@@ -21,51 +21,19 @@ async_bot = AsyncLLM(
 )
 
 def main():
-    """
-    [同步版本] 主运行函数示例
-    """
-    # 构造符合要求的对话历史 JSON 结构
-    dialogue_history = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello! Can you write a short poem about code?"},
-    ]
-
-    print("=" * 50)
-    print("[同步版本] 模型:", bot.get_model())
-    print("[同步版本] API Key:", bot.get_api_key())
-    print("=" * 50)
-    print("正在调用同步 LLM 流式接口...")
-
-    for chunk in bot.stream_chat(messages=dialogue_history):
-        print(f"{chunk}", end="", flush=True)
-    
-    print("\n")
-
-async def async_main():
-    """
-    [异步版本] 主运行函数示例
-    """
-    # 构造符合要求的对话历史 JSON 结构
-    dialogue_history = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "Hello! Can you write a short poem about code?"},
-    ]
-
-    print("=" * 50)
-    print("[异步版本] 模型:", async_bot.get_model())
-    print("[异步版本] API Key:", async_bot.get_api_key())
-    print("=" * 50)
-    print("正在调用异步 LLM 流式接口...")
-
-    async for chunk in async_bot.stream_chat(messages=dialogue_history):
-        print(f"{chunk}", end="", flush=True)
-    
-    print("\n")
+    system_prompt = "You are a helpful assistant."
+    user_prompt = "Hello! Can you write a short poem about code?"
+    meg = [{"role": "system", "content": system_prompt},
+    {"role": "user", "content": user_prompt}]
+    response = bot.structured_output(messages=meg,
+        format={
+            "poem": "str | 一个短的诗歌",
+            "author": "str | 诗歌的作者"
+        }
+    )
+    print("同步调用结果:", response)
 
 # 运行主循环
 if __name__ == "__main__":
-    print("\n>>> 测试同步版本 stream_chat <<<\n")
-    main()
-    
-    print("\n>>> 测试异步版本 stream_chat <<<\n")
-    asyncio.run(async_main())
+
+ main()

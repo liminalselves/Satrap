@@ -1,6 +1,3 @@
-import os
-import logging
-import asyncio
 from typing import List, Dict, Any, Optional
 from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
@@ -96,6 +93,7 @@ class LLM:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.api_key = api_key if lock_api_key else "api key locked"
         self.model = model
+        self.base_url = base_url
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -217,6 +215,92 @@ class LLM:
             logger.error(f"[LLM] 调用过程发生未知异常: {e}")
             yield "" if not self.return_false else False
 
+    def structured_output(self,
+            messages: List[Dict[str, str]],
+            model: Optional[str] = None,
+            temperature: Optional[float] = None,
+            top_p: Optional[float] = None,
+            max_tokens: Optional[int] = None,
+            format: Optional[dict] = None,
+        ) -> str | bool:
+            """
+            同步调用 LLM 并要求结构化输出
+
+            参数:
+            - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+            - model: 可选参数, 用于覆盖默认模型
+            - temperature: 可选参数, 用于覆盖默认温度
+            - top_p: 可选参数, 用于覆盖默认 top_p
+            - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+            - format: 用于指定输出格式的字典提示, 示例如下:
+
+            {
+                "a": "str | 对参数的描述",
+                "x": "int",
+                "y": "float",
+                "z": "bool",
+                "m": {
+                    "k": "str",
+                    "v": "int"
+                },   # object 类型
+                "n": "enum"
+            }
+
+            返回:
+            - 模型回复的字符串内容; 如果出错, 根据配置返回空字符串或 False
+            """
+            import json
+
+            target_model = model if model else self.model
+            use_temp = temperature if temperature is not None else self.temperature
+            use_top_p = top_p if top_p is not None else self.top_p
+            use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+            if not messages:
+                logger.warning("对话输入 messages 为空")
+                return "" if not self.return_false else False
+
+            # Step.1 处理格式化提示词
+            processed_messages = [m.copy() for m in messages]
+            # 创建消息列表的深拷贝以避免修改原始数据
+
+            if format:
+                format_str = json.dumps(format, ensure_ascii=False, indent=2)
+                system_instruction = f"\n请严格按照以下 JSON 格式输出结果, 不要包含 Markdown 标记或其他多余文本:\n{format_str}"
+                
+                if processed_messages and processed_messages[0].get("role") == "system":
+                    processed_messages[0]["content"] += f"\n\n{system_instruction}"
+                    # 如果已有 system prompt, 则追加格式要求
+                else:
+                    processed_messages.insert(0, {"role": "system", "content": system_instruction})
+                    # 如果没有 system prompt, 则插入一条新的
+
+            try:
+                # Step.2 同步调用 API
+                response = self.client.chat.completions.create(
+                    model=target_model,
+                    messages=processed_messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    response_format={"type": "json_object"},
+                )   # 使用注入了格式提示的消息列表发起请求
+
+                # Step.3 解析结果
+                return parse_chat_response(response, self.suppress_error)
+
+            except APIError as e:
+                if not self.suppress_error:
+                    raise e
+                logger.error(f"[LLM] LLM API 错误: {e}")
+                return "" if not self.return_false else False
+            except Exception as e:
+                if not self.suppress_error:
+                    raise e
+                logger.error(f"[LLM] 调用过程发生未知异常: {e}")
+                return "" if not self.return_false else False
+
+
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
         return self.model
@@ -224,6 +308,11 @@ class LLM:
     def get_api_key(self) -> str:
         """获取当前 LLM 实例的 API Key"""
         return self.api_key
+    
+    def get_base_url(self) -> Optional[str]:
+        """获取当前 LLM 实例的 Base URL;
+        如果未设置则返回 None"""
+        return self.base_url
 
 
 class AsyncLLM:
@@ -255,6 +344,7 @@ class AsyncLLM:
         """
         self.api_key = api_key if lock_api_key else "api key locked"
         self.model = model
+        self.base_url = base_url
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -390,6 +480,92 @@ class AsyncLLM:
             logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
             yield "" if not self.return_false else False
 
+    async def structured_output(
+            self,
+            messages: List[Dict[str, str]],
+            model: Optional[str] = None,
+            temperature: Optional[float] = None,
+            top_p: Optional[float] = None,
+            max_tokens: Optional[int] = None,
+            format: Optional[dict] = None,
+        ) -> str | bool:
+            """
+            异步调用 LLM 并要求结构化输出
+
+            参数:
+            - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+            - model: 可选参数, 用于覆盖默认模型
+            - temperature: 可选参数, 用于覆盖默认温度
+            - top_p: 可选参数, 用于覆盖默认 top_p
+            - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+            - format: 用于指定输出格式的字典提示, 示例如下:
+
+            {
+                "a": "str | 对参数的描述",
+                "x": "int",
+                "y": "float",
+                "z": "bool",
+                "m": {
+                    "k": "str",
+                    "v": "int"
+                },   # object 类型
+                "n": "enum"
+            }
+
+            返回:
+            - 模型回复的字符串内容; 如果出错, 根据配置返回空字符串或 False
+            """
+            import json
+
+            target_model = model if model else self.model
+            use_temp = temperature if temperature is not None else self.temperature
+            use_top_p = top_p if top_p is not None else self.top_p
+            use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+            if not messages:
+                logger.warning("对话输入 messages 为空")
+                return "" if not self.return_false else False
+
+            # Step.1 处理格式化提示词
+            processed_messages = [m.copy() for m in messages]
+            # 创建消息列表的深拷贝以避免修改原始数据
+
+            if format:
+                format_str = json.dumps(format, ensure_ascii=False, indent=2)
+                system_instruction = f"\n请严格按照以下 JSON 格式输出结果, 不要包含 Markdown 标记或其他多余文本:\n{format_str}"
+                
+                if processed_messages and processed_messages[0].get("role") == "system":
+                    processed_messages[0]["content"] += f"\n\n{system_instruction}"
+                    # 如果已有 system prompt, 则追加格式要求
+                else:
+                    processed_messages.insert(0, {"role": "system", "content": system_instruction})
+                    # 如果没有 system prompt, 则插入一条新的
+
+            try:
+                # Step.2 异步调用 API
+                response = await self.client.chat.completions.create(
+                    model=target_model,
+                    messages=processed_messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    response_format={"type": "json_object"},
+                )   # 使用注入了格式提示的消息列表发起请求
+
+                # Step.3 解析结果
+                return parse_chat_response(response, self.suppress_error)
+
+            except APIError as e:
+                if not self.suppress_error:
+                    raise e
+                logger.error(f"[AsyncLLM] LLM API 错误: {e}")
+                return "" if not self.return_false else False
+            except Exception as e:
+                if not self.suppress_error:
+                    raise e
+                logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
+                return "" if not self.return_false else False
+
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""
         return self.model
@@ -397,3 +573,8 @@ class AsyncLLM:
     def get_api_key(self) -> str:
         """获取当前 AsyncLLM 实例的 API Key"""
         return self.api_key
+    
+    def get_base_url(self) -> Optional[str]:
+        """获取当前 AsyncLLM 实例的 Base URL;
+        如果未设置则返回 None"""
+        return self.base_url
