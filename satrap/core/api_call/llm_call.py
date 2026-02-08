@@ -1,0 +1,399 @@
+import os
+import logging
+import asyncio
+from typing import List, Dict, Any, Optional
+from openai import OpenAI, AsyncOpenAI, APIError
+from openai.types.chat.chat_completion import ChatCompletion
+from satrap import logger
+
+
+def parse_chat_response(
+    api_response: ChatCompletion | Dict[str, Any],
+    suppress_error: bool = True,
+) -> str:
+    """
+    解析 LLM API 的响应对象
+
+    参数:
+    - api_response: API 返回的 ChatCompletion 对象或字典
+    - suppress_error: 如果为 True (默认), 解析失败时返回空字符串而不是抛出异常
+
+    返回:
+    - 模型的回复文本字符串; 如果出错或无内容, 返回空字符串
+    """
+
+    # Step.1 基础有效性检查 (确保响应不为空)
+    if api_response is None:
+        msg = "LLM 接口响应为空"
+        if suppress_error:
+            logger.warning(msg)
+            return ""
+        raise ValueError(msg)
+
+    try:
+        # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
+        choices = getattr(api_response, "choices", None)
+        if choices is None and isinstance(api_response, dict):
+            choices = api_response.get("choices")
+        # 尝试通过属性或字典键获取 choices 列表行
+
+        if not choices or len(choices) == 0:
+            logger.warning("LLM 接口响应中 'choices' 列表为空")
+            return ""
+
+        # Step.3 提取第一条回复的消息内容
+        first_choice = choices[0]
+
+        # 处理 Pydantic 对象或字典格式
+        if hasattr(first_choice, "message"):
+            content = first_choice.message.content
+        elif isinstance(first_choice, dict):
+            content = first_choice.get("message", {}).get("content")
+        else:
+            content = ""
+        # 根据返回的数据类型提取 content 字段
+
+        if content is None:
+            return ""
+
+        return content.strip()
+
+    # Step.4 异常处理
+    except Exception as e:
+        logger.error(f"解析 LLM 响应时发生错误: {e}")
+        if suppress_error:
+            return ""
+        raise e
+
+
+class LLM:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
+        model: str = "put-your-model-name-here",
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        max_tokens: int = 1000,
+        suppress_error: bool = True,
+        return_false: bool = False,
+        lock_api_key: bool = True,
+    ):
+        """
+        [同步版本] LLM API 调用封装
+
+        参数:
+        - api_key: API 密钥
+        - base_url: API 地址
+        - model: 使用的模型名称
+        - temperature: 生成文本的随机性 (0.0 - 2.0), 默认 0.7
+        - top_p: 控制生成文本的多样性 (0.0 - 1.0), 默认 0.95
+        - max_tokens: 最大生成 token 数, 默认 1000
+        - suppress_error: 是否抑制异常, 默认 True
+        - return_false: 启用时发生错误返回 false 而非空字符串
+        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        """
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.api_key = api_key if lock_api_key else "api key locked"
+        self.model = model
+        self.temperature = temperature
+        self.top_p = top_p
+        self.max_tokens = max_tokens
+        self.suppress_error = suppress_error
+        self.return_false = return_false
+
+    def chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str | bool:
+        """
+        同步发送对话请求
+
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+
+        返回:
+        - 模型回复的字符串内容; 如果出错, 根据配置返回空字符串或 False
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            return "" if not self.return_false else False
+
+        try:
+            # Step.1 同步调用 API
+            response = self.client.chat.completions.create(
+                model=target_model,
+                messages=messages,   # type: ignore
+                temperature=use_temp,
+                top_p=use_top_p,
+                max_tokens=use_max_tokens,
+            )   # 发起网络请求
+
+            # Step.2 解析结果
+            return parse_chat_response(response, self.suppress_error)
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] LLM API 错误: {e}")
+            return "" if not self.return_false else False
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
+            return "" if not self.return_false else False
+
+    def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """
+        同步流式发送对话请求 (生成器)
+
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+
+        返回:
+        - 生成器, 每次 yield 一个文本片段; 如果出错, 根据配置返回空字符串或 False
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            yield "" if not self.return_false else False
+            return
+
+        try:
+            # Step.1 同步流式调用 API
+            stream = self.client.chat.completions.create(
+                model=target_model,
+                messages=messages,   # type: ignore
+                temperature=use_temp,
+                top_p=use_top_p,
+                max_tokens=use_max_tokens,
+                stream=True,
+            )   # 发起流式网络请求
+
+            # Step.2 逐步 yield 内容
+            for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        yield content
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] LLM API 错误: {e}")
+            yield "" if not self.return_false else False
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
+            yield "" if not self.return_false else False
+
+    def get_model(self) -> str:
+        """获取当前 LLM 实例使用的模型名称"""
+        return self.model
+
+    def get_api_key(self) -> str:
+        """获取当前 LLM 实例的 API Key"""
+        return self.api_key
+
+
+class AsyncLLM:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str] = None,
+        model: str = "put-your-model-name-here",
+        temperature: float = 0.7,
+        top_p: float = 0.95,
+        max_tokens: int = 1000,
+        suppress_error: bool = True,
+        return_false: bool = False,
+        lock_api_key: bool = True,
+    ):
+        """
+        [异步版本] LLM API 调用封装
+
+        参数:
+        - api_key: API 密钥
+        - base_url: API 地址
+        - model: 模型名称
+        - temperature: 生成文本的随机性 (0.0 - 2.0), 默认 0.7
+        - top_p: 控制生成文本的多样性 (0.0 - 1.0), 默认 0.95
+        - max_tokens: 最大生成 token 数, 默认 1000
+        - suppress_error: 是否抑制 API 调用中的异常, 默认 True
+        - return_false: 启用时发生错误返回 false 而非空字符串
+        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        """
+        self.api_key = api_key if lock_api_key else "api key locked"
+        self.model = model
+        self.temperature = temperature
+        self.top_p = top_p
+        self.max_tokens = max_tokens
+        self.suppress_error = suppress_error
+        self.return_false = return_false
+
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url
+        )  # 初始化异步 OpenAI 客户端
+
+    async def chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ) -> str | bool:
+        """
+        调用 LLM 进行对话生成
+
+        参数:
+        - messages: 对话历史列表, 格式如 [{"role": "user", "content": "..."}]
+        - model: 临时覆盖初始化时的模型名称
+        - temperature: 覆盖初始化时的温度参数
+        - top_p: 覆盖初始化时的 top_p 参数
+        - max_tokens: 覆盖初始化时的最大生成 token 数
+
+        返回:
+        - 助手回复的文本内容; 如果出错且 return_false 为 True, 则返回 False
+        """
+        # Step.1 准备调用参数 (使用默认值或覆盖值)
+        use_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            return "" if not self.return_false else False
+
+        try:
+            # Step.2 异步调用 OpenAI 接口
+            response = await self.client.chat.completions.create(
+                model=use_model,
+                messages=messages,   # type: ignore
+                temperature=use_temp,
+                top_p=use_top_p,
+                max_tokens=use_max_tokens,
+            )   # 发起网络请求并等待结果
+
+            # Step.3 解析并返回结果
+            return parse_chat_response(
+                api_response=response,
+                suppress_error=self.suppress_error
+            )
+
+        except APIError as e:
+            # Step.4 API 层面错误的特定处理
+            err_msg = f"[AsyncLLM] LLM API 返回错误: {e}"
+            if not self.suppress_error:
+                raise e
+            logger.error(err_msg)
+            return ""
+
+        except Exception as e:
+            # Step.5 其他未知异常处理 (如网络连接失败)
+            err_msg = f"[AsyncLLM] 调用过程发生未知异常: {e}"
+            if not self.suppress_error:
+                raise e
+            logger.error(err_msg)
+            return "" if not self.return_false else False
+
+    async def stream_chat(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """
+        异步流式发送对话请求 (异步生成器)
+
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+
+        返回:
+        - 异步生成器, 每次 yield 一个文本片段; 如果出错, 根据配置返回空字符串或 False
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            yield "" if not self.return_false else False
+            return
+
+        try:
+            # Step.1 异步流式调用 API
+            stream = await self.client.chat.completions.create(
+                model=target_model,
+                messages=messages,   # type: ignore
+                temperature=use_temp,
+                top_p=use_top_p,
+                max_tokens=use_max_tokens,
+                stream=True,
+            )   # 发起异步流式网络请求
+
+            # Step.2 逐步 yield 内容
+            async for chunk in stream:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta = chunk.choices[0].delta
+                    content = getattr(delta, "content", None)
+                    if content:
+                        yield content
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
+            yield "" if not self.return_false else False
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
+            yield "" if not self.return_false else False
+
+    def get_model(self) -> str:
+        """获取当前 AsyncLLM 实例使用的模型名称"""
+        return self.model
+
+    def get_api_key(self) -> str:
+        """获取当前 AsyncLLM 实例的 API Key"""
+        return self.api_key
