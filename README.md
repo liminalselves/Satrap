@@ -14,17 +14,19 @@
 
 ``` bash
 satrap/
-├── __init__.py            # 包入口
-├── api/                   # API 相关 (开发中)
+├── __init__.py             # 包入口
+├── api/                    # API 相关 (开发中)
 ├── core/
-│   ├── log.py             # 日志系统
+│   ├── log.py              # 日志系统
 │   ├── api_call/
-│   │   └── LLMCall.py     # LLM API 调用封装
-│   │   └── EmbedCall.py   # Embed API 调用封装
-│   ├── database/          # 数据库模块 (开发中)
-│   └── utils/             # 工具函数 (开发中)
-└── satrapdata/            # 数据存储目录
-    └── logs/              # 日志文件
+│   │   ├── LLMCall.py      # LLM API 调用封装
+│   │   └── EmbedCall.py    # Embed API 调用封装
+│   ├── database/           # 数据库模块 (开发中)
+│   ├── utils/              # 工具函数 (开发中)
+│   │   ├── TCBuilder.py    # tools call 构建
+│   │   └── text_utils.py   # 文本处理
+└── satrapdata/             # 数据存储目录
+    └── logs/               # 日志文件
 ```
 
 ## 兼容性

@@ -104,6 +104,7 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
+        thinking: bool = False,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -114,6 +115,7 @@ class LLM:
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否启用思考
         - temperature: 可选参数, 用于覆盖默认温度
         - top_p: 可选参数, 用于覆盖默认 top_p
         - max_tokens: 可选参数, 用于覆盖默认最大 token 数
@@ -138,6 +140,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
+                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
             )   # 发起网络请求
 
             # Step.2 解析结果
@@ -158,6 +161,7 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
+        thinking: bool = False,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -168,6 +172,7 @@ class LLM:
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否启用思考
         - temperature: 可选参数, 用于覆盖默认温度
         - top_p: 可选参数, 用于覆盖默认 top_p
         - max_tokens: 可选参数, 用于覆盖默认最大 token 数
@@ -193,6 +198,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
+                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
                 stream=True,
             )   # 发起流式网络请求
 
@@ -360,6 +366,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
+        thinking: bool = False,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -370,6 +377,7 @@ class AsyncLLM:
         参数:
         - messages: 对话历史列表, 格式如 [{"role": "user", "content": "..."}]
         - model: 临时覆盖初始化时的模型名称
+        - thinking: 是否启用思考
         - temperature: 覆盖初始化时的温度参数
         - top_p: 覆盖初始化时的 top_p 参数
         - max_tokens: 覆盖初始化时的最大生成 token 数
@@ -395,6 +403,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
+                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
             )   # 发起网络请求并等待结果
 
             # Step.3 解析并返回结果
@@ -423,6 +432,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
+        thinking: bool = False,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -433,6 +443,7 @@ class AsyncLLM:
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否启用思考
         - temperature: 可选参数, 用于覆盖默认温度
         - top_p: 可选参数, 用于覆盖默认 top_p
         - max_tokens: 可选参数, 用于覆盖默认最大 token 数
@@ -458,6 +469,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
+                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
                 stream=True,
             )   # 发起异步流式网络请求
 
