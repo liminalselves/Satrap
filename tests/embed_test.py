@@ -6,7 +6,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 # 示例: 初始化 Embedding 客户端 (请替换为实际的 key)
 embed_client = Embedding(
-    api_key="sk-tmnnwfrmzwqhidioynjpugpgyhsokquxdbxbdmpzfvpfkqop", 
+    api_key="", 
     base_url="https://api.siliconflow.cn/v1",
     model="BAAI/bge-large-zh-v1.5",
     dimensions=512,
