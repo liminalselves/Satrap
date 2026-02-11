@@ -1,4 +1,4 @@
-from satrap.core.api_call.llm_call import AsyncLLM, LLM
+from satrap.core.ApiCall.LLMCall import AsyncLLM, LLM
 import asyncio, os, sys
 
 # 将项目根目录添加到 sys.path
