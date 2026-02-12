@@ -314,11 +314,34 @@ class LLM:
     def get_api_key(self) -> str:
         """获取当前 LLM 实例的 API Key"""
         return self.api_key
-    
+
     def get_base_url(self) -> Optional[str]:
         """获取当前 LLM 实例的 Base URL;
         如果未设置则返回 None"""
         return self.base_url
+    
+    def set_parameters(
+        self,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """更新 LLM 实例的默认参数设置
+
+        参数:
+        - model: 新的模型名称
+        - temperature: 新的温度参数
+        - top_p: 新的 top_p 参数
+        - max_tokens: 新的最大 token 数"""
+        if model is not None:
+            self.model = model
+        if temperature is not None:
+            self.temperature = temperature
+        if top_p is not None:
+            self.top_p = top_p
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
 
 
 class AsyncLLM:
@@ -590,3 +613,26 @@ class AsyncLLM:
         """获取当前 AsyncLLM 实例的 Base URL;
         如果未设置则返回 None"""
         return self.base_url
+    
+    def set_parameters(
+        self,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+    ):
+        """更新 AsyncLLM 实例的默认参数设置
+
+        参数:
+        - model: 新的模型名称
+        - temperature: 新的温度参数
+        - top_p: 新的 top_p 参数
+        - max_tokens: 新的最大 token 数"""
+        if model is not None:
+            self.model = model
+        if temperature is not None:
+            self.temperature = temperature
+        if top_p is not None:
+            self.top_p = top_p
+        if max_tokens is not None:
+            self.max_tokens = max_tokens

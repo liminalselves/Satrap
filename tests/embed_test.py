@@ -92,5 +92,8 @@ def main():
     print("\n所有测试完成!")
 
 
+    print("=====")
+
 if __name__ == "__main__":
     main()
+    print(embed_client.check_embedding())

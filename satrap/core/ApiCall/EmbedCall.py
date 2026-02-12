@@ -2,7 +2,6 @@ from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI, AsyncOpenAI, APIError
 from satrap import logger
 
-
 def parse_embedding_response(
     api_response: Any,
     suppress_error: bool = True,
@@ -196,6 +195,26 @@ class Embedding:
         如果未设置则返回 None"""
         return self.base_url
 
+    def check_embedding(self):
+        """
+        检查嵌入模型是否可用
+        - return: 嵌入模型的维度; 如果检查失败则返回 None
+        """
+        request_kwargs = {
+            "model": self.model,
+            "input": ["测试文本"],
+            "encoding_format": self.encoding_format,
+            "dimensions": self.dimensions,
+        }
+        try:
+            response = self.client.embeddings.create(**request_kwargs)
+            dim = len(response.data[0].embedding)
+            return dim
+
+        except Exception as e:
+            logger.error(f"检查嵌入模型失败: {e}")
+            return None
+
 
 class AsyncEmbedding:
     def __init__(
@@ -340,3 +359,23 @@ class AsyncEmbedding:
         """获取当前 AsyncEmbedding 实例的 Base URL;
         如果未设置则返回 None"""
         return self.base_url
+
+    async def check_embedding(self):
+        """
+        检查嵌入模型是否可用
+        - return: 嵌入模型的维度; 如果检查失败则返回 None
+        """
+        request_kwargs = {
+            "model": self.model,
+            "input": ["测试文本"],
+            "encoding_format": self.encoding_format,
+            "dimensions": self.dimensions,
+        }
+        try:
+            response = await self.client.embeddings.create(**request_kwargs)
+            dim = len(response.data[0].embedding)
+            return dim
+
+        except Exception as e:
+            logger.error(f"检查嵌入模型失败: {e}")
+            return None
