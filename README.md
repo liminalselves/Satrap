@@ -18,7 +18,7 @@ satrap/
 ├── api/                    # API 相关 (开发中)
 ├── core/
 │   ├── log.py              # 日志系统
-│   ├── api_call/
+│   ├── APICall/
 │   │   ├── LLMCall.py      # LLM API 调用封装
 │   │   └── EmbedCall.py    # Embed API 调用封装
 │   ├── database/           # 数据库模块 (开发中)
@@ -26,7 +26,7 @@ satrap/
 │   │   ├── TCBuilder.py    # tools call 构建
 │   │   ├── text_utils.py   # 文本处理
 │   │   └── context.py      # 上下文管理
-│   └── framework.py        # 模型工作流框架 (开发中)
+│   └── framework/          # 模型工作流框架 (开发中)
 └── satrapdata/             # 数据存储目录
     └── logs/               # 日志文件
 ```
