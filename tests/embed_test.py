@@ -1,4 +1,4 @@
-from satrap.core.ApiCall.EmbedCall import Embedding, parse_embedding_response
+from satrap.core.APICall.EmbedCall import Embedding, parse_embedding_response
 import os, sys
 
 # 将项目根目录添加到 sys.path

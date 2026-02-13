@@ -24,7 +24,9 @@ satrap/
 │   ├── database/           # 数据库模块 (开发中)
 │   ├── utils/              # 工具函数 (开发中)
 │   │   ├── TCBuilder.py    # tools call 构建
-│   │   └── text_utils.py   # 文本处理
+│   │   ├── text_utils.py   # 文本处理
+│   │   └── context.py      # 上下文管理
+│   └── framework.py        # 模型工作流框架 (开发中)
 └── satrapdata/             # 数据存储目录
     └── logs/               # 日志文件
 ```

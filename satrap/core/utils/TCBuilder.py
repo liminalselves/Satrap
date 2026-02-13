@@ -1,7 +1,7 @@
 from typing import Dict, Tuple, Any
 from satrap import logger
 
-def create_tool(
+def create_tools(
     tool_name: str,
     description: str,
     params_dict: Dict[str, Tuple[str, str]]   # 参数名 -> (类型, 描述)
