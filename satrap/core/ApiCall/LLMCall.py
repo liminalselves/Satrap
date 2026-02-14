@@ -1,6 +1,8 @@
 from typing import List, Dict, Any, Optional
 from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
+import json
+
 from satrap import logger
 
 
@@ -9,7 +11,7 @@ def parse_chat_response(
     suppress_error: bool = True,
 ) -> str:
     """
-    解析 LLM API 的响应对象
+    解析 LLM API 对话响应, 提取模型的回复文本
 
     参数:
     - api_response: API 返回的 ChatCompletion 对象或字典
@@ -23,7 +25,7 @@ def parse_chat_response(
     if api_response is None:
         msg = "LLM 接口响应为空"
         if suppress_error:
-            logger.warning(msg)
+            logger.warning(f"[响应处理] {msg}")
             return ""
         raise ValueError(msg)
 
@@ -35,7 +37,7 @@ def parse_chat_response(
         # 尝试通过属性或字典键获取 choices 列表行
 
         if not choices or len(choices) == 0:
-            logger.warning("LLM 接口响应中 'choices' 列表为空")
+            logger.warning("[响应处理] LLM 接口响应中 'choices' 列表为空")
             return ""
 
         # Step.3 提取第一条回复的消息内容
@@ -57,9 +59,107 @@ def parse_chat_response(
 
     # Step.4 异常处理
     except Exception as e:
-        logger.error(f"解析 LLM 响应时发生错误: {e}")
+        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
         if suppress_error:
             return ""
+        raise e
+    
+def parse_call_response(
+    api_response: ChatCompletion | Dict[str, Any],
+    suppress_error: bool = True,
+) -> tuple[str, str, dict[str, Any]]:
+    """解析 LLM API 调用响应, 判断是否包含函数调用
+
+    参数:
+    - api_response: API 返回的 ChatCompletion 对象或字典
+    - suppress_error: 如果为 True (默认), 解析失败时返回空字符串而不是抛出异常
+
+    返回:
+    - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式)
+    """
+    # Step.1 基础有效性检查 (确保响应不为空)
+    if api_response is None:
+        msg = "LLM 接口响应为空"
+        if suppress_error:
+            logger.warning(f"[响应处理] {msg}")
+            return "message", "", {}
+        raise ValueError(msg)
+
+    try:
+        # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
+        choices = getattr(api_response, "choices", None)
+        if choices is None and isinstance(api_response, dict):
+            choices = api_response.get("choices")
+
+        if not choices or len(choices) == 0:
+            logger.warning("LLM 接口响应中 'choices' 列表为空")
+            return "message", "", {}
+
+        # Step.3 提取第一条回复的消息对象
+        first_choice = choices[0]
+        message = getattr(first_choice, "message", None)
+        if message is None and isinstance(first_choice, dict):
+            message = first_choice.get("message")
+        
+        if message is None:
+            return "message", "", {}
+
+        content = getattr(message, "content", None)
+        if content is None and isinstance(message, dict):
+            content = message.get("content")
+        text_content = content.strip() if content else ""
+        # 提取文本内容
+
+        # Step.4 检查是否存在工具调用 (tool_calls)
+        tool_calls = getattr(message, "tool_calls", None)
+        if tool_calls is None and isinstance(message, dict):
+            tool_calls = message.get("tool_calls")
+
+        if tool_calls and len(tool_calls) > 0:
+
+            first_tool_call = tool_calls[0]
+            # 提取第一个工具调用
+
+            function_data = getattr(first_tool_call, "function", None)
+            if function_data is None and isinstance(first_tool_call, dict):
+                function_data = first_tool_call.get("function")
+            # 提取 function 对象 (兼容对象和字典)
+
+            if function_data:
+                func_name = getattr(function_data, "name", "")
+                if isinstance(function_data, dict):
+                    func_name = function_data.get("name", "")
+                    # 提取函数名
+
+                args_str = getattr(function_data, "arguments", "{}")
+                if isinstance(function_data, dict):
+                    args_str = function_data.get("arguments", "{}")
+                    # 提取参数字符串并解析  
+    
+                try:   # 确保参数是字符串后再进行 JSON 解析
+                    if isinstance(args_str, str):
+                        args_dict = json.loads(args_str)
+                    elif isinstance(args_str, dict):
+                        args_dict = args_str
+                    else:
+                        args_dict = {}
+
+                except json.JSONDecodeError:
+                    logger.error(f"[响应处理] 工具调用参数 JSON 解析失败: {args_str}")
+                    args_dict = {}
+
+                call_info = {"name": func_name, "arguments": args_dict}
+                return "tools_call", text_content, call_info
+                # 封装返回的函数调用信息
+
+        # Step.5 默认返回普通消息类型
+        return "message", text_content, {}
+
+    # Step.6 异常处理
+    except Exception as e:
+        logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
+        if suppress_error:
+            return "message", "", {}
         raise e
 
 
@@ -306,6 +406,79 @@ class LLM:
                 logger.error(f"[LLM] 调用过程发生未知异常: {e}")
                 return "" if not self.return_false else False
 
+    def call(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        thinking: bool = False,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+
+    ) -> tuple[str, str, dict[str, Any]] | bool:
+        """同步调用 LLM 并返回响应
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否要求模型进行思考, 默认为 False
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+
+        返回:
+        - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式); 如果出错, 根据配置返回空字符串或 False
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            return ("", "", {}) if not self.return_false else False
+
+        try:
+            # Step.1 同步调用 API
+            if tools is not None:
+                response = self.client.chat.completions.create(
+                    model=target_model,
+                    messages=messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    tools=tools,               # type: ignore
+                    tool_choice=tool_choice,   # type: ignore
+                )   # 发起网络请求
+
+            else:
+                response = self.client.chat.completions.create(
+                    model=target_model,
+                    messages=messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                )   # 发起网络请求
+
+            # Step.2 解析结果
+            return parse_call_response(response, self.suppress_error)
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] LLM API 错误: {e}")
+            return ("", "", {}) if not self.return_false else False
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
+            return ("", "", {}) if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
@@ -600,6 +773,80 @@ class AsyncLLM:
                     raise e
                 logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
                 return "" if not self.return_false else False
+
+    async def call(
+        self,
+        messages: List[Dict[str, str]],
+        model: Optional[str] = None,
+        thinking: bool = False,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+
+    ) -> tuple[str, str, dict[str, Any]] | bool:
+        """异步调用 LLM 并返回响应
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否要求模型进行思考, 默认为 False
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+
+        返回:
+        - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式); 如果出错, 根据配置返回空字符串或 False
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            return ("", "", {}) if not self.return_false else False
+
+        try:
+            # Step.1 异步调用 API
+            if tools is not None:
+                response = await self.client.chat.completions.create(
+                    model=target_model,
+                    messages=messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    tools=tools,               # type: ignore
+                    tool_choice=tool_choice,   # type: ignore
+                )   # 发起异步网络请求
+
+            else:
+                response = await self.client.chat.completions.create(
+                    model=target_model,
+                    messages=messages,   # type: ignore
+                    temperature=use_temp,
+                    top_p=use_top_p,
+                    max_tokens=use_max_tokens,
+                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                )   # 发起异步网络请求
+
+            # Step.2 解析结果
+            return parse_call_response(response, self.suppress_error)
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
+            return ("", "", {}) if not self.return_false else False
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
+            return ("", "", {}) if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""

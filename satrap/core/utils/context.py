@@ -80,10 +80,7 @@ class ContextManager:
             self._messages = []
 
     def save_context(self):
-        """
-        保存当前上下文到数据库 <br>
-        策略: 采用"删除旧数据 + 插入新列表"的方式, 确保 Python 列表中的顺序和修改(如中间删除)能完美同步到 SQL
-        """
+        """保存当前上下文到数据库"""
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
