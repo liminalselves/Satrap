@@ -175,6 +175,24 @@ class ContextManager:
         self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
         self._sync()
 
+    def add_tool_call_flow(self, message: str, tool_message: dict, tool_result: dict):
+        """
+        添加一个完整的工具调用消息流到上下文中
+
+        相当于:
+        ctx.add_bot_message(message, tool_message)
+        ctx.add_tool_message(tool_message["id"], tool_result)
+
+        参数:
+        - message: 模型消息
+        - tool_message: 工具调用消息
+        - tool_result: 工具调用的返回结果
+        """
+        self.add_bot_message(message, tool_message)
+        self.add_tool_message(tool_message["id"], tool_result)
+        self._sync()
+
+
     def add_at_system_start(self, message: str):
         """
         在上下文的开头添加系统消息

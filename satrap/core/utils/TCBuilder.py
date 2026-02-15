@@ -57,7 +57,7 @@ def create_tool_defined(
 class Tool:
     """工具基类; 所有工具都应当继承自该类"""
     def __init__(self, tool_name: str, description: str, params_dict: Dict[str, Tuple[str, str]]):
-        """初始化工具; 工具的执行应当覆写 execute 方法并进行 `super().__init__(tool_name, description, params_dict)`
+        """初始化工具; 工具的执行应当覆写 `execute` 方法并进行 `super().__init__(tool_name, description, params_dict)`
 
         参数:
         - tool_name: 工具名称
@@ -72,7 +72,7 @@ class Tool:
 
         使用示例:
         ``` python
-        class sum(Tool):
+        class sum_numbers(Tool):
             def __init__(
             self,
             tool_name = 'sum',
@@ -86,6 +86,13 @@ class Tool:
             def execute(self, a: float, b: float) -> float:
                 '''执行工具; 计算两个数的和'''
                 return a + b
+
+        # 执行:
+        sum_tool = sum_numbers()
+        a = 1
+        b = 2
+        result = sum_tool(a, b)
+        # 输出: 3
         ```
         """
         self.tool_name = tool_name

@@ -43,7 +43,7 @@ class WeatherTool(Tool):
             "shanghai": {"temp": 28, "condition": "多云", "humidity": 60},
             "guangzhou": {"temp": 32, "condition": "雷阵雨", "humidity": 80},
         }
-        
+
         city_lower = city.lower()
         if city_lower in weather_data:
             data = weather_data[city_lower]
@@ -171,7 +171,7 @@ def test_function_call():
             tools=tool_manager.get_tools_definitions(),
             tool_choice="auto"
         )
-        
+
         # 检查返回值类型
         if isinstance(result, bool):
             print("调用失败")
@@ -190,13 +190,10 @@ def test_function_call():
             print("=" * 50)
 
             tool_message, tool_result = tool_manager.execute_tool_call(call_info[0])
-            ctx.add_bot_message(text_content, tool_message)
-            ctx.add_tool_message(call_info[0]["id"], tool_result)
+            ctx.add_tool_call_flow(text_content, tool_message, tool_result)
             messages = ctx.get_context()
             # 工具调用
-            
-            # 添加工具返回结果
-            
+
             # 再次调用 LLM（不带工具定义，获取最终回复）
             final_result = llm.call(messages=messages)
             if isinstance(final_result, bool):
@@ -208,7 +205,7 @@ def test_function_call():
             
             # 保存对话
             ctx.add_bot_message(final_text)
-            
+
         else:
             print("\n模型直接回复（未调用工具）:")
             print(text_content)
