@@ -22,7 +22,7 @@ class ContextManager:
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
-        self._messages: List[Dict[str, str]] = []   # 内存中的消息缓存
+        self._messages: List[Dict[str, str | list]] = []   # 内存中的消息缓存
         self._init_db_table()                       # 初始化数据库表结构
         self.load_context()                         # 加载数据
 
@@ -107,7 +107,7 @@ class ContextManager:
         finally:
             conn.close()
 
-    def get_context(self) -> List[Dict[str, str]]:
+    def get_context(self) -> List[Dict[str, str | list]]:
         """
         获取当前上下文中的所有消息
 
@@ -136,14 +136,20 @@ class ContextManager:
         self._messages.append({"role": "system", "content": message})
         self._sync()
 
-    def add_bot_message(self, message: str):
+    def add_bot_message(self, message: str, tools_call: dict | None = None):
         """
         添加机器人消息到上下文中
 
         参数:
         - message: 消息内容
+        - tools_call: 工具调用信息, 可选, 格式为 {"id": "工具ID", "type": "function", "function": {"name": "工具名", "arguments": "参数JSON字符串"}}
         """
-        self._messages.append({"role": "assistant", "content": message})
+        if tools_call:
+            self._messages.append({"role": "assistant", "content": message, "tool_calls": [tools_call]})
+
+        else:
+            self._messages.append({"role": "assistant", "content": message})
+
         self._sync()
 
     def add_chat(self, user_message: str, bot_message: str):
@@ -156,6 +162,17 @@ class ContextManager:
         """
         self._messages.append({"role": "user", "content": user_message})
         self._messages.append({"role": "assistant", "content": bot_message})
+        self._sync()
+
+    def add_tool_message(self, tool_call_id: str, tool_result: dict):
+        """
+        添加工具调用的返回消息到上下文中
+
+        参数:
+        - tool_call_id: 工具调用ID
+        - tool_result: 工具调用的返回结果
+        """
+        self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
         self._sync()
 
     def add_at_system_start(self, message: str):

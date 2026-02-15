@@ -67,7 +67,7 @@ def parse_chat_response(
 def parse_call_response(
     api_response: ChatCompletion | Dict[str, Any],
     suppress_error: bool = True,
-) -> tuple[str, str, dict[str, Any]]:
+) -> tuple[str, str, list[dict[str, Any]]]:
     """解析 LLM API 调用响应, 判断是否包含函数调用
 
     参数:
@@ -75,14 +75,14 @@ def parse_call_response(
     - suppress_error: 如果为 True (默认), 解析失败时返回空字符串而不是抛出异常
 
     返回:
-    - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式)
+    - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数列表 (每个元素包含 name, id, arguments)
     """
     # Step.1 基础有效性检查 (确保响应不为空)
     if api_response is None:
         msg = "LLM 接口响应为空"
         if suppress_error:
             logger.warning(f"[响应处理] {msg}")
-            return "message", "", {}
+            return "message", "", []
         raise ValueError(msg)
 
     try:
@@ -93,7 +93,7 @@ def parse_call_response(
 
         if not choices or len(choices) == 0:
             logger.warning("LLM 接口响应中 'choices' 列表为空")
-            return "message", "", {}
+            return "message", "", []
 
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
@@ -102,7 +102,7 @@ def parse_call_response(
             message = first_choice.get("message")
         
         if message is None:
-            return "message", "", {}
+            return "message", "", []
 
         content = getattr(message, "content", None)
         if content is None and isinstance(message, dict):
@@ -116,50 +116,60 @@ def parse_call_response(
             tool_calls = message.get("tool_calls")
 
         if tool_calls and len(tool_calls) > 0:
+            tool_calls_list: list[dict[str, Any]] = []
+            
+            # 遍历所有工具调用
+            for tool_call in tool_calls:
+                # 提取工具调用 id
+                call_id = getattr(tool_call, "id", None)
+                if call_id is None and isinstance(tool_call, dict):
+                    call_id = tool_call.get("id", "")
+                else:
+                    call_id = call_id or ""
+                
+                function_data = getattr(tool_call, "function", None)
+                if function_data is None and isinstance(tool_call, dict):
+                    function_data = tool_call.get("function")
+                # 提取 function 对象 (兼容对象和字典)
 
-            first_tool_call = tool_calls[0]
-            # 提取第一个工具调用
+                if function_data:
+                    func_name = getattr(function_data, "name", "")
+                    if isinstance(function_data, dict):
+                        func_name = function_data.get("name", "")
+                        # 提取函数名
 
-            function_data = getattr(first_tool_call, "function", None)
-            if function_data is None and isinstance(first_tool_call, dict):
-                function_data = first_tool_call.get("function")
-            # 提取 function 对象 (兼容对象和字典)
-
-            if function_data:
-                func_name = getattr(function_data, "name", "")
-                if isinstance(function_data, dict):
-                    func_name = function_data.get("name", "")
-                    # 提取函数名
-
-                args_str = getattr(function_data, "arguments", "{}")
-                if isinstance(function_data, dict):
-                    args_str = function_data.get("arguments", "{}")
-                    # 提取参数字符串并解析  
+                    args_str = getattr(function_data, "arguments", "{}")
+                    if isinstance(function_data, dict):
+                        args_str = function_data.get("arguments", "{}")
+                        # 提取参数字符串并解析  
     
-                try:   # 确保参数是字符串后再进行 JSON 解析
-                    if isinstance(args_str, str):
-                        args_dict = json.loads(args_str)
-                    elif isinstance(args_str, dict):
-                        args_dict = args_str
-                    else:
+                    try:   # 确保参数是字符串后再进行 JSON 解析
+                        if isinstance(args_str, str):
+                            args_dict = json.loads(args_str)
+                        elif isinstance(args_str, dict):
+                            args_dict = args_str
+                        else:
+                            args_dict = {}
+
+                    except json.JSONDecodeError:
+                        logger.error(f"[响应处理] 工具调用参数 JSON 解析失败: {args_str}")
                         args_dict = {}
 
-                except json.JSONDecodeError:
-                    logger.error(f"[响应处理] 工具调用参数 JSON 解析失败: {args_str}")
-                    args_dict = {}
+                    call_info = {"name": func_name, "id": call_id, "arguments": args_dict}
+                    tool_calls_list.append(call_info)
+                    # 封装单个工具调用信息并添加到列表
 
-                call_info = {"name": func_name, "arguments": args_dict}
-                return "tools_call", text_content, call_info
-                # 封装返回的函数调用信息
+            if tool_calls_list:
+                return "tools_call", text_content, tool_calls_list
 
         # Step.5 默认返回普通消息类型
-        return "message", text_content, {}
+        return "message", text_content, []
 
     # Step.6 异常处理
     except Exception as e:
         logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
         if suppress_error:
-            return "message", "", {}
+            return "message", "", []
         raise e
 
 
@@ -408,7 +418,7 @@ class LLM:
 
     def call(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, str | list]],
         model: Optional[str] = None,
         thinking: bool = False,
         temperature: Optional[float] = None,
@@ -416,8 +426,7 @@ class LLM:
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
-
-    ) -> tuple[str, str, dict[str, Any]] | bool:
+    ) -> tuple[str, str, list[dict[str, Any]]] | bool:
         """同步调用 LLM 并返回响应
         
         参数:
@@ -440,7 +449,7 @@ class LLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
 
         try:
             # Step.1 同步调用 API
@@ -473,12 +482,12 @@ class LLM:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] LLM API 错误: {e}")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
@@ -784,8 +793,7 @@ class AsyncLLM:
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
-
-    ) -> tuple[str, str, dict[str, Any]] | bool:
+    ) -> tuple[str, str, list[dict[str, Any]]] | bool:
         """异步调用 LLM 并返回响应
         
         参数:
@@ -808,7 +816,7 @@ class AsyncLLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
 
         try:
             # Step.1 异步调用 API
@@ -841,12 +849,12 @@ class AsyncLLM:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            return ("", "", {}) if not self.return_false else False
+            return ("", "", []) if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""

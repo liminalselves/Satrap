@@ -11,7 +11,7 @@
 import json
 from typing import Dict, Any, Tuple, List
 
-from satrap.core.utils.TCBuilder import Tool, create_tool_defined
+from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager
 from satrap.core.APICall.LLMCall import LLM, parse_call_response
 from satrap.core.utils.context import ContextManager
 
@@ -88,31 +88,6 @@ class CalculatorTool(Tool):
             }
 
 
-# ==================== 工具管理器 ====================
-
-class ToolManager:
-    """工具管理器，用于注册和执行工具"""
-    
-    def __init__(self):
-        self.tools: Dict[str, Tool] = {}
-    
-    def register_tool(self, tool: Tool):
-        """注册工具"""
-        self.tools[tool.get_tool_name()] = tool
-    
-    def get_tool_definitions(self) -> list:
-        """获取所有工具的 OpenAI 格式定义"""
-        return [tool.get_tool_defined() for tool in self.tools.values()]
-    
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
-        """执行指定工具"""
-        if tool_name not in self.tools:
-            return {"error": f"工具 {tool_name} 不存在"}
-        
-        tool = self.tools[tool_name]
-        return tool(**arguments)
-
-
 # ==================== 测试函数 ====================
 
 def test_function_call():
@@ -127,14 +102,14 @@ def test_function_call():
     print("Step 1: 初始化工具")
     print("=" * 50)
     
-    tool_manager = ToolManager()
+    tool_manager = ToolsManager()
     tool_manager.register_tool(WeatherTool())
     tool_manager.register_tool(CalculatorTool())
     
     print(f"已注册工具: {list(tool_manager.tools.keys())}")
     
     # 打印工具定义
-    for tool_def in tool_manager.get_tool_definitions():
+    for tool_def in tool_manager.get_tools_definitions():
         print(f"\n工具定义: {tool_def['function']['name']}")
         print(json.dumps(tool_def, ensure_ascii=False, indent=2))
     
@@ -147,7 +122,7 @@ def test_function_call():
         conversation_id="test_function_call_001",
         keep_in_memory=True  # 使用内存模式，不写入数据库
     )
-    
+
     # 添加系统消息
     ctx.add_at_system_start("你是一个智能助手，可以使用工具来帮助用户完成任务。,可用'get_weather'进行函数调用获得天气")
     
@@ -193,7 +168,7 @@ def test_function_call():
         # 使用 LLM.call() 方法，支持 tools 参数
         result = llm.call(
             messages=ctx.get_context(),
-            tools=tool_manager.get_tool_definitions(),
+            tools=tool_manager.get_tools_definitions(),
             tool_choice="auto"
         )
         
@@ -213,45 +188,14 @@ def test_function_call():
             print("\n" + "=" * 50)
             print("Step 6: 执行工具调用")
             print("=" * 50)
-            
-            tool_name = call_info.get("name", "")
-            arguments = call_info.get("arguments", {})
-            
-            print(f"调用工具: {tool_name}")
-            print(f"参数: {arguments}")
-            
-            # 执行工具
-            tool_result = tool_manager.execute_tool(tool_name, arguments)
-            print(f"工具返回结果: {tool_result}")
-            
-            # Step 7: 将工具结果返回给 LLM 获取最终回复
-            print("\n" + "=" * 50)
-            print("Step 7: 将工具结果返回给 LLM")
-            print("=" * 50)
-            
-            # 构建包含工具调用结果的消息
-            messages: List[Dict[str, Any]] = ctx.get_context().copy()
-            
-            # 添加助手的工具调用消息
-            messages.append({
-                "role": "assistant",
-                "content": text_content,
-                "tool_calls": [{
-                    "id": "call_001",
-                    "type": "function",
-                    "function": {
-                        "name": tool_name,
-                        "arguments": json.dumps(arguments)
-                    }
-                }]
-            })
+
+            tool_message, tool_result = tool_manager.execute_tool_call(call_info[0])
+            ctx.add_bot_message(text_content, tool_message)
+            ctx.add_tool_message(call_info[0]["id"], tool_result)
+            messages = ctx.get_context()
+            # 工具调用
             
             # 添加工具返回结果
-            messages.append({
-                "role": "tool",
-                "tool_call_id": "call_001",
-                "content": json.dumps(tool_result, ensure_ascii=False)
-            })
             
             # 再次调用 LLM（不带工具定义，获取最终回复）
             final_result = llm.call(messages=messages)

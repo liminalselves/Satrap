@@ -1,4 +1,6 @@
 from typing import Dict, Tuple, Any, Union, List
+import json
+
 from satrap import logger
 
 def create_tool_defined(
@@ -105,3 +107,97 @@ class Tool:
     def __call__(self, *input, **kwargs):
         result = self.execute(*input, **kwargs)
         return result
+
+class ToolsManager:
+    """工具管理器, 用于注册和执行工具"""
+    def __init__(self):
+        self.tools: Dict[str, Tool] = {}
+
+    def register_tool(self, tool: Tool):
+        """注册工具
+        
+        参数:
+        - tool: 要注册的工具实例, 必须是 Tool 类的子类
+        """
+        self.tools[tool.get_tool_name()] = tool
+
+    def get_tools_definitions(self) -> list:
+        """获取所有工具的 OpenAI 格式定义
+        
+        返回:
+        - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
+        """
+        return [tool.get_tool_defined() for tool in self.tools.values()]
+
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+        """执行指定工具"""
+        if tool_name not in self.tools:
+            return {"error": f"工具 {tool_name} 不存在"}
+
+        tool = self.tools[tool_name]
+        return tool(**arguments)
+
+    @staticmethod
+    def get_call_info(call_info: Dict[str, Any]):
+        """获取工具调用信息
+        
+        参数:
+        - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
+        
+        返回:
+        - 一个元组 (工具名, 参数字典)
+        """
+        tool_name = call_info.get("name", "")
+        arguments = call_info.get("arguments", {})
+        return tool_name, arguments
+
+    @staticmethod
+    def create_call_message(call_info: Dict[str, Any]) -> Dict[str, Any]:
+        """创建工具调用消息
+        
+        参数:
+        - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
+        
+        返回:
+        - 一个字典, 符合 OpenAI function calling 的工具调用消息格式
+
+        例如:
+        ```
+        {
+            "id": "call_abc123",
+            "type": "function",
+            "function": {
+                "name": "sum",
+                "arguments": "{"a": 1, "b": 2}"
+            }
+        }
+        ```
+        """
+        tool_name = call_info.get("name", "")
+        tool_call_id = call_info.get("id", "")
+        arguments = call_info.get("arguments", {})
+        # 创建工具调用消息
+
+        return {
+            "id": tool_call_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(arguments, ensure_ascii=False)
+            }
+        }
+
+    def execute_tool_call(self, call_info: Dict[str, Any]) -> Any:
+        """执行工具调用流程
+        
+        参数:
+        - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
+        
+        返回:
+        - 元组 (工具调用消息, 工具调用的返回结果)
+        """
+        tool_name, arguments = self.get_call_info(call_info)
+        tool_message = self.create_call_message(call_info)
+        tool_result = self.execute_tool(tool_name, arguments)
+        return tool_message, tool_result
+
