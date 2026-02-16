@@ -1,4 +1,6 @@
+from satrap.core.utils.context import ContextManager
 from typing import Dict, Tuple, Any, Union, List
+from satrap.core.type import LLMCallResponse
 import json
 
 from satrap import logger
@@ -207,4 +209,3 @@ class ToolsManager:
         tool_message = self.create_call_message(call_info)
         tool_result = self.execute_tool(tool_name, arguments)
         return tool_message, tool_result
-

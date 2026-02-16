@@ -3,8 +3,132 @@ from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
 from satrap.core.type import LLMCallResponse
 import json
+import base64
+import os
 
 from satrap import logger
+
+
+def _is_local_file_path(path: str) -> bool:
+    """判断字符串是否为本地文件路径
+    
+    参数:
+    - path: 待判断的字符串
+    
+    返回:
+    - 如果是本地文件路径返回 True, 否则返回 False
+    """
+    if path.startswith("http://") or path.startswith("https://"):
+        return False
+    # 判断是否为 URL (以 http:// 或 https:// 开头)
+
+    if path.startswith("data:"):
+        return False
+    # 判断是否为 data URL (base64 编码的图片)
+
+    return True   # 其他情况视为本地文件路径
+
+
+def _encode_image_to_base64(image_path: str) -> str:
+    """将本地图片文件编码为 base64 格式的 data URL
+    
+    参数:
+    - image_path: 本地图片文件路径
+    
+    返回:
+    - base64 编码的 data URL 字符串
+    
+    异常:
+    - FileNotFoundError: 文件不存在
+    - ValueError: 不支持的图片格式
+    """
+    if not os.path.exists(image_path):
+        raise FileNotFoundError(f"图片文件不存在: {image_path}")
+
+    # 获取文件扩展名并确定 MIME 类型
+    ext = os.path.splitext(image_path)[1].lower()
+    mime_types = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+        ".bmp": "image/bmp",
+    }
+    
+    if ext not in mime_types:
+        raise ValueError(f"不支持的图片格式: {ext}")
+
+    mime_type = mime_types[ext]
+
+    # 读取文件并编码为 base64
+    with open(image_path, "rb") as f:
+        image_data = f.read()
+
+    base64_data = base64.b64encode(image_data).decode("utf-8")
+    return f"data:{mime_type};base64,{base64_data}"
+
+
+def _process_image_urls(img_urls: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """处理图片 URL 列表, 将本地文件转换为 base64 格式
+
+    参数:
+    - img_urls: 图片 URL 列表, 可以是本地文件路径或远程 URL
+
+    返回:
+    - OpenAI API 格式的图片内容列表
+    """
+    if not img_urls:
+        return []
+
+    processed_images = []
+    for img_url in img_urls:
+        if _is_local_file_path(img_url):
+            # 本地文件, 转换为 base64
+            try:
+                data_url = _encode_image_to_base64(img_url)
+                processed_images.append({
+                    "type": "image_url",
+                    "image_url": {"url": data_url}
+                })
+            except (FileNotFoundError, ValueError) as e:
+                logger.warning(f"[图像处理] 跳过无效图片: {e}")
+        else:
+            # 远程 URL 或 data URL, 直接使用
+            processed_images.append({
+                "type": "image_url",
+                "image_url": {"url": img_url}
+            })
+
+    return processed_images
+
+
+def _build_content_with_images(
+    text_content: str | List[Dict[str, Any]],
+    img_urls: Optional[List[str]]
+) -> List[Dict[str, Any]] | str:
+    """构建包含文本和图片的内容
+    
+    参数:
+    - text_content: 文本内容或已有的多模态内容列表
+    - img_urls: 图片 URL 列表
+    
+    返回:
+    - 如果有图片, 返回多模态内容列表; 否则返回原始内容
+    """
+    if not img_urls:
+        return text_content
+    
+    # 如果内容已经是列表格式, 追加图片内容
+    if isinstance(text_content, list):
+        content = text_content.copy()
+        content.extend(_process_image_urls(img_urls))
+        return content
+    
+    # 如果是纯文本, 构建新的多模态内容列表
+    content: List[Dict[str, Any]] = [{"type": "text", "text": text_content}]
+    content.extend(_process_image_urls(img_urls))
+    return content
 
 
 def parse_chat_response(
@@ -94,7 +218,7 @@ def parse_call_response(
 
         if not choices or len(choices) == 0:
             logger.warning("LLM 接口响应中 'choices' 列表为空")
-            return LLMCallResponse(role="message", content="")
+            return LLMCallResponse(type="message", content="")
 
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
@@ -103,7 +227,7 @@ def parse_call_response(
             message = first_choice.get("message")
         
         if message is None:
-            return LLMCallResponse(role="message", content="")
+            return LLMCallResponse(type="message", content="")
 
         content = getattr(message, "content", None)
         if content is None and isinstance(message, dict):
@@ -161,16 +285,16 @@ def parse_call_response(
                     # 封装单个工具调用信息并添加到列表
 
             if tool_calls_list:
-                return LLMCallResponse(role="tools_call", content=text_content, tool_calls=tool_calls_list)
+                return LLMCallResponse(type="tools_call", content=text_content, tool_calls=tool_calls_list)
 
         # Step.5 默认返回普通消息类型
-        return LLMCallResponse(role="message", content=text_content)
+        return LLMCallResponse(type="message", content=text_content)
 
     # Step.6 异常处理
     except Exception as e:
         logger.error(f"[响应处理] 解析 LLM 响应时发生错误: {e}")
         if suppress_error:
-            return LLMCallResponse(role="message", content="")
+            return LLMCallResponse(type="message", content="")
         raise e
 
 
@@ -427,9 +551,10 @@ class LLM:
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
+        img_urls: Optional[List[str]] = None,
     ) -> LLMCallResponse | bool:
         """同步调用 LLM 并返回响应
-        
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
@@ -439,6 +564,7 @@ class LLM:
         - max_tokens: 可选参数, 用于覆盖默认最大 token 数
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+        - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
 
         返回:
         - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式); 如果出错, 根据配置返回空字符串或 False
@@ -450,14 +576,26 @@ class LLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
+
+        # Step.1 处理图片 URL, 构建多模态消息
+        processed_messages = [m.copy() for m in messages]
+        if img_urls:
+            # 找到最后一条用户消息并添加图片
+            for i in range(len(processed_messages) - 1, -1, -1):
+                if processed_messages[i].get("role") == "user":
+                    original_content = processed_messages[i].get("content", "")
+                    processed_messages[i]["content"] = _build_content_with_images(
+                        original_content, img_urls
+                    )
+                    break
 
         try:
-            # Step.1 同步调用 API
+            # Step.2 同步调用 API
             if tools is not None:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=messages,   # type: ignore
+                    messages=processed_messages if img_urls else messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -469,26 +607,26 @@ class LLM:
             else:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=messages,   # type: ignore
+                    messages=processed_messages if img_urls else messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
                     extra_body={"thinking": {"type": "enabled"}} if thinking else None,
                 )   # 发起网络请求
 
-            # Step.2 解析结果
+            # Step.3 解析结果
             return parse_call_response(response, self.suppress_error)
 
         except APIError as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] LLM API 错误: {e}")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
@@ -786,7 +924,7 @@ class AsyncLLM:
 
     async def call(
         self,
-        messages: List[Dict[str, str]],
+        messages: List[Dict[str, str | List[Dict[str, Any]]]],
         model: Optional[str] = None,
         thinking: bool = False,
         temperature: Optional[float] = None,
@@ -794,6 +932,7 @@ class AsyncLLM:
         max_tokens: Optional[int] = None,
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
+        img_urls: Optional[List[str]] = None,
     ) -> LLMCallResponse | bool:
         """异步调用 LLM 并返回响应
         
@@ -806,6 +945,7 @@ class AsyncLLM:
         - max_tokens: 可选参数, 用于覆盖默认最大 token 数
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+        - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
 
         返回:
         - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式); 如果出错, 根据配置返回空字符串或 False
@@ -817,14 +957,26 @@ class AsyncLLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
+
+        # Step.1 处理图片 URL, 构建多模态消息
+        processed_messages = [m.copy() for m in messages]
+        if img_urls:
+            # 找到最后一条用户消息并添加图片
+            for i in range(len(processed_messages) - 1, -1, -1):
+                if processed_messages[i].get("role") == "user":
+                    original_content = processed_messages[i].get("content", "")
+                    processed_messages[i]["content"] = _build_content_with_images(
+                        original_content, img_urls
+                    )
+                    break
 
         try:
-            # Step.1 异步调用 API
+            # Step.2 异步调用 API
             if tools is not None:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=messages,   # type: ignore
+                    messages=processed_messages if img_urls else messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -836,26 +988,26 @@ class AsyncLLM:
             else:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=messages,   # type: ignore
+                    messages=processed_messages if img_urls else messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
                     extra_body={"thinking": {"type": "enabled"}} if thinking else None,
                 )   # 发起异步网络请求
 
-            # Step.2 解析结果
+            # Step.3 解析结果
             return parse_call_response(response, self.suppress_error)
 
         except APIError as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            return LLMCallResponse(role="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="") if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""

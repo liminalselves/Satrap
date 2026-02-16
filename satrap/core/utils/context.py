@@ -23,8 +23,8 @@ class ContextManager:
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
         self._messages: List[Dict[str, str | list]] = []   # 内存中的消息缓存
-        self._init_db_table()                       # 初始化数据库表结构
-        self.load_context()                         # 加载数据
+        self._init_db_table()   # 初始化数据库表结构
+        self.load_context()     # 加载数据
 
         logger.info(f"[上下文管理器] 初始化完成, 对话ID: {self.conversation_id}")
 
@@ -126,27 +126,28 @@ class ContextManager:
         self._messages.append({"role": "user", "content": message})
         self._sync()
 
-    def add_system_message(self, message: str):
+    def reset_system_prompt(self, message: str):
         """
-        添加系统消息到上下文中
+        重置系统提示词
 
         参数:
-        - message: 消息内容
+        - message: 新的系统提示词
         """
-        self._messages.append({"role": "system", "content": message})
+        self._messages = [m for m in self._messages if m.get("role") != "system"]
+        # 在开头插入新的系统消息
+        self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
-    def add_bot_message(self, message: str, tools_call: dict | None = None):
+    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None):
         """
         添加机器人消息到上下文中
 
         参数:
         - message: 消息内容
-        - tools_call: 工具调用信息, 可选, 格式为 {"id": "工具ID", "type": "function", "function": {"name": "工具名", "arguments": "参数JSON字符串"}}
+        - tools_calls: 工具调用信息列表, 可选, 每个元素格式为 {"id": "工具ID", "type": "function", "function": {"name": "工具名", "arguments": "参数JSON字符串"}}
         """
-        if tools_call:
-            self._messages.append({"role": "assistant", "content": message, "tool_calls": [tools_call]})
-
+        if tools_calls:
+            self._messages.append({"role": "assistant", "content": message, "tool_calls": tools_calls})
         else:
             self._messages.append({"role": "assistant", "content": message})
 
@@ -175,42 +176,65 @@ class ContextManager:
         self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
         self._sync()
 
-    def add_tool_call_flow(self, message: str, tool_message: dict, tool_result: dict):
+    def add_tool_call_flow(self, message: str, tool_messages: list[dict], tool_results: list[dict]):
         """
         添加一个完整的工具调用消息流到上下文中
 
         相当于:
-        ctx.add_bot_message(message, tool_message)
-        ctx.add_tool_message(tool_message["id"], tool_result)
+        ```
+        ctx.add_bot_message(message, tool_messages)
+        for tool_msg, tool_res in zip(tool_messages, tool_results):
+            ctx.add_tool_message(tool_msg["id"], tool_res)
+        ```
 
         参数:
         - message: 模型消息
-        - tool_message: 工具调用消息
-        - tool_result: 工具调用的返回结果
+        - tool_messages: 工具调用消息列表
+        - tool_results: 工具调用的返回结果列表, 与 tool_messages 一一对应
         """
-        self.add_bot_message(message, tool_message)
-        self.add_tool_message(tool_message["id"], tool_result)
+        self.add_bot_message(message, tool_messages)
+        for tool_msg, tool_res in zip(tool_messages, tool_results):
+            self.add_tool_message(tool_msg["id"], tool_res)
+        self._sync()
+
+    def add_at_system_start(self, message: str, separator: str = ""):
+        """
+        在原系统提示词的开头添加消息（修改第一条系统消息的内容）
+
+        参数:
+        - message: 要添加的消息内容
+        - separator: 拼接时插入的分隔符，默认为空字符串
+        """
+        # 查找第一条系统消息
+        for msg in self._messages:
+            if msg.get("role") == "system":
+                # 在开头拼接新内容
+                msg["content"] = message + separator + msg["content"]   # type: ignore
+                break
+        else:
+            # 没有系统消息，则新建一条并插入到开头
+            self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
 
-    def add_at_system_start(self, message: str):
+    def add_at_system_end(self, message: str, separator: str = ""):
         """
-        在上下文的开头添加系统消息
+        在原系统提示词的结尾添加消息（修改第一条系统消息的内容）
 
         参数:
-        - message: 消息内容
+        - message: 要添加的消息内容
+        - separator: 拼接时插入的分隔符，默认为空字符串
         """
-        self._messages.insert(0, {"role": "system", "content": message})
+        # 查找第一条系统消息
+        for msg in self._messages:
+            if msg.get("role") == "system":
+                # 在结尾拼接新内容
+                msg["content"] = msg["content"] + separator + message   # type: ignore
+                break
+        else:
+            # 没有系统消息，则新建一条并插入到开头
+            self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
-
-    def add_at_system_end(self, message: str):
-        """
-        在上下文的结尾添加系统消息
-
-        参数:
-        - message: 消息内容
-        """
-        self.add_system_message(message)
 
     def static_message(self) -> int:
         """
@@ -222,10 +246,12 @@ class ContextManager:
         return len(self._messages)
 
     def del_context(self):
-        """删除当前上下文中的所有消息"""
+        """删除当前上下文中的所有消息, 保留系统消息"""
+        sys_msg = self._messages[0]
         self._messages.clear()
+        self._messages.append(sys_msg)
         self._sync()
-        logger.info(f"Context cleared for ID: {self.conversation_id}")
+        logger.info(f"上下文已清空: {self.conversation_id}")
 
     def del_system_message(self):
         """删除上下文中的系统消息"""
@@ -264,20 +290,33 @@ class ContextManager:
 
     def del_last_chat(self, n: int = 1):
         """
-        删除上下文中的最后n条聊天消息 (用户消息和机器人消息)
+        删除上下文中的最后 n 组聊天消息
 
         参数:
-        - n: 删除的组数 (每组包含两条消息: 用户 + 机器人)
+        - n: 删除的组数
         """
-        indices_to_remove = []   # 倒序查找
+        indices_to_remove = []
+        groups_removed = 0
+
+        # 1. 倒序遍历消息列表
         for i in range(len(self._messages) - 1, -1, -1):
-            if self._messages[i].get("role") in ["user", "assistant"]:
-                indices_to_remove.append(i)
-                if len(indices_to_remove) >= n * 2:
+            msg = self._messages[i]
+            role = msg.get("role")
+
+            if role == "system":   # 系统消息在开头, 说明已经没对话了
+                break
+
+            indices_to_remove.append(i)   # 将当前索引加入待删除列表
+
+            if role == "user":   # 遇到 user 消息, 说明完成了一整组对话的定位
+                groups_removed += 1
+                if groups_removed >= n:
                     break
 
         for index in indices_to_remove:
             self._messages.pop(index)
+        # 执行删除   
+
         self._sync()
 
     def export_json(self, file_path: str):
@@ -312,6 +351,6 @@ if __name__ == "__main__":
     # 2. 批量操作模式 (keep_in_memory=True)
     # 适合需要大量修改, 最后一次性保存的场景.
     ctx2 = ContextManager(conversation_id=1002, keep_in_memory=True)
-    ctx2.add_system_message("你是一个数学助手.")
+    ctx2.reset_system_prompt("你是一个数学助手.")
     ctx2.add_chat("1+1等于几?", "等于2.")
     ctx2.save_context() # 必须手动调用

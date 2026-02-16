@@ -105,6 +105,7 @@ def test_function_call():
     tool_manager = ToolsManager()
     tool_manager.register_tool(WeatherTool())
     tool_manager.register_tool(CalculatorTool())
+
     
     print(f"已注册工具: {list(tool_manager.tools.keys())}")
     
@@ -189,8 +190,15 @@ def test_function_call():
             print("Step 6: 执行工具调用")
             print("=" * 50)
 
-            tool_message, tool_result = tool_manager.execute_tool_call(call_info[0])
-            ctx.add_tool_call_flow(text_content, tool_message, tool_result)
+            # 处理所有工具调用
+            tool_messages = []
+            tool_results = []
+            for call in call_info:
+                tool_msg, tool_res = tool_manager.execute_tool_call(call)
+                tool_messages.append(tool_msg)
+                tool_results.append(tool_res)
+
+            ctx.add_tool_call_flow(text_content, tool_messages, tool_results)
             messages = ctx.get_context()
             # 工具调用
 
