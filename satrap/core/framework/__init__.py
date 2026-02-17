@@ -111,14 +111,48 @@ class ModelWorkflowFramework:
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
     def __init__(self, session_id: str):
-        """"""
+        """会话框架, 用于管理多个模型工作流的会话
+        任何依赖多模型的复杂 Agent 都应当继承自该类, 并实现 `forward` 方法
+
+        并在初始化时进行 `super().__init__(session_id)`
+
+        参数:
+        - session_id: 会话 ID
+        """
         self.session_ctx = ContextManager(session_id)
+        """会话共享上下文"""
+
         self.session_ctx.load_context()
+        self.session_id = session_id
+        self.wf_list = []
 
     def run(self):
         """执行会话; 调用模型并返回结果"""
         return None
     
+    def workflow_id_assign(self, wf_id: str):
+        """为会话分配工作流 ID
+
+        返回:
+        - 工作流 ID (str) (session_id + "_" + wf_id)
+        """
+        workflow_id = self.session_id + "_" + wf_id
+        self.wf_list.append(workflow_id)
+        return workflow_id
+    
+    def clear_memory(self):
+        """清除会话内存"""
+        try:
+            self.session_ctx.del_context()
+            for wf_id in self.wf_list:
+                wf_ctx = ContextManager(wf_id)
+                wf_ctx.del_context()
+
+            logger.info(f"[会话管理器] 清除工作流上下文完成, 工作流ID: {wf_id}")
+
+        except Exception as e:
+            logger.error(f"[会话管理器] 清除会话上下文错误: {e}")                
+
     def __call__(self, *input, **kwargs):
         result = self.run(*input, **kwargs)
         return result
