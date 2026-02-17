@@ -13,8 +13,7 @@ class ModelWorkflowFramework:
         模型工作流框架, 负责管理模型的调用和工作流的执行
         这是 Satrap 的核心组件之一, 负责协调单个模型实例调用, 以实现复杂的任务处理和自动化流程;
 
-        任何工作流都应该继承这个类, 并实现自己的工作流逻辑, 以便被调用和执行
-
+        任何工作流都应该继承这个类, 并实现自己的工作流逻辑, 以便被调用和执行;
         工作流应当覆写 `forward` 方法, 并在其中实现模型的调用和工作流的逻辑
 
         并在初始化进行 `super().__init__(llm, context_id, tools_manager, system_prompt)`
@@ -24,6 +23,34 @@ class ModelWorkflowFramework:
         - context_id: 上下文 ID
         - tools_manager: 工具管理器实例
         - system_prompt: 系统提示词; 如果填写, 会重置上下文的系统提示词
+
+        使用示例
+        ``` python
+        class MyWorkflow(ModelWorkflowFramework):
+            def __init__(self, llm, context_id, tools_manager, system_prompt=None):
+                super().__init__(llm, context_id, tools_manager, system_prompt)
+
+            def forward(self, user_input: str) -> str:
+                self.ctx.add_user_message(user_input)
+                response = self.llm.call(self.ctx.get_context(), tools=self.tools_manager.get_tools_definitions())
+                
+                if not response:
+                    return "模型调用失败"
+                
+                # 处理可能的工具调用
+                msg, has_tool = self.agent_executor(response)
+                if has_tool:
+                    res = self.llm.call(msg, tools=self.tools_manager.get_tools_definitions())
+                    return self.final_response(res)
+                return self.final_response(response)
+
+        # 2. 初始化并调用工作流
+        workflow = MyWorkflow(llm, "conversation_id", tools_manager, "You are a helper")
+        result = workflow("北京今天天气怎么样？")
+        print(result)
+
+        # 或者集成进 `Session` 类中, 以实现复杂多模型 Agent 与会话管理
+        ```
         """
         self.llm = llm
         self.ctx = ContextManager(context_id)
@@ -43,7 +70,7 @@ class ModelWorkflowFramework:
         - 元组(list, bool): 上下文消息列表和是否有工具调用
         """
         try:
-            if model_response.type == "tools_call" is not None and model_response.tool_calls:
+            if model_response.type == "tools_call" and model_response.tool_calls is not None:
                 tool_messages = []
                 tool_results = []
 
@@ -73,7 +100,6 @@ class ModelWorkflowFramework:
         else:
             return messages.content
 
-
     def forward(self):
         """执行工作流; 调用模型并返回结果"""
         return None
@@ -82,5 +108,17 @@ class ModelWorkflowFramework:
         result = self.forward(*input, **kwargs)
         return result
 
+class Session:
+    """会话类, 用于管理多个模型工作流的会话"""
+    def __init__(self, session_id: str):
+        """"""
+        self.session_ctx = ContextManager(session_id)
+        self.session_ctx.load_context()
 
-
+    def run(self):
+        """执行会话; 调用模型并返回结果"""
+        return None
+    
+    def __call__(self, *input, **kwargs):
+        result = self.run(*input, **kwargs)
+        return result
