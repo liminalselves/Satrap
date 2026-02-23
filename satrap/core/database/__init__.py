@@ -7,7 +7,7 @@ import msgpack
 import json
 import os
 
-from satrap import logger
+from satrap.core.log import logger
 
 
 class LiteVectorDB:

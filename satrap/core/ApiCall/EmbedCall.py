@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Union
 from openai import OpenAI, AsyncOpenAI, APIError
-from satrap import logger
+from satrap.core.log import logger
 
 def parse_embedding_response(
     api_response: Any,

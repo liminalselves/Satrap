@@ -4,7 +4,7 @@ import asyncio
 import sqlite3
 import json
 
-from satrap import logger
+from satrap.core.log import logger
 
 class ContextManager:
     """对话上下文管理器"""
@@ -101,7 +101,7 @@ class ContextManager:
                     data_to_insert
                 )
             conn.commit()
-            logger.info(f"[上下文管理器] 上下文已保存, 对话ID: {self.conversation_id}, 消息数量: {len(self._messages)}")
+            logger.debug(f"[上下文管理器] 上下文已保存, 对话ID: {self.conversation_id}, 消息数量: {len(self._messages)}")
 
         except Exception as e:
             logger.error(f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}")

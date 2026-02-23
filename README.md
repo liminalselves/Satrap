@@ -25,6 +25,7 @@ satrap/
 │   ├── utils/              # 工具函数 (开发中)
 │   │   ├── TCBuilder.py    # tools call 构建
 │   │   ├── text_utils.py   # 文本处理
+│   │   ├── sandbox.py      # 代码沙箱执行器
 │   │   └── context.py      # 上下文管理
 │   ├── framework/          # 模型工作流框架 (开发中)
 │   └── type.py             # 类型定义

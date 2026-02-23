@@ -4,7 +4,7 @@ from satrap.core.utils.context import ContextManager
 from satrap.core.type import LLMCallResponse
 from typing import Optional
 
-from satrap import logger
+from satrap.core.log import logger
 
 class ModelWorkflowFramework:
     """模型工作流框架"""

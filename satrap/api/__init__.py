@@ -1,1 +1,1 @@
-from satrap import logger
+from satrap.core.log import logger

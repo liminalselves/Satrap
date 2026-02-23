@@ -177,6 +177,7 @@ class Logger():
         if save_to_file:
             self.file_logger.critical(message)
 
+logger = Logger(logger_name="SATRAP", output_dir="./satrap/satrapdata")
 
 if __name__ == "__main__":
     logger = Logger(

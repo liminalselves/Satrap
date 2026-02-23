@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union, Literal
 from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
 from satrap.core.type import LLMCallResponse
@@ -6,7 +6,7 @@ import base64
 import json
 import os
 
-from satrap import logger
+from satrap.core.log import logger
 
 
 def _is_local_file_path(path: str) -> bool:
@@ -343,7 +343,7 @@ class LLM:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
-    ) -> str | bool:
+    ) -> Union[str, Literal[False]]:
         """
         同步发送对话请求
 
@@ -463,7 +463,7 @@ class LLM:
             top_p: Optional[float] = None,
             max_tokens: Optional[int] = None,
             format: Optional[dict] = None,
-        ) -> str | bool:
+        ) -> Union[str, Literal[False]]:
             """
             同步调用 LLM 并要求结构化输出
 
@@ -490,8 +490,6 @@ class LLM:
             返回:
             - 模型回复的字符串内容; 如果出错, 根据配置返回空字符串或 False
             """
-            import json
-
             target_model = model if model else self.model
             use_temp = temperature if temperature is not None else self.temperature
             use_top_p = top_p if top_p is not None else self.top_p
@@ -552,7 +550,7 @@ class LLM:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
-    ) -> LLMCallResponse | bool:
+    ) -> LLMCallResponse | Literal[False]:
         """同步调用 LLM 并返回响应
 
         参数:
@@ -714,7 +712,7 @@ class AsyncLLM:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
-    ) -> str | bool:
+    ) -> Union[str, Literal[False]]:
         """
         调用 LLM 进行对话生成
 
@@ -844,7 +842,7 @@ class AsyncLLM:
             top_p: Optional[float] = None,
             max_tokens: Optional[int] = None,
             format: Optional[dict] = None,
-        ) -> str | bool:
+        ) -> Union[str, Literal[False]]:
             """
             异步调用 LLM 并要求结构化输出
 
@@ -871,8 +869,6 @@ class AsyncLLM:
             返回:
             - 模型回复的字符串内容; 如果出错, 根据配置返回空字符串或 False
             """
-            import json
-
             target_model = model if model else self.model
             use_temp = temperature if temperature is not None else self.temperature
             use_top_p = top_p if top_p is not None else self.top_p
@@ -933,7 +929,7 @@ class AsyncLLM:
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
-    ) -> LLMCallResponse | bool:
+    ) -> LLMCallResponse | Literal[False]:
         """异步调用 LLM 并返回响应
         
         参数:

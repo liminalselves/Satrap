@@ -6,7 +6,7 @@ from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager
 from satrap.core.APICall.LLMCall import LLM, parse_call_response
 from satrap.core.utils.context import ContextManager
 
-from satrap import logger
+from satrap.core.log import logger
 
 class WeatherTool(Tool):
     """天气查询工具示例"""
@@ -108,7 +108,7 @@ class TestWorkflow(ModelWorkflowFramework):
         if not model_response:
             return "模型调用失败"
 
-        msg, has_tool_call = self.agent_executor(model_response)   # Agent 执行器处理模型回复   # type: ignore
+        msg, has_tool_call = self.agent_executor(model_response)   # Agent 执行器处理模型回复
 
         if has_tool_call:   # 如果模型回复包含函数调用, 再返还给模型处理
             res = self.llm.call(msg, tools=self.tools_manager.get_tools_definitions())
