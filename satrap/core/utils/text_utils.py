@@ -37,6 +37,22 @@ class TextSplitter:
         - 分割后的字符串列表
         """
         return self._split_text(text, self.separators)
+    
+    def split_documents(self, documents: List[str]) -> List[str]:
+        """
+        对多个文档进行分割
+
+        参数:
+        - documents: 需要分割的原始文档列表
+
+        返回:
+        - 分割后的字符串列表
+        """
+        all_chunks = []
+        for doc in documents:
+            chunks = self.split_text(doc)
+            all_chunks.extend(chunks)
+        return all_chunks
 
     def _split_text(self, text: str, separators: List[str]) -> List[str]:
         """

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Literal
 from openai import OpenAI, AsyncOpenAI, APIError
 from satrap.core.log import logger
 
@@ -98,7 +98,7 @@ class Embedding:
         model: Optional[str] = None,
         dimensions: Optional[int] = None,
         encoding_format: Optional[str] = None,
-    ) -> Union[List[float], List[List[float]], bool]:
+    ) -> List[List[float]] | Literal[False]:
         """
         同步生成文本嵌入向量
 
@@ -172,15 +172,15 @@ class Embedding:
                 return self._empty_return(is_single)
 
         # 4. 根据输入格式返回
-        return all_embeddings[0] if is_single else all_embeddings
+        return all_embeddings
 
-    def _empty_return(self, is_single: bool) -> Union[List[float], List[List[float]], bool]:
+    def _empty_return(self, is_single: bool) -> List[List[float]] | Literal[False]:
         """
         根据 return_false 配置返回适当的空值
         """
         if self.return_false:
             return False
-        return [] if is_single else [[]]
+        return [[]]
 
     def get_model(self) -> str:
         """获取当前 Embed 实例使用的模型名称"""
