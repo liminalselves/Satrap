@@ -98,7 +98,7 @@ class Embedding:
         model: Optional[str] = None,
         dimensions: Optional[int] = None,
         encoding_format: Optional[str] = None,
-    ) -> List[List[float]] | Literal[False]:
+    ) -> List[float] | List[List[float]] | Literal[False]:
         """
         同步生成文本嵌入向量
 
@@ -172,15 +172,15 @@ class Embedding:
                 return self._empty_return(is_single)
 
         # 4. 根据输入格式返回
-        return all_embeddings
+        return all_embeddings[0] if is_single else all_embeddings
 
-    def _empty_return(self, is_single: bool) -> List[List[float]] | Literal[False]:
+    def _empty_return(self, is_single: bool) -> List[float] | List[List[float]] | Literal[False]:
         """
         根据 return_false 配置返回适当的空值
         """
         if self.return_false:
             return False
-        return [[]]
+        return [] if is_single else [[]]
 
     def get_model(self) -> str:
         """获取当前 Embed 实例使用的模型名称"""
