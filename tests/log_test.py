@@ -1,4 +1,4 @@
-from satrap import logger
+from satrap.core.log import logger
 
 logger.info("This is an info message.", std_out=True, save_to_file=True)
 logger.debug("This is a debug message.", std_out=True, save_to_file=True)

@@ -3,6 +3,7 @@ import aiosqlite
 import asyncio
 import sqlite3
 import json
+import re
 
 from satrap.core.log import logger
 
@@ -141,14 +142,18 @@ class ContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
-    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None):
+    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True):
         """
         添加机器人消息到上下文中
 
         参数:
         - message: 消息内容
         - tools_calls: 工具调用信息列表, 可选, 每个元素格式为 {"id": "工具ID", "type": "function", "function": {"name": "工具名", "arguments": "参数JSON字符串"}}
+        - ignore_think: 是否忽略消息中的思考过程, 默认True
         """
+        if ignore_think:
+            message = re.sub(r'<think>.*?</think>', '', message, flags=re.DOTALL)
+
         if tools_calls:
             self._messages.append({"role": "assistant", "content": message, "tool_calls": tools_calls})
         else:
@@ -477,14 +482,18 @@ class AsyncContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         await self._sync()
 
-    async def add_bot_message(self, message: str, tools_calls: list[dict] | None = None):
+    async def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True):
         """
         添加机器人消息到上下文中
 
         参数:
         - message: 消息内容
         - tools_calls: 工具调用信息列表，可选，每个元素格式为 {"id": "工具 ID", "type": "function", "function": {"name": "工具名", "arguments": "参数 JSON 字符串"}}
+        - ignore_think: 是否忽略消息中的思考过程, 默认True
         """
+        if ignore_think:
+            message = re.sub(r'<think>.*?</think>', '', message, flags=re.DOTALL)
+
         if tools_calls:
             self._messages.append({"role": "assistant", "content": message, "tool_calls": tools_calls})
         else:

@@ -4,7 +4,7 @@ from satrap.core.APICall.LLMCall import LLM
 from typing import Dict, Tuple, Any, Union, List
 from satrap.core.utils.context import ContextManager
 from satrap.core.utils.TCBuilder import Tool
-from satrap import logger
+from satrap.core.log import logger
 
 class WeatherTool(Tool):
     """天气查询工具示例"""

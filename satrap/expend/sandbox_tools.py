@@ -6,6 +6,15 @@ import re
 from satrap.core.log import logger
 
 
+def extract_code(response: str) -> str:
+    """从模型响应中提取代码块"""
+    code_pattern = r"```(?:python)?\s*([\s\S]*?)```"
+    match = re.search(code_pattern, response)
+    if match:
+        return match.group(1).strip()
+    else:   # 如果没有代码块标记, 直接使用返回内容
+        return response.strip()
+
 class CodeSandboxTool(Tool):
     """代码沙箱工具, 封装对 CodeSandbox 的各种操作"""
     def __init__(self, sandbox: CodeSandbox):
@@ -25,6 +34,9 @@ class CodeSandboxTool(Tool):
         执行沙箱操作, 返回结果字典
         """
         try:
+            if code is not None:   # 如果提供了代码参数, 尝试从中提取代码块
+                code = extract_code(code)
+
             if operation == "run":
                 if code is None:
                     return {"error": "操作 'run' 需要提供 code 参数"}
