@@ -210,4 +210,4 @@ __marimo__/
 *.db
 
 # sandbox
-.sandbox/
+sandbox/
