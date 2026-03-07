@@ -1,9 +1,7 @@
 from typing import List, Dict, Any
 import numpy as np
-import traceback
-import aiofiles
-import asyncio
 import msgpack
+import sqlite3
 import json
 import os
 
@@ -290,3 +288,277 @@ class LiteVectorDB:
                 'vector_dimension': len(self.collections[name]['vectors'][0]) if self.collections[name]['vectors'] else 0
             }
         return {'document_count': 0, 'vector_dimension': 0}
+
+class DataBase:
+    """使用 faiss + SQLite 的向量数据库"""
+
+    def __init__(self, persist_path: str = "./vector"):
+        """初始化 DataBase
+
+        参数:
+        - persist_path: 数据持久化路径, 默认 "./vector"
+        """
+        try:
+            import faiss as _faiss
+        except Exception as e:
+            raise ImportError("未检测到 faiss, 请先安装 faiss-cpu 或 faiss-gpu") from e
+
+        self.faiss = _faiss
+        self.persist_path = persist_path
+        os.makedirs(self.persist_path, exist_ok=True)
+
+        self.sqlite_path = os.path.join(self.persist_path, "metadata.sqlite")
+        self.collection_dims: Dict[str, int] = {}
+        self.indices: Dict[str, Any] = {}
+
+        self._init_sqlite()
+        self._load_from_disk()
+
+    def _connect(self):
+        """创建 SQLite 连接"""
+        conn = sqlite3.connect(self.sqlite_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _init_sqlite(self):
+        """初始化 SQLite 表"""
+        with self._connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS collections (
+                    name TEXT PRIMARY KEY,
+                    dim INTEGER NOT NULL DEFAULT 0
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    collection_name TEXT NOT NULL,
+                    document TEXT NOT NULL,
+                    metadata TEXT NOT NULL DEFAULT '{}',
+                    FOREIGN KEY(collection_name) REFERENCES collections(name) ON DELETE CASCADE
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_documents_collection
+                ON documents(collection_name)
+            """)
+            conn.commit()
+
+    def _index_path(self, name: str) -> str:
+        """获取集合索引文件路径"""
+        safe_name = name.replace("/", "_").replace("\\", "_").replace(":", "_")
+        return os.path.join(self.persist_path, f"{safe_name}.faiss")
+
+    def _create_index(self, dim: int):
+        """创建 faiss 索引
+
+        说明:
+        - 使用 IndexFlatIP + IndexIDMap2
+        - 写入前做 L2 归一化, 以支持余弦相似度检索
+        """
+        return self.faiss.IndexIDMap2(self.faiss.IndexFlatIP(dim))
+
+    def _save_index(self, name: str):
+        """保存单个集合索引到磁盘"""
+        index = self.indices.get(name)
+        if index is None:
+            return
+        self.faiss.write_index(index, self._index_path(name))
+
+    def _load_from_disk(self):
+        """从 SQLite 和磁盘索引加载集合"""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT name, dim FROM collections").fetchall()
+
+        for row in rows:
+            name = str(row["name"])
+            dim = int(row["dim"])
+            self.collection_dims[name] = dim
+
+            index_file = self._index_path(name)
+            if os.path.exists(index_file):
+                try:
+                    self.indices[name] = self.faiss.read_index(index_file)
+                except Exception as e:
+                    logger.warning(f"加载集合 {name} 的 faiss 索引失败: {e}")
+                    self.indices[name] = self._create_index(dim) if dim > 0 else None
+            else:
+                self.indices[name] = self._create_index(dim) if dim > 0 else None
+
+    def create_collection(self, name: str):
+        """创建集合"""
+        if name not in self.collection_dims:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, dim) VALUES (?, ?)",
+                    (name, 0)
+                )
+                conn.commit()
+            self.collection_dims[name] = 0
+            self.indices[name] = None
+            logger.info(f"创建集合: {name}")
+        else:
+            logger.info(f"集合 {name} 已存在")
+
+        return True
+
+    def add_to_collection(
+        self,
+        name: str,
+        documents: List[str],
+        vectors: List[List[float]],
+        metadata: List[Dict],
+    ):
+        """添加文档到集合
+
+        参数:
+        - name: 集合名称
+        - documents: 文档列表
+        - vectors: 向量列表
+        - metadata: 元数据列表
+        """
+        if name not in self.collection_dims:
+            self.create_collection(name)
+
+        if metadata is None:
+            metadata = [{}] * len(documents)
+
+        if not (len(documents) == len(vectors) == len(metadata)):
+            raise ValueError("documents、vectors、metadata 长度必须一致")
+
+        if not vectors:
+            return 0
+
+        vectors_np = np.array(vectors, dtype=np.float32)
+        dim = vectors_np.shape[1]
+
+        if self.collection_dims[name] == 0:
+            self.collection_dims[name] = dim
+            self.indices[name] = self._create_index(dim)
+            with self._connect() as conn:
+                conn.execute("UPDATE collections SET dim=? WHERE name=?", (dim, name))
+                conn.commit()
+        elif self.collection_dims[name] != dim:
+            raise ValueError(f"向量维度不一致: 期望 {self.collection_dims[name]}, 实际 {dim}")
+
+        self.faiss.normalize_L2(vectors_np)
+
+        ids = []
+        with self._connect() as conn:
+            for doc, meta in zip(documents, metadata):
+                meta_json = json.dumps(meta if meta is not None else {}, ensure_ascii=False, default=str)
+                cursor = conn.execute(
+                    "INSERT INTO documents(collection_name, document, metadata) VALUES (?, ?, ?)",
+                    (name, doc, meta_json)
+                )
+                ids.append(cursor.lastrowid)
+            conn.commit()
+
+        ids_np = np.array(ids, dtype=np.int64)
+        self.indices[name].add_with_ids(vectors_np, ids_np)
+        self._save_index(name)
+        logger.info(f"向集合 {name} 添加 {len(documents)} 个文档")
+        return len(documents)
+
+    def search(
+        self,
+        name: str,
+        query_vector: List[float],
+        k: int = 4,
+        threshold: float = 0.5
+    ) -> List[Dict]:
+        """搜索相似文档
+
+        参数:
+        - name: 集合名称
+        - query_vector: 查询向量
+        - k: 返回的文档数量
+        - threshold: 相似度阈值
+
+        返回:
+        - results: 包含 document、score 和 metadata 的列表
+        """
+        if name not in self.collection_dims:
+            return []
+
+        index = self.indices.get(name)
+        if index is None or index.ntotal == 0:
+            return []
+
+        query_np = np.array([query_vector], dtype=np.float32)
+        self.faiss.normalize_L2(query_np)
+
+        top_k = min(max(k, 1), index.ntotal)
+        distances, ids = index.search(query_np, top_k)
+        scores = distances[0]
+        id_list = ids[0]
+
+        results = []
+        with self._connect() as conn:
+            for score, doc_id in zip(scores, id_list):
+                if doc_id < 0:
+                    continue
+                if float(score) < threshold:
+                    continue
+
+                row = conn.execute(
+                    "SELECT document, metadata FROM documents WHERE id=? AND collection_name=?",
+                    (int(doc_id), name)
+                ).fetchone()
+                if row is None:
+                    continue
+
+                try:
+                    meta_obj = json.loads(row["metadata"]) if row["metadata"] else {}
+                except Exception:
+                    meta_obj = {}
+
+                results.append({
+                    "document": row["document"],
+                    "score": float(score),
+                    "metadata": meta_obj
+                })
+
+        return results
+
+    def get_collection_names(self):
+        """获取所有集合名称"""
+        return list(self.collection_dims.keys())
+
+    def delete_collection(self, name: str):
+        """删除集合"""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM documents WHERE collection_name=?", (name,))
+            conn.execute("DELETE FROM collections WHERE name=?", (name,))
+            conn.commit()
+
+        self.collection_dims.pop(name, None)
+        self.indices.pop(name, None)
+
+        index_file = self._index_path(name)
+        if os.path.exists(index_file):
+            try:
+                os.remove(index_file)
+            except Exception as e:
+                logger.warning(f"删除集合 {name} 的索引文件失败: {e}")
+
+        logger.info(f"删除集合: {name}")
+        return True
+
+    def get_collection_stats(self, name: str):
+        """获取集合统计"""
+        if name not in self.collection_dims:
+            return {"document_count": 0, "vector_dimension": 0}
+
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(1) AS cnt FROM documents WHERE collection_name=?",
+                (name,)
+            ).fetchone()
+            document_count = int(row["cnt"]) if row else 0
+
+        return {
+            "document_count": document_count,
+            "vector_dimension": int(self.collection_dims.get(name, 0))
+        }
+

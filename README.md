@@ -1,4 +1,4 @@
-# Satrap
+﻿# Satrap
 
 一个简洁的 Python 工具库，提供日志记录和大语言模型 (LLM) API 调用封装。
 
