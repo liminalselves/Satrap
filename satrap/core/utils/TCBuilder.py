@@ -109,7 +109,7 @@ class Tool:
     result = tool(1, 2)   # 返回 3
     ```
     """
-    def __init__(self, tool_name: str, description: str, params_dict: Dict[str, Tuple[str, str]]):
+    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None):
         """初始化工具"""
         cls = self.__class__
         self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)
@@ -194,7 +194,7 @@ class AsyncTool:
     asyncio.run(main())
     ```
     """
-    def __init__(self, tool_name: str, description: str, params_dict: Dict[str, Tuple[str, str]]):
+    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None):
         """初始化工具"""
         cls = self.__class__
         self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)

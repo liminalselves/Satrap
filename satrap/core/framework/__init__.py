@@ -9,7 +9,14 @@ from satrap.core.log import logger
 
 class ModelWorkflowFramework:
     """模型工作流框架"""
-    def __init__(self, llm: LLM, context_id: str, tools_manager: ToolsManager, system_prompt: str | None = None, content_callback: Optional[Callable[[str], None]] | None = None):
+    def __init__(
+        self,
+        llm: LLM,
+        context_id: str,
+        tools_manager: ToolsManager,
+        system_prompt: str | None = None,
+        content_callback: Optional[Callable[[str], None]] | None = None
+    ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
         这是 Satrap 的核心组件之一, 负责协调单个模型实例调用, 以实现复杂的任务处理和自动化流程;
@@ -71,37 +78,66 @@ class ModelWorkflowFramework:
         if self.content_callback and content:
             self.content_callback(content)
 
-    def agent_executor(self, model_response: LLMCallResponse) -> tuple[list[dict[str, str | list]], bool]:
+    def agent_executor(self, model_response: LLMCallResponse, max_iterations: int = 10) -> list[dict[str, str | list]]:
         """智能体执行器, 用于执行智能体调用流程
 
         参数:
         - model_response: 模型调用响应
+        - max_iterations: 最大迭代次数
 
         返回:
-        - 元组(list, bool): 上下文消息列表和是否有工具调用
+        - list[dict[str, str | list]]: 上下文消息列表
         """
         try:
-            if model_response.type == "tools_call" and model_response.tool_calls is not None:
-                tool_messages = []
-                tool_results = []
+            # 1. 将第一次模型响应存入上下文
+            current_response = model_response   # 当前处理的响应
 
-                for tool_call in model_response.tool_calls:   # 处理所有工具调用
-                    tool_message, tool_result = self.tools_manager.execute_tool_call(tool_call)
-                    tool_messages.append(tool_message)
-                    tool_results.append(tool_result)
+            # 2. 循环处理可能的工具调用
+            now_iterations = 0
+            while True:
 
-                self.ctx.add_tool_call_flow(model_response.content, tool_messages, tool_results)
-                messages = self.ctx.get_context()
-                return messages, True
+                # 情况1: 模型要求调用工具
+                if current_response.type == "tools_call" and current_response.tool_calls:
+                    now_iterations += 1
 
-            else:
-                self.ctx.add_bot_message(model_response.content)   # 添加模型回复到上下文
-                messages = self.ctx.get_context()   # 获取最新上下文
-                return messages, False
+                    tool_messages = []
+                    tool_results = []
+                    for tool_call in current_response.tool_calls:
+                        tool_message, tool_result = self.tools_manager.execute_tool_call(tool_call)
+                        tool_messages.append(tool_message)
+                        tool_results.append(tool_result)
+                        # 执行所有工具调用
+                 
+                    self.ctx.add_tool_call_flow(
+                        current_response.content,
+                        tool_messages,
+                        tool_results
+                    )   # 将模型消息和工具结果添加到上下文中
+
+                    new_response = self.llm.call(
+                        self.ctx.get_context(),
+                        tools=self.tools_manager.get_tools_definitions()
+                    )   # 使用更新后的上下文再次调用模型
+
+                    if not new_response:
+                        logger.error("模型在工具调用后返回空响应，终止循环")
+                        break
+
+                    current_response = new_response   # 继续循环
+
+                    if now_iterations >= max_iterations:   # 达到最大迭代次数
+                        logger.warning("智能体执行器达到最大迭代次数，终止循环")
+                        break
+
+                else:   # 情况2: 模型直接返回最终答案
+                    self.ctx.add_bot_message(current_response.content)
+                    break
+
+            return self.ctx.get_context()
 
         except Exception as e:
             logger.error(f"智能体执行器错误: {e}")
-            return [], False
+            return []
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:

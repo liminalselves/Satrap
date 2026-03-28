@@ -21,6 +21,7 @@ class LLMCallResponse:
         """返回可解包的元素数量"""
         return 4
 
+@dataclass
 class LLMCallRequest:
     """LLM 调用请求数据结构"""
     role: str
@@ -33,3 +34,16 @@ class LLMCallRequest:
     """工具选择策略, 如 "auto" 或 "none" , 或 {"type": "function", "function": {"name": "工具名"}}"""
     img_urls: Optional[List[str]] = None
     """LLM 调用请求图片 URL 列表"""
+
+@dataclass
+class UserCall:
+    """用户调用数据结构"""
+    session_id: str | None = None
+    """会话 ID, 如 `sr7dws`"""
+    session_type: str | None = None
+    """会话类型"""
+    message: str | None = None
+    """用户输入消息"""
+    img_urls: Optional[List[str]] = None
+    """用户输入图片 URL 列表"""
+
