@@ -1,8 +1,9 @@
-from typing import List, Dict, Union, Optional
+from typing import List, Dict, Union, Optional, Any
 import aiosqlite
 import asyncio
 import sqlite3
 import json
+import copy
 import re
 
 from satrap.core.log import logger
@@ -142,7 +143,7 @@ class ContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
-    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True):
+    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True, reasoning: str | None = None):
         """
         添加机器人消息到上下文中
 
@@ -150,14 +151,25 @@ class ContextManager:
         - message: 消息内容
         - tools_calls: 工具调用信息列表, 可选, 每个元素格式为 {"id": "工具ID", "type": "function", "function": {"name": "工具名", "arguments": "参数JSON字符串"}}
         - ignore_think: 是否忽略消息中的思考过程, 默认True
+        - reasoning: 思考过程, 可选
         """
-        if ignore_think:
-            message = re.sub(r'<think>.*?</think>', '', message, flags=re.DOTALL)
-
         if tools_calls:
-            self._messages.append({"role": "assistant", "content": message, "tool_calls": tools_calls})
+            self._messages.append(
+                {
+                    "role": "assistant",
+                    "content": message,
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "tool_calls": tools_calls,
+                }
+            )
         else:
-            self._messages.append({"role": "assistant", "content": message})
+            self._messages.append(
+                {
+                    "role": "assistant", 
+                    "content": message,
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                }
+            )
 
         self._sync()
 
@@ -173,7 +185,7 @@ class ContextManager:
         self._messages.append({"role": "assistant", "content": bot_message})
         self._sync()
 
-    def add_tool_message(self, tool_call_id: str, tool_result: dict):
+    def add_tool_message(self, tool_call_id: str, tool_result: dict | str):
         """
         添加工具调用的返回消息到上下文中
 
@@ -181,7 +193,8 @@ class ContextManager:
         - tool_call_id: 工具调用ID
         - tool_result: 工具调用的返回结果
         """
-        self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
+        self._messages.append({"role": "tool", "tool_call_id": tool_call_id,
+            "content": json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result})
         self._sync()
 
     def add_tool_call_flow(self, message: str, tool_messages: list[dict], tool_results: list[dict]):
@@ -189,7 +202,7 @@ class ContextManager:
         添加一个完整的工具调用消息流到上下文中
 
         相当于:
-        ```
+        ``` python
         ctx.add_bot_message(message, tool_messages)
         for tool_msg, tool_res in zip(tool_messages, tool_results):
             ctx.add_tool_message(tool_msg["id"], tool_res)
@@ -207,7 +220,7 @@ class ContextManager:
 
     def add_at_system_start(self, message: str, separator: str = ""):
         """
-        在原系统提示词的开头添加消息（修改第一条系统消息的内容）
+        在原系统提示词的开头添加消息 (修改第一条系统消息的内容)
 
         参数:
         - message: 要添加的消息内容
@@ -227,7 +240,7 @@ class ContextManager:
 
     def add_at_system_end(self, message: str, separator: str = ""):
         """
-        在原系统提示词的结尾添加消息（修改第一条系统消息的内容）
+        在原系统提示词的结尾添加消息 (修改第一条系统消息的内容)
 
         参数:
         - message: 要添加的消息内容
@@ -242,6 +255,21 @@ class ContextManager:
         else:
             # 没有系统消息，则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        self._sync()
+
+    def add_turn_messages(self, turn_messages: list[dict]):
+        """
+        添加多条消息到上下文中
+
+        参数:
+        - turn_messages: 要添加的消息列表
+        """
+        serialized = []
+        for msg in turn_messages:
+            new_msg = copy.deepcopy(msg)
+            serialized.append(new_msg)
+        
+        self._messages.extend(serialized)
         self._sync()
 
     def static_message(self) -> int:
@@ -355,7 +383,7 @@ class AsyncContextManager:
         - conversation_id: 当前对话的唯一 ID
         - keep_in_memory:
             True: 加载数据后在内存操作，需手动调用 save_context() 写入数据库 <br>
-            False: (推荐) 每次修改操作自动同步到数据库，保证数据不丢失
+            False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
         - db_path: SQLite 数据库路径
         """
         self.db_path = db_path
@@ -482,7 +510,7 @@ class AsyncContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         await self._sync()
 
-    async def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True):
+    async def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True, reasoning: str | None = None):
         """
         添加机器人消息到上下文中
 
@@ -490,14 +518,25 @@ class AsyncContextManager:
         - message: 消息内容
         - tools_calls: 工具调用信息列表，可选，每个元素格式为 {"id": "工具 ID", "type": "function", "function": {"name": "工具名", "arguments": "参数 JSON 字符串"}}
         - ignore_think: 是否忽略消息中的思考过程, 默认True
+        - reasoning: 思考过程, 可选
         """
-        if ignore_think:
-            message = re.sub(r'<think>.*?</think>', '', message, flags=re.DOTALL)
-
         if tools_calls:
-            self._messages.append({"role": "assistant", "content": message, "tool_calls": tools_calls})
+            self._messages.append(
+                {
+                    "role": "assistant",
+                    "content": message,
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "tool_calls": tools_calls,
+                }
+            )
         else:
-            self._messages.append({"role": "assistant", "content": message})
+            self._messages.append(
+                {
+                    "role": "assistant", 
+                    "content": message,
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                }
+            )
 
         await self._sync()
 
@@ -529,7 +568,7 @@ class AsyncContextManager:
         添加一个完整的工具调用消息流到上下文中
 
         相当于:
-        ```
+        ``` python
         await ctx.add_bot_message(message, tool_messages)
         for tool_msg, tool_res in zip(tool_messages, tool_results):
             await ctx.add_tool_message(tool_msg["id"], tool_res)
@@ -582,6 +621,21 @@ class AsyncContextManager:
         else:
             # 没有系统消息，则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        await self._sync()
+
+    async def add_turn_messages(self, turn_messages: list[dict]):
+        """
+        添加多条消息到上下文中
+
+        参数:
+        - turn_messages: 要添加的消息列表
+        """
+        serialized = []
+        for msg in turn_messages:
+            new_msg = copy.deepcopy(msg)
+            serialized.append(new_msg)
+
+        self._messages.extend(serialized)
         await self._sync()
 
     def static_message(self) -> int:
@@ -689,23 +743,77 @@ class AsyncContextManager:
         except Exception as e:
             logger.error(f"[异步上下文管理] 导出 json 文件失败：{e}")
 
-
-# ================= 使用示例 =================
-if __name__ == "__main__":
-    ctx = ContextManager(conversation_id=1001, keep_in_memory=False)
+def add_user_message(context: list[dict[str, Any]], message: str):
+    """向上下文中添加一条用户消息
     
-    if ctx.static_message() == 0:
-        ctx.add_at_system_start("你是一个翻译助手.")
-        logger.info("Initialized new conversation for 1001")
+    参数:
+    - context: 上下文列表
+    - message: 用户消息内容
+    """
+    context.append({"role": "user", "content": message})
 
-    ctx.add_user_message("Hello")
-    ctx.add_bot_message("你好")
+def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: list[dict] | None = None, reasoning: str | None = None):
+    """向上下文中添加一条助手消息
     
-    print(f"ID 1001 消息数: {ctx.static_message()}")
+    参数:
+    - context: 上下文列表
+    - message: 助手消息内容
+    - tools_calls: 工具调用列表, 默认 None
+    - reasoning: 思考内容, 默认 None
+    """
+    if tools_calls:
+        context.append(
+            {
+                "role": "assistant",
+                "content": message,
+                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,   # type: ignore
+                "tool_calls": tools_calls,
+            }
+        )
+    else:
+        context.append(
+            {
+                "role": "assistant", 
+                "content": message,
+                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,   # type: ignore
+            }
+        )
 
-    # 2. 批量操作模式 (keep_in_memory=True)
-    # 适合需要大量修改, 最后一次性保存的场景.
-    ctx2 = ContextManager(conversation_id=1002, keep_in_memory=True)
-    ctx2.reset_system_prompt("你是一个数学助手.")
-    ctx2.add_chat("1+1等于几?", "等于2.")
-    ctx2.save_context() # 必须手动调用
+
+def add_tool_message(context: list[dict[str, Any]], tool_call_id: str, tool_result: dict | str):
+    """向上下文中添加一条工具调用结果消息
+    
+    参数:
+    - context: 上下文列表
+    - tool_call_id: 工具调用 ID
+    - tool_result: 工具调用结果
+    """
+    context.append({"role": "tool", "tool_call_id": tool_call_id,
+        "content": json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result})
+
+def add_tools_call_flow(context: list[dict[str, Any]], message: str, tool_messages: list[dict], tool_results: list[dict], reasoning: str | None = None):
+    """添加一个完整的工具调用消息流到上下文中
+
+    相当于:
+    ``` python
+    ctx.add_bot_message(message, tool_messages, reasoning)
+    for tool_msg, tool_res in zip(tool_messages, tool_results):
+        ctx.add_tool_message(tool_msg["id"], tool_res)
+    ```
+
+    参数:
+    - context: 上下文列表
+    - message: 助手消息内容
+    - tool_messages: 工具调用消息列表
+    - tool_results: 工具调用结果列表
+    - reasoning: 思考内容, 默认 None
+    """
+    add_bot_message(context, message, tools_calls=tool_messages, reasoning=reasoning)
+    for tool_msg, tool_res in zip(tool_messages, tool_results):
+        add_tool_message(context, tool_msg["id"], tool_res)
+
+def clear_reasoning_content(messages: list[dict[str, Any]]):
+    """清除上下文中所有消息的思考内容 (reasoning_content 字段)"""
+    for message in messages:
+        if 'reasoning_content' in message:
+            message["reasoning_content"] = None

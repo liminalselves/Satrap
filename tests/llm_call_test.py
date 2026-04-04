@@ -8,29 +8,19 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 bot = LLM(
     api_key="", 
     base_url="https://api.deepseek.com/v1",
-    model="deepseek-chat",
+    model="deepseek-reasoner",
     temperature=1.0
 )
 
-# 异步版本
-async_bot = AsyncLLM(
-    api_key="", 
-    base_url="https://api.deepseek.com/v1",
-    model="deepseek-chat",
-    temperature=1.0
-)
 
 def main():
     system_prompt = "You are a helpful assistant."
-    user_prompt = "Hello! Can you write a short poem about code?"
-    meg = [{"role": "system", "content": system_prompt},
-    {"role": "user", "content": user_prompt}]
-    response = bot.structured_output(messages=meg,
-        format={
-            "poem": "str | 一个短的诗歌",
-            "author": "str | 诗歌的作者"
-        }
-    )
+    user_prompt = "你好"
+    message = [
+    {"role": "system", "content": system_prompt},
+    {"role": "user", "content": user_prompt}
+    ]
+    response = bot.call(messages=message)   # type: ignore
     print("同步调用结果:", response)
 
 # 运行主循环

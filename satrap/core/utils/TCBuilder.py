@@ -22,7 +22,7 @@ def create_tool_defined(
             "param2": ("number", "这是第二个参数"),
             ...
         }
-    
+
     其中参数类型可以是 "string", "number", "boolean", "array", "object"
 
     返回:
@@ -271,7 +271,9 @@ class ToolsManager:
 
         tool = self.tools[tool_name]
         try:
-            return tool(**arguments)
+            result = tool(**arguments)
+            logger.debug(f"[执行工具] 工具 {tool_name} 执行成功")
+            return result
         except Exception as e:
             logger.error(f"[执行工具] 工具 {tool_name} 执行出错：{str(e)}")
             return {"error": f"工具执行异常：{str(e)}"}

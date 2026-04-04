@@ -8,6 +8,8 @@ class LLMCallResponse:
     """LLM 调用响应类型"""
     content: str
     """LLM 调用响应内容"""
+    thinking: str | None = None
+    """LLM 调用响应思考"""
     tool_calls: Optional[List[Dict[str, Any]]] = None
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
 
@@ -15,6 +17,7 @@ class LLMCallResponse:
         """支持解包操作"""
         yield self.type
         yield self.content
+        yield self.thinking
         yield self.tool_calls or field(default_factory=list)
         
     def __len__(self) -> int:

@@ -1,6 +1,7 @@
 from typing import List, Dict, Any, Optional, Union, Literal
 from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
+from satrap.core.utils import safe_parse_arguments
 from satrap.core.type import LLMCallResponse
 import base64
 import json
@@ -235,6 +236,10 @@ def parse_call_response(
         text_content = content.strip() if content else ""
         # 提取文本内容
 
+        reasoning = getattr(message, "reasoning_content", None)
+        if reasoning is None and isinstance(message, dict):
+            reasoning = message.get("reasoning_content")
+
         # Step.4 检查是否存在工具调用 (tool_calls)
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls is None and isinstance(message, dict):
@@ -270,7 +275,7 @@ def parse_call_response(
     
                     try:   # 确保参数是字符串后再进行 JSON 解析
                         if isinstance(args_str, str):
-                            args_dict = json.loads(args_str)
+                            args_dict = safe_parse_arguments(args_str)
                         elif isinstance(args_str, dict):
                             args_dict = args_str
                         else:
@@ -285,10 +290,10 @@ def parse_call_response(
                     # 封装单个工具调用信息并添加到列表
 
             if tool_calls_list:
-                return LLMCallResponse(type="tools_call", content=text_content, tool_calls=tool_calls_list)
+                return LLMCallResponse(type="tools_call", content=text_content, tool_calls=tool_calls_list, thinking=reasoning)
 
         # Step.5 默认返回普通消息类型
-        return LLMCallResponse(type="message", content=text_content)
+        return LLMCallResponse(type="message", content=text_content, thinking=reasoning)
 
     # Step.6 异常处理
     except Exception as e:

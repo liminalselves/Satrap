@@ -1,8 +1,10 @@
-from typing import Union, Dict, Any
-import subprocess, sys, os
+﻿from typing import Dict, Any
+import subprocess
 import shutil
+import os
 
 from satrap.core.log import logger
+
 
 class CodeSandbox:
     """代码沙箱执行器, 在指定目录和 Python 环境中运行代码"""
@@ -24,7 +26,14 @@ class CodeSandbox:
         """
         安全地将路径连接到沙箱根目录, 防止路径遍历攻击
         """
-        abs_path = os.path.abspath(os.path.join(self.sandbox_path, *paths))   # 将输入路径拼接成绝对路径
+        abs_path = os.path.abspath(os.path.join(self.sandbox_path, *paths))
+        real_sandbox = os.path.realpath(self.sandbox_path)
+        real_target = os.path.realpath(abs_path)
+
+        if not real_target.startswith(real_sandbox + os.sep) and real_target != real_sandbox:
+            return self.sandbox_path   # 默认返回沙箱根目录
+        # 如果目标路径不在沙箱内, 回退到沙箱根目录
+
         return abs_path
 
     def _run_python(self, args: list, cwd: str | None = None) -> Dict[str, Any]:
@@ -88,7 +97,7 @@ class CodeSandbox:
         返回:
         - 包含 stdout, stderr, returncode 的字典
         """
-        abs_path = os.path.join(self.sandbox_path, path)
+        abs_path = self._safe_join(path)
         if not os.path.isfile(abs_path):
             return {
                 'stdout': '',
@@ -173,3 +182,20 @@ class CodeSandbox:
                     rel_path = os.path.join(rel_root, f)
                 file_list.append(rel_path)
         return file_list
+
+    def read_file(self, path: str, encoding: str = "utf-8") -> Dict[str, Any]:
+        """读取并返回沙箱内文件内容"""
+        try:
+            abs_path = self._safe_join(path)
+        except ValueError as e:
+            return {"content": "", "stderr": str(e), "returncode": -12}
+
+        if not os.path.isfile(abs_path):
+            return {"content": "", "stderr": f"文件不存在: {abs_path}", "returncode": -3}
+
+        try:
+            with open(abs_path, "r", encoding=encoding) as f:
+                content = f.read()
+            return {"content": content, "stderr": "", "returncode": 0}
+        except Exception as e:
+            return {"content": "", "stderr": f"读取文件失败: {e}", "returncode": -13}

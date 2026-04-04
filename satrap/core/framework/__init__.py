@@ -1,9 +1,10 @@
+from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
 from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager
 from satrap.core.utils.context import ContextManager, AsyncContextManager
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.type import LLMCallResponse
-from typing import Optional, Callable
-import inspect
+from typing import Optional, Callable, Any
+import inspect, json
 
 from satrap.core.log import logger
 
@@ -15,7 +16,8 @@ class ModelWorkflowFramework:
         context_id: str,
         tools_manager: ToolsManager,
         system_prompt: str | None = None,
-        content_callback: Optional[Callable[[str], None]] | None = None
+        content_callback: Optional[Callable[[str], None]] | None = None,
+        return_thinking: bool = False,
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -34,6 +36,7 @@ class ModelWorkflowFramework:
         - tools_manager: 工具管理器实例
         - system_prompt: 系统提示词; 如果填写, 会重置上下文的系统提示词
         - content_callback: 内容回调函数, 用于在复杂模型调用过程中抛出模型回复内容; 如果只取最终回复, 则可以设置为 None
+        - return_thinking: 是否返回模型思考内容; 如果为 True, 则会在模型回复内容前抛出思考内容
 
         使用示例
         ``` python
@@ -66,6 +69,7 @@ class ModelWorkflowFramework:
         self.llm = llm
         self.ctx = ContextManager(context_id)
         self.tools_manager = tools_manager
+        self.return_thinking = return_thinking
 
         self.ctx.load_context()
         if system_prompt:
@@ -73,71 +77,91 @@ class ModelWorkflowFramework:
 
         self.content_callback = content_callback
 
-    def _content_content(self, content: str):
+    def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             self.content_callback(content)
 
-    def agent_executor(self, model_response: LLMCallResponse, max_iterations: int = 10) -> list[dict[str, str | list]]:
+    def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10) -> list[dict[str, str | list]]:
         """智能体执行器, 用于执行智能体调用流程
 
         参数:
         - model_response: 模型调用响应
+        - callback: 是否回调回复, 默认关闭
         - max_iterations: 最大迭代次数
 
         返回:
         - list[dict[str, str | list]]: 上下文消息列表
         """
         try:
-            # 1. 将第一次模型响应存入上下文
-            current_response = model_response   # 当前处理的响应
+            now_iteration = 0
+            now_response = model_response
+            turn_messages: list[dict[str, Any]] = []
 
-            # 2. 循环处理可能的工具调用
-            now_iterations = 0
-            while True:
+            while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
+                now_iteration += 1
+                tool_messages = []
+                tool_results = []
 
-                # 情况1: 模型要求调用工具
-                if current_response.type == "tools_call" and current_response.tool_calls:
-                    now_iterations += 1
+                if callback:   # 回调回复
+                    if now_response.thinking and self.content_callback:
+                        self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                    if now_response.content and self.content_callback:
+                        self._content_callback(now_response.content)
 
-                    tool_messages = []
-                    tool_results = []
-                    for tool_call in current_response.tool_calls:
-                        tool_message, tool_result = self.tools_manager.execute_tool_call(tool_call)
-                        tool_messages.append(tool_message)
-                        tool_results.append(tool_result)
-                        # 执行所有工具调用
-                 
-                    self.ctx.add_tool_call_flow(
-                        current_response.content,
-                        tool_messages,
-                        tool_results
-                    )   # 将模型消息和工具结果添加到上下文中
+                for tool_call in now_response.tool_calls:
+                    result = self.tools_manager.execute_tool_call(tool_call)
+                    tool_message, tool_result = result
+                    tool_messages.append(tool_message)
+                    tool_results.append(tool_result)
+                    # 执行工具调用并获取结果
 
-                    new_response = self.llm.call(
-                        self.ctx.get_context(),
-                        tools=self.tools_manager.get_tools_definitions()
-                    )   # 使用更新后的上下文再次调用模型
+                add_tools_call_flow(turn_messages, now_response.content, tool_messages, tool_results, now_response.thinking)
+                # 添加至本轮消息流
 
-                    if not new_response:
-                        logger.error("模型在工具调用后返回空响应，终止循环")
-                        break
+                new_context = self.ctx.get_context() + turn_messages
+                new_response = self.llm.call(
+                    new_context,
+                    tools=self.tools_manager.get_tools_definitions(),
+                )   # 调用模型
 
-                    current_response = new_response   # 继续循环
-
-                    if now_iterations >= max_iterations:   # 达到最大迭代次数
-                        logger.warning("智能体执行器达到最大迭代次数，终止循环")
-                        break
-
-                else:   # 情况2: 模型直接返回最终答案
-                    self.ctx.add_bot_message(current_response.content)
+                if not new_response:   # 模型调用失败, 无响应返回
+                    clear_reasoning_content(turn_messages)
+                    self.ctx.add_turn_messages(turn_messages)
+                    logger.error("模型调用失败, 无响应返回")
                     break
 
-            return self.ctx.get_context()
+                if now_iteration >= max_iterations:   # 达到最大迭代次数
+                    if callback:   # 回调回复
+                        if now_response.thinking and self.content_callback:
+                            self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                        if now_response.content and self.content_callback:
+                            self._content_callback(now_response.content)
 
+                    clear_reasoning_content(turn_messages)
+                    self.ctx.add_turn_messages(turn_messages)
+                    logger.warning("已达到最大工具调用迭代次数, 停止执行")
+                    break
+
+                now_response = new_response   # 更新当前响应
+
+            else:   # 模型直接返回最终答案
+                if callback:   # 回调回复
+                    if now_response.thinking and self.content_callback:
+                        self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                    if now_response.content and self.content_callback:
+                        self._content_callback(now_response.content)
+
+                add_bot_message(turn_messages, now_response.content)
+                clear_reasoning_content(turn_messages)
+                self.ctx.add_turn_messages(turn_messages)
+
+            return self.ctx.get_context()
+    
         except Exception as e:
             logger.error(f"智能体执行器错误: {e}")
-            return []
+            return self.ctx.get_context()
+
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:
@@ -176,7 +200,7 @@ class Session:
 
         self.content_callback = content_callback
 
-    def _content_content(self, content: str):
+    def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             self.content_callback(content)
@@ -278,7 +302,7 @@ class AsyncModelWorkflowFramework:
         await instance.initialize()
         return instance
 
-    def _content_content(self, content: str):
+    def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             self.content_callback(content)
@@ -379,7 +403,7 @@ class AsyncSession:
         await instance.initialize()
         return instance
 
-    def _content_content(self, content: str):
+    def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             self.content_callback(content)
