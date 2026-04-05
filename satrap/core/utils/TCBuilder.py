@@ -359,6 +359,14 @@ class AsyncToolsManager:
             self.tools[tool.get_tool_name()] = tool
             logger.info(f"[注册异步工具] 工具 {tool.get_tool_name()} 已注册")
 
+    def get_tools_definitions(self) -> list:
+        """获取所有工具的 OpenAI 格式定义
+
+        返回:
+        - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
+        """
+        return [tool.get_tool_defined() for tool in self.tools.values()]
+
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
         执行指定工具 (异步方法)

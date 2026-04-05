@@ -57,7 +57,7 @@ class CodingAgentWorkflow(ModelWorkflowFramework):
             return error_msg
 
         # 使用父类的 agent_executor 继续处理可能的工具调用
-        context= self.agent_executor(
+        context, _ = self.agent_executor(
             initial_response,
             callback=True,
             max_iterations=self.max_tool_rounds
@@ -108,7 +108,7 @@ def build_workflow(cfg: DemoConfig, content_callback: Optional[Callable[[str], N
 
 def run_once(cfg: DemoConfig, message: str) -> str:
     wf = build_workflow(cfg)  # 单次运行不需要回调
-    return wf(message)
+    return wf(message)   # type: ignore  # 忽略返回值类型检查错误
 
 
 def run_repl(cfg: DemoConfig):

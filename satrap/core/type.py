@@ -49,4 +49,3 @@ class UserCall:
     """用户输入消息"""
     img_urls: Optional[List[str]] = None
     """用户输入图片 URL 列表"""
-

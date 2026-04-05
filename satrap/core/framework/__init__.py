@@ -1,9 +1,10 @@
 from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
-from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager
+from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
 from satrap.core.utils.context import ContextManager, AsyncContextManager
+from satrap.core.framework.command import CommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+from typing import Optional, Callable, Any, Awaitable
 from satrap.core.type import LLMCallResponse
-from typing import Optional, Callable, Any
 import inspect, json
 
 from satrap.core.log import logger
@@ -14,9 +15,9 @@ class ModelWorkflowFramework:
         self,
         llm: LLM,
         context_id: str,
-        tools_manager: ToolsManager,
+        tools_manager: ToolsManager | None = None,
         system_prompt: str | None = None,
-        content_callback: Optional[Callable[[str], None]] | None = None,
+        content_callback: Optional[Callable[[str], None]] = None,
         return_thinking: bool = False,
     ):
         """
@@ -52,11 +53,8 @@ class ModelWorkflowFramework:
                     return "模型调用失败"
 
                 # 处理可能的工具调用
-                msg, has_tool = self.agent_executor(response)
-                if has_tool:
-                    res = self.llm.call(msg, tools=self.tools_manager.get_tools_definitions())
-                    return self.final_response(res)
-                return self.final_response(response)
+                context, success = self.agent_executor(response)
+                return context[-1]["content"] if success else "执行失败"
 
         # 2. 初始化并调用工作流
         workflow = MyWorkflow(llm, "conversation_id", tools_manager, "You are a helper")
@@ -68,8 +66,9 @@ class ModelWorkflowFramework:
         """
         self.llm = llm
         self.ctx = ContextManager(context_id)
-        self.tools_manager = tools_manager
+        self.tools_manager = tools_manager if tools_manager else ToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
         self.return_thinking = return_thinking
+
 
         self.ctx.load_context()
         if system_prompt:
@@ -82,7 +81,8 @@ class ModelWorkflowFramework:
         if self.content_callback and content:
             self.content_callback(content)
 
-    def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10) -> list[dict[str, str | list]]:
+    def agent_executor(self, model_response: LLMCallResponse,
+        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list]], bool]:
         """智能体执行器, 用于执行智能体调用流程
 
         参数:
@@ -92,6 +92,7 @@ class ModelWorkflowFramework:
 
         返回:
         - list[dict[str, str | list]]: 上下文消息列表
+        - bool: 是否成功执行
         """
         try:
             now_iteration = 0
@@ -156,12 +157,11 @@ class ModelWorkflowFramework:
                 clear_reasoning_content(turn_messages)
                 self.ctx.add_turn_messages(turn_messages)
 
-            return self.ctx.get_context()
+            return self.ctx.get_context(), True
     
         except Exception as e:
             logger.error(f"智能体执行器错误: {e}")
-            return self.ctx.get_context()
-
+            return self.ctx.get_context(), False
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:
@@ -181,19 +181,30 @@ class ModelWorkflowFramework:
 
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
-    def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None):
+    def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
+        command_handler: Optional[CommandHandler] | None = None):
         """会话框架, 用于管理多个模型工作流的会话
         任何依赖多模型的复杂 Agent 都应当继承自该类, 并实现 `forward` 方法
 
-        并在初始化时进行 `super().__init__(session_id, content_callback)`
+        并在初始化时进行 `super().__init__(session_id, content_callback, command_handler)`
 
         参数:
         - session_id: 会话 ID
         - content_callback: 内容回调函数, 用于在复杂模型调用过程中抛出模型回复内容; 如果只取最终回复, 则可以设置为 None
+        - command_handler: 命令处理程序实例
         """
         self.session_ctx = ContextManager(session_id)
         """会话共享上下文"""
 
+        if command_handler is None:   # 创建默认命令处理器，输出回调指向 _content_callback
+            self.cmd_handler = CommandHandler(output_callback=self._content_callback)
+
+        else:   # 确保输出回调被设置, 默认指向 _content_callback
+            self.cmd_handler = command_handler
+            if self.cmd_handler.output_callback is None:
+                self.cmd_handler.output_callback = self._content_callback
+
+        self.command_handler = self.cmd_handler
         self.session_ctx.load_context()
         self.session_id = session_id
         self.wf_list = []
@@ -230,7 +241,18 @@ class Session:
             logger.info(f"[会话管理器] 清除工作流上下文完成, 工作流ID: {wf_id}")
 
         except Exception as e:
-            logger.error(f"[会话管理器] 清除会话上下文错误: {e}")                
+            logger.error(f"[会话管理器] 清除会话上下文错误: {e}")  
+
+    def cmd_process(self, msg: str) -> tuple[Any, bool]:
+        """处理命令字符串
+        
+        参数:
+        - msg: 输入消息
+        
+        返回:
+        - (Any, bool): 命令执行结果和是否为命令消息的元组
+        """
+        return self.command_handler.process_message(msg)              
 
     def __call__(self, *input, **kwargs):
         result = self.run(*input, **kwargs)
@@ -252,9 +274,9 @@ class AsyncModelWorkflowFramework:
         self,
         llm: AsyncLLM,
         context_id: str,
-        tools_manager: ToolsManager,
+        tools_manager: AsyncToolsManager | None = None,
         system_prompt: str | None = None,
-        content_callback: Optional[Callable[[str], None]] | None = None
+        content_callback: Optional[Callable[[str], Awaitable[None]]] = None
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -281,7 +303,7 @@ class AsyncModelWorkflowFramework:
         """
         self.llm = llm
         self.ctx = AsyncContextManager(context_id)
-        self.tools_manager = tools_manager
+        self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
         self.system_prompt = system_prompt
         self.content_callback = content_callback
         self._initialized = False
@@ -302,10 +324,10 @@ class AsyncModelWorkflowFramework:
         await instance.initialize()
         return instance
 
-    def _content_callback(self, content: str):
+    async def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
-            self.content_callback(content)
+            await self.content_callback(content)
 
     @staticmethod
     async def _await_if_needed(value):
@@ -313,31 +335,87 @@ class AsyncModelWorkflowFramework:
             return await value
         return value
 
-    async def agent_executor(self, model_response: LLMCallResponse) -> tuple[list[dict[str, str | list]], bool]:
-        """异步智能体执行器, 用于执行智能体调用流程"""
+    async def agent_executor(self, model_response: LLMCallResponse,
+        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list]], bool]:
+        """异步智能体执行器, 用于执行智能体调用流程
+        
+        参数:
+        - model_response: 模型调用响应
+        - callback: 是否回调回复, 默认关闭
+        - max_iterations: 最大迭代次数
+
+        返回:
+        - list[dict[str, str | list]]: 上下文消息列表
+        - bool: 是否成功执行
+        """
         try:
-            await self.initialize()
-            if model_response.type == "tools_call" and model_response.tool_calls is not None:
+            now_iteration = 0
+            now_response = model_response
+            turn_messages: list[dict[str, Any]] = []
+
+            while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
+                now_iteration += 1
                 tool_messages = []
                 tool_results = []
 
-                for tool_call in model_response.tool_calls:
-                    result = self.tools_manager.execute_tool_call(tool_call)
-                    tool_message, tool_result = await self._await_if_needed(result)
+                if callback:   # 回调回复
+                    if now_response.thinking and self.content_callback:
+                        await self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                    if now_response.content and self.content_callback:
+                        await self._content_callback(now_response.content)
+
+                for tool_call in now_response.tool_calls:
+                    result = await self.tools_manager.execute_tool_call(tool_call)
+                    tool_message, tool_result = result
                     tool_messages.append(tool_message)
                     tool_results.append(tool_result)
+                    # 执行工具调用并获取结果
 
-                await self.ctx.add_tool_call_flow(model_response.content, tool_messages, tool_results)
-                messages = self.ctx.get_context()
-                return messages, True
+                add_tools_call_flow(turn_messages, now_response.content, tool_messages, tool_results, now_response.thinking)
+                # 添加至本轮消息流
 
-            await self.ctx.add_bot_message(model_response.content)
-            messages = self.ctx.get_context()
-            return messages, False
+                new_context = self.ctx.get_context() + turn_messages
+                new_response = await self.llm.call(
+                    new_context,
+                    tools=self.tools_manager.get_tools_definitions(),
+                )   # 调用模型
 
+                if not new_response:   # 模型调用失败, 无响应返回
+                    clear_reasoning_content(turn_messages)
+                    await self.ctx.add_turn_messages(turn_messages)
+                    logger.error("模型调用失败, 无响应返回")
+                    break
+
+                if now_iteration >= max_iterations:   # 达到最大迭代次数
+                    if callback:   # 回调回复
+                        if now_response.thinking and self.content_callback:
+                            await self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                        if now_response.content and self.content_callback:
+                            await self._content_callback(now_response.content)
+
+                    clear_reasoning_content(turn_messages)
+                    await self.ctx.add_turn_messages(turn_messages)
+                    logger.warning("已达到最大工具调用迭代次数, 停止执行")
+                    break
+
+                now_response = new_response   # 更新当前响应
+
+            else:   # 模型直接返回最终答案
+                if callback:   # 回调回复
+                    if now_response.thinking and self.content_callback:
+                        await self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
+                    if now_response.content and self.content_callback:
+                        await self._content_callback(now_response.content)
+
+                add_bot_message(turn_messages, now_response.content)
+                clear_reasoning_content(turn_messages)
+                await self.ctx.add_turn_messages(turn_messages)
+
+            return self.ctx.get_context(), True
+    
         except Exception as e:
-            logger.error(f"异步智能体执行器错误: {e}")
-            return [], False
+            logger.error(f"智能体执行器错误: {e}")
+            return self.ctx.get_context(), False
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:
@@ -408,7 +486,7 @@ class AsyncSession:
         if self.content_callback and content:
             self.content_callback(content)
 
-    async def run(self, *input, **kwargs):
+    async def run(self):
         """执行会话"""
         return None
 
@@ -436,3 +514,6 @@ class AsyncSession:
         await self.initialize()
         result = await self.run(*input, **kwargs)
         return result
+
+
+from .SessionManager import SessionManager, SessionRegistry, SessionPool, SessionEntry, SessionMetadata

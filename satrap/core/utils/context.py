@@ -779,7 +779,6 @@ def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: li
             }
         )
 
-
 def add_tool_message(context: list[dict[str, Any]], tool_call_id: str, tool_result: dict | str):
     """向上下文中添加一条工具调用结果消息
     

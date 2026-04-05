@@ -331,7 +331,7 @@ class LLM:
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
-        self.api_key = api_key if lock_api_key else "api key locked"
+        self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
         self.base_url = base_url
         self.temperature = temperature
@@ -695,7 +695,7 @@ class AsyncLLM:
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         """
-        self.api_key = api_key if lock_api_key else "api key locked"
+        self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
         self.base_url = base_url
         self.temperature = temperature
