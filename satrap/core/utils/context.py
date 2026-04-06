@@ -103,7 +103,6 @@ class ContextManager:
                     data_to_insert
                 )
             conn.commit()
-            logger.debug(f"[上下文管理器] 上下文已保存, 对话ID: {self.conversation_id}, 消息数量: {len(self._messages)}")
 
         except Exception as e:
             logger.error(f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}")
@@ -472,12 +471,9 @@ class AsyncContextManager:
                         data_to_insert
                     )
                 await conn.commit()
-                logger.info(f"[异步上下文管理器] 上下文已保存，对话 ID: {self.conversation_id}, 消息数量：{len(self._messages)}")
 
         except Exception as e:
             logger.error(f"[异步上下文管理器] 保存上下文失败：{self.conversation_id}: {e}")
-            # aiosqlite context manager handles rollback on exception usually, but explicit is safe if not using context
-            # With 'async with', rollback happens automatically on exception before closing
 
     def get_context(self) -> List[Dict[str, str | list]]:
         """

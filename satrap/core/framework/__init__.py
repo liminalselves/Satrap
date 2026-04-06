@@ -1,7 +1,7 @@
 from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
 from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
 from satrap.core.utils.context import ContextManager, AsyncContextManager
-from satrap.core.framework.command import CommandHandler
+from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from typing import Optional, Callable, Any, Awaitable
 from satrap.core.type import LLMCallResponse
@@ -171,6 +171,18 @@ class ModelWorkflowFramework:
         else:
             return messages.content
 
+    @staticmethod
+    def get_bot_message(messages: list[dict[str, str | list]]) -> str:
+        """获取最后一条 assistant 回复"""
+        for message in reversed(messages):
+            if message["role"] == "assistant":
+                return str(message["content"])
+        return ""
+
+    def reset_llm(self, llm: LLM):
+        """重置会话模型"""
+        self.llm = llm
+
     def forward(self):
         """执行工作流; 调用模型并返回结果"""
         return None
@@ -196,7 +208,7 @@ class Session:
         self.session_ctx = ContextManager(session_id)
         """会话共享上下文"""
 
-        if command_handler is None:   # 创建默认命令处理器，输出回调指向 _content_callback
+        if command_handler is None:   # 创建默认命令处理器, 输出回调指向 _content_callback
             self.cmd_handler = CommandHandler(output_callback=self._content_callback)
 
         else:   # 确保输出回调被设置, 默认指向 _content_callback
@@ -276,7 +288,7 @@ class AsyncModelWorkflowFramework:
         context_id: str,
         tools_manager: AsyncToolsManager | None = None,
         system_prompt: str | None = None,
-        content_callback: Optional[Callable[[str], Awaitable[None]]] = None
+        content_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -303,9 +315,11 @@ class AsyncModelWorkflowFramework:
         """
         self.llm = llm
         self.ctx = AsyncContextManager(context_id)
-        self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
-        self.system_prompt = system_prompt
+        self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()
+        # 如果未提供工具管理器, 则创建一个空的工具管理器实例
+
         self.content_callback = content_callback
+        self.system_prompt = system_prompt
         self._initialized = False
 
     async def initialize(self):
@@ -423,6 +437,18 @@ class AsyncModelWorkflowFramework:
         if isinstance(messages, bool):
             return "模型调用失败, 请查看日志以获得更多信息"
         return messages.content
+    
+    @staticmethod
+    def get_bot_message(messages: list[dict[str, str | list]]) -> str:
+        """获取最后一条 assistant 回复"""
+        for message in reversed(messages):
+            if message["role"] == "assistant":
+                return str(message["content"])
+        return ""
+
+    def reset_llm(self, llm: AsyncLLM):
+        """重置会话模型"""
+        self.llm = llm
 
     async def forward(self, *input, **kwargs):
         """执行工作流"""
@@ -445,7 +471,10 @@ class AsyncSession:
                 return await run(self, *args, **kw)
             cls.run = _wrapped_run
 
-    def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None):
+    def __init__(self, session_id: str,
+        content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,
+        command_handler: Optional[AsyncCommandHandler] | None = None
+    ):
         """
         异步会话框架, 用于管理多个异步模型工作流协作的会话
         任何依赖多模型的复杂异步 Agent 都应继承该类, 并实现 `async run` 方法
@@ -453,13 +482,30 @@ class AsyncSession:
         子类初始化时应调用:
         `super().__init__(session_id, content_callback)`
 
-        由于使用异步上下文管理器, 实例创建后需要先初始化会话上下文:
-        - 推荐使用 `await AsyncSession.create(...)`
-        - 或在调用前显式执行 `await self.initialize()`
+        ``` python
+        class MySession(AsyncSession):
+            def __init__(self, session_id: str,
+                content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,
+                command_handler: Optional[AsyncCommandHandler] | None = None
+            ):
+                super().__init__(session_id, content_callback, command_handler)
+
+            async def _async_init(self):
+                self.workflow = await MyWorkflow.create(...)
+                # 异步初始化钩子, 用于创建工作流等
+
+            async def run(self, user_input: str) -> str:
+                return await self.workflow.forward(user_input)
+
+        # 直接使用, 无需 create 或 initialize
+        session = MySession("user_123", content_callback=print)
+        reply = await session.run("你好")
+        ```
 
         参数:
         - session_id: 会话 ID
         - content_callback: 内容回调函数, 用于在复杂调用流程中回传模型内容
+        - command_handler: 命令处理器实例, 用于处理用户输入的命令
         """
         self.session_ctx = AsyncContextManager(session_id)
         self.session_id = session_id
@@ -467,24 +513,29 @@ class AsyncSession:
         self.content_callback = content_callback
         self._initialized = False
 
-    async def initialize(self):
-        """初始化异步会话上下文"""
+        self.command_handler = command_handler if command_handler else AsyncCommandHandler()
+        # 如果未提供命令处理器, 则创建一个空的命令处理器实例
+
+    async def _ensure_initialized(self):
+        """确保异步初始化完成 (幂等)"""
         if self._initialized:
             return
-        await self.session_ctx.initialize()
+        await self.initialize()
         self._initialized = True
 
-    @classmethod
-    async def create(cls, *args, **kwargs):
-        """创建并初始化实例"""
-        instance = cls(*args, **kwargs)
-        await instance.initialize()
-        return instance
+    async def initialize(self):
+        """执行实际初始化, 可被子类重写, 但需调用 super().initialize()"""
+        await self.session_ctx.initialize()
+        await self._async_init()   # 钩子: 子类可在此创建工作流等
 
-    def _content_callback(self, content: str):
+    async def _async_init(self):
+        """子类可重写的异步初始化钩子"""
+        pass
+
+    async def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
-            self.content_callback(content)
+            await self.content_callback(content)
 
     async def run(self):
         """执行会话"""
@@ -510,8 +561,19 @@ class AsyncSession:
         except Exception as e:
             logger.error(f"[会话管理器] 清除会话上下文错误: {e}")
 
+    async def cmd_process(self, msg: str) -> tuple[Any, bool]:
+        """处理命令字符串
+        
+        参数:
+        - msg: 输入消息
+        
+        返回:
+        - (Any, bool): 命令执行结果和是否为命令消息的元组
+        """
+        return await self.command_handler.process_message(msg)
+
     async def __call__(self, *input, **kwargs):
-        await self.initialize()
+        await self._ensure_initialized()
         result = await self.run(*input, **kwargs)
         return result
 

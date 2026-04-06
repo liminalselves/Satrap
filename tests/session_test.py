@@ -26,7 +26,7 @@ class MyWF(ModelWorkflowFramework):
         res_msg = self.final_response(response)
         self.ctx.add_bot_message(res_msg)
         return res_msg
-    
+
 class MySession(Session):
     def __init__(self, session_id: str, content_callback=None, command_handler=None):
         super().__init__(session_id=session_id, content_callback=content_callback, command_handler=command_handler)

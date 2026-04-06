@@ -282,11 +282,15 @@ class AsyncCommandHandler:
         
         参数:
         - message: 输入消息
+
+        返回:
+        - (Any) 命令执行结果, 或 None 如果不是命令消息
+        - (bool) 是否有命令
         """
         try:
             exist = self._is_cmd(message)  # 断言是否是命令消息
             if not exist:
-                return None   # 不是命令消息, 不处理
+                return None, False   # 不是命令消息, 不处理
 
             cmd, args = self._parse(message)
             if cmd is not None and args is not None:
@@ -294,13 +298,13 @@ class AsyncCommandHandler:
             
                 if self.output_callback and result is not None:
                     await self.output_callback(result)
-                return result
+                return result, True   # 命令消息, 处理成功
 
             else:
                 logger.warning(f"无效命令: {message}")
-                return None
+                return None, True
                 
         except Exception as e:
             logger.error(f"[命令处理] 处理消息错误: {e}")
-            return None
+            return None, True
 

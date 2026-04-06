@@ -342,6 +342,26 @@ class ToolsManager:
         tool_result = self.execute_tool(tool_name, arguments)
         return tool_message, tool_result
 
+    def unregister_tool(self, tool_name: str) -> bool:
+        """注销异步工具"""
+        if tool_name in self.tools:
+            del self.tools[tool_name]
+            logger.info(f"[注销异步工具] 工具 {tool_name} 已注销")
+            return True
+        else:
+            logger.warning(f"[注销异步工具] 工具 {tool_name} 不存在，无法注销")
+            return False
+        
+    def unregister_all_tools(self) -> bool:
+        """注销所有异步工具"""
+        if self.tools:
+            self.tools.clear()
+            logger.info(f"[注销异步工具] 已注销所有工具")
+            return True
+        else:
+            logger.warning(f"[注销异步工具] 已没有已注册工具")
+            return False
+
 class AsyncToolsManager:
     """异步工具管理器, 用于注册和执行异步工具"""
     def __init__(self):
@@ -349,7 +369,7 @@ class AsyncToolsManager:
 
     def register_tool(self, tool: AsyncTool):
         """注册异步工具
-        
+
         参数:
         - tool: 要注册的异步工具实例, 必须是 AsyncTool 类的子类
         """
@@ -451,3 +471,24 @@ class AsyncToolsManager:
         tool_message = self.create_call_message(call_info)
         tool_result = await self.execute_tool(tool_name, arguments)
         return tool_message, tool_result
+
+    def unregister_tool(self, tool_name: str) -> bool:
+        """注销异步工具"""
+        if tool_name in self.tools:
+            del self.tools[tool_name]
+            logger.info(f"[注销异步工具] 工具 {tool_name} 已注销")
+            return True
+        else:
+            logger.warning(f"[注销异步工具] 工具 {tool_name} 不存在，无法注销")
+            return False
+        
+    def unregister_all_tools(self) -> bool:
+        """注销所有异步工具"""
+        if self.tools:
+            self.tools.clear()
+            logger.info(f"[注销异步工具] 已注销所有工具")
+            return True
+        else:
+            logger.warning(f"[注销异步工具] 已没有已注册工具")
+            return False
+

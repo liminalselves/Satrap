@@ -146,3 +146,142 @@ class AsyncSearchTool(AsyncTool):
                 except Exception:
                     continue
         return json.dumps({"error": "所有域名均无法访问，请检查网络或稍后重试"})
+
+
+class FetchPageTool(Tool):
+    """网页内容获取工具 (同步)"""
+    tool_name = "fetch_page"
+    description = "获取指定URL的网页内容，提取标题和正文文本"
+    params_dict = {
+        "url": ("string", "要访问的网页URL"),
+        "max_length": ("number", "返回的文本最大长度，默认5000，超出则截断")
+    }
+
+    def __init__(self, timeout: int = 10):
+        super().__init__(self.tool_name, self.description, self.params_dict)
+        self.timeout = timeout
+
+    def _get_headers(self) -> dict:
+        """生成随机请求头"""
+        return {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Connection": "keep-alive",
+        }
+
+    def _extract_text(self, html: str) -> str:
+        """从HTML中提取纯文本; 去除脚本, 样式等无关内容"""
+        soup = BeautifulSoup(html, "html.parser")
+        # 移除脚本和样式
+        for element in soup(["script", "style", "meta", "link", "noscript"]):
+            element.decompose()
+        # 获取文本并规范化空白字符
+        text = soup.get_text(separator="\n", strip=True)
+        lines = (line.strip() for line in text.splitlines())
+        return "\n".join(line for line in lines if line)
+
+    def execute(self, url: str, max_length: int = 5000) -> str:
+        """执行网页获取, 返回JSON字符串"""
+        try:
+            resp = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
+            resp.raise_for_status()
+            resp.encoding = resp.apparent_encoding or "utf-8"
+
+            # 提取标题
+            soup = BeautifulSoup(resp.text, "html.parser")
+            title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
+
+            # 提取正文文本
+            text = self._extract_text(resp.text)
+            if len(text) > max_length:
+                text = text[:max_length] + "...(内容已截断)"
+
+            result = {
+                "url": url,
+                "title": title,
+                "content": text,
+                "status_code": resp.status_code
+            }
+            return json.dumps(result, ensure_ascii=False, indent=2)
+
+        except requests.RequestException as e:
+            return json.dumps({
+                "error": f"请求失败: {str(e)}",
+                "url": url
+            }, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({
+                "error": f"解析失败: {str(e)}",
+                "url": url
+            }, ensure_ascii=False)
+
+class AsyncFetchPageTool(AsyncTool):
+    """网页内容获取工具 (异步)"""
+    tool_name = "fetch_page"
+    description = "获取指定URL的网页内容，提取标题和正文文本"
+    params_dict = {
+        "url": ("string", "要访问的网页URL"),
+        "max_length": ("number", "返回的文本最大长度，默认5000，超出则截断")
+    }
+
+    def __init__(self, timeout: int = 10):
+        super().__init__(self.tool_name, self.description, self.params_dict)
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+
+    def _get_headers(self) -> dict:
+        return {
+            "User-Agent": random.choice(USER_AGENTS),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            "Connection": "keep-alive",
+        }
+
+    def _extract_text(self, html: str) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        for element in soup(["script", "style", "meta", "link", "noscript"]):
+            element.decompose()
+        text = soup.get_text(separator="\n", strip=True)
+        lines = (line.strip() for line in text.splitlines())
+        return "\n".join(line for line in lines if line)
+
+    async def execute(self, url: str, max_length: int = 5000) -> str:
+        """异步执行网页获取"""
+        async with aiohttp.ClientSession() as session:
+            try:
+                async with session.get(url, headers=self._get_headers(), timeout=self.timeout) as resp:
+                    if resp.status != 200:
+                        return json.dumps({
+                            "error": f"HTTP {resp.status}",
+                            "url": url
+                        }, ensure_ascii=False)
+
+                    html = await resp.text(encoding="utf-8", errors="replace")
+
+                    # 提取标题
+                    soup = BeautifulSoup(html, "html.parser")
+                    title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
+
+                    # 提取正文
+                    text = self._extract_text(html)
+                    if len(text) > max_length:
+                        text = text[:max_length] + "...(内容已截断)"
+
+                    result = {
+                        "url": url,
+                        "title": title,
+                        "content": text,
+                        "status_code": resp.status
+                    }
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+
+            except aiohttp.ClientError as e:
+                return json.dumps({
+                    "error": f"请求失败: {str(e)}",
+                    "url": url
+                }, ensure_ascii=False)
+            except Exception as e:
+                return json.dumps({
+                    "error": f"解析失败: {str(e)}",
+                    "url": url
+                }, ensure_ascii=False)
