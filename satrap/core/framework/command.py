@@ -111,7 +111,7 @@ class CommandHandler:
 
             lines = ["已注册的命令:"]
             for cmd, intro in intros.items():
-                lines.append(f"{self.prefix}{cmd}: {intro}")
+                lines.append(f"{self.prefix}{cmd}: {intro}\n")
             return "\n".join(lines)
 
         self.register_command("help", help_cmd, intro="显示帮助信息")
@@ -129,7 +129,7 @@ class CommandHandler:
 
     def process_message(self, message: str):
         """处理输入消息, 执行对应命令
-        
+
         参数:
         - message: 输入消息
 
@@ -261,7 +261,7 @@ class AsyncCommandHandler:
 
             lines = ["已注册的命令:"]
             for cmd, intro in intros.items():
-                lines.append(f"{self.prefix}{cmd}: {intro}")
+                lines.append(f"{self.prefix}{cmd}: {intro}\n")
             return "\n".join(lines)
 
         self.register_command("help", help_cmd, intro="显示帮助信息")
