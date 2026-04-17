@@ -167,6 +167,20 @@ class SessionConfigStore:
                     return None
                 return self._row_to_config(row)
 
+    def list(self, limit: int = 200) -> List[SessionConfig]:
+        """列出持久化的会话配置 (按最后使用时间倒序)"""
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT * FROM session_configs
+                    ORDER BY last_used_at DESC
+                    LIMIT ?
+                    """,
+                    (int(limit),),
+                ).fetchall()
+                return [self._row_to_config(row) for row in rows]
+
     def delete(self, session_id: str):
         with self._lock:
             with self._connect() as conn:
@@ -335,6 +349,37 @@ class SessionManager:
 
     def get_session_config(self, session_id: str) -> Optional[SessionConfig]:
         return self.store.get(session_id)
+
+    def list_session_configs(self, limit: int = 200) -> List[SessionConfig]:
+        """列出持久化 SessionConfig (来自 SQLite)"""
+        return self.store.list(limit=limit)
+
+    def list_registered_session_types(self) -> List[str]:
+        """列出当前已注册的 session_type_name"""
+        return self.registry.list_types()
+
+    def update_session_config(
+        self,
+        session_id: str,
+        session_config: Optional[Dict[str, Any]] = None,
+        session_type_name: Optional[str] = None,
+    ) -> Optional[SessionConfig]:
+        """更新已存在会话的持久化配置并返回更新后的 SessionConfig
+
+        - session_config 为 None 时，保留原 session_config
+        - session_type_name 为 None 时，保留原 session_type_name
+        """
+        cfg = self.store.get(session_id)
+        if cfg is None:
+            return None
+
+        if session_config is not None:
+            cfg.session_config = dict(session_config)
+        if session_type_name is not None:
+            cfg.session_type_name = session_type_name
+        cfg.last_used_at = time.time()
+        self.store.upsert(cfg)
+        return cfg
 
     # ---------------- 调用入口 ----------------
     def handle_call(self, user_call: UserCall) -> str:

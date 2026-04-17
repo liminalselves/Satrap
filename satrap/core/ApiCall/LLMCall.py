@@ -707,7 +707,7 @@ class AsyncLLM:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url
-        )  # 初始化异步 OpenAI 客户端
+        )   # 初始化异步 OpenAI 客户端
 
     async def chat(
         self,
