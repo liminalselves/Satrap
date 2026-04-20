@@ -13,24 +13,64 @@
 ## 项目结构
 
 ``` bash
-satrap/
-├── __init__.py             # 包入口
-├── api/                    # API 相关 (开发中)
-├── core/
-│   ├── log.py              # 日志系统
-│   ├── APICall/
-│   │   ├── LLMCall.py      # LLM API 调用封装
-│   │   └── EmbedCall.py    # Embed API 调用封装
-│   ├── database/           # 数据库模块 (开发中)
-│   ├── utils/              # 工具函数 (开发中)
-│   │   ├── TCBuilder.py    # tools call 构建
-│   │   ├── text_utils.py   # 文本处理
-│   │   ├── sandbox.py      # 代码沙箱执行器
-│   │   └── context.py      # 上下文管理
-│   ├── framework/          # 模型工作流框架 (开发中)
-│   └── type.py             # 类型定义
-└── satrapdata/             # 数据存储目录
-    └── logs/               # 日志文件
+Satrap/
+├── .gitignore
+├── LICENSE
+├── README.md
+├── requirements.txt
+├── satrap/
+│   ├── __init__.py
+│   ├── api/
+│   │   └── __init__.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── log.py                     # 日志系统
+│   │   ├── type.py                    # 类型定义模块
+│   │   ├── APICall/
+│   │   │   ├── __init__.py
+│   │   │   ├── EmbedCall.py           # 嵌入调用封装
+│   │   │   ├── LLMCall.py             # LLM 调用封装
+│   │   │   └── ReRankCall.py          # 🔥 新增: 重排序接口
+│   │   ├── database/                  # 数据库操作封装
+│   │   │   └── __init__.py
+│   │   ├── framework/                 # 框架模块
+│   │   │   ├── __init__.py
+│   │   │   ├── BackGroundManager.py   # 🔥 背景任务管理
+│   │   │   ├── Base.py                # 工作流 & 会话
+│   │   │   ├── SessionManager.py      # 🔥 最近重构
+│   │   │   └── command.py             # 命令工具
+│   │   └── utils/
+│   │       ├── __init__.py
+│   │       ├── TCBuilder.py           # 工具管理
+│   │       ├── context.py             # 🔥 上下文估算功能
+│   │       ├── sandbox.py             # 沙箱工具
+│   │       ├── text_utils.py          # 文本工具
+│   │       └── tokenizer.py           # 🔥 新增: token 估算
+│   └── expend/                        # 🔥 扩展模块
+│       ├── __init__.py
+│       ├── mem0.py                    # 记忆管理集成
+│       ├── rag.py                     # RAG 检索增强
+│       ├── sandbox_tools.py           # 沙箱工具扩展
+│       └── search.py                  # 网络搜索工具
+└── tests/
+    ├── agent_test.py
+    ├── benchmark_vector_db.py
+    ├── chat_demo.py
+    ├── coding_agent_demo.py
+    ├── control_panel.py
+    ├── ctmger_text.py
+    ├── embed_test.py
+    ├── llm_call_test.py
+    ├── log_test.py
+    ├── mem0_test.py
+    ├── multisession_test.py
+    ├── rag_test.py
+    ├── rerank_test.py
+    ├── sandbox_test.py
+    ├── search_test.py
+    ├── session_test.py
+    ├── tools_test.py
+    └── wf_test.py
 ```
 
 ## 兼容性
