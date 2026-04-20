@@ -22,9 +22,13 @@ class SessionEntry:
     """会话池中的运行时条目(仅驻留内存中的活跃实例)"""
 
     session: Session | AsyncSession
+    """会话实例"""
     session_type: str
+    """会话类型名称"""
     created_at: float
+    """会话创建时间戳"""
     last_used: float
+    """会话最近使用时间戳"""
 
 
 @dataclass
@@ -32,23 +36,32 @@ class SessionMetadata:
     """对外展示的活跃会话元信息"""
 
     session_id: str
+    """会话ID"""
     session_type: str
+    """会话类型名称"""
     created_at: float
+    """会话创建时间戳"""
     last_used_at: float
+    """会话最近使用时间戳"""
     message_count: int
+    """会话已处理消息数量"""
 
 
 class SessionRegistry:
-    """会话类型注册表: 维护 `session_type_name -> 会话类` 的映射。"""
+    """会话类型注册表: 维护 `session_type_name -> 会话类` 的映射"""
 
     def __init__(self):
         self._mapping: Dict[str, Type[Session] | Type[AsyncSession]] = {}
         self._lock = threading.RLock()
 
     def register(self, session_type_name: str, session_class: Type[Session] | Type[AsyncSession]):
-        """注册会话类型。
+        """注册会话类型
 
-        这里仅维护映射，不做实例化。实例化由 SessionManager 在真正需要时完成。
+        这里仅维护映射, 不做实例化; 实例化由 SessionManager 在真正需要时完成
+
+        参数:
+        - session_type_name: 会话类型名称
+        - session_class: 会话类对象 (Session 或 AsyncSession)
         """
         if not session_type_name:
             logger.error("[SessionRegistry] 注册失败：session_type_name 不能为空")
@@ -64,32 +77,59 @@ class SessionRegistry:
             self._mapping[session_type_name] = session_class
 
     def get_class(self, session_type_name: str) -> Optional[Type[Session] | Type[AsyncSession]]:
+        """根据会话类型名称获取会话类
+        
+        参数:
+        - session_type_name: 会话类型名称
+        
+        返回:
+        - 会话类对象 (Session 或 AsyncSession)
+        """
         with self._lock:
             return self._mapping.get(session_type_name)
 
     def list_types(self) -> List[str]:
+        """列出所有已注册的会话类型名称
+        
+        返回:
+        - 会话类型名称列表
+        """
         with self._lock:
             return list(self._mapping.keys())
 
 
 class SessionConfigStore:
-    """SessionConfig 的 SQLite 持久化存储。
+    """SessionConfig 的 SQLite 持久化存储
 
-    表设计非常轻量，仅保存会话配置与基础统计字段，便于后续按 session_id 恢复实例。
+    表设计非常轻量, 仅保存会话配置与基础统计字段, 便于后续按 session_id 恢复实例
     """
 
     def __init__(self, db_path: str | Path | None = None):
+        """初始化会话配置存储
+        
+        参数:
+        - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
+        """
         self._lock = threading.RLock()
         self.db_path = Path(db_path) if db_path else (Path.cwd() / ".satrap" / "session_config.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 
     def _connect(self) -> sqlite3.Connection:
+        """连接数据库
+        
+        返回:
+        - 数据库连接对象 (sqlite3.Connection)
+        """
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
     def _init_table(self):
+        """初始化会话配置表
+        
+        确保数据库表存在, 并创建必要的索引
+        """
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
@@ -108,6 +148,14 @@ class SessionConfigStore:
 
     @staticmethod
     def _row_to_config(row: sqlite3.Row) -> SessionConfig:
+        """将 SQLite 行转换为 SessionConfig 实例
+        
+        参数:
+        - row: SQLite 行数据 (sqlite3.Row)
+        
+        返回:
+        - 会话配置 (SessionConfig)
+        """
         payload: Dict[str, Any] = {}
         raw_payload = row["session_config"]
         if raw_payload:
@@ -128,7 +176,11 @@ class SessionConfigStore:
         )
 
     def upsert(self, config: SessionConfig):
-        """插入或更新一条 SessionConfig。"""
+        """插入或更新一条 SessionConfig 记录
+        
+        参数:
+        - config: 会话配置 (SessionConfig)
+        """
         if not config.session_id:
             raise ValueError("session_id 不能为空")
 
@@ -168,7 +220,11 @@ class SessionConfigStore:
                 return self._row_to_config(row)
 
     def list(self, limit: int = 200) -> List[SessionConfig]:
-        """列出持久化的会话配置 (按最后使用时间倒序)"""
+        """列出持久化的会话配置 (按最后使用时间倒序)
+        
+        参数:
+        - limit: 最大返回数量 (默认 200)
+        """
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -188,7 +244,13 @@ class SessionConfigStore:
                 conn.commit()
 
     def update_runtime_fields(self, session_id: str, last_used_at: float, message_count: int):
-        """仅更新运行时统计字段，避免覆盖 session_config 本体。"""
+        """仅更新运行时统计字段, 免覆盖 session_config 本体
+        
+        参数:
+        - session_id: 会话 ID
+        - last_used_at: 最后使用时间 (Unix 时间戳)
+        - message_count: 消息计数
+        """
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
@@ -206,12 +268,26 @@ class SessionPool:
     """活跃会话池: 保持原有 LRU + 闲置清理机制"""
 
     def __init__(self, max_size: int = 1000, idle_timeout: int = 3600):
+        """初始化会话池
+        
+        参数:
+        - max_size: 最大会话数量 (默认 1000)
+        - idle_timeout: 闲置超时时间 (秒, 默认 3600)
+        """
         self._sessions: Dict[str, SessionEntry] = {}
         self.max_size = max_size
         self.idle_timeout = idle_timeout
         self._lock = threading.RLock()
 
     def get(self, session_id: str) -> Optional[SessionEntry]:
+        """获取会话条目
+        
+        参数:
+        - session_id: 会话 ID
+        
+        返回:
+        - SessionEntry 或 None
+        """
         with self._lock:
             entry = self._sessions.get(session_id)
             if entry:
@@ -224,6 +300,16 @@ class SessionPool:
         session: Session | AsyncSession,
         session_type: str,
     ) -> Optional[tuple[str, SessionEntry]]:
+        """添加会话条目到池
+        
+        参数:
+        - session_id: 会话 ID
+        - session: 会话实例
+        - session_type: 会话类型
+        
+        返回:
+        - 旧会话条目 (如果存在) 或 None
+        """
         with self._lock:
             now = time.time()
 
@@ -247,14 +333,35 @@ class SessionPool:
             return evicted
 
     def remove(self, session_id: str) -> Optional[SessionEntry]:
+        """从池中移除会话条目
+        
+        参数:
+        - session_id: 会话 ID
+        
+        返回:
+        - 移除的会话条目 (如果存在) 或 None
+        """
         with self._lock:
             return self._sessions.pop(session_id, None)
 
     def list_entries(self) -> Dict[str, SessionEntry]:
+        """列出所有会话条目
+        
+        返回:
+        - 所有会话条目 (会话 ID -> SessionEntry)
+        """
         with self._lock:
             return dict(self._sessions)
 
     def collect_idle(self, max_idle_seconds: Optional[int] = None) -> List[tuple[str, SessionEntry]]:
+        """收集闲置会话
+        
+        参数:
+        - max_idle_seconds: 最大闲置时间 (秒, 默认 3600)
+        
+        返回:
+        - 所有移除的会话条目 (会话 ID -> SessionEntry)
+        """
         with self._lock:
             now = time.time()
             timeout = self.idle_timeout if max_idle_seconds is None else max_idle_seconds
@@ -270,6 +377,11 @@ class SessionPool:
             return removed
 
     def _evict_one_locked(self) -> tuple[str, SessionEntry]:
+        """从池中移除最旧会话
+        
+        返回:
+        - 移除的会话条目 (会话 ID -> SessionEntry)
+        """
         oldest_id = min(self._sessions.keys(), key=lambda sid: self._sessions[sid].last_used)
         return oldest_id, self._sessions.pop(oldest_id)
 
@@ -278,8 +390,8 @@ class SessionManager:
     """会话管理器
 
     目标:
-    - 注册会话类型时可创建并持久化 `SessionConfig`，自动分配 session_id
-    - 使用 session_id 对话时，从 SQL 恢复 SessionConfig 再实例化 session
+    - 注册会话类型时可创建并持久化 `SessionConfig`, 自动分配 session_id
+    - 使用 session_id 对话时, 从 SQL 恢复 SessionConfig 再实例化 session
     - 保持原有活跃淘汰机制(SessionPool)不变
     """
 
@@ -290,6 +402,14 @@ class SessionManager:
         idle_timeout: int = 3600,
         db_path: str | Path | None = None,
     ):
+        """初始化会话管理器
+        
+        参数:
+        - default_session_type: 默认会话类型 (默认 "default")
+        - max_size: 最大会话池大小 (默认 1000)
+        - idle_timeout: 最大闲置时间 (秒, 默认 3600)
+        - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
+        """
         self.registry = SessionRegistry()
         self.pool = SessionPool(max_size=max_size, idle_timeout=idle_timeout)
         self.store = SessionConfigStore(db_path=db_path)
@@ -305,7 +425,12 @@ class SessionManager:
 
     # ---------------- 注册与配置 ----------------
     def register_session_type(self, session_type_name: str, session_class: Type[Session] | Type[AsyncSession]):
-        """仅注册类型映射(兼容旧接口)。"""
+        """仅注册类型映射
+        
+        参数:
+        - session_type_name: 会话类型名称
+        - session_class: 会话类 (必须继承 Session / AsyncSession)
+        """
         try:
             self.registry.register(session_type_name, session_class)
         except Exception as e:
@@ -324,9 +449,9 @@ class SessionManager:
 
         参数:
         - session_class: 必须继承 Session / AsyncSession
-        - session_type_name: 可选，不传则使用类名
+        - session_type_name: 可选, 不传则使用类名
         - session_config: 会话实例初始化配置(会存库)
-        - session_id: 可选，不传则自动生成
+        - session_id: 可选, 不传则自动生成
         """
         if not inspect.isclass(session_class) or not issubclass(session_class, (Session, AsyncSession)):
             raise TypeError("session_class 必须继承 Session 或 AsyncSession")
@@ -348,14 +473,33 @@ class SessionManager:
         return cfg
 
     def get_session_config(self, session_id: str) -> Optional[SessionConfig]:
+        """根据 session_id 获取会话配置
+        
+        参数:
+        - session_id: 会话 ID
+        
+        返回:
+        - 会话配置 (SessionConfig) 或 None
+        """
         return self.store.get(session_id)
 
     def list_session_configs(self, limit: int = 200) -> List[SessionConfig]:
-        """列出持久化 SessionConfig (来自 SQLite)"""
+        """列出持久化 SessionConfig (来自 SQLite)
+        
+        参数:
+        - limit: 最大返回数量 (默认 200)
+        
+        返回:
+        - 会话配置列表 (SessionConfig)
+        """
         return self.store.list(limit=limit)
 
     def list_registered_session_types(self) -> List[str]:
-        """列出当前已注册的 session_type_name"""
+        """列出当前已注册的 session_type_name
+        
+        返回:
+        - 会话类型名称列表 (str)
+        """
         return self.registry.list_types()
 
     def update_session_config(
@@ -366,8 +510,13 @@ class SessionManager:
     ) -> Optional[SessionConfig]:
         """更新已存在会话的持久化配置并返回更新后的 SessionConfig
 
-        - session_config 为 None 时，保留原 session_config
-        - session_type_name 为 None 时，保留原 session_type_name
+        参数:
+        - session_id: 会话 ID
+        - session_config: 可选, 不传则不更新 session_config
+        - session_type_name: 可选, 不传则不更新 session_type_name
+        
+        返回:
+        - 更新后的会话配置 (SessionConfig) 或 None
         """
         cfg = self.store.get(session_id)
         if cfg is None:
@@ -386,10 +535,10 @@ class SessionManager:
         """同步处理用户调用
 
         实现逻辑:
-        1) 根据 user_call.session_id 读取 SessionConfig
-        2) 若不存在则按请求类型创建一条默认 SessionConfig
-        3) 使用 SessionConfig 实例化会话(若池中无活跃实例)
-        4) 保持原有池化/淘汰流程
+        1. 根据 user_call.session_id 读取 SessionConfig
+        2. 若不存在则按请求类型创建一条默认 SessionConfig
+        3. 使用 SessionConfig 实例化会话(若池中无活跃实例)
+        4. 保持原有池化/淘汰流程
         """
         try:
             if not isinstance(user_call, UserCall):
@@ -423,7 +572,14 @@ class SessionManager:
             return ""
 
     async def handle_call_async(self, user_call: UserCall) -> str:
-        """异步处理用户调用"""
+        """异步处理用户调用
+        
+        参数:
+        - user_call: 用户调用对象 (包含 session_id, method, params)
+        
+        返回:
+        - 会话响应 (str) 或空字符串
+        """
         try:
             if not isinstance(user_call, UserCall):
                 logger.error("[SessionManager] handle_call_async 失败：user_call 必须是 UserCall 实例")
@@ -456,7 +612,11 @@ class SessionManager:
 
     # ---------------- 查询/清理 ----------------
     def list_sessions(self) -> List[SessionMetadata]:
-        """列出当前活跃会话(内存池快照)"""
+        """列出当前活跃会话 (内存池快照)
+        
+        返回:
+        - 活跃会话元数据列表 (SessionMetadata)
+        """
         try:
             result: List[SessionMetadata] = []
             for session_id, entry in self.pool.list_entries().items():
@@ -476,7 +636,11 @@ class SessionManager:
             return []
 
     def cleanup_idle_sessions(self, max_idle_seconds: int = 3600):
-        """同步清理闲置会话(仅影响活跃池，不删除持久化配置)"""
+        """同步清理闲置会话 (仅影响活跃池, 不删除持久化配置)
+        
+        参数:
+        - max_idle_seconds: 最大闲置时间 (默认 3600 秒)
+        """
         try:
             removed = self.pool.collect_idle(max_idle_seconds=max_idle_seconds)
             for session_id, entry in removed:
@@ -487,7 +651,11 @@ class SessionManager:
             logger.error(f"[SessionManager] cleanup_idle_sessions 失败：{e}")
 
     async def cleanup_idle_sessions_async(self, max_idle_seconds: int = 3600):
-        """异步清理闲置会话(仅影响活跃池，不删除持久化配置)"""
+        """异步清理闲置会话 (仅影响活跃池, 不删除持久化配置)
+        
+        参数:
+        - max_idle_seconds: 最大闲置时间 (默认 3600 秒)
+        """
         try:
             removed = self.pool.collect_idle(max_idle_seconds=max_idle_seconds)
             for session_id, entry in removed:
@@ -498,9 +666,11 @@ class SessionManager:
             logger.error(f"[SessionManager] cleanup_idle_sessions_async 失败：{e}")
 
     def remove_session(self, session_id: str, remove_config: bool = False):
-        """移除活跃会话
+        """移除活跃会话 (同步)
 
-        - remove_config=False: 仅移除内存活跃实例，保留 SQL 中的 SessionConfig
+        参数:
+        - session_id: 会话 ID
+        - remove_config=False: 仅移除内存活跃实例, 保留 SQL 中的 SessionConfig
         - remove_config=True: 同时删除 SQL 中配置
         """
         try:
@@ -513,7 +683,13 @@ class SessionManager:
             logger.error(f"[SessionManager] remove_session 失败：session_id={session_id}, 错误={e}")
 
     async def remove_session_async(self, session_id: str, remove_config: bool = False):
-        """异步移除活跃会话"""
+        """移除活跃会话 (异步)
+
+        参数:
+        - session_id: 会话 ID
+        - remove_config=False: 仅移除内存活跃实例, 保留 SQL 中的 SessionConfig
+        - remove_config=True: 同时删除 SQL 中配置
+        """
         try:
             entry = self.pool.remove(session_id)
             if entry:
@@ -526,6 +702,12 @@ class SessionManager:
     # ---------------- 内部逻辑 ----------------
     def _resolve_or_create_session_config(self, user_call: UserCall) -> SessionConfig:
         """按 user_call 解析 SessionConfig, 不存在则创建并持久化
+
+        参数:
+        - user_call: 用户调用请求 (UserCall)
+
+        返回:
+        - 会话配置 (SessionConfig)
 
         规则:
         - 若传入 session_id 且数据库存在该记录: 直接使用
@@ -565,12 +747,19 @@ class SessionManager:
     def _instantiate_session(
         self, session_class: Type[Session] | Type[AsyncSession], session_cfg: SessionConfig
     ) -> Session | AsyncSession:
-        """根据 SessionConfig 实例化 session
+        """根据 SessionConfig 实例化 session 类
+
+        参数:
+        - session_class: 会话类 (Session 或 AsyncSession)
+        - session_cfg: 会话配置 (SessionConfig)
+
+        返回:
+        - 会话实例 (Session 或 AsyncSession)
 
         兼容三类构造习惯:
-        1) `__init__(self, session_config: SessionConfig, ...)`
-        2) `__init__(self, session_id: str, ..., **session_config)`
-        3) `__init__(self, session_id: str, ...)` (忽略 session_config)
+        1. `__init__(self, session_config: SessionConfig, ...)`
+        2. `__init__(self, session_id: str, ..., **session_config)`
+        3. `__init__(self, session_id: str, ...)` (忽略 session_config)
         """
         sig = inspect.signature(session_class)
         params = list(sig.parameters.values())
@@ -592,7 +781,7 @@ class SessionManager:
                 for key, value in payload.items():
                     if key in accepted and key not in kwargs:
                         kwargs[key] = value
-            return session_class(**kwargs)  # type: ignore[misc]
+            return session_class(**kwargs)   # type: ignore[misc]
 
         # case 2/3: 走 session_id + 配置透传
         payload = dict(session_cfg.session_config or {})
@@ -614,14 +803,21 @@ class SessionManager:
         # 最后兜底: 仍无法提供 session_id 关键字时, 尝试位置参数
         if not kwargs and session_cfg.session_id:
             try:
-                return session_class(session_cfg.session_id)  # type: ignore[misc]
+                return session_class(session_cfg.session_id)   # type: ignore[misc]
             except Exception:
                 pass
 
-        return session_class(**kwargs)  # type: ignore[misc]
+        return session_class(**kwargs)   # type: ignore[misc]
 
     def _create_entry(self, session_cfg: SessionConfig) -> Optional[SessionEntry]:
-        """根据 SessionConfig 创建活跃会话并放入会话池"""
+        """根据 SessionConfig 创建活跃会话并放入会话池
+
+        参数:
+        - session_cfg: 会话配置 (SessionConfig)
+
+        返回:
+        - 会话条目 (SessionEntry)
+        """
         session_id = session_cfg.session_id or ""
         session_type = session_cfg.session_type_name or self.default_session_type
 
@@ -658,7 +854,12 @@ class SessionManager:
         return entry
 
     def _sync_runtime_to_store(self, session_id: str, session: Session | AsyncSession):
-        """将内存中的 last_used/message_count 回写到 SQLite"""
+        """将内存中的 last_used/message_count 回写到 SQLite 数据库
+
+        参数:
+        - session_id: 会话 ID
+        - session: 会话实例 (Session 或 AsyncSession)
+        """
         try:
             message_count = self._session_message_count(session)
             self.store.update_runtime_fields(
@@ -671,6 +872,15 @@ class SessionManager:
 
     @staticmethod
     def _invoke_sync_session(session: Session, user_call: UserCall) -> Any:
+        """同步执行会话
+
+        参数:
+        - session: 同步会话实例 (Session)
+        - user_call: 用户调用对象 (UserCall)
+
+        返回:
+        - 会话执行结果
+        """
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
@@ -681,6 +891,15 @@ class SessionManager:
 
     @staticmethod
     async def _invoke_async_session(session: AsyncSession, user_call: UserCall) -> Any:
+        """异步执行会话
+
+        参数:
+        - session: 异步会话实例 (AsyncSession)
+        - user_call: 用户调用对象 (UserCall)
+
+        返回:
+        - 会话执行结果
+        """
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
@@ -691,7 +910,15 @@ class SessionManager:
 
     @staticmethod
     def _build_run_args(run_method: Any, user_call: UserCall) -> tuple[Any, ...]:
-        """保持原有参数适配策略"""
+        """保持原有参数适配策略
+
+        参数:
+        - run_method: 会话实例的 run 方法
+        - user_call: 用户调用对象 (UserCall)
+
+        返回:
+        - 适配后的参数元组
+        """
         try:
             params = list(inspect.signature(run_method).parameters.values())
         except Exception as e:
@@ -715,6 +942,14 @@ class SessionManager:
 
     @staticmethod
     def _session_message_count(session: Session | AsyncSession) -> int:
+        """获取会话已处理消息数量
+
+        参数:
+        - session: 会话实例 (Session 或 AsyncSession)
+
+        返回:
+        - 会话已处理消息数量
+        """
         ctx: ContextManager | AsyncContextManager | None = getattr(session, "session_ctx", None)
         if ctx is None:
             return 0
@@ -726,6 +961,11 @@ class SessionManager:
 
     @staticmethod
     def _release_session_memory(session: Session | AsyncSession):
+        """释放会话内存
+
+        参数:
+        - session: 会话实例 (Session 或 AsyncSession)
+        """
         clear_method = getattr(session, "clear_memory", None)
         if not callable(clear_method):
             return
@@ -739,6 +979,11 @@ class SessionManager:
 
     @staticmethod
     async def _release_session_memory_async(session: Session | AsyncSession):
+        """释放会话内存 (异步)
+
+        参数:
+        - session: 会话实例 (Session 或 AsyncSession)
+        """
         clear_method = getattr(session, "clear_memory", None)
         if not callable(clear_method):
             return
