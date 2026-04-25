@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         MessageSession,
         PlatformMetadata,
     )
+    from satrap.core.pipeline.scheduler import PipelineScheduler
 
 from satrap.core.log import logger
 from satrap.core.type import Group, PlatformError, PlatformStatus
@@ -480,8 +481,9 @@ class EventDispatcher:
     轮询所有适配器的事件队列, 将 MessageEvent 分发给对应的处理器
     """
 
-    def __init__(self, manager: PlatformAdapterManager):
+    def __init__(self, manager: PlatformAdapterManager, scheduler: PipelineScheduler | None = None):
         self.manager = manager
+        self.scheduler = scheduler
 
     async def dispatch_loop(self) -> None:
         """主循环: 从所有适配器队列中拉取事件并处理"""
@@ -493,15 +495,18 @@ class EventDispatcher:
             await asyncio.sleep(0.01)
 
     async def _process_event(self, event: MessageEvent) -> None:
-        """处理单个 MessageEvent (占位实现, 后续接入插件管道/LLM 工作流)
+        """处理单个 MessageEvent (委托给 PipelineScheduler)
 
         参数:
         - event: 要处理的事件
         """
-        logger.debug(
-            f"[EventDispatcher] 收到事件: session={event.unified_msg_origin}, "
-            f"message={event.get_message_str()!r}"
-        )
+        if self.scheduler:
+            await self.scheduler.execute(event)
+        else:
+            logger.debug(
+                f"[EventDispatcher] 未设置 PipelineScheduler，事件已忽略: "
+                f"{event.unified_msg_origin}"
+            )
 
 
 # 全局注册表与装饰器, 便于平台实现快速注册

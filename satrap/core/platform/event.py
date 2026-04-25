@@ -50,11 +50,17 @@ class MessageSession:
 class PlatformMetadata:
     """平台元信息"""
     name: str
+    """平台名称"""
     id: str
+    """平台 ID"""
     adapter_display_name: str | None = None
+    """适配器显示名称"""
     description: str = ""
+    """平台描述"""
     support_streaming_message: bool = False
+    """是否支持流式消息"""
     support_proactive_message: bool = False
+    """是否支持主动消息"""
 
 
 class MessageChain:
@@ -605,6 +611,10 @@ class MessageEvent:
                 )
                 return None
         return None
+
+    def has_send_operation(self) -> bool:
+        """是否已执行过发送操作（如已通过 content_callback 发送）"""
+        return self._has_send_oper
 
     async def process_buffer(self, buffer: str, pattern: re.Pattern) -> str:
         """按正则模式逐步从缓冲区提取并发送匹配内容, 每次发送后等待 1.5 秒

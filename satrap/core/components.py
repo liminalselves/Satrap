@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 from enum import Enum
 
 class PlatformComponentType(str, Enum):
