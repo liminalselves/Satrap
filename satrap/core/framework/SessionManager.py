@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
 from satrap.core.framework.Base import AsyncSession, Session
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.log import logger
 from satrap.core.type import SessionConfig, UserCall
 from satrap.core.utils.context import AsyncContextManager, ContextManager
@@ -398,6 +399,7 @@ class SessionManager:
     def __init__(
         self,
         default_session_type: str = "default",
+        default_session_class: Type[Session] | Type[AsyncSession] = Session,
         max_size: int = 1000,
         idle_timeout: int = 3600,
         db_path: str | Path | None = None,
@@ -419,7 +421,7 @@ class SessionManager:
 
         try:
             # 保持兼容: 默认类型仍映射到基础 Session 类
-            self.registry.register(default_session_type, Session)
+            self.registry.register(default_session_type, default_session_class)
         except Exception as e:
             logger.error(f"[SessionManager] 注册默认会话类型失败：{e}")
 
@@ -471,6 +473,39 @@ class SessionManager:
         )
         self.store.upsert(cfg)
         return cfg
+
+    def register_session_from_class_config(
+        self,
+        class_config_name: str,
+        class_cfg_mgr: SessionClassConfigManager,
+        session_id: str | None = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> SessionConfig:
+        """从 SessionClassConfigManager 读取类级配置, 创建实例级 SessionConfig
+
+        参数:
+        - class_config_name: SessionClassConfigManager 中的注册名称
+        - class_cfg_mgr: SessionClassConfigManager 实例
+        - session_id: 可选, 不传则自动生成
+        - extra_params: 可选, 补充/覆盖 params(如当前用户特有的覆盖项)
+
+        流程:
+        1. 从 class_cfg_mgr 获取 class 对象 + params
+        2. 将 class 注册到 self.registry
+        3. 合并 params + extra_params 作为 SessionConfig.session_config
+        4. 生成 session_id 和 timestamps, 持久化到 SessionConfigStore
+        5. 返回 SessionConfig
+        """
+        session_class = class_cfg_mgr.get_class(class_config_name)
+        params = dict(class_cfg_mgr.get_params(class_config_name))
+        if extra_params:
+            params.update(extra_params)
+        return self.register_session(
+            session_class=session_class,
+            session_type_name=class_config_name,
+            session_config=params,
+            session_id=session_id,
+        )
 
     def get_session_config(self, session_id: str) -> Optional[SessionConfig]:
         """根据 session_id 获取会话配置

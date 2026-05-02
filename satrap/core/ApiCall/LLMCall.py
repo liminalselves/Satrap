@@ -315,6 +315,7 @@ class LLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
     ):
         """
         [同步版本] LLM API 调用封装
@@ -328,7 +329,8 @@ class LLM:
         - max_tokens: 最大生成 token 数, 默认 1000
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
-        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True\
+        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.api_key = api_key if not lock_api_key else "api key locked"
@@ -339,6 +341,7 @@ class LLM:
         self.max_tokens = max_tokens
         self.suppress_error = suppress_error
         self.return_false = return_false
+        self.reasoning_body = reasoning_body
 
     def chat(
         self,
@@ -380,7 +383,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                extra_body=self.reasoning_body if thinking else None,
             )   # 发起网络请求
 
             # Step.2 解析结果
@@ -438,7 +441,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                extra_body=self.reasoning_body if thinking else None,
                 stream=True,
             )   # 发起流式网络请求
 
@@ -602,7 +605,7 @@ class LLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    extra_body=self.reasoning_body if thinking else None,
                     tools=tools,               # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起网络请求
@@ -614,7 +617,7 @@ class LLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    extra_body=self.reasoning_body if thinking else None,
                 )   # 发起网络请求
 
             # Step.3 解析结果
@@ -680,6 +683,7 @@ class AsyncLLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
     ):
         """
         [异步版本] LLM API 调用封装
@@ -694,6 +698,7 @@ class AsyncLLM:
         - suppress_error: 是否抑制 API 调用中的异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -703,7 +708,7 @@ class AsyncLLM:
         self.max_tokens = max_tokens
         self.suppress_error = suppress_error
         self.return_false = return_false
-
+        self.reasoning_body = reasoning_body
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url
@@ -750,7 +755,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                extra_body=self.reasoning_body if thinking else None,
             )   # 发起网络请求并等待结果
 
             # Step.3 解析并返回结果
@@ -816,7 +821,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                extra_body=self.reasoning_body if thinking else None,
                 stream=True,
             )   # 发起异步流式网络请求
 
@@ -981,7 +986,7 @@ class AsyncLLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    extra_body=self.reasoning_body if thinking else None,
                     tools=tools,               # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起异步网络请求
@@ -993,7 +998,7 @@ class AsyncLLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body={"thinking": {"type": "enabled"}} if thinking else None,
+                    extra_body=self.reasoning_body if thinking else None,
                 )   # 发起异步网络请求
 
             # Step.3 解析结果

@@ -1,4 +1,4 @@
-﻿from components import PlatformComponentType
+from satrap.core.components import BaseMessageComponent, PlatformComponentType
 from typing import Optional, List, Dict, Any, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -12,7 +12,7 @@ class LLMCallResponse:
     """LLM 调用响应类型"""
     content: str
     """LLM 调用响应内容"""
-    thinking: str | None = None
+    thinking: Optional[str] = None
     """LLM 调用响应思考"""
     tool_calls: Optional[List[Dict[str, Any]]] = None
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
@@ -45,11 +45,11 @@ class LLMCallRequest:
 @dataclass
 class UserCall:
     """用户调用数据结构"""
-    session_id: str | None = None
+    session_id: Optional[str] = None
     """会话 ID, 如 `sr7dws`"""
-    session_type: str | None = None
+    session_type: Optional[str] = None
     """会话类型"""
-    message: str | None = None
+    message: Optional[str] = None
     """用户输入消息"""
     img_urls: Optional[List[str]] = None
     """用户输入图片 URL 列表"""
@@ -57,19 +57,19 @@ class UserCall:
 @dataclass
 class LLMConfig:
     """LLM 配置数据结构"""
-    name: str | None = None
+    name: Optional[str] = None
     """LLM 名称"""
-    model: str | None = None
+    model: Optional[str] = None
     """LLM 模型"""
-    base_url: str | None = None
+    base_url: Optional[str] = None
     """LLM 基础 URL"""
-    api_key: str | None = None
+    api_key: Optional[str] = None
     """LLM API 密钥"""
-    temperature: float | None = None
+    temperature: Optional[float] = None
     """LLM 温度"""
-    top_p: float | None = None
+    top_p: Optional[float] = None
     """LLM top_p 参数"""
-    max_tokens: int | None = None
+    max_tokens: Optional[int] = None
     """LLM 最大 token 数量"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
@@ -77,17 +77,17 @@ class LLMConfig:
 @dataclass
 class EmbeddingConfig:
     """Embedding 配置数据结构"""
-    name: str | None = None
+    name: Optional[str] = None
     """Embedding 名称"""
-    model: str | None = None
+    model: Optional[str] = None
     """Embedding 模型"""
-    base_url: str | None = None
+    base_url: Optional[str] = None
     """Embedding 基础 URL"""
-    api_key: str | None = None
+    api_key: Optional[str] = None
     """Embedding API 密钥"""
-    dimensions: int | None = None
+    dimensions: Optional[int] = None
     """Embedding 维度"""
-    max_batch_size: int | None = None
+    max_batch_size: Optional[int] = None
     """Embedding 最大批量大小"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
@@ -95,17 +95,17 @@ class EmbeddingConfig:
 @dataclass
 class ReRankConfig:
     """ReRank 配置数据结构"""
-    name: str | None = None
+    name: Optional[str] = None
     """ReRank 名称"""
-    model: str | None = None
+    model: Optional[str] = None
     """ReRank 模型"""
-    base_url: str | None = None
+    base_url: Optional[str] = None
     """ReRank 最大批量大小"""
-    api_key: str | None = None
+    api_key: Optional[str] = None
     """ReRank API 密钥"""
-    top_k: int | None = None
+    top_k: Optional[int] = None
     """ReRank top_k 参数"""
-    min_score: float | None = None
+    min_score: Optional[float] = None
     """ReRank 返回最小分数"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
@@ -113,9 +113,9 @@ class ReRankConfig:
 @dataclass
 class SessionConfig:
     """会话配置数据结构"""
-    session_id: str | None = None
+    session_id: Optional[str] = None
     """会话 ID, 如 `sr7dws`"""
-    session_type_name: str | None = None
+    session_type_name: Optional[str] = None
     """会话类型名称"""
     created_at: float = 0.0
     """会话创建时间"""
@@ -129,13 +129,13 @@ class SessionConfig:
 @dataclass
 class UserInfo:
     """用户信息"""
-    user_id: str | None = None
+    user_id: Optional[str] = None
     """用户 id"""
-    user_platform: str | None = None
+    user_platform: Optional[str] = None
     """用户所在的平台"""
-    user_nickname: str | None = None
+    user_nickname: Optional[str] = None
     """用户昵称"""
-    user_session: list[str] = field(default_factory=list)
+    user_session: List[str] = field(default_factory=list)
     """用户会话列表 (会话 ID 列表)"""
 
 
@@ -148,7 +148,7 @@ class PlatformMessageType(Enum):
 class MessageMember:
     user_id: str
     """用户 id"""
-    nickname: str | None = None
+    nickname: Optional[str] = None
     """用户昵称"""
 
     def __str__(self) -> str:
@@ -161,15 +161,15 @@ class MessageMember:
 class Group:
     group_id: str
     """群号"""
-    group_name: str | None = None
+    group_name: Optional[str] = None
     """群名称"""
-    group_avatar: str | None = None
+    group_avatar: Optional[str] = None
     """群头像"""
-    group_owner: str | None = None
+    group_owner: Optional[str] = None
     """群主 id"""
-    group_admins: list[str] | None = None
+    group_admins: Optional[List[str]] = None
     """群管理员 id"""
-    members: list[MessageMember] | None = None
+    members: Optional[List[MessageMember]] = None
     """所有群成员"""
 
     def __str__(self) -> str:
@@ -193,12 +193,12 @@ class PlatformMessage:
     """会话id, 取决于 unique_session 的设置"""
     message_id: str
     """消息id"""
-    group: Group | None
+    group: Optional[Group]
     """群组"""
     sender: MessageMember
     """发送者"""
-    message: list[PlatformComponentType]
-    """消息链使用 Nakuru 的消息链格式"""
+    message: List[BaseMessageComponent]
+    """消息组件链"""
     message_str: str
     """最直观的纯文本消息字符串"""
     raw_message: object
@@ -223,7 +223,7 @@ class PlatformMessage:
         return ""
 
     @group_id.setter
-    def group_id(self, value: str | None) -> None:
+    def group_id(self, value: Optional[str]) -> None:
         """设置 group_id"""
         if value:
             if self.group:
@@ -247,5 +247,5 @@ class PlatformError:
     """平台错误信息"""
     message: str
     timestamp: datetime = field(default_factory=datetime.now)
-    traceback: str | None = None
+    traceback: Optional[str] = None
 

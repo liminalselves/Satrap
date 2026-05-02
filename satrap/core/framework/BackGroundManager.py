@@ -17,7 +17,7 @@ TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig)
 
 
 class ModelConfigManager:
-    """模型配置管理器.
+    """模型配置管理器
 
     支持:
     - LLM/Embedding/ReRank 多配置(按 name 区分)
