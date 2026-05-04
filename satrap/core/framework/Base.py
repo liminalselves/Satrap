@@ -222,11 +222,23 @@ class Session:
         self.wf_list = []
 
         self.content_callback = content_callback
+        self._user_manager = None
 
     def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             self.content_callback(content)
+
+    @property
+    def user_contexts(self) -> list[str]:
+        """获取当前用户的所有上下文 session_id 列表"""
+        if not self._user_manager:
+            return []
+        parts = self.session_id.split(":", 2)
+        if len(parts) < 3:
+            return []
+        _session_type, _platform, user_id = parts
+        return self._user_manager.get_user_session_ids(user_id)
 
     def run(self):
         """执行会话; 调用模型并返回结果"""
@@ -512,6 +524,7 @@ class AsyncSession:
         self.wf_list = []
         self.content_callback = content_callback
         self._initialized = False
+        self._user_manager = None
 
         self.command_handler = command_handler if command_handler else AsyncCommandHandler()
         # 如果未提供命令处理器, 则创建一个空的命令处理器实例
@@ -536,6 +549,17 @@ class AsyncSession:
         """调用回调返回模型回复内容"""
         if self.content_callback and content:
             await self.content_callback(content)
+
+    @property
+    def user_contexts(self) -> list[str]:
+        """获取当前用户的所有上下文 session_id 列表"""
+        if not self._user_manager:
+            return []
+        parts = self.session_id.split(":", 2)
+        if len(parts) < 3:
+            return []
+        _session_type, _platform, user_id = parts
+        return self._user_manager.get_user_session_ids(user_id)
 
     async def run(self):
         """执行会话"""

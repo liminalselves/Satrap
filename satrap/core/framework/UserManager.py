@@ -3,13 +3,28 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Type
+from typing import Any, List, Optional, Type, Dict
 
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.log import logger
 from satrap.core.type import SessionConfig, UserCall, UserInfo
+
+
+@dataclass
+class ContextSession:
+    """上下文会话记录"""
+    context_key: str = ""
+    user_id: str = ""
+    platform: str = ""
+    session_type: str = ""
+    session_id: str = ""
+    created_at: float = 0.0
+    last_used_at: float = 0.0
 
 
 class UserInfoStore:
@@ -49,6 +64,22 @@ class UserInfoStore:
                         user_session TEXT NOT NULL
                     )
                     """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS context_sessions (
+                        context_key TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        platform TEXT NOT NULL,
+                        session_type TEXT NOT NULL,
+                        session_id TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        last_used_at REAL NOT NULL
+                    )
+                    """
+                )
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_cs_user ON context_sessions (user_id, platform, session_type)"
                 )
                 conn.commit()
 
@@ -207,6 +238,63 @@ class UserInfoStore:
             if info is None:
                 return []
             return list(info.user_session or [])
+
+    # ── 上下文会话 ──
+
+    def upsert_context_session(self, user_id: str, platform: str,
+                                session_type: str, session_id: str) -> str:
+        """创建或更新上下文会话记录
+
+        返回: context_key (格式: "{session_type}:{platform}:{user_id}")
+        """
+        context_key = f"{session_type}:{platform}:{user_id}"
+        now = time.time()
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO context_sessions
+                    (context_key, user_id, platform, session_type, session_id, created_at, last_used_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(context_key) DO UPDATE SET
+                        session_id=excluded.session_id,
+                        last_used_at=excluded.last_used_at
+                    """,
+                    (context_key, user_id, platform, session_type, session_id, now, now),
+                )
+                conn.commit()
+        return context_key
+
+    def get_context_session(self, user_id: str, platform: str,
+                             session_type: str) -> Optional[ContextSession]:
+        """查询上下文会话记录"""
+        context_key = f"{session_type}:{platform}:{user_id}"
+        with self._lock:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM context_sessions WHERE context_key=?",
+                    (context_key,),
+                ).fetchone()
+                if row is None:
+                    return None
+                return ContextSession(
+                    context_key=row["context_key"],
+                    user_id=row["user_id"],
+                    platform=row["platform"],
+                    session_type=row["session_type"],
+                    session_id=row["session_id"],
+                    created_at=row["created_at"],
+                    last_used_at=row["last_used_at"],
+                )
+
+    def delete_context_session(self, user_id: str, platform: str,
+                                session_type: str):
+        """删除上下文会话记录"""
+        context_key = f"{session_type}:{platform}:{user_id}"
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM context_sessions WHERE context_key=?", (context_key,))
+                conn.commit()
 
 
 class UserManager:
@@ -461,6 +549,66 @@ class UserManager:
             except Exception as e:
                 logger.error(f"[UserManager] create_user_session 失败: user_id={user_id}, 错误={e}")
                 return ""
+
+    # ---------------- 上下文路由 ----------------
+    def resolve_session(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str = "",
+        class_cfg_mgr: SessionClassConfigManager | None = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """解析用户+平台到 session_id, 不存在则自动创建
+
+        参数:
+        - user_id: 用户 ID (如 Misskey 用户 ID)
+        - platform: 平台标识 (如 "misskey")
+        - session_type: 会话类型名称 (SessionClassConfigManager 中的注册名)
+        - class_cfg_mgr: SessionClassConfigManager 实例 (自动创建时需要)
+        - extra_params: 补充/覆盖 params
+
+        返回: session_id (格式: "{session_type}:{platform}:{user_id}")
+        """
+        self.get_or_create_user(user_id=user_id, platform=platform)
+
+        existed = self.store.get_context_session(user_id, platform, session_type)
+        if existed is not None:
+            return existed.session_id
+
+        if class_cfg_mgr is None or not session_type:
+            return ""
+
+        session_id = self.sm.register_session_from_context(
+            class_config_name=session_type,
+            class_cfg_mgr=class_cfg_mgr,
+            context_value=user_id,
+            platform=platform,
+            extra_params=extra_params,
+        ).session_id or ""
+
+        if session_id:
+            self.store.upsert_context_session(user_id, platform, session_type, session_id)
+            self.bind_session(user_id=user_id, session_id=session_id)
+
+        return session_id
+
+    def get_or_create_context(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str,
+        class_cfg_mgr: SessionClassConfigManager,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """获取或创建用户上下文 (resolve_session 的别名)"""
+        return self.resolve_session(
+            user_id=user_id,
+            platform=platform,
+            session_type=session_type,
+            class_cfg_mgr=class_cfg_mgr,
+            extra_params=extra_params,
+        )
 
     # ---------------- 消息路由 ----------------
     def route_call(self, user_call: UserCall, user_id: str) -> str:

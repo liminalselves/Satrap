@@ -462,6 +462,14 @@ class PlatformAdapterManager:
             return
         await adapter.stop()
 
+    async def enable_adapter(self, adapter_id: str):
+        """启用适配器 (start_adapter 的别名)"""
+        await self.start_adapter(adapter_id)
+
+    async def disable_adapter(self, adapter_id: str):
+        """停用适配器 (stop_adapter 的别名)"""
+        await self.stop_adapter(adapter_id)
+
     async def start_all(self):
         """启动所有启用的适配器"""
         for adapter in self._adapters.values():

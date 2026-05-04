@@ -57,7 +57,7 @@ class SessionClassConfigManager:
         session_class: Type[Session] | Type[AsyncSession],
     ) -> Dict[str, inspect.Parameter]:
         """反射 __init__ 签名, 提取自定义参数(排除已知自动注入参数)"""
-        exclude = {"self", "session_id", "content_callback", "command_handler", "session_config"}
+        exclude = {"self", "session_id", "content_callback", "command_handler", "session_config", "llm"}
         try:
             sig = inspect.signature(session_class.__init__)
         except Exception:
@@ -114,6 +114,9 @@ class SessionClassConfigManager:
             output[name] = {
                 "class_path": entry["class_path"],
                 "is_async": entry["is_async"],
+                "enabled": entry.get("enabled", True),
+                "context_key": entry.get("context_key", ""),
+                "model_key": entry.get("model_key", ""),
                 "description": entry.get("description", ""),
                 "params": dict(entry.get("params", {})),
             }
@@ -142,12 +145,15 @@ class SessionClassConfigManager:
                     self._configs = {}
                     return
                 self._configs = {}
-                for name, entry in data.items():
+                for _name, entry in data.items():
                     if not isinstance(entry, dict):
                         continue
-                    self._configs[str(name)] = {
+                    self._configs[str(_name)] = {
                         "class_path": str(entry.get("class_path", "")),
                         "is_async": bool(entry.get("is_async", False)),
+                        "enabled": bool(entry.get("enabled", True)),
+                        "context_key": str(entry.get("context_key", "")),
+                        "model_key": str(entry.get("model_key", "")),
                         "description": str(entry.get("description", "")),
                         "params": dict(entry.get("params", {})),
                     }
@@ -165,6 +171,8 @@ class SessionClassConfigManager:
         name: str,
         session_class: Type[Session] | Type[AsyncSession],
         description: str = "",
+        context_key: str = "",
+        model_key: str = "",
     ):
         """注册会话类, 自动发现 __init__ 自定义参数并生成占位模板
 
@@ -172,6 +180,8 @@ class SessionClassConfigManager:
         - name: 会话类配置名称
         - session_class: Session/AsyncSession 子类
         - description: 可选描述
+        - context_key: params 中的哪个字段作为上下文区分键
+        - model_key: params 中的哪个字段引用 ModelConfigManager 中的 LLM 名称
         """
         with self._lock:
             if not inspect.isclass(session_class) or not issubclass(
@@ -190,6 +200,9 @@ class SessionClassConfigManager:
             self._configs[key] = {
                 "class_path": class_path,
                 "is_async": is_async,
+                "enabled": True,
+                "context_key": context_key,
+                "model_key": model_key,
                 "description": description,
                 "params": template,
             }
@@ -207,6 +220,9 @@ class SessionClassConfigManager:
             return {
                 "class_path": entry["class_path"],
                 "is_async": entry["is_async"],
+                "enabled": entry.get("enabled", True),
+                "context_key": entry.get("context_key", ""),
+                "model_key": entry.get("model_key", ""),
                 "description": entry.get("description", ""),
                 "params": dict(entry.get("params", {})),
             }
@@ -243,6 +259,70 @@ class SessionClassConfigManager:
         with self._lock:
             key = self._normalize_name(name)
             return key in self._configs
+
+    # -------- 启用/停用 --------
+    def enable(self, name: str):
+        """启用会话类配置"""
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._configs:
+                raise ValueError(f"未知的会话类配置: {key}")
+            self._configs[key]["enabled"] = True
+            self._save_locked()
+
+    def disable(self, name: str):
+        """停用会话类配置"""
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._configs:
+                raise ValueError(f"未知的会话类配置: {key}")
+            self._configs[key]["enabled"] = False
+            self._save_locked()
+
+    def is_enabled(self, name: str) -> bool:
+        """检查会话类配置是否启用(不存在时返回 False)"""
+        with self._lock:
+            key = self._normalize_name(name)
+            entry = self._configs.get(key)
+            if entry is None:
+                return False
+            return bool(entry.get("enabled", True))
+
+    def get_context_key(self, name: str) -> str:
+        """获取上下文区分键字段名"""
+        with self._lock:
+            key = self._normalize_name(name)
+            entry = self._configs.get(key)
+            if entry is None:
+                return ""
+            return str(entry.get("context_key", ""))
+
+    def set_context_key(self, name: str, context_key: str):
+        """设置上下文区分键字段名"""
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._configs:
+                raise ValueError(f"未知的会话类配置: {key}")
+            self._configs[key]["context_key"] = context_key
+            self._save_locked()
+
+    def get_model_key(self, name: str) -> str:
+        """获取模型引用键字段名"""
+        with self._lock:
+            key = self._normalize_name(name)
+            entry = self._configs.get(key)
+            if entry is None:
+                return ""
+            return str(entry.get("model_key", ""))
+
+    def set_model_key(self, name: str, model_key: str):
+        """设置模型引用键字段名"""
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._configs:
+                raise ValueError(f"未知的会话类配置: {key}")
+            self._configs[key]["model_key"] = model_key
+            self._save_locked()
 
     def get_class_template(self, name: str) -> Dict[str, Any]:
         """获取自动发现的参数模板(占位值)"""

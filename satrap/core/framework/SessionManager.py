@@ -7,14 +7,16 @@ import sqlite3
 import threading
 import time
 import uuid
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.log import logger
-from satrap.core.type import SessionConfig, UserCall
+from satrap.core.type import SessionConfig, UserCall, LLMConfig
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
@@ -418,6 +420,7 @@ class SessionManager:
 
         self.default_session_type = default_session_type
         self._async_lock = asyncio.Lock()
+        self._class_cfg_mgr: SessionClassConfigManager | None = None
 
         try:
             # 保持兼容: 默认类型仍映射到基础 Session 类
@@ -502,6 +505,45 @@ class SessionManager:
             params.update(extra_params)
         return self.register_session(
             session_class=session_class,
+            session_type_name=class_config_name,
+            session_config=params,
+            session_id=session_id,
+        )
+
+    def register_session_from_context(
+        self,
+        class_config_name: str,
+        class_cfg_mgr: SessionClassConfigManager,
+        context_value: str,
+        platform: str = "",
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> SessionConfig:
+        """用 context_value 作为 session_id 创建实例级 SessionConfig
+
+        参数:
+        - class_config_name: SessionClassConfigManager 中的注册名称
+        - class_cfg_mgr: SessionClassConfigManager 实例
+        - context_value: 上下文区分值 (如用户 ID, 频道 ID)
+        - platform: 平台标识, 用于构建 session_id
+        - extra_params: 补充/覆盖 params
+
+        session_id 格式: "{class_config_name}:{platform}:{context_value}"
+        同类型+同平台+同 context_value = 同一个上下文
+        """
+        entry = class_cfg_mgr.get_config(class_config_name)
+        context_key = entry.get("context_key", "") if entry else ""
+
+        platform_part = f"{platform}:" if platform else ""
+        session_id = f"{class_config_name}:{platform_part}{context_value}"
+
+        params = dict(class_cfg_mgr.get_params(class_config_name))
+        if context_key:
+            params[context_key] = context_value
+        if extra_params:
+            params.update(extra_params)
+
+        return self.register_session(
+            session_class=class_cfg_mgr.get_class(class_config_name),
             session_type_name=class_config_name,
             session_config=params,
             session_id=session_id,
@@ -734,6 +776,36 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] remove_session_async 失败：session_id={session_id}, 错误={e}")
 
+    @property
+    def class_cfg_mgr(self) -> SessionClassConfigManager | None:
+        """获取关联的 SessionClassConfigManager"""
+        return self._class_cfg_mgr
+
+    @class_cfg_mgr.setter
+    def class_cfg_mgr(self, mgr: SessionClassConfigManager | None):
+        """设置关联的 SessionClassConfigManager"""
+        self._class_cfg_mgr = mgr
+
+    @property
+    def user_manager(self):
+        """获取关联的 UserManager"""
+        return getattr(self, '_user_mgr', None)
+
+    @user_manager.setter
+    def user_manager(self, mgr):
+        """设置关联的 UserManager"""
+        self._user_mgr = mgr
+
+    @property
+    def model_config_manager(self):
+        """获取关联的 ModelConfigManager"""
+        return getattr(self, '_model_cfg_mgr', None)
+
+    @model_config_manager.setter
+    def model_config_manager(self, mgr):
+        """设置关联的 ModelConfigManager"""
+        self._model_cfg_mgr = mgr
+
     # ---------------- 内部逻辑 ----------------
     def _resolve_or_create_session_config(self, user_call: UserCall) -> SessionConfig:
         """按 user_call 解析 SessionConfig, 不存在则创建并持久化
@@ -766,15 +838,24 @@ class SessionManager:
             # 理论上不会发生；兜底保证注册
             self.registry.register(self.default_session_type, Session)
 
+        if self._class_cfg_mgr is not None and not self._class_cfg_mgr.is_enabled(requested_type):
+            logger.warning(
+                f"[SessionManager] 会话类型 {requested_type} 已被禁用"
+            )
+            requested_type = self.default_session_type
+
         sid = user_call.session_id or uuid.uuid4().hex
         now = time.time()
+        class_params: dict = {}
+        if self._class_cfg_mgr is not None:
+            class_params = dict(self._class_cfg_mgr.get_params(requested_type))
         cfg = SessionConfig(
             session_id=sid,
             session_type_name=requested_type,
             created_at=now,
             last_used_at=now,
             message_count=0,
-            session_config={},
+            session_config=class_params,
         )
         self.store.upsert(cfg)
         return cfg
@@ -862,7 +943,45 @@ class SessionManager:
             return None
 
         try:
+            # 如果 session_config 为空但有 class_cfg_mgr, 补充类级配置
+            if not session_cfg.session_config and self._class_cfg_mgr:
+                session_cfg = dataclasses.replace(
+                    session_cfg,
+                    session_config=dict(self._class_cfg_mgr.get_params(session_type)),
+                )
+
+            # 读取 model_name → 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
+            model_cfg_mgr = getattr(self, '_model_cfg_mgr', None)
+            llm_instance = None
+            if model_cfg_mgr:
+                cfg_params = session_cfg.session_config or {}
+                model_name = cfg_params.get("model_name", "default")
+                llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
+                if llm_cfg and llm_cfg.api_key:
+                    _LLMCls = AsyncLLM if issubclass(session_class, AsyncSession) else LLM
+                    llm_instance = _LLMCls(
+                        api_key=llm_cfg.api_key or "",
+                        base_url=llm_cfg.base_url or "",
+                        model=llm_cfg.model or "",
+                        temperature=llm_cfg.temperature or 0.7,
+                        max_tokens=llm_cfg.max_tokens or 4096,
+                    )
+                else:
+                    logger.warning(
+                        f"[SessionManager] LLM 配置 '{model_name}' 不存在或缺少 api_key, "
+                        f"请先通过 'satrap model set' 配置"
+                    )
+            # 将 LLM 实例放入 session_config, 通过 __init__ 传递
+            if llm_instance is not None:
+                modified_params = dict(session_cfg.session_config or {})
+                modified_params["llm"] = llm_instance
+                session_cfg = dataclasses.replace(session_cfg, session_config=modified_params)
+
             session = self._instantiate_session(session_class, session_cfg)
+            # 注入 UserManager, 使 Session 能访问当前用户的所有上下文
+            user_mgr = getattr(self, '_user_mgr', None)
+            if user_mgr is not None:
+                session._user_manager = user_mgr
         except Exception as e:
             logger.error(
                 f"[SessionManager] 创建会话实例失败：session_type_name={session_type}, "

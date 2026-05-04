@@ -65,8 +65,12 @@ class MisskeyAdapter(PlatformAdapter):
         """
         super().__init__(config, event_handler, event_queue)
         settings = config.settings or {}
-        self._instance_url: str = settings.get("instance_url") or settings.get("misskey_instance_url", "")
-        self._token: str = settings.get("token") or settings.get("misskey_token", "")
+        self._instance_url: str = (settings.get("instance_url")
+                                   or settings.get("misskey_instance_url")
+                                   or settings.get("base_url", ""))
+        self._token: str = (settings.get("token")
+                            or settings.get("misskey_token")
+                            or settings.get("api_token", ""))
         self.max_message_length = int(settings.get("max_message_length", 3000))
         self.default_visibility = settings.get("misskey_default_visibility", "public")
         self.local_only = bool(settings.get("misskey_local_only", False))
@@ -242,6 +246,7 @@ class MisskeyAdapter(PlatformAdapter):
             platform_message=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
+            session_type=getattr(message, 'session_type', '') or "",
             adapter=self,
         )
         self.commit_event(event)
