@@ -246,7 +246,7 @@ class MisskeyAdapter(PlatformAdapter):
             platform_message=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
-            session_type=getattr(message, 'session_type', '') or "",
+            session_type=self.adapter_type,
             adapter=self,
         )
         self.commit_event(event)

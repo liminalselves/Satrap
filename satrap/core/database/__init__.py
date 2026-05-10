@@ -10,11 +10,11 @@ from satrap.core.log import logger
 
 class LiteVectorDB:
     """轻量级向量数据库"""
-    def __init__(self, persist_path: str = "./lite_vector"):
+    def __init__(self, persist_path: str = ".satrap/lite_vector"):
         """初始化 LiteVectorDB
 
         参数:
-        - persist_path: 数据持久化路径, 默认 "./lite_vector"
+        - persist_path: 数据持久化路径, 默认 ".satrap/lite_vector"
         """
 
         self.persist_path = persist_path
@@ -292,11 +292,11 @@ class LiteVectorDB:
 class DataBase:
     """使用 faiss + SQLite 的向量数据库"""
 
-    def __init__(self, persist_path: str = "./vector"):
+    def __init__(self, persist_path: str = ".satrap/vector"):
         """初始化 DataBase
 
         参数:
-        - persist_path: 数据持久化路径, 默认 "./vector"
+        - persist_path: 数据持久化路径, 默认 ".satrap/vector"
         """
         try:
             import faiss as _faiss

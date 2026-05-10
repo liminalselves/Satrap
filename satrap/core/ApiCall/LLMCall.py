@@ -6,6 +6,7 @@ from satrap.core.type import LLMCallResponse
 import base64
 import json
 import os
+import re
 
 from satrap.core.log import logger
 
@@ -132,6 +133,64 @@ def _build_content_with_images(
     return content
 
 
+def _extract_thinking_from_message(
+    message: Union[Any, Dict[str, Any]],
+    full_response: Optional[Any] = None
+) -> Optional[str]:
+    """
+    从消息对象中提取思考内容, 支持多种供应商格式
+    
+    支持的格式 (按优先级):
+    - reasoning_content (DeepSeek, Qwen, GLM, Kimi, Fireworks, IBM)
+    - reasoning (OpenRouter, Together, Perplexity, Groq parsed)
+    - thinking (Cohere, 某些自定义)
+    - reasoning_details (MiniMax)
+    - <think> 标签包裹的内容 (Groq raw, Together 某些模型)
+    - 未来可扩展
+    """
+    # 1. reasoning_content
+    reasoning = getattr(message, "reasoning_content", None)
+    if reasoning is None and isinstance(message, dict):
+        reasoning = message.get("reasoning_content")
+    if reasoning:
+        return reasoning
+
+    # 2. reasoning
+    reasoning = getattr(message, "reasoning", None)
+    if reasoning is None and isinstance(message, dict):
+        reasoning = message.get("reasoning")
+    if reasoning:
+        return reasoning
+
+    # 3. thinking
+    thinking = getattr(message, "thinking", None)
+    if thinking is None and isinstance(message, dict):
+        thinking = message.get("thinking")
+    if thinking:
+        return thinking
+
+    # 4. reasoning_details (数组)
+    reasoning_details = getattr(message, "reasoning_details", None)
+    if reasoning_details is None and isinstance(message, dict):
+        reasoning_details = message.get("reasoning_details")
+    if reasoning_details:
+        if isinstance(reasoning_details, list):
+            return "\n".join([str(x) for x in reasoning_details])
+        return str(reasoning_details)
+
+    # 5. 从 content 中提取 <think> 标签
+    content = getattr(message, "content", None)
+    if content is None and isinstance(message, dict):
+        content = message.get("content")
+    if content and isinstance(content, str):
+        match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)   # 匹配 <think>...</think>
+        if match:
+            return match.group(1).strip()
+
+    # 6. 退回兼容
+    return None
+
+
 def parse_chat_response(
     api_response: ChatCompletion | Dict[str, Any],
     suppress_error: bool = True,
@@ -236,9 +295,8 @@ def parse_call_response(
         text_content = content.strip() if content else ""
         # 提取文本内容
 
-        reasoning = getattr(message, "reasoning_content", None)
-        if reasoning is None and isinstance(message, dict):
-            reasoning = message.get("reasoning_content")
+        reasoning = _extract_thinking_from_message(message, api_response)
+        # 提取思考内容
 
         # Step.4 检查是否存在工具调用 (tool_calls)
         tool_calls = getattr(message, "tool_calls", None)
@@ -303,6 +361,31 @@ def parse_call_response(
         raise e
 
 
+def _rename_thinking_field(
+    messages: List[Dict[str, Any]], 
+    target_field: str | None = None,
+) -> List[Dict[str, Any]]:
+    """
+    将消息中的 'reasoning_content' 字段重命名为 target_field
+    如果 target_field 就是 'reasoning_content', 则不做任何操作
+
+    参数:
+    - messages: 输入的消息列表
+    - target_field: 目标字段名称, 用于替换 'reasoning_content'
+    """
+    if target_field == "reasoning_content" or target_field is None:
+        return messages  # 无需重命名, 直接返回原列表
+    
+    new_messages = []
+    for msg in messages:
+        new_msg = msg.copy()
+        if "reasoning_content" in new_msg:
+            thinking_value = new_msg.pop("reasoning_content")
+            new_msg[target_field] = thinking_value
+        new_messages.append(new_msg)
+    return new_messages
+
+
 class LLM:
     def __init__(
         self,
@@ -316,6 +399,7 @@ class LLM:
         return_false: bool = False,
         lock_api_key: bool = True,
         reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
+        thinking_field_name: Optional[str] = "reasoning_content",
     ):
         """
         [同步版本] LLM API 调用封装
@@ -331,6 +415,7 @@ class LLM:
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True\
         - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
+        - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         """
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.api_key = api_key if not lock_api_key else "api key locked"
@@ -342,6 +427,7 @@ class LLM:
         self.suppress_error = suppress_error
         self.return_false = return_false
         self.reasoning_body = reasoning_body
+        self.thinking_field_name = thinking_field_name
 
     def chat(
         self,
@@ -584,7 +670,10 @@ class LLM:
             logger.warning("对话输入 messages 为空")
             return LLMCallResponse(type="message", content="") if not self.return_false else False
 
-        # Step.1 处理图片 URL, 构建多模态消息
+        # Step.1 处理思考字段
+        messages = _rename_thinking_field(messages, self.thinking_field_name)
+
+        # Step.2 处理图片 URL, 构建多模态消息
         processed_messages = [m.copy() for m in messages]
         if img_urls:
             # 找到最后一条用户消息并添加图片
@@ -597,7 +686,7 @@ class LLM:
                     break
 
         try:
-            # Step.2 同步调用 API
+            # Step.3 同步调用 API
             if tools is not None:
                 response = self.client.chat.completions.create(
                     model=target_model,
@@ -620,7 +709,7 @@ class LLM:
                     extra_body=self.reasoning_body if thinking else None,
                 )   # 发起网络请求
 
-            # Step.3 解析结果
+            # Step.4 解析结果
             return parse_call_response(response, self.suppress_error)
 
         except APIError as e:
@@ -684,6 +773,7 @@ class AsyncLLM:
         return_false: bool = False,
         lock_api_key: bool = True,
         reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
+        thinking_field_name: Optional[str] = "reasoning_content",
     ):
         """
         [异步版本] LLM API 调用封装
@@ -699,6 +789,7 @@ class AsyncLLM:
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
+        - thinking_field_name: 思考字段名称, 默认 "reasoning_content"
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -709,6 +800,7 @@ class AsyncLLM:
         self.suppress_error = suppress_error
         self.return_false = return_false
         self.reasoning_body = reasoning_body
+        self.thinking_field_name = thinking_field_name
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url
@@ -965,7 +1057,10 @@ class AsyncLLM:
             logger.warning("对话输入 messages 为空")
             return LLMCallResponse(type="message", content="") if not self.return_false else False
 
-        # Step.1 处理图片 URL, 构建多模态消息
+        # Step.1 处理思考字段
+        messages = _rename_thinking_field(messages, self.thinking_field_name)
+
+        # Step.2 处理图片 URL, 构建多模态消息
         processed_messages = [m.copy() for m in messages]
         if img_urls:
             # 找到最后一条用户消息并添加图片
@@ -978,7 +1073,7 @@ class AsyncLLM:
                     break
 
         try:
-            # Step.2 异步调用 API
+            # Step.3 异步调用 API
             if tools is not None:
                 response = await self.client.chat.completions.create(
                     model=target_model,
@@ -1001,7 +1096,7 @@ class AsyncLLM:
                     extra_body=self.reasoning_body if thinking else None,
                 )   # 发起异步网络请求
 
-            # Step.3 解析结果
+            # Step.4 解析结果
             return parse_call_response(response, self.suppress_error)
 
         except APIError as e:

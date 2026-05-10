@@ -82,7 +82,7 @@ class Mem0Memory:
         self,
         llm: AsyncLLM,
         embedding: AsyncEmbedding,
-        persist_path: str = "./satrapdata/mem0",
+        persist_path: str = ".satrap/mem0",
         top_k: int = 10,
         similarity_threshold: float = 0.5,
         recent_messages_window: int = 10,
