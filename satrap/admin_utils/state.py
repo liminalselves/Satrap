@@ -15,6 +15,17 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 
 
+def reset_state_managers(config):
+    """用新配置重建前端共享管理器"""
+    st.session_state.config = config
+    st.session_state.scm = SessionClassConfigManager(
+        storage_path=st.session_state.config.session_class_config_path,
+    )
+    st.session_state.mcm = ModelConfigManager(
+        storage_path=st.session_state.config.model_config_path,
+    )
+
+
 def ensure_state():
     """确保 st.session_state 中已初始化共享管理器, 各页面在 render() 开头调用"""
     if "config" not in st.session_state:

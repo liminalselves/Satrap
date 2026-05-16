@@ -4,7 +4,8 @@ import json
 from typing import Any
 
 import streamlit as st
-from satrap.pages._state import ensure_state
+from satrap.admin_utils.state import ensure_state
+from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 
@@ -13,6 +14,22 @@ st.set_page_config(page_title="会话管理", page_icon="", layout="wide")
 
 def _reload_caches():
     st.cache_data.clear()
+
+
+def _adapter_options() -> list[str]:
+    """获取可绑定的平台适配器实例 ID 列表"""
+    config = st.session_state.config
+    ids = [str(p.get("id", "")).strip() for p in config.platforms if str(p.get("id", "")).strip()]
+
+    daemon = DaemonInfo.from_config(config)
+    client = DaemonClient(daemon=daemon, timeout=1)
+    health = client.health()
+    if health.get("running", False):
+        for adapter_id in health.get("adapters", {}):
+            adapter_id = str(adapter_id).strip()
+            if adapter_id and adapter_id not in ids:
+                ids.append(adapter_id)
+    return ids
 
 
 @st.dialog("注册新会话类")
@@ -76,6 +93,11 @@ def _create_session_dialog(name: str):
     model_key = (cfg_entry or {}).get("model_key", "")
 
     session_id = st.text_input("Session ID (留空自动生成)")
+    adapter_ids = _adapter_options()
+    adapter_choices = ["自动(按消息来源)"] + adapter_ids
+    adapter_choice = st.selectbox("绑定适配器", adapter_choices)
+    adapter_id = "" if adapter_choice == "自动(按消息来源)" else adapter_choice
+
     context_value = ""
     if context_key:
         context_value = st.text_input(f"上下文值 ({context_key})")
@@ -96,11 +118,17 @@ def _create_session_dialog(name: str):
             extra[model_key] = llm_name
         elif llm_name:
             extra["model_name"] = llm_name
+        if adapter_id:
+            extra["adapter_id"] = adapter_id
 
         try:
             if context_value:
                 cfg = sm.register_session_from_context(
-                    name, scm, context_value=context_value, extra_params=extra,
+                    name,
+                    scm,
+                    context_value=context_value,
+                    platform=adapter_id,
+                    extra_params=extra,
                 )
                 st.success(f"已创建会话: `{cfg.session_id}` (上下文: {context_value})")
             else:

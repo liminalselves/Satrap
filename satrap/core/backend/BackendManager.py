@@ -105,6 +105,7 @@ class BackendManager:
 
         self._http_server: BackendHTTPServer | None = None
         self._dispatch_task: asyncio.Task | None = None
+        self._shutdown_event: asyncio.Event | None = None
         self._running = False
 
     # ── 属性访问 ──
@@ -133,6 +134,15 @@ class BackendManager:
     def adapter_manager(self) -> PlatformAdapterManager | None:
         return self._adapter_mgr
 
+    def set_shutdown_event(self, event: asyncio.Event | None):
+        """设置外部关闭事件, 供 HTTP 管理接口触发"""
+        self._shutdown_event = event
+
+    def request_shutdown(self):
+        """请求后端主循环退出"""
+        if self._shutdown_event:
+            self._shutdown_event.set()
+
     # ── 启动 ──
 
     async def start(self):
@@ -144,7 +154,7 @@ class BackendManager:
             self._init_user_manager()
             self._init_pipeline()
             self._init_platforms()
-            self._init_http_api()
+            await self._init_http_api()
             logger.info("[BackendManager] 所有组件初始化完成")
         except Exception as e:
             logger.error(f"[BackendManager] 启动失败: {e}")
@@ -189,6 +199,22 @@ class BackendManager:
 
     async def health(self) -> Dict[str, Any]:
         """健康检查"""
+        adapters = {}
+        if self._adapter_mgr:
+            for aid, adapter in self._adapter_mgr._adapters.items():
+                try:
+                    adapters[aid] = adapter.get_stats()
+                except Exception as e:
+                    adapters[aid] = {
+                        "status": "unknown",
+                        "started": getattr(adapter, "started", False),
+                        "started_at": None,
+                        "error_count": 1,
+                        "last_error": str(e),
+                        "config_id": aid,
+                        "config_type": getattr(getattr(adapter, "config", None), "type", ""),
+                    }
+
         return {
             "running": self._running,
             "model_config": self._model_cfg is not None,
@@ -196,13 +222,7 @@ class BackendManager:
             "session_manager": self._session_mgr is not None,
             "user_manager": self._user_mgr is not None,
             "pipeline": self._scheduler is not None,
-            "adapters": {
-                aid: {
-                    "status": a.status.value if hasattr(a, 'status') else 'unknown',
-                    "started": a.started,
-                }
-                for aid, a in (self._adapter_mgr._adapters.items() if self._adapter_mgr else {}).items()
-            },
+            "adapters": adapters,
             "platform_count": len(self._adapter_mgr.list_adapters()) if self._adapter_mgr else 0,
         }
 
@@ -308,6 +328,9 @@ class BackendManager:
             else:
                 logger.error(f"[BackendManager] 创建平台适配器失败: {pid} ({ptype})")
 
+        if self._scheduler and self._adapter_mgr:
+            self._scheduler.set_adapter_ids(set(self._adapter_mgr.list_adapters()))
+
         # 启动适配器
         loop = asyncio.get_event_loop()
         if self._adapter_mgr:
@@ -327,14 +350,14 @@ class BackendManager:
             self._running = True
             logger.info("[BackendManager] EventDispatcher 已启动")
 
-    def _init_http_api(self):
+    async def _init_http_api(self):
         """启动内嵌 HTTP API 服务器"""
         self._http_server = BackendHTTPServer(
             self,
             host=self.config.api_host,
             port=self.config.api_port,
         )
-        asyncio.ensure_future(self._http_server.start())
+        await self._http_server.start()
         logger.info(f"[BackendManager] HTTP API 服务: http://{self.config.api_host}:{self.config.api_port}")
 
     async def _dispatch_loop(self):

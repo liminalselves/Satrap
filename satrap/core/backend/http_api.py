@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import unquote
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -91,6 +92,11 @@ class BackendHTTPServer:
             await backend.reload_config()
             return 200, {"ok": True}
 
+        # POST /api/shutdown
+        if method == "POST" and path == "/api/shutdown":
+            asyncio.get_event_loop().call_soon(backend.request_shutdown)
+            return 200, {"ok": True}
+
         # GET /api/config/session-classes
         if method == "GET" and path == "/api/config/session-classes":
             mgr = backend.session_class_mgr
@@ -99,36 +105,36 @@ class BackendHTTPServer:
             return 200, {}
 
         # POST /api/config/session-classes/{name}/enable
-        if method == "POST" and path.endswith("/enable") and "/api/config/session-classes/" in path:
-            name = path.split("/")[5]
+        if method == "POST" and path.endswith("/enable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
+            name = unquote(path.split("/")[5])
             backend.session_class_mgr.enable(name)
             return 200, {"ok": True}
 
         # POST /api/config/session-classes/{name}/disable
-        if method == "POST" and path.endswith("/disable") and "/api/config/session-classes/" in path:
-            name = path.split("/")[5]
+        if method == "POST" and path.endswith("/disable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
+            name = unquote(path.split("/")[5])
             backend.session_class_mgr.disable(name)
             return 200, {"ok": True}
 
         # GET /api/config/session-classes/{name}
         path_prefix = "/api/config/session-classes/"
-        if method == "GET" and path.startswith(path_prefix):
-            name = path[len(path_prefix):]
+        if method == "GET" and path.startswith(path_prefix) and backend.session_class_mgr:
+            name = unquote(path[len(path_prefix):])
             cfg = backend.session_class_mgr.get_config(name)
             if cfg is None:
                 return 404, {"error": "not found"}
             return 200, cfg
 
         # PUT /api/config/session-classes/{name}
-        if method == "PUT" and path.startswith(path_prefix):
-            name = path[len(path_prefix):]
+        if method == "PUT" and path.startswith(path_prefix) and backend.session_class_mgr:
+            name = unquote(path[len(path_prefix):])
             payload = json.loads(body)
             if "params" in payload:
                 backend.session_class_mgr.set_config(name, payload["params"])
             return 200, {"ok": True}
 
         # GET /api/config/models?type=llm
-        if method == "GET" and path.startswith("/api/config/models"):
+        if method == "GET" and path.startswith("/api/config/models") and backend.model_config_manager:
             typ = "llm"
             qs = path.split("?", 1)[1] if "?" in path else ""
             for pair in qs.split("&"):

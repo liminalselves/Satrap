@@ -10,6 +10,16 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 
 
+def _configured_adapter_ids(config) -> set[str]:
+    """返回配置中声明的平台适配器实例 ID 集合"""
+    ids: set[str] = set()
+    for item in getattr(config, "platforms", []) or []:
+        adapter_id = str(item.get("id", "")).strip()
+        if adapter_id:
+            ids.add(adapter_id)
+    return ids
+
+
 def _init_mgr(args) -> SessionClassConfigManager:
     """离线模式: 直接初始化 SessionClassConfigManager"""
     config = ConfigLoader.autodetect()
@@ -52,7 +62,7 @@ def cmd_session_list(args):
             sys.exit(1)
         configs = data
     else:
-        configs = mgr.list_configs()
+        configs = mgr.list_configs()   # type: ignore
 
     if not configs:
         print("没有已注册的会话类")
@@ -76,7 +86,7 @@ def cmd_session_enable(args):
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.enable(args.name)
+            mgr.enable(args.name)   # type: ignore
         print(f"已启用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -91,7 +101,7 @@ def cmd_session_disable(args):
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.disable(args.name)
+            mgr.disable(args.name)   # type: ignore
         print(f"已停用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -144,7 +154,7 @@ def cmd_session_config_set(args):
                     kv[key.strip()] = val.strip()
             mgr.update_config(args.name, **kv)
         print(f"已更新配置: {args.name}")
-    except (ValueError, json.JSONDecodeError) as e:
+    except ValueError as e:
         print(f"配置失败: {e}")
         sys.exit(1)
 
@@ -168,6 +178,14 @@ def cmd_session_create(args):
     sid = args.id or ""
 
     extra = {}
+    adapter_id = (getattr(args, 'adapter_id', None) or "").strip()
+    if adapter_id:
+        configured_ids = _configured_adapter_ids(config)
+        if configured_ids and adapter_id not in configured_ids:
+            print(f"错误: 未找到适配器实例: {adapter_id}")
+            sys.exit(1)
+        extra["adapter_id"] = adapter_id
+
     llm_val = getattr(args, 'llm', None) or ""
     if llm_val:
         entry = scm.get_config(args.name)
@@ -181,15 +199,19 @@ def cmd_session_create(args):
     try:
         if context_value:
             cfg = sm.register_session_from_context(
-                args.name, scm, context_value=context_value, extra_params=extra,
+                args.name,
+                scm,
+                context_value=context_value,
+                platform=adapter_id,
+                extra_params=extra,
             )
-            print(f"已创建会话: {cfg.session_id} (上下文: {context_value})")
+            print(f"已创建会话: {str(cfg.session_id)} (上下文: {context_value})")
         else:
             sid = sid or uuid.uuid4().hex
             cfg = sm.register_session_from_class_config(
                 args.name, scm, session_id=sid, extra_params=extra,
             )
-            print(f"已创建会话: {cfg.session_id}")
+            print(f"已创建会话: {str(cfg.session_id)}")
     except Exception as e:
         print(f"创建失败: {e}")
         sys.exit(1)

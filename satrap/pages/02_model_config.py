@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import streamlit as st
-from satrap.pages._state import ensure_state
+from satrap.admin_utils.state import ensure_state
 from satrap.core.type import LLMConfig, EmbeddingConfig, ReRankConfig
 
 st.set_page_config(page_title="模型配置", page_icon="", layout="wide")

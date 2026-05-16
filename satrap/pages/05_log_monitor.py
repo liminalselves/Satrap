@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 
 import streamlit as st
+from satrap.admin_utils.log_state import read_log_increment
 
 st.set_page_config(page_title="日志监控", page_icon="", layout="wide")
 
@@ -65,6 +65,8 @@ def render():
         st.session_state.log_position = 0
     if "log_paused" not in st.session_state:
         st.session_state.log_paused = False
+    if "log_lines" not in st.session_state:
+        st.session_state.log_lines = []
 
     col1, col2, col3, col4 = st.columns([1, 1, 1, 3])
     with col1:
@@ -79,7 +81,8 @@ def render():
         if st.button("暂停" if not st.session_state.log_paused else "继续"):
             st.session_state.log_paused = not st.session_state.log_paused
         if st.button("清空显示"):
-            st.session_state.log_position = 0
+            st.session_state.log_lines = []
+            st.session_state.log_position = log_file.stat().st_size
             st.rerun()
         if st.button("刷新"):
             st.rerun()
@@ -87,26 +90,28 @@ def render():
     max_lines = st.slider("显示行数", 50, 500, 200)
 
     try:
-        with open(log_file, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(st.session_state.log_position)
-            new_lines = f.readlines()
-            st.session_state.log_position = f.tell()
+        position, cached_lines, display_lines = read_log_increment(
+            log_file=log_file,
+            position=st.session_state.log_position,
+            cached_lines=list(st.session_state.log_lines),
+            max_lines=max_lines,
+            paused=st.session_state.log_paused,
+        )
+        st.session_state.log_position = position
+        st.session_state.log_lines = cached_lines
     except Exception as e:
         st.error(f"读取日志文件失败: {e}")
         return
 
-    all_lines = new_lines
-
     if level_filter:
-        all_lines = [l for l in all_lines if _parse_level(l) in level_filter]
+        display_lines = [l for l in display_lines if _parse_level(l) in level_filter]
 
     if search_query:
-        all_lines = [l for l in all_lines if search_query.lower() in l.lower()]
+        display_lines = [l for l in display_lines if search_query.lower() in l.lower()]
 
-    if not all_lines:
+    if not display_lines:
         st.info("暂无新日志")
     else:
-        display_lines = all_lines[-max_lines:]
         container = st.container(height=600)
         with container:
             for line in display_lines:

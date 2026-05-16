@@ -2,7 +2,6 @@
 """Satrap CLI 入口"""
 import argparse
 import asyncio
-import os
 import sys
 from pathlib import Path
 
@@ -15,8 +14,8 @@ if _proj_root not in sys.path:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Satrap 后端管理工具")
     parser.add_argument("--config", help="配置文件路径")
-    parser.add_argument("--api-host", default=os.getenv("SATRAP_API_HOST", "127.0.0.1"))
-    parser.add_argument("--api-port", type=int, default=int(os.getenv("SATRAP_API_PORT", "19870")))
+    parser.add_argument("--api-host")
+    parser.add_argument("--api-port", type=int)
 
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
@@ -50,6 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("name"); p.add_argument("--id"); p.add_argument("--config")
     p.add_argument("--context-value", default="", help="上下文区分值, 作为 session_id 的一部分")
     p.add_argument("--llm", default="", help="ModelConfigManager 中的 LLM 配置名称")
+    p.add_argument("--adapter-id", default="", help="绑定的平台适配器实例 ID")
     p = sess_sub.add_parser("config", help="配置 session 类参数")
     p.add_argument("name")
     p.add_argument("--set", action="append", nargs="+", help="设置参数: key=value")

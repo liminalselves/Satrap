@@ -77,6 +77,7 @@ class ConfigLoader:
         env_map = {
             "SATRAP_MODEL_CONFIG_PATH": "model_config_path",
             "SATRAP_SESSION_CLASS_CONFIG_PATH": "session_class_config_path",
+            "SATRAP_API_HOST": "api_host",
         }
         for env_key, attr in env_map.items():
             val = os.getenv(env_key)
@@ -94,6 +95,13 @@ class ConfigLoader:
         if timeout:
             try:
                 config.llm_timeout = float(timeout)
+            except ValueError:
+                pass
+
+        api_port = os.getenv("SATRAP_API_PORT")
+        if api_port:
+            try:
+                config.api_port = int(api_port)
             except ValueError:
                 pass
 

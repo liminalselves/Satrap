@@ -44,10 +44,15 @@ class PipelineScheduler:
         self.error_feedback = error_feedback
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], bool]] = []
+        self.adapter_ids: set[str] = set()
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], bool]):
         """添加预处理器, 在 stage 1a 前依次调用; 返回 False 则丢弃事件"""
         self.preprocessors.append(fn)
+
+    def set_adapter_ids(self, adapter_ids: set[str]):
+        """设置当前后端已注册的平台适配器实例 ID"""
+        self.adapter_ids = set(adapter_ids)
 
     async def execute(self, event: MessageEvent) -> None:
         """执行完整管线
@@ -89,11 +94,13 @@ class PipelineScheduler:
             # ── Stage 1d: 通过 UserManager 解析 session_id ──
             session_id = event.session_id
             if self.user_manager and event.session_type:
+                platform_id, extra_params = self._resolve_route_adapter(event)
                 resolved = self.user_manager.resolve_session(
                     user_id=event.get_sender_id(),
-                    platform=event.get_platform_id(),
+                    platform=platform_id,
                     session_type=event.session_type,
                     class_cfg_mgr=getattr(self.session_manager, 'class_cfg_mgr', None),
+                    extra_params=extra_params,
                 )
                 if resolved:
                     session_id = resolved
@@ -141,6 +148,30 @@ class PipelineScheduler:
             await event.send(MessageChain.from_text(text))
         except Exception as e:
             logger.warning(f"[PipelineScheduler] 发送反馈消息失败: {e}")
+
+    def _resolve_route_adapter(self, event: MessageEvent) -> tuple[str, dict[str, str] | None]:
+        """解析事件应绑定到哪个适配器实例"""
+        source_adapter_id = event.get_platform_id()
+        class_cfg_mgr = getattr(self.session_manager, 'class_cfg_mgr', None)
+        requested = ""
+        if class_cfg_mgr is not None and event.session_type:
+            try:
+                params = class_cfg_mgr.get_params(event.session_type)
+                requested = str(params.get("adapter_id", "") or "").strip()
+            except Exception:
+                requested = ""
+
+        if not requested:
+            return source_adapter_id, None
+
+        if self.adapter_ids and requested not in self.adapter_ids:
+            logger.warning(
+                f"[PipelineScheduler] 适配器实例不存在: {requested}, "
+                f"回退到事件来源: {source_adapter_id}"
+            )
+            return source_adapter_id, None
+
+        return requested, {"adapter_id": requested}
 
     @staticmethod
     def _extract_img_urls(event: MessageEvent) -> list[str]:
