@@ -130,7 +130,20 @@ def update_common_fields(
     rate_burst: int,
     platforms: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """更新常用配置字段"""
+    """更新常用配置字段
+    
+    参数:
+    - data: 原始配置数据
+    - api_host: API Host
+    - api_port: API Port
+    - default_session_type: 默认会话类型
+    - max_sessions: 最大会话数
+    - idle_timeout: 空闲超时时间
+    - llm_timeout: LLM 超时时间
+    - rate_limit: 速率限制
+    - rate_burst: 速率突发
+    - platforms: 平台配置列表
+    """
     updated = dict(data)
     api = dict(updated.get("api") or {})
     api["host"] = api_host

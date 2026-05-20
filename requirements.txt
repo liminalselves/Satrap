@@ -5,7 +5,7 @@
 colorlog>=6.7.0
 
 # Token 估算 (依赖 DeepSeek V3 分词器)
-splintr>=0.1.0
+splintr-rs>=0.1.0
 
 # 数值计算与向量处理
 numpy>=1.24.0
