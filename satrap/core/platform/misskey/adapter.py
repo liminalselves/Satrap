@@ -36,6 +36,7 @@ from satrap.core.platform.misskey.misskey_utils import (
     upload_local_with_retries,
 )
 from satrap.core.type import PlatformMessage
+from satrap.core.components import Plain
 
 
 MAX_FILE_UPLOAD_COUNT = 16
@@ -268,9 +269,8 @@ class MisskeyAdapter(PlatformAdapter):
             message.raw_message = {}
         message.raw_message["poll"] = poll
         poll_text = format_poll(poll)
-        if poll_text:
-            from satrap.core.components import Plain
 
+        if poll_text:
             message.message.append(Plain(poll_text))
             message_parts.append(poll_text)
 
@@ -309,10 +309,10 @@ class MisskeyAdapter(PlatformAdapter):
         cache_user_info(self._user_cache, sender_info, raw_data, self.bot_self_id, is_chat=True)
 
         raw_text = raw_data.get("text", "") or ""
-        if raw_text:
-            from satrap.core.components import Plain
 
+        if raw_text:
             message.message.append(Plain(raw_text))
+
         process_files(message, raw_data.get("files", []) or [], include_text_parts=False)
         message.message_str = raw_text
         return message
@@ -341,9 +341,8 @@ class MisskeyAdapter(PlatformAdapter):
             if self._bot_username and f"@{self._bot_username}" in raw_text:
                 text_parts, _ = process_at_mention(message, raw_text, self._bot_username, self.bot_self_id)
                 message_parts.extend(text_parts)
-            else:
-                from satrap.core.components import Plain
 
+            else:
                 message.message.append(Plain(raw_text))
                 message_parts.append(raw_text)
         message_parts.extend(process_files(message, raw_data.get("files", []) or []))

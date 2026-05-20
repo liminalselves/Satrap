@@ -6,6 +6,7 @@ import os
 import random
 import tempfile
 import uuid
+import websockets
 from collections.abc import Awaitable, Callable
 from typing import Any, NoReturn
 
@@ -64,8 +65,6 @@ class StreamingClient:
     async def connect(self) -> bool:
         """连接 Misskey streaming 端点"""
         try:
-            import websockets  # type: ignore[import-not-found]
-
             ws_url = self.instance_url.replace("https://", "wss://").replace("http://", "ws://")
             ws_url += f"/streaming?i={self.access_token}"
             self.websocket = await websockets.connect(

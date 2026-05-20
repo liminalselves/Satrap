@@ -1,4 +1,5 @@
 import json
+import ast
 import re
 
 from satrap.core.log import logger
@@ -32,7 +33,7 @@ def safe_parse_arguments(arg_str: str) -> dict:
 
 
     try:   # 尝试 ast.literal_eval
-        import ast
+
         return ast.literal_eval(arg_str)
     except:
         pass

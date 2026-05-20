@@ -1,4 +1,5 @@
 from splintr import Tokenizer
+import math
 
 tokenizer = Tokenizer.from_pretrained("deepseek_v3")
 
@@ -13,7 +14,7 @@ def experience_estimate(text: str) -> int:
     - 中文字符每个约 0.7 个 token
     - 英文字母、数字、标点等: 每 4 个字符约 1 个 token(即 0.25 token/字符)
     """
-    import math
+
     
     chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
     other_chars = len(text) - chinese_chars
