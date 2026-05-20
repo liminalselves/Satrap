@@ -1,9 +1,11 @@
 from typing import List, Dict, Any
+import faiss as _faiss
 import numpy as np
 import msgpack
 import sqlite3
 import json
 import os
+import re
 
 from satrap.core.log import logger
 
@@ -156,10 +158,9 @@ class LiteVectorDB:
                 if isinstance(vec, str):
                     # 处理字符串格式的向量数据
                     try:
-                        # 移除方括号和多余的空格，然后分割
+                        # 移除方括号和多余的空格, 然后分割
                         vec_str = vec.strip('[]')
-                        # 使用正则表达式分割，处理多个空格的情况
-                        import re
+                        # 使用正则表达式分割, 处理多个空格的情况
                         vec_values = re.split(r'\s+', vec_str.strip())
                         vec_array = np.array([float(v) for v in vec_values if v], dtype=np.float16)
                         processed_vectors.append(vec_array)
@@ -298,10 +299,6 @@ class DataBase:
         参数:
         - persist_path: 数据持久化路径, 默认 ".satrap/vector"
         """
-        try:
-            import faiss as _faiss
-        except Exception as e:
-            raise ImportError("未检测到 faiss, 请先安装 faiss-cpu 或 faiss-gpu") from e
 
         self.faiss = _faiss
         self.persist_path = persist_path

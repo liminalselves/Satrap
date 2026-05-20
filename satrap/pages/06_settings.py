@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import os
 
 import streamlit as st
 from satrap.admin_utils.backend_control import (
@@ -200,9 +202,7 @@ def render():
     with st.container(border=True):
         st.write("**Streamlit 信息**")
         st.code(f"Streamlit Version:      {st.__version__}")
-        import sys
         st.code(f"Python Version:         {sys.version}")
-        import os
         st.code(f"Working Directory:      {os.getcwd()}")
 
     with st.container(border=True):

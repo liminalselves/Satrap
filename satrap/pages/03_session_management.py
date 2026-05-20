@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 import streamlit as st
@@ -132,7 +133,6 @@ def _create_session_dialog(name: str):
                 )
                 st.success(f"已创建会话: `{cfg.session_id}` (上下文: {context_value})")
             else:
-                import uuid
                 sid = session_id or uuid.uuid4().hex
                 cfg = sm.register_session_from_class_config(
                     name, scm, session_id=sid, extra_params=extra,

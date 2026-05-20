@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import yaml
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,6 @@ def find_config_path(cwd: str | Path | None = None) -> Path:
 
 def _load_yaml(text: str) -> dict[str, Any]:
     """解析 YAML 文本"""
-    try:
-        import yaml
-    except ImportError as e:
-        raise RuntimeError("当前环境未安装 PyYAML, 无法编辑 YAML 配置") from e
-
     data = yaml.safe_load(text) if text.strip() else {}
     if data is None:
         return {}
@@ -38,10 +34,6 @@ def _load_yaml(text: str) -> dict[str, Any]:
 
 def _dump_yaml(data: dict[str, Any]) -> str:
     """序列化 YAML 文本"""
-    try:
-        import yaml
-    except ImportError as e:
-        raise RuntimeError("当前环境未安装 PyYAML, 无法保存 YAML 配置") from e
     return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
 
