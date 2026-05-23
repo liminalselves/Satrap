@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.config_loader import ConfigLoader
 
 
 CONFIG_CANDIDATES = ("config.yaml", "config.yml", "config.json")
@@ -13,13 +14,23 @@ CONFIG_CANDIDATES = ("config.yaml", "config.yml", "config.json")
 
 
 def find_config_path(cwd: str | Path | None = None) -> Path:
-    """查找当前配置文件, 不存在时返回默认 config.yaml"""
-    root = Path(cwd) if cwd is not None else Path.cwd()
-    for name in CONFIG_CANDIDATES:
-        path = root / name
+    """查找当前配置文件, 不存在时返回 satrap/config.yaml"""
+    for path in ConfigLoader.candidate_paths(cwd):
         if path.exists():
             return path
-    return root / "config.yaml"
+    return ConfigLoader.default_config_path(cwd)
+
+
+def config_exists(cwd: str | Path | None = None) -> bool:
+    """判断当前工作目录是否已有配置文件"""
+    return any(path.exists() for path in ConfigLoader.candidate_paths(cwd))
+
+
+def create_default_config(cwd: str | Path | None = None) -> BackendConfig:
+    """创建默认配置文件并返回配置对象"""
+    path = ConfigLoader.ensure_default_config(cwd)
+    config = ConfigLoader.from_yaml(path) if path.suffix.lower() in (".yaml", ".yml") else ConfigLoader.from_json(path)
+    return ConfigLoader.merge_env(config)
 
 
 def _load_yaml(text: str) -> dict[str, Any]:
@@ -29,6 +40,12 @@ def _load_yaml(text: str) -> dict[str, Any]:
         return {}
     if not isinstance(data, dict):
         raise ValueError("配置文件根节点必须是对象")
+    return data
+
+
+def _load_yaml_any(text: str) -> Any:
+    """解析任意 YAML 文本"""
+    data = yaml.safe_load(text) if text.strip() else None
     return data
 
 
@@ -85,19 +102,17 @@ def parse_platforms_text(text: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(text)
     except json.JSONDecodeError:
-        data = _load_yaml(text)
+        data = _load_yaml_any(text)
+    if data is None:
+        return []
     if not isinstance(data, list):
         raise ValueError("platforms 必须是列表")
-    result: list[dict[str, Any]] = []
-    for item in data:
-        if not isinstance(item, dict):
-            raise ValueError("platforms 中的每一项必须是对象")
-        result.append(item)
-    return result
+    return validate_platforms(data)
 
 
 def validate_config_document(data: dict[str, Any]) -> BackendConfig:
     """校验配置文档并返回 BackendConfig"""
+    validate_platforms(data.get("platforms", []))
     return BackendConfig.from_dict(data)
 
 
@@ -105,8 +120,82 @@ def save_config_document(path: str | Path, data: dict[str, Any]) -> BackendConfi
     """校验并保存配置文档"""
     path = Path(path)
     config = validate_config_document(data)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(dump_config_document(path, data), encoding="utf-8")
     return config
+
+
+def validate_platforms(platforms: Any) -> list[dict[str, Any]]:
+    """校验 platforms 列表结构"""
+    if platforms is None:
+        return []
+    if not isinstance(platforms, list):
+        raise ValueError("platforms 必须是列表")
+    seen: set[str] = set()
+    result: list[dict[str, Any]] = []
+    for item in platforms:
+        if not isinstance(item, dict):
+            raise ValueError("platforms 中的每一项必须是对象")
+        pid = str(item.get("id", "")).strip()
+        ptype = str(item.get("type", "")).strip()
+        settings = item.get("settings", {})
+        if not pid:
+            raise ValueError("平台 id 不能为空")
+        if not ptype:
+            raise ValueError(f"平台 {pid} 的 type 不能为空")
+        if not isinstance(settings, dict):
+            raise ValueError(f"平台 {pid} 的 settings 必须是对象")
+        if pid in seen:
+            raise ValueError(f"平台 id 重复: {pid}")
+        seen.add(pid)
+        copied = dict(item)
+        copied["id"] = pid
+        copied["type"] = ptype
+        copied["settings"] = dict(settings)
+        result.append(copied)
+    return result
+
+
+def upsert_platform(
+    platforms: list[dict[str, Any]],
+    *,
+    original_id: str | None,
+    platform_id: str,
+    platform_type: str,
+    settings: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """新增或更新平台配置"""
+    pid = platform_id.strip()
+    ptype = platform_type.strip()
+    if not pid:
+        raise ValueError("平台 id 不能为空")
+    if not ptype:
+        raise ValueError("平台 type 不能为空")
+    if not isinstance(settings, dict):
+        raise ValueError("平台 settings 必须是对象")
+
+    old_id = (original_id or "").strip()
+    updated = [dict(item) for item in platforms]
+    target_index: int | None = None
+    for index, item in enumerate(updated):
+        item_id = str(item.get("id", "")).strip()
+        if item_id == pid and item_id != old_id:
+            raise ValueError(f"平台 id 已存在: {pid}")
+        if old_id and item_id == old_id:
+            target_index = index
+
+    entry = {"id": pid, "type": ptype, "settings": dict(settings)}
+    if target_index is None:
+        updated.append(entry)
+    else:
+        updated[target_index] = entry
+    return validate_platforms(updated)
+
+
+def delete_platform(platforms: list[dict[str, Any]], platform_id: str) -> list[dict[str, Any]]:
+    """删除指定平台配置"""
+    pid = platform_id.strip()
+    return validate_platforms([dict(item) for item in platforms if str(item.get("id", "")).strip() != pid])
 
 
 def update_common_fields(

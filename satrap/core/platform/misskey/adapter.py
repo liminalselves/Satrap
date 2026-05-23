@@ -75,7 +75,8 @@ class MisskeyAdapter(PlatformAdapter):
         self.max_message_length = int(settings.get("max_message_length", 3000))
         self.default_visibility = settings.get("misskey_default_visibility", "public")
         self.local_only = bool(settings.get("misskey_local_only", False))
-        self.enable_chat = bool(settings.get("misskey_enable_chat", True))
+        self.enable_chat = bool(settings.get("chat_enabled", settings.get("misskey_enable_chat", True)))
+        self.enable_room = bool(settings.get("room_enabled", settings.get("misskey_enable_room", True)))
         self.enable_file_upload = bool(settings.get("misskey_enable_file_upload", True))
         self.upload_folder = settings.get("misskey_upload_folder")
         self.upload_concurrency = int(settings.get("misskey_upload_concurrency", DEFAULT_UPLOAD_CONCURRENCY))
@@ -203,6 +204,8 @@ class MisskeyAdapter(PlatformAdapter):
             if sender_id == self.bot_self_id:
                 return
             if data.get("toRoomId"):
+                if not self.enable_room:
+                    return
                 message = await self.convert_room_message(data)
             else:
                 message = await self.convert_chat_message(data)

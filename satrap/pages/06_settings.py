@@ -14,12 +14,16 @@ from satrap.admin_utils.backend_control import (
     stop_backend,
 )
 from satrap.admin_utils.config_editor import (
+    config_exists,
+    create_default_config,
+    delete_platform,
     find_config_path,
     load_config_document,
     load_raw_config,
     parse_platforms_text,
     parse_raw_config,
     save_config_document,
+    upsert_platform,
     update_common_fields,
 )
 from satrap.admin_utils.state import ensure_state, reset_state_managers
@@ -49,6 +53,169 @@ def _save_config_and_maybe_restart(path, data: dict, backend_running: bool):
         st.rerun()
     except Exception as e:
         st.error(f"保存配置失败: {e}")
+
+
+def _platform_index(options: list[str], value: str) -> int:
+    """获取 selectbox 默认索引"""
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
+def _platform_settings_form(platform_type: str, settings: dict, key_prefix: str) -> dict:
+    """按平台类型渲染 settings 表单"""
+    if platform_type == "onebot":
+        col1, col2 = st.columns(2)
+        with col1:
+            host = st.text_input("Host", value=str(settings.get("host", "127.0.0.1")), key=f"{key_prefix}_host")
+            access_token = st.text_input(
+                "Access Token",
+                value=str(settings.get("access_token", "")),
+                type="password",
+                key=f"{key_prefix}_access_token",
+            )
+            enable_private = st.checkbox(
+                "启用私聊",
+                value=bool(settings.get("enable_private", True)),
+                key=f"{key_prefix}_enable_private",
+            )
+            self_id = st.text_input("Self ID", value=str(settings.get("self_id", "")), key=f"{key_prefix}_self_id")
+        with col2:
+            port = st.number_input(
+                "Port",
+                min_value=1,
+                max_value=65535,
+                value=int(settings.get("port", 8080)),
+                key=f"{key_prefix}_port",
+            )
+            secret = st.text_input(
+                "Secret",
+                value=str(settings.get("secret", "")),
+                type="password",
+                key=f"{key_prefix}_secret",
+            )
+            enable_group = st.checkbox(
+                "启用群聊",
+                value=bool(settings.get("enable_group", True)),
+                key=f"{key_prefix}_enable_group",
+            )
+        result = {
+            "host": host,
+            "port": int(port),
+            "access_token": access_token,
+            "secret": secret,
+            "enable_private": enable_private,
+            "enable_group": enable_group,
+        }
+        if self_id.strip():
+            result["self_id"] = self_id.strip()
+        return result
+
+    col1, col2 = st.columns(2)
+    with col1:
+        base_url = st.text_input("Base URL", value=str(settings.get("base_url", "")), key=f"{key_prefix}_base_url")
+        api_token = st.text_input(
+            "API Token",
+            value=str(settings.get("api_token", "")),
+            type="password",
+            key=f"{key_prefix}_api_token",
+        )
+        chat_enabled = st.checkbox(
+            "启用 Chat",
+            value=bool(settings.get("chat_enabled", settings.get("misskey_enable_chat", True))),
+            key=f"{key_prefix}_chat_enabled",
+        )
+        local_only = st.checkbox(
+            "Local Only",
+            value=bool(settings.get("misskey_local_only", False)),
+            key=f"{key_prefix}_local_only",
+        )
+    with col2:
+        room_enabled = st.checkbox(
+            "启用 Room",
+            value=bool(settings.get("room_enabled", False)),
+            key=f"{key_prefix}_room_enabled",
+        )
+        max_message_length = st.number_input(
+            "最大消息长度",
+            min_value=1,
+            value=int(settings.get("max_message_length", 3000)),
+            key=f"{key_prefix}_max_message_length",
+        )
+        visibility_options = ["public", "home", "followers", "specified"]
+        visibility = st.selectbox(
+            "默认可见性",
+            visibility_options,
+            index=_platform_index(visibility_options, str(settings.get("misskey_default_visibility", "public"))),
+            key=f"{key_prefix}_visibility",
+        )
+    return {
+        "base_url": base_url,
+        "api_token": api_token,
+        "chat_enabled": chat_enabled,
+        "room_enabled": room_enabled,
+        "max_message_length": int(max_message_length),
+        "misskey_default_visibility": visibility,
+        "misskey_local_only": local_only,
+    }
+
+
+def _render_platform_editor(config_data: dict, config_path, backend_running: bool):
+    """渲染平台快捷新增/修改表单"""
+    platforms = list(config_data.get("platforms", []) or [])
+    platform_ids = [str(item.get("id", "")).strip() for item in platforms if str(item.get("id", "")).strip()]
+    selected = st.selectbox("选择已有平台", ["新增平台配置"] + platform_ids, key="platform_editor_selected")
+    current = next((item for item in platforms if item.get("id") == selected), None)
+    current_settings = dict((current or {}).get("settings") or {})
+    current_type = str((current or {}).get("type") or "misskey")
+
+    type_options = ["misskey", "onebot"]
+    if current_type and current_type not in type_options:
+        type_options.append(current_type)
+
+    col_id, col_type = st.columns(2)
+    with col_id:
+        platform_id = st.text_input(
+            "平台名称",
+            value=str((current or {}).get("id") or ""),
+            placeholder="misskey_main",
+            key=f"platform_editor_id_{selected}",
+        )
+    with col_type:
+        platform_type = st.selectbox(
+            "类型",
+            type_options,
+            index=_platform_index(type_options, current_type),
+            key=f"platform_editor_type_{selected}",
+        )
+
+    settings = _platform_settings_form(platform_type, current_settings, f"platform_editor_{selected}_{platform_type}")
+
+    col_save, col_delete = st.columns(2)
+    with col_save:
+        if st.button("保存平台配置", type="primary", key=f"save_platform_{selected}"):
+            try:
+                updated_platforms = upsert_platform(
+                    platforms,
+                    original_id=None if selected == "新增平台配置" else selected,
+                    platform_id=platform_id,
+                    platform_type=platform_type,
+                    settings=settings,
+                )
+                updated = dict(config_data)
+                updated["platforms"] = updated_platforms
+                _save_config_and_maybe_restart(config_path, updated, backend_running)
+            except Exception as e:
+                st.error(f"平台配置无效: {e}")
+    with col_delete:
+        if selected != "新增平台配置" and st.button("删除平台配置", key=f"delete_platform_{selected}"):
+            try:
+                updated = dict(config_data)
+                updated["platforms"] = delete_platform(platforms, selected)
+                _save_config_and_maybe_restart(config_path, updated, backend_running)
+            except Exception as e:
+                st.error(f"删除平台失败: {e}")
 
 
 def render():
@@ -102,8 +269,22 @@ def render():
         st.code(f"Session DB Path:        {config.session_db_path or '(默认)'}")
         st.code(f"User DB Path:           {config.user_db_path or '(默认)'}")
         st.code(f"API Host:               {config.api_host}:{config.api_port}")
+        st.caption(f"当前配置文件: `{find_config_path()}`")
 
-        if st.button("重新加载配置"):
+        col_create, col_reload = st.columns(2)
+        with col_create:
+            has_config = config_exists()
+            create_clicked = st.button("配置已存在" if has_config else "快速创建配置", disabled=has_config)
+        with col_reload:
+            reload_frontend_clicked = st.button("重新加载配置")
+
+        if create_clicked:
+            new_config = create_default_config()
+            reset_state_managers(new_config)
+            st.success(f"配置已创建: {find_config_path()}")
+            st.rerun()
+
+        if reload_frontend_clicked:
             from satrap.core.config_loader import ConfigLoader
             new_config = ConfigLoader.autodetect()
             reset_state_managers(new_config)
@@ -121,7 +302,7 @@ def render():
         st.write("**配置编辑**")
         st.caption(f"当前配置文件: `{config_path}`")
 
-        tab_common, tab_raw = st.tabs(["常用配置", "原始配置"])
+        tab_common, tab_platforms, tab_raw = st.tabs(["常用配置", "平台配置", "原始配置"])
         with tab_common:
             current_api = dict(config_data.get("api") or {})
             col1, col2 = st.columns(2)
@@ -189,6 +370,12 @@ def render():
                     _save_config_and_maybe_restart(config_path, updated, backend_running)
                 except Exception as e:
                     st.error(f"常用配置无效: {e}")
+
+        with tab_platforms:
+            _render_platform_editor(config_data, config_path, backend_running)
+            st.divider()
+            st.write("**当前 platforms**")
+            st.json(config_data.get("platforms", []) or [])
 
         with tab_raw:
             raw_text = st.text_area("完整配置", value=load_raw_config(config_path), height=520)

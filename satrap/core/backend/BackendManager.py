@@ -303,6 +303,10 @@ class BackendManager:
             import satrap.core.platform.misskey.adapter  # noqa: F401
         except ImportError:
             pass
+        try:
+            import satrap.core.platform.onebot.adapter  # noqa: F401
+        except ImportError:
+            pass
 
         from satrap.core.platform import registry as global_registry
 

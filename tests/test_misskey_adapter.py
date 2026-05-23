@@ -1,4 +1,5 @@
 import pytest
+from typing import Any, cast
 
 from satrap.core.components import File, Image, Plain
 from satrap.core.platform import PlatformConfig
@@ -50,7 +51,7 @@ def make_adapter(settings=None):
     adapter.bot_self_id = "bot-id"
     adapter.client_self_id = "bot-id"
     adapter._bot_username = "bot"
-    adapter._client = FakeMisskeyAPI()
+    adapter._client = cast(Any, FakeMisskeyAPI())
     return adapter
 
 
@@ -62,7 +63,15 @@ def test_config_aliases_and_defaults():
     assert adapter.max_message_length == 3000
     assert adapter.default_visibility == "public"
     assert adapter.enable_chat is True
+    assert adapter.enable_room is True
     assert adapter.enable_file_upload is True
+
+
+def test_config_frontend_aliases():
+    adapter = make_adapter({"base_url": "https://misskey.example", "api_token": "token", "chat_enabled": False, "room_enabled": False})
+
+    assert adapter.enable_chat is False
+    assert adapter.enable_room is False
 
 
 @pytest.mark.asyncio
@@ -118,6 +127,7 @@ async def test_convert_chat_and_room_messages():
     assert chat.session_id == "chat%u1"
     assert room.type == PlatformMessageType.GROUP_MESSAGE
     assert room.session_id == "room%room-1"
+    assert room.group is not None
     assert room.group.group_id == "room-1"
 
 
@@ -135,7 +145,7 @@ async def test_send_message_routes_note_chat_room():
     await adapter.send_message("chat%u1", MessageChain([Plain("dm")]))
     await adapter.send_message("room%r1", MessageChain([Plain("room")]))
 
-    api = adapter._client
+    api = cast(FakeMisskeyAPI, adapter._client)
     assert api.calls[0][0] == "create_note"
     assert api.calls[0][1]["reply_id"] == "note-origin"
     assert api.calls[0][1]["visibility"] == "specified"
@@ -160,7 +170,7 @@ async def test_send_message_uploads_file_components(tmp_path):
         ),
     )
 
-    api = adapter._client
+    api = cast(FakeMisskeyAPI, adapter._client)
     assert api.calls[0][0] == "upload_and_find_file"
     assert api.calls[1][0] == "upload_file"
     assert api.calls[2] == ("send_message", {"toUserId": "u1", "text": "file[图片][文件]", "fileId": "file-url"})
