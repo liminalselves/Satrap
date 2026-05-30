@@ -36,6 +36,7 @@ class ConfigLoader:
             "llm_timeout": cfg.llm_timeout,
             "error_feedback": cfg.error_feedback,
             "session_classes": dict(cfg.session_classes),
+            "session_scan_paths": list(cfg.session_scan_paths),
             "api": {
                 "host": cfg.api_host,
                 "port": cfg.api_port,

@@ -3,11 +3,12 @@ from __future__ import annotations
 import json
 import sys
 import uuid
+from pathlib import Path
 
-from satrap.cli.client import DaemonClient
-from satrap.core.config_loader import ConfigLoader
+from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.session_discovery import discover_session_classes
 
 
 def _configured_adapter_ids(config) -> set[str]:
@@ -22,17 +23,20 @@ def _configured_adapter_ids(config) -> set[str]:
 
 def _init_mgr(args) -> SessionClassConfigManager:
     """离线模式: 直接初始化 SessionClassConfigManager"""
-    config = ConfigLoader.autodetect()
-    if getattr(args, 'config', None):
-        config = ConfigLoader.from_json(args.config) or ConfigLoader.from_yaml(args.config)
-    return SessionClassConfigManager(storage_path=config.session_class_config_path)
+    config = load_cli_config(args)
+    return SessionClassConfigManager(
+        storage_path=config.session_class_config_path,
+        session_scan_paths=config.session_scan_paths,
+    )
 
 
 def _client_or_fallback(args):
     """尝试 HTTP 连接, 失败时返回 (None, offline_mgr)"""
-    client = DaemonClient()
-    if client.is_alive():
+    client = daemon_client_from_args(args)
+    if client.is_alive() and not offline_requested(args):
         return client, None
+    if offline_requested(args):
+        ensure_offline_allowed(args, "修改会话类配置")
     return None, _init_mgr(args)
 
 
@@ -109,13 +113,35 @@ def cmd_session_disable(args):
 
 
 def cmd_session_register(args):
-    mgr = _init_mgr(args)
+    class_path = (getattr(args, "from_scan", None) or getattr(args, "class_path", None) or "").strip()
+    if not class_path:
+        print("注册失败: 请提供 --class-path 或 --from-scan")
+        sys.exit(1)
+    client = daemon_client_from_args(args)
     try:
-        cls = SessionClassConfigManager._load_class(args.class_path)
         ck = getattr(args, 'context_key', None) or ""
         mk = getattr(args, 'model_key', None) or ""
-        mgr.register(args.name, cls, description=args.description or "",
-                      context_key=ck, model_key=mk)
+        if client.is_alive() and not offline_requested(args):
+            result = client.register_session_class(
+                args.name,
+                class_path,
+                description=args.description or "",
+                context_key=ck,
+                model_key=mk,
+            )
+            if "error" in result:
+                raise ValueError(result["error"])
+        else:
+            if offline_requested(args):
+                ensure_offline_allowed(args, "注册会话类")
+            mgr = _init_mgr(args)
+            mgr.register_by_class_path(
+                args.name,
+                class_path,
+                description=args.description or "",
+                context_key=ck,
+                model_key=mk,
+            )
         tags = []
         if ck:
             tags.append(f"上下文键: {ck}")
@@ -129,20 +155,34 @@ def cmd_session_register(args):
 
 
 def cmd_session_unregister(args):
-    mgr = _init_mgr(args)
-    if mgr.remove_config(args.name):
+    client, mgr = _client_or_fallback(args)
+    if client:
+        result = client.unregister_session_class(args.name)
+        if "error" in result:
+            print(f"注销失败: {result['error']}")
+            sys.exit(1)
         print(f"已注销: {args.name}")
-    else:
-        print(f"未找到: {args.name}")
-        sys.exit(1)
+        return
+    if mgr and mgr.remove_config(args.name):
+        print(f"已注销: {args.name}")
+        return
+    print(f"未找到: {args.name}")
+    sys.exit(1)
 
 
 def cmd_session_config_set(args):
-    mgr = _init_mgr(args)
+    client, mgr = _client_or_fallback(args)
     try:
         if args.from_json:
             params = json.loads(args.from_json)
-            mgr.set_config(args.name, params)
+            if not isinstance(params, dict):
+                raise ValueError("--from-json 必须是 JSON 对象")
+            if client:
+                result = client.set_session_class_params(args.name, params)
+                if "error" in result:
+                    raise ValueError(result["error"])
+            else:
+                mgr.set_config(args.name, params)  # type: ignore
         else:
             kv = {}
             for group in args.set:
@@ -152,7 +192,17 @@ def cmd_session_config_set(args):
                         sys.exit(1)
                     key, val = item.split("=", 1)
                     kv[key.strip()] = val.strip()
-            mgr.update_config(args.name, **kv)
+            if client:
+                current = client.get_session_class(args.name)
+                if "error" in current:
+                    raise ValueError(current["error"])
+                params = dict(current.get("params", {}))
+                params.update(kv)
+                result = client.set_session_class_params(args.name, params)
+                if "error" in result:
+                    raise ValueError(result["error"])
+            else:
+                mgr.update_config(args.name, **kv)  # type: ignore
         print(f"已更新配置: {args.name}")
     except ValueError as e:
         print(f"配置失败: {e}")
@@ -160,19 +210,48 @@ def cmd_session_config_set(args):
 
 
 def cmd_session_config_show(args):
-    mgr = _init_mgr(args)
-    cfg = mgr.get_config(args.name)
+    client, mgr = _client_or_fallback(args)
+    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)  # type: ignore
+    if isinstance(cfg, dict) and "error" in cfg:
+        print(f"查询失败: {cfg['error']}")
+        sys.exit(1)
     if cfg is None:
         print(f"未找到: {args.name}")
         sys.exit(1)
     print(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
+def cmd_session_scan(args):
+    """扫描 Session 类"""
+    config = load_cli_config(args)
+    paths = getattr(args, "path", None) or config.session_scan_paths
+    results = discover_session_classes(paths)
+    if not results:
+        print("未发现 Session/AsyncSession 子类")
+        return
+    current_file = ""
+    for item in results:
+        file_name = str(Path(item.file_path))
+        if file_name != current_file:
+            current_file = file_name
+            print(file_name)
+        if item.error:
+            print(f"  ! {item.error}")
+        else:
+            print(f"  - {item.class_name} ({'async' if item.is_async else 'sync'})")
+            print(f"    class_path: {item.class_path}")
+            print(f"    params: {json.dumps(item.init_params, ensure_ascii=False)}")
+
+
 def cmd_session_create(args):
-    config = ConfigLoader.autodetect()
-    if args.config:
-        config = ConfigLoader.from_json(args.config) or ConfigLoader.from_yaml(args.config)
-    scm = SessionClassConfigManager(storage_path=config.session_class_config_path)
+    config = load_cli_config(args)
+    client = daemon_client_from_args(args)
+    if client.is_alive():
+        print("提示: 后端正在运行, 此命令只创建持久化 session 实例, 不会直接修改已加载的运行时缓存.")
+    scm = SessionClassConfigManager(
+        storage_path=config.session_class_config_path,
+        session_scan_paths=config.session_scan_paths,
+    )
     sm = SessionManager(db_path=config.session_db_path)
     context_value = getattr(args, 'context_value', None) or ""
     sid = args.id or ""
@@ -225,6 +304,7 @@ def dispatch(args):
         "register": cmd_session_register,
         "unregister": cmd_session_unregister,
         "create": cmd_session_create,
+        "scan": cmd_session_scan,
     }
     if args.action in action_map:
         action_map[args.action](args)

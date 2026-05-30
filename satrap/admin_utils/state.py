@@ -20,6 +20,7 @@ def reset_state_managers(config):
     st.session_state.config = config
     st.session_state.scm = SessionClassConfigManager(
         storage_path=st.session_state.config.session_class_config_path,
+        session_scan_paths=st.session_state.config.session_scan_paths,
     )
     st.session_state.mcm = ModelConfigManager(
         storage_path=st.session_state.config.model_config_path,
@@ -35,6 +36,7 @@ def ensure_state():
     if "scm" not in st.session_state:
         st.session_state.scm = SessionClassConfigManager(
             storage_path=st.session_state.config.session_class_config_path,
+            session_scan_paths=st.session_state.config.session_scan_paths,
         )
 
     if "mcm" not in st.session_state:

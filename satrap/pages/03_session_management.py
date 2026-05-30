@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
+from pathlib import Path
 from typing import Any
 
 import streamlit as st
@@ -9,6 +11,7 @@ from satrap.admin_utils.state import ensure_state
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.session_discovery import create_default_session_dir, discover_session_classes
 
 st.set_page_config(page_title="会话管理", page_icon="", layout="wide")
 
@@ -33,13 +36,69 @@ def _adapter_options() -> list[str]:
     return ids
 
 
+def _class_name_to_config_name(class_name: str) -> str:
+    """将类名转换为默认配置名"""
+    name = re.sub(r"(?<!^)(?=[A-Z])", "_", class_name).lower()
+    return name.removesuffix("_session") or name
+
+
+def _scan_path_options() -> list[str]:
+    """获取 Session 扫描目录选项"""
+    paths = [str(item) for item in getattr(st.session_state.config, "session_scan_paths", []) or []]
+    if not paths:
+        paths = ["satrap/sessions"]
+    return paths
+
+
 @st.dialog("注册新会话类")
 def _register_dialog():
     scm: SessionClassConfigManager = st.session_state.scm
     st.write("注册新会话类")
 
-    name = st.text_input("名称 (name)")
-    class_path = st.text_input("Class Path (如 `misskey_session.MisskeySession`)")
+    mode = st.radio("注册方式", ["扫描目录", "手动 Class Path"], horizontal=True)
+
+    selected_class_path = ""
+    default_name = ""
+    if mode == "扫描目录":
+        scan_paths = _scan_path_options()
+        selected_scan_path = st.selectbox("Session Path", scan_paths)
+        col_create, col_refresh = st.columns(2)
+        with col_create:
+            if st.button("创建默认 Session 目录"):
+                path = create_default_session_dir([selected_scan_path])
+                st.success(f"已创建: {path}")
+        with col_refresh:
+            refresh_clicked = st.button("刷新扫描结果")
+
+        cache_key = f"session_scan_results_{selected_scan_path}"
+        if refresh_clicked or cache_key not in st.session_state:
+            st.session_state[cache_key] = [item.to_dict() for item in discover_session_classes([selected_scan_path])]
+
+        results = st.session_state.get(cache_key, [])
+        errors = [item for item in results if item.get("error")]
+        for item in errors:
+            st.warning(f"{Path(item.get('file_path', '')).name}: {item.get('error')}")
+
+        choices = [item for item in results if item.get("class_path")]
+        if choices:
+            labels = [
+                f"{Path(item['file_path']).name} -> {item['class_name']} ({'async' if item.get('is_async') else 'sync'})"
+                for item in choices
+            ]
+            selected_index = st.selectbox("选择会话类", range(len(labels)), format_func=lambda i: labels[i])
+            selected = choices[int(selected_index)]
+            selected_class_path = str(selected.get("class_path", ""))
+            default_name = _class_name_to_config_name(str(selected.get("class_name", "")))
+            st.code(selected_class_path)
+            st.caption("参数模板")
+            st.json(selected.get("init_params", {}))
+        else:
+            st.info("未发现可注册的 Session/AsyncSession 子类")
+    else:
+        selected_class_path = st.text_input("Class Path (如 `misskey_session.MisskeySession`)")
+
+    name = st.text_input("名称 (name)", value=default_name)
+    class_path = selected_class_path if mode == "扫描目录" else selected_class_path
     desc = st.text_input("描述 (description, 可选)")
     context_key = st.text_input("上下文键 (context_key, 可选)")
     model_key = st.text_input("模型键 (model_key, 可选)")
@@ -49,8 +108,7 @@ def _register_dialog():
             st.error("名称和 Class Path 为必填项")
             return
         try:
-            cls = SessionClassConfigManager._load_class(class_path)
-            scm.register(name, cls, description=desc, context_key=context_key, model_key=model_key)
+            scm.register_by_class_path(name, class_path, description=desc, context_key=context_key, model_key=model_key)
             st.success(f"已注册: {name}")
             _reload_caches()
             st.rerun()

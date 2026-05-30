@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Type
 
 from satrap.core.framework.Base import AsyncSession, Session
+from satrap.core.framework.session_discovery import ensure_session_scan_paths
 from satrap.core.log import logger
 
 
@@ -26,9 +27,16 @@ class SessionClassConfigManager:
 
     DEFAULT_NAME = "default"
 
-    def __init__(self, storage_path: str | Path | None = None, auto_create: bool = True):
+    def __init__(
+        self,
+        storage_path: str | Path | None = None,
+        auto_create: bool = True,
+        session_scan_paths: list[str] | None = None,
+    ):
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
+        self.session_scan_paths = list(session_scan_paths or ["satrap/sessions"])
+        ensure_session_scan_paths(self.session_scan_paths)
 
         self._configs: Dict[str, Dict[str, Any]] = {}
         self._class_cache: Dict[str, Type[Session] | Type[AsyncSession]] = {}
@@ -208,6 +216,25 @@ class SessionClassConfigManager:
             }
             self._save_locked()
             logger.info(f"[SessionClassConfigManager] 已注册会话类: {key} -> {class_path}")
+
+    def register_by_class_path(
+        self,
+        name: str,
+        class_path: str,
+        description: str = "",
+        context_key: str = "",
+        model_key: str = "",
+    ):
+        """通过 class_path 注册会话类"""
+        ensure_session_scan_paths(self.session_scan_paths)
+        session_class = self._load_class(class_path)
+        self.register(
+            name,
+            session_class,
+            description=description,
+            context_key=context_key,
+            model_key=model_key,
+        )
 
     # -------- 查询 --------
     def get_config(self, name: str) -> Optional[Dict[str, Any]]:

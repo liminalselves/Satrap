@@ -3,8 +3,7 @@ from __future__ import annotations
 import json
 import sys
 
-from satrap.cli.client import DaemonClient
-from satrap.core.config_loader import ConfigLoader
+from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
 
@@ -18,9 +17,7 @@ CLS_MAP = {"llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfi
 
 
 def _init_mgr(args) -> ModelConfigManager:
-    config = ConfigLoader.autodetect()
-    if getattr(args, 'config', None):
-        config = ConfigLoader.from_json(args.config) or ConfigLoader.from_yaml(args.config)
+    config = load_cli_config(args)
     return ModelConfigManager(storage_path=config.model_config_path)
 
 
@@ -47,8 +44,8 @@ def _fmt_model_config(config) -> dict:
 
 
 def cmd_model_list(args):
-    client = DaemonClient()
-    if client.is_alive():
+    client = daemon_client_from_args(args)
+    if client.is_alive() and not offline_requested(args):
         data = client.list_models(typ=args.type) if args.type != "all" else {}
         if args.type == "all":
             all_data = {}
@@ -97,13 +94,26 @@ def _print_model_table(data: dict, args):
 
 
 def cmd_model_show(args):
-    mgr = _init_mgr(args)
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
         sys.exit(1)
-    config = getattr(mgr, info[1])(name=args.name)
-    data = _fmt_model_config(config)
+    client = daemon_client_from_args(args)
+    if client.is_alive() and not offline_requested(args):
+        configs = client.list_models(typ=args.type)
+        if "error" in configs:
+            print(f"查询失败: {configs['error']}")
+            sys.exit(1)
+        data = dict(configs.get(args.name, {}))
+        if not data:
+            print(f"未找到: {args.type}/{args.name}")
+            sys.exit(1)
+    else:
+        if offline_requested(args):
+            ensure_offline_allowed(args, "读取模型配置")
+        mgr = _init_mgr(args)
+        config = getattr(mgr, info[1])(name=args.name)
+        data = _fmt_model_config(config)
     if not args.show_key and "api_key" in data:
         ak = data.get("api_key", "") or ""
         data["api_key"] = "****" + ak[-4:] if len(ak) > 4 else "****"
@@ -111,7 +121,6 @@ def cmd_model_show(args):
 
 
 def cmd_model_set(args):
-    mgr = _init_mgr(args)
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -119,18 +128,25 @@ def cmd_model_set(args):
     try:
         if args.from_json:
             params = json.loads(args.from_json)
-            config = CLS_MAP[args.type](**params)
-            getattr(mgr, info[2])(config, name=args.name)
         else:
-            kv = {}
-            for group in args.set:
-                for item in (group if isinstance(group, list) else [group]):
-                    if "=" not in item:
-                        print(f"无效格式: {item}")
-                        sys.exit(1)
-                    key, val = item.split("=", 1)
-                    kv[key.strip()] = val.strip()
-            getattr(mgr, info[3])(name=args.name, **kv)
+            params = parse_kv_pairs(args.set)
+        if not isinstance(params, dict):
+            raise ValueError("参数必须是对象")
+
+        client = daemon_client_from_args(args)
+        if client.is_alive() and not offline_requested(args):
+            result = client.set_model(args.type, args.name, params) if args.from_json else client.update_model(args.type, args.name, params)
+            if "error" in result:
+                raise ValueError(result["error"])
+        else:
+            if offline_requested(args):
+                ensure_offline_allowed(args, "修改模型配置")
+            mgr = _init_mgr(args)
+            if args.from_json:
+                config = CLS_MAP[args.type](**params)
+                getattr(mgr, info[2])(config, name=args.name)
+            else:
+                getattr(mgr, info[3])(name=args.name, **params)
         print(f"已更新模型配置: {args.type}/{args.name}")
     except Exception as e:
         print(f"设置失败: {e}")
@@ -138,13 +154,22 @@ def cmd_model_set(args):
 
 
 def cmd_model_remove(args):
-    mgr = _init_mgr(args)
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
         sys.exit(1)
     try:
-        success = getattr(mgr, info[4])(name=args.name)
+        client = daemon_client_from_args(args)
+        if client.is_alive() and not offline_requested(args):
+            result = client.remove_model(args.type, args.name)
+            if "error" in result:
+                raise ValueError(result["error"])
+            success = True
+        else:
+            if offline_requested(args):
+                ensure_offline_allowed(args, "删除模型配置")
+            mgr = _init_mgr(args)
+            success = getattr(mgr, info[4])(name=args.name)
         if success:
             print(f"已删除: {args.type}/{args.name}")
         else:

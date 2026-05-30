@@ -1,13 +1,13 @@
 import sys
 
-from satrap.cli.client import DaemonClient
+from satrap.cli.common import daemon_client_from_args
 
 
 def cmd_reload(args):
     """通知后端重载配置"""
-    client = DaemonClient()
+    client = daemon_client_from_args(args)
     if not client.is_alive():
-        print("错误: 后端未运行")
+        print(f"错误: 后端未运行 ({client.daemon.base_url})")
         sys.exit(1)
     result = client.reload_config()
     if "error" in result:

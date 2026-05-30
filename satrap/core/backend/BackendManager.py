@@ -48,6 +48,7 @@ class BackendConfig:
 
     # Session 类注册 (name -> class_path)
     session_classes: Dict[str, str] = field(default_factory=dict)
+    session_scan_paths: List[str] = field(default_factory=lambda: ["satrap/sessions"])
 
     # HTTP API
     api_host: str = "127.0.0.1"
@@ -72,6 +73,7 @@ class BackendConfig:
             llm_timeout=float(data.get("llm_timeout", 120.0)),
             error_feedback=bool(data.get("error_feedback", True)),
             session_classes=dict(data.get("session_classes", {})),
+            session_scan_paths=list(data.get("session_scan_paths", ["satrap/sessions"])),
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
@@ -239,12 +241,12 @@ class BackendManager:
 
         self._session_cls_cfg = _SCCM(
             storage_path=self.config.session_class_config_path,
+            session_scan_paths=self.config.session_scan_paths,
         )
         # 注册配置中声明的 session 类
         for name, class_path in self.config.session_classes.items():
             try:
-                cls = _SCCM._load_class(class_path)
-                self._session_cls_cfg.register(name, cls)
+                self._session_cls_cfg.register_by_class_path(name, class_path)
             except Exception as e:
                 logger.error(f"[BackendManager] 注册 session 类失败: {name}={class_path}, 错误: {e}")
         logger.info("[BackendManager] SessionClassConfigManager 就绪")

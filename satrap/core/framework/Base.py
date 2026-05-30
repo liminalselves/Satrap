@@ -183,7 +183,7 @@ class ModelWorkflowFramework:
         """重置会话模型"""
         self.llm = llm
 
-    def forward(self):
+    def forward(self, *input, **kwargs) -> Any:
         """执行工作流; 调用模型并返回结果"""
         return None
 
@@ -222,7 +222,10 @@ class Session:
         self.wf_list = []
 
         self.content_callback = content_callback
-        self._user_manager = None
+        self._user_manager: Any = None
+        from satrap.expend.command import register_session_commands
+
+        register_session_commands(self)
 
     def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
@@ -234,13 +237,17 @@ class Session:
         """获取当前用户的所有上下文 session_id 列表"""
         if not self._user_manager:
             return []
-        parts = self.session_id.split(":", 2)
+        parts = self.session_id.split(":")
         if len(parts) < 3:
             return []
-        _session_type, _platform, user_id = parts
+        user_id = parts[2]
         return self._user_manager.get_user_session_ids(user_id)
 
-    def run(self):
+    def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
+        """上下文切换后调用, 子类可重写以刷新工作流。"""
+        return None
+
+    def run(self, *input, **kwargs) -> Any:
         """执行会话; 调用模型并返回结果"""
         return None
     
@@ -262,7 +269,7 @@ class Session:
                 wf_ctx = ContextManager(wf_id)
                 wf_ctx.del_context()
 
-            logger.info(f"[会话管理器] 清除工作流上下文完成, 工作流ID: {wf_id}")
+            logger.info("[会话管理器] 清除工作流上下文完成")
 
         except Exception as e:
             logger.error(f"[会话管理器] 清除会话上下文错误: {e}")  
@@ -462,7 +469,7 @@ class AsyncModelWorkflowFramework:
         """重置会话模型"""
         self.llm = llm
 
-    async def forward(self, *input, **kwargs):
+    async def forward(self, *input, **kwargs) -> Any:
         """执行工作流"""
         return None
 
@@ -524,10 +531,13 @@ class AsyncSession:
         self.wf_list = []
         self.content_callback = content_callback
         self._initialized = False
-        self._user_manager = None
+        self._user_manager: Any = None
 
         self.command_handler = command_handler if command_handler else AsyncCommandHandler()
         # 如果未提供命令处理器, 则创建一个空的命令处理器实例
+        from satrap.expend.command import register_async_session_commands
+
+        register_async_session_commands(self)
 
     async def _ensure_initialized(self):
         """确保异步初始化完成 (幂等)"""
@@ -555,13 +565,17 @@ class AsyncSession:
         """获取当前用户的所有上下文 session_id 列表"""
         if not self._user_manager:
             return []
-        parts = self.session_id.split(":", 2)
+        parts = self.session_id.split(":")
         if len(parts) < 3:
             return []
-        _session_type, _platform, user_id = parts
+        user_id = parts[2]
         return self._user_manager.get_user_session_ids(user_id)
 
-    async def run(self):
+    async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
+        """上下文切换后调用, 子类可重写以刷新工作流。"""
+        return None
+
+    async def run(self, *input, **kwargs) -> Any:
         """执行会话"""
         return None
 

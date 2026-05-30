@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -70,23 +71,60 @@ class DaemonClient:
     def list_session_classes(self) -> dict:
         return self._request("GET", "/api/config/session-classes")
 
+    def register_session_class(
+        self,
+        name: str,
+        class_path: str,
+        description: str = "",
+        context_key: str = "",
+        model_key: str = "",
+    ) -> dict:
+        return self._request(
+            "POST",
+            "/api/config/session-classes",
+            body={
+                "name": name,
+                "class_path": class_path,
+                "description": description,
+                "context_key": context_key,
+                "model_key": model_key,
+            },
+        )
+
     def enable_session_class(self, name: str) -> dict:
-        return self._request("POST", f"/api/config/session-classes/{name}/enable")
+        return self._request("POST", f"/api/config/session-classes/{self._quote(name)}/enable")
 
     def disable_session_class(self, name: str) -> dict:
-        return self._request("POST", f"/api/config/session-classes/{name}/disable")
+        return self._request("POST", f"/api/config/session-classes/{self._quote(name)}/disable")
 
     def get_session_class(self, name: str) -> dict:
-        return self._request("GET", f"/api/config/session-classes/{name}")
+        return self._request("GET", f"/api/config/session-classes/{self._quote(name)}")
 
     def set_session_class_params(self, name: str, params: dict) -> dict:
-        return self._request("PUT", f"/api/config/session-classes/{name}", body={"params": params})
+        return self._request("PUT", f"/api/config/session-classes/{self._quote(name)}", body={"params": params})
+
+    def unregister_session_class(self, name: str) -> dict:
+        return self._request("DELETE", f"/api/config/session-classes/{self._quote(name)}")
 
     def list_models(self, typ: str = "llm") -> dict:
         return self._request("GET", f"/api/config/models?type={typ}")
 
+    def set_model(self, typ: str, name: str, params: dict) -> dict:
+        return self._request("POST", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}", body=params)
+
+    def update_model(self, typ: str, name: str, params: dict) -> dict:
+        return self._request("PATCH", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}", body=params)
+
+    def remove_model(self, typ: str, name: str) -> dict:
+        return self._request("DELETE", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}")
+
     def health(self) -> dict:
         return self._request("GET", "/api/health")
+
+    @staticmethod
+    def _quote(value: str) -> str:
+        """URL path segment 转义"""
+        return urllib.parse.quote(value, safe="")
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         """发送 HTTP 请求并解析 JSON 响应"""

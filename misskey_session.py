@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 from satrap import AsyncLLM, AsyncToolsManager
 from satrap.core.framework import AsyncSession
 from satrap.core.framework.Base import AsyncModelWorkflowFramework
-from satrap.core.utils.context import AsyncContextManager
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.expend.sandbox_tools import AsyncCodeSandboxTool
 from satrap.expend.search import AsyncSearchTool, AsyncFetchPageTool
@@ -73,108 +72,25 @@ class MisskeySession(AsyncSession):
         )
         self._wf = None
 
-        self.command_handler.register_command("new", self._cmd_new, "开始新对话")
-        self.command_handler.register_command("history", self._cmd_history, "查看此用户的所有对话")
-        self.command_handler.register_command("switch", self._cmd_switch, "切换至指定对话: /switch <session_id>")
-        self.command_handler.register_command("about", self._cmd_about, "关于")
-
-    @property
-    def user_contexts(self) -> list[str]:
-        """获取当前用户的所有上下文 session_id 列表
-
-        相对于父类按 : 最多分割2次, 这里直接取第3段作为 user_id,
-        兼容多对话后缀格式: type:platform:user_id 和 type:platform:user_id:ts
-        """
-        if not self._user_manager:
-            return []
-        parts = self.session_id.split(":")
-        if len(parts) < 3:
-            return []
-        user_id = parts[2]
-        return self._user_manager.get_user_session_ids(user_id)
-
-    async def _cmd_new(self):
-        """开始新的对话（保留当前对话历史）"""
-        import time
-
-        # 取原始 base session_id (前3段 type:platform:user_id)，附加时间戳
-        # 避免在当前已带时间戳的 id 上继续堆叠
-        parts = self.session_id.split(":")
-        base_id = ":".join(parts[:3])
-        new_id = f"{base_id}:{int(time.time())}"
-
-        # 绑定到用户管理器，使其出现在 /history 列表中
-        if self._user_manager:
-            parts = self.session_id.split(":")
-            if len(parts) >= 3:
-                user_id = parts[2]
-                self._user_manager.bind_session(user_id, new_id)
-
-        # 切换到新上下文（沙箱路径不跟随切换，所有对话共享同一沙箱）
-        self.session_id = new_id
-        self.session_ctx = AsyncContextManager(self.session_id)
-        await self.session_ctx.initialize()
-
-        self._wf = await MainWF.create(
-            llm=self._llm,
-            context_id=self.session_id,
-            tools_manager=self._wf.tools_manager,   # type: ignore
-            system_prompt=self.system_prompt,
-            content_callback=self._content_callback,
-        )
-
-        return "已开始新对话（旧对话可通过 /history 查看和切换）"
-
-    async def _cmd_history(self):
-        """列出此用户的所有对话上下文"""
-        contexts = self.user_contexts
-        if not contexts:
-            return "暂无其他对话"
-
-        current = self.session_id
-        lines = ["当前用户的所有对话:"]
-        for sid in contexts:
-            tag = " ← 当前" if sid == current else ""
-            lines.append(f"  {sid}{tag}")
-        return "\n".join(lines)
-
-    async def _cmd_switch(self, target_id: str = ""):
-        """切换至指定对话: /switch <session_id>"""
-        if not target_id:
-            return "用法: /switch <session_id>\n请通过 /history 查看可用对话的 session_id"
-
-        contexts = self.user_contexts
-        if target_id not in contexts:
-            return f"对话不存在: {target_id}\n请通过 /history 查看可用对话"
-
-        if target_id == self.session_id:
-            return f"已在当前对话: {target_id}"
-
-        # 更新 session_id（沙箱路径不跟随切换）
-        old_sid = self.session_id
-        self.session_id = target_id
-
-        # 重建上下文管理器和工作流, 使其使用新上下文的 ContextManager
-        self.session_ctx = AsyncContextManager(self.session_id)
-        await self.session_ctx.initialize()
-
-        self._wf = await MainWF.create(
-            llm=self._llm,
-            context_id=self.session_id,
-            tools_manager=self._wf.tools_manager,   # type: ignore
-            system_prompt=self.system_prompt,
-            content_callback=self._content_callback,
-        )
-
-        return f"已切换至: {target_id}"
-
-    async def _cmd_about(self):
+    def get_about_text(self) -> str:
         """输出程序信息"""
         return (
             "Satrap AI 助手 v0.1 alpha\n"
             "仍然在测试中, 有 Bug 请反馈\n"
             "基于 Satrap 框架 / Misskey 平台\n"
             "功能: 代码执行 / 网页搜索 / 多轮对话 / 多对话切换"
+        )
+
+    async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
+        """切换上下文后重建工作流, 使模型读写新上下文。"""
+        if not self._wf:
+            return
+        self._wf = await MainWF.create(
+            llm=self._llm,
+            context_id=new_session_id,
+            tools_manager=self._wf.tools_manager,
+            system_prompt=self.system_prompt,
+            content_callback=self._content_callback,
         )
 
     async def _async_init(self):

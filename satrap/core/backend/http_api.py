@@ -5,6 +5,8 @@ import json
 from urllib.parse import unquote
 from typing import TYPE_CHECKING
 
+from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
 
@@ -104,6 +106,21 @@ class BackendHTTPServer:
                 return 200, mgr.list_configs()
             return 200, {}
 
+        # POST /api/config/session-classes
+        if method == "POST" and path == "/api/config/session-classes" and backend.session_class_mgr:
+            try:
+                payload = json.loads(body or b"{}")
+                backend.session_class_mgr.register_by_class_path(
+                    str(payload.get("name", "")),
+                    str(payload.get("class_path", "")),
+                    description=str(payload.get("description", "")),
+                    context_key=str(payload.get("context_key", "")),
+                    model_key=str(payload.get("model_key", "")),
+                )
+                return 200, {"ok": True}
+            except Exception as e:
+                return 400, {"error": str(e)}
+
         # POST /api/config/session-classes/{name}/enable
         if method == "POST" and path.endswith("/enable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
             name = unquote(path.split("/")[5])
@@ -133,6 +150,13 @@ class BackendHTTPServer:
                 backend.session_class_mgr.set_config(name, payload["params"])
             return 200, {"ok": True}
 
+        # DELETE /api/config/session-classes/{name}
+        if method == "DELETE" and path.startswith(path_prefix) and backend.session_class_mgr:
+            name = unquote(path[len(path_prefix):])
+            if backend.session_class_mgr.remove_config(name):
+                return 200, {"ok": True}
+            return 404, {"error": "not found"}
+
         # GET /api/config/models?type=llm
         if method == "GET" and path.startswith("/api/config/models") and backend.model_config_manager:
             typ = "llm"
@@ -150,5 +174,50 @@ class BackendHTTPServer:
             elif typ == "rerank":
                 return 200, mgr.list_rerank_configs(mask_api_key=True)
             return 200, {}
+
+        # POST/PATCH/DELETE /api/config/models/{type}/{name}
+        model_prefix = "/api/config/models/"
+        if path.startswith(model_prefix) and backend.model_config_manager:
+            parts = path[len(model_prefix):].split("/", 1)
+            if len(parts) != 2:
+                return 404, {"error": f"unknown route: {method} {path}"}
+            typ = unquote(parts[0])
+            name = unquote(parts[1])
+            mgr = backend.model_config_manager
+            try:
+                if typ not in ("llm", "embedding", "rerank"):
+                    return 400, {"error": f"未知模型类型: {typ}"}
+
+                if method == "POST":
+                    payload = json.loads(body or b"{}")
+                    payload["name"] = name
+                    if typ == "llm":
+                        mgr.set_llm_config(LLMConfig(**payload), name=name)
+                    elif typ == "embedding":
+                        mgr.set_embedding_config(EmbeddingConfig(**payload), name=name)
+                    else:
+                        mgr.set_rerank_config(ReRankConfig(**payload), name=name)
+                    return 200, {"ok": True}
+                if method == "PATCH":
+                    payload = json.loads(body or b"{}")
+                    if typ == "llm":
+                        mgr.update_llm_config(name=name, **payload)
+                    elif typ == "embedding":
+                        mgr.update_embedding_config(name=name, **payload)
+                    else:
+                        mgr.update_rerank_config(name=name, **payload)
+                    return 200, {"ok": True}
+                if method == "DELETE":
+                    if typ == "llm":
+                        removed = mgr.remove_llm_config(name=name)
+                    elif typ == "embedding":
+                        removed = mgr.remove_embedding_config(name=name)
+                    else:
+                        removed = mgr.remove_rerank_config(name=name)
+                    if removed:
+                        return 200, {"ok": True}
+                    return 404, {"error": "not found"}
+            except Exception as e:
+                return 400, {"error": str(e)}
 
         return 404, {"error": f"unknown route: {method} {path}"}
