@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
-import yaml
 from pathlib import Path
 from typing import Any
+
+import streamlit as st
+import yaml
 
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config_loader import ConfigLoader
@@ -14,7 +16,7 @@ CONFIG_CANDIDATES = ("config.yaml", "config.yml", "config.json")
 
 
 def find_config_path(cwd: str | Path | None = None) -> Path:
-    """查找当前配置文件, 不存在时返回 satrap/config.yaml"""
+    """查找当前配置文件, 不存在时返回 .satrap/config.yaml"""
     for path in ConfigLoader.candidate_paths(cwd):
         if path.exists():
             return path
@@ -252,3 +254,109 @@ def configured_platform_types(config_data: dict[str, Any], health: dict | None =
         if typ:
             types.add(typ)
     return sorted(types)
+
+
+def _platform_index(options: list[str], value: str) -> int:
+    """获取 selectbox 默认索引"""
+    try:
+        return options.index(value)
+    except ValueError:
+        return 0
+
+
+def _platform_settings_form(platform_type: str, settings: dict, key_prefix: str) -> dict:
+    """按平台类型渲染 settings 表单"""
+    if platform_type == "onebot":
+        col1, col2 = st.columns(2)
+        with col1:
+            host = st.text_input("Host", value=str(settings.get("host", "127.0.0.1")), key=f"{key_prefix}_host")
+            access_token = st.text_input(
+                "Access Token",
+                value=str(settings.get("access_token", "")),
+                type="password",
+                key=f"{key_prefix}_access_token",
+            )
+            enable_private = st.checkbox(
+                "启用私聊",
+                value=bool(settings.get("enable_private", True)),
+                key=f"{key_prefix}_enable_private",
+            )
+            self_id = st.text_input("Self ID", value=str(settings.get("self_id", "")), key=f"{key_prefix}_self_id")
+        with col2:
+            port = st.number_input(
+                "Port",
+                min_value=1,
+                max_value=65535,
+                value=int(settings.get("port", 8080)),
+                key=f"{key_prefix}_port",
+            )
+            secret = st.text_input(
+                "Secret",
+                value=str(settings.get("secret", "")),
+                type="password",
+                key=f"{key_prefix}_secret",
+            )
+            enable_group = st.checkbox(
+                "启用群聊",
+                value=bool(settings.get("enable_group", True)),
+                key=f"{key_prefix}_enable_group",
+            )
+        result = {
+            "host": host,
+            "port": int(port),
+            "access_token": access_token,
+            "secret": secret,
+            "enable_private": enable_private,
+            "enable_group": enable_group,
+        }
+        if self_id.strip():
+            result["self_id"] = self_id.strip()
+        return result
+
+    col1, col2 = st.columns(2)
+    with col1:
+        base_url = st.text_input("Base URL", value=str(settings.get("base_url", "")), key=f"{key_prefix}_base_url")
+        api_token = st.text_input(
+            "API Token",
+            value=str(settings.get("api_token", "")),
+            type="password",
+            key=f"{key_prefix}_api_token",
+        )
+        chat_enabled = st.checkbox(
+            "启用 Chat",
+            value=bool(settings.get("chat_enabled", settings.get("misskey_enable_chat", True))),
+            key=f"{key_prefix}_chat_enabled",
+        )
+        local_only = st.checkbox(
+            "Local Only",
+            value=bool(settings.get("misskey_local_only", False)),
+            key=f"{key_prefix}_local_only",
+        )
+    with col2:
+        room_enabled = st.checkbox(
+            "启用 Room",
+            value=bool(settings.get("room_enabled", False)),
+            key=f"{key_prefix}_room_enabled",
+        )
+        max_message_length = st.number_input(
+            "最大消息长度",
+            min_value=1,
+            value=int(settings.get("max_message_length", 3000)),
+            key=f"{key_prefix}_max_message_length",
+        )
+        visibility_options = ["public", "home", "followers", "specified"]
+        visibility = st.selectbox(
+            "默认可见性",
+            visibility_options,
+            index=_platform_index(visibility_options, str(settings.get("misskey_default_visibility", "public"))),
+            key=f"{key_prefix}_visibility",
+        )
+    return {
+        "base_url": base_url,
+        "api_token": api_token,
+        "chat_enabled": chat_enabled,
+        "room_enabled": room_enabled,
+        "max_message_length": int(max_message_length),
+        "misskey_default_visibility": visibility,
+        "misskey_local_only": local_only,
+    }

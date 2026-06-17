@@ -46,7 +46,7 @@ def _scan_path_options() -> list[str]:
     """获取 Session 扫描目录选项"""
     paths = [str(item) for item in getattr(st.session_state.config, "session_scan_paths", []) or []]
     if not paths:
-        paths = ["satrap/sessions"]
+        paths = [".satrap/session"]
     return paths
 
 
@@ -100,7 +100,6 @@ def _register_dialog():
     name = st.text_input("名称 (name)", value=default_name)
     class_path = selected_class_path if mode == "扫描目录" else selected_class_path
     desc = st.text_input("描述 (description, 可选)")
-    context_key = st.text_input("上下文键 (context_key, 可选)")
     model_key = st.text_input("模型键 (model_key, 可选)")
 
     if st.button("注册"):
@@ -108,7 +107,7 @@ def _register_dialog():
             st.error("名称和 Class Path 为必填项")
             return
         try:
-            scm.register_by_class_path(name, class_path, description=desc, context_key=context_key, model_key=model_key)
+            scm.register_by_class_path(name, class_path, description=desc, model_key=model_key)
             st.success(f"已注册: {name}")
             _reload_caches()
             st.rerun()
@@ -148,7 +147,6 @@ def _create_session_dialog(name: str):
     st.write(f"创建会话实例: {name}")
 
     cfg_entry = scm.get_config(name)
-    context_key = (cfg_entry or {}).get("context_key", "")
     model_key = (cfg_entry or {}).get("model_key", "")
 
     session_id = st.text_input("Session ID (留空自动生成)")
@@ -157,16 +155,13 @@ def _create_session_dialog(name: str):
     adapter_choice = st.selectbox("绑定适配器", adapter_choices)
     adapter_id = "" if adapter_choice == "自动(按消息来源)" else adapter_choice
 
-    context_value = ""
-    if context_key:
-        context_value = st.text_input(f"上下文值 ({context_key})")
-
     llm_name = ""
     if model_key:
         mcm = st.session_state.mcm
         llm_configs = mcm.list_llm_configs(mask_api_key=True)
         llm_names = list(llm_configs.keys())
-        llm_name = st.selectbox("LLM 模型", llm_names) if llm_names else st.text_input("LLM 名称")
+        current_name = st.selectbox("LLM 模型", llm_names) if llm_names else st.text_input("LLM 名称")
+        llm_name = current_name
 
     if st.button("创建"):
 
@@ -181,21 +176,11 @@ def _create_session_dialog(name: str):
             extra["adapter_id"] = adapter_id
 
         try:
-            if context_value:
-                cfg = sm.register_session_from_context(
-                    name,
-                    scm,
-                    context_value=context_value,
-                    platform=adapter_id,
-                    extra_params=extra,
-                )
-                st.success(f"已创建会话: `{cfg.session_id}` (上下文: {context_value})")
-            else:
-                sid = session_id or uuid.uuid4().hex
-                cfg = sm.register_session_from_class_config(
-                    name, scm, session_id=sid, extra_params=extra,
-                )
-                st.success(f"已创建会话: `{cfg.session_id}`")
+            sid = session_id or uuid.uuid4().hex
+            cfg = sm.register_session_from_class_config(
+                name, scm, session_id=sid, extra_params=extra,
+            )
+            st.success(f"已创建会话: `{cfg.session_id}`")
             _reload_caches()
             st.rerun()
         except Exception as e:
@@ -218,6 +203,26 @@ def _unregister_dialog(name: str):
     with col2:
         if st.button("取消"):
             st.rerun()
+
+
+@st.dialog("编辑模型键")
+def _edit_model_key_dialog(name: str):
+    scm: SessionClassConfigManager = st.session_state.scm
+    st.write(f"编辑模型键: {name}")
+
+    cfg_entry = scm.get_config(name)
+    current_model_key = (cfg_entry or {}).get("model_key", "")
+    st.caption("模型键决定了 LLM 模型名称以哪个参数名传给会话构造函数。留空则使用默认值 'model_name'。")
+    new_model_key = st.text_input("模型键", value=current_model_key) or ""
+
+    if st.button("保存"):
+        try:
+            scm.set_model_key(name, new_model_key)
+            st.success("已保存")
+            _reload_caches()
+            st.rerun()
+        except Exception as e:
+            st.error(f"保存失败: {e}")
 
 
 @st.cache_data(ttl=2)
@@ -243,13 +248,11 @@ def render():
     rows = []
     for sname, entry in configs.items():
         status = "启用" if entry.get("enabled", True) else "停用"
-        ck = entry.get("context_key", "") or "-"
         mk = entry.get("model_key", "") or "-"
         cp = entry.get("class_path", "")
         rows.append({
             "名称": sname,
             "状态": status,
-            "上下文键": ck,
             "模型键": mk,
             "Class Path": cp,
         })
@@ -263,7 +266,7 @@ def render():
     if not name_list:
         return
 
-    col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
+    col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 1, 1, 1, 1])
     with col1:
         target = st.selectbox("选择会话类", name_list, label_visibility="collapsed")
     with col2:
@@ -294,6 +297,9 @@ def render():
     with col5:
         if st.button("注销"):
             _unregister_dialog(target)
+    with col6:
+        if st.button("模型键"):
+            _edit_model_key_dialog(target)
 
 
 render()

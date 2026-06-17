@@ -46,16 +46,20 @@ class ConfigLoader:
 
     @staticmethod
     def candidate_paths(cwd: str | Path | None = None) -> list[Path]:
-        """返回配置文件自动检测路径, 根目录优先, satrap 目录兜底"""
+        """返回配置文件自动检测路径, 根目录优先, .satrap 目录其次, satrap 目录兜底"""
         root = Path(cwd) if cwd is not None else Path.cwd()
         names = ("config.yaml", "config.yml", "config.json")
-        return [root / name for name in names] + [root / "satrap" / name for name in names]
+        return (
+            [root / name for name in names]
+            + [root / ".satrap" / name for name in names]
+            + [root / "satrap" / name for name in names]
+        )
 
     @staticmethod
     def default_config_path(cwd: str | Path | None = None) -> Path:
         """返回无配置时应创建的默认配置路径"""
         root = Path(cwd) if cwd is not None else Path.cwd()
-        return root / "satrap" / "config.yaml"
+        return root / ".satrap" / "config.yaml"
 
     @staticmethod
     def ensure_default_config(cwd: str | Path | None = None) -> Path:
@@ -169,7 +173,7 @@ class ConfigLoader:
 
     @staticmethod
     def autodetect() -> BackendConfig:
-        """自动检测并加载配置文件, 不存在时创建 satrap/config.yaml"""
+        """自动检测并加载配置文件, 不存在时创建 .satrap/config.yaml"""
         for path in ConfigLoader.candidate_paths():
             if path.exists():
                 loader = ConfigLoader.from_yaml if path.suffix in (".yaml", ".yml") else ConfigLoader.from_json

@@ -48,7 +48,7 @@ class BackendConfig:
 
     # Session 类注册 (name -> class_path)
     session_classes: Dict[str, str] = field(default_factory=dict)
-    session_scan_paths: List[str] = field(default_factory=lambda: ["satrap/sessions"])
+    session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
 
     # HTTP API
     api_host: str = "127.0.0.1"
@@ -73,7 +73,7 @@ class BackendConfig:
             llm_timeout=float(data.get("llm_timeout", 120.0)),
             error_feedback=bool(data.get("error_feedback", True)),
             session_classes=dict(data.get("session_classes", {})),
-            session_scan_paths=list(data.get("session_scan_paths", ["satrap/sessions"])),
+            session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),

@@ -31,11 +31,11 @@ class SessionClassConfigManager:
         self,
         storage_path: str | Path | None = None,
         auto_create: bool = True,
-        session_scan_paths: list[str] | None = None,
+        session_scan_paths: list[str] | None = None
     ):
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
-        self.session_scan_paths = list(session_scan_paths or ["satrap/sessions"])
+        self.session_scan_paths = list(session_scan_paths or [".satrap/session"])
         ensure_session_scan_paths(self.session_scan_paths)
 
         self._configs: Dict[str, Dict[str, Any]] = {}

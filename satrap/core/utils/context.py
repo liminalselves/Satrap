@@ -65,12 +65,20 @@ class ContextManager:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     conversation_id TEXT NOT NULL,
                     role TEXT NOT NULL,
-                    content TEXT NOT NULL
+                    content TEXT,
+                    tool_call_id TEXT,
+                    tool_calls TEXT,
+                    reasoning_content TEXT
                 )
-            ''')   # 创建一个简单的表存储所有消息
+            ''')
 
             cursor.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
-            # 创建索引加速查询
+
+            for col in ('tool_call_id', 'tool_calls', 'reasoning_content'):
+                try:
+                    cursor.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass
 
             conn.commit()
             conn.close()
@@ -89,15 +97,23 @@ class ContextManager:
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
-            # 按插入顺序读取
             cursor.execute(
-                "SELECT role, content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
+                "SELECT role, content, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
                 (self.conversation_id,)
             )
             rows = cursor.fetchall()
-            conn.close()   # 关闭连接
+            conn.close()
 
-            self._messages = [{"role": row[0], "content": row[1]} for row in rows]
+            self._messages = []
+            for row in rows:
+                msg = {"role": row[0], "content": row[1]}
+                if row[2] is not None:
+                    msg["tool_call_id"] = row[2]
+                if row[3] is not None:
+                    msg["tool_calls"] = json.loads(row[3])
+                if row[4] is not None:
+                    msg["reasoning_content"] = row[4]
+                self._messages.append(msg)
         except Exception as e:
             logger.error(f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages = []
@@ -107,17 +123,22 @@ class ContextManager:
         conn = self._get_conn()
         cursor = conn.cursor()
         try:
-            # 1. 删除该ID下的旧数据
             cursor.execute("DELETE FROM chat_history WHERE conversation_id = ?", (self.conversation_id,))
             
-            # 2. 批量插入新数据
             if self._messages:
                 data_to_insert = [
-                    (self.conversation_id, msg["role"], msg["content"]) 
+                    (
+                        self.conversation_id,
+                        msg["role"],
+                        msg.get("content"),
+                        msg.get("tool_call_id"),
+                        json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
+                        msg.get("reasoning_content"),
+                    )
                     for msg in self._messages
                 ]
                 cursor.executemany(
-                    "INSERT INTO chat_history (conversation_id, role, content) VALUES (?, ?, ?)", 
+                    "INSERT INTO chat_history (conversation_id, role, content, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?)", 
                     data_to_insert
                 )
             conn.commit()
@@ -603,12 +624,20 @@ class AsyncContextManager:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         conversation_id TEXT NOT NULL,
                         role TEXT NOT NULL,
-                        content TEXT NOT NULL
+                        content TEXT,
+                        tool_call_id TEXT,
+                        tool_calls TEXT,
+                        reasoning_content TEXT
                     )
-                ''')   # 创建一个简单的表存储所有消息
+                ''')
 
                 await conn.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
-                # 创建索引加速查询
+
+                for col in ('tool_call_id', 'tool_calls', 'reasoning_content'):
+                    try:
+                        await conn.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
+                    except aiosqlite.OperationalError:
+                        pass
 
                 await conn.commit()
         except Exception as e:
@@ -625,14 +654,22 @@ class AsyncContextManager:
         """从数据库加载当前 ID 的上下文信息到内存中"""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
-                # 按插入顺序读取
                 cursor = await conn.execute(
-                    "SELECT role, content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
+                    "SELECT role, content, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
                     (self.conversation_id,)
                 )
                 rows = await cursor.fetchall()
 
-            self._messages = [{"role": row[0], "content": row[1]} for row in rows]
+            self._messages = []
+            for row in rows:
+                msg = {"role": row[0], "content": row[1]}
+                if row[2] is not None:
+                    msg["tool_call_id"] = row[2]
+                if row[3] is not None:
+                    msg["tool_calls"] = json.loads(row[3])
+                if row[4] is not None:
+                    msg["reasoning_content"] = row[4]
+                self._messages.append(msg)
         except Exception as e:
             logger.error(f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages = []
@@ -641,17 +678,22 @@ class AsyncContextManager:
         """保存当前上下文到数据库"""
         try:
             async with aiosqlite.connect(self.db_path) as conn:
-                # 1. 删除该 ID 下的旧数据
                 await conn.execute("DELETE FROM chat_history WHERE conversation_id = ?", (self.conversation_id,))
                 
-                # 2. 批量插入新数据
                 if self._messages:
                     data_to_insert = [
-                        (self.conversation_id, msg["role"], msg["content"]) 
+                        (
+                            self.conversation_id,
+                            msg["role"],
+                            msg.get("content"),
+                            msg.get("tool_call_id"),
+                            json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
+                            msg.get("reasoning_content"),
+                        )
                         for msg in self._messages
                     ]
                     await conn.executemany(
-                        "INSERT INTO chat_history (conversation_id, role, content) VALUES (?, ?, ?)", 
+                        "INSERT INTO chat_history (conversation_id, role, content, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?)", 
                         data_to_insert
                     )
                 await conn.commit()

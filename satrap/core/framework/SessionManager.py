@@ -15,10 +15,9 @@ from typing import Any, Dict, List, Optional, Type
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.log import logger
-from satrap.core.type import SessionConfig, UserCall, LLMConfig
+from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction
 from satrap.core.utils.context import AsyncContextManager, ContextManager
-
+from satrap.core.log import logger
 
 @dataclass
 class SessionEntry:
@@ -680,9 +679,30 @@ class SessionManager:
             else:
                 response = self._invoke_sync_session(entry.session, user_call)
 
+            if isinstance(response, CommandAction):   # 当需要切换会话时
+                user_call.session_id = response.target_session_id
+                new_cfg = self._resolve_or_create_session_config(user_call)
+                new_id = new_cfg.session_id
+                if not new_id:
+                    logger.error(f"[SessionManager] handle_call_async 失败：切换会话时无法获取新 session_id，原 session_id={session_id}")
+                    return f"切换失败：无法获取新会话 ID"
+
+                async with self._async_lock:
+                    new_entry = self.pool.get(new_id)
+                    if new_entry is None:
+                        new_entry = self._create_entry(new_cfg)
+
+                if new_entry is None:
+                    return f"切换失败：无法创建会话 {new_id}"
+
+                response = response.message
+                await self.cleanup_idle_sessions_async()
+                return "" if response is None else str(response)   # 切换时返回
+
             self._sync_runtime_to_store(session_id, entry.session)
             await self.cleanup_idle_sessions_async()
-            return "" if response is None else str(response)
+            return "" if response is None else str(response)   # 正常返回
+
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""

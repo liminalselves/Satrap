@@ -10,7 +10,7 @@ from typing import Any, Type
 from satrap.core.framework.Base import AsyncSession, Session
 
 
-DEFAULT_SESSION_SCAN_PATH = "satrap/sessions"
+DEFAULT_SESSION_SCAN_PATH = ".satrap/session"
 """默认 Session 扫描目录"""
 
 
@@ -127,7 +127,9 @@ def _import_root_for_scan_path(scan_path: Path) -> Path:
     """推导应加入 sys.path 的导入根"""
     cwd = Path.cwd().resolve()
     try:
-        scan_path.relative_to(cwd)
+        rel = scan_path.relative_to(cwd)
+        if any(p.startswith(".") for p in rel.parts):
+            return scan_path
         return cwd
     except ValueError:
         return scan_path.parent
@@ -136,11 +138,14 @@ def _import_root_for_scan_path(scan_path: Path) -> Path:
 def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
     """根据扫描目录和文件路径生成稳定模块名"""
     cwd = Path.cwd().resolve()
+    file_resolved = file_path.resolve()
     try:
-        rel = file_path.resolve().relative_to(cwd)
+        rel = file_resolved.relative_to(cwd)
+        if any(p.startswith(".") for p in rel.parts):
+            return file_path.stem
         return ".".join(rel.with_suffix("").parts)
     except ValueError:
-        rel = file_path.resolve().relative_to(scan_path.parent.resolve())
+        rel = file_resolved.relative_to(scan_path.parent.resolve())
         return ".".join(rel.with_suffix("").parts)
 
 

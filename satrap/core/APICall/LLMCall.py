@@ -413,7 +413,7 @@ class LLM:
         - max_tokens: 最大生成 token 数, 默认 1000
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
-        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True\
+        - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         """
@@ -668,7 +668,7 @@ class LLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="对话输入 messages 为空，请在后台日志中查看详细信息") if not self.return_false else False
 
         # Step.1 处理思考字段
         messages = _rename_thinking_field(messages, self.thinking_field_name)
@@ -716,12 +716,12 @@ class LLM:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] LLM API 错误: {e}")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="LLM API 错误，请在后台日志中查看详细信息") if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[LLM] 调用过程发生未知异常: {e}")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="调用过程发生未知异常，请在后台日志中查看详细信息") if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
@@ -1055,7 +1055,7 @@ class AsyncLLM:
 
         if not messages:
             logger.warning("对话输入 messages 为空")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="对话输入 messages 为空，请在后台日志中查看详细信息") if not self.return_false else False
 
         # Step.1 处理思考字段
         messages = _rename_thinking_field(messages, self.thinking_field_name)
@@ -1103,12 +1103,12 @@ class AsyncLLM:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] LLM API 错误: {e}")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="LLM API 错误，请在后台日志中查看详细信息") if not self.return_false else False
         except Exception as e:
             if not self.suppress_error:
                 raise e
             logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
-            return LLMCallResponse(type="message", content="") if not self.return_false else False
+            return LLMCallResponse(type="message", content="调用过程发生未知异常，请在后台日志中查看详细信息") if not self.return_false else False
 
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""

@@ -7,6 +7,11 @@ from typing import Optional, Callable, Any, Awaitable
 from satrap.core.type import LLMCallResponse
 import inspect, json
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from satrap.core.framework.SessionManager import SessionManager
+    from satrap.core.framework.UserManager import UserManager
+
 from satrap.core.log import logger
 
 class ModelWorkflowFramework:
@@ -142,7 +147,19 @@ class ModelWorkflowFramework:
                     clear_reasoning_content(turn_messages)
                     self.ctx.add_turn_messages(turn_messages)
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
-                    break
+                    self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
+                    final_context = self.ctx.get_context()
+                    final_response = self.llm.call(final_context, tools=[])
+
+                    if not final_response:
+                        logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
+                        return self.ctx.get_context(), False
+
+                    self.ctx.add_bot_message(final_response.content)
+                    if callback:
+                        self._content_callback(final_response.content)
+
+                    return self.ctx.get_context(), True
 
                 now_response = new_response   # 更新当前响应
 
@@ -222,10 +239,7 @@ class Session:
         self.wf_list = []
 
         self.content_callback = content_callback
-        self._user_manager: Any = None
-        from satrap.expend.command import register_session_commands
-
-        register_session_commands(self)
+        self._user_manager: UserManager | None = None
 
     def _content_callback(self, content: str):
         """调用回调返回模型回复内容"""
@@ -244,7 +258,7 @@ class Session:
         return self._user_manager.get_user_session_ids(user_id)
 
     def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
-        """上下文切换后调用, 子类可重写以刷新工作流。"""
+        """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
 
     def run(self, *input, **kwargs) -> Any:
@@ -284,6 +298,10 @@ class Session:
         - (Any, bool): 命令执行结果和是否为命令消息的元组
         """
         return self.command_handler.process_message(msg)              
+
+    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+        """注册命令处理函数"""
+        self.command_handler.register_command(name, handler, intro)
 
     def __call__(self, *input, **kwargs):
         result = self.run(*input, **kwargs)
@@ -429,7 +447,19 @@ class AsyncModelWorkflowFramework:
                     clear_reasoning_content(turn_messages)
                     await self.ctx.add_turn_messages(turn_messages)
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
-                    break
+                    await self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
+                    final_context = self.ctx.get_context()
+                    final_response = await self.llm.call(final_context, tools=[])
+
+                    if not final_response:
+                        logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
+                        return self.ctx.get_context(), False
+
+                    await self.ctx.add_bot_message(final_response.content)
+                    if callback:
+                        await self._content_callback(final_response.content)
+
+                    return self.ctx.get_context(), True
 
                 now_response = new_response   # 更新当前响应
 
@@ -531,13 +561,10 @@ class AsyncSession:
         self.wf_list = []
         self.content_callback = content_callback
         self._initialized = False
-        self._user_manager: Any = None
+        self._user_manager: UserManager | None = None
 
         self.command_handler = command_handler if command_handler else AsyncCommandHandler()
         # 如果未提供命令处理器, 则创建一个空的命令处理器实例
-        from satrap.expend.command import register_async_session_commands
-
-        register_async_session_commands(self)
 
     async def _ensure_initialized(self):
         """确保异步初始化完成 (幂等)"""
@@ -572,7 +599,7 @@ class AsyncSession:
         return self._user_manager.get_user_session_ids(user_id)
 
     async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
-        """上下文切换后调用, 子类可重写以刷新工作流。"""
+        """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
 
     async def run(self, *input, **kwargs) -> Any:
@@ -610,7 +637,13 @@ class AsyncSession:
         """
         return await self.command_handler.process_message(msg)
 
+    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+        """注册命令处理函数"""
+        self.command_handler.register_command(name, handler, intro)
+
     async def __call__(self, *input, **kwargs):
         await self._ensure_initialized()
         result = await self.run(*input, **kwargs)
         return result
+
+

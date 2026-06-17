@@ -233,7 +233,6 @@ class PlatformMessage:
         else:
             self.group = None
 
-
 class PlatformStatus(Enum):
     """平台状态"""
     PENDING = "pending"
@@ -246,6 +245,23 @@ class PlatformStatus(Enum):
 class PlatformError:
     """平台错误信息"""
     message: str
+    """错误信息发出的平台"""
     timestamp: datetime = field(default_factory=datetime.now)
+    """错误发生时间"""
     traceback: Optional[str] = None
+    """错误的完整 traceback 信息"""
+
+@dataclass
+class CommandAction:
+    """命令执行后的动作指示"""
+    action: str
+    """动作类型, 可选值:
+        - "switch_session": 切换会话
+        - "new_session": 创建新会话
+        - "none": 无动作, 仅返回信息
+    """
+    target_session_id: Optional[str] = None
+    """目标会话 ID, 用于切换会话等操作"""
+    message: str = ""
+    """返回给用户的信息"""
 
