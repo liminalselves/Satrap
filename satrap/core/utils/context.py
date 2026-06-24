@@ -1,5 +1,11 @@
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
 from typing import List, Dict, Union, Optional, Any
+from satrap.core.utils.vision import (
+    DEFAULT_IMAGE_TOKEN_COST,
+    build_multimodal_content,
+    content_text_projection,
+    estimate_content_image_count,
+)
 import aiosqlite
 import asyncio
 import sqlite3
@@ -8,6 +14,26 @@ import copy
 import re
 
 from satrap.core.log import logger
+
+
+def _message_content_json(content: Any) -> str | None:
+    """序列化多模态 content"""
+    if isinstance(content, list):
+        return json.dumps(content, ensure_ascii=False)
+    return None
+
+
+def _load_message_content(content: str | None, content_json: str | None) -> Any:
+    """加载消息 content, 优先使用完整 JSON"""
+    if content_json:
+        try:
+            parsed = json.loads(content_json)
+            if isinstance(parsed, list):
+                return parsed
+        except Exception:
+            pass
+    return content
+
 
 class ContextManager:
     """对话上下文管理器"""
@@ -41,7 +67,7 @@ class ContextManager:
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
-        self._messages: List[Dict[str, str | list]] = []   # 内存中的消息缓存
+        self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
         self._init_db_table()   # 初始化数据库表结构
         self.load_context()     # 加载数据
 
@@ -66,6 +92,7 @@ class ContextManager:
                     conversation_id TEXT NOT NULL,
                     role TEXT NOT NULL,
                     content TEXT,
+                    content_json TEXT,
                     tool_call_id TEXT,
                     tool_calls TEXT,
                     reasoning_content TEXT
@@ -74,7 +101,7 @@ class ContextManager:
 
             cursor.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
 
-            for col in ('tool_call_id', 'tool_calls', 'reasoning_content'):
+            for col in ('content_json', 'tool_call_id', 'tool_calls', 'reasoning_content'):
                 try:
                     cursor.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
                 except sqlite3.OperationalError:
@@ -98,7 +125,7 @@ class ContextManager:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT role, content, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
+                "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
                 (self.conversation_id,)
             )
             rows = cursor.fetchall()
@@ -106,13 +133,13 @@ class ContextManager:
 
             self._messages = []
             for row in rows:
-                msg = {"role": row[0], "content": row[1]}
-                if row[2] is not None:
-                    msg["tool_call_id"] = row[2]
+                msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
-                    msg["tool_calls"] = json.loads(row[3])
+                    msg["tool_call_id"] = row[3]
                 if row[4] is not None:
-                    msg["reasoning_content"] = row[4]
+                    msg["tool_calls"] = json.loads(row[4])
+                if row[5] is not None:
+                    msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
         except Exception as e:
             logger.error(f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
@@ -130,7 +157,8 @@ class ContextManager:
                     (
                         self.conversation_id,
                         msg["role"],
-                        msg.get("content"),
+                        content_text_projection(msg.get("content")),
+                        _message_content_json(msg.get("content")),
                         msg.get("tool_call_id"),
                         json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
                         msg.get("reasoning_content"),
@@ -138,7 +166,7 @@ class ContextManager:
                     for msg in self._messages
                 ]
                 cursor.executemany(
-                    "INSERT INTO chat_history (conversation_id, role, content, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?)", 
+                    "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                     data_to_insert
                 )
             conn.commit()
@@ -150,7 +178,7 @@ class ContextManager:
         finally:
             conn.close()
 
-    def get_context(self) -> List[Dict[str, str | list]]:
+    def get_context(self) -> List[Dict[str, Any]]:
         """
         获取当前上下文中的所有消息
 
@@ -159,7 +187,7 @@ class ContextManager:
         """
         return self._messages
 
-    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, str | list]]:
+    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, Any]]:
         """
         获取发送给模型的上下文 (保证在最大上下文长度内)
         
@@ -171,14 +199,15 @@ class ContextManager:
         """
         return self._apply_truncation(self._messages, method)
 
-    def add_user_message(self, message: str):
+    def add_user_message(self, message: str, img_urls: list[str] | None = None):
         """
         添加用户消息到上下文中
 
         参数:
         - message: 消息内容
+        - img_urls: 图片 URL 或本地路径列表, 可选
         """
-        self._messages.append({"role": "user", "content": message})
+        self._messages.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
         self._sync()
 
     def reset_system_prompt(self, message: str):
@@ -467,13 +496,16 @@ class ContextManager:
         if messages is None:
             messages = self._messages
         for msg in messages:
+            content = msg.get("content", "")
             token_count += 4   # 每个消息有 4 个固定 token
+            token_count += estimate_content_image_count(content) * DEFAULT_IMAGE_TOKEN_COST
+            text_content = content_text_projection(content)
             if method == "tokenizer":
-                token_count += tokenizer_estimate(str(msg.get("content", "")))
+                token_count += tokenizer_estimate(text_content)
             elif method == "experience":
-                token_count += experience_estimate(str(msg.get("content", "")))
+                token_count += experience_estimate(text_content)
             else:
-                token_count += experience_estimate(str(msg.get("content", "")))   # 默认使用经验法则
+                token_count += experience_estimate(text_content)   # 默认使用经验法则
         return token_count
 
     def _apply_sliding_truncation(self, messages: List[Dict], threshold: int, method: str) -> List[Dict]:
@@ -625,6 +657,7 @@ class AsyncContextManager:
                         conversation_id TEXT NOT NULL,
                         role TEXT NOT NULL,
                         content TEXT,
+                        content_json TEXT,
                         tool_call_id TEXT,
                         tool_calls TEXT,
                         reasoning_content TEXT
@@ -633,7 +666,7 @@ class AsyncContextManager:
 
                 await conn.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
 
-                for col in ('tool_call_id', 'tool_calls', 'reasoning_content'):
+                for col in ('content_json', 'tool_call_id', 'tool_calls', 'reasoning_content'):
                     try:
                         await conn.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
                     except aiosqlite.OperationalError:
@@ -655,20 +688,20 @@ class AsyncContextManager:
         try:
             async with aiosqlite.connect(self.db_path) as conn:
                 cursor = await conn.execute(
-                    "SELECT role, content, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
+                    "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
                     (self.conversation_id,)
                 )
                 rows = await cursor.fetchall()
 
             self._messages = []
             for row in rows:
-                msg = {"role": row[0], "content": row[1]}
-                if row[2] is not None:
-                    msg["tool_call_id"] = row[2]
+                msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
-                    msg["tool_calls"] = json.loads(row[3])
+                    msg["tool_call_id"] = row[3]
                 if row[4] is not None:
-                    msg["reasoning_content"] = row[4]
+                    msg["tool_calls"] = json.loads(row[4])
+                if row[5] is not None:
+                    msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
         except Exception as e:
             logger.error(f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
@@ -685,7 +718,8 @@ class AsyncContextManager:
                         (
                             self.conversation_id,
                             msg["role"],
-                            msg.get("content"),
+                            content_text_projection(msg.get("content")),
+                            _message_content_json(msg.get("content")),
                             msg.get("tool_call_id"),
                             json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
                             msg.get("reasoning_content"),
@@ -693,7 +727,7 @@ class AsyncContextManager:
                         for msg in self._messages
                     ]
                     await conn.executemany(
-                        "INSERT INTO chat_history (conversation_id, role, content, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?)", 
+                        "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                         data_to_insert
                     )
                 await conn.commit()
@@ -701,7 +735,7 @@ class AsyncContextManager:
         except Exception as e:
             logger.error(f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
 
-    def get_context(self) -> List[Dict[str, str | list]]:
+    def get_context(self) -> List[Dict[str, Any]]:
         """
         获取当前上下文中的所有消息 (内存操作, 同步)
 
@@ -710,7 +744,7 @@ class AsyncContextManager:
         """
         return self._messages
     
-    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, str | list]]:
+    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, Any]]:
         """
         获取发送给模型的上下文 (保证在最大上下文长度内)
         
@@ -722,14 +756,15 @@ class AsyncContextManager:
         """
         return self._apply_truncation(self._messages, method)
 
-    async def add_user_message(self, message: str):
+    async def add_user_message(self, message: str, img_urls: list[str] | None = None):
         """
         添加用户消息到上下文中
 
         参数:
         - message: 消息内容
+        - img_urls: 图片 URL 或本地路径列表, 可选
         """
-        self._messages.append({"role": "user", "content": message})
+        self._messages.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
         await self._sync()
 
     async def reset_system_prompt(self, message: str):
@@ -1024,13 +1059,16 @@ class AsyncContextManager:
         if messages is None:
             messages = self._messages
         for msg in messages:
+            content = msg.get("content", "")
             token_count += 4   # 每个消息有 4 个固定 token
+            token_count += estimate_content_image_count(content) * DEFAULT_IMAGE_TOKEN_COST
+            text_content = content_text_projection(content)
             if method == "tokenizer":
-                token_count += tokenizer_estimate(str(msg.get("content", "")))
+                token_count += tokenizer_estimate(text_content)
             elif method == "experience":
-                token_count += experience_estimate(str(msg.get("content", "")))
+                token_count += experience_estimate(text_content)
             else:
-                token_count += experience_estimate(str(msg.get("content", "")))   # 默认使用经验法则
+                token_count += experience_estimate(text_content)   # 默认使用经验法则
         return token_count
 
     def _apply_sliding_truncation(self, messages: List[Dict], threshold: int, method: str) -> List[Dict]:
@@ -1115,14 +1153,15 @@ class AsyncContextManager:
             logger.error(f"[异步上下文管理] 未知截断策略 {self.exceed_process}, 返回原列表, ID: {self.conversation_id}")
             return messages.copy()
 
-def add_user_message(context: list[dict[str, Any]], message: str):
+def add_user_message(context: list[dict[str, Any]], message: str, img_urls: list[str] | None = None):
     """向上下文中添加一条用户消息
     
     参数:
     - context: 上下文列表
     - message: 用户消息内容
+    - img_urls: 图片 URL 或本地路径列表, 可选
     """
-    context.append({"role": "user", "content": message})
+    context.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
 
 def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: list[dict] | None = None, reasoning: str | None = None):
     """向上下文中添加一条助手消息

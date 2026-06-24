@@ -196,6 +196,25 @@ class ModelWorkflowFramework:
                 return str(message["content"])
         return ""
 
+    def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+        """完整执行一轮 Agent 流程, 返回最终模型输出"""
+        self.ctx.add_user_message(user_input)
+
+        response = self.llm.call(
+            self.ctx.get_context(),
+            tools=self.tools_manager.get_tools_definitions(),
+        )
+        if not response:
+            return "模型调用失败"
+
+        context, success = self.agent_executor(
+            response, callback=callback, max_iterations=max_iterations,
+        )
+        if not success:
+            return "执行失败"
+
+        return self.get_bot_message(context)
+
     def reset_llm(self, llm: LLM):
         """重置会话模型"""
         self.llm = llm
@@ -494,6 +513,25 @@ class AsyncModelWorkflowFramework:
             if message["role"] == "assistant":
                 return str(message["content"])
         return ""
+
+    async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+        """完整执行一轮异步 Agent 流程, 返回最终模型输出"""
+        await self.ctx.add_user_message(user_input)
+
+        response = await self.llm.call(
+            self.ctx.get_context(),
+            tools=self.tools_manager.get_tools_definitions(),
+        )
+        if not response:
+            return "模型调用失败"
+
+        context, success = await self.agent_executor(
+            response, callback=callback, max_iterations=max_iterations,
+        )
+        if not success:
+            return "执行失败"
+
+        return self.get_bot_message(context)
 
     def reset_llm(self, llm: AsyncLLM):
         """重置会话模型"""

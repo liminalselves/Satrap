@@ -12,6 +12,7 @@ splintr-rs>=0.1.0
 
 # 数值计算与向量处理
 numpy>=1.24.0
+pillow>=10.0.0
 
 # 序列化
 msgpack>=1.0.5

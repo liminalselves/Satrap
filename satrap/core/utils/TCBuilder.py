@@ -116,6 +116,7 @@ class Tool:
         self.description = description if description is not None else getattr(cls, 'description', None)
         self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
         self.tool_available = True
+        self.tool_enabled = True
 
         if self.tool_name is None or self.description is None or self.params_dict is None:
             logger.error(f"[创建工具] 工具 {tool_name} 定义不完整")
@@ -138,6 +139,18 @@ class Tool:
     def assert_tool(self) -> bool:
         """断言工具是否可用"""
         return self.tool_available
+
+    def enable(self) -> None:
+        """启用工具"""
+        self.tool_enabled = True
+
+    def disable(self) -> None:
+        """禁用工具"""
+        self.tool_enabled = False
+
+    def is_enabled(self) -> bool:
+        """检查工具是否启用"""
+        return self.tool_enabled
 
     def __call__(self, *input, **kwargs):
         """
@@ -201,6 +214,7 @@ class AsyncTool:
         self.description = description if description is not None else getattr(cls, 'description', None)
         self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
         self.tool_available = True
+        self.tool_enabled = True
 
         if self.tool_name is None or self.description is None or self.params_dict is None:
             logger.error(f"[创建工具] 工具 {tool_name} 定义不完整")
@@ -226,6 +240,18 @@ class AsyncTool:
     def assert_tool(self) -> bool:
         """断言工具是否可用"""
         return self.tool_available
+
+    def enable(self) -> None:
+        """启用工具"""
+        self.tool_enabled = True
+
+    def disable(self) -> None:
+        """禁用工具"""
+        self.tool_enabled = False
+
+    def is_enabled(self) -> bool:
+        """检查工具是否启用"""
+        return self.tool_enabled
 
     async def __call__(self, *args, **kwargs):
         """
@@ -262,7 +288,52 @@ class ToolsManager:
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
         """
-        return [tool.get_tool_defined() for tool in self.tools.values()]
+        return [tool.get_tool_defined() for tool in self.tools.values() if tool.assert_tool() and tool.is_enabled()]
+
+    def enable_tool(self, tool_name: str) -> bool:
+        """启用指定工具"""
+        tool = self.tools.get(tool_name)
+        if not tool:
+            logger.warning(f"[启用工具] 工具 {tool_name} 不存在, 无法启用")
+            return False
+        tool.enable()
+        logger.info(f"[启用工具] 工具 {tool_name} 已启用")
+        return True
+
+    def disable_tool(self, tool_name: str) -> bool:
+        """禁用指定工具"""
+        tool = self.tools.get(tool_name)
+        if not tool:
+            logger.warning(f"[禁用工具] 工具 {tool_name} 不存在, 无法禁用")
+            return False
+        tool.disable()
+        logger.info(f"[禁用工具] 工具 {tool_name} 已禁用")
+        return True
+
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        """检查指定工具是否启用"""
+        tool = self.tools.get(tool_name)
+        return bool(tool and tool.is_enabled())
+
+    def enable_all_tools(self) -> bool:
+        """启用所有已注册工具"""
+        if not self.tools:
+            logger.warning("[启用工具] 当前没有已注册工具")
+            return False
+        for tool in self.tools.values():
+            tool.enable()
+        logger.info("[启用工具] 已启用所有工具")
+        return True
+
+    def disable_all_tools(self) -> bool:
+        """禁用所有已注册工具"""
+        if not self.tools:
+            logger.warning("[禁用工具] 当前没有已注册工具")
+            return False
+        for tool in self.tools.values():
+            tool.disable()
+        logger.info("[禁用工具] 已禁用所有工具")
+        return True
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """执行指定工具"""
@@ -270,6 +341,9 @@ class ToolsManager:
             return {"error": f"工具 {tool_name} 不存在"}
 
         tool = self.tools[tool_name]
+        if not tool.is_enabled():
+            return {"error": f"工具 {tool_name} 已禁用"}
+
         try:
             result = tool(**arguments)
             logger.debug(f"[执行工具] 工具 {tool_name} 执行成功")
@@ -343,23 +417,23 @@ class ToolsManager:
         return tool_message, tool_result
 
     def unregister_tool(self, tool_name: str) -> bool:
-        """注销异步工具"""
+        """注销工具"""
         if tool_name in self.tools:
             del self.tools[tool_name]
-            logger.info(f"[注销异步工具] 工具 {tool_name} 已注销")
+            logger.info(f"[注销工具] 工具 {tool_name} 已注销")
             return True
         else:
-            logger.warning(f"[注销异步工具] 工具 {tool_name} 不存在，无法注销")
+            logger.warning(f"[注销工具] 工具 {tool_name} 不存在，无法注销")
             return False
         
     def unregister_all_tools(self) -> bool:
-        """注销所有异步工具"""
+        """注销所有工具"""
         if self.tools:
             self.tools.clear()
-            logger.info(f"[注销异步工具] 已注销所有工具")
+            logger.info(f"[注销工具] 已注销所有工具")
             return True
         else:
-            logger.warning(f"[注销异步工具] 已没有已注册工具")
+            logger.warning(f"[注销工具] 已没有已注册工具")
             return False
 
 class AsyncToolsManager:
@@ -385,7 +459,52 @@ class AsyncToolsManager:
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
         """
-        return [tool.get_tool_defined() for tool in self.tools.values()]
+        return [tool.get_tool_defined() for tool in self.tools.values() if tool.assert_tool() and tool.is_enabled()]
+
+    def enable_tool(self, tool_name: str) -> bool:
+        """启用指定异步工具"""
+        tool = self.tools.get(tool_name)
+        if not tool:
+            logger.warning(f"[启用异步工具] 工具 {tool_name} 不存在, 无法启用")
+            return False
+        tool.enable()
+        logger.info(f"[启用异步工具] 工具 {tool_name} 已启用")
+        return True
+
+    def disable_tool(self, tool_name: str) -> bool:
+        """禁用指定异步工具"""
+        tool = self.tools.get(tool_name)
+        if not tool:
+            logger.warning(f"[禁用异步工具] 工具 {tool_name} 不存在, 无法禁用")
+            return False
+        tool.disable()
+        logger.info(f"[禁用异步工具] 工具 {tool_name} 已禁用")
+        return True
+
+    def is_tool_enabled(self, tool_name: str) -> bool:
+        """检查指定异步工具是否启用"""
+        tool = self.tools.get(tool_name)
+        return bool(tool and tool.is_enabled())
+
+    def enable_all_tools(self) -> bool:
+        """启用所有已注册异步工具"""
+        if not self.tools:
+            logger.warning("[启用异步工具] 当前没有已注册工具")
+            return False
+        for tool in self.tools.values():
+            tool.enable()
+        logger.info("[启用异步工具] 已启用所有工具")
+        return True
+
+    def disable_all_tools(self) -> bool:
+        """禁用所有已注册异步工具"""
+        if not self.tools:
+            logger.warning("[禁用异步工具] 当前没有已注册工具")
+            return False
+        for tool in self.tools.values():
+            tool.disable()
+        logger.info("[禁用异步工具] 已禁用所有工具")
+        return True
 
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """
@@ -402,6 +521,9 @@ class AsyncToolsManager:
             return {"error": f"工具 {tool_name} 不存在"}
 
         tool = self.tools[tool_name]
+        if not tool.is_enabled():
+            return {"error": f"工具 {tool_name} 已禁用"}
+
         try:   # 异步调用工具
             return await tool(**arguments)
         except Exception as e:

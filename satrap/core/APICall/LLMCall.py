@@ -3,134 +3,14 @@ from openai import OpenAI, AsyncOpenAI, APIError
 from openai.types.chat.chat_completion import ChatCompletion
 from satrap.core.utils import safe_parse_arguments
 from satrap.core.type import LLMCallResponse
-import base64
 import json
-import os
 import re
 
 from satrap.core.log import logger
-
-
-def _is_local_file_path(path: str) -> bool:
-    """判断字符串是否为本地文件路径
-    
-    参数:
-    - path: 待判断的字符串
-    
-    返回:
-    - 如果是本地文件路径返回 True, 否则返回 False
-    """
-    if path.startswith("http://") or path.startswith("https://"):
-        return False
-    # 判断是否为 URL (以 http:// 或 https:// 开头)
-
-    if path.startswith("data:"):
-        return False
-    # 判断是否为 data URL (base64 编码的图片)
-
-    return True   # 其他情况视为本地文件路径
-
-
-def _encode_image_to_base64(image_path: str) -> str:
-    """将本地图片文件编码为 base64 格式的 data URL
-    
-    参数:
-    - image_path: 本地图片文件路径
-    
-    返回:
-    - base64 编码的 data URL 字符串
-    
-    异常:
-    - FileNotFoundError: 文件不存在
-    - ValueError: 不支持的图片格式
-    """
-    if not os.path.exists(image_path):
-        raise FileNotFoundError(f"图片文件不存在: {image_path}")
-
-    # 获取文件扩展名并确定 MIME 类型
-    ext = os.path.splitext(image_path)[1].lower()
-    mime_types = {
-        ".jpg": "image/jpeg",
-        ".jpeg": "image/jpeg",
-        ".png": "image/png",
-        ".gif": "image/gif",
-        ".webp": "image/webp",
-        ".bmp": "image/bmp",
-    }
-    
-    if ext not in mime_types:
-        raise ValueError(f"不支持的图片格式: {ext}")
-
-    mime_type = mime_types[ext]
-
-    # 读取文件并编码为 base64
-    with open(image_path, "rb") as f:
-        image_data = f.read()
-
-    base64_data = base64.b64encode(image_data).decode("utf-8")
-    return f"data:{mime_type};base64,{base64_data}"
-
-
-def _process_image_urls(img_urls: Optional[List[str]]) -> List[Dict[str, Any]]:
-    """处理图片 URL 列表, 将本地文件转换为 base64 格式
-
-    参数:
-    - img_urls: 图片 URL 列表, 可以是本地文件路径或远程 URL
-
-    返回:
-    - OpenAI API 格式的图片内容列表
-    """
-    if not img_urls:
-        return []
-
-    processed_images = []
-    for img_url in img_urls:
-        if _is_local_file_path(img_url):
-            # 本地文件, 转换为 base64
-            try:
-                data_url = _encode_image_to_base64(img_url)
-                processed_images.append({
-                    "type": "image_url",
-                    "image_url": {"url": data_url}
-                })
-            except (FileNotFoundError, ValueError) as e:
-                logger.warning(f"[图像处理] 跳过无效图片: {e}")
-        else:
-            # 远程 URL 或 data URL, 直接使用
-            processed_images.append({
-                "type": "image_url",
-                "image_url": {"url": img_url}
-            })
-
-    return processed_images
-
-
-def _build_content_with_images(
-    text_content: str | List[Dict[str, Any]],
-    img_urls: Optional[List[str]]
-) -> List[Dict[str, Any]] | str:
-    """构建包含文本和图片的内容
-    
-    参数:
-    - text_content: 文本内容或已有的多模态内容列表
-    - img_urls: 图片 URL 列表
-    
-    返回:
-    - 如果有图片, 返回多模态内容列表; 否则返回原始内容
-    """
-    if not img_urls:
-        return text_content
-    
-    # 如果内容已经是列表格式, 追加图片内容
-    if isinstance(text_content, list):
-        content = text_content.copy()
-        content.extend(_process_image_urls(img_urls))
-        return content
-    
-    # 如果是纯文本, 构建新的多模态内容列表
-    content: List[Dict[str, Any]] = [{"type": "text", "text": text_content}]
-    content.extend(_process_image_urls(img_urls))
-    return content
+from satrap.core.utils.vision import (
+    normalize_chat_messages,
+    normalize_openai_base_url,
+)
 
 
 def _extract_thinking_from_message(
@@ -417,6 +297,7 @@ class LLM:
         - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         """
+        base_url = normalize_openai_base_url(base_url)
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -674,23 +555,14 @@ class LLM:
         messages = _rename_thinking_field(messages, self.thinking_field_name)
 
         # Step.2 处理图片 URL, 构建多模态消息
-        processed_messages = [m.copy() for m in messages]
-        if img_urls:
-            # 找到最后一条用户消息并添加图片
-            for i in range(len(processed_messages) - 1, -1, -1):
-                if processed_messages[i].get("role") == "user":
-                    original_content = processed_messages[i].get("content", "")
-                    processed_messages[i]["content"] = _build_content_with_images(
-                        original_content, img_urls
-                    )
-                    break
+        processed_messages = normalize_chat_messages(messages, img_urls=img_urls)
 
         try:
             # Step.3 同步调用 API
             if tools is not None:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages if img_urls else messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -702,7 +574,7 @@ class LLM:
             else:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages if img_urls else messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -801,6 +673,7 @@ class AsyncLLM:
         self.return_false = return_false
         self.reasoning_body = reasoning_body
         self.thinking_field_name = thinking_field_name
+        base_url = normalize_openai_base_url(base_url)
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url
@@ -1061,23 +934,14 @@ class AsyncLLM:
         messages = _rename_thinking_field(messages, self.thinking_field_name)
 
         # Step.2 处理图片 URL, 构建多模态消息
-        processed_messages = [m.copy() for m in messages]
-        if img_urls:
-            # 找到最后一条用户消息并添加图片
-            for i in range(len(processed_messages) - 1, -1, -1):
-                if processed_messages[i].get("role") == "user":
-                    original_content = processed_messages[i].get("content", "")
-                    processed_messages[i]["content"] = _build_content_with_images(
-                        original_content, img_urls
-                    )
-                    break
+        processed_messages = normalize_chat_messages(messages, img_urls=img_urls)
 
         try:
             # Step.3 异步调用 API
             if tools is not None:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages if img_urls else messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1089,7 +953,7 @@ class AsyncLLM:
             else:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages if img_urls else messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
