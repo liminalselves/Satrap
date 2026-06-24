@@ -5,6 +5,32 @@ import json
 
 from satrap.core.log import logger
 
+
+def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[str, Any]:
+    """创建工具错误结果"""
+    return {
+        "error": message,
+        "ok": False,
+        "error_type": error_type,
+        "tool_name": tool_name,
+    }
+
+
+def _safe_json_dumps(data: Any) -> str:
+    """安全序列化工具参数"""
+    try:
+        return json.dumps(data, ensure_ascii=False)
+    except TypeError:
+        return json.dumps(str(data), ensure_ascii=False)
+
+
+def _summarize_arguments(arguments: Any, max_length: int = 500) -> str:
+    """生成日志用参数摘要"""
+    summary = _safe_json_dumps(arguments)
+    if len(summary) <= max_length:
+        return summary
+    return summary[:max_length] + "..."
+
 def create_tool_defined(
     tool_name: str,
     description: str,
@@ -337,20 +363,29 @@ class ToolsManager:
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """执行指定工具"""
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return _create_tool_error("", "工具名称无效", "invalid_tool_call")
+
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments")
+
         if tool_name not in self.tools:
-            return {"error": f"工具 {tool_name} 不存在"}
+            return _create_tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found")
 
         tool = self.tools[tool_name]
         if not tool.is_enabled():
-            return {"error": f"工具 {tool_name} 已禁用"}
+            return _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled")
 
         try:
             result = tool(**arguments)
             logger.debug(f"[执行工具] 工具 {tool_name} 执行成功")
             return result
         except Exception as e:
-            logger.error(f"[执行工具] 工具 {tool_name} 执行出错：{str(e)}")
-            return {"error": f"工具执行异常：{str(e)}"}
+            args_summary = _summarize_arguments(arguments)
+            logger.error(f"[执行工具] 工具 {tool_name} 执行出错: {str(e)}, 参数: {args_summary}")
+            return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any]):
@@ -362,8 +397,13 @@ class ToolsManager:
         返回:
         - 一个元组 (工具名, 参数字典)
         """
+        if not isinstance(call_info, dict):
+            return "", {}
+
         tool_name = call_info.get("name", "")
         arguments = call_info.get("arguments", {})
+        if arguments is None:
+            arguments = {}
         return tool_name, arguments
 
     @staticmethod
@@ -388,9 +428,14 @@ class ToolsManager:
         }
         ```
         """
+        if not isinstance(call_info, dict):
+            call_info = {}
+
         tool_name = call_info.get("name", "")
         tool_call_id = call_info.get("id", "")
         arguments = call_info.get("arguments", {})
+        if arguments is None:
+            arguments = {}
         # 创建工具调用消息
 
         return {
@@ -398,9 +443,25 @@ class ToolsManager:
             "type": "function",
             "function": {
                 "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False)
+                "arguments": _safe_json_dumps(arguments)
             }
         }
+
+    @staticmethod
+    def validate_call_info(call_info: Dict[str, Any]) -> Dict[str, Any] | None:
+        """校验工具调用信息"""
+        if not isinstance(call_info, dict):
+            return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
+
+        tool_name = call_info.get("name", "")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return _create_tool_error("", "工具调用缺少有效工具名称", "invalid_tool_call")
+
+        arguments = call_info.get("arguments", {})
+        if arguments is not None and not isinstance(arguments, dict):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments")
+
+        return None
 
     def execute_tool_call(self, call_info: Dict[str, Any]) -> Any:
         """执行工具调用流程
@@ -411,8 +472,12 @@ class ToolsManager:
         返回:
         - 元组 (工具调用消息, 工具调用的返回结果)
         """
-        tool_name, arguments = self.get_call_info(call_info)
         tool_message = self.create_call_message(call_info)
+        call_error = self.validate_call_info(call_info)
+        if call_error is not None:
+            return tool_message, call_error
+
+        tool_name, arguments = self.get_call_info(call_info)
         tool_result = self.execute_tool(tool_name, arguments)
         return tool_message, tool_result
 
@@ -517,18 +582,29 @@ class AsyncToolsManager:
         返回:
         - 工具执行结果，如果工具不存在返回错误字典
         """
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return _create_tool_error("", "工具名称无效", "invalid_tool_call")
+
+        if arguments is None:
+            arguments = {}
+        if not isinstance(arguments, dict):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments")
+
         if tool_name not in self.tools:
-            return {"error": f"工具 {tool_name} 不存在"}
+            return _create_tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found")
 
         tool = self.tools[tool_name]
         if not tool.is_enabled():
-            return {"error": f"工具 {tool_name} 已禁用"}
+            return _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled")
 
         try:   # 异步调用工具
-            return await tool(**arguments)
+            result = await tool(**arguments)
+            logger.debug(f"[执行异步工具] 工具 {tool_name} 执行成功")
+            return result
         except Exception as e:
-            logger.error(f"[执行工具] 工具 {tool_name} 执行出错：{str(e)}")
-            return {"error": f"工具执行异常：{str(e)}"}
+            args_summary = _summarize_arguments(arguments)
+            logger.error(f"[执行异步工具] 工具 {tool_name} 执行出错: {str(e)}, 参数: {args_summary}")
+            return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any]):
@@ -540,8 +616,13 @@ class AsyncToolsManager:
         返回:
         - 一个元组 (工具名, 参数字典)
         """
+        if not isinstance(call_info, dict):
+            return "", {}
+
         tool_name = call_info.get("name", "")
         arguments = call_info.get("arguments", {})
+        if arguments is None:
+            arguments = {}
         return tool_name, arguments
 
     @staticmethod
@@ -566,9 +647,14 @@ class AsyncToolsManager:
         }
         ```
         """
+        if not isinstance(call_info, dict):
+            call_info = {}
+
         tool_name = call_info.get("name", "")
         tool_call_id = call_info.get("id", "")
         arguments = call_info.get("arguments", {})
+        if arguments is None:
+            arguments = {}
         # 创建工具调用消息
 
         return {
@@ -576,9 +662,25 @@ class AsyncToolsManager:
             "type": "function",
             "function": {
                 "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False)
+                "arguments": _safe_json_dumps(arguments)
             }
         }
+
+    @staticmethod
+    def validate_call_info(call_info: Dict[str, Any]) -> Dict[str, Any] | None:
+        """校验工具调用信息"""
+        if not isinstance(call_info, dict):
+            return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
+
+        tool_name = call_info.get("name", "")
+        if not isinstance(tool_name, str) or not tool_name.strip():
+            return _create_tool_error("", "工具调用缺少有效工具名称", "invalid_tool_call")
+
+        arguments = call_info.get("arguments", {})
+        if arguments is not None and not isinstance(arguments, dict):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments")
+
+        return None
     
     async def execute_tool_call(self, call_info: Dict[str, Any]) -> Any:
         """执行工具调用流程 (异步方法)
@@ -589,8 +691,12 @@ class AsyncToolsManager:
         返回:
         - 元组 (工具调用消息, 工具调用的返回结果)
         """
-        tool_name, arguments = self.get_call_info(call_info)
         tool_message = self.create_call_message(call_info)
+        call_error = self.validate_call_info(call_info)
+        if call_error is not None:
+            return tool_message, call_error
+
+        tool_name, arguments = self.get_call_info(call_info)
         tool_result = await self.execute_tool(tool_name, arguments)
         return tool_message, tool_result
 
