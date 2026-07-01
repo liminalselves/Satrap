@@ -95,6 +95,7 @@ class ReRank:
         top_k: int = 5,
         min_score: float = 0.0,
         lock_api_key: bool = True,
+        timeout: int = 60,
     ):
         """[同步版本] ReRank API 封装
 
@@ -105,6 +106,7 @@ class ReRank:
         - top_k: 返回的文档数量 (默认 5)
         - min_score: 最小相关性分数阈值 (默认 0.0)
         - lock_api_key: 是否锁定 API 密钥 (默认 True)
+        - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key
         self.base_url = base_url + "/rerank"
@@ -112,6 +114,7 @@ class ReRank:
         self.top_k = top_k
         self.min_score = min_score
         self.lock_api_key = lock_api_key
+        self.timeout = timeout
        
     def call(
         self,
@@ -152,7 +155,7 @@ class ReRank:
                     "Content-Type": "application/json"
                 },
                 json=request,
-                timeout=60,
+                timeout=self.timeout,
             )   # 发送 POST 请求
 
             api_response = response.json()   # 解析 JSON 响应
@@ -235,6 +238,7 @@ class AsyncReRank:
         top_k: int = 5,
         min_score: float = 0.0,
         lock_api_key: bool = True,
+        timeout: int = 60,
     ):
         """[异步版本] ReRank API 封装
 
@@ -245,6 +249,7 @@ class AsyncReRank:
         - top_k: 返回的文档数量 (默认 5)
         - min_score: 最小相关性分数阈值 (默认 0.0)
         - lock_api_key: 是否锁定 API Key (默认 True)
+        - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key
         self.base_url = base_url + "/rerank"
@@ -252,6 +257,7 @@ class AsyncReRank:
         self.top_k = top_k
         self.min_score = min_score
         self.lock_api_key = lock_api_key
+        self.timeout = timeout
        
     async def call(
         self,
@@ -293,7 +299,7 @@ class AsyncReRank:
                         "Content-Type": "application/json"
                     },
                     json=request,
-                    timeout=aiohttp.ClientTimeout(total=60),
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as response:
                     api_response = await response.json()   # 解析 JSON 响应
 

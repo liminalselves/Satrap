@@ -67,6 +67,7 @@ class Embedding:
         return_false: bool = False,
         lock_api_key: bool = True,
         max_batch_size: int = 100,
+        timeout: int = 60,
     ):
         """
         [同步版本] OpenAI Embedding API 调用封装
@@ -81,8 +82,9 @@ class Embedding:
         - return_false: 启用时发生错误返回 False 而非空列表
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         - max_batch_size: 单次 API 调用最大处理的文本数量, 默认 100
+        - timeout: 请求超时时间(秒), 默认 60
         """
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.api_key = api_key if lock_api_key else "api key locked"
         self.base_url = base_url
         self.model = model
@@ -228,6 +230,7 @@ class AsyncEmbedding:
         return_false: bool = False,
         lock_api_key: bool = True,
         max_batch_size: int = 100,
+        timeout: int = 60,
     ):
         """
         [异步版本] OpenAI Embedding API 调用封装
@@ -242,6 +245,7 @@ class AsyncEmbedding:
         - return_false: 启用时发生错误返回 False 而非空列表
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
         - max_batch_size: 单次 API 调用最大处理的文本数量, 默认 100
+        - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key if lock_api_key else "api key locked"
         self.base_url = base_url
@@ -251,10 +255,12 @@ class AsyncEmbedding:
         self.suppress_error = suppress_error
         self.return_false = return_false
         self.max_batch_size = max_batch_size
+        self.timeout = timeout
 
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=timeout,
         )  # 初始化异步 OpenAI 客户端
 
     async def embed(

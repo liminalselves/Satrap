@@ -275,6 +275,7 @@ class LLM:
         temperature: float = 0.7,
         top_p: float = 0.95,
         max_tokens: int = 1000,
+        timeout: int = 60,
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
@@ -291,6 +292,7 @@ class LLM:
         - temperature: 生成文本的随机性 (0.0 - 2.0), 默认 0.7
         - top_p: 控制生成文本的多样性 (0.0 - 1.0), 默认 0.95
         - max_tokens: 最大生成 token 数, 默认 1000
+        - timeout: 请求超时时间, 默认 60 秒
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
@@ -298,7 +300,7 @@ class LLM:
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         """
         base_url = normalize_openai_base_url(base_url)
-        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
         self.base_url = base_url
@@ -641,6 +643,7 @@ class AsyncLLM:
         temperature: float = 0.7,
         top_p: float = 0.95,
         max_tokens: int = 1000,
+        timeout: int = 60,
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
@@ -657,6 +660,7 @@ class AsyncLLM:
         - temperature: 生成文本的随机性 (0.0 - 2.0), 默认 0.7
         - top_p: 控制生成文本的多样性 (0.0 - 1.0), 默认 0.95
         - max_tokens: 最大生成 token 数, 默认 1000
+        - timeout: 请求超时时间, 默认 60 秒
         - suppress_error: 是否抑制 API 调用中的异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
@@ -676,7 +680,8 @@ class AsyncLLM:
         base_url = normalize_openai_base_url(base_url)
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url=base_url
+            base_url=base_url,
+            timeout=timeout,
         )   # 初始化异步 OpenAI 客户端
 
     async def chat(

@@ -361,9 +361,7 @@ class ContextManager:
 
     def del_context(self):
         """删除当前上下文中的所有消息, 保留系统消息"""
-        sys_msg = self._messages[0]
-        self._messages.clear()
-        self._messages.append(sys_msg)
+        self._messages = [copy.deepcopy(msg) for msg in self._messages if msg.get("role") == "system"]
         self._sync()
         logger.info(f"上下文已清空, ID: {self.conversation_id}")
 
@@ -918,11 +916,7 @@ class AsyncContextManager:
 
     async def del_context(self):
         """删除当前上下文中的所有消息, 保留系统消息"""
-        if not self._messages:
-            return
-        sys_msg = self._messages[0]
-        self._messages.clear()
-        self._messages.append(sys_msg)
+        self._messages = [copy.deepcopy(msg) for msg in self._messages if msg.get("role") == "system"]
         await self._sync()
         logger.info(f"上下文已清空：{self.conversation_id}, ID: {self.conversation_id}")
 

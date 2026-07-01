@@ -5,7 +5,7 @@ from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from typing import Optional, Callable, Any, Awaitable
 from satrap.core.type import LLMCallResponse
-import inspect, json
+import inspect, json, copy
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -196,6 +196,16 @@ class ModelWorkflowFramework:
                 return str(message["content"])
         return ""
 
+    @staticmethod
+    def _get_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """提取系统消息副本"""
+        return [copy.deepcopy(message) for message in messages if message.get("role") == "system"]
+
+    def _restore_context_keep_system(self, system_messages: list[dict[str, Any]]):
+        """恢复上下文为系统消息"""
+        self.ctx._messages = copy.deepcopy(system_messages)
+        self.ctx._sync()
+
     def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
         """完整执行一轮 Agent 流程, 返回最终模型输出"""
         self.ctx.add_user_message(user_input)
@@ -214,6 +224,31 @@ class ModelWorkflowFramework:
             return "执行失败"
 
         return self.get_bot_message(context)
+
+    def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+        """使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出"""
+        system_messages = self._get_system_messages(self.ctx.get_context())
+        self._restore_context_keep_system(system_messages)
+
+        try:
+            self.ctx.add_user_message(user_input)
+
+            response = self.llm.call(
+                self.ctx.get_context(),
+                tools=self.tools_manager.get_tools_definitions(),
+            )
+            if not response:
+                return "模型调用失败"
+
+            context, success = self.agent_executor(
+                response, callback=callback, max_iterations=max_iterations,
+            )
+            if not success:
+                return "执行失败"
+
+            return self.get_bot_message(context)
+        finally:
+            self._restore_context_keep_system(system_messages)
 
     def reset_llm(self, llm: LLM):
         """重置会话模型"""
@@ -514,6 +549,16 @@ class AsyncModelWorkflowFramework:
                 return str(message["content"])
         return ""
 
+    @staticmethod
+    def _get_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """提取系统消息副本"""
+        return [copy.deepcopy(message) for message in messages if message.get("role") == "system"]
+
+    async def _restore_context_keep_system(self, system_messages: list[dict[str, Any]]):
+        """恢复上下文为系统消息"""
+        self.ctx._messages = copy.deepcopy(system_messages)
+        await self.ctx._sync()
+
     async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
         """完整执行一轮异步 Agent 流程, 返回最终模型输出"""
         await self.ctx.add_user_message(user_input)
@@ -532,6 +577,31 @@ class AsyncModelWorkflowFramework:
             return "执行失败"
 
         return self.get_bot_message(context)
+
+    async def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+        """使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出"""
+        system_messages = self._get_system_messages(self.ctx.get_context())
+        await self._restore_context_keep_system(system_messages)
+
+        try:
+            await self.ctx.add_user_message(user_input)
+
+            response = await self.llm.call(
+                self.ctx.get_context(),
+                tools=self.tools_manager.get_tools_definitions(),
+            )
+            if not response:
+                return "模型调用失败"
+
+            context, success = await self.agent_executor(
+                response, callback=callback, max_iterations=max_iterations,
+            )
+            if not success:
+                return "执行失败"
+
+            return self.get_bot_message(context)
+        finally:
+            await self._restore_context_keep_system(system_messages)
 
     def reset_llm(self, llm: AsyncLLM):
         """重置会话模型"""
