@@ -15,6 +15,18 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 
 
+def trigger_backend_reload():
+    """触发后端热加载配置（fire-and-forget）"""
+    config = st.session_state.config
+    host = getattr(config, 'api_host', '127.0.0.1')
+    port = getattr(config, 'api_port', 19870)
+    import urllib.request
+    try:
+        urllib.request.urlopen(f"http://{host}:{port}/api/config/reload", data=b"", timeout=5)
+    except Exception:
+        pass
+
+
 def reset_state_managers(config):
     """用新配置重建前端共享管理器"""
     st.session_state.config = config

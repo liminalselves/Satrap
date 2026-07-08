@@ -315,6 +315,9 @@ class Session:
         """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
 
+    def reload_llm(self, llm):
+        """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
+
     def run(self, *input, **kwargs) -> Any:
         """执行会话; 调用模型并返回结果"""
         return None
@@ -709,6 +712,9 @@ class AsyncSession:
     async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
         """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
+
+    def reload_llm(self, llm):
+        """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
 
     async def run(self, *input, **kwargs) -> Any:
         """执行会话"""

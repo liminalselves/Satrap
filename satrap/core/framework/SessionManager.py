@@ -533,7 +533,7 @@ class SessionManager:
         context_key = entry.get("context_key", "") if entry else ""
 
         platform_part = f"{platform}:" if platform else ""
-        session_id = f"{class_config_name}:{platform_part}{context_value}"
+        session_id = f"{class_config_name}:{platform_part}{context_value}:{uuid.uuid4().hex}"
 
         params = dict(class_cfg_mgr.get_params(class_config_name))
         if context_key:
@@ -695,6 +695,16 @@ class SessionManager:
                 if new_entry is None:
                     return f"切换失败：无法创建会话 {new_id}"
 
+                # 更新 context_sessions 路由，使下一条消息能路由到新会话
+                user_mgr = getattr(self, '_user_mgr', None)
+                if user_mgr and new_id:
+                    parts = new_id.split(":")
+                    if len(parts) >= 3:
+                        ctx_type = parts[0]
+                        ctx_platform = parts[1]
+                        ctx_user_id = parts[2]
+                        user_mgr.update_context_session(ctx_user_id, ctx_platform, ctx_type, new_id)
+
                 response = response.message
                 await self.cleanup_idle_sessions_async()
                 return "" if response is None else str(response)   # 切换时返回
@@ -706,6 +716,71 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
+
+    def reload_model_configs(self):
+        """重载所有活跃会话的 LLM 实例, 使模型配置变更即时生效"""
+        model_cfg_mgr = getattr(self, '_model_cfg_mgr', None)
+        if not model_cfg_mgr:
+            logger.warning("[SessionManager] reload_model_configs 跳过：无 ModelConfigManager")
+            return
+
+        for session_id, entry in self.pool.list_entries().items():
+            session = entry.session
+            session_cfg = self.store.get(session_id)
+            if session_cfg is None:
+                continue
+            cfg_params = session_cfg.session_config or {}
+            session_type = entry.session_type
+
+            model_name_key = "model_name"
+            if self._class_cfg_mgr is not None:
+                try:
+                    mk = self._class_cfg_mgr.get_model_key(session_type)
+                    if mk:
+                        model_name_key = mk
+                except Exception:
+                    pass
+            model_name = cfg_params.get(model_name_key)
+            if not model_name:
+                if self._class_cfg_mgr is not None:
+                    try:
+                        class_params = self._class_cfg_mgr.get_params(session_type)
+                        model_name = class_params.get(model_name_key)
+                    except Exception:
+                        pass
+            if not model_name:
+                model_name = "default"
+            llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
+            if not llm_cfg or not llm_cfg.api_key:
+                continue
+
+            _LLMCls = AsyncLLM if isinstance(session, AsyncSession) else LLM
+            new_llm = _LLMCls(
+                api_key=llm_cfg.api_key or "",
+                base_url=llm_cfg.base_url or "",
+                model=llm_cfg.model or "",
+                temperature=llm_cfg.temperature or 0.7,
+                max_tokens=llm_cfg.max_tokens or 4096,
+            )
+
+            session.reload_llm(new_llm)
+            if hasattr(session, 'reset_llm'):
+                session.reset_llm(new_llm)
+            if hasattr(session, '_llm'):
+                session._llm = new_llm
+            if hasattr(session, 'llm'):
+                session.llm = new_llm
+
+            for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
+                wf = getattr(session, attr, None)
+                if wf is None:
+                    continue
+                if hasattr(wf, 'reset_llm'):
+                    wf.reset_llm(new_llm)
+                elif hasattr(wf, 'llm'):
+                    wf.llm = new_llm
+
+            logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     # ---------------- 查询/清理 ----------------
     def list_sessions(self) -> List[SessionMetadata]:
@@ -963,19 +1038,37 @@ class SessionManager:
             return None
 
         try:
-            # 如果 session_config 为空但有 class_cfg_mgr, 补充类级配置
-            if not session_cfg.session_config and self._class_cfg_mgr:
-                session_cfg = dataclasses.replace(
-                    session_cfg,
-                    session_config=dict(self._class_cfg_mgr.get_params(session_type)),
-                )
+            # 合并类级配置模板到实例级配置（实例级优先）
+            if self._class_cfg_mgr:
+                class_params = dict(self._class_cfg_mgr.get_params(session_type))
+                current_params = dict(session_cfg.session_config or {})
+                merged = dict(class_params)
+                merged.update(current_params)
+                session_cfg = dataclasses.replace(session_cfg, session_config=merged)
 
             # 读取 model_name → 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
             model_cfg_mgr = getattr(self, '_model_cfg_mgr', None)
             llm_instance = None
             if model_cfg_mgr:
                 cfg_params = session_cfg.session_config or {}
-                model_name = cfg_params.get("model_name", "default")
+                # 从 class_cfg_mgr 获取 model_key，确定 session_config 中哪个字段存有模型名
+                model_name_key = "model_name"
+                if self._class_cfg_mgr is not None:
+                    try:
+                        mk = self._class_cfg_mgr.get_model_key(session_type)
+                        if mk:
+                            model_name_key = mk
+                    except Exception:
+                        pass
+                model_name = cfg_params.get(model_name_key)
+                if not model_name and self._class_cfg_mgr is not None:
+                    try:
+                        class_params = self._class_cfg_mgr.get_params(session_type)
+                        model_name = class_params.get(model_name_key)
+                    except Exception:
+                        pass
+                if not model_name:
+                    model_name = "default"
                 llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
                 if llm_cfg and llm_cfg.api_key:
                     _LLMCls = AsyncLLM if issubclass(session_class, AsyncSession) else LLM

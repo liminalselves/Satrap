@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import streamlit as st
-from satrap.admin_utils.state import ensure_state
+from satrap.admin_utils.state import ensure_state, trigger_backend_reload
 from satrap.core.type import LLMConfig, EmbeddingConfig, ReRankConfig
 
 st.set_page_config(page_title="模型配置", page_icon="", layout="wide")
@@ -71,6 +71,7 @@ def _add_dialog(model_type: str):
             else:
                 mcm.set_rerank_config(cfg, name=name)
             st.success(f"已保存: {name}")
+            trigger_backend_reload()
             st.rerun()
         except Exception as e:
             st.error(f"保存失败: {e}")
@@ -129,6 +130,7 @@ def _edit_dialog(model_type: str, name: str):
             else:
                 mcm.update_rerank_config(name=name, **updates)
             st.success("已更新")
+            trigger_backend_reload()
             st.cache_data.clear()
             st.rerun()
         except Exception as e:
@@ -155,6 +157,7 @@ def _delete_dialog(model_type: str, name: str):
                 return
             if ok:
                 st.success("已删除")
+                trigger_backend_reload()
                 st.cache_data.clear()
                 st.rerun()
             else:

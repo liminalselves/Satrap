@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
-from satrap.admin_utils.state import ensure_state
+from satrap.admin_utils.state import ensure_state, trigger_backend_reload
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
@@ -134,6 +134,7 @@ def _param_dialog(name: str):
             scm.set_config(name, new_params)
             st.success("已保存")
             _reload_caches()
+            trigger_backend_reload()
             st.rerun()
         except json.JSONDecodeError as e:
             st.error(f"JSON 格式错误: {e}")
@@ -220,6 +221,7 @@ def _edit_model_key_dialog(name: str):
             scm.set_model_key(name, new_model_key)
             st.success("已保存")
             _reload_caches()
+            trigger_backend_reload()
             st.rerun()
         except Exception as e:
             st.error(f"保存失败: {e}")

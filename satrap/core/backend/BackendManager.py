@@ -169,6 +169,8 @@ class BackendManager:
             self._model_cfg.reload()
         if self._session_cls_cfg:
             self._session_cls_cfg.reload()
+        if self._session_mgr:
+            self._session_mgr.reload_model_configs()
         logger.info("[BackendManager] 配置已重载")
 
     async def stop(self):

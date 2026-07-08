@@ -593,6 +593,25 @@ class UserManager:
 
         return session_id
 
+    def update_context_session(self, user_id: str, platform: str,
+                                session_type: str, session_id: str):
+        """更新上下文会话路由，使该用户的后续消息路由到指定 session_id
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台标识
+        - session_type: 会话类型名称
+        - session_id: 目标会话 ID
+        """
+        try:
+            self.store.upsert_context_session(user_id, platform, session_type, session_id)
+        except Exception as e:
+            logger.error(
+                f"[UserManager] update_context_session 失败: "
+                f"user_id={user_id}, platform={platform}, "
+                f"session_type={session_type}, session_id={session_id}, 错误={e}"
+            )
+
     def get_or_create_context(
         self,
         user_id: str,
