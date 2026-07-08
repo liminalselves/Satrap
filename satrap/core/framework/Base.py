@@ -300,15 +300,24 @@ class Session:
         if self.content_callback and content:
             self.content_callback(content)
 
+    @staticmethod
+    def _parse_user_id(session_id: str) -> str:
+        """从 session_id 中提取 user_id, 兼容新旧格式"""
+        parts = session_id.split(":")
+        if len(parts) >= 4:
+            return parts[2]
+        if len(parts) == 3:
+            return parts[1]
+        return ""
+
     @property
     def user_contexts(self) -> list[str]:
         """获取当前用户的所有上下文 session_id 列表"""
         if not self._user_manager:
             return []
-        parts = self.session_id.split(":")
-        if len(parts) < 3:
+        user_id = self._parse_user_id(self.session_id)
+        if not user_id:
             return []
-        user_id = parts[2]
         return self._user_manager.get_user_session_ids(user_id)
 
     def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
@@ -703,10 +712,9 @@ class AsyncSession:
         """获取当前用户的所有上下文 session_id 列表"""
         if not self._user_manager:
             return []
-        parts = self.session_id.split(":")
-        if len(parts) < 3:
+        user_id = Session._parse_user_id(self.session_id)
+        if not user_id:
             return []
-        user_id = parts[2]
         return self._user_manager.get_user_session_ids(user_id)
 
     async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:

@@ -3,10 +3,11 @@
 import asyncio
 import inspect
 import json
+import secrets
 import sqlite3
 import threading
 import time
-import uuid
+import string
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +19,14 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.log import logger
+
+_UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
+
+def _short_uid(n: int = 6) -> str:
+    """生成 n 字符 base62 随机 ID, 默认 6 字符 ≈ 568 亿组合"""
+    return ''.join(secrets.choice(_UID_ALPHABET) for _ in range(n))
+
 
 @dataclass
 class SessionEntry:
@@ -464,7 +473,7 @@ class SessionManager:
         self.registry.register(type_name, session_class)
 
         now = time.time()
-        sid = (session_id or uuid.uuid4().hex).strip()
+        sid = (session_id or _short_uid()).strip()
         cfg = SessionConfig(
             session_id=sid,
             session_type_name=type_name,
@@ -526,14 +535,17 @@ class SessionManager:
         - platform: 平台标识, 用于构建 session_id
         - extra_params: 补充/覆盖 params
 
-        session_id 格式: "{class_config_name}:{platform}:{context_value}"
+        session_id 格式: "{class_config_name}:{platform}:{context_value}:{short_uid}"
         同类型+同平台+同 context_value = 同一个上下文
         """
         entry = class_cfg_mgr.get_config(class_config_name)
         context_key = entry.get("context_key", "") if entry else ""
 
-        platform_part = f"{platform}:" if platform else ""
-        session_id = f"{class_config_name}:{platform_part}{context_value}:{uuid.uuid4().hex}"
+        rand = _short_uid()
+        if platform and platform != class_config_name:
+            session_id = f"{class_config_name}:{platform}:{context_value}:{rand}"
+        else:
+            session_id = f"{class_config_name}:{context_value}:{rand}"
 
         params = dict(class_cfg_mgr.get_params(class_config_name))
         if context_key:
@@ -699,11 +711,10 @@ class SessionManager:
                 user_mgr = getattr(self, '_user_mgr', None)
                 if user_mgr and new_id:
                     parts = new_id.split(":")
-                    if len(parts) >= 3:
-                        ctx_type = parts[0]
-                        ctx_platform = parts[1]
-                        ctx_user_id = parts[2]
-                        user_mgr.update_context_session(ctx_user_id, ctx_platform, ctx_type, new_id)
+                    if len(parts) >= 4:
+                        user_mgr.update_context_session(parts[2], parts[1], parts[0], new_id)
+                    elif len(parts) == 3:
+                        user_mgr.update_context_session(parts[1], parts[0], parts[0], new_id)
 
                 response = response.message
                 await self.cleanup_idle_sessions_async()
@@ -939,7 +950,7 @@ class SessionManager:
             )
             requested_type = self.default_session_type
 
-        sid = user_call.session_id or uuid.uuid4().hex
+        sid = user_call.session_id or _short_uid()
         now = time.time()
         class_params: dict = {}
         if self._class_cfg_mgr is not None:

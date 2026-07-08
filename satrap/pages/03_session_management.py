@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -100,14 +99,20 @@ def _register_dialog():
     name = st.text_input("名称 (name)", value=default_name)
     class_path = selected_class_path if mode == "扫描目录" else selected_class_path
     desc = st.text_input("描述 (description, 可选)")
-    model_key = st.text_input("模型键 (model_key, 可选)")
+
+    mcm = st.session_state.mcm
+    llm_configs = mcm.list_llm_configs(mask_api_key=True)
+    llm_names = list(llm_configs.keys())
+    selected_llm = st.selectbox("绑定 LLM 配置", llm_names) if llm_names else ""
 
     if st.button("注册"):
         if not name or not class_path:
             st.error("名称和 Class Path 为必填项")
             return
         try:
-            scm.register_by_class_path(name, class_path, description=desc, model_key=model_key)
+            scm.register_by_class_path(name, class_path, description=desc, model_key="model_name")
+            if selected_llm:
+                scm.update_config(name, model_name=selected_llm)
             st.success(f"已注册: {name}")
             _reload_caches()
             st.rerun()
@@ -177,7 +182,7 @@ def _create_session_dialog(name: str):
             extra["adapter_id"] = adapter_id
 
         try:
-            sid = session_id or uuid.uuid4().hex
+            sid = session_id or None
             cfg = sm.register_session_from_class_config(
                 name, scm, session_id=sid, extra_params=extra,
             )
@@ -212,14 +217,33 @@ def _edit_model_key_dialog(name: str):
     st.write(f"编辑模型键: {name}")
 
     cfg_entry = scm.get_config(name)
-    current_model_key = (cfg_entry or {}).get("model_key", "")
-    st.caption("模型键决定了 LLM 模型名称以哪个参数名传给会话构造函数。留空则使用默认值 'model_name'。")
-    new_model_key = st.text_input("模型键", value=current_model_key) or ""
+    current_params = dict((cfg_entry or {}).get("params", {}) or {})
+
+    # 从 model_config.json 获取已有 LLM 配置列表
+    mcm = st.session_state.mcm
+    llm_configs = mcm.list_llm_configs(mask_api_key=True)
+    llm_names = list(llm_configs.keys())
+
+    # 当前 params 中 model_name 的值（即当前选中的 LLM 配置名）
+    current_model_name = current_params.get("model_name", "")
+    if current_model_name not in llm_names:
+        current_model_name = llm_names[0] if llm_names else ""
+
+    selected = st.selectbox(
+        "选择 LLM 配置",
+        llm_names,
+        index=llm_names.index(current_model_name) if current_model_name in llm_names else 0,
+    )
+
+    st.caption("选择该会话类使用的 LLM 配置。修改后将自动设置 model_key 为 'model_name' 并更新 params。")
 
     if st.button("保存"):
         try:
-            scm.set_model_key(name, new_model_key)
-            st.success("已保存")
+            scm.set_model_key(name, "model_name")
+            params = dict(current_params)
+            params["model_name"] = selected
+            scm.set_config(name, params)
+            st.success(f"已切换到 LLM 配置: {selected}")
             _reload_caches()
             trigger_backend_reload()
             st.rerun()

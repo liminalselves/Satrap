@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import time, uuid
+import secrets
+import string
 from satrap.core.type import CommandAction
 
 from typing import TYPE_CHECKING
@@ -9,27 +10,51 @@ if TYPE_CHECKING:
     from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 
 
+_UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
+
+def _short_uid(n: int = 6) -> str:
+    """生成 n 字符 base62 随机 ID"""
+    return ''.join(secrets.choice(_UID_ALPHABET) for _ in range(n))
+
+
+def _parse_user_id(session_id: str) -> str:
+    """从 session_id 中提取 user_id, 兼容新旧格式"""
+    parts = session_id.split(":")
+    if len(parts) >= 4:
+        return parts[2]
+    if len(parts) == 3:
+        return parts[1]
+    return ""
+
+
+def _base_id(session_id: str) -> str:
+    """提取 session_id 的固定前缀（去掉尾部随机段）, 兼容新旧格式"""
+    parts = session_id.split(":")
+    if len(parts) >= 4:
+        return ":".join(parts[:3])
+    if len(parts) == 3:
+        return ":".join(parts[:2])
+    return session_id
+
+
 def _get_user_contexts_list(session: Session | AsyncSession) -> list[str]:
     """获取当前用户的所有会话 ID 列表"""
     user_manager = session._user_manager
     if user_manager:
-        parts = session.session_id.split(":")
-        if len(parts) >= 3:
-            user_id = parts[2]
+        user_id = _parse_user_id(session.session_id)
+        if user_id:
             return user_manager.get_user_session_ids(user_id)
     return []
 
 
 def cmd_new(session: Session) -> CommandAction:
     """开始新的对话"""
-    parts = session.session_id.split(":")
-    base_id = ":".join(parts[:3])              # 防止堆叠
-    new_id = f"{base_id}:{uuid.uuid4().hex}"   # UUID 作为后缀
-    # 前3段 type:platform:user_id + UUID 确保唯一
+    new_id = f"{_base_id(session.session_id)}:{_short_uid()}"
 
     user_manager = session._user_manager
-    if user_manager and len(parts) >= 3:
-        user_id = parts[2]
+    user_id = _parse_user_id(session.session_id)
+    if user_manager and user_id:
         user_manager.bind_session(user_id, new_id)
 
     return CommandAction(
@@ -82,14 +107,11 @@ def cmd_about(text: str = "") -> str:
 
 async def cmd_new_async(session: AsyncSession) -> CommandAction:
     """开始新的对话"""
-    parts = session.session_id.split(":")
-    base_id = ":".join(parts[:3])              # 防止堆叠
-    new_id = f"{base_id}:{uuid.uuid4().hex}"   # UUID 作为后缀
-    # 前3段 type:platform:user_id + UUID 确保唯一
+    new_id = f"{_base_id(session.session_id)}:{_short_uid()}"
 
     user_manager = session._user_manager
-    if user_manager and len(parts) >= 3:
-        user_id = parts[2]
+    user_id = _parse_user_id(session.session_id)
+    if user_manager and user_id:
         user_manager.bind_session(user_id, new_id)
 
     return CommandAction(

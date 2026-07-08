@@ -1,49 +1,50 @@
 # Satrap 后端配置示例
-# 复制为 config.yaml 并填写实际值后使用: satrap run --config config.yaml
+# 复制为 config.yaml 并填入实际值后使用: satrap run --config config.yaml
 
-# --- 存储路径 (None = 使用默认路径 .satrap/*) ---
+# --- 存储路径, null 表示使用默认路径 .satrap/* ---
 model_config_path: null              # 模型配置 JSON 路径
 session_class_config_path: null       # Session 类配置 JSON 路径
-session_db_path: null                 # 会话实例数据库路径 (SQLite)
-user_db_path: null                    # 用户信息数据库路径 (SQLite)
+session_db_path: null                 # Session 实例数据库路径, SQLite
+user_db_path: null                    # 用户信息数据库路径, SQLite
 
-# --- 会话管理器 ---
-default_session_type: default         # 默认会话类型
-max_sessions: 1000                    # 最大并发会话数
-idle_timeout: 3600                    # 会话闲置超时 (秒)
+# --- Session 管理器 ---
+default_session_type: default         # 默认 Session 类型
+max_sessions: 1000                    # 最大活跃 Session 数
+idle_timeout: 3600                    # Session 闲置超时, 单位秒
 
 # --- 管线参数 ---
-rate_limit: 1.0                       # 限流: 每秒 token 数
-rate_burst: 5                         # 限流: 桶大小 (单次突发允许数)
-llm_timeout: 120.0                    # LLM 调用超时 (秒)
-error_feedback: true                  # 出错/限流时是否通知用户
+rate_limit: 1.0                       # 限流速率
+rate_burst: 5                         # 限流突发容量
+llm_timeout: 120.0                    # LLM 调用超时, 单位秒
+error_feedback: true                  # 出错或限流时是否通知用户
 
 # --- HTTP API ---
 api:
   host: 127.0.0.1
   port: 19870
 
-# --- Session 类注册 (name -> class_path) ---
+# --- Session 类注册, name -> class_path ---
 # 在此注册的 Session 子类会在启动时自动导入并注册到 SessionClassConfigManager
 session_classes:
   # default: my_module.MySession
   # assistant: my_module.AssistantSession
 
 # --- Session 类扫描目录 ---
-# 管理面板可扫描这些目录下的 .py 文件, 发现继承 Session/AsyncSession 的类.
+# 管理面板和 CLI 可以扫描这些目录下的 .py 文件, 发现继承 Session/AsyncSession 的类
 session_scan_paths:
-  - satrap/sessions
+  - .satrap/session
 
 # --- 平台适配器配置 ---
 platforms:
-  # 可以配置多个同类型适配器实例, 只要 id 唯一即可.
-  # 会话默认按消息来源自动绑定, 例如 misskey1 的用户会进入 misskey:misskey1:<user_id>.
-  # 手动创建会话时也可以通过 adapter_id 绑定到指定实例.
-  # - id: misskey1                    # 适配器实例唯一 ID
-  #   type: misskey                   # 适配器类型 (对应 @register_platform_adapter)
+  # 可以配置多个同类型适配器实例, 只要 id 唯一即可
+  # 会话默认按消息来源自动绑定, 例如 misskey1 的用户会进入 misskey:misskey1:<user_id>
+  # 手动创建会话时也可以通过 adapter_id 绑定到指定实例
+
+  # - id: misskey1
+  #   type: misskey
   #   settings:
   #     base_url: https://misskey-one.example.com
-  #     api_token: ${MISSKEY1_API_TOKEN}  # 支持环境变量引用
+  #     api_token: ${MISSKEY1_API_TOKEN}
   #     chat_enabled: true
   #     room_enabled: false
 
@@ -55,19 +56,11 @@ platforms:
   #     chat_enabled: true
   #     room_enabled: false
 
-  # - id: misskey3
-  #   type: misskey
-  #   settings:
-  #     base_url: https://misskey-three.example.com
-  #     api_token: ${MISSKEY3_API_TOKEN}
-  #     chat_enabled: true
-  #     room_enabled: false
-
   # - id: qq_bot
-  #   type: onebot                  # 也兼容 aiocqhttp
+  #   type: onebot
   #   settings:
-  #     host: 127.0.0.1             # OneBot 反向 WebSocket 监听地址
-  #     port: 6700                  # 机器人端连接 ws://127.0.0.1:6700/ws/
+  #     host: 127.0.0.1
+  #     port: 6700
   #     access_token: ${ONEBOT_ACCESS_TOKEN}
   #     enable_private: true
   #     enable_group: true

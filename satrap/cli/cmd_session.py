@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import sys
-import uuid
 from pathlib import Path
 
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
@@ -286,7 +285,6 @@ def cmd_session_create(args):
             )
             print(f"已创建会话: {str(cfg.session_id)} (上下文: {context_value})")
         else:
-            sid = sid or uuid.uuid4().hex
             cfg = sm.register_session_from_class_config(
                 args.name, scm, session_id=sid, extra_params=extra,
             )
