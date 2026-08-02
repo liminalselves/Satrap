@@ -182,6 +182,18 @@ answer = agent.stream_full_agent(
 
 `content_callback` 只接收回答增量, `thinking_callback` 只接收思考增量。未设置 `thinking_callback` 时, 思考增量会回退到 `content_callback`; `return_thinking=False` 时则不会回调思考内容。异步版本使用 `AsyncModelWorkflowFramework.create()` 和 `await agent.stream_full_agent(...)`。
 
+如果需要和 `tools_agent()` 一样只在临时上下文中执行, 使用 `stream_tools_agent()`:
+
+```python
+answer = agent.stream_tools_agent(
+    "只在本轮上下文中调用工具并回答",
+    callback=True,
+    thinking=True,
+)
+```
+
+该方法结束后会恢复原有 system 消息, 本轮用户消息, 工具调用和模型回复不会写入持久上下文。异步版本使用 `await agent.stream_tools_agent(...)`。
+
 ## 自定义 Workflow
 
 ```python

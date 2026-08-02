@@ -7,6 +7,8 @@ import pytest
 from satrap import (
     AsyncLLM,
     AsyncModelWorkflowFramework,
+    AsyncTool,
+    AsyncToolsManager,
     LLM,
     LLMCallResponse,
     LLMCallStreamEvent,
@@ -141,6 +143,16 @@ class _CalculateTool(Tool):
         return {"result": 5}
 
 
+class _AsyncCalculateTool(AsyncTool):
+    tool_name = "calculate"
+    description = "计算"
+    params_dict = {"expression": ("string", "表达式")}
+
+    async def execute(self, expression: str):
+        assert expression == "2 + 3"
+        return {"result": 5}
+
+
 class _AgentLLM:
     def __init__(self):
         self.responses = [
@@ -185,6 +197,30 @@ def test_stream_full_agent_executes_tool_and_continues(monkeypatch, tmp_path):
     assert agent.stream_full_agent("请计算 2+3", callback=False) == "结果是 5"
     roles = [message["role"] for message in agent.ctx.get_context()]
     assert roles == ["user", "assistant", "tool", "assistant"]
+
+
+def test_stream_tools_agent_keeps_only_system_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "satrap.core.framework.Base.ContextManager",
+        lambda conversation_id: ContextManager(
+            conversation_id,
+            db_path=str(tmp_path / "chat_history.db"),
+        ),
+    )
+    tools = ToolsManager()
+    tools.register_tool(_CalculateTool())
+    agent = ModelWorkflowFramework(
+        llm=_AgentLLM(),
+        context_id="stream-tools-agent-test",
+        tools_manager=tools,
+    )
+    agent.ctx.reset_system_prompt("只保留系统消息")
+    agent.ctx.add_user_message("历史消息")
+
+    assert agent.stream_tools_agent("请计算 2+3", callback=False) == "结果是 5"
+    assert agent.ctx.get_context() == [
+        {"role": "system", "content": "只保留系统消息"},
+    ]
 
 
 class _ThinkingAgentLLM:
@@ -262,3 +298,54 @@ async def test_async_stream_full_agent_separates_thinking_callback(monkeypatch, 
     assert await agent.stream_full_agent("测试", callback=True, thinking=True) == "异步完成"
     assert thinking == ["异步检查"]
     assert content == ["异步完成"]
+
+
+class _AsyncToolAgentLLM:
+    def __init__(self):
+        self.responses = [
+            LLMCallResponse(
+                type="tools_call",
+                content="",
+                tool_calls=[
+                    {
+                        "name": "calculate",
+                        "id": "call_1",
+                        "arguments": {"expression": "2 + 3"},
+                    }
+                ],
+            ),
+            LLMCallResponse(type="message", content="结果是 5"),
+        ]
+
+    async def stream_call(self, messages, tools=None, thinking=False):
+        assert thinking is False
+        response = self.responses.pop(0)
+        if response.content:
+            yield LLMCallStreamEvent(kind="content_delta", delta=response.content)
+        yield LLMCallStreamEvent(kind="done", response=response)
+
+
+@pytest.mark.asyncio
+async def test_async_stream_tools_agent_keeps_only_system_context(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "satrap.core.framework.Base.AsyncContextManager",
+        lambda conversation_id: AsyncContextManager(
+            conversation_id,
+            db_path=str(tmp_path / "async-chat-history.db"),
+        ),
+    )
+    tools = AsyncToolsManager()
+    tools.register_tool(_AsyncCalculateTool())
+    agent = AsyncModelWorkflowFramework(
+        llm=_AsyncToolAgentLLM(),
+        tools_manager=tools,
+        context_id="async-stream-tools-agent-test",
+    )
+    await agent.initialize()
+    await agent.ctx.reset_system_prompt("只保留异步系统消息")
+    await agent.ctx.add_user_message("异步历史消息")
+
+    assert await agent.stream_tools_agent("请计算 2+3", callback=False) == "结果是 5"
+    assert agent.ctx.get_context() == [
+        {"role": "system", "content": "只保留异步系统消息"},
+    ]

@@ -374,6 +374,37 @@ class ModelWorkflowFramework:
         finally:
             self._restore_context_keep_system(system_messages)
 
+    def stream_tools_agent(
+        self,
+        user_input: str,
+        callback: bool = True,
+        max_iterations: int = 10,
+        thinking: bool = False,
+    ) -> str:
+        """使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 是否回调回复, 默认开启
+        - max_iterations: 最大迭代次数, 默认 10
+        - thinking: 是否要求模型进行思考, 默认为 False
+
+        返回:
+        - 最终模型输出
+        """
+        system_messages = self._get_system_messages(self.ctx.get_context())
+        self._restore_context_keep_system(system_messages)
+
+        try:
+            return self.stream_full_agent(
+                user_input,
+                callback=callback,
+                max_iterations=max_iterations,
+                thinking=thinking,
+            )
+        finally:
+            self._restore_context_keep_system(system_messages)
+
     def reset_llm(self, llm: LLM):
         """重置会话模型"""
         self.llm = llm
@@ -867,6 +898,37 @@ class AsyncModelWorkflowFramework:
                 return "执行失败"
 
             return self.get_bot_message(context)
+        finally:
+            await self._restore_context_keep_system(system_messages)
+
+    async def stream_tools_agent(
+        self,
+        user_input: str,
+        callback: bool = True,
+        max_iterations: int = 10,
+        thinking: bool = False,
+    ) -> str:
+        """使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 是否回调回复, 默认开启
+        - max_iterations: 最大迭代次数, 默认 10
+        - thinking: 是否要求模型进行思考, 默认为 False
+
+        返回:
+        - 最终模型输出
+        """
+        system_messages = self._get_system_messages(self.ctx.get_context())
+        await self._restore_context_keep_system(system_messages)
+
+        try:
+            return await self.stream_full_agent(
+                user_input,
+                callback=callback,
+                max_iterations=max_iterations,
+                thinking=thinking,
+            )
         finally:
             await self._restore_context_keep_system(system_messages)
 
