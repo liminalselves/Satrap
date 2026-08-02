@@ -14,6 +14,8 @@ from satrap import (
     AsyncToolsManager,
     ContextManager,
     LLM,
+    LLMCallResponse,
+    LLMCallStreamEvent,
     Logger,
     ModelWorkflowFramework,
     Session,
@@ -49,9 +51,38 @@ llm.chat(messages)
 llm.stream_chat(messages)
 llm.structured_output(messages, format={"name": "str", "score": "int"})
 llm.call(messages, tools=tools, img_urls=["./a.png"])
+llm.stream_call(messages, thinking=True, tools=tools)
 ```
 
 推荐在 Agent 场景使用 `call()`, 因为它会返回 `LLMCallResponse`, 能区分普通消息和工具调用。
+
+`stream_call()` 和 `AsyncLLM.stream_call()` 会把一次模型请求转换为统一事件流。同步版本使用 `for`, 异步版本使用 `async for`。`thinking=True` 只是请求模型返回思考增量, 最终是否有 `thinking_delta` 取决于模型和供应商是否支持该字段:
+
+```python
+messages = [{"role": "user", "content": "你好"}]
+response = None
+for event in llm.stream_call(messages, thinking=True):
+    if event.kind == "thinking_delta":
+        print(event.delta, end="", flush=True)
+    elif event.kind == "content_delta":
+        print(event.delta, end="", flush=True)
+    elif event.kind == "done":
+        response = event.response
+    elif event.kind == "error":
+        print(f"\n流式调用失败: {event.error}")
+```
+
+`LLMCallStreamEvent.kind` 常见值如下:
+
+| 类型 | 内容 |
+| --- | --- |
+| `content_delta` | 普通回答文本增量, 位于 `delta` |
+| `thinking_delta` | 思考或 reasoning 文本增量, 位于 `delta` |
+| `tool_call_delta` | 工具调用增量, 位于 `tool_call` |
+| `done` | 请求结束, 完整结果位于 `response` |
+| `error` | 请求错误, 详情位于 `error` |
+
+流式方法会在内部拼接工具参数, `done` 事件中的 `response` 仍然是完整的 `LLMCallResponse`, 调用方不需要自行合并工具调用片段。
 
 ## ContextManager
 

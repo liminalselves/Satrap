@@ -151,6 +151,37 @@ print(answer)
 
 `callback=True` 时, workflow 会通过 `content_callback` 输出中间内容。`max_iterations` 用来限制连续工具调用轮数。
 
+## 流式 Agent 与思考输出
+
+`stream_full_agent()` 会通过 `LLM.stream_call()` 执行 Agent 流程, 工具调用期间也会持续输出回答增量。需要输出思考内容时, 同时传入 `thinking=True` 和 `return_thinking=True`:
+
+```python
+def show_content(delta: str):
+    print(delta, end="", flush=True)
+
+
+def show_thinking(delta: str):
+    print(f"[思考] {delta}", end="", flush=True)
+
+
+agent = ModelWorkflowFramework(
+    llm=llm,
+    context_id="agent-stream-demo",
+    tools_manager=tools,
+    content_callback=show_content,
+    return_thinking=True,
+    thinking_callback=show_thinking,
+)
+
+answer = agent.stream_full_agent(
+    "请先思考, 必要时调用工具, 然后给出答案",
+    callback=True,
+    thinking=True,
+)
+```
+
+`content_callback` 只接收回答增量, `thinking_callback` 只接收思考增量。未设置 `thinking_callback` 时, 思考增量会回退到 `content_callback`; `return_thinking=False` 时则不会回调思考内容。异步版本使用 `AsyncModelWorkflowFramework.create()` 和 `await agent.stream_full_agent(...)`。
+
 ## 自定义 Workflow
 
 ```python
@@ -182,4 +213,4 @@ class MyWorkflow(ModelWorkflowFramework):
 from satrap.expend.agent import SubAgent
 ```
 
-使用前需要准备子 Agent 使用的 LLM 和 ToolsManager。具体行为可以参考 `tests/test_agent_sub_agent.py`。
+使用前需要准备子 Agent 使用的 LLM 和 ToolsManager。具体行为可以参考 `tests/unit/test_agent_sub_agent.py`。

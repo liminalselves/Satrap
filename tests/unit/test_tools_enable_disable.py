@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import asyncio
+import pytest
 
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 
@@ -116,31 +116,29 @@ def test_incomplete_tool_still_cannot_register():
     assert manager.tools == {}
 
 
-def test_async_tools_manager_can_disable_and_enable_tool():
-    async def _run():
-        manager = AsyncToolsManager()
-        tool = AsyncCountingTool()
-        manager.register_tool(tool)
+@pytest.mark.asyncio
+async def test_async_tools_manager_can_disable_and_enable_tool():
+    manager = AsyncToolsManager()
+    tool = AsyncCountingTool()
+    manager.register_tool(tool)
 
-        assert manager.is_tool_enabled("async_counting") is True
-        assert len(manager.get_tools_definitions()) == 1
-        assert manager.disable_tool("async_counting") is True
-        assert "async_counting" in manager.tools
-        assert manager.get_tools_definitions() == []
+    assert manager.is_tool_enabled("async_counting") is True
+    assert len(manager.get_tools_definitions()) == 1
+    assert manager.disable_tool("async_counting") is True
+    assert "async_counting" in manager.tools
+    assert manager.get_tools_definitions() == []
 
-        result = await manager.execute_tool("async_counting", {"value": 1})
+    result = await manager.execute_tool("async_counting", {"value": 1})
 
-        assert result["error"] == "工具 async_counting 已禁用"
-        assert result["ok"] is False
-        assert result["error_type"] == "disabled"
-        assert result["tool_name"] == "async_counting"
-        assert tool.calls == 0
+    assert result["error"] == "工具 async_counting 已禁用"
+    assert result["ok"] is False
+    assert result["error_type"] == "disabled"
+    assert result["tool_name"] == "async_counting"
+    assert tool.calls == 0
 
-        assert manager.enable_tool("async_counting") is True
-        assert await manager.execute_tool("async_counting", {"value": 2}) == {"value": 2}
-        assert tool.calls == 1
-
-    asyncio.run(_run())
+    assert manager.enable_tool("async_counting") is True
+    assert await manager.execute_tool("async_counting", {"value": 2}) == {"value": 2}
+    assert tool.calls == 1
 
 
 def test_execute_tool_call_preserves_return_shape_for_disabled_tool():
@@ -214,32 +212,30 @@ def test_execute_tool_call_handles_malformed_call_info_without_raising():
     assert tool_result["error_type"] == "invalid_arguments"
 
 
-def test_async_tools_manager_returns_structured_errors_and_catches_exceptions():
-    async def _run():
-        manager = AsyncToolsManager()
-        counting_tool = AsyncCountingTool()
-        raising_tool = AsyncRaisingTool()
-        manager.register_tool(counting_tool)
-        manager.register_tool(raising_tool)
+@pytest.mark.asyncio
+async def test_async_tools_manager_returns_structured_errors_and_catches_exceptions():
+    manager = AsyncToolsManager()
+    counting_tool = AsyncCountingTool()
+    raising_tool = AsyncRaisingTool()
+    manager.register_tool(counting_tool)
+    manager.register_tool(raising_tool)
 
-        missing_result = await manager.execute_tool("missing", {})
-        assert missing_result["error_type"] == "not_found"
+    missing_result = await manager.execute_tool("missing", {})
+    assert missing_result["error_type"] == "not_found"
 
-        invalid_args_result = await manager.execute_tool("async_counting", "not a dict")   # type: ignore[arg-type]
-        assert invalid_args_result["error_type"] == "invalid_arguments"
-        assert counting_tool.calls == 0
+    invalid_args_result = await manager.execute_tool("async_counting", "not a dict")   # type: ignore[arg-type]
+    assert invalid_args_result["error_type"] == "invalid_arguments"
+    assert counting_tool.calls == 0
 
-        exception_result = await manager.execute_tool("async_raising", {"value": 7})
-        assert exception_result["ok"] is False
-        assert exception_result["error_type"] == "execution_error"
-        assert exception_result["tool_name"] == "async_raising"
-        assert "async boom 7" in exception_result["error"]
-        assert raising_tool.calls == 1
+    exception_result = await manager.execute_tool("async_raising", {"value": 7})
+    assert exception_result["ok"] is False
+    assert exception_result["error_type"] == "execution_error"
+    assert exception_result["tool_name"] == "async_raising"
+    assert "async boom 7" in exception_result["error"]
+    assert raising_tool.calls == 1
 
-        tool_message, tool_result = await manager.execute_tool_call(
-            {"id": "call_bad_args", "name": "async_counting", "arguments": "bad"}
-        )
-        assert tool_message["id"] == "call_bad_args"
-        assert tool_result["error_type"] == "invalid_arguments"
-
-    asyncio.run(_run())
+    tool_message, tool_result = await manager.execute_tool_call(
+        {"id": "call_bad_args", "name": "async_counting", "arguments": "bad"}
+    )
+    assert tool_message["id"] == "call_bad_args"
+    assert tool_result["error_type"] == "invalid_arguments"

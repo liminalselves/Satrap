@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import asyncio
 import json
-import os
-import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.type import LLMCallResponse
@@ -13,7 +12,7 @@ from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
 from satrap.expend.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOLKIT_PATH = PROJECT_ROOT / ".toolkit" / "apikey.txt"
 
 
@@ -177,6 +176,7 @@ async def _run_async_sub_agent(task_input: str) -> str:
     return await agent.execute(task_input)
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_parses_json_array_task():
     result = await _run_async_sub_agent('["async task a", "async task b"]')
     assert "子代理1执行任务" in result
@@ -185,23 +185,27 @@ async def test_async_sub_agent_parses_json_array_task():
     assert "async task b" in result
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_parses_single_string():
     result = await _run_async_sub_agent("single async task")
     assert "子代理1执行任务" in result
     assert "single async task" in result
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_empty_list():
     result = await _run_async_sub_agent("[]")
     assert result == "未收到任何子任务"
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_malformed_json():
     result = await _run_async_sub_agent("{bad json}")
     assert "子代理1执行任务" in result
     assert "{bad json}" in result
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_invalid_type():
     result = await _run_async_sub_agent('"just a string"')
     assert "子代理1执行任务" in result
@@ -213,10 +217,12 @@ async def test_async_sub_agent_invalid_type():
 # ===============================================================
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_sub_agent_with_deepseek():
     llm, _ = _build_deepseek_llm()
     if llm is None:
-        return
+        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
 
     tools_mgr = ToolsManager()
     agent = SubAgent(llm, tools_mgr)
@@ -226,10 +232,13 @@ def test_sub_agent_with_deepseek():
     assert "2+2" in result or "4" in result or "capital" in result or "Paris" in result
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
+@pytest.mark.asyncio
 async def test_async_sub_agent_with_deepseek():
     _, async_llm = _build_deepseek_llm()
     if async_llm is None:
-        return
+        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
 
     tools_mgr = AsyncToolsManager()
     agent = AsyncSubAgent(async_llm, tools_mgr)
@@ -239,10 +248,13 @@ async def test_async_sub_agent_with_deepseek():
     assert "2+2" in result or "4" in result or "capital" in result or "Paris" in result
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
+@pytest.mark.asyncio
 async def test_async_sub_agent_parallelism_with_deepseek():
     _, async_llm = _build_deepseek_llm()
     if async_llm is None:
-        return
+        pytest.skip(".toolkit/apikey.txt 中没有可用的 DeepSeek 配置")
 
     tools_mgr = AsyncToolsManager()
     agent = AsyncSubAgent(async_llm, tools_mgr)
@@ -251,11 +263,6 @@ async def test_async_sub_agent_parallelism_with_deepseek():
     for i in range(1, 5):
         assert f"子代理{i}" in result
         assert str(i) in result
-
-
-# ===============================================================
-# Run all tests
-# ===============================================================
 
 
 def test_sub_agent_model_forward_returns_string():
@@ -267,6 +274,7 @@ def test_sub_agent_model_forward_returns_string():
     assert len(result) > 0
 
 
+@pytest.mark.asyncio
 async def test_async_sub_agent_model_forward_returns_string():
     llm = _FakeAsyncLLM()
     tools_manager = _FakeToolsManager()
@@ -274,68 +282,3 @@ async def test_async_sub_agent_model_forward_returns_string():
     result = await model.forward("some async task")
     assert isinstance(result, str)
     assert len(result) > 0
-
-
-async def run_all_unit_tests():
-    """Run all unit tests"""
-    print("=" * 60)
-    print("Sync SubAgent unit tests")
-    print("=" * 60)
-    test_sub_agent_parses_json_array_task()
-    print("  PASS: test_sub_agent_parses_json_array_task")
-    test_sub_agent_parses_single_string_task()
-    print("  PASS: test_sub_agent_parses_single_string_task")
-    test_sub_agent_handles_empty_task_list()
-    print("  PASS: test_sub_agent_handles_empty_task_list")
-    test_sub_agent_handles_malformed_json()
-    print("  PASS: test_sub_agent_handles_malformed_json")
-    test_sub_agent_preserves_task_order()
-    print("  PASS: test_sub_agent_preserves_task_order")
-    test_sub_agent_model_forward_returns_string()
-    print("  PASS: test_sub_agent_model_forward_returns_string")
-
-    print("\n" + "=" * 60)
-    print("Async SubAgent unit tests")
-    print("=" * 60)
-    await test_async_sub_agent_parses_json_array_task()
-    print("  PASS: test_async_sub_agent_parses_json_array_task")
-    await test_async_sub_agent_parses_single_string()
-    print("  PASS: test_async_sub_agent_parses_single_string")
-    await test_async_sub_agent_empty_list()
-    print("  PASS: test_async_sub_agent_empty_list")
-    await test_async_sub_agent_malformed_json()
-    print("  PASS: test_async_sub_agent_malformed_json")
-    await test_async_sub_agent_invalid_type()
-    print("  PASS: test_async_sub_agent_invalid_type")
-    await test_async_sub_agent_model_forward_returns_string()
-    print("  PASS: test_async_sub_agent_model_forward_returns_string")
-
-
-async def run_integration_tests():
-    """Run integration tests with DeepSeek API (skipped if toolkit config missing)"""
-    llm, async_llm = _build_deepseek_llm()
-    if llm is None or async_llm is None:
-        print("\n[SKIP] DeepSeek config not found in .toolkit/apikey.txt")
-        return
-
-    print("\n" + "=" * 60)
-    print("Integration tests with DeepSeek API")
-    print("=" * 60)
-    test_sub_agent_with_deepseek()
-    print("  PASS: test_sub_agent_with_deepseek")
-    await test_async_sub_agent_with_deepseek()
-    print("  PASS: test_async_sub_agent_with_deepseek")
-    await test_async_sub_agent_parallelism_with_deepseek()
-    print("  PASS: test_async_sub_agent_parallelism_with_deepseek")
-
-
-async def main():
-    await run_all_unit_tests()
-    await run_integration_tests()
-    print("\n" + "=" * 60)
-    print("ALL TESTS PASSED")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

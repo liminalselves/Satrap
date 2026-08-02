@@ -1,16 +1,14 @@
-from typing import List, Dict, Any, Optional, Union, Literal
-from openai import OpenAI, AsyncOpenAI, APIError
+from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator
+from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
-from satrap.core.utils import safe_parse_arguments
-from satrap.core.type import LLMCallResponse
+from openai import OpenAI, AsyncOpenAI, APIError
 import json
 import re
 
 from satrap.core.log import logger
-from satrap.core.utils.vision import (
-    normalize_chat_messages,
-    normalize_openai_base_url,
-)
+
 
 
 def _extract_thinking_from_message(
@@ -266,6 +264,160 @@ def _rename_thinking_field(
     return new_messages
 
 
+def _stream_field(value: Any, name: str, default: Any = None) -> Any:
+    """兼容对象和字典形式读取流式响应字段"""
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _stream_text(value: Any) -> str:
+    """提取流式字段中的文本内容"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts: list[str] = []
+        for part in value:
+            text = _stream_field(part, "text", "")
+            if text:
+                parts.append(str(text))
+        return "".join(parts)
+    return "" if value is None else str(value)
+
+
+def _stream_first_text(value: Any, names: tuple[str, ...]) -> str:
+    """按优先级读取第一个非空文本字段"""
+    for name in names:
+        text = _stream_text(_stream_field(value, name, None))
+        if text:
+            return text
+    return ""
+
+
+class _StreamCallAccumulator:
+    """聚合 Chat Completions 流式响应并生成最终调用结果"""
+    def __init__(self):
+        self.content_parts: list[str] = []     # 最终答案内容
+        self.reasoning_parts: list[str] = []   # 思考内容
+        self.tool_calls: dict[int, dict[str, str]] = {}   # tools call 信息
+        self.finish_reason: str | None = None   # 完成原因
+
+    def consume(self, chunk: Any) -> list[LLMCallStreamEvent]:
+        """
+        接收一个来自 API 的原始响应块, 更新累加器状态, 并返回本次 chunk 产生的事件列表
+        
+        参数:
+        - chunk: 来自 API 的原始响应块 (对象或字典)
+        """
+        events: list[LLMCallStreamEvent] = []
+        choices = _stream_field(chunk, "choices", []) or []
+
+        for choice in choices:   # 遍历每个 choice
+            finish_reason = _stream_field(choice, "finish_reason", None)
+
+            if finish_reason:
+                self.finish_reason = str(finish_reason)
+
+            delta = _stream_field(choice, "delta", None)
+            if delta is None:
+                continue
+
+            # ======= 处理思考内容 =======
+            thinking = _stream_first_text(
+                delta,
+                ("reasoning_content", "reasoning", "thinking"),
+            )
+            if thinking:
+                self.reasoning_parts.append(thinking)
+                events.append(LLMCallStreamEvent(kind="thinking_delta", delta=thinking))
+
+            # ======= 处理答案内容 =======
+            content = _stream_text(_stream_field(delta, "content", None))
+            if content:
+                self.content_parts.append(content)
+                events.append(LLMCallStreamEvent(kind="content_delta", delta=content))
+
+            # ======= 处理 tools call =======
+            tool_deltas = _stream_field(delta, "tool_calls", None)
+            if tool_deltas is None:
+                function_call = _stream_field(delta, "function_call", None)
+                tool_deltas = [function_call] if function_call is not None else []
+
+            # ======= 处理 tools call 增量 =======
+            for fallback_index, tool_delta in enumerate(tool_deltas or []):
+                index_value = _stream_field(tool_delta, "index", fallback_index)
+                try:
+                    index = int(index_value)
+                except (TypeError, ValueError):
+                    index = fallback_index
+
+                slot = self.tool_calls.setdefault(
+                    index,
+                    {"id": "", "name": "", "arguments": ""},
+                )   # 获取或创建槽位
+
+                function_data = _stream_field(tool_delta, "function", None)
+                if function_data is None:
+                    function_data = tool_delta
+                # 提取函数信息
+
+                id_delta = _stream_text(_stream_field(tool_delta, "id", None))
+                name_delta = _stream_text(_stream_field(function_data, "name", None))
+                arguments_delta = _stream_text(
+                    _stream_field(function_data, "arguments", None)
+                )
+
+                if id_delta:
+                    slot["id"] += id_delta
+                if name_delta:
+                    slot["name"] += name_delta
+                if arguments_delta:
+                    slot["arguments"] += arguments_delta
+                # 增量字段
+
+                if id_delta or name_delta or arguments_delta:
+                    events.append(
+                        LLMCallStreamEvent(
+                            kind="tool_call_delta",
+                            tool_call={
+                                "index": index,
+                                "id": id_delta,
+                                "name": name_delta,
+                                "arguments": arguments_delta,
+                            },  # 工具调用增量
+                        )
+                    )
+        return events
+
+    def response(self, suppress_error: bool = True) -> LLMCallResponse:
+        """将聚合结果转换为与非流式 call 一致的响应结构"""
+        tool_calls = []
+        for index in sorted(self.tool_calls):
+            tool_call = self.tool_calls[index]
+            tool_calls.append(
+                {
+                    "id": tool_call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_call["name"],
+                        "arguments": tool_call["arguments"] or "{}",
+                    },
+                }
+            )
+
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": "".join(self.content_parts),
+        }
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        if self.reasoning_parts:
+            message["reasoning_content"] = "".join(self.reasoning_parts)
+
+        payload = {"choices": [{"message": message}]}
+        return parse_call_response(payload, suppress_error=suppress_error)
+
+
 class LLM:
     def __init__(
         self,
@@ -299,11 +451,9 @@ class LLM:
         - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         """
-        base_url = normalize_openai_base_url(base_url)
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
-        self.base_url = base_url
+        self.base_url = normalize_openai_base_url(base_url)
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -311,6 +461,8 @@ class LLM:
         self.return_false = return_false
         self.reasoning_body = reasoning_body
         self.thinking_field_name = thinking_field_name
+
+        self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
     def chat(
         self,
@@ -597,6 +749,102 @@ class LLM:
             logger.error(f"[LLM] 调用过程发生未知异常: {e}")
             return LLMCallResponse(type="message", content="调用过程发生未知异常，请在后台日志中查看详细信息") if not self.return_false else False
 
+    def stream_call(
+        self,
+        messages: List[Dict[str, str | list]],
+        model: Optional[str] = None,
+        thinking: bool = False,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+        img_urls: Optional[List[str]] = None,
+    ) -> Iterator[LLMCallStreamEvent]:
+        """同步流式调用 LLM 并返回结构化增量事件
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否要求模型进行思考, 默认为 False
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+        - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
+
+        返回:
+        - 生成器, 生成增量事件
+        """
+
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            response: LLMCallResponse | bool = (
+                False
+                if self.return_false
+                else LLMCallResponse(
+                    type="message",
+                    content="对话输入 messages 为空，请在后台日志中查看详细信息",
+                )
+            )
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
+            return
+
+        messages = _rename_thinking_field(messages, self.thinking_field_name)
+        processed_messages = normalize_chat_messages(messages, img_urls=img_urls)
+        request_params: dict[str, Any] = {
+            "model": target_model,
+            "messages": processed_messages,
+            "temperature": use_temp,
+            "top_p": use_top_p,
+            "max_tokens": use_max_tokens,
+            "extra_body": self.reasoning_body if thinking else None,
+            "stream": True,
+        }
+        if tools is not None:
+            request_params["tools"] = tools
+            request_params["tool_choice"] = tool_choice
+
+        accumulator = _StreamCallAccumulator()
+        try:
+            stream = self.client.chat.completions.create(**request_params)
+            for chunk in stream:
+                yield from accumulator.consume(chunk)
+
+            response = accumulator.response(self.suppress_error)
+            yield LLMCallStreamEvent(
+                kind="done",
+                response=response,
+                finish_reason=accumulator.finish_reason,
+            )
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+            message = f"LLM API 错误，请在后台日志中查看详细信息"
+            logger.error(f"[LLM] LLM API 错误: {e}")
+            response = False if self.return_false else LLMCallResponse(type="message", content=message)
+
+            yield LLMCallStreamEvent(kind="error", error=message, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
+
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+
+            message = "调用过程发生未知异常，请在后台日志中查看详细信息"
+            logger.error(f"[LLM] 调用过程发生未知异常: {e}")
+            response = False if self.return_false else LLMCallResponse(type="message", content=message)
+
+            yield LLMCallStreamEvent(kind="error", error=message, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
+
     def get_model(self) -> str:
         """获取当前 LLM 实例使用的模型名称"""
         return self.model
@@ -669,7 +917,7 @@ class AsyncLLM:
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
-        self.base_url = base_url
+        self.base_url = normalize_openai_base_url(base_url)
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -677,10 +925,10 @@ class AsyncLLM:
         self.return_false = return_false
         self.reasoning_body = reasoning_body
         self.thinking_field_name = thinking_field_name
-        base_url = normalize_openai_base_url(base_url)
+
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url=base_url,
+            base_url=self.base_url,
             timeout=timeout,
         )   # 初始化异步 OpenAI 客户端
 
@@ -978,6 +1226,103 @@ class AsyncLLM:
                 raise e
             logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
             return LLMCallResponse(type="message", content="调用过程发生未知异常，请在后台日志中查看详细信息") if not self.return_false else False
+
+    async def stream_call(
+        self,
+        messages: List[Dict[str, str | List[Dict[str, Any]]]],
+        model: Optional[str] = None,
+        thinking: bool = False,
+        temperature: Optional[float] = None,
+        top_p: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: str = "auto",
+        img_urls: Optional[List[str]] = None,
+    ) -> AsyncIterator[LLMCallStreamEvent]:
+        """异步流式调用 LLM 并返回结构化增量事件
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - model: 可选参数, 用于覆盖默认模型
+        - thinking: 是否要求模型进行思考, 默认为 False
+        - temperature: 可选参数, 用于覆盖默认温度
+        - top_p: 可选参数, 用于覆盖默认 top_p
+        - max_tokens: 可选参数, 用于覆盖默认最大 token 数
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
+        - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
+
+        返回:
+        - 异步生成器, 生成增量事件
+        """
+        target_model = model if model else self.model
+        use_temp = temperature if temperature is not None else self.temperature
+        use_top_p = top_p if top_p is not None else self.top_p
+        use_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
+
+        if not messages:
+            logger.warning("对话输入 messages 为空")
+            response: LLMCallResponse | bool = (
+                False
+                if self.return_false
+                else LLMCallResponse(
+                    type="message",
+                    content="对话输入 messages 为空，请在后台日志中查看详细信息",
+                )
+            )
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
+            return
+
+        messages = _rename_thinking_field(messages, self.thinking_field_name)
+        processed_messages = normalize_chat_messages(messages, img_urls=img_urls)
+        request_params: dict[str, Any] = {
+            "model": target_model,
+            "messages": processed_messages,
+            "temperature": use_temp,
+            "top_p": use_top_p,
+            "max_tokens": use_max_tokens,
+            "extra_body": self.reasoning_body if thinking else None,
+            "stream": True,
+        }
+        if tools is not None:
+            request_params["tools"] = tools
+            request_params["tool_choice"] = tool_choice
+
+        accumulator = _StreamCallAccumulator()
+        try:
+            stream = await self.client.chat.completions.create(**request_params)
+            async for chunk in stream:
+                for event in accumulator.consume(chunk):
+                    yield event
+
+            response = accumulator.response(self.suppress_error)
+            yield LLMCallStreamEvent(
+                kind="done",
+                response=response,
+                finish_reason=accumulator.finish_reason,
+            )
+
+        except APIError as e:
+            if not self.suppress_error:
+                raise e
+
+            message = "LLM API 错误，请在后台日志中查看详细信息"
+            logger.error(f"[AsyncLLM] LLM API 错误: {e}")
+            response = False if self.return_false else LLMCallResponse(type="message", content=message)
+
+            yield LLMCallStreamEvent(kind="error", error=message, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
+
+        except Exception as e:
+            if not self.suppress_error:
+                raise e
+
+            message = "调用过程发生未知异常，请在后台日志中查看详细信息"
+            logger.error(f"[AsyncLLM] 调用过程发生未知异常: {e}")
+            response = False if self.return_false else LLMCallResponse(type="message", content=message)
+
+            yield LLMCallStreamEvent(kind="error", error=message, response=response)
+            yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
 
     def get_model(self) -> str:
         """获取当前 AsyncLLM 实例使用的模型名称"""

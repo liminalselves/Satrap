@@ -54,7 +54,25 @@ class AssistantAsyncSession(AsyncSession):
 
 ## 默认命令
 
-基础 `Session` 内置命令处理器。默认命令由 `satrap.expend.command.session_commands` 注册, 常见用途包括查看历史上下文, 新建上下文和切换上下文。可以通过 `register_command()` 添加或覆盖命令。
+基础 `Session` 默认只注册 `/help`。`satrap.expend.command.session_commands` 提供可复用的 `new`, `history`, `switch`, `about` 命令函数, 具体 Session 需要显式注册它们。注册后仍可以通过 `register_command()` 添加或覆盖命令。
+
+```python
+from functools import partial
+
+from satrap.expend.command.session_commands import (
+    cmd_about,
+    cmd_history,
+    cmd_new,
+    cmd_switch,
+)
+
+session.register_command("new", partial(cmd_new, session), "新建上下文")
+session.register_command("history", partial(cmd_history, session), "查看上下文")
+session.register_command("switch", partial(cmd_switch, session), "切换上下文")
+session.register_command("about", cmd_about, "查看命令说明")
+```
+
+异步 Session 使用对应的 `cmd_new_async`, `cmd_history_async`, `cmd_switch_async`, `cmd_about_async` 函数, 并注册异步处理器。
 
 ```python
 def ping():

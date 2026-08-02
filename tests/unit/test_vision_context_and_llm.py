@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import base64
 import os
 from pathlib import Path
@@ -67,21 +66,19 @@ def test_context_manager_persists_multimodal_content(tmp_path):
     assert loaded.estimate_token(method="experience") >= DEFAULT_IMAGE_TOKEN_COST
 
 
-def test_async_context_manager_persists_multimodal_content(tmp_path):
-    async def _run():
-        db_path = tmp_path / "history.db"
-        ctx = AsyncContextManager("vision", db_path=str(db_path))
-        await ctx.initialize()
-        await ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
+@pytest.mark.asyncio
+async def test_async_context_manager_persists_multimodal_content(tmp_path):
+    db_path = tmp_path / "history.db"
+    ctx = AsyncContextManager("vision", db_path=str(db_path))
+    await ctx.initialize()
+    await ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
 
-        loaded = AsyncContextManager("vision", db_path=str(db_path))
-        await loaded.initialize()
-        message = loaded.get_context()[0]
+    loaded = AsyncContextManager("vision", db_path=str(db_path))
+    await loaded.initialize()
+    message = loaded.get_context()[0]
 
-        assert isinstance(message["content"], list)
-        assert message["content"][1]["type"] == "image_url"
-
-    asyncio.run(_run())
+    assert isinstance(message["content"], list)
+    assert message["content"][1]["type"] == "image_url"
 
 
 def test_context_manager_loads_legacy_text_rows(tmp_path):
@@ -142,26 +139,24 @@ def test_llm_call_appends_images_to_last_user_message():
     assert messages[-1]["content"][1]["type"] == "image_url"
 
 
-def test_async_llm_call_appends_images_to_last_user_message():
-    async def _run():
-        fake = _FakeAsyncCompletions()
-        llm = AsyncLLM.__new__(AsyncLLM)
-        llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
-        llm.model = "mock"
-        llm.temperature = 0.7
-        llm.top_p = 0.95
-        llm.max_tokens = 1000
-        llm.suppress_error = True
-        llm.return_false = False
-        llm.reasoning_body = {"thinking": {"type": "enabled"}}
-        llm.thinking_field_name = "reasoning_content"
+@pytest.mark.asyncio
+async def test_async_llm_call_appends_images_to_last_user_message():
+    fake = _FakeAsyncCompletions()
+    llm = AsyncLLM.__new__(AsyncLLM)
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    llm.model = "mock"
+    llm.temperature = 0.7
+    llm.top_p = 0.95
+    llm.max_tokens = 1000
+    llm.suppress_error = True
+    llm.return_false = False
+    llm.reasoning_body = {"thinking": {"type": "enabled"}}
+    llm.thinking_field_name = "reasoning_content"
 
-        response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
+    response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
 
-        assert isinstance(response, LLMCallResponse)
-        assert fake.kwargs["messages"][0]["content"][1]["type"] == "image_url"
-
-    asyncio.run(_run())
+    assert isinstance(response, LLMCallResponse)
+    assert fake.kwargs["messages"][0]["content"][1]["type"] == "image_url"
 
 
 def _load_toolkit_config() -> dict[str, str]:
@@ -188,6 +183,8 @@ def test_normalize_openai_base_url_for_toolkit_endpoint():
     assert normalize_openai_base_url("https://api.siliconflow.cn/v1/chat/completions") == "https://api.siliconflow.cn/v1"
 
 
+@pytest.mark.integration
+@pytest.mark.requires_api
 def test_real_toolkit_vision_call_when_available():
     values = _load_toolkit_config()
     llm = LLM(

@@ -4,14 +4,15 @@
 
 ## 阅读路径
 
-1. [快速开始](quick-start.md): 安装, 一次文本调用, 一次图片调用, 一个最小工具
+1. [快速开始](quick-start.md): 安装, 文本与图片调用, 流式输出, 一个最小工具
 2. [配置说明](configuration.md): `config.yaml`, 模型配置, Session 类配置和环境变量
-3. [核心 API](core-api.md): LLM, ContextManager, Embedding, ReRank 和消息组件
+3. [核心 API](core-api.md): LLM, 流式事件, ContextManager, Embedding, ReRank 和消息组件
 4. [工具与 Agent](tools-and-agent.md): Tool / AsyncTool, ToolsManager, workflow 和 sub-agent
 5. [扩展模块](extensions.md): 搜索, 网页抓取, 代码沙箱, RAG, 长期记忆和 sub-agent
 6. [Session, 后端与 CLI](sessions-backend-cli.md): Session 写法, 后端生命周期, CLI 常用命令
 7. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
-8. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
+8. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
+9. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
 
 ## 项目结构速览
 
@@ -28,7 +29,7 @@ satrap/
   cli/                # satrap 命令行实现
   pages/              # Streamlit 管理面板页面
   expend/             # 可选扩展工具, 如搜索, RAG, mem0, sandbox
-tests/                # 单元测试与示例脚本
+tests/                # unit, integration 和 manual 测试
 docs/                 # 项目文档
 ```
 

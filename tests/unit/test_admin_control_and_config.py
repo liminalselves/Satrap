@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from satrap.admin_utils.config_editor import (
     config_exists,
     create_default_config,
@@ -36,23 +38,20 @@ def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch):
     assert calls == [("POST", "/api/shutdown", None)]
 
 
-def test_http_shutdown_route_sets_backend_event():
+@pytest.mark.asyncio
+async def test_http_shutdown_route_sets_backend_event():
     """shutdown API 应触发 BackendManager 的关闭事件"""
+    backend = BackendManager()
+    event = asyncio.Event()
+    backend.set_shutdown_event(event)
+    server = BackendHTTPServer(backend)
 
-    async def run():
-        backend = BackendManager()
-        event = asyncio.Event()
-        backend.set_shutdown_event(event)
-        server = BackendHTTPServer(backend)
+    status, data = await server._route("POST", "/api/shutdown", b"")
+    await asyncio.sleep(0)
 
-        status, data = await server._route("POST", "/api/shutdown", b"")
-        await asyncio.sleep(0)
-
-        assert status == 200
-        assert data == {"ok": True}
-        assert event.is_set()
-
-    asyncio.run(run())
+    assert status == 200
+    assert data == {"ok": True}
+    assert event.is_set()
 
 
 def test_config_editor_yaml_roundtrip(tmp_path):
@@ -125,14 +124,14 @@ def test_configured_platform_types_uses_config_and_health():
 
 
 def test_find_config_path_defaults_to_yaml(tmp_path):
-    """没有配置文件时默认指向 satrap/config.yaml"""
-    assert find_config_path(tmp_path) == tmp_path / "satrap" / "config.yaml"
+    """没有配置文件时默认指向 .satrap/config.yaml"""
+    assert find_config_path(tmp_path) == tmp_path / ".satrap" / "config.yaml"
 
 
 def test_find_config_path_prefers_root_config(tmp_path):
     """根目录配置优先于 satrap 目录配置"""
     root_config = tmp_path / "config.yaml"
-    nested_config = tmp_path / "satrap" / "config.yaml"
+    nested_config = tmp_path / ".satrap" / "config.yaml"
     nested_config.parent.mkdir()
     root_config.write_text("platforms: []\n", encoding="utf-8")
     nested_config.write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
@@ -141,11 +140,11 @@ def test_find_config_path_prefers_root_config(tmp_path):
 
 
 def test_create_default_config_under_satrap(tmp_path):
-    """无配置文件时应在 satrap/config.yaml 创建默认配置"""
+    """无配置文件时应在 .satrap/config.yaml 创建默认配置"""
     assert not config_exists(tmp_path)
 
     config = create_default_config(tmp_path)
-    path = tmp_path / "satrap" / "config.yaml"
+    path = tmp_path / ".satrap" / "config.yaml"
 
     assert path.exists()
     assert config.api_host == "127.0.0.1"
@@ -153,25 +152,25 @@ def test_create_default_config_under_satrap(tmp_path):
 
 
 def test_config_loader_autodetect_creates_default_config(tmp_path, monkeypatch):
-    """ConfigLoader.autodetect 无配置时创建并加载 satrap/config.yaml"""
+    """ConfigLoader.autodetect 无配置时创建并加载 .satrap/config.yaml"""
     monkeypatch.chdir(tmp_path)
 
     config = ConfigLoader.autodetect()
-    path = tmp_path / "satrap" / "config.yaml"
+    path = tmp_path / ".satrap" / "config.yaml"
 
     assert path.exists()
     assert config.api_port == 19870
 
 
 def test_config_loader_autodetect_keeps_root_priority(tmp_path, monkeypatch):
-    """根目录已有配置时不创建 satrap/config.yaml"""
+    """根目录已有配置时不创建 .satrap/config.yaml"""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
 
     config = ConfigLoader.autodetect()
 
     assert config.api_port == 19999
-    assert not (tmp_path / "satrap" / "config.yaml").exists()
+    assert not (tmp_path / ".satrap" / "config.yaml").exists()
 
 
 def test_platform_upsert_add_update_and_delete():

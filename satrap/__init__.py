@@ -2,6 +2,7 @@ from .core.utils.context import ContextManager, AsyncContextManager
 from .core.framework import ModelWorkflowFramework, AsyncModelWorkflowFramework, Session, AsyncSession
 from .core.utils.TCBuilder import ToolsManager, AsyncToolsManager, Tool, AsyncTool
 from .core.APICall.LLMCall import LLM, AsyncLLM
+from .core.type import LLMCallResponse, LLMCallStreamEvent
 from .core.log import Logger
 
 __all__ = [
@@ -17,6 +18,8 @@ __all__ = [
     "AsyncTool",
     "LLM",
     "AsyncLLM",
+    "LLMCallResponse",
+    "LLMCallStreamEvent",
     "Logger",
 
 ]

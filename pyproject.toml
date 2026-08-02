@@ -1,3 +1,18 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+addopts = "-ra"
+cache_dir = "tests/.pytest_cache"
+markers = [
+    "unit: 离线单元测试",
+    "integration: 需要外部服务或真实模型的集成测试",
+    "requires_api: 需要 API 凭据的测试",
+    "slow: 运行时间较长的测试",
+]

@@ -18,19 +18,6 @@ DEFAULT_MAX_IMAGE_SIDE = 1600
 DEFAULT_TARGET_BYTES = 4 * 1024 * 1024
 
 
-def normalize_openai_base_url(base_url: str | None) -> str | None:
-    """归一化 OpenAI 兼容客户端 base_url"""
-    if not base_url:
-        return base_url
-    cleaned = base_url.strip().rstrip("/")
-    suffixes = ("/chat/completions", "/completions", "/responses")
-    for suffix in suffixes:
-        if cleaned.endswith(suffix):
-            cleaned = cleaned[: -len(suffix)]
-            break
-    return cleaned or base_url
-
-
 def is_data_image_url(value: str) -> bool:
     """判断字符串是否为图片 data URL"""
     return value.startswith("data:image/") and ";base64," in value

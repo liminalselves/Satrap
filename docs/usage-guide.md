@@ -11,6 +11,7 @@
 - [扩展模块](extensions.md)
 - [Session, 后端与 CLI](sessions-backend-cli.md)
 - [平台接入](platforms.md)
+- [测试说明](testing.md)
 - [常见问题](faq.md)
 
 如果你只想快速跑通一次调用, 直接看 [快速开始](quick-start.md)。

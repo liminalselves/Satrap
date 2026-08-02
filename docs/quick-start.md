@@ -149,3 +149,44 @@ agent = ModelWorkflowFramework(
 answer = agent.full_agent("你好, 请简单介绍你自己", callback=True, max_iterations=10)
 print(answer)
 ```
+
+## 7. 流式输出思考内容
+
+同步 Agent 可以把回答和思考分别交给两个回调。`thinking=True` 请求模型返回思考增量, `return_thinking=True` 决定 workflow 是否转发这些增量:
+
+```python
+def on_content(delta: str):
+    print(delta, end="", flush=True)
+
+
+def on_thinking(delta: str):
+    print(f"[思考] {delta}", end="", flush=True)
+
+
+agent = ModelWorkflowFramework(
+    llm=llm,
+    context_id="quickstart-stream",
+    tools_manager=tools,
+    content_callback=on_content,
+    return_thinking=True,
+    thinking_callback=on_thinking,
+)
+
+answer = agent.stream_full_agent(
+    "介绍一下 Satrap, 必要时调用工具",
+    callback=True,
+    thinking=True,
+)
+print(f"\n最终答案: {answer}")
+```
+
+## 8. 运行测试
+
+测试依赖和测试目录说明见 [测试说明](testing.md)。最常用的离线检查命令是:
+
+```bash
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+```
+
+需要显式访问外部服务的集成测试时, 使用 `python -m pytest -q --run-integration`, 并先配置对应环境变量。

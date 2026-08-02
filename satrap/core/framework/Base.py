@@ -24,6 +24,7 @@ class ModelWorkflowFramework:
         system_prompt: str | None = None,
         content_callback: Optional[Callable[[str], None]] = None,
         return_thinking: bool = False,
+        thinking_callback: Optional[Callable[[str], None]] = None,
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -43,6 +44,7 @@ class ModelWorkflowFramework:
         - system_prompt: 系统提示词; 如果填写, 会重置上下文的系统提示词
         - content_callback: 内容回调函数, 用于在复杂模型调用过程中抛出模型回复内容; 如果只取最终回复, 则可以设置为 None
         - return_thinking: 是否返回模型思考内容; 如果为 True, 则会在模型回复内容前抛出思考内容
+        - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
 
         使用示例
         ``` python
@@ -73,6 +75,7 @@ class ModelWorkflowFramework:
         self.ctx = ContextManager(context_id)
         self.tools_manager = tools_manager if tools_manager else ToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
         self.return_thinking = return_thinking
+        self.thinking_callback = thinking_callback
 
 
         self.ctx.load_context()
@@ -224,6 +227,127 @@ class ModelWorkflowFramework:
             return "执行失败"
 
         return self.get_bot_message(context)
+
+    def _stream_call_response(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        callback: bool,
+        thinking: bool,
+    ) -> LLMCallResponse | bool:
+        """消费一次流式请求并返回完整响应
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - callback: 是否回调回复, 默认关闭
+        - thinking: 是否要求模型进行思考, 默认为 False
+        """
+        response: Any = None
+        for event in self.llm.stream_call(messages, tools=tools, thinking=thinking):
+            if callback and event.kind == "content_delta":
+                self._content_callback(event.delta)
+
+            elif callback and event.kind == "thinking_delta" and self.return_thinking:
+                if self.thinking_callback:
+                    self.thinking_callback(event.delta)
+                else:
+                    self._content_callback(event.delta)
+
+            elif event.kind == "error" and event.error:
+                logger.error(f"流式 LLM 调用失败: {event.error}")
+
+            elif event.kind == "done":
+                response = event.response
+
+        if isinstance(response, (LLMCallResponse, bool)):
+            return response
+        return False
+
+    def stream_full_agent(
+        self,
+        user_input: str,
+        callback: bool = True,
+        max_iterations: int = 10,
+        thinking: bool = False,
+    ) -> str:
+        """流式执行一轮 Agent 流程并返回最终模型输出
+        
+        参数:
+        - user_input: 用户输入
+        - callback: 是否回调回复, 默认关闭
+        - max_iterations: 最大迭代次数, 默认 10
+        - thinking: 是否要求模型进行思考, 默认为 False
+
+        返回:
+        - 最终模型输出
+        """
+        self.ctx.add_user_message(user_input)
+        max_iterations = max(1, max_iterations)
+
+        response = self._stream_call_response(
+            self.ctx.get_context(),
+            self.tools_manager.get_tools_definitions(),
+            callback,
+            thinking,
+        )
+        if not isinstance(response, LLMCallResponse):
+            return "模型调用失败"
+
+        now_response = response
+        now_iteration = 0
+        turn_messages: list[dict[str, Any]] = []
+
+        while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
+            now_iteration += 1
+            tool_messages = []
+            tool_results = []
+
+            for tool_call in now_response.tool_calls:
+                tool_message, tool_result = self.tools_manager.execute_tool_call(tool_call)
+                tool_messages.append(tool_message)
+                tool_results.append(tool_result)
+
+            add_tools_call_flow(
+                turn_messages,
+                now_response.content,
+                tool_messages,
+                tool_results,
+                now_response.thinking,
+            )
+
+            new_response = self._stream_call_response(
+                self.ctx.get_context() + turn_messages,
+                self.tools_manager.get_tools_definitions(),
+                callback,
+                thinking,
+            )
+            if not isinstance(new_response, LLMCallResponse):
+                clear_reasoning_content(turn_messages)
+                self.ctx.add_turn_messages(turn_messages)
+                return "执行失败"
+
+            if now_iteration >= max_iterations:
+                clear_reasoning_content(turn_messages)
+                self.ctx.add_turn_messages(turn_messages)
+                self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
+                final_response = self._stream_call_response(
+                    self.ctx.get_context(),
+                    [],
+                    callback,
+                    thinking,
+                )
+                if not isinstance(final_response, LLMCallResponse):
+                    return "执行失败"
+                self.ctx.add_bot_message(final_response.content)
+                return final_response.content
+
+            now_response = new_response
+
+        add_bot_message(turn_messages, now_response.content, reasoning=now_response.thinking)
+        clear_reasoning_content(turn_messages)
+        self.ctx.add_turn_messages(turn_messages)
+        return self.get_bot_message(self.ctx.get_context())
 
     def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
         """使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出"""
@@ -392,6 +516,8 @@ class AsyncModelWorkflowFramework:
         tools_manager: AsyncToolsManager | None = None,
         system_prompt: str | None = None,
         content_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        return_thinking: bool = False,
+        thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -415,6 +541,8 @@ class AsyncModelWorkflowFramework:
         - tools_manager: 工具管理器实例
         - system_prompt: 系统提示词; 若提供, 会在初始化时重置上下文中的系统提示
         - content_callback: 内容回调函数; 用于在复杂调用流程中回传模型内容
+        - return_thinking: 是否回传模型思考内容
+        - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
         """
         self.llm = llm
         self.ctx = AsyncContextManager(context_id)
@@ -422,6 +550,8 @@ class AsyncModelWorkflowFramework:
         # 如果未提供工具管理器, 则创建一个空的工具管理器实例
 
         self.content_callback = content_callback
+        self.return_thinking = return_thinking
+        self.thinking_callback = thinking_callback
         self.system_prompt = system_prompt
         self._initialized = False
 
@@ -589,6 +719,131 @@ class AsyncModelWorkflowFramework:
             return "执行失败"
 
         return self.get_bot_message(context)
+
+    async def _stream_call_response(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        callback: bool,
+        thinking: bool,
+    ) -> LLMCallResponse | bool:
+        """消费一次异步流式请求并返回完整响应
+        
+        参数:
+        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - tools: 可选参数, 工具定义列表, 用于 Function Calling
+        - callback: 是否回调回复, 默认关闭
+        - thinking: 是否要求模型进行思考, 默认为 False
+        
+        返回:
+        - LLMCallResponse | bool: 模型调用响应, 或 False 表示失败
+        """
+        response: Any = None
+        async for event in self.llm.stream_call(messages, tools=tools, thinking=thinking):
+            if callback and event.kind == "content_delta":
+                await self._content_callback(event.delta)
+
+            elif callback and event.kind == "thinking_delta" and self.return_thinking:
+                if self.thinking_callback:
+                    await self.thinking_callback(event.delta)
+                else:
+                    await self._content_callback(event.delta)
+
+            elif event.kind == "error" and event.error:
+                logger.error(f"异步流式 LLM 调用失败: {event.error}")
+
+            elif event.kind == "done":
+                response = event.response
+
+        if isinstance(response, (LLMCallResponse, bool)):
+            return response
+        return False
+
+    async def stream_full_agent(
+        self,
+        user_input: str,
+        callback: bool = True,
+        max_iterations: int = 10,
+        thinking: bool = False,
+    ) -> str:
+        """异步流式执行一轮 Agent 流程并返回最终模型输出
+        
+        参数:
+        - user_input: 用户输入
+        - callback: 是否回调回复, 默认关闭
+        - max_iterations: 最大迭代次数, 默认 10
+        - thinking: 是否要求模型进行思考, 默认为 False
+        
+        返回:
+        - 最终模型输出
+        """
+        await self.ctx.add_user_message(user_input)
+        max_iterations = max(1, max_iterations)
+
+        response = await self._stream_call_response(
+            self.ctx.get_context(),
+            self.tools_manager.get_tools_definitions(),
+            callback,
+            thinking,
+        )
+        if not isinstance(response, LLMCallResponse):
+            return "模型调用失败"
+
+        now_response = response
+        now_iteration = 0
+        turn_messages: list[dict[str, Any]] = []
+
+        while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
+            now_iteration += 1
+            tool_messages = []
+            tool_results = []
+
+            for tool_call in now_response.tool_calls:
+                tool_message, tool_result = await self.tools_manager.execute_tool_call(tool_call)
+                tool_messages.append(tool_message)
+                tool_results.append(tool_result)
+
+            add_tools_call_flow(
+                turn_messages,
+                now_response.content,
+                tool_messages,
+                tool_results,
+                now_response.thinking,
+            )
+
+            new_response = await self._stream_call_response(
+                self.ctx.get_context() + turn_messages,
+                self.tools_manager.get_tools_definitions(),
+                callback,
+                thinking,
+            )
+
+            if not isinstance(new_response, LLMCallResponse):
+                clear_reasoning_content(turn_messages)
+                await self.ctx.add_turn_messages(turn_messages)
+                return "执行失败"
+
+            if now_iteration >= max_iterations:
+                clear_reasoning_content(turn_messages)
+                await self.ctx.add_turn_messages(turn_messages)
+                await self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
+                final_response = await self._stream_call_response(
+                    self.ctx.get_context(),
+                    [],
+                    callback,
+                    thinking,
+                )
+                if not isinstance(final_response, LLMCallResponse):
+                    return "执行失败"
+                await self.ctx.add_bot_message(final_response.content)
+                return final_response.content
+
+            now_response = new_response
+
+        add_bot_message(turn_messages, now_response.content, reasoning=now_response.thinking)
+        clear_reasoning_content(turn_messages)
+        await self.ctx.add_turn_messages(turn_messages)
+        return self.get_bot_message(self.ctx.get_context())
 
     async def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
         """使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出"""

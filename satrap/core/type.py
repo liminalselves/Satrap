@@ -28,6 +28,23 @@ class LLMCallResponse:
         """返回可解包的元素数量"""
         return 4
 
+
+@dataclass
+class LLMCallStreamEvent:
+    """LLM 流式调用事件"""
+    kind: str
+    """事件类型, 如 content_delta, thinking_delta, tool_call_delta, done 或 error"""
+    delta: str = ""
+    """本次事件携带的文本或工具参数增量"""
+    tool_call: Optional[Dict[str, Any]] = None
+    """工具调用增量, 包含 index, id, name 和 arguments 字段"""
+    response: Optional[object] = None
+    """done 事件携带的完整 LLMCallResponse 或 False"""
+    finish_reason: Optional[str] = None
+    """模型结束原因"""
+    error: Optional[str] = None
+    """error 事件的错误信息"""
+
 @dataclass
 class LLMCallRequest:
     """LLM 调用请求数据结构"""

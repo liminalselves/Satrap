@@ -1,19 +1,21 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from types import SimpleNamespace
+
+import pytest
 
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.admin_utils.log_state import read_log_increment
 
 
-def test_backend_health_with_no_adapter_manager_returns_empty_adapters():
+@pytest.mark.asyncio
+async def test_backend_health_with_no_adapter_manager_returns_empty_adapters():
     """没有适配器管理器时 health 仍可正常返回"""
     backend = BackendManager()
     backend._running = True
 
-    health = asyncio.run(backend.health())
+    health = await backend.health()
 
     assert health["running"] is True
     assert health["adapters"] == {}
@@ -42,7 +44,8 @@ class _FakeAdapter:
         }
 
 
-def test_backend_health_uses_adapter_stats_dict():
+@pytest.mark.asyncio
+async def test_backend_health_uses_adapter_stats_dict():
     """health 的 adapters 字段应为前端可直接读取的 dict"""
     backend = BackendManager()
     backend._running = True
@@ -51,7 +54,7 @@ def test_backend_health_uses_adapter_stats_dict():
         list_adapters=lambda: ["fake"],
     )
 
-    health = asyncio.run(backend.health())
+    health = await backend.health()
 
     assert isinstance(health["adapters"], dict)
     assert health["adapters"]["fake"]["status"] == "running"

@@ -92,8 +92,8 @@ def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path):
     first = um.resolve_session("user-1", "misskey1", "dummy", scm)
     second = um.resolve_session("user-1", "misskey2", "dummy", scm)
 
-    assert first == "dummy:misskey1:user-1"
-    assert second == "dummy:misskey2:user-1"
+    assert first.startswith("dummy:misskey1:user-1:")
+    assert second.startswith("dummy:misskey2:user-1:")
     assert first != second
 
 

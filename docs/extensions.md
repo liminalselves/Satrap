@@ -219,7 +219,7 @@ tools.register_tool(sub_agent_tool)
 
 ## 默认 Session 命令
 
-`satrap.expend.command.session_commands` 提供 Session 默认命令函数, 基础 Session 会将它们注册到命令处理器中。
+`satrap.expend.command.session_commands` 提供可复用的 Session 命令函数, 裸 `Session` 默认只注册 `/help`; 具体 Session 需要显式注册下面的命令。注册示例见 [Session, 后端与 CLI](sessions-backend-cli.md)。
 
 | 命令 | 说明 |
 | --- | --- |

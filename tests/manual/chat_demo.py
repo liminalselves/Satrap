@@ -10,7 +10,7 @@ from typing import Any, Dict
 import streamlit as st
 
 # 切换到项目根目录，避免相对路径导致日志/数据库路径异常。
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 os.chdir(str(PROJECT_ROOT))
 
 from satrap.core.APICall.LLMCall import AsyncLLM

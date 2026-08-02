@@ -104,9 +104,9 @@ def test_session_scan_paths_config_defaults_and_loading():
     default_config = BackendConfig()
     loaded = ConfigLoader.from_dict({"session_scan_paths": ["custom_sessions"], "platforms": []})
 
-    assert default_config.session_scan_paths == ["satrap/sessions"]
+    assert default_config.session_scan_paths == [".satrap/session"]
     assert loaded.session_scan_paths == ["custom_sessions"]
-    assert ConfigLoader.default_config_document(default_config)["session_scan_paths"] == ["satrap/sessions"]
+    assert ConfigLoader.default_config_document(default_config)["session_scan_paths"] == [".satrap/session"]
 
 
 def test_create_default_session_dir(tmp_path):

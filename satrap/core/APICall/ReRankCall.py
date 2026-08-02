@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional, Union, Literal
+from satrap.core.utils import normalize_openai_base_url
 import requests
 import aiohttp
 import asyncio
@@ -109,7 +110,7 @@ class ReRank:
         - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key
-        self.base_url = base_url + "/rerank"
+        self.base_url = normalize_openai_base_url(base_url) + "/rerank"
         self.model = model
         self.top_k = top_k
         self.min_score = min_score

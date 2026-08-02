@@ -1,5 +1,7 @@
 from typing import List, Dict, Any, Optional, Union, Literal
+from satrap.core.utils import normalize_openai_base_url
 from openai import OpenAI, AsyncOpenAI, APIError
+
 from satrap.core.log import logger
 
 def parse_embedding_response(
@@ -84,15 +86,16 @@ class Embedding:
         - max_batch_size: 单次 API 调用最大处理的文本数量, 默认 100
         - timeout: 请求超时时间(秒), 默认 60
         """
-        self.client = OpenAI(api_key=api_key, base_url=base_url, timeout=timeout)
         self.api_key = api_key if lock_api_key else "api key locked"
-        self.base_url = base_url
+        self.base_url = normalize_openai_base_url(base_url)
         self.model = model
         self.dimensions = dimensions
         self.encoding_format = encoding_format
         self.suppress_error = suppress_error
         self.return_false = return_false
         self.max_batch_size = max_batch_size
+
+        self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
     def embed(
         self,
@@ -248,7 +251,7 @@ class AsyncEmbedding:
         - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key if lock_api_key else "api key locked"
-        self.base_url = base_url
+        self.base_url = normalize_openai_base_url(base_url)
         self.model = model
         self.dimensions = dimensions
         self.encoding_format = encoding_format
@@ -259,7 +262,7 @@ class AsyncEmbedding:
 
         self.client = AsyncOpenAI(
             api_key=api_key,
-            base_url=base_url,
+            base_url=self.base_url,
             timeout=timeout,
         )  # 初始化异步 OpenAI 客户端
 

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 from argparse import Namespace
+
+import pytest
 
 from satrap.cli.client import DaemonClient
 from satrap.main import _build_parser
@@ -83,49 +84,43 @@ def test_daemon_client_new_routes_call_expected_paths(monkeypatch):
     ]
 
 
-def test_http_session_class_write_routes(tmp_path):
+@pytest.mark.asyncio
+async def test_http_session_class_write_routes(tmp_path):
     """后端 HTTP API 应支持 session class 注册和删除"""
+    backend = BackendManager()
+    backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
+    server = BackendHTTPServer(backend)
+    payload = b'{"name":"dummy","class_path":"satrap.core.framework.Base.Session"}'
 
-    async def run():
-        backend = BackendManager()
-        backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
-        server = BackendHTTPServer(backend)
-        payload = b'{"name":"dummy","class_path":"satrap.core.framework.Base.Session"}'
+    status, data = await server._route("POST", "/api/config/session-classes", payload)
+    assert status == 200
+    assert data == {"ok": True}
+    assert backend.session_class_mgr is not None
+    assert backend.session_class_mgr.has_config("dummy")
 
-        status, data = await server._route("POST", "/api/config/session-classes", payload)
-        assert status == 200
-        assert data == {"ok": True}
-        assert backend.session_class_mgr is not None
-        assert backend.session_class_mgr.has_config("dummy")
-
-        status, data = await server._route("DELETE", "/api/config/session-classes/dummy", b"")
-        assert status == 200
-        assert data == {"ok": True}
-
-    asyncio.run(run())
+    status, data = await server._route("DELETE", "/api/config/session-classes/dummy", b"")
+    assert status == 200
+    assert data == {"ok": True}
 
 
-def test_http_model_write_routes(tmp_path):
+@pytest.mark.asyncio
+async def test_http_model_write_routes(tmp_path):
     """后端 HTTP API 应支持模型配置写接口"""
+    backend = BackendManager()
+    backend._model_cfg = ModelConfigManager(storage_path=tmp_path / "models.json")
+    server = BackendHTTPServer(backend)
 
-    async def run():
-        backend = BackendManager()
-        backend._model_cfg = ModelConfigManager(storage_path=tmp_path / "models.json")
-        server = BackendHTTPServer(backend)
+    status, data = await server._route("POST", "/api/config/models/llm/test", b'{"model":"gpt-test"}')
+    assert status == 200
+    assert data == {"ok": True}
+    assert backend.model_config_manager is not None
+    assert backend.model_config_manager.get_llm_config("test").model == "gpt-test"
 
-        status, data = await server._route("POST", "/api/config/models/llm/test", b'{"model":"gpt-test"}')
-        assert status == 200
-        assert data == {"ok": True}
-        assert backend.model_config_manager is not None
-        assert backend.model_config_manager.get_llm_config("test").model == "gpt-test"
+    status, data = await server._route("PATCH", "/api/config/models/llm/test", b'{"temperature":0.2}')
+    assert status == 200
+    assert data == {"ok": True}
+    assert backend.model_config_manager.get_llm_config("test").temperature == 0.2
 
-        status, data = await server._route("PATCH", "/api/config/models/llm/test", b'{"temperature":0.2}')
-        assert status == 200
-        assert data == {"ok": True}
-        assert backend.model_config_manager.get_llm_config("test").temperature == 0.2
-
-        status, data = await server._route("DELETE", "/api/config/models/llm/test", b"")
-        assert status == 200
-        assert data == {"ok": True}
-
-    asyncio.run(run())
+    status, data = await server._route("DELETE", "/api/config/models/llm/test", b"")
+    assert status == 200
+    assert data == {"ok": True}

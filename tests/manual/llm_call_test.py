@@ -2,7 +2,7 @@ from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 import asyncio, os, sys
 
 # 将项目根目录添加到 sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 # 示例: 初始化机器人 (请替换为实际的 key)
 bot = LLM(

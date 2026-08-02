@@ -1,3 +1,4 @@
+from typing import overload
 import json
 import ast
 import re
@@ -41,3 +42,24 @@ def safe_parse_arguments(arg_str: str) -> dict:
     # 全部失败, 记录并返回空字典
     logger.error(f"[安全解析] 无法解析参数: {arg_str[:200]}...")
     return {}
+
+
+@overload
+def normalize_openai_base_url(base_url: None) -> None: ...
+
+@overload
+def normalize_openai_base_url(base_url: str) -> str: ...
+
+def normalize_openai_base_url(base_url: str | None) -> str | None:
+    """归一化 OpenAI 兼容客户端 base_url"""
+    if not base_url:
+        return base_url
+
+    cleaned = base_url.strip().rstrip("/")
+    suffixes = ("/chat/completions", "/completions", "/responses")
+    for suffix in suffixes:
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            break
+
+    return cleaned or base_url
