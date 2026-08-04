@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import asyncio
 import os
 import re
@@ -376,9 +376,9 @@ def render_sidebar():
 
         if st.button("新建对话", use_container_width=True):
             payload = build_session_payload(
-                api_key=st.session_state.api_key,
-                base_url=st.session_state.base_url,
-                model=st.session_state.model,
+                api_key=st.session_state.api_key or "",
+                base_url=st.session_state.base_url or "",
+                model=st.session_state.model or "",
                 temperature=float(st.session_state.temperature),
                 max_tokens=int(st.session_state.max_tokens),
                 system_prompt=DEFAULT_SYSTEM_PROMPT,
@@ -403,7 +403,7 @@ def render_sidebar():
         st.session_state.active_session_id = selected_id
 
         if st.button("删除当前会话", use_container_width=True):
-            sid = st.session_state.active_session_id
+            sid = st.session_state.active_session_id or ""
             st.session_state.conversations.pop(sid, None)
             manager.remove_session(sid, remove_config=True)
             ensure_active_session()

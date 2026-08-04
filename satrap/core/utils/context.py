@@ -14,6 +14,75 @@ import copy
 import re
 
 from satrap.core.log import logger
+from satrap.core.state import StateStore
+from satrap.core.state.mutation import state_mutation_context
+from satrap.core.type import (
+    JsonRow,
+    RestoreOptions,
+    SnapshotDomain,
+    StateCheckpoint,
+    StateScope,
+)
+
+
+def _messages_domain() -> SnapshotDomain:
+    """消息领域注册: 管理 chat_history 表的对话消息"""
+    def builder(conn: sqlite3.Connection, scope: StateScope) -> List[JsonRow]:
+        """读取指定对话的全部消息行"""
+        rows = conn.execute(
+            "SELECT id, role, content, content_json, tool_call_id, tool_calls, "
+            "reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id",
+            (scope.scope_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def restorer(
+        conn: sqlite3.Connection,
+        scope: StateScope,
+        rows: List[JsonRow],
+        options: RestoreOptions,
+    ) -> None:
+        """清空后按快照重写指定对话的消息 (与 save_context 的列保持一致)"""
+        cleaner(conn, scope)
+        for row in rows:
+            conn.execute(
+                "INSERT INTO chat_history "
+                "(conversation_id, role, content, content_json, tool_call_id, "
+                " tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    scope.scope_id,
+                    str(row.get("role") or ""),
+                    row.get("content"),
+                    row.get("content_json"),
+                    row.get("tool_call_id"),
+                    row.get("tool_calls"),
+                    row.get("reasoning_content"),
+                ),
+            )
+
+    def cleaner(conn: sqlite3.Connection, scope: StateScope) -> None:
+        """清空指定对话的全部消息"""
+        conn.execute(
+            "DELETE FROM chat_history WHERE conversation_id = ?",
+            (scope.scope_id,),
+        )
+
+    def position_provider(conn: sqlite3.Connection, scope: StateScope) -> int:
+        """提供消息水位: 当前对话最大消息行 ID"""
+        row = conn.execute(
+            "SELECT COALESCE(MAX(id), 0) AS position FROM chat_history "
+            "WHERE conversation_id = ?",
+            (scope.scope_id,),
+        ).fetchone()
+        return int(row["position"])
+
+    return SnapshotDomain(
+        name="messages",
+        builder=builder,
+        restorer=restorer,
+        cleaner=cleaner,
+        position_provider=position_provider,
+    )
 
 
 def _message_content_json(content: Any) -> str | None:
@@ -45,6 +114,8 @@ class ContextManager:
         max_context: int = 128000,
         context_threshold: float = 0.9,
         exceed_process: str = "sliding",
+        state_store: Optional[StateStore] = None,
+        enable_checkpoint: bool = False,
     ):
         """
         初始化上下文管理器
@@ -60,6 +131,8 @@ class ContextManager:
         - exceed_process: 超过阈值时的处理方式, 默认 "sliding" (滑动窗口)
             - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在阈值以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
+        - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
+        - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
 
         返回:
         - None
@@ -67,6 +140,12 @@ class ContextManager:
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
+        # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
+        self.state_store = state_store
+        if self.state_store is None and enable_checkpoint:
+            self.state_store = StateStore(db_path=self.db_path)
+        if self.state_store is not None:
+            self.state_store.register_domain(_messages_domain())
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
         self._init_db_table()   # 初始化数据库表结构
         self.load_context()     # 加载数据
@@ -177,6 +256,90 @@ class ContextManager:
 
         finally:
             conn.close()
+
+    # ================= 检查点支持 =================
+
+    def _scope(self) -> StateScope:
+        """当前对话对应的状态作用域"""
+        return StateScope(namespace="conversation", scope_id=self.conversation_id)
+
+    def _require_state_store(self) -> StateStore:
+        """获取状态存储, 未启用时抛出 ValueError"""
+        if self.state_store is None:
+            raise ValueError("未启用状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
+        return self.state_store
+
+    def create_checkpoint(self, name: str = "", description: str = "") -> StateCheckpoint:
+        """为当前对话创建状态检查点
+
+        参数:
+        - name: 检查点显示名称
+        - description: 检查点说明
+
+        返回:
+        - StateCheckpoint: 创建的检查点
+        """
+        return self._require_state_store().create_checkpoint(
+            self._scope(), name=name, description=description
+        )
+
+    def list_checkpoints(self) -> List[StateCheckpoint]:
+        """列出当前对话的全部检查点 (按创建时间升序)
+
+        返回:
+        - List[StateCheckpoint]: 检查点列表
+        """
+        return self._require_state_store().list_checkpoints(self._scope())
+
+    def rollback(self, checkpoint_id: str) -> None:
+        """回滚当前对话到指定检查点并重载上下文
+
+        参数:
+        - checkpoint_id: 目标检查点 ID
+        """
+        store = self._require_state_store()
+        with state_mutation_context(
+            source="checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
+        ):
+            store.rollback(checkpoint_id)
+        self.load_context()
+
+    def fork(
+        self,
+        branch_name: str,
+        checkpoint_id: Optional[str] = None,
+    ) -> "ContextManager":
+        """从指定检查点 (默认最近一个) fork 一条新剧情线, 返回新的上下文管理器
+
+        参数:
+        - branch_name: 分支名称, 新对话 ID 形如 "{原ID}:fork:{分支名}"
+        - checkpoint_id: 源检查点 ID, 默认最近一个检查点
+
+        返回:
+        - ContextManager: 新分支的上下文管理器
+
+        异常:
+        - ValueError: 当前对话没有检查点
+        """
+        store = self._require_state_store()
+        checkpoints = store.list_checkpoints(self._scope())
+        if not checkpoints:
+            raise ValueError("当前对话没有检查点, 请先创建检查点")
+        source_id = checkpoint_id or checkpoints[-1].checkpoint_id
+        new_conversation_id = f"{self.conversation_id}:fork:{branch_name}"
+        with state_mutation_context(
+            source="checkpoint_fork", reason=f"从检查点 {source_id} 分支"
+        ):
+            store.fork(source_id, new_conversation_id)
+        return ContextManager(
+            new_conversation_id,
+            keep_in_memory=self.keep_in_memory,
+            db_path=self.db_path,
+            max_context=self.max_context,
+            context_threshold=self.context_threshold,
+            exceed_process=self.exceed_process,
+            state_store=store,
+        )
 
     def get_context(self) -> List[Dict[str, Any]]:
         """
@@ -598,6 +761,8 @@ class AsyncContextManager:
         max_context: int = 128000,
         context_threshold: float = 0.9,
         exceed_process: str = "sliding",
+        state_store: Optional[StateStore] = None,
+        enable_checkpoint: bool = False,
     ):
         """
         初始化异步上下文管理器
@@ -615,11 +780,17 @@ class AsyncContextManager:
         - exceed_process: 超过阈值时的处理方式, 默认 "sliding" (滑动窗口)
             - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在阈值以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
+        - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
+        - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
 
         """
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
+        # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
+        self.state_store = state_store
+        if self.state_store is None and enable_checkpoint:
+            self.state_store = StateStore(db_path=self.db_path)
         self._messages: List[Dict[str, str | list]] = []   # 内存中的消息缓存
         self.max_context = max_context                     # 最大上下文长度
         self.context_threshold = context_threshold         # 上下文阈值
@@ -632,6 +803,8 @@ class AsyncContextManager:
         需在实例化后手动调用, 或使用 async with 语句
         """
         await self._init_db_table()
+        if self.state_store is not None:
+            self.state_store.register_domain(_messages_domain())
         await self.load_context()
         logger.info(f"[异步上下文管理] 初始化完成，对话 ID: {self.conversation_id}")
 
@@ -732,6 +905,92 @@ class AsyncContextManager:
 
         except Exception as e:
             logger.error(f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
+
+    # ================= 检查点支持 =================
+
+    def _scope(self) -> StateScope:
+        """当前对话对应的状态作用域"""
+        return StateScope(namespace="conversation", scope_id=self.conversation_id)
+
+    def _require_state_store(self) -> StateStore:
+        """获取状态存储, 未启用时抛出 ValueError"""
+        if self.state_store is None:
+            raise ValueError("未启用状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
+        return self.state_store
+
+    async def create_checkpoint(self, name: str = "", description: str = "") -> StateCheckpoint:
+        """为当前对话创建状态检查点
+
+        参数:
+        - name: 检查点显示名称
+        - description: 检查点说明
+
+        返回:
+        - StateCheckpoint: 创建的检查点
+        """
+        store = self._require_state_store()
+        return await asyncio.to_thread(store.create_checkpoint, self._scope(), name, description)
+
+    async def list_checkpoints(self) -> List[StateCheckpoint]:
+        """列出当前对话的全部检查点 (按创建时间升序)
+
+        返回:
+        - List[StateCheckpoint]: 检查点列表
+        """
+        store = self._require_state_store()
+        return await asyncio.to_thread(store.list_checkpoints, self._scope())
+
+    async def rollback(self, checkpoint_id: str) -> None:
+        """回滚当前对话到指定检查点并重载上下文
+
+        参数:
+        - checkpoint_id: 目标检查点 ID
+        """
+        store = self._require_state_store()
+        with state_mutation_context(
+            source="checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
+        ):
+            await asyncio.to_thread(store.rollback, checkpoint_id)
+        await self.load_context()
+
+    async def fork(
+        self,
+        branch_name: str,
+        checkpoint_id: Optional[str] = None,
+    ) -> "AsyncContextManager":
+        """从指定检查点 (默认最近一个) fork 一条新剧情线, 返回已初始化的新上下文管理器
+
+        参数:
+        - branch_name: 分支名称, 新对话 ID 形如 "{原ID}:fork:{分支名}"
+        - checkpoint_id: 源检查点 ID, 默认最近一个检查点
+
+        返回:
+        - AsyncContextManager: 新分支的上下文管理器 (已初始化)
+
+        异常:
+        - ValueError: 当前对话没有检查点
+        """
+        store = self._require_state_store()
+        checkpoints = await asyncio.to_thread(store.list_checkpoints, self._scope())
+        if not checkpoints:
+            raise ValueError("当前对话没有检查点, 请先创建检查点")
+        source_id = checkpoint_id or checkpoints[-1].checkpoint_id
+        new_conversation_id = f"{self.conversation_id}:fork:{branch_name}"
+        with state_mutation_context(
+            source="checkpoint_fork", reason=f"从检查点 {source_id} 分支"
+        ):
+            await asyncio.to_thread(store.fork, source_id, new_conversation_id)
+        new_ctx = AsyncContextManager(
+            new_conversation_id,
+            keep_in_memory=self.keep_in_memory,
+            db_path=self.db_path,
+            max_context=self.max_context,
+            context_threshold=self.context_threshold,
+            exceed_process=self.exceed_process,
+            state_store=store,
+        )
+        await new_ctx.initialize()
+        return new_ctx
 
     def get_context(self) -> List[Dict[str, Any]]:
         """

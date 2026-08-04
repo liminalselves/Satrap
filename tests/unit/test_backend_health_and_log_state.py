@@ -49,7 +49,7 @@ async def test_backend_health_uses_adapter_stats_dict():
     """health 的 adapters 字段应为前端可直接读取的 dict"""
     backend = BackendManager()
     backend._running = True
-    backend._adapter_mgr = SimpleNamespace(
+    backend._adapter_mgr = SimpleNamespace(   # type: ignore[assignment]
         _adapters={"fake": _FakeAdapter()},
         list_adapters=lambda: ["fake"],
     )

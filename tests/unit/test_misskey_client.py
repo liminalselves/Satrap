@@ -86,11 +86,11 @@ async def test_status_error_mapping():
     api = MisskeyAPI("https://misskey.example", "token")
 
     with pytest.raises(AuthenticationError):
-        await api._process_response(FakeResponse(status=401), "i")
+        await api._process_response(FakeResponse(status=401), "i")   # type: ignore[arg-type]
     with pytest.raises(APIRateLimitError):
-        await api._process_response(FakeResponse(status=429), "i")
+        await api._process_response(FakeResponse(status=429), "i")   # type: ignore[arg-type]
     with pytest.raises(APIError):
-        await api._process_response(FakeResponse(status=400), "i")
+        await api._process_response(FakeResponse(status=400), "i")   # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio
@@ -99,7 +99,7 @@ async def test_upload_file_uses_drive_create(tmp_path):
     path.write_text("hello", encoding="utf-8")
     api = MisskeyAPI("https://misskey.example", "token")
     fake_session = FakeSession()
-    api._session = fake_session
+    api._session = fake_session   # type: ignore[assignment]
 
     result = await api.upload_file(str(path), name="demo.txt", folder_id="folder-1")
 

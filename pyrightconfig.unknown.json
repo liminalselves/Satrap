@@ -1,0 +1,14 @@
+{
+  "typeCheckingMode": "basic",
+  "exclude": [
+    "build",
+    ".satrap",
+    ".astro"
+  ],
+  "reportMissingParameterType": "warning",
+  "reportUnknownParameterType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownLambdaType": "warning"
+}

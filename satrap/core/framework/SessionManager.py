@@ -775,12 +775,6 @@ class SessionManager:
             )
 
             session.reload_llm(new_llm)
-            if hasattr(session, 'reset_llm'):
-                session.reset_llm(new_llm)
-            if hasattr(session, '_llm'):
-                session._llm = new_llm
-            if hasattr(session, 'llm'):
-                session.llm = new_llm
 
             for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
                 wf = getattr(session, attr, None)

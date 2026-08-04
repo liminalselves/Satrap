@@ -111,7 +111,7 @@ class _FakeAsyncCompletions:
 
 def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm = LLM.__new__(LLM)
-    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake_completions))
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake_completions))   # type: ignore[assignment] 测试替身, 非真实 OpenAI 客户端
     llm.model = "mock"
     llm.temperature = 0.7
     llm.top_p = 0.95
@@ -133,6 +133,7 @@ def test_llm_call_appends_images_to_last_user_message():
     )
 
     assert isinstance(response, LLMCallResponse)
+    assert fake.kwargs is not None
     messages = fake.kwargs["messages"]
     assert messages[0]["content"] == "第一张"
     assert isinstance(messages[-1]["content"], list)
@@ -143,7 +144,7 @@ def test_llm_call_appends_images_to_last_user_message():
 async def test_async_llm_call_appends_images_to_last_user_message():
     fake = _FakeAsyncCompletions()
     llm = AsyncLLM.__new__(AsyncLLM)
-    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))
+    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))   # type: ignore[assignment] 测试替身, 非真实 OpenAI 客户端
     llm.model = "mock"
     llm.temperature = 0.7
     llm.top_p = 0.95
@@ -156,6 +157,7 @@ async def test_async_llm_call_appends_images_to_last_user_message():
     response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
 
     assert isinstance(response, LLMCallResponse)
+    assert fake.kwargs is not None
     assert fake.kwargs["messages"][0]["content"][1]["type"] == "image_url"
 
 

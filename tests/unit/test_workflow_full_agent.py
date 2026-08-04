@@ -16,8 +16,8 @@ class _FakeTools:
 
 class _FakeLLM:
     def __init__(self):
-        self.messages = None
-        self.tools = None
+        self.messages = []
+        self.tools = []
 
     def call(self, messages, tools=None):
         self.messages = copy.deepcopy(messages)
@@ -27,7 +27,7 @@ class _FakeLLM:
 
 class _FailingLLM:
     def __init__(self):
-        self.messages = None
+        self.messages = []
 
     def call(self, messages, tools=None):
         self.messages = copy.deepcopy(messages)
@@ -36,8 +36,8 @@ class _FailingLLM:
 
 class _FakeAsyncLLM:
     def __init__(self):
-        self.messages = None
-        self.tools = None
+        self.messages = []
+        self.tools = []
 
     async def call(self, messages, tools=None):
         self.messages = copy.deepcopy(messages)
@@ -47,7 +47,7 @@ class _FakeAsyncLLM:
 
 class _FailingAsyncLLM:
     def __init__(self):
-        self.messages = None
+        self.messages = []
 
     async def call(self, messages, tools=None):
         self.messages = copy.deepcopy(messages)

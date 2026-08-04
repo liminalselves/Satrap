@@ -1,0 +1,8 @@
+{
+  "typeCheckingMode": "basic",
+  "exclude": [
+    "build",
+    ".satrap",
+    ".astro"
+  ]
+}

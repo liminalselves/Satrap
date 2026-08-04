@@ -62,12 +62,13 @@ def test_sync_history_without_user_manager_returns_empty_message():
 def test_sync_new_command_creates_action_and_binds_user():
     session = Session("chat:misskey:user1:old")
     user_manager = FakeUserManager(["chat:misskey:user1:old"])
-    session._user_manager = user_manager
+    session._user_manager = user_manager   # type: ignore[assignment]
 
     result = cmd_new(session)
 
     assert isinstance(result, CommandAction)
     assert result.action == "switch"
+    assert result.target_session_id is not None
     assert result.target_session_id.startswith("chat:misskey:user1:")
     assert result.target_session_id != session.session_id
     assert result.message == "已开始新对话（旧对话可通过 /history 查看和切换）"
@@ -76,7 +77,7 @@ def test_sync_new_command_creates_action_and_binds_user():
 
 def test_sync_switch_validates_bound_contexts():
     session = Session("chat:misskey:user1")
-    session._user_manager = FakeUserManager(
+    session._user_manager = FakeUserManager(   # type: ignore[assignment]
         ["chat:misskey:user1", "chat:misskey:user1:next"],
     )
 
@@ -100,14 +101,16 @@ async def test_async_commands_match_sync_command_contract():
     user_manager = FakeUserManager(
         ["chat:misskey:user1:old", "chat:misskey:user1:next"],
     )
-    session._user_manager = user_manager
+    session._user_manager = user_manager   # type: ignore[assignment]
 
     history = await cmd_history_async(session)
     new_action = await cmd_new_async(session)
     switch_action = await cmd_switch_async(session, "chat:misskey:user1:next")
 
+    assert isinstance(history, str)
     assert "chat:misskey:user1:old" in history
     assert isinstance(new_action, CommandAction)
+    assert new_action.target_session_id is not None
     assert new_action.target_session_id.startswith("chat:misskey:user1:")
     assert isinstance(switch_action, CommandAction)
     assert switch_action.target_session_id == "chat:misskey:user1:next"

@@ -32,8 +32,8 @@ class FakeLLM:
     def __init__(self):
         self.extract_facts = ["我喜欢咖啡"]
         self.update_action = "ADD"
-        self.update_memory_id = None
-        self.update_new_content = None
+        self.update_memory_id: str | None = None
+        self.update_new_content: str | None = None
 
     async def structured_output(self, messages, format):
         if "memories" in format:
@@ -65,8 +65,8 @@ class FakeLLM:
 @pytest.mark.asyncio
 async def test_mem0_add_search_get_delete_and_clear(tmp_path):
     memory = Mem0Memory(
-        llm=FakeLLM(),
-        embedding=FakeEmbedding(),
+        llm=FakeLLM(),   # type: ignore[arg-type]
+        embedding=FakeEmbedding(),   # type: ignore[arg-type]
         persist_path=str(tmp_path / "mem0.db"),
         top_k=5,
         similarity_threshold=0.0,
@@ -96,8 +96,8 @@ async def test_mem0_add_search_get_delete_and_clear(tmp_path):
 async def test_mem0_update_preserves_memory_id_and_replaces_content(tmp_path):
     llm = FakeLLM()
     memory = Mem0Memory(
-        llm=llm,
-        embedding=FakeEmbedding(),
+        llm=llm,   # type: ignore[arg-type]
+        embedding=FakeEmbedding(),   # type: ignore[arg-type]
         persist_path=str(tmp_path / "mem0-update.db"),
         top_k=5,
         similarity_threshold=0.0,
