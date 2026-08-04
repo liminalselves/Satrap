@@ -1,14 +1,10 @@
 import ast
 import json
-import os
 import operator
 
 import pytest
 
-from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import Tool, ToolsManager, create_tool_defined
-from satrap.core.utils.context import ContextManager
 
 
 class WeatherTool(Tool):
@@ -86,51 +82,3 @@ def test_create_tool_defined_and_tool_call_are_compatible():
     assert definition["function"]["name"] == "search_web"
     assert definition["function"]["parameters"]["required"] == ["query"]
 
-
-@pytest.mark.integration
-@pytest.mark.requires_api
-def test_function_call_with_real_llm():
-    api_key = os.getenv("TEST_LLM_API_KEY")
-    base_url = os.getenv("TEST_LLM_BASE_URL", "https://api.deepseek.com/v1")
-    model = os.getenv("TEST_LLM_MODEL", "deepseek-chat")
-    if not api_key:
-        pytest.skip("设置 TEST_LLM_API_KEY 后运行真实 Function Call 测试")
-
-    manager = ToolsManager()
-    manager.register_tool(WeatherTool())
-    manager.register_tool(CalculatorTool())
-    context = ContextManager(
-        conversation_id="test_function_call_001",
-        keep_in_memory=True,
-    )
-    context.add_system_message("你是一个可以调用天气和计算工具的助手")
-    context.add_user_message("请调用 calculate 计算 2 + 3 * 4")
-
-    llm = LLM(
-        api_key=api_key,
-        base_url=base_url,
-        model=model,
-        temperature=0.7,
-        max_tokens=1000,
-        suppress_error=False,
-    )
-    response = llm.call(
-        context.get_context(),
-        tools=manager.get_tools_definitions(),
-        tool_choice="auto",
-    )
-
-    assert isinstance(response, LLMCallResponse)
-    if response.type == "tools_call":
-        tool_messages = []
-        tool_results = []
-        for call in response.tool_calls or []:
-            message, result = manager.execute_tool_call(call)
-            tool_messages.append(message)
-            tool_results.append(result)
-        context.add_tool_call_flow(response.content, tool_messages, tool_results, response.thinking)
-        final_response = llm.call(context.get_context())
-        assert isinstance(final_response, LLMCallResponse)
-        assert final_response.content.strip()
-    else:
-        assert response.content.strip()

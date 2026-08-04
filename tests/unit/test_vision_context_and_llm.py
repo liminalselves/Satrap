@@ -9,12 +9,12 @@ import pytest
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.type import LLMCallResponse
+from satrap.core.utils import normalize_openai_base_url
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
     content_text_projection,
-    normalize_openai_base_url,
 )
 
 

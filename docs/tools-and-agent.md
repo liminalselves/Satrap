@@ -226,3 +226,10 @@ from satrap.expend.agent import SubAgent
 ```
 
 使用前需要准备子 Agent 使用的 LLM 和 ToolsManager。具体行为可以参考 `tests/unit/test_agent_sub_agent.py`。
+
+## MCP 与 Skill 接入
+
+工具注册表 `ToolsManager` / `AsyncToolsManager` 是唯一的执行闸口, MCP 远端工具和 Skill 都通过它接入 Agent 循环, `agent_executor` 无需任何改动:
+
+- **MCP**: `MCPClient.register_tools()` 把远端工具包装为 `AsyncTool` 注册进 `AsyncToolsManager`; 工具定义由 MCP JSON Schema 原样生成, 执行时通过 MCP 会话转发。见 [核心 API](core-api.md#mcp-客户端)。
+- **Skill**: `SkillsManager.activate()` 把指令注入系统提示词, 并在 `ToolsManager` 中启用关联工具; 反激活时剥离指令并禁用工具。见 [核心 API](core-api.md#技能-skill)。

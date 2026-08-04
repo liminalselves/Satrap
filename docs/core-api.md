@@ -17,8 +17,13 @@ from satrap import (
     LLMCallResponse,
     LLMCallStreamEvent,
     Logger,
+    MCPClient,
+    MCPToolAdapter,
     ModelWorkflowFramework,
     Session,
+    Skill,
+    SkillsManager,
+    SkillTool,
     Tool,
     ToolsManager,
 )
@@ -130,6 +135,134 @@ ctx.add_user_message(
 ```
 
 本地图片会自动转成 data URL。默认最长边为 1600px, 目标大小小于 4MB。
+
+## MCP 客户端
+
+`MCPClient` / `MCPToolAdapter` (位于 `satrap.core.utils.mcp`) 是 MCP 协议接入基础设施, 与 `ToolsManager` 同层。`MCPClient` 连接 MCP Server (stdio 子进程或 streamable HTTP), 把远端工具包装为 `AsyncTool` 注册进 `AsyncToolsManager`, 模型即可通过 function calling 直接调用:
+
+```python
+import asyncio
+
+from satrap import AsyncToolsManager, MCPClient
+
+
+async def main():
+    # stdio 传输 (本地子进程)
+    mcp = MCPClient(
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-filesystem", "."],
+        name="fs",   # 工具名自动加前缀, 避免多来源冲突
+    )
+    # 或 streamable HTTP 传输
+    # mcp = MCPClient(url="https://example.com/mcp", headers={"Authorization": "Bearer xxx"})
+
+    tools = AsyncToolsManager()
+    await mcp.register_tools(tools)   # 注册所有远端工具
+
+    _, result = await tools.execute_tool_call({"name": "fs_read_file", "arguments": {"path": "/tmp/a.txt"}})
+
+    await mcp.close()   # 断开连接并自动注销工具
+
+
+asyncio.run(main())
+```
+
+`MCPClient` 参数:
+
+| 参数 | 说明 |
+| --- | --- |
+| `command` / `args` / `env` | stdio 传输的启动命令, 参数与环境变量 |
+| `url` / `headers` | streamable HTTP 传输的地址与请求头 |
+| `name` | 客户端名称, 默认工具名前缀 |
+| `tool_prefix` | 自定义工具名前缀, 传空字符串禁用前缀 |
+
+MCP 远端工具的 JSON Schema 会原样透传为 OpenAI 参数定义, 保留可选参数, 枚举和嵌套结构。`MCPToolAdapter` 也可直接手动构造并注册:
+
+```python
+from satrap.core.utils.mcp import MCPToolAdapter
+
+tools.register_tool(MCPToolAdapter(session, mcp_tool, name_prefix="fs"))
+```
+
+反向导出本地工具为 MCP Server (供其他 MCP 客户端调用) 使用 `MCPServerExporter`:
+
+```python
+from satrap import ToolsManager
+from satrap.core.utils.mcp import MCPServerExporter
+
+exporter = MCPServerExporter(tools, name="satrap")
+exporter.run(transport="stdio")   # 阻塞运行, 支持 stdio / sse / streamable-http
+```
+
+## 技能 (Skill)
+
+`Skill` / `SkillsManager` / `SkillTool` (位于 `satrap.core.utils.skills`) 是技能基础设施: 技能 = 指令文本 + 关联工具列表 (+ 可选自带工具与 MCP 客户端)。激活技能时指令注入系统提示词, 关联工具注册并启用; 反激活时自动剥离指令并禁用工具。
+
+技能以文件夹为单位组织, 每个技能一个目录:
+
+``` text
+skills/
+└── coding_agent/          # 技能文件夹 (front matter 未声明 name 时, 文件夹名即技能名)
+    ├── skill.md           # 技能指令 (Markdown, 支持 YAML front matter)
+    ├── tools.py           # 可选: 自带工具与 MCP 客户端
+    └── meta.yaml          # 可选: 作者, 版本等信息 (加载进 skill.meta)
+```
+
+`skill.md` 的 front matter 声明 `name`, `description` 与关联的 `tools` (激活时启用的外部工具名):
+
+```markdown
+---
+name: coding_agent
+description: 代码助手
+tools:
+  - code_sandbox
+  - search
+---
+<技能指令正文...>
+```
+
+`tools.py` (可选) 约定:
+- `get_tools()`: 返回工具实例列表 (构造函数需要参数的场景)
+- `get_mcp_clients()`: 返回 MCPClient 实例列表 (`activate_async` 时自动连接注册)
+- 未定义 `get_tools` 时, 模块内定义的 `Tool` / `AsyncTool` 子类会被自动实例化收集
+- 自带工具名自动并入技能工具列表, 无需在 front matter 重复声明
+
+也兼容旧式单文件技能 (直接放置 .md 文件)。
+
+```python
+from satrap import SkillsManager
+
+skills = SkillsManager(skills_dir=".satrap/skills")
+skills.scan()   # 扫描并加载全部技能 (文件夹式 + 单文件式)
+
+skills.activate("coding_agent", workflow)          # 同步 workflow: 注入指令 + 注册/启用工具
+await skills.activate_async("coding_agent", workflow)   # 异步 workflow (额外自动连接自带 MCP 客户端)
+
+skills.deactivate("coding_agent", workflow)        # 取消激活
+await skills.deactivate_async("coding_agent", workflow)   # 异步取消 (额外关闭自带 MCP 连接)
+```
+
+常用方法:
+
+| 方法 | 说明 |
+| --- | --- |
+| `scan()` | 扫描目录下的全部技能 (文件夹式与单文件式) |
+| `load_skill(name, file_path)` | 加载单个技能文件 |
+| `get_skill()` / `has_skill()` / `list_skills()` | 查询已加载技能 |
+| `activate()` / `deactivate()` | 同步装配 / 卸载技能 |
+| `activate_async()` / `deactivate_async()` | 异步装配 / 卸载技能 (含自带 MCP 连接/关闭) |
+
+`SKILLS_PRESET_DIR` 指向内置示例技能目录 (`satrap/expend/skills`, 内含 `coding_agent` 与 `web_research` 两个技能文件夹), 可复制到自己的技能目录使用。
+
+技能支持动态加载路线: 注册 `SkillTool` 后模型可按需调用 `load_skill` 获取技能指令:
+
+```python
+from satrap import SkillTool
+
+tools.register_tool(SkillTool(skills))
+```
+
+技能引用的工具可以是 MCP 注册的远端工具, 二者共享同一个 `ToolsManager` 注册表。典型组合: 先 `await mcp.register_tools(tools)`, 再 `skills.activate("coding_agent", workflow)` 把远端工具纳入技能工作流。
 
 ## Embedding / ReRank
 

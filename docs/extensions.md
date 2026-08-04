@@ -229,3 +229,7 @@ tools.register_tool(sub_agent_tool)
 | `about` | 返回命令说明 |
 
 这些命令依赖 `UserManager` 的上下文绑定能力。只在裸 `Session` 中直接调用时, `history` 可能返回空列表。
+
+## MCP 与技能 (Skill)
+
+MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机制 (`Skill` / `SkillsManager` / `SkillTool`) 属于框架基础设施, 与 `ToolsManager` 同层, 位于 `satrap.core.utils` 并已在顶层导出。详细用法见 [核心 API](core-api.md#mcp-客户端) 和 [核心 API](core-api.md#技能-skill)。
