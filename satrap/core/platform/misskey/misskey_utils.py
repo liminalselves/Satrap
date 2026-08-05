@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.platform.event import MessageChain
@@ -15,7 +15,8 @@ class FileIDExtractor:
         """从多种响应结构中提取文件 ID"""
         if not isinstance(result, dict):
             return None
-        candidates = [
+        result = cast(dict[str, Any], result)
+        candidates: list[Any] = [
             result.get("createdFile", {}).get("id") if isinstance(result.get("createdFile"), dict) else None,
             result.get("file", {}).get("id") if isinstance(result.get("file"), dict) else None,
             result.get("id"),
@@ -140,12 +141,14 @@ def format_poll(poll: dict[str, Any]) -> str:
     """格式化 Misskey 投票内容"""
     if not poll:
         return ""
-    choices = poll.get("choices") or []
-    text_choices = [
-        f"({idx}) {choice.get('text', '')} [{choice.get('votes', 0)}票]"
-        for idx, choice in enumerate(choices, start=1)
-        if isinstance(choice, dict)
-    ]
+    choices = cast(list[Any], poll.get("choices") or [])
+    text_choices: list[str] = []
+    for idx, choice in enumerate(choices, start=1):
+        if isinstance(choice, dict):
+            choice = cast(dict[str, Any], choice)
+            text_choices.append(
+                f"({idx}) {choice.get('text', '')} [{choice.get('votes', 0)}票]"
+            )
     if not text_choices:
         return "[投票]"
     mode = "允许多选" if poll.get("multiple") else "单选"
@@ -155,10 +158,10 @@ def format_poll(poll: dict[str, Any]) -> str:
 def extract_sender_info(raw_data: dict[str, Any], is_chat: bool = False) -> dict[str, Any]:
     """提取 Misskey 发送者信息"""
     if is_chat:
-        sender = raw_data.get("fromUser") or {}
+        sender = cast(dict[str, Any], raw_data.get("fromUser") or {})
         sender_id = str(sender.get("id") or raw_data.get("fromUserId") or "")
     else:
-        sender = raw_data.get("user") or {}
+        sender = cast(dict[str, Any], raw_data.get("user") or {})
         sender_id = str(sender.get("id") or raw_data.get("userId") or "")
     return {
         "sender": sender,
@@ -239,6 +242,7 @@ def process_files(message: PlatformMessage, files: list[Any], include_text_parts
     for item in files:
         if not isinstance(item, dict):
             continue
+        item = cast(dict[str, Any], item)
         component, text = create_file_component(item)
         message.message.append(component)
         if include_text_parts:
@@ -278,7 +282,7 @@ def cache_user_info(
 def cache_room_info(user_cache: dict[str, Any], raw_data: dict[str, Any], bot_self_id: str) -> None:
     """缓存房间上下文"""
     room_id = raw_data.get("toRoomId")
-    room_data = raw_data.get("toRoom") or {}
+    room_data = cast(dict[str, Any], raw_data.get("toRoom") or {})
     if room_id:
         user_cache[f"room:{room_id}"] = {
             "room_id": room_id,
@@ -328,6 +332,7 @@ async def upload_local_with_retries(
     try:
         result = await api.upload_file(local_path, preferred_name, folder_id)
         if isinstance(result, dict):
+            result = cast(dict[str, Any], result)
             file_id = result.get("id") or FileIDExtractor.extract_file_id(result.get("raw"))
             return str(file_id) if file_id else None
     except Exception:

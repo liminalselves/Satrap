@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import pytest
+from typing import Any, cast
 
 from satrap.core.components import At, AtAll, Face, Image, Json, Plain, Reply, Unknown
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
-from satrap.core.platform.event import MessageChain
+from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.onebot_utils import (
     create_platform_message,
@@ -18,18 +19,18 @@ from satrap.core.type import PlatformMessageType
 
 class FakeOneBotClient:
     def __init__(self):
-        self.calls = []
+        self.calls: list[Any] = []
 
-    async def send_private_msg(self, **kwargs):
+    async def send_private_msg(self, **kwargs: Any):
         self.calls.append(("send_private_msg", kwargs))
         return {"message_id": 1}
 
-    async def send_group_msg(self, **kwargs):
+    async def send_group_msg(self, **kwargs: Any):
         self.calls.append(("send_group_msg", kwargs))
         return {"message_id": 2}
 
 
-def make_adapter(settings=None) -> OneBotAdapter:
+def make_adapter(settings: dict[str, Any] | None = None) -> OneBotAdapter:
     adapter = OneBotAdapter(
         PlatformConfig(
             id="onebot_main",
@@ -165,7 +166,7 @@ async def test_convert_message_commits_event():
         }
     )
 
-    event = adapter._event_queue.get_nowait()
+    event = cast(MessageEvent, adapter._event_queue.get_nowait())
     assert event.platform_meta.id == "onebot_main"
     assert event.session_id == "private%123"
     assert event.session_type == "onebot"

@@ -4,6 +4,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -52,7 +53,7 @@ def test_build_multimodal_content_compresses_toolkit_image_when_available():
     assert len(base64.b64decode(payload)) <= 4 * 1024 * 1024
 
 
-def test_context_manager_persists_multimodal_content(tmp_path):
+def test_context_manager_persists_multimodal_content(tmp_path: Path):
     db_path = tmp_path / "history.db"
     ctx = ContextManager("vision", db_path=str(db_path))
     ctx.add_user_message("图片里有什么", img_urls=[_tiny_png_data_url()])
@@ -67,7 +68,7 @@ def test_context_manager_persists_multimodal_content(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_context_manager_persists_multimodal_content(tmp_path):
+async def test_async_context_manager_persists_multimodal_content(tmp_path: Path):
     db_path = tmp_path / "history.db"
     ctx = AsyncContextManager("vision", db_path=str(db_path))
     await ctx.initialize()
@@ -81,7 +82,7 @@ async def test_async_context_manager_persists_multimodal_content(tmp_path):
     assert message["content"][1]["type"] == "image_url"
 
 
-def test_context_manager_loads_legacy_text_rows(tmp_path):
+def test_context_manager_loads_legacy_text_rows(tmp_path: Path):
     db_path = tmp_path / "legacy.db"
     ctx = ContextManager("legacy", db_path=str(db_path))
     ctx.add_user_message("旧消息")
@@ -95,7 +96,7 @@ class _FakeCompletions:
     def __init__(self):
         self.kwargs = None
 
-    def create(self, **kwargs):
+    def create(self, **kwargs: Any):
         self.kwargs = kwargs
         return {"choices": [{"message": {"content": "ok"}}]}
 
@@ -104,7 +105,7 @@ class _FakeAsyncCompletions:
     def __init__(self):
         self.kwargs = None
 
-    async def create(self, **kwargs):
+    async def create(self, **kwargs: Any):
         self.kwargs = kwargs
         return {"choices": [{"message": {"content": "ok"}}]}
 

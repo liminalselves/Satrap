@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import TracebackType
+
 import os
 from pathlib import Path
 from typing import IO
@@ -60,5 +62,5 @@ class BackendInstanceLock:
     def __enter__(self) -> BackendInstanceLock:
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None):
         self.release()

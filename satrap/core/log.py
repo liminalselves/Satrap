@@ -9,8 +9,8 @@ class Logger():
     def __init__(
         self,
         logger_name: str,
-        std_level=logging.INFO,
-        file_level=logging.DEBUG,
+        std_level: int = logging.INFO,
+        file_level: int = logging.DEBUG,
         std_out: bool=True,
         file_out: bool=True,
         output_dir: str | None=None,

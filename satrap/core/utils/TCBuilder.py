@@ -158,7 +158,7 @@ class Tool:
         """获取工具名称"""
         return self.tool_name or "unknown_tool"
 
-    def execute(self, *input, **kwargs) -> Any:
+    def execute(self, *input: Any, **kwargs: Any) -> Any:
         """执行工具"""
         return None
 
@@ -178,7 +178,7 @@ class Tool:
         """检查工具是否启用"""
         return self.tool_enabled
 
-    def __call__(self, *input, **kwargs):
+    def __call__(self, *input: Any, **kwargs: Any):
         """
         使工具实例可被调用
         使用方式: result = tool_instance(...)
@@ -256,7 +256,7 @@ class AsyncTool:
         """获取工具名称"""
         return self.tool_name or "unknown_tool"
 
-    async def execute(self, *args, **kwargs) -> Any:
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
         """
         执行工具 (异步)
         子类必须重写此方法, 并使用 async def
@@ -279,7 +279,7 @@ class AsyncTool:
         """检查工具是否启用"""
         return self.tool_enabled
 
-    async def __call__(self, *args, **kwargs):
+    async def __call__(self, *args: Any, **kwargs: Any):
         """
         使工具实例可被调用
         使用方式: result = await tool_instance(...)
@@ -308,7 +308,7 @@ class ToolsManager:
             self.tools[tool.get_tool_name()] = tool
             logger.info(f"[注册工具] 工具 {tool.get_tool_name()} 已注册")
 
-    def get_tools_definitions(self) -> list:
+    def get_tools_definitions(self) -> list[dict[str, Any]]:
         """获取所有工具的 OpenAI 格式定义
 
         返回:
@@ -518,7 +518,7 @@ class AsyncToolsManager:
             self.tools[tool.get_tool_name()] = tool
             logger.info(f"[注册异步工具] 工具 {tool.get_tool_name()} 已注册")
 
-    def get_tools_definitions(self) -> list:
+    def get_tools_definitions(self) -> list[dict[str, Any]]:
         """获取所有工具的 OpenAI 格式定义
 
         返回:

@@ -1,16 +1,19 @@
 from __future__ import annotations
+import argparse
 
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
+from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.session_discovery import discover_session_classes
 
 
-def _configured_adapter_ids(config) -> set[str]:
+def _configured_adapter_ids(config: BackendConfig) -> set[str]:
     """返回配置中声明的平台适配器实例 ID 集合"""
     ids: set[str] = set()
     for item in getattr(config, "platforms", []) or []:
@@ -20,7 +23,7 @@ def _configured_adapter_ids(config) -> set[str]:
     return ids
 
 
-def _init_mgr(args) -> SessionClassConfigManager:
+def _init_mgr(args: argparse.Namespace) -> SessionClassConfigManager:
     """离线模式: 直接初始化 SessionClassConfigManager"""
     config = load_cli_config(args)
     return SessionClassConfigManager(
@@ -29,7 +32,7 @@ def _init_mgr(args) -> SessionClassConfigManager:
     )
 
 
-def _client_or_fallback(args):
+def _client_or_fallback(args: argparse.Namespace):
     """尝试 HTTP 连接, 失败时返回 (None, offline_mgr)"""
     client = daemon_client_from_args(args)
     if client.is_alive() and not offline_requested(args):
@@ -42,11 +45,11 @@ def _client_or_fallback(args):
 def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     if not rows:
         return "(空)"
-    col_widths = []
+    col_widths: list[int] = []
     all_rows = ([header] if header else []) + rows
     for col_idx in range(len(all_rows[0])):
         col_widths.append(max(len(str(r[col_idx])) for r in all_rows))
-    lines = []
+    lines: list[str] = []
     if header:
         hdr = " | ".join(str(h).ljust(w) for h, w in zip(header, col_widths))
         lines.append(hdr)
@@ -56,7 +59,7 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def cmd_session_list(args):
+def cmd_session_list(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     if client:
         data = client.list_session_classes()
@@ -71,7 +74,7 @@ def cmd_session_list(args):
         print("没有已注册的会话类")
         return
     header = ["名称", "状态", "上下文键", "模型键", "Class Path", "参数"]
-    rows = []
+    rows: list[list[str]] = []
     for name, entry in configs.items():
         status = "启用" if entry.get("enabled", True) else "停用"
         ck = entry.get("context_key", "") or "-"
@@ -81,7 +84,7 @@ def cmd_session_list(args):
     print(_fmt_table(rows, header))
 
 
-def cmd_session_enable(args):
+def cmd_session_enable(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     try:
         if client:
@@ -96,7 +99,7 @@ def cmd_session_enable(args):
         sys.exit(1)
 
 
-def cmd_session_disable(args):
+def cmd_session_disable(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     try:
         if client:
@@ -111,7 +114,7 @@ def cmd_session_disable(args):
         sys.exit(1)
 
 
-def cmd_session_register(args):
+def cmd_session_register(args: argparse.Namespace):
     class_path = (getattr(args, "from_scan", None) or getattr(args, "class_path", None) or "").strip()
     if not class_path:
         print("注册失败: 请提供 --class-path 或 --from-scan")
@@ -141,7 +144,7 @@ def cmd_session_register(args):
                 context_key=ck,
                 model_key=mk,
             )
-        tags = []
+        tags: list[str] = []
         if ck:
             tags.append(f"上下文键: {ck}")
         if mk:
@@ -153,7 +156,7 @@ def cmd_session_register(args):
         sys.exit(1)
 
 
-def cmd_session_unregister(args):
+def cmd_session_unregister(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     if client:
         result = client.unregister_session_class(args.name)
@@ -169,13 +172,14 @@ def cmd_session_unregister(args):
     sys.exit(1)
 
 
-def cmd_session_config_set(args):
+def cmd_session_config_set(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     try:
         if args.from_json:
             params = json.loads(args.from_json)
             if not isinstance(params, dict):
                 raise ValueError("--from-json 必须是 JSON 对象")
+            params = cast(dict[str, Any], params)
             if client:
                 result = client.set_session_class_params(args.name, params)
                 if "error" in result:
@@ -183,9 +187,10 @@ def cmd_session_config_set(args):
             else:
                 mgr.set_config(args.name, params)  # type: ignore
         else:
-            kv = {}
+            kv: dict[str, str] = {}
             for group in args.set:
-                for item in (group if isinstance(group, list) else [group]):
+                items = cast(list[str], group) if isinstance(group, list) else [str(group)]
+                for item in items:
                     if "=" not in item:
                         print(f"无效格式: {item}, 请使用 key=value")
                         sys.exit(1)
@@ -195,7 +200,7 @@ def cmd_session_config_set(args):
                 current = client.get_session_class(args.name)
                 if "error" in current:
                     raise ValueError(current["error"])
-                params = dict(current.get("params", {}))
+                params: dict[str, Any] = dict(current.get("params", {}))
                 params.update(kv)
                 result = client.set_session_class_params(args.name, params)
                 if "error" in result:
@@ -208,7 +213,7 @@ def cmd_session_config_set(args):
         sys.exit(1)
 
 
-def cmd_session_config_show(args):
+def cmd_session_config_show(args: argparse.Namespace):
     client, mgr = _client_or_fallback(args)
     cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)  # type: ignore
     if isinstance(cfg, dict) and "error" in cfg:
@@ -220,7 +225,7 @@ def cmd_session_config_show(args):
     print(json.dumps(cfg, ensure_ascii=False, indent=2))
 
 
-def cmd_session_scan(args):
+def cmd_session_scan(args: argparse.Namespace):
     """扫描 Session 类"""
     config = load_cli_config(args)
     paths = getattr(args, "path", None) or config.session_scan_paths
@@ -242,7 +247,7 @@ def cmd_session_scan(args):
             print(f"    params: {json.dumps(item.init_params, ensure_ascii=False)}")
 
 
-def cmd_session_create(args):
+def cmd_session_create(args: argparse.Namespace):
     config = load_cli_config(args)
     client = daemon_client_from_args(args)
     if client.is_alive():
@@ -255,7 +260,7 @@ def cmd_session_create(args):
     context_value = getattr(args, 'context_value', None) or ""
     sid = args.id or ""
 
-    extra = {}
+    extra: dict[str, Any] = {}
     adapter_id = (getattr(args, 'adapter_id', None) or "").strip()
     if adapter_id:
         configured_ids = _configured_adapter_ids(config)
@@ -294,7 +299,7 @@ def cmd_session_create(args):
         sys.exit(1)
 
 
-def dispatch(args):
+def dispatch(args: argparse.Namespace):
     action_map = {
         "list": cmd_session_list,
         "enable": cmd_session_enable,

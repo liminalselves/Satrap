@@ -58,7 +58,7 @@ def _build_deepseek_llm() -> tuple[LLM | None, AsyncLLM | None]:
 
 
 class _FakeTool:
-    def get_tool_defined(self):
+    def get_tool_defined(self) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
@@ -73,7 +73,7 @@ class _FakeTool:
 
 
 class _FakeToolsManager:
-    def get_tools_definitions(self):
+    def get_tools_definitions(self) -> list[dict[str, Any]]:
         return [_FakeTool().get_tool_defined()]
 
     def execute_tool_call(self, call_info: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -84,7 +84,7 @@ class _FakeToolsManager:
         else:
             args = args_str
         result = _FakeTool().execute(**args)
-        msg = {"role": "tool", "content": json.dumps(result, ensure_ascii=False), "tool_call_id": call_info.get("id", "")}
+        msg: dict[str, Any] = {"role": "tool", "content": json.dumps(result, ensure_ascii=False), "tool_call_id": call_info.get("id", "")}
         return msg, result
 
 
@@ -92,7 +92,7 @@ class _FakeLLM:
     def __init__(self):
         self.call_count = 0
 
-    def call(self, messages, tools=None) -> LLMCallResponse | bool:
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> LLMCallResponse | bool:
         self.call_count += 1
         return LLMCallResponse(type="message", content=f"fake reply #{self.call_count}")
 
@@ -101,7 +101,7 @@ class _FakeAsyncLLM:
     def __init__(self):
         self.call_count = 0
 
-    async def call(self, messages, tools=None) -> LLMCallResponse | bool:
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> LLMCallResponse | bool:
         self.call_count += 1
         return LLMCallResponse(type="message", content=f"async fake reply #{self.call_count}")
 

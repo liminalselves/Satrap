@@ -14,7 +14,7 @@ from satrap.expend.command.session_commands import (
 
 
 class FakeUserManager:
-    def __init__(self, sessions=None):
+    def __init__(self, sessions: list[str] | None = None):
         self.sessions = list(sessions or [])
         self.bound = []
 

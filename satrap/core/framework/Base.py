@@ -3,7 +3,7 @@ from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager,
 from satrap.core.utils.context import ContextManager, AsyncContextManager
 from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from typing import Optional, Callable, Any, Awaitable
+from typing import Optional, Callable, Any, Awaitable, TypeVar, cast
 from satrap.core.type import LLMCallResponse
 import inspect, json, copy
 
@@ -13,6 +13,9 @@ if TYPE_CHECKING:
     from satrap.core.framework.UserManager import UserManager
 
 from satrap.core.log import logger
+
+_WorkflowT = TypeVar("_WorkflowT")
+"""工作流类泛型, 用于 create 工厂与 await 工具"""
 
 class ModelWorkflowFramework:
     """模型工作流框架"""
@@ -90,7 +93,7 @@ class ModelWorkflowFramework:
             self.content_callback(content)
 
     def agent_executor(self, model_response: LLMCallResponse,
-        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list]], bool]:
+        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list[Any]]], bool]:
         """智能体执行器, 用于执行智能体调用流程
 
         参数:
@@ -99,7 +102,7 @@ class ModelWorkflowFramework:
         - max_iterations: 最大迭代次数
 
         返回:
-        - list[dict[str, str | list]]: 上下文消息列表
+        - list[dict[str, str | list[Any]]]: 上下文消息列表
         - bool: 是否成功执行
         """
         try:
@@ -109,8 +112,8 @@ class ModelWorkflowFramework:
 
             while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
                 now_iteration += 1
-                tool_messages = []
-                tool_results = []
+                tool_messages: list[dict[str, Any]] = []
+                tool_results: list[dict[str, Any]] = []
 
                 if callback:   # 回调回复
                     if now_response.thinking and self.content_callback:
@@ -192,7 +195,7 @@ class ModelWorkflowFramework:
             return messages.content
 
     @staticmethod
-    def get_bot_message(messages: list[dict[str, str | list]]) -> str:
+    def get_bot_message(messages: list[dict[str, str | list[Any]]]) -> str:
         """获取最后一条 assistant 回复"""
         for message in reversed(messages):
             if message["role"] == "assistant":
@@ -300,8 +303,8 @@ class ModelWorkflowFramework:
 
         while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
             now_iteration += 1
-            tool_messages = []
-            tool_results = []
+            tool_messages: list[dict[str, Any]] = []
+            tool_results: list[dict[str, Any]] = []
 
             for tool_call in now_response.tool_calls:
                 tool_message, tool_result = self.tools_manager.execute_tool_call(tool_call)
@@ -409,11 +412,11 @@ class ModelWorkflowFramework:
         """重置会话模型"""
         self.llm = llm
 
-    def forward(self, *input, **kwargs) -> Any:
+    def forward(self, *input: Any, **kwargs: Any) -> Any:
         """执行工作流; 调用模型并返回结果"""
         return None
 
-    def __call__(self, *input, **kwargs):
+    def __call__(self, *input: Any, **kwargs: Any):
         result = self.forward(*input, **kwargs)
         return result
 
@@ -445,7 +448,7 @@ class Session:
         self.command_handler = self.cmd_handler
         self.session_ctx.load_context()
         self.session_id = session_id
-        self.wf_list = []
+        self.wf_list: list[str] = []
 
         self.content_callback = content_callback
         self._user_manager: UserManager | None = None
@@ -479,10 +482,10 @@ class Session:
         """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
 
-    def reload_llm(self, llm):
+    def reload_llm(self, llm: LLM):
         """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
 
-    def run(self, *input, **kwargs) -> Any:
+    def run(self, *input: Any, **kwargs: Any) -> Any:
         """执行会话; 调用模型并返回结果"""
         return None
     
@@ -520,22 +523,22 @@ class Session:
         """
         return self.command_handler.process_message(msg)              
 
-    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+    def register_command(self, name: str, handler: Callable[..., Any], intro: str = "None"):
         """注册命令处理函数"""
         self.command_handler.register_command(name, handler, intro)
 
-    def __call__(self, *input, **kwargs):
+    def __call__(self, *input: Any, **kwargs: Any):
         result = self.run(*input, **kwargs)
         return result
 
 
 class AsyncModelWorkflowFramework:
     """异步版模型工作流框架"""
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls: type, **kwargs: Any):
         super().__init_subclass__(**kwargs)
         forward = cls.__dict__.get("forward")
         if forward is not None and inspect.iscoroutinefunction(forward):
-            async def _wrapped_forward(self, *args, **kw):
+            async def _wrapped_forward(self: Any, *args: Any, **kw: Any):
                 await self.initialize()
                 return await forward(self, *args, **kw)
             cls.forward = _wrapped_forward
@@ -596,10 +599,10 @@ class AsyncModelWorkflowFramework:
         self._initialized = True
 
     @classmethod
-    async def create(cls, *args, **kwargs):
+    async def create(cls: type[_WorkflowT], *args: Any, **kwargs: Any) -> _WorkflowT:
         """创建并初始化实例"""
         instance = cls(*args, **kwargs)
-        await instance.initialize()
+        await cast(AsyncModelWorkflowFramework, instance).initialize()
         return instance
 
     async def _content_callback(self, content: str):
@@ -608,13 +611,13 @@ class AsyncModelWorkflowFramework:
             await self.content_callback(content)
 
     @staticmethod
-    async def _await_if_needed(value):
+    async def _await_if_needed(value: Awaitable[_WorkflowT] | _WorkflowT) -> _WorkflowT:
         if inspect.isawaitable(value):
-            return await value
+            return await cast(Awaitable[_WorkflowT], value)
         return value
 
     async def agent_executor(self, model_response: LLMCallResponse,
-        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list]], bool]:
+        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list[Any]]], bool]:
         """异步智能体执行器, 用于执行智能体调用流程
         
         参数:
@@ -623,7 +626,7 @@ class AsyncModelWorkflowFramework:
         - max_iterations: 最大迭代次数
 
         返回:
-        - list[dict[str, str | list]]: 上下文消息列表
+        - list[dict[str, str | list[Any]]]: 上下文消息列表
         - bool: 是否成功执行
         """
         try:
@@ -633,8 +636,8 @@ class AsyncModelWorkflowFramework:
 
             while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
                 now_iteration += 1
-                tool_messages = []
-                tool_results = []
+                tool_messages: list[dict[str, Any]] = []
+                tool_results: list[dict[str, Any]] = []
 
                 if callback:   # 回调回复
                     if now_response.thinking and self.content_callback:
@@ -715,7 +718,7 @@ class AsyncModelWorkflowFramework:
         return messages.content
     
     @staticmethod
-    def get_bot_message(messages: list[dict[str, str | list]]) -> str:
+    def get_bot_message(messages: list[dict[str, str | list[Any]]]) -> str:
         """获取最后一条 assistant 回复"""
         for message in reversed(messages):
             if message["role"] == "assistant":
@@ -826,8 +829,8 @@ class AsyncModelWorkflowFramework:
 
         while now_response.type == "tools_call" and now_response.tool_calls and now_iteration < max_iterations:
             now_iteration += 1
-            tool_messages = []
-            tool_results = []
+            tool_messages: list[dict[str, Any]] = []
+            tool_results: list[dict[str, Any]] = []
 
             for tool_call in now_response.tool_calls:
                 tool_message, tool_result = await self.tools_manager.execute_tool_call(tool_call)
@@ -936,11 +939,11 @@ class AsyncModelWorkflowFramework:
         """重置会话模型"""
         self.llm = llm
 
-    async def forward(self, *input, **kwargs) -> Any:
+    async def forward(self, *input: Any, **kwargs: Any) -> Any:
         """执行工作流"""
         return None
 
-    async def __call__(self, *input, **kwargs):
+    async def __call__(self, *input: Any, **kwargs: Any):
         await self.initialize()
         result = await self.forward(*input, **kwargs)
         return result
@@ -948,11 +951,11 @@ class AsyncModelWorkflowFramework:
 
 class AsyncSession:
     """异步版会话类"""
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls: type, **kwargs: Any):
         super().__init_subclass__(**kwargs)
         run = cls.__dict__.get("run")
         if run is not None and inspect.iscoroutinefunction(run):
-            async def _wrapped_run(self, *args, **kw):
+            async def _wrapped_run(self: Any, *args: Any, **kw: Any):
                 await self.initialize()
                 return await run(self, *args, **kw)
             cls.run = _wrapped_run
@@ -995,7 +998,7 @@ class AsyncSession:
         """
         self.session_ctx = AsyncContextManager(session_id)
         self.session_id = session_id
-        self.wf_list = []
+        self.wf_list: list[str] = []
         self.content_callback = content_callback
         self._initialized = False
         self._user_manager: UserManager | None = None
@@ -1038,10 +1041,10 @@ class AsyncSession:
         """上下文切换后调用, 子类可重写以刷新工作流"""
         return None
 
-    def reload_llm(self, llm):
+    def reload_llm(self, llm: AsyncLLM):
         """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
 
-    async def run(self, *input, **kwargs) -> Any:
+    async def run(self, *input: Any, **kwargs: Any) -> Any:
         """执行会话"""
         return None
 
@@ -1076,11 +1079,11 @@ class AsyncSession:
         """
         return await self.command_handler.process_message(msg)
 
-    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+    def register_command(self, name: str, handler: Callable[..., Any], intro: str = "None"):
         """注册命令处理函数"""
         self.command_handler.register_command(name, handler, intro)
 
-    async def __call__(self, *input, **kwargs):
+    async def __call__(self, *input: Any, **kwargs: Any):
         await self._ensure_initialized()
         result = await self.run(*input, **kwargs)
         return result

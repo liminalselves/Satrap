@@ -1,11 +1,11 @@
-from typing import overload
+from typing import Any, overload
 import json
 import ast
 import re
 
 from satrap.core.log import logger
 
-def safe_parse_arguments(arg_str: str) -> dict:
+def safe_parse_arguments(arg_str: str) -> dict[str, Any]:
     """容错解析参数字符串, 返回 dict"""
     if not isinstance(arg_str, str):
         return arg_str if isinstance(arg_str, dict) else {}
@@ -17,7 +17,7 @@ def safe_parse_arguments(arg_str: str) -> dict:
 
     try:   # 尝试修复常见错误
         pattern = r'("code":\s*")(.*?)("(?=\s*[,}]))'
-        def fix_code(match):
+        def fix_code(match: re.Match[str]):
             prefix = match.group(1)
             code_body = match.group(2)
             suffix = match.group(3)

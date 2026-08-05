@@ -71,7 +71,7 @@ class MessageChain:
 
     def __init__(self, components: list[BaseMessageComponent] | None = None):
         """初始化消息链, 可传入初始组件列表"""
-        self._components = components or []
+        self._components: list[BaseMessageComponent] = components or []
 
     @classmethod
     def from_text(cls, text: str) -> MessageChain:
@@ -99,11 +99,11 @@ class MessageChain:
         """拼接两条消息链"""
         return MessageChain(self._components + other._components)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index: int):
         """按索引获取组件"""
         return self._components[index]
 
-    def to_dict_list(self) -> list[dict]:
+    def to_dict_list(self) -> list[dict[str, Any]]:
         """转为字典列表, 用于序列化或传递给下层"""
         return [c.toDict() for c in self._components]
 
@@ -173,9 +173,9 @@ class ProviderRequest:
 
     prompt: str = ""
     session_id: str = ""
-    image_urls: list[str] = field(default_factory=list)
-    audio_urls: list[str] = field(default_factory=list)
-    contexts: list = field(default_factory=list)
+    image_urls: list[str] = field(default_factory=list[str])
+    audio_urls: list[str] = field(default_factory=list[str])
+    contexts: list[Any] = field(default_factory=list[Any])
     system_prompt: str = ""
     conversation: Any = None
 
@@ -272,7 +272,7 @@ class MessageEvent:
         """
         if not chain:
             return ""
-        parts = []
+        parts: list[str] = []
         for c in chain:
             t = c.type
             if t == PlatformComponentType.Plain:

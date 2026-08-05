@@ -42,7 +42,7 @@ class PlatformConfig:
     id: str = "default"
     type: str = ""
     enable: bool = True
-    settings: Dict[str, Any] = field(default_factory=dict)
+    settings: Dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass
@@ -61,7 +61,7 @@ class PlatformEvent:
     message: str = ""
     raw_event: Any = None
     timestamp: float = field(default_factory=lambda: time.time())
-    extras: Dict[str, Any] = field(default_factory=dict)
+    extras: Dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 class PlatformAdapter(ABC):
@@ -74,17 +74,17 @@ class PlatformAdapter(ABC):
 
     adapter_type: str = ""
 
-    def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue | None = None):
+    def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue[Any] | None = None):
         self.config = config
         self.event_handler = event_handler
         self.started = False
 
         self.client_self_id = uuid.uuid4().hex
-        self._event_queue = event_queue or asyncio.Queue()
+        self._event_queue = event_queue or asyncio.Queue[Any]()
         self._status: PlatformStatus = PlatformStatus.PENDING
         self._errors: list[PlatformError] = []
         self._started_at: datetime | None = None
-        self._run_task: asyncio.Task | None = None
+        self._run_task: asyncio.Task[Any] | None = None
 
     def set_event_handler(self, handler: EventHandler | None):
         """设置/替换事件回调函数
@@ -224,7 +224,7 @@ class PlatformAdapter(ABC):
 
     # ── Stats ──
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """获取平台运行统计信息"""
         return {
             "status": self._status.value,
@@ -268,7 +268,7 @@ class PlatformAdapter(ABC):
         - session_id: 会话 ID
         - message: 要发送的消息链
         """
-        parts = []
+        parts: list[str] = []
         for c in message:
             t = getattr(c, 'type', None)
             if t is not None and hasattr(t, 'value') and t.value.lower() == 'plain':

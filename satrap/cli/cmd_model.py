@@ -1,7 +1,10 @@
 from __future__ import annotations
+import argparse
 
 import json
 import sys
+
+from typing import Any, cast
 
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.core.framework.BackGroundManager import ModelConfigManager
@@ -13,10 +16,10 @@ TYPE_MAP = {
     "embedding": ("list_embedding_configs", "get_embedding_config", "set_embedding_config", "update_embedding_config", "remove_embedding_config"),
     "rerank": ("list_rerank_configs", "get_rerank_config", "set_rerank_config", "update_rerank_config", "remove_rerank_config"),
 }
-CLS_MAP = {"llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig}
+CLS_MAP: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig]] = {"llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig}
 
 
-def _init_mgr(args) -> ModelConfigManager:
+def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     config = load_cli_config(args)
     return ModelConfigManager(storage_path=config.model_config_path)
 
@@ -24,11 +27,11 @@ def _init_mgr(args) -> ModelConfigManager:
 def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     if not rows:
         return "(空)"
-    col_widths = []
+    col_widths: list[int] = []
     all_rows = ([header] if header else []) + rows
     for col_idx in range(len(all_rows[0])):
         col_widths.append(max(len(str(r[col_idx])) for r in all_rows))
-    lines = []
+    lines: list[str] = []
     if header:
         hdr = " | ".join(str(h).ljust(w) for h, w in zip(header, col_widths))
         lines.append(hdr)
@@ -38,17 +41,17 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def _fmt_model_config(config) -> dict:
+def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig) -> dict[str, Any]:
     data = {f.name: getattr(config, f.name) for f in config.__dataclass_fields__.values()}
     return data
 
 
-def cmd_model_list(args):
+def cmd_model_list(args: argparse.Namespace):
     client = daemon_client_from_args(args)
     if client.is_alive() and not offline_requested(args):
         data = client.list_models(typ=args.type) if args.type != "all" else {}
         if args.type == "all":
-            all_data = {}
+            all_data: dict[str, Any] = {}
             for t in TYPE_MAP:
                 all_data[t] = client.list_models(typ=t)
             data = all_data
@@ -60,7 +63,7 @@ def cmd_model_list(args):
 
     mgr = _init_mgr(args)
     types = TYPE_MAP.keys() if args.type == "all" else [args.type]
-    rows = []
+    rows: list[list[str]] = []
     for t in types:
         info = TYPE_MAP.get(t)
         if not info:
@@ -76,11 +79,11 @@ def cmd_model_list(args):
     print(_fmt_table(rows, header))
 
 
-def _print_model_table(data: dict, args):
+def _print_model_table(data: dict[str, Any], args: argparse.Namespace):
     if args.type == "all":
-        rows = []
+        rows: list[list[str]] = []
         for t in TYPE_MAP:
-            for name, entry in data.get(t, {}).items():
+            for name, entry in cast(dict[str, Any], data.get(t, {})).items():
                 model = entry.get("model") or entry.get("base_url", "")
                 rows.append([t, name, model])
         if not rows:
@@ -93,7 +96,7 @@ def _print_model_table(data: dict, args):
             print(f"[{args.type}] {name}: {model}")
 
 
-def cmd_model_show(args):
+def cmd_model_show(args: argparse.Namespace):
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -120,7 +123,7 @@ def cmd_model_show(args):
     print(json.dumps(data, ensure_ascii=False, indent=2))
 
 
-def cmd_model_set(args):
+def cmd_model_set(args: argparse.Namespace):
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -153,7 +156,7 @@ def cmd_model_set(args):
         sys.exit(1)
 
 
-def cmd_model_remove(args):
+def cmd_model_remove(args: argparse.Namespace):
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -180,7 +183,7 @@ def cmd_model_remove(args):
         sys.exit(1)
 
 
-def dispatch(args):
+def dispatch(args: argparse.Namespace):
     action_map = {
         "list": cmd_model_list,
         "show": cmd_model_show,

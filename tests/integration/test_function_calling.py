@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import operator
 import os
+from typing import Any
 
 import pytest
 
@@ -31,7 +32,7 @@ class WeatherTool(Tool):
             },
         )
 
-    def execute(self, city: str, unit: str = "celsius"):
+    def execute(self, city: str, unit: str = "celsius") -> dict[str, Any]:
         return {"city": city, "unit": unit, "condition": "晴天", "temperature": 25}
 
 
@@ -43,9 +44,9 @@ class CalculatorTool(Tool):
             params_dict={"expression": ("string", "数学表达式")},
         )
 
-    def execute(self, expression: str):
+    def execute(self, expression: str) -> dict[str, Any]:
         try:
-            operators = {
+            operators: dict[type, Any] = {
                 ast.Add: operator.add,
                 ast.Sub: operator.sub,
                 ast.Mult: operator.mul,
@@ -53,7 +54,7 @@ class CalculatorTool(Tool):
             }
             tree = ast.parse(expression, mode="eval")
 
-            def evaluate(node):
+            def evaluate(node: ast.AST) -> int | float:
                 if isinstance(node, ast.Expression):
                     return evaluate(node.body)
                 if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
@@ -101,8 +102,8 @@ def test_function_call_with_real_llm():
 
     assert isinstance(response, LLMCallResponse)
     if response.type == "tools_call":
-        tool_messages = []
-        tool_results = []
+        tool_messages: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
         for call in response.tool_calls or []:
             message, result = manager.execute_tool_call(call)
             tool_messages.append(message)

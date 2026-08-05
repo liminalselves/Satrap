@@ -58,7 +58,7 @@ class BackendConfig:
     platforms: List[Dict[str, Any]] = field(default_factory=list)
 
     @classmethod
-    def from_dict(cls, data: dict) -> BackendConfig:
+    def from_dict(cls, data: dict[str, Any]) -> BackendConfig:
         """从字典加载配置"""
         return cls(
             model_config_path=data.get("model_config_path"),

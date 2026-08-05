@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable, List
+import inspect
+from typing import Awaitable, Callable, List, TypeVar, cast
 
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
@@ -9,6 +10,9 @@ from satrap.core.log import logger
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.type import UserCall
+
+
+_T = TypeVar("_T")
 
 
 class PipelineScheduler:
@@ -191,7 +195,7 @@ class PipelineScheduler:
         return urls
 
     @staticmethod
-    async def _await_if_needed(value):
-        if asyncio.iscoroutine(value):
-            return await value
+    async def _await_if_needed(value: Awaitable[_T] | _T) -> _T:
+        if inspect.isawaitable(value):
+            return await cast(Awaitable[_T], value)
         return value

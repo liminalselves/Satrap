@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import copy
+from typing import Any
 
 import pytest
+from pathlib import Path
 
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
 from satrap.core.type import LLMCallResponse
@@ -10,16 +12,16 @@ from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 class _FakeTools:
-    def get_tools_definitions(self):
+    def get_tools_definitions(self) -> list[dict[str, Any]]:
         return []
 
 
 class _FakeLLM:
     def __init__(self):
-        self.messages = []
-        self.tools = []
+        self.messages: list[dict[str, Any]] = []
+        self.tools: list[dict[str, Any]] | None = []
 
-    def call(self, messages, tools=None):
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
         self.messages = copy.deepcopy(messages)
         self.tools = tools
         return LLMCallResponse(type="message", content="同步回复")
@@ -27,19 +29,19 @@ class _FakeLLM:
 
 class _FailingLLM:
     def __init__(self):
-        self.messages = []
+        self.messages: list[dict[str, Any]] = []
 
-    def call(self, messages, tools=None):
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
         self.messages = copy.deepcopy(messages)
         return False
 
 
 class _FakeAsyncLLM:
     def __init__(self):
-        self.messages = []
-        self.tools = []
+        self.messages: list[dict[str, Any]] = []
+        self.tools: list[dict[str, Any]] | None = []
 
-    async def call(self, messages, tools=None):
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
         self.messages = copy.deepcopy(messages)
         self.tools = tools
         return LLMCallResponse(type="message", content="异步回复")
@@ -47,14 +49,14 @@ class _FakeAsyncLLM:
 
 class _FailingAsyncLLM:
     def __init__(self):
-        self.messages = []
+        self.messages: list[dict[str, Any]] = []
 
-    async def call(self, messages, tools=None):
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
         self.messages = copy.deepcopy(messages)
         return False
 
 
-def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path):
+def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
     llm = _FakeLLM()
     wf = ModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -70,9 +72,9 @@ def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path):
     assert llm.tools == []
 
 
-def test_model_workflow_full_agent_accepts_executor_options(tmp_path):
+def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response, callback=False, max_iterations=10):
+        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "自定义回复"}], True)
 
@@ -90,7 +92,7 @@ def test_model_workflow_full_agent_accepts_executor_options(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path):
+async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
     llm = _FakeAsyncLLM()
     wf = AsyncModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -107,7 +109,7 @@ async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path
     assert llm.tools == []
 
 
-def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path):
+def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
     llm = _FakeLLM()
     wf = ModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -131,9 +133,9 @@ def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path):
     assert reloaded.get_context() == [{"role": "system", "content": "系统提示"}]
 
 
-def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path):
+def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response, callback=False, max_iterations=10):
+        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "临时回复"}], True)
 
@@ -152,7 +154,7 @@ def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(
     assert wf.ctx.get_context() == []
 
 
-def test_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path):
+def test_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
     llm = _FailingLLM()
     wf = ModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -169,7 +171,7 @@ def test_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path)
     assert wf.ctx.get_context() == [{"role": "system", "content": "系统提示"}]
 
 
-def test_context_manager_del_context_keeps_only_system_messages(tmp_path):
+def test_context_manager_del_context_keeps_only_system_messages(tmp_path: Path):
     ctx = ContextManager("del-context-sync", db_path=str(tmp_path / "del-sync.db"))
     ctx.add_user_message("第一条不是系统")
     ctx.reset_system_prompt("系统提示")
@@ -181,7 +183,7 @@ def test_context_manager_del_context_keeps_only_system_messages(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_path):
+async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
     llm = _FakeAsyncLLM()
     wf = AsyncModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -208,9 +210,9 @@ async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path):
+async def test_async_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response, callback=False, max_iterations=10):
+        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "异步临时回复"}], True)
 
@@ -231,7 +233,7 @@ async def test_async_model_workflow_tools_agent_clears_without_system_and_preser
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path):
+async def test_async_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
     llm = _FailingAsyncLLM()
     wf = AsyncModelWorkflowFramework(
         llm=llm,   # type: ignore[arg-type]
@@ -250,7 +252,7 @@ async def test_async_model_workflow_tools_agent_cleans_context_after_model_failu
 
 
 @pytest.mark.asyncio
-async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_path):
+async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_path: Path):
     ctx = AsyncContextManager("del-context-async", db_path=str(tmp_path / "del-async.db"))
     await ctx.initialize()
     await ctx.add_user_message("第一条不是系统")
@@ -263,9 +265,9 @@ async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path):
+async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response, callback=False, max_iterations=10):
+        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "异步自定义回复"}], True)
 

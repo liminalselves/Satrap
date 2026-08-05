@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import streamlit as st
 from satrap.admin_utils.config_editor import (
     _platform_settings_form,
@@ -16,16 +18,16 @@ from satrap.cli.client import DaemonClient, DaemonInfo
 st.set_page_config(page_title="平台状态", page_icon="", layout="wide")
 
 
-def _type_options(health: dict) -> list[str]:
+def _type_options(health: dict[str, Any]) -> list[str]:
     base = ["misskey", "onebot"]
-    for info in health.get("adapters", {}).values():
+    for info in cast(dict[str, Any], health.get("adapters", {})).values():
         typ = str(info.get("config_type") or info.get("type") or "").strip()
         if typ and typ not in base:
             base.append(typ)
     return base
 
 
-def _save_and_reload(data: dict):
+def _save_and_reload(data: dict[str, Any]):
     path = find_config_path()
     try:
         new_config = save_config_document(path, data)
@@ -46,7 +48,7 @@ def _save_and_reload(data: dict):
 
 
 @st.dialog("添加平台配置")
-def _add_platform_dialog(health: dict):
+def _add_platform_dialog(health: dict[str, Any]):
     st.write("添加新平台")
 
     platform_id = st.text_input("平台名称", placeholder="misskey_main")
@@ -75,7 +77,7 @@ def _add_platform_dialog(health: dict):
 
 
 @st.dialog("编辑平台配置")
-def _edit_platform_dialog(original_id: str, health: dict):
+def _edit_platform_dialog(original_id: str, health: dict[str, Any]):
     st.write(f"编辑平台: {original_id}")
 
     config_data = load_config_document(find_config_path())

@@ -1,4 +1,5 @@
 import satrap, uuid
+from typing import Callable
 from satrap import LLM, ToolsManager
 from satrap.core.framework import Session
 from satrap import ModelWorkflowFramework
@@ -17,7 +18,7 @@ command_handler.register_command("get_model_name", llm.get_model, "获取当前�
 command_handler.register_command("get_api_key", llm.get_api_key, "获取当前 API 密钥")
 
 class MyWF(ModelWorkflowFramework):
-    def __init__(self, llm: LLM, tools_manager: ToolsManager | None = None, content_callback=None, command_handler=None, context_id=""):
+    def __init__(self, llm: LLM, tools_manager: ToolsManager | None = None, content_callback: Callable[[str], None] | None = None, command_handler: CommandHandler | None = None, context_id: str = ""):
         super().__init__(llm=llm, tools_manager=tools_manager, content_callback=content_callback, context_id=context_id)
 
     def forward(self, query: str) -> str:
@@ -28,7 +29,7 @@ class MyWF(ModelWorkflowFramework):
         return res_msg
 
 class MySession(Session):
-    def __init__(self, session_id: str, content_callback=None, command_handler=None):
+    def __init__(self, session_id: str, content_callback: Callable[[str], None] | None = None, command_handler: CommandHandler | None = None):
         super().__init__(session_id=session_id, content_callback=content_callback, command_handler=command_handler)
         self.wf = MyWF(llm=llm, tools_manager=ToolsManager(), content_callback=content_callback, command_handler=command_handler, context_id=session_id)
 

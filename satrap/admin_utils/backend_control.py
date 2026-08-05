@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import streamlit as st
+from typing import Any
 
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendConfig
@@ -38,7 +39,7 @@ def daemon_client(config: BackendConfig, timeout: float = 5) -> DaemonClient:
     return DaemonClient(daemon=daemon_info(config), timeout=timeout)
 
 
-def check_backend(config: BackendConfig) -> tuple[dict | None, str | None]:
+def check_backend(config: BackendConfig) -> tuple[dict[str, Any] | None, str | None]:
     """检测后端是否运行"""
     client = daemon_client(config, timeout=2)
     health = client.health()

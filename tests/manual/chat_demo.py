@@ -2,10 +2,11 @@
 import asyncio
 import os
 import re
+import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Awaitable, Callable, Dict
 
 import streamlit as st
 
@@ -18,6 +19,7 @@ from satrap.core.framework import AsyncModelWorkflowFramework, AsyncSession, Ses
 from satrap.core.framework.command import AsyncCommandHandler
 from satrap.core.type import SessionConfig, UserCall
 from satrap.core.utils.TCBuilder import AsyncToolsManager
+from satrap.core.utils.sandbox import CodeSandbox
 from satrap.expend import AsyncCodeSandboxTool, AsyncFetchPageTool, AsyncSearchTool
 
 
@@ -39,7 +41,7 @@ manager = SessionManager(
 def build_tools_manager() -> AsyncToolsManager:
     """构建工具管理器。"""
     tools_manager = AsyncToolsManager()
-    tools_manager.register_tool(AsyncCodeSandboxTool(sandbox="sandbox"))
+    tools_manager.register_tool(AsyncCodeSandboxTool(sandbox=CodeSandbox("sandbox", sys.executable)))
     tools_manager.register_tool(AsyncSearchTool())
     tools_manager.register_tool(AsyncFetchPageTool())
     return tools_manager
@@ -84,7 +86,7 @@ class AsyncMyWF(AsyncModelWorkflowFramework):
         self,
         llm: AsyncLLM,
         tools_manager: AsyncToolsManager | None = None,
-        content_callback=None,
+        content_callback: Callable[[str], Awaitable[None]] | None = None,
         context_id: str = "",
         system_prompt: str = "",
     ):
@@ -190,7 +192,7 @@ class AsyncMySession(AsyncSession):
                 f"Base URL: {self.llm.get_base_url()}"
             )
 
-        async def system_cmd(*args):
+        async def system_cmd(*args: str):
             if not args:
                 return f"当前 system prompt:\n{self.system_prompt}"
             new_prompt = " ".join(args).strip()

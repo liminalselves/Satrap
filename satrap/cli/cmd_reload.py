@@ -1,9 +1,10 @@
+import argparse
 import sys
 
 from satrap.cli.common import daemon_client_from_args
 
 
-def cmd_reload(args):
+def cmd_reload(args: argparse.Namespace):
     """通知后端重载配置"""
     client = daemon_client_from_args(args)
     if not client.is_alive():

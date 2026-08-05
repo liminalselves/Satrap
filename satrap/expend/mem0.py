@@ -2,7 +2,7 @@
 import json
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, cast
 
 import numpy as np
 
@@ -244,8 +244,8 @@ class Mem0Memory:
             return []
 
         try:
-            data = json.loads(response) if isinstance(response, str) else {}
-            memories = data.get("memories", [])
+            data = cast(dict[str, Any], json.loads(response) if isinstance(response, str) else {})
+            memories = cast(list[Any], data.get("memories", []))
             return [m for m in memories if isinstance(m, str) and m.strip()]
         except (json.JSONDecodeError, TypeError):
             logger.warning(f"[Mem0] 提取阶段 JSON 解析失败: {str(response)[:100]}")
@@ -286,7 +286,7 @@ class Mem0Memory:
             return None
 
         try:
-            data = json.loads(response) if isinstance(response, str) else {}
+            data = cast(dict[str, Any], json.loads(response) if isinstance(response, str) else {})
             action = str(data.get("action", "NOOP")).upper()
         except (json.JSONDecodeError, TypeError):
             logger.warning(f"[Mem0] 更新阶段 JSON 解析失败: {str(response)[:100]}")

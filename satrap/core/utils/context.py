@@ -1,5 +1,5 @@
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
-from typing import List, Dict, Union, Optional, Any
+from typing import List, Dict, Union, Optional, Any, cast
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
@@ -14,6 +14,7 @@ import copy
 import re
 
 from satrap.core.log import logger
+from types import TracebackType
 from satrap.core.state import StateStore
 from satrap.core.state.mutation import state_mutation_context
 from satrap.core.type import (
@@ -98,7 +99,7 @@ def _load_message_content(content: str | None, content_json: str | None) -> Any:
         try:
             parsed = json.loads(content_json)
             if isinstance(parsed, list):
-                return parsed
+                return cast(list[dict[str, Any]], parsed)
         except Exception:
             pass
     return content
@@ -210,7 +211,7 @@ class ContextManager:
             rows = cursor.fetchall()
             conn.close()
 
-            self._messages = []
+            self._messages: List[Dict[str, Any]] = []
             for row in rows:
                 msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
@@ -222,7 +223,7 @@ class ContextManager:
                 self._messages.append(msg)
         except Exception as e:
             logger.error(f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
-            self._messages = []
+            self._messages: List[Dict[str, Any]] = []
 
     def save_context(self):
         """保存当前上下文到数据库"""
@@ -385,7 +386,7 @@ class ContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
-    def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True, reasoning: str | None = None):
+    def add_bot_message(self, message: str, tools_calls: list[dict[str, Any]] | None = None, ignore_think: bool = True, reasoning: str | None = None):
         """
         添加机器人消息到上下文中
 
@@ -427,7 +428,7 @@ class ContextManager:
         self._messages.append({"role": "assistant", "content": bot_message})
         self._sync()
 
-    def add_tool_message(self, tool_call_id: str, tool_result: dict | str):
+    def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any] | str):
         """
         添加工具调用的返回消息到上下文中
 
@@ -439,7 +440,7 @@ class ContextManager:
             "content": json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result})
         self._sync()
 
-    def add_tool_call_flow(self, message: str, tool_messages: list[dict], tool_results: list[dict]):
+    def add_tool_call_flow(self, message: str, tool_messages: list[dict[str, Any]], tool_results: list[dict[str, Any]]):
         """
         添加一个完整的工具调用消息流到上下文中
 
@@ -498,14 +499,14 @@ class ContextManager:
             self._messages.insert(0, {"role": "system", "content": message})
         self._sync()
 
-    def add_turn_messages(self, turn_messages: list[dict]):
+    def add_turn_messages(self, turn_messages: list[dict[str, Any]]):
         """
         添加多条消息到上下文中
 
         参数:
         - turn_messages: 要添加的消息列表
         """
-        serialized = []
+        serialized: list[dict[str, Any]] = []
         for msg in turn_messages:
             new_msg = copy.deepcopy(msg)
             serialized.append(new_msg)
@@ -570,7 +571,7 @@ class ContextManager:
         参数:
         - n: 删除的组数
         """
-        indices_to_remove = []
+        indices_to_remove: list[int] = []
         groups_removed = 0
 
         # 1. 倒序遍历消息列表
@@ -601,7 +602,7 @@ class ContextManager:
         参数:
         - file_path: 导出路径
         """
-        data = {"id": self.conversation_id, "messages": self._messages}
+        data: dict[str, Any] = {"id": self.conversation_id, "messages": self._messages}
         try:
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)
@@ -610,7 +611,7 @@ class ContextManager:
         except Exception as e:
             logger.error(f"[上下文管理] 导出 json 文件失败: {e}, ID: {self.conversation_id}")
 
-    def _group_messages_by_turns(self, messages: List[Dict]) -> List[List[Dict]]:
+    def _group_messages_by_turns(self, messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         """
         将消息列表按对话轮次分组
         每组以 user 消息开头, 包含随后的 assistant 和 tool 消息
@@ -622,8 +623,8 @@ class ContextManager:
         返回:
         - List[List[Dict]]: 分组后的轮次列表
         """
-        turns = []
-        current_turn = []
+        turns: List[List[Dict[str, Any]]] = []
+        current_turn: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             if role == "system" and not current_turn:
@@ -638,11 +639,11 @@ class ContextManager:
             turns.append(current_turn)
         return turns
 
-    def _flatten_turns(self, turns: List[List[Dict]]) -> List[Dict]:
+    def _flatten_turns(self, turns: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """将分组后的轮次列表还原为扁平消息列表"""
         return [msg for turn in turns for msg in turn]
 
-    def estimate_token(self, messages: List[Dict] | None = None, method: str = "tokenizer") -> int:
+    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
 
@@ -669,7 +670,7 @@ class ContextManager:
                 token_count += experience_estimate(text_content)   # 默认使用经验法则
         return token_count
 
-    def _apply_sliding_truncation(self, messages: List[Dict], threshold: int, method: str) -> List[Dict]:
+    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: str) -> List[Dict[str, Any]]:
         """
         滑动窗口截断: 保留系统消息, 从最早的对话轮次开始整轮删除, 直到 token 数不超过阈值
 
@@ -701,7 +702,7 @@ class ContextManager:
         result_turns = ([system_turn] if system_turn else []) + truncated_turns
         return self._flatten_turns(result_turns)
 
-    def _apply_truncation(self, messages: List[Dict], method: str = "tokenizer") -> List[Dict]:
+    def _apply_truncation(self, messages: List[Dict[str, Any]], method: str = "tokenizer") -> List[Dict[str, Any]]:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
@@ -734,7 +735,7 @@ class ContextManager:
                 logger.debug(f"[上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
                 return self._apply_sliding_truncation(messages, threshold, method)
 
-            def token_of_turn_list(turn_list):   # 计算需要删除多少 token
+            def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
                 return self.estimate_token(self._flatten_turns(
                     ([system_turn] if system_turn else []) + turn_list
                 ), method=method)
@@ -791,7 +792,7 @@ class AsyncContextManager:
         self.state_store = state_store
         if self.state_store is None and enable_checkpoint:
             self.state_store = StateStore(db_path=self.db_path)
-        self._messages: List[Dict[str, str | list]] = []   # 内存中的消息缓存
+        self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
         self.max_context = max_context                     # 最大上下文长度
         self.context_threshold = context_threshold         # 上下文阈值
         self.exceed_process = exceed_process               # 超过阈值时的处理方式
@@ -813,7 +814,7 @@ class AsyncContextManager:
         await self.initialize()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         """退出时确保数据保存"""
         if not self.keep_in_memory:
             await self.save_context()
@@ -864,7 +865,7 @@ class AsyncContextManager:
                 )
                 rows = await cursor.fetchall()
 
-            self._messages = []
+            self._messages: List[Dict[str, Any]] = []
             for row in rows:
                 msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
@@ -1036,7 +1037,7 @@ class AsyncContextManager:
         self._messages.insert(0, {"role": "system", "content": message})
         await self._sync()
 
-    async def add_bot_message(self, message: str, tools_calls: list[dict] | None = None, ignore_think: bool = True, reasoning: str | None = None):
+    async def add_bot_message(self, message: str, tools_calls: list[dict[str, Any]] | None = None, ignore_think: bool = True, reasoning: str | None = None):
         """
         添加机器人消息到上下文中
 
@@ -1078,7 +1079,7 @@ class AsyncContextManager:
         self._messages.append({"role": "assistant", "content": bot_message})
         await self._sync()
 
-    async def add_tool_message(self, tool_call_id: str, tool_result: dict):
+    async def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any]):
         """
         添加工具调用的返回消息到上下文中
 
@@ -1089,7 +1090,7 @@ class AsyncContextManager:
         self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
         await self._sync()
 
-    async def add_tool_call_flow(self, message: str, tool_messages: list[dict], tool_results: list[dict]):
+    async def add_tool_call_flow(self, message: str, tool_messages: list[dict[str, Any]], tool_results: list[dict[str, Any]]):
         """
         添加一个完整的工具调用消息流到上下文中
 
@@ -1149,14 +1150,14 @@ class AsyncContextManager:
             self._messages.insert(0, {"role": "system", "content": message})
         await self._sync()
 
-    async def add_turn_messages(self, turn_messages: list[dict]):
+    async def add_turn_messages(self, turn_messages: list[dict[str, Any]]):
         """
         添加多条消息到上下文中
 
         参数:
         - turn_messages: 要添加的消息列表
         """
-        serialized = []
+        serialized: list[dict[str, Any]] = []
         for msg in turn_messages:
             new_msg = copy.deepcopy(msg)
             serialized.append(new_msg)
@@ -1221,7 +1222,7 @@ class AsyncContextManager:
         参数:
         - n: 删除的组数
         """
-        indices_to_remove = []
+        indices_to_remove: list[int] = []
         groups_removed = 0
 
         # 1. 倒序遍历消息列表
@@ -1252,7 +1253,7 @@ class AsyncContextManager:
         参数:
         - file_path: 导出路径
         """
-        data = {"id": self.conversation_id, "messages": self._messages}
+        data: dict[str, Any] = {"id": self.conversation_id, "messages": self._messages}
         try:
             # 使用 asyncio.to_thread 避免阻塞事件循环
             def _write_file():
@@ -1265,7 +1266,7 @@ class AsyncContextManager:
         except Exception as e:
             logger.error(f"[异步上下文管理] 导出 json 文件失败：{e}, ID: {self.conversation_id}")
 
-    def _group_messages_by_turns(self, messages: List[Dict]) -> List[List[Dict]]:
+    def _group_messages_by_turns(self, messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
         """
         将消息列表按对话轮次分组
         每组以 user 消息开头, 包含随后的 assistant 和 tool 消息
@@ -1277,8 +1278,8 @@ class AsyncContextManager:
         返回:
         - List[List[Dict]]: 分组后的轮次列表
         """
-        turns = []
-        current_turn = []
+        turns: List[List[Dict[str, Any]]] = []
+        current_turn: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role")
             if role == "system" and not current_turn:
@@ -1293,11 +1294,11 @@ class AsyncContextManager:
             turns.append(current_turn)
         return turns
 
-    def _flatten_turns(self, turns: List[List[Dict]]) -> List[Dict]:
+    def _flatten_turns(self, turns: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
         """将分组后的轮次列表还原为扁平消息列表"""
         return [msg for turn in turns for msg in turn]
 
-    def estimate_token(self, messages: List[Dict] | None = None, method: str = "tokenizer") -> int:
+    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
 
@@ -1324,7 +1325,7 @@ class AsyncContextManager:
                 token_count += experience_estimate(text_content)   # 默认使用经验法则
         return token_count
 
-    def _apply_sliding_truncation(self, messages: List[Dict], threshold: int, method: str) -> List[Dict]:
+    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: str) -> List[Dict[str, Any]]:
         """
         滑动窗口截断: 保留系统消息, 从最早的对话轮次开始整轮删除, 直到 token 数不超过阈值
 
@@ -1356,7 +1357,7 @@ class AsyncContextManager:
         result_turns = ([system_turn] if system_turn else []) + truncated_turns
         return self._flatten_turns(result_turns)
 
-    def _apply_truncation(self, messages: List[Dict], method: str = "tokenizer") -> List[Dict]:
+    def _apply_truncation(self, messages: List[Dict[str, Any]], method: str = "tokenizer") -> List[Dict[str, Any]]:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
@@ -1389,7 +1390,7 @@ class AsyncContextManager:
                 logger.debug(f"[异步上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
                 return self._apply_sliding_truncation(messages, threshold, method)
 
-            def token_of_turn_list(turn_list):   # 计算需要删除多少 token
+            def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
                 return self.estimate_token(self._flatten_turns(
                     ([system_turn] if system_turn else []) + turn_list
                 ), method=method)
@@ -1416,7 +1417,7 @@ def add_user_message(context: list[dict[str, Any]], message: str, img_urls: list
     """
     context.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
 
-def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: list[dict] | None = None, reasoning: str | None = None):
+def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: list[dict[str, Any]] | None = None, reasoning: str | None = None):
     """向上下文中添加一条助手消息
     
     参数:
@@ -1443,7 +1444,7 @@ def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: li
             }
         )
 
-def add_tool_message(context: list[dict[str, Any]], tool_call_id: str, tool_result: dict | str):
+def add_tool_message(context: list[dict[str, Any]], tool_call_id: str, tool_result: dict[str, Any] | str):
     """向上下文中添加一条工具调用结果消息
     
     参数:
@@ -1454,7 +1455,7 @@ def add_tool_message(context: list[dict[str, Any]], tool_call_id: str, tool_resu
     context.append({"role": "tool", "tool_call_id": tool_call_id,
         "content": json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result})
 
-def add_tools_call_flow(context: list[dict[str, Any]], message: str, tool_messages: list[dict], tool_results: list[dict], reasoning: str | None = None):
+def add_tools_call_flow(context: list[dict[str, Any]], message: str, tool_messages: list[dict[str, Any]], tool_results: list[dict[str, Any]], reasoning: str | None = None):
     """添加一个完整的工具调用消息流到上下文中
 
     相当于:

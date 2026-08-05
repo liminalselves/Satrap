@@ -1,4 +1,5 @@
 from __future__ import annotations
+import argparse
 
 import asyncio
 import sys
@@ -8,7 +9,7 @@ from satrap.cli.common import daemon_client_from_args, load_cli_config
 from satrap.cli.cmd_run import cmd_run
 
 
-def cmd_status(args):
+def cmd_status(args: argparse.Namespace):
     """显示后端状态"""
     client = daemon_client_from_args(args, timeout=2)
     health = client.health()
@@ -27,7 +28,7 @@ def cmd_status(args):
         print("平台实例: (空)")
 
 
-def cmd_stop(args):
+def cmd_stop(args: argparse.Namespace):
     """停止后端"""
     client = daemon_client_from_args(args, timeout=2)
     if not client.is_alive():
@@ -47,7 +48,7 @@ def cmd_stop(args):
     sys.exit(1)
 
 
-def cmd_restart(args):
+def cmd_restart(args: argparse.Namespace):
     """重启后端"""
     client = daemon_client_from_args(args, timeout=2)
     if client.is_alive():
@@ -65,7 +66,7 @@ def cmd_restart(args):
     asyncio.run(cmd_run(args))
 
 
-def dispatch(args):
+def dispatch(args: argparse.Namespace):
     if args.command == "status":
         cmd_status(args)
     elif args.command == "stop":

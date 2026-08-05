@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import streamlit as st
 import yaml
@@ -37,7 +37,7 @@ def create_default_config(cwd: str | Path | None = None) -> BackendConfig:
 
 def _load_yaml(text: str) -> dict[str, Any]:
     """解析 YAML 文本"""
-    data = yaml.safe_load(text) if text.strip() else {}
+    data = cast(dict[str, Any] | None, yaml.safe_load(text) if text.strip() else {})
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -63,7 +63,7 @@ def load_config_document(path: str | Path) -> dict[str, Any]:
         return {}
     text = path.read_text(encoding="utf-8")
     if path.suffix.lower() == ".json":
-        data = json.loads(text) if text.strip() else {}
+        data = cast(dict[str, Any] | None, json.loads(text) if text.strip() else {})
         if not isinstance(data, dict):
             raise ValueError("配置文件根节点必须是对象")
         return data
@@ -90,7 +90,7 @@ def parse_raw_config(path: str | Path, raw_text: str) -> dict[str, Any]:
     """按路径格式解析原始配置文本"""
     path = Path(path)
     if path.suffix.lower() == ".json":
-        data = json.loads(raw_text) if raw_text.strip() else {}
+        data = cast(dict[str, Any] | None, json.loads(raw_text) if raw_text.strip() else {})
         if not isinstance(data, dict):
             raise ValueError("配置文件根节点必须是对象")
         return data
@@ -109,7 +109,7 @@ def parse_platforms_text(text: str) -> list[dict[str, Any]]:
         return []
     if not isinstance(data, list):
         raise ValueError("platforms 必须是列表")
-    return validate_platforms(data)
+    return validate_platforms(cast(list[Any], data))
 
 
 def validate_config_document(data: dict[str, Any]) -> BackendConfig:
@@ -127,7 +127,7 @@ def save_config_document(path: str | Path, data: dict[str, Any]) -> BackendConfi
     return config
 
 
-def validate_platforms(platforms: Any) -> list[dict[str, Any]]:
+def validate_platforms(platforms: list[Any] | None) -> list[dict[str, Any]]:
     """校验 platforms 列表结构"""
     if platforms is None:
         return []
@@ -138,6 +138,7 @@ def validate_platforms(platforms: Any) -> list[dict[str, Any]]:
     for item in platforms:
         if not isinstance(item, dict):
             raise ValueError("platforms 中的每一项必须是对象")
+        item = cast(dict[str, Any], item)
         pid = str(item.get("id", "")).strip()
         ptype = str(item.get("type", "")).strip()
         settings = item.get("settings", {})
@@ -153,7 +154,7 @@ def validate_platforms(platforms: Any) -> list[dict[str, Any]]:
         copied = dict(item)
         copied["id"] = pid
         copied["type"] = ptype
-        copied["settings"] = dict(settings)
+        copied["settings"] = cast(dict[str, Any], dict(settings))
         result.append(copied)
     return result
 
@@ -186,7 +187,7 @@ def upsert_platform(
         if old_id and item_id == old_id:
             target_index = index
 
-    entry = {"id": pid, "type": ptype, "settings": dict(settings)}
+    entry: dict[str, Any] = {"id": pid, "type": ptype, "settings": dict(settings)}
     if target_index is None:
         updated.append(entry)
     else:
@@ -242,10 +243,10 @@ def update_common_fields(
     return updated
 
 
-def configured_platform_types(config_data: dict[str, Any], health: dict | None = None) -> list[str]:
+def configured_platform_types(config_data: dict[str, Any], health: dict[str, Any] | None = None) -> list[str]:
     """汇总配置和运行态中的适配器类型"""
     types: set[str] = set()
-    for item in config_data.get("platforms", []) or []:
+    for item in cast(list[Any], config_data.get("platforms", []) or []):
         typ = str(item.get("type", "")).strip()
         if typ:
             types.add(typ)
@@ -264,7 +265,7 @@ def _platform_index(options: list[str], value: str) -> int:
         return 0
 
 
-def _platform_settings_form(platform_type: str, settings: dict, key_prefix: str) -> dict:
+def _platform_settings_form(platform_type: str, settings: dict[str, Any], key_prefix: str) -> dict[str, Any]:
     """按平台类型渲染 settings 表单"""
     if platform_type == "onebot":
         col1, col2 = st.columns(2)

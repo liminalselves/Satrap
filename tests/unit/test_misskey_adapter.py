@@ -1,4 +1,5 @@
 import pytest
+from pathlib import Path
 from typing import Any, cast
 
 from satrap.core.components import File, Image, Plain
@@ -10,25 +11,25 @@ from satrap.core.type import PlatformMessageType
 
 class FakeMisskeyAPI:
     def __init__(self):
-        self.calls = []
+        self.calls: list[Any] = []
 
-    async def create_note(self, **kwargs):
+    async def create_note(self, **kwargs: Any):
         self.calls.append(("create_note", kwargs))
         return {"createdNote": {"id": "note-1"}}
 
-    async def send_message(self, payload):
+    async def send_message(self, payload: dict[str, Any]):
         self.calls.append(("send_message", payload))
         return {"id": "chat-1"}
 
-    async def send_room_message(self, payload):
+    async def send_room_message(self, payload: dict[str, Any]):
         self.calls.append(("send_room_message", payload))
         return {"id": "room-1"}
 
-    async def upload_and_find_file(self, url, name=None, folder_id=None):
+    async def upload_and_find_file(self, url: str, name: str | None = None, folder_id: str | None = None):
         self.calls.append(("upload_and_find_file", {"url": url, "name": name, "folder_id": folder_id}))
         return {"id": "file-url"}
 
-    async def upload_file(self, path, name=None, folder_id=None):
+    async def upload_file(self, path: str, name: str | None = None, folder_id: str | None = None):
         self.calls.append(("upload_file", {"path": path, "name": name, "folder_id": folder_id}))
         return {"id": "file-local"}
 
@@ -36,7 +37,7 @@ class FakeMisskeyAPI:
         self.calls.append(("close", {}))
 
 
-def make_adapter(settings=None):
+def make_adapter(settings: dict[str, Any] | None = None):
     adapter = MisskeyAdapter(
         PlatformConfig(
             id="mk",
@@ -77,7 +78,7 @@ def test_config_frontend_aliases():
 @pytest.mark.asyncio
 async def test_convert_note_message_with_files_and_poll():
     adapter = make_adapter()
-    raw = {
+    raw: dict[str, Any] = {
         "id": "note-1",
         "text": "@bot hello",
         "visibility": "specified",
@@ -154,7 +155,7 @@ async def test_send_message_routes_note_chat_room():
 
 
 @pytest.mark.asyncio
-async def test_send_message_uploads_file_components(tmp_path):
+async def test_send_message_uploads_file_components(tmp_path: Path):
     adapter = make_adapter()
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")

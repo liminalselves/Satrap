@@ -1,7 +1,10 @@
 import base64
+from pathlib import Path
 import os
+from pathlib import Path
 
 import pytest
+from pathlib import Path
 
 from satrap.core.components import (
     At,
@@ -73,7 +76,7 @@ async def test_node_and_nodes_to_dict():
 
 
 @pytest.mark.asyncio
-async def test_image_and_record_base64_file_conversion(tmp_path):
+async def test_image_and_record_base64_file_conversion(tmp_path: Path):
     raw = b"satrap"
     encoded = base64.b64encode(raw).decode("utf-8")
 
@@ -94,7 +97,7 @@ async def test_image_and_record_base64_file_conversion(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_file_get_file_local_and_async_guard(tmp_path):
+async def test_file_get_file_local_and_async_guard(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
 
@@ -108,7 +111,7 @@ async def test_file_get_file_local_and_async_guard(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_file_register_to_file_service(tmp_path):
+async def test_file_register_to_file_service(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
     set_callback_api_base("https://callback.example/")
@@ -122,7 +125,7 @@ async def test_file_register_to_file_service(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_video_and_file_to_dict_without_callback(tmp_path):
+async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
     path = tmp_path / "video.bin"
     path.write_bytes(b"video")
 

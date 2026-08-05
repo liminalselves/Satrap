@@ -105,7 +105,7 @@ class CodeSandboxTool(Tool):
 
 class AsyncCodeSandboxTool(AsyncTool):
     """异步代码沙箱工具, 封装对 CodeSandbox 的各种异步操作"""
-    def __init__(self, sandbox):
+    def __init__(self, sandbox: CodeSandbox):
         super().__init__(
             tool_name="code_sandbox",
             description="在代码沙箱中执行代码或管理文件。支持的操作：run（执行代码字符串）、run_file（执行文件）、save（保存代码到文件）、read（读取文件内容）、delete（删除文件）、delete_dir（删除目录）、list（列出文件）。",

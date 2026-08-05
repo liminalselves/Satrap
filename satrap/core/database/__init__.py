@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, cast
 import faiss as _faiss
 import numpy as np
 import msgpack
@@ -22,16 +22,16 @@ class LiteVectorDB:
         self.persist_path = persist_path
         os.makedirs(persist_path, exist_ok=True)
 
-        self.collections = {}
-        self._key_cache = {}   # 缓存集合键值对
+        self.collections: dict[str, dict[str, Any]] = {}
+        self._key_cache: dict[str, Any] = {}   # 缓存集合键值对
 
         self._load_from_disk()
         # 内存中的索引
 
     def _precompute_norms(self):
         """预计算所有集合的向量"""
-        _vector = {}   # 向量
-        _norm = {}     # 归一化向量模长
+        _vector: dict[str, Any] = {}   # 向量
+        _norm: dict[str, Any] = {}     # 归一化向量模长
         self._key_cache.clear()   # 清空缓存
         for name, collection in self.collections.items():
             vectors = collection['vectors']
@@ -46,8 +46,8 @@ class LiteVectorDB:
 
     def _update_norms(self, name: str):
         """更新集合的向量模长"""
-        _vector = {}    # 向量
-        _norm = {}      # 归一化向量模长
+        _vector: dict[str, Any] = {}    # 向量
+        _norm: dict[str, Any] = {}      # 归一化向量模长
         collection = self.collections[name]
         vectors = collection['vectors']
         if vectors is not None and len(vectors) > 0:
@@ -62,14 +62,14 @@ class LiteVectorDB:
         if os.path.exists(index_file):  # 使用 msgpack 格式
             try:
                 with open(index_file, 'rb') as f:
-                    data = msgpack.unpack(f, raw=False)
-                    self.collections: dict = self._to_tensor_format(data)   # type: ignore
+                    data: Any = msgpack.unpack(f, raw=False)
+                    self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore
                 logger.info(f"从磁盘加载 {len(self.collections)} 个集合")
                 self._precompute_norms()  # 预计算向量模长
 
             except Exception as e:
                 logger.warning(f"从磁盘加载失败: {e}")
-                self.collections = {}
+                self.collections: dict[str, dict[str, Any]] = {}
 
         else:
             logger.warning(f"msgpack 文件不存在: {index_file}, 无法加载数据集合")
@@ -92,7 +92,7 @@ class LiteVectorDB:
             query_vector: List[float],
             k: int,
             threshold: float
-        ) -> List[Dict]:
+        ) -> List[Dict[str, Any]]:
         """使用 numpy 进行向量搜索
 
         参数:
@@ -117,7 +117,7 @@ class LiteVectorDB:
         else:   # 否则使用完全排序
             sorted_indices = np.argsort(similarities)[::-1]   # 降序排序
 
-        results = []
+        results: list[dict[str, Any]] = []
         collection = self.collections[name]
 
         for idx in sorted_indices:   # 遍历排序后的索引
@@ -131,9 +131,9 @@ class LiteVectorDB:
 
         return results
 
-    def _to_memory_format(self, data: dict) -> dict:
+    def _to_memory_format(self, data: dict[str, Any]) -> dict[str, Any]:
         """将整个数据库转换为可序列化的内存格式"""
-        memory_collections = {}
+        memory_collections: dict[str, Any] = {}
 
         for name, collection in data.items():
             # 使用 JSON 序列化/反序列化来强制转换所有数据
@@ -147,12 +147,12 @@ class LiteVectorDB:
 
         return memory_collections
 
-    def _to_tensor_format(self, data: dict) -> dict:
+    def _to_tensor_format(self, data: dict[str, Any]) -> dict[str, Any]:
         """将加载的数据库数据转换为带张量的格式"""
-        tensor_db = {}
+        tensor_db: dict[str, Any] = {}
         for name, collection in data.items():
             vectors_data = collection.get('vectors', [])
-            processed_vectors = []
+            processed_vectors: list[Any] = []
             
             for vec in vectors_data:
                 if isinstance(vec, str):
@@ -211,7 +211,7 @@ class LiteVectorDB:
             name: str, 
             documents: List[str],
             vectors: List[List[float]],
-            metadata: List[Dict],
+            metadata: List[Dict[str, Any]],
         ):
         """添加文档到集合
 
@@ -243,7 +243,7 @@ class LiteVectorDB:
         query_vector: List[float],
         k: int = 4,
         threshold: float = 0.5
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """搜索相似文档
         
         参数:
@@ -256,11 +256,11 @@ class LiteVectorDB:
         - results: 包含文档, 相似度分数和元数据的列表
         """
         if name not in self.collections:  # 检查集合是否存在
-            return []
+            return cast(List[Dict[str, Any]], [])
         
         collection = self.collections[name]
         if not collection['vectors']:  # 检查是否有向量
-            return []
+            return cast(List[Dict[str, Any]], [])
         
         return self._search_with_numpy(name, query_vector, k, threshold)
 
@@ -404,7 +404,7 @@ class DataBase:
         name: str,
         documents: List[str],
         vectors: List[List[float]],
-        metadata: List[Dict],
+        metadata: List[Dict[str, Any]],
     ):
         """添加文档到集合
 
@@ -440,7 +440,7 @@ class DataBase:
 
         self.faiss.normalize_L2(vectors_np)
 
-        ids = []
+        ids: list[int] = []
         with self._connect() as conn:
             for doc, meta in zip(documents, metadata):
                 meta_json = json.dumps(meta if meta is not None else {}, ensure_ascii=False, default=str)
@@ -448,7 +448,7 @@ class DataBase:
                     "INSERT INTO documents(collection_name, document, metadata) VALUES (?, ?, ?)",
                     (name, doc, meta_json)
                 )
-                ids.append(cursor.lastrowid)
+                ids.append(cursor.lastrowid)   # type: ignore[arg-type] sqlite3 插入后 lastrowid 恒有值
             conn.commit()
 
         ids_np = np.array(ids, dtype=np.int64)
@@ -463,7 +463,7 @@ class DataBase:
         query_vector: List[float],
         k: int = 4,
         threshold: float = 0.5
-    ) -> List[Dict]:
+    ) -> List[Dict[str, Any]]:
         """搜索相似文档
 
         参数:
@@ -476,11 +476,11 @@ class DataBase:
         - results: 包含 document、score 和 metadata 的列表
         """
         if name not in self.collection_dims:
-            return []
+            return cast(List[Dict[str, Any]], [])
 
         index = self.indices.get(name)
         if index is None or index.ntotal == 0:
-            return []
+            return cast(List[Dict[str, Any]], [])
 
         query_np = np.array([query_vector], dtype=np.float32)
         self.faiss.normalize_L2(query_np)
@@ -490,7 +490,7 @@ class DataBase:
         scores = distances[0]
         id_list = ids[0]
 
-        results = []
+        results: list[dict[str, Any]] = []
         with self._connect() as conn:
             for score, doc_id in zip(scores, id_list):
                 if doc_id < 0:
@@ -506,7 +506,7 @@ class DataBase:
                     continue
 
                 try:
-                    meta_obj = json.loads(row["metadata"]) if row["metadata"] else {}
+                    meta_obj: Any = json.loads(row["metadata"]) if row["metadata"] else {}
                 except Exception:
                     meta_obj = {}
 

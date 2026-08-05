@@ -1,7 +1,10 @@
 from __future__ import annotations
+import argparse
 
 import json
 import sys
+
+from typing import Any, cast
 
 from satrap.admin_utils.config_editor import (
     delete_platform,
@@ -13,24 +16,24 @@ from satrap.admin_utils.config_editor import (
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs, print_json
 
 
-def _warn_if_backend_running(args):
+def _warn_if_backend_running(args: argparse.Namespace):
     """平台配置变更需要重启后端后生效"""
     client = daemon_client_from_args(args)
     if client.is_alive():
         print("提示: 后端正在运行, 平台配置变更需要重启后端后生效.")
 
 
-def cmd_platform_list(args):
+def cmd_platform_list(args: argparse.Namespace):
     """列出平台适配器和配置中的平台"""
     config_data = load_config_document(find_config_path())
-    configured = config_data.get("platforms", []) or []
+    configured = cast(list[Any], config_data.get("platforms", []) or [])
     client = daemon_client_from_args(args)
     if client.is_alive():
         health = client.health()
-        adapters = health.get("adapters", {})
+        adapters = cast(dict[str, Any], health.get("adapters", {}))
         print(f"后端: {client.daemon.base_url}")
         if adapters:
-            rows = []
+            rows: list[list[str]] = []
             for aid, info in adapters.items():
                 rows.append([aid, info.get("config_type", "?"), info.get("status", "?"), str(info.get("started", False))])
             print(_fmt_table(rows, ["ID", "类型", "状态", "已启动"]))
@@ -50,9 +53,9 @@ def cmd_platform_list(args):
         print("\n配置中的平台: (空)")
 
 
-def cmd_platform_show(args):
+def cmd_platform_show(args: argparse.Namespace):
     """查看平台配置"""
-    platforms = load_config_document(find_config_path()).get("platforms", []) or []
+    platforms = cast(list[Any], load_config_document(find_config_path()).get("platforms", []) or [])
     for item in platforms:
         if str(item.get("id", "")) == args.id:
             print_json(item)
@@ -61,17 +64,17 @@ def cmd_platform_show(args):
     sys.exit(1)
 
 
-def _settings_from_args(args) -> dict:
+def _settings_from_args(args: argparse.Namespace) -> dict[str, Any]:
     """解析平台 settings 参数"""
     if getattr(args, "from_json", None):
-        data = json.loads(args.from_json)
+        data = cast(dict[str, Any], json.loads(args.from_json))
         if not isinstance(data, dict):
             raise ValueError("--from-json 必须是 JSON 对象")
         return data
     return parse_kv_pairs(getattr(args, "set", None))
 
 
-def cmd_platform_upsert(args):
+def cmd_platform_upsert(args: argparse.Namespace):
     """新增或更新平台配置"""
     _warn_if_backend_running(args)
     path = find_config_path()
@@ -93,7 +96,7 @@ def cmd_platform_upsert(args):
         sys.exit(1)
 
 
-def cmd_platform_remove(args):
+def cmd_platform_remove(args: argparse.Namespace):
     """删除平台配置"""
     _warn_if_backend_running(args)
     path = find_config_path()
@@ -107,11 +110,11 @@ def cmd_platform_remove(args):
 def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     if not rows:
         return "(空)"
-    col_widths = []
+    col_widths: list[int] = []
     all_rows = ([header] if header else []) + rows
     for col_idx in range(len(all_rows[0])):
         col_widths.append(max(len(str(r[col_idx])) for r in all_rows))
-    lines = []
+    lines: list[str] = []
     if header:
         hdr = " | ".join(str(h).ljust(w) for h, w in zip(header, col_widths))
         lines.append(hdr)
@@ -121,7 +124,7 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def dispatch(args):
+def dispatch(args: argparse.Namespace):
     if args.action == "list":
         cmd_platform_list(args)
     elif args.action == "show":

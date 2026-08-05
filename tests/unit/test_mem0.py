@@ -1,5 +1,6 @@
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +13,7 @@ class FakeEmbedding:
     def __init__(self, dim: int = 16):
         self.dim = dim
 
-    async def embed(self, text):
+    async def embed(self, text: str | list[str] | None):
         if text is None:
             return []
         if isinstance(text, list):
@@ -35,7 +36,7 @@ class FakeLLM:
         self.update_memory_id: str | None = None
         self.update_new_content: str | None = None
 
-    async def structured_output(self, messages, format):
+    async def structured_output(self, messages: list[dict], format: str):
         if "memories" in format:
             return json.dumps({"memories": self.extract_facts}, ensure_ascii=False)
 
@@ -58,12 +59,12 @@ class FakeLLM:
             )
         return json.dumps({"action": "NOOP"}, ensure_ascii=False)
 
-    async def chat(self, messages):
+    async def chat(self, messages: list[dict]):
         return "这是一条测试摘要"
 
 
 @pytest.mark.asyncio
-async def test_mem0_add_search_get_delete_and_clear(tmp_path):
+async def test_mem0_add_search_get_delete_and_clear(tmp_path: Path):
     memory = Mem0Memory(
         llm=FakeLLM(),   # type: ignore[arg-type]
         embedding=FakeEmbedding(),   # type: ignore[arg-type]
@@ -93,7 +94,7 @@ async def test_mem0_add_search_get_delete_and_clear(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_mem0_update_preserves_memory_id_and_replaces_content(tmp_path):
+async def test_mem0_update_preserves_memory_id_and_replaces_content(tmp_path: Path):
     llm = FakeLLM()
     memory = Mem0Memory(
         llm=llm,   # type: ignore[arg-type]

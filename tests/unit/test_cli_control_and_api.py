@@ -3,6 +3,7 @@ from __future__ import annotations
 from argparse import Namespace
 
 import pytest
+from pathlib import Path
 
 from satrap.cli.client import DaemonClient
 from satrap.main import _build_parser
@@ -58,11 +59,11 @@ def test_global_flags_survive_subparser_defaults():
     assert args.config == "demo.yaml"
 
 
-def test_daemon_client_new_routes_call_expected_paths(monkeypatch):
+def test_daemon_client_new_routes_call_expected_paths(monkeypatch: pytest.MonkeyPatch):
     """DaemonClient 新增方法应请求对应 HTTP 路由"""
     calls = []
 
-    def fake_request(method, path, body=None):
+    def fake_request(method: str, path: str, body: dict | None = None):
         calls.append((method, path, body))
         return {"ok": True}
 
@@ -85,7 +86,7 @@ def test_daemon_client_new_routes_call_expected_paths(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_http_session_class_write_routes(tmp_path):
+async def test_http_session_class_write_routes(tmp_path: Path):
     """后端 HTTP API 应支持 session class 注册和删除"""
     backend = BackendManager()
     backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
@@ -104,7 +105,7 @@ async def test_http_session_class_write_routes(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_http_model_write_routes(tmp_path):
+async def test_http_model_write_routes(tmp_path: Path):
     """后端 HTTP API 应支持模型配置写接口"""
     backend = BackendManager()
     backend._model_cfg = ModelConfigManager(storage_path=tmp_path / "models.json")

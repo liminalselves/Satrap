@@ -1,5 +1,6 @@
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from bs4 import BeautifulSoup
+from typing import Any, cast
 import requests
 import aiohttp
 import random
@@ -33,7 +34,7 @@ class SearchTool(Tool):
         self.timeout = timeout
         self.base_urls = ["https://cn.bing.com", "https://www.bing.com"]   # 备用域名列表
 
-    def _get_headers(self) -> dict:
+    def _get_headers(self) -> dict[str, str]:
         """生成随机请求头"""
         return {
             "User-Agent": random.choice(USER_AGENTS),
@@ -43,13 +44,13 @@ class SearchTool(Tool):
             "Referer": "https://www.bing.com/"
         }
 
-    def _parse_result(self, html: str, max_results: int) -> list:
+    def _parse_result(self, html: str, max_results: int) -> list[dict[str, str]]:
         """解析 Bing 搜索结果页面"""
-        soup = BeautifulSoup(html, "html.parser")
-        results = []
+        soup = cast(Any, BeautifulSoup(html, "html.parser"))
+        results: list[dict[str, str]] = []
 
         # Bing 结果容器: <li class="b_algo">
-        for item in soup.select("li.b_algo"):
+        for item in cast(list[Any], soup.select("li.b_algo")):
             title_elem = item.select_one("h2 a")
             if not title_elem:
                 continue
@@ -101,7 +102,7 @@ class AsyncSearchTool(AsyncTool):
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.base_urls = ["https://cn.bing.com", "https://www.bing.com"]
 
-    def _get_headers(self) -> dict:
+    def _get_headers(self) -> dict[str, str]:
         return {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "*/*",
@@ -110,10 +111,10 @@ class AsyncSearchTool(AsyncTool):
             "Referer": "https://www.bing.com/"
         }
 
-    def _parse_result(self, html: str, max_results: int) -> list:
-        soup = BeautifulSoup(html, "html.parser")
-        results = []
-        for item in soup.select("li.b_algo"):
+    def _parse_result(self, html: str, max_results: int) -> list[dict[str, str]]:
+        soup = cast(Any, BeautifulSoup(html, "html.parser"))
+        results: list[dict[str, str]] = []
+        for item in cast(list[Any], soup.select("li.b_algo")):
             title_elem = item.select_one("h2 a")
             if not title_elem:
                 continue
@@ -161,7 +162,7 @@ class FetchPageTool(Tool):
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = timeout
 
-    def _get_headers(self) -> dict:
+    def _get_headers(self) -> dict[str, str]:
         """生成随机请求头"""
         return {
             "User-Agent": random.choice(USER_AGENTS),
@@ -172,7 +173,7 @@ class FetchPageTool(Tool):
 
     def _extract_text(self, html: str) -> str:
         """从HTML中提取纯文本; 去除脚本, 样式等无关内容"""
-        soup = BeautifulSoup(html, "html.parser")
+        soup = cast(Any, BeautifulSoup(html, "html.parser"))
         # 移除脚本和样式
         for element in soup(["script", "style", "meta", "link", "noscript"]):
             element.decompose()
@@ -189,7 +190,7 @@ class FetchPageTool(Tool):
             resp.encoding = resp.apparent_encoding or "utf-8"
 
             # 提取标题
-            soup = BeautifulSoup(resp.text, "html.parser")
+            soup = cast(Any, BeautifulSoup(resp.text, "html.parser"))
             title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
 
             # 提取正文文本
@@ -229,7 +230,7 @@ class AsyncFetchPageTool(AsyncTool):
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
-    def _get_headers(self) -> dict:
+    def _get_headers(self) -> dict[str, str]:
         return {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -238,7 +239,7 @@ class AsyncFetchPageTool(AsyncTool):
         }
 
     def _extract_text(self, html: str) -> str:
-        soup = BeautifulSoup(html, "html.parser")
+        soup = cast(Any, BeautifulSoup(html, "html.parser"))
         for element in soup(["script", "style", "meta", "link", "noscript"]):
             element.decompose()
         text = soup.get_text(separator="\n", strip=True)
@@ -259,7 +260,7 @@ class AsyncFetchPageTool(AsyncTool):
                     html = await resp.text(encoding="utf-8", errors="replace")
 
                     # 提取标题
-                    soup = BeautifulSoup(html, "html.parser")
+                    soup = cast(Any, BeautifulSoup(html, "html.parser"))
                     title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
 
                     # 提取正文

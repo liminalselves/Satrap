@@ -252,7 +252,7 @@ def _edit_model_key_dialog(name: str):
 
 
 @st.cache_data(ttl=2)
-def _get_session_configs(_scm) -> dict[str, dict[str, Any]]:
+def _get_session_configs(_scm: SessionClassConfigManager) -> dict[str, dict[str, Any]]:
     return _scm.list_configs()
 
 

@@ -213,7 +213,7 @@ class ModelConfigManager:
             self._llm_configs[key] = LLMConfig(**payload)
             self._save_locked()
 
-    def update_llm_config(self, name: str = DEFAULT_NAME, **kwargs):
+    def update_llm_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
         """更新 LLM 配置"""
         with self._lock:
             key = self._normalize_name(name)
@@ -260,7 +260,7 @@ class ModelConfigManager:
             self._embedding_configs[key] = EmbeddingConfig(**payload)
             self._save_locked()
 
-    def update_embedding_config(self, name: str = DEFAULT_NAME, **kwargs):
+    def update_embedding_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
         """更新 Embedding 配置"""
         with self._lock:
             key = self._normalize_name(name)
@@ -307,7 +307,7 @@ class ModelConfigManager:
             self._rerank_configs[key] = ReRankConfig(**payload)
             self._save_locked()
 
-    def update_rerank_config(self, name: str = DEFAULT_NAME, **kwargs):
+    def update_rerank_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
         """更新 ReRank 配置"""
         with self._lock:
             key = self._normalize_name(name)

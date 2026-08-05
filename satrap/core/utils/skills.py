@@ -55,7 +55,7 @@ import importlib.util
 import inspect
 import os
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 import yaml
 
@@ -152,15 +152,17 @@ class Skill:
         return f"Skill(name={self.name!r}, tools={self.tool_names!r})"
 
 
-def _parse_front_matter(text: str):
+def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     """解析 Markdown 文本的 YAML front matter, 返回 (元数据字典, 正文)"""
     match = _FRONT_MATTER_RE.match(text)
     if not match:
         return {}, text
     try:
-        meta = yaml.safe_load(match.group(1)) or {}
+        meta: dict[str, Any] = yaml.safe_load(match.group(1)) or {}
         if not isinstance(meta, dict):
             meta = {}
+        else:
+            meta = cast(dict[str, Any], meta)
     except Exception as e:
         logger.warning(f"[技能] front matter 解析失败: {e}")
         meta = {}
@@ -196,7 +198,10 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
     if callable(get_tools):
         try:
             result = get_tools()
-            tools.extend(result if isinstance(result, (list, tuple)) else [result])
+            if isinstance(result, (list, tuple)):
+                tools.extend(cast(list[Any], result))
+            else:
+                tools.append(result)
         except Exception as e:
             logger.error(f"[技能管理] get_tools() 执行失败: {e}")
     else:
@@ -214,7 +219,10 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
     if callable(get_mcp_clients):
         try:
             result = get_mcp_clients()
-            mcp_clients.extend(result if isinstance(result, (list, tuple)) else [result])
+            if isinstance(result, (list, tuple)):
+                mcp_clients.extend(cast(list[Any], result))
+            else:
+                mcp_clients.append(result)
         except Exception as e:
             logger.error(f"[技能管理] get_mcp_clients() 执行失败: {e}")
 
@@ -282,9 +290,9 @@ class SkillsManager:
         if os.path.isfile(meta_path):
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = yaml.safe_load(f) or {}
+                    meta: dict[str, Any] = yaml.safe_load(f) or {}
                 if isinstance(meta, dict):
-                    skill.meta.update(meta)
+                    skill.meta.update(cast(dict[str, Any], meta))
             except Exception as e:
                 logger.warning(f"[技能管理] meta.yaml 解析失败: {meta_path}: {e}")
 
@@ -321,7 +329,7 @@ class SkillsManager:
 
     # ================= 装配到 workflow =================
 
-    def activate(self, skill_name: str, workflow) -> bool:
+    def activate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """将技能装配进 workflow: 指令注入系统提示词 + 注册自带工具 + 启用关联工具 (同步版)
 
         参数:
@@ -350,7 +358,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill_name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
-    async def activate_async(self, skill_name: str, workflow) -> bool:
+    async def activate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """将技能装配进 workflow (异步版): 额外自动连接并注册技能自带的 MCP 客户端"""
         skill = self.skills.get(skill_name)
         if skill is None:
@@ -360,7 +368,9 @@ class SkillsManager:
         if self._active.get(wf_id) == skill_name:
             return True
 
-        await workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
+        result = workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
+        if inspect.isawaitable(result):
+            await result
         self._register_bundled_tools(workflow, skill)
         enabled = self._apply_tools(workflow, skill.tool_names, enable=True)
 
@@ -380,7 +390,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill_name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
-    def deactivate(self, skill_name: str, workflow) -> bool:
+    def deactivate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """取消技能激活: 从系统提示词剥离指令块 + 禁用关联工具 (同步版)"""
         skill = self.skills.get(skill_name)
         if skill is None:
@@ -397,7 +407,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill_name} 已取消激活")
         return True
 
-    async def deactivate_async(self, skill_name: str, workflow) -> bool:
+    async def deactivate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """取消技能激活 (异步版): 额外关闭技能自带的 MCP 客户端连接"""
         skill = self.skills.get(skill_name)
         if skill is None:
@@ -424,7 +434,7 @@ class SkillsManager:
 
     # ================= 内部方法 =================
 
-    def _register_bundled_tools(self, workflow, skill: Skill) -> int:
+    def _register_bundled_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], skill: Skill) -> int:
         """注册技能自带的工具实例 (已注册的同名工具跳过), 返回新注册数"""
         tools_manager: Union[ToolsManager, AsyncToolsManager, None] = getattr(workflow, "tools_manager", None)
         if tools_manager is None or not skill.tools:
@@ -439,7 +449,7 @@ class SkillsManager:
 
         return registered
 
-    def _apply_tools(self, workflow, tool_names: List[str], enable: bool) -> int:
+    def _apply_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], tool_names: List[str], enable: bool) -> int:
         """启用或禁用关联工具, 返回实际生效的工具数"""
         tools_manager: Union[ToolsManager, AsyncToolsManager, None] = getattr(workflow, "tools_manager", None)
         if tools_manager is None or not tool_names:
@@ -469,7 +479,7 @@ class SkillsManager:
                 msg["content"] = pattern.sub("", content)
 
     @staticmethod
-    def _sync_context(workflow):
+    def _sync_context(workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]):
         """触发上下文落库, 返回 _sync() 的结果 (异步管理器返回协程)"""
         sync = getattr(workflow.ctx, "_sync", None)
         if sync is not None:

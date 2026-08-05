@@ -10,6 +10,7 @@ from typing import Any
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.log import logger
 from satrap.core.platform import (
+    EventHandler,
     PlatformAdapter,
     PlatformConfig,
     register_platform_adapter,
@@ -54,8 +55,8 @@ class MisskeyAdapter(PlatformAdapter):
     def __init__(
         self,
         config: PlatformConfig,
-        event_handler=None,
-        event_queue=None,
+        event_handler: EventHandler | None = None,
+        event_queue: asyncio.Queue | None = None,
     ) -> None:
         """初始化 MisskeyAdapter 实例
 

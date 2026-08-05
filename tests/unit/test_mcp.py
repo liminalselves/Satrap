@@ -19,7 +19,7 @@ from satrap.core.utils.mcp import (
 )
 
 
-def _make_mcp_tool(name="read_file", description="读取文件", schema=None):
+def _make_mcp_tool(name: str = "read_file", description: str = "读取文件", schema: dict | None = None):
     return MCPTool(
         name=name,
         description=description,
@@ -37,7 +37,7 @@ def _make_mcp_tool(name="read_file", description="读取文件", schema=None):
 class FakeSession:
     """假 MCP 会话, 可配置 call_tool 的返回内容"""
 
-    def __init__(self, content=None, is_error=False, error=None):
+    def __init__(self, content: list[SimpleNamespace] | None = None, is_error: bool = False, error: Exception | None = None):
         self._content = content if content is not None else [SimpleNamespace(type="text", text="ok")]
         self._is_error = is_error
         self._error = error
@@ -47,14 +47,14 @@ class FakeSession:
     async def list_tools(self):
         return SimpleNamespace(tools=self.tools)
 
-    async def call_tool(self, name, arguments=None):
+    async def call_tool(self, name: str, arguments: dict | None = None):
         self.calls.append((name, arguments))
         if self._error:
             raise self._error
         return SimpleNamespace(content=self._content, is_error=self._is_error)
 
 
-def _make_adapter(session=None, name="read_file", schema=None):
+def _make_adapter(session: FakeSession | None = None, name: str = "read_file", schema: dict | None = None):
     session = session or FakeSession()
     return MCPToolAdapter(session, _make_mcp_tool(name=name, schema=schema))
 
@@ -134,7 +134,7 @@ async def test_adapter_in_async_tools_manager():
         async def list_tools(self):
             return SimpleNamespace(tools=[])
 
-        async def call_tool(self, name, arguments=None):
+        async def call_tool(self, name: str, arguments: dict | None = None):
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=str(arguments))],
                 is_error=False,
@@ -157,10 +157,10 @@ def test_client_requires_command_or_url():
         MCPClient()
 
 
-async def test_client_register_and_close(monkeypatch):
+async def test_client_register_and_close(monkeypatch: pytest.MonkeyPatch):
     fake_session = FakeSession()
 
-    async def fake_connect(self):
+    async def fake_connect(self: MCPClient):
         self.session = fake_session
         self._connected = True
         return fake_session

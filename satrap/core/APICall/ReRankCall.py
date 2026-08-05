@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Union, Literal
+from typing import List, Dict, Any, Optional, Union, Literal, cast
 from satrap.core.utils import normalize_openai_base_url
 import requests
 import aiohttp
@@ -45,11 +45,11 @@ def parse_rerank_result(
             raise ValueError(log_msg)
 
     # 2. 获取 output
-    results = None
+    results: list[Any] | None = None
     if "results" in api_response and isinstance(api_response["results"], list):
         results = api_response["results"]
     elif "output" in api_response and isinstance(api_response["output"], dict):
-        results = api_response["output"].get("results")
+        results = cast(dict[str, Any], api_response["output"]).get("results")
     else:
         results = api_response.get("results")
     # 兼容保证
@@ -59,8 +59,8 @@ def parse_rerank_result(
         return []
 
     # 3. 提取核心数据
-    parsed_data = []
-    for item in results:
+    parsed_data: list[dict[str, Any]] = []
+    for item in cast(list[Any], results):
         try:
             score = item.get("relevance_score", 0.0)
             if score < min_score:
@@ -68,6 +68,7 @@ def parse_rerank_result(
 
             doc = item.get("document")
             if isinstance(doc, dict):
+                doc = cast(dict[str, Any], doc)
                 text = doc.get("text", "")
             else:
                 text = item.get("text", "")

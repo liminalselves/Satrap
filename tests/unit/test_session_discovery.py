@@ -19,7 +19,7 @@ def _write_session_file(root: Path, name: str, content: str) -> Path:
     return path
 
 
-def test_discover_multiple_session_classes_in_one_file(tmp_path):
+def test_discover_multiple_session_classes_in_one_file(tmp_path: Path):
     """扫描应发现同一文件中的多个 Session/AsyncSession 子类"""
     scan_dir = tmp_path / "session_src"
     _write_session_file(
@@ -50,7 +50,7 @@ class AsyncDemo(AsyncSession):
     assert classes["SyncDemo"].init_params == {"topic": "", "count": 0}
 
 
-def test_discover_reports_import_errors_without_stopping(tmp_path):
+def test_discover_reports_import_errors_without_stopping(tmp_path: Path):
     """单个文件导入错误不应影响其它文件扫描"""
     scan_dir = tmp_path / "broken_src"
     _write_session_file(scan_dir, "broken.py", "raise RuntimeError('boom')\n")
@@ -71,7 +71,7 @@ class OkSession(Session):
     assert any(item.class_name == "OkSession" for item in results)
 
 
-def test_register_by_discovered_class_path(tmp_path):
+def test_register_by_discovered_class_path(tmp_path: Path):
     """扫描得到的 class_path 可直接注册并生成参数模板"""
     scan_dir = tmp_path / "register_src"
     _write_session_file(
@@ -109,7 +109,7 @@ def test_session_scan_paths_config_defaults_and_loading():
     assert ConfigLoader.default_config_document(default_config)["session_scan_paths"] == [".satrap/session"]
 
 
-def test_create_default_session_dir(tmp_path):
+def test_create_default_session_dir(tmp_path: Path):
     """创建默认 Session 目录时应补齐 __init__.py"""
     target = create_default_session_dir([str(tmp_path / "sessions")])
 

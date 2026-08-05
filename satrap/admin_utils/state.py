@@ -10,6 +10,7 @@ if _root not in sys.path:
     sys.path.insert(0, _root)
 
 import streamlit as st
+from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config_loader import ConfigLoader
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
@@ -27,7 +28,7 @@ def trigger_backend_reload():
         pass
 
 
-def reset_state_managers(config):
+def reset_state_managers(config: BackendConfig):
     """用新配置重建前端共享管理器"""
     st.session_state.config = config
     st.session_state.scm = SessionClassConfigManager(

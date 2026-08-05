@@ -7,6 +7,7 @@ from uuid import uuid4
 import asyncio
 import json
 import time
+from typing import Any
 
 from satrap.core.log import logger
 
@@ -73,7 +74,7 @@ class SubAgent(Tool):
         self.llm = llm
         self.tools_manager = tools_manager
 
-    def execute(self, task: str):
+    def execute(self, task: str) -> str:
         """
         执行子代理任务
 
@@ -97,13 +98,13 @@ class SubAgent(Tool):
             return "未收到任何子任务"
         
         # 3. 定义单个子任务的执行函数
-        def run_single(index, sub_task):
-            sub_agent = SubAgentModel(self.llm, index, self.tools_manager)
+        def run_single(index: int, sub_task: str):
+            sub_agent = SubAgentModel(self.llm, str(index), self.tools_manager)
             result = sub_agent.forward(sub_task)
             return index, sub_task, result   # 返回 (索引, 子任务, 结果) 以便后续按序拼接
 
         # 4. 并行执行
-        results_dict = {}
+        results_dict: dict[int, str] = {}
         with ThreadPoolExecutor(max_workers=16) as executor:   # max_workers 建议根据 API 限流调整 
             futures = {
                 executor.submit(run_single, i, sub_task): i 
@@ -140,7 +141,7 @@ class AsyncSubAgent(AsyncTool):
         self.llm = llm
         self.tools_manager = tools_manager
 
-    async def execute(self, task: str):
+    async def execute(self, task: str) -> str:
         """
         执行异步子代理任务
 
@@ -163,7 +164,7 @@ class AsyncSubAgent(AsyncTool):
             return "未收到任何子任务"
 
         # 2. 定义单个子任务的执行函数
-        async def run_single(index, sub_task):
+        async def run_single(index: int, sub_task: str) -> dict[str, Any]:
             sub_agent = await AsyncSubAgentModel.create(self.llm, index, self.tools_manager)
             result = await sub_agent.forward(sub_task)
             return {
@@ -180,7 +181,7 @@ class AsyncSubAgent(AsyncTool):
         results = await asyncio.gather(*coros, return_exceptions=True)
         # 使用 gather 并发执行, return_exceptions=True 可防止某个子任务崩溃影响整体
 
-        output_lines = []
+        output_lines: list[str] = []
         for res in results:
             if isinstance(res, dict) and "index" in res:
                 output_lines.append(

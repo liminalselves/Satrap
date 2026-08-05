@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from pathlib import Path
+
+import pytest
 
 from satrap.cli.backend_lock import BackendInstanceLock
 from satrap.cli.client import DaemonInfo
@@ -8,7 +11,7 @@ from satrap.cli.cmd_run import load_run_config
 from satrap.core.backend.BackendManager import BackendConfig
 
 
-def test_daemon_info_from_config_uses_config_values(monkeypatch):
+def test_daemon_info_from_config_uses_config_values(monkeypatch: pytest.MonkeyPatch):
     """Daemon 地址默认来自 BackendConfig"""
     monkeypatch.delenv("SATRAP_API_HOST", raising=False)
     monkeypatch.delenv("SATRAP_API_PORT", raising=False)
@@ -21,7 +24,7 @@ def test_daemon_info_from_config_uses_config_values(monkeypatch):
     assert daemon.base_url == "http://127.0.0.2:19871"
 
 
-def test_daemon_info_from_config_allows_env_override(monkeypatch):
+def test_daemon_info_from_config_allows_env_override(monkeypatch: pytest.MonkeyPatch):
     """环境变量优先覆盖配置中的 API 地址"""
     monkeypatch.setenv("SATRAP_API_HOST", "127.0.0.3")
     monkeypatch.setenv("SATRAP_API_PORT", "19872")
@@ -32,7 +35,7 @@ def test_daemon_info_from_config_allows_env_override(monkeypatch):
     assert daemon.port == 19872
 
 
-def test_load_run_config_allows_cli_api_override(tmp_path, monkeypatch):
+def test_load_run_config_allows_cli_api_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """run 命令的 --api-host/--api-port 应覆盖配置文件"""
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.json"
@@ -52,7 +55,7 @@ def test_load_run_config_allows_cli_api_override(tmp_path, monkeypatch):
     assert config.api_port == 19873
 
 
-def test_backend_instance_lock_is_exclusive(tmp_path):
+def test_backend_instance_lock_is_exclusive(tmp_path: Path):
     """同一个锁文件同时只能被一个后端实例持有"""
     lock_path = tmp_path / "backend.lock"
     first = BackendInstanceLock(lock_path)

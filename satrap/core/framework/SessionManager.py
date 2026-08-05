@@ -19,6 +19,11 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.log import logger
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.framework.UserManager import UserManager
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
 
@@ -774,7 +779,7 @@ class SessionManager:
                 max_tokens=llm_cfg.max_tokens or 4096,
             )
 
-            session.reload_llm(new_llm)
+            session.reload_llm(new_llm)   # type: ignore[arg-type] session 为 Session|AsyncSession, 运行时由 isinstance 分支保证匹配
 
             for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
                 wf = getattr(session, attr, None)
@@ -892,7 +897,7 @@ class SessionManager:
         return getattr(self, '_user_mgr', None)
 
     @user_manager.setter
-    def user_manager(self, mgr):
+    def user_manager(self, mgr: UserManager | None):
         """设置关联的 UserManager"""
         self._user_mgr = mgr
 
@@ -902,7 +907,7 @@ class SessionManager:
         return getattr(self, '_model_cfg_mgr', None)
 
     @model_config_manager.setter
-    def model_config_manager(self, mgr):
+    def model_config_manager(self, mgr: ModelConfigManager | None):
         """设置关联的 ModelConfigManager"""
         self._model_cfg_mgr = mgr
 

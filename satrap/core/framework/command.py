@@ -1,4 +1,4 @@
-from typing import Optional, Callable, Dict, List, Tuple, Awaitable
+from typing import Any, Optional, Callable, Dict, List, Tuple, Awaitable
 
 from satrap.core.log import logger
 
@@ -13,7 +13,7 @@ class CommandHandler:
         - param_split: 参数分割符, 默认为 " "
         """
         self.output_callback = output_callback
-        self.commands: Dict[str, Callable] = {}   # 命令名 -> 处理函数
+        self.commands: Dict[str, Any] = {}   # 命令名 -> 处理函数
         self.intros: Dict[str, str] = {}          # 命令名 -> 简介
         self.prefix = cmd_prefix
         self.pref_len = len(cmd_prefix)
@@ -116,7 +116,7 @@ class CommandHandler:
 
         self.register_command("help", help_cmd, intro="显示帮助信息")
 
-    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+    def register_command(self, name: str, handler: Any, intro: str = "None"):
         """注册命令处理函数
 
         参数:
@@ -127,7 +127,7 @@ class CommandHandler:
         self.commands[name] = handler
         self.intros[name] = intro
 
-    def process_message(self, message: str):
+    def process_message(self, message: str) -> tuple[Any, bool]:
         """处理输入消息, 执行对应命令
 
         参数:
@@ -169,7 +169,7 @@ class AsyncCommandHandler:
         - param_split: 参数分割符, 默认为 " "
         """
         self.output_callback = output_callback
-        self.commands: Dict[str, Callable] = {}   # 命令名 -> 异步处理函数
+        self.commands: Dict[str, Any] = {}   # 命令名 -> 异步处理函数
         self.intros: Dict[str, str] = {}          # 命令名 -> 简介
         self.prefix = cmd_prefix
         self.pref_len = len(cmd_prefix)
@@ -224,7 +224,7 @@ class AsyncCommandHandler:
 
         return False
 
-    async def _execute(self, cmd: str, args: List[str]):
+    async def _execute(self, cmd: str, args: List[str]) -> Any:
         """异步执行命令处理函数
         
         参数:
@@ -266,7 +266,7 @@ class AsyncCommandHandler:
 
         self.register_command("help", help_cmd, intro="显示帮助信息")
 
-    def register_command(self, name: str, handler: Callable, intro: str = "None"):
+    def register_command(self, name: str, handler: Any, intro: str = "None"):
         """注册命令处理函数
 
         参数:
@@ -277,7 +277,7 @@ class AsyncCommandHandler:
         self.commands[name] = handler
         self.intros[name] = intro
 
-    async def process_message(self, message: str):
+    async def process_message(self, message: str) -> tuple[Any, bool]:
         """异步处理输入消息, 执行对应命令
         
         参数:

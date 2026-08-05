@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Union, Literal
+from typing import List, Dict, Any, Optional, Union, Literal, cast
 from satrap.core.utils import normalize_openai_base_url
 from openai import OpenAI, AsyncOpenAI, APIError
 
@@ -38,11 +38,11 @@ def parse_embedding_response(
         # 按索引排序以保证顺序与输入一致
         sorted_data = sorted(data, key=lambda x: x.index if hasattr(x, "index") else x.get("index", 0))
 
-        embeddings = []
+        embeddings: list[Any] = []
         for item in sorted_data:
             embedding = getattr(item, "embedding", None)
             if embedding is None and isinstance(item, dict):
-                embedding = item.get("embedding")
+                embedding = cast(dict[str, Any], item).get("embedding")
             if embedding is not None:
                 embeddings.append(embedding)
             else:
@@ -143,7 +143,7 @@ class Embedding:
             total_batches = (total_count + batch_size - 1) // batch_size
 
             # 构造请求参数
-            request_kwargs = {
+            request_kwargs: dict[str, Any] = {
                 "model": target_model,
                 "input": batch_texts,
                 "encoding_format": target_encoding,
@@ -205,7 +205,7 @@ class Embedding:
         检查嵌入模型是否可用
         - return: 嵌入模型的维度; 如果检查失败则返回 None
         """
-        request_kwargs = {
+        request_kwargs: dict[str, Any] = {
             "model": self.model,
             "input": ["测试文本"],
             "encoding_format": self.encoding_format,
@@ -312,7 +312,7 @@ class AsyncEmbedding:
             total_batches = (total_count + batch_size - 1) // batch_size
 
             # 构造请求参数
-            request_kwargs = {
+            request_kwargs: dict[str, Any] = {
                 "model": target_model,
                 "input": batch_texts,
                 "encoding_format": target_encoding,
@@ -374,7 +374,7 @@ class AsyncEmbedding:
         检查嵌入模型是否可用
         - return: 嵌入模型的维度; 如果检查失败则返回 None
         """
-        request_kwargs = {
+        request_kwargs: dict[str, Any] = {
             "model": self.model,
             "input": ["测试文本"],
             "encoding_format": self.encoding_format,

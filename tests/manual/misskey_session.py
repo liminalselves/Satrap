@@ -3,9 +3,10 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from satrap import AsyncLLM, AsyncToolsManager
+from satrap.core.framework.command import AsyncCommandHandler
 from satrap.core.framework import AsyncSession
 from satrap.core.framework.Base import AsyncModelWorkflowFramework
 from satrap.core.utils.context import AsyncContextManager
@@ -70,7 +71,7 @@ class MisskeySession(AsyncSession):
                  llm: AsyncLLM | None = None,
                  system_prompt: str = SYSTEM_PROMPT,
                  sandbox_dir: str = ".satrap/sandbox",
-                 content_callback=None, command_handler=None):
+                 content_callback: Callable[[str], Awaitable[None]] | None = None, command_handler: AsyncCommandHandler | None = None):
         super().__init__(session_id, content_callback=content_callback,
                          command_handler=command_handler)
 

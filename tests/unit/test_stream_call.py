@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import TypeVar
+from typing import Any, Iterator, TypeVar
 
 import pytest
+from pathlib import Path
 
 from satrap import (
     AsyncLLM,
@@ -20,7 +21,7 @@ from satrap import (
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
-def _chunks():
+def _chunks() -> list[dict[str, Any]]:
     return [
         {"choices": [{"delta": {"content": "我来计算"}}]},
         {
@@ -57,7 +58,7 @@ def _chunks():
 
 
 class _SyncCompletions:
-    def create(self, **kwargs):
+    def create(self, **kwargs: Any) -> Iterator[dict[str, Any]]:
         assert kwargs["stream"] is True
         assert kwargs["tools"] == [{"type": "function"}]
         return iter(_chunks())
@@ -68,11 +69,11 @@ class _SyncClient:
 
 
 class _AsyncStream:
-    def __aiter__(self):
-        self._iterator = iter(_chunks())
+    def __aiter__(self) -> "_AsyncStream":
+        self._iterator: Iterator[dict[str, Any]] = iter(_chunks())
         return self
 
-    async def __anext__(self):
+    async def __anext__(self) -> dict[str, Any]:
         try:
             return next(self._iterator)
         except StopIteration:
@@ -80,7 +81,7 @@ class _AsyncStream:
 
 
 class _AsyncCompletions:
-    async def create(self, **kwargs):
+    async def create(self, **kwargs: Any):
         assert kwargs["stream"] is True
         return _AsyncStream()
 
@@ -176,7 +177,7 @@ class _AgentLLM:
             LLMCallResponse(type="message", content="结果是 5"),
         ]
 
-    def stream_call(self, messages, tools=None, thinking=False):
+    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False):
         assert thinking is False
         response = self.responses.pop(0)
         if response.content:
@@ -184,14 +185,13 @@ class _AgentLLM:
         yield LLMCallStreamEvent(kind="done", response=response)
 
 
-def test_stream_full_agent_executes_tool_and_continues(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "satrap.core.framework.Base.ContextManager",
-        lambda conversation_id: ContextManager(
-            conversation_id,
-            db_path=str(tmp_path / "chat_history.db"),
-        ),
-    )
+def test_stream_full_agent_executes_tool_and_continues(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def _ctx(conversation_id: str) -> ContextManager:
+        return ContextManager(conversation_id, db_path=str(tmp_path / "chat_history.db"))
+
+    monkeypatch.setattr("satrap.core.framework.Base.ContextManager", _ctx)
     tools = ToolsManager()
     tools.register_tool(_CalculateTool())
     agent = ModelWorkflowFramework(
@@ -205,14 +205,13 @@ def test_stream_full_agent_executes_tool_and_continues(monkeypatch, tmp_path):
     assert roles == ["user", "assistant", "tool", "assistant"]
 
 
-def test_stream_tools_agent_keeps_only_system_context(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "satrap.core.framework.Base.ContextManager",
-        lambda conversation_id: ContextManager(
-            conversation_id,
-            db_path=str(tmp_path / "chat_history.db"),
-        ),
-    )
+def test_stream_tools_agent_keeps_only_system_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def _ctx(conversation_id: str) -> ContextManager:
+        return ContextManager(conversation_id, db_path=str(tmp_path / "chat_history.db"))
+
+    monkeypatch.setattr("satrap.core.framework.Base.ContextManager", _ctx)
     tools = ToolsManager()
     tools.register_tool(_CalculateTool())
     agent = ModelWorkflowFramework(
@@ -230,7 +229,7 @@ def test_stream_tools_agent_keeps_only_system_context(monkeypatch, tmp_path):
 
 
 class _ThinkingAgentLLM:
-    def stream_call(self, messages, tools=None, thinking=False):
+    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False):
         assert thinking is True
         yield LLMCallStreamEvent(kind="thinking_delta", delta="先检查工具")
         yield LLMCallStreamEvent(kind="content_delta", delta="已完成")
@@ -240,16 +239,15 @@ class _ThinkingAgentLLM:
         )
 
 
-def test_stream_full_agent_separates_thinking_callback(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "satrap.core.framework.Base.ContextManager",
-        lambda conversation_id: ContextManager(
-            conversation_id,
-            db_path=str(tmp_path / "chat_history.db"),
-        ),
-    )
-    content = []
-    thinking = []
+def test_stream_full_agent_separates_thinking_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def _ctx(conversation_id: str) -> ContextManager:
+        return ContextManager(conversation_id, db_path=str(tmp_path / "chat_history.db"))
+
+    monkeypatch.setattr("satrap.core.framework.Base.ContextManager", _ctx)
+    content: list[str] = []
+    thinking: list[str] = []
     agent = ModelWorkflowFramework(
         llm=_ThinkingAgentLLM(),   # type: ignore[arg-type]
         context_id="stream-thinking-test",
@@ -264,7 +262,7 @@ def test_stream_full_agent_separates_thinking_callback(monkeypatch, tmp_path):
 
 
 class _AsyncThinkingAgentLLM:
-    async def stream_call(self, messages, tools=None, thinking=False):
+    async def stream_call(self, messages: list[dict], tools: list[dict] | None = None, thinking: bool = False):
         assert thinking is True
         yield LLMCallStreamEvent(kind="thinking_delta", delta="异步检查")
         yield LLMCallStreamEvent(kind="content_delta", delta="异步完成")
@@ -275,21 +273,20 @@ class _AsyncThinkingAgentLLM:
 
 
 @pytest.mark.asyncio
-async def test_async_stream_full_agent_separates_thinking_callback(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "satrap.core.framework.Base.AsyncContextManager",
-        lambda conversation_id: AsyncContextManager(
-            conversation_id,
-            db_path=str(tmp_path / "async-chat-history.db"),
-        ),
-    )
-    content = []
-    thinking = []
+async def test_async_stream_full_agent_separates_thinking_callback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def _ctx(conversation_id: str) -> AsyncContextManager:
+        return AsyncContextManager(conversation_id, db_path=str(tmp_path / "async-chat-history.db"))
 
-    async def content_callback(value):
+    monkeypatch.setattr("satrap.core.framework.Base.AsyncContextManager", _ctx)
+    content: list[str] = []
+    thinking: list[str] = []
+
+    async def content_callback(value: str):
         content.append(value)
 
-    async def thinking_callback(value):
+    async def thinking_callback(value: str):
         thinking.append(value)
 
     agent = AsyncModelWorkflowFramework(
@@ -323,7 +320,7 @@ class _AsyncToolAgentLLM:
             LLMCallResponse(type="message", content="结果是 5"),
         ]
 
-    async def stream_call(self, messages, tools=None, thinking=False):
+    async def stream_call(self, messages: list[dict], tools: list[dict] | None = None, thinking: bool = False):
         assert thinking is False
         response = self.responses.pop(0)
         if response.content:
@@ -332,14 +329,13 @@ class _AsyncToolAgentLLM:
 
 
 @pytest.mark.asyncio
-async def test_async_stream_tools_agent_keeps_only_system_context(monkeypatch, tmp_path):
-    monkeypatch.setattr(
-        "satrap.core.framework.Base.AsyncContextManager",
-        lambda conversation_id: AsyncContextManager(
-            conversation_id,
-            db_path=str(tmp_path / "async-chat-history.db"),
-        ),
-    )
+async def test_async_stream_tools_agent_keeps_only_system_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    def _ctx(conversation_id: str) -> AsyncContextManager:
+        return AsyncContextManager(conversation_id, db_path=str(tmp_path / "async-chat-history.db"))
+
+    monkeypatch.setattr("satrap.core.framework.Base.AsyncContextManager", _ctx)
     tools = AsyncToolsManager()
     tools.register_tool(_AsyncCalculateTool())
     agent = AsyncModelWorkflowFramework(

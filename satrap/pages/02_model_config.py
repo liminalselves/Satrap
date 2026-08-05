@@ -4,11 +4,12 @@ from typing import Any
 
 import streamlit as st
 from satrap.admin_utils.state import ensure_state, trigger_backend_reload
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.type import LLMConfig, EmbeddingConfig, ReRankConfig
 
 st.set_page_config(page_title="模型配置", page_icon="", layout="wide")
 
-TYPE_LABELS = {
+TYPE_LABELS: dict[str, tuple[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig]]] = {
     "llm": ("LLM 配置", LLMConfig),
     "embedding": ("Embedding 配置", EmbeddingConfig),
     "rerank": ("ReRank 配置", ReRankConfig),
@@ -47,7 +48,7 @@ def _add_dialog(model_type: str):
     st.write(f"新增 {label}")
 
     fields = FIELD_META[model_type]
-    values = {}
+    values: dict[str, Any] = {}
     for key, display, kind in fields:
         if kind == "password":
             values[key] = st.text_input(display, type="password", key=f"add_{key}")
@@ -60,7 +61,7 @@ def _add_dialog(model_type: str):
     ok = st.button("保存")
 
     if ok:
-        all_vals = {k: v for k, v in values.items() if v is not None and v != ""}
+        all_vals: dict[str, Any] = {k: v for k, v in values.items() if v is not None and v != ""}
         all_vals["name"] = name
         try:
             cfg = cls(**all_vals)
@@ -92,7 +93,7 @@ def _edit_dialog(model_type: str, name: str):
     st.write(f"编辑 {label}: {name}")
 
     fields = FIELD_META[model_type]
-    values = {}
+    values: dict[str, Any] = {}
     for key, display, kind in fields:
         current = getattr(cfg_obj, key, None) or ""
         if kind == "password":
@@ -168,7 +169,7 @@ def _delete_dialog(model_type: str, name: str):
 
 
 @st.cache_data(ttl=2)
-def _get_configs(_mcm, model_type: str) -> dict[str, Any]:
+def _get_configs(_mcm: ModelConfigManager, model_type: str) -> dict[str, Any]:
     if model_type == "llm":
         return _mcm.list_llm_configs(mask_api_key=True)
     elif model_type == "embedding":

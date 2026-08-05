@@ -6,7 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import Any
 
 from satrap.core.log import logger
-from satrap.core.platform import PlatformAdapter, PlatformConfig, register_platform_adapter
+from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, register_platform_adapter
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform.onebot.onebot_utils import (
     create_platform_message,
@@ -39,8 +39,8 @@ class OneBotAdapter(PlatformAdapter):
     def __init__(
         self,
         config: PlatformConfig,
-        event_handler=None,
-        event_queue=None,
+        event_handler: EventHandler | None = None,
+        event_queue: asyncio.Queue | None = None,
     ) -> None:
         """初始化 OneBotAdapter 实例"""
         super().__init__(config, event_handler, event_queue)

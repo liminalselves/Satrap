@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import sys
 import os
+from pathlib import Path
+from typing import Any, cast
 
 import streamlit as st
 from satrap.admin_utils.backend_control import (
@@ -33,7 +35,7 @@ from satrap.admin_utils.state import ensure_state, reset_state_managers
 st.set_page_config(page_title="系统设置", page_icon="", layout="wide")
 
 
-def _save_config_and_maybe_restart(path, data: dict, backend_running: bool):
+def _save_config_and_maybe_restart(path: Path, data: dict[str, Any], backend_running: bool):
     """保存配置, 并在后端运行时重启"""
     try:
         old_config = st.session_state.config
@@ -57,9 +59,9 @@ def _save_config_and_maybe_restart(path, data: dict, backend_running: bool):
         st.error(f"保存配置失败: {e}")
 
 
-def _render_platform_editor(config_data: dict, config_path, backend_running: bool):
+def _render_platform_editor(config_data: dict[str, Any], config_path: Path, backend_running: bool):
     """渲染平台快捷新增/修改表单"""
-    platforms = list(config_data.get("platforms", []) or [])
+    platforms = list(cast(list[Any], config_data.get("platforms", []) or []))
     platform_ids = [str(item.get("id", "")).strip() for item in platforms if str(item.get("id", "")).strip()]
     selected = st.selectbox("选择已有平台", ["新增平台配置"] + platform_ids, key="platform_editor_selected")
     current = next((item for item in platforms if item.get("id") == selected), None)

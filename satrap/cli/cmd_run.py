@@ -1,4 +1,5 @@
 from __future__ import annotations
+import argparse
 
 import asyncio
 import signal
@@ -12,7 +13,7 @@ from satrap.core.config_loader import ConfigLoader
 from satrap.core.log import logger
 
 
-def load_run_config(args):
+def load_run_config(args: argparse.Namespace):
     """加载 run 命令配置并应用命令行覆盖"""
     config = ConfigLoader.autodetect()
     if args.config:
@@ -26,7 +27,7 @@ def load_run_config(args):
     return config
 
 
-async def cmd_run(args):
+async def cmd_run(args: argparse.Namespace):
     """启动后端服务"""
     config = load_run_config(args)
 

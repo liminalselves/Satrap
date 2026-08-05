@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator
+from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.core.utils.vision import normalize_chat_messages
@@ -27,39 +27,41 @@ def _extract_thinking_from_message(
     - 未来可扩展
     """
     # 1. reasoning_content
+    if isinstance(message, dict):
+        message = cast(Dict[str, Any], message)
     reasoning = getattr(message, "reasoning_content", None)
     if reasoning is None and isinstance(message, dict):
-        reasoning = message.get("reasoning_content")
+        reasoning = cast(Dict[str, Any], message).get("reasoning_content")
     if reasoning:
         return reasoning
 
     # 2. reasoning
-    reasoning = getattr(message, "reasoning", None)
+    reasoning = getattr(cast(Any, message), "reasoning", None)
     if reasoning is None and isinstance(message, dict):
-        reasoning = message.get("reasoning")
+        reasoning = cast(Dict[str, Any], message).get("reasoning")
     if reasoning:
         return reasoning
 
     # 3. thinking
-    thinking = getattr(message, "thinking", None)
+    thinking = getattr(cast(Any, message), "thinking", None)
     if thinking is None and isinstance(message, dict):
-        thinking = message.get("thinking")
+        thinking = cast(Dict[str, Any], message).get("thinking")
     if thinking:
         return thinking
 
     # 4. reasoning_details (数组)
-    reasoning_details = getattr(message, "reasoning_details", None)
+    reasoning_details = getattr(cast(Any, message), "reasoning_details", None)
     if reasoning_details is None and isinstance(message, dict):
-        reasoning_details = message.get("reasoning_details")
+        reasoning_details = cast(Dict[str, Any], message).get("reasoning_details")
     if reasoning_details:
         if isinstance(reasoning_details, list):
-            return "\n".join([str(x) for x in reasoning_details])
+            return "\n".join([str(x) for x in cast(list[Any], reasoning_details)])
         return str(reasoning_details)
 
     # 5. 从 content 中提取 <think> 标签
-    content = getattr(message, "content", None)
+    content = getattr(cast(Any, message), "content", None)
     if content is None and isinstance(message, dict):
-        content = message.get("content")
+        content = cast(Dict[str, Any], message).get("content")
     if content and isinstance(content, str):
         match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)   # 匹配 <think>...</think>
         if match:
@@ -96,6 +98,7 @@ def parse_chat_response(
         # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
         choices = getattr(api_response, "choices", None)
         if choices is None and isinstance(api_response, dict):
+            api_response = cast(Dict[str, Any], api_response)
             choices = api_response.get("choices")
         # 尝试通过属性或字典键获取 choices 列表行
 
@@ -110,6 +113,7 @@ def parse_chat_response(
         if hasattr(first_choice, "message"):
             content = first_choice.message.content
         elif isinstance(first_choice, dict):
+            first_choice = cast(Dict[str, Any], first_choice)
             content = first_choice.get("message", {}).get("content")
         else:
             content = ""
@@ -152,6 +156,7 @@ def parse_call_response(
         # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
         choices = getattr(api_response, "choices", None)
         if choices is None and isinstance(api_response, dict):
+            api_response = cast(Dict[str, Any], api_response)
             choices = api_response.get("choices")
 
         if not choices or len(choices) == 0:
@@ -162,6 +167,7 @@ def parse_call_response(
         first_choice = choices[0]
         message = getattr(first_choice, "message", None)
         if message is None and isinstance(first_choice, dict):
+            first_choice = cast(Dict[str, Any], first_choice)
             message = first_choice.get("message")
         
         if message is None:
@@ -169,6 +175,7 @@ def parse_call_response(
 
         content = getattr(message, "content", None)
         if content is None and isinstance(message, dict):
+            message = cast(Dict[str, Any], message)
             content = message.get("content")
         text_content = content.strip() if content else ""
         # 提取文本内容
@@ -179,6 +186,7 @@ def parse_call_response(
         # Step.4 检查是否存在工具调用 (tool_calls)
         tool_calls = getattr(message, "tool_calls", None)
         if tool_calls is None and isinstance(message, dict):
+            message = cast(Dict[str, Any], message)
             tool_calls = message.get("tool_calls")
 
         if tool_calls and len(tool_calls) > 0:
@@ -189,23 +197,27 @@ def parse_call_response(
                 # 提取工具调用 id
                 call_id = getattr(tool_call, "id", None)
                 if call_id is None and isinstance(tool_call, dict):
+                    tool_call = cast(Dict[str, Any], tool_call)
                     call_id = tool_call.get("id", "")
                 else:
                     call_id = call_id or ""
                 
                 function_data = getattr(tool_call, "function", None)
                 if function_data is None and isinstance(tool_call, dict):
+                    tool_call = cast(Dict[str, Any], tool_call)
                     function_data = tool_call.get("function")
                 # 提取 function 对象 (兼容对象和字典)
 
                 if function_data:
                     func_name = getattr(function_data, "name", "")
                     if isinstance(function_data, dict):
+                        function_data = cast(Dict[str, Any], function_data)
                         func_name = function_data.get("name", "")
                         # 提取函数名
 
                     args_str = getattr(function_data, "arguments", "{}")
                     if isinstance(function_data, dict):
+                        function_data = cast(Dict[str, Any], function_data)
                         args_str = function_data.get("arguments", "{}")
                         # 提取参数字符串并解析  
     
@@ -213,15 +225,15 @@ def parse_call_response(
                         if isinstance(args_str, str):
                             args_dict = safe_parse_arguments(args_str)
                         elif isinstance(args_str, dict):
-                            args_dict = args_str
+                            args_dict = cast(dict[str, Any], args_str)
                         else:
-                            args_dict = {}
+                            args_dict = cast(dict[str, Any], {})
 
                     except json.JSONDecodeError:
                         logger.error(f"[响应处理] 工具调用参数 JSON 解析失败: {args_str}")
                         args_dict = {}
 
-                    call_info = {"name": func_name, "id": call_id, "arguments": args_dict}
+                    call_info: dict[str, Any] = {"name": func_name, "id": call_id, "arguments": args_dict}
                     tool_calls_list.append(call_info)
                     # 封装单个工具调用信息并添加到列表
 
@@ -254,7 +266,7 @@ def _rename_thinking_field(
     if target_field == "reasoning_content" or target_field is None:
         return messages  # 无需重命名, 直接返回原列表
     
-    new_messages = []
+    new_messages: list[dict[str, Any]] = []
     for msg in messages:
         new_msg = msg.copy()
         if "reasoning_content" in new_msg:
@@ -267,7 +279,7 @@ def _rename_thinking_field(
 def _stream_field(value: Any, name: str, default: Any = None) -> Any:
     """兼容对象和字典形式读取流式响应字段"""
     if isinstance(value, dict):
-        return value.get(name, default)
+        return cast(dict[str, Any], value).get(name, default)
     return getattr(value, name, default)
 
 
@@ -277,7 +289,7 @@ def _stream_text(value: Any) -> str:
         return value
     if isinstance(value, list):
         parts: list[str] = []
-        for part in value:
+        for part in cast(list[Any], value):
             text = _stream_field(part, "text", "")
             if text:
                 parts.append(str(text))
@@ -310,7 +322,7 @@ class _StreamCallAccumulator:
         - chunk: 来自 API 的原始响应块 (对象或字典)
         """
         events: list[LLMCallStreamEvent] = []
-        choices = _stream_field(chunk, "choices", []) or []
+        choices: list[Any] = _stream_field(chunk, "choices", []) or []
 
         for choice in choices:   # 遍历每个 choice
             finish_reason = _stream_field(choice, "finish_reason", None)
@@ -391,7 +403,7 @@ class _StreamCallAccumulator:
 
     def response(self, suppress_error: bool = True) -> LLMCallResponse:
         """将聚合结果转换为与非流式 call 一致的响应结构"""
-        tool_calls = []
+        tool_calls: list[dict[str, Any]] = []
         for index in sorted(self.tool_calls):
             tool_call = self.tool_calls[index]
             tool_calls.append(
@@ -556,7 +568,7 @@ class LLM:
 
         try:
             # Step.1 同步流式调用 API
-            stream = self.client.chat.completions.create(
+            stream = cast(Any, self.client.chat.completions.create(
                 model=target_model,
                 messages=messages,   # type: ignore
                 temperature=use_temp,
@@ -564,7 +576,7 @@ class LLM:
                 max_tokens=use_max_tokens,
                 extra_body=self.reasoning_body if thinking else None,
                 stream=True,
-            )   # 发起流式网络请求
+            ))   # 发起流式网络请求
 
             # Step.2 逐步 yield 内容
             for chunk in stream:
@@ -591,7 +603,7 @@ class LLM:
             temperature: Optional[float] = None,
             top_p: Optional[float] = None,
             max_tokens: Optional[int] = None,
-            format: Optional[dict] = None,
+            format: Optional[dict[str, Any]] = None,
         ) -> Union[str, Literal[False]]:
             """
             同步调用 LLM 并要求结构化输出
@@ -670,7 +682,7 @@ class LLM:
 
     def call(
         self,
-        messages: List[Dict[str, str | list]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         thinking: bool = False,
         temperature: Optional[float] = None,
@@ -751,7 +763,7 @@ class LLM:
 
     def stream_call(
         self,
-        messages: List[Dict[str, str | list]],
+        messages: List[Dict[str, Any]],
         model: Optional[str] = None,
         thinking: bool = False,
         temperature: Optional[float] = None,
@@ -813,7 +825,7 @@ class LLM:
 
         accumulator = _StreamCallAccumulator()
         try:
-            stream = self.client.chat.completions.create(**request_params)
+            stream = cast(Any, self.client.chat.completions.create(**request_params))
             for chunk in stream:
                 yield from accumulator.consume(chunk)
 
@@ -1033,7 +1045,7 @@ class AsyncLLM:
 
         try:
             # Step.1 异步流式调用 API
-            stream = await self.client.chat.completions.create(
+            stream = cast(Any, await self.client.chat.completions.create(
                 model=target_model,
                 messages=messages,   # type: ignore
                 temperature=use_temp,
@@ -1041,7 +1053,7 @@ class AsyncLLM:
                 max_tokens=use_max_tokens,
                 extra_body=self.reasoning_body if thinking else None,
                 stream=True,
-            )   # 发起异步流式网络请求
+            ))   # 发起异步流式网络请求
 
             # Step.2 逐步 yield 内容
             async for chunk in stream:
@@ -1069,7 +1081,7 @@ class AsyncLLM:
             temperature: Optional[float] = None,
             top_p: Optional[float] = None,
             max_tokens: Optional[int] = None,
-            format: Optional[dict] = None,
+            format: Optional[dict[str, Any]] = None,
         ) -> Union[str, Literal[False]]:
             """
             异步调用 LLM 并要求结构化输出
@@ -1290,7 +1302,7 @@ class AsyncLLM:
 
         accumulator = _StreamCallAccumulator()
         try:
-            stream = await self.client.chat.completions.create(**request_params)
+            stream = cast(Any, await self.client.chat.completions.create(**request_params))
             async for chunk in stream:
                 for event in accumulator.consume(chunk):
                     yield event

@@ -83,7 +83,7 @@ def test_same_adapter_type_can_register_multiple_instances():
     assert mgr.list_adapters() == ["dummy1", "dummy2"]
 
 
-def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path):
+def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: Path):
     """同一用户在不同 adapter_id 下应拥有不同上下文"""
     scm = _session_class_mgr(tmp_path)
     sm = _session_manager(tmp_path, scm)
@@ -97,7 +97,7 @@ def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path):
     assert first != second
 
 
-def test_pipeline_uses_configured_adapter_override(tmp_path):
+def test_pipeline_uses_configured_adapter_override(tmp_path: Path):
     """类级 adapter_id 存在且有效时, 管线使用该适配器绑定上下文"""
     scm = _session_class_mgr(tmp_path, {"adapter_id": "misskey2"})
     sm = _session_manager(tmp_path, scm)
@@ -110,7 +110,7 @@ def test_pipeline_uses_configured_adapter_override(tmp_path):
     assert extra == {"adapter_id": "misskey2"}
 
 
-def test_pipeline_falls_back_when_adapter_override_is_missing(tmp_path):
+def test_pipeline_falls_back_when_adapter_override_is_missing(tmp_path: Path):
     """显式 adapter_id 不存在时回退事件来源适配器"""
     scm = _session_class_mgr(tmp_path, {"adapter_id": "missing"})
     sm = _session_manager(tmp_path, scm)

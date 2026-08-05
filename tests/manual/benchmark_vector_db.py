@@ -2,6 +2,8 @@
 import shutil
 import time
 import random
+from typing import Any
+
 import numpy as np
 
 from satrap.core.database import LiteVectorDB, DataBase
@@ -28,7 +30,7 @@ def build_queries(q: int, dim: int, seed: int = 7):
     return queries.tolist()
 
 
-def bench_db(db_cls, persist_path: str, docs, vecs, metas, queries, collection: str, k: int, threshold: float):
+def bench_db(db_cls: type[LiteVectorDB] | type[DataBase], persist_path: str, docs: list[str], vecs: list[list[float]], metas: list[dict[str, Any]], queries: list[list[float]], collection: str, k: int, threshold: float) -> dict[str, Any]:
     rm_tree(persist_path)
 
     t0 = time.perf_counter()
@@ -44,7 +46,7 @@ def bench_db(db_cls, persist_path: str, docs, vecs, metas, queries, collection: 
     # warmup
     _ = db.search(collection, queries[0], k=k, threshold=threshold)
 
-    search_latencies = []
+    search_latencies: list[float] = []
     total_hits = 0
     for qv in queries:
         s0 = time.perf_counter()
@@ -69,7 +71,7 @@ def bench_db(db_cls, persist_path: str, docs, vecs, metas, queries, collection: 
     }
 
 
-def fmt(name: str, r: dict):
+def fmt(name: str, r: dict[str, Any]):
     print(f"\n[{name}]")
     print(f"init_ms        : {r['init_ms']:.2f}")
     print(f"create_ms      : {r['create_ms']:.2f}")

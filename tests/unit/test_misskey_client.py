@@ -1,6 +1,9 @@
 import json
+from types import TracebackType
+from typing import Any
 
 import pytest
+from pathlib import Path
 
 from satrap.core.platform.misskey.client import (
     APIError,
@@ -12,12 +15,12 @@ from satrap.core.platform.misskey.client import (
 
 
 class FakeResponse:
-    def __init__(self, status=200, payload=None, text="error"):
+    def __init__(self, status: int = 200, payload: dict[str, Any] | None = None, text: str = "error"):
         self.status = status
-        self.payload = payload if payload is not None else {}
+        self.payload: dict[str, Any] = payload if payload is not None else {}
         self._text = text
 
-    async def json(self):
+    async def json(self) -> dict[str, Any]:
         return self.payload
 
     async def text(self):
@@ -25,22 +28,22 @@ class FakeResponse:
 
 
 class FakePostContext:
-    def __init__(self, response):
+    def __init__(self, response: FakeResponse):
         self.response = response
 
     async def __aenter__(self):
         return self.response
 
-    async def __aexit__(self, exc_type, exc, tb):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc: BaseException | None, tb: TracebackType | None):
         return False
 
 
 class FakeSession:
     def __init__(self):
         self.closed = False
-        self.calls = []
+        self.calls: list[Any] = []
 
-    def post(self, url, **kwargs):
+    def post(self, url: str, **kwargs: Any):
         self.calls.append((url, kwargs))
         return FakePostContext(FakeResponse(payload={"ok": True, "id": "file-1"}))
 
@@ -49,11 +52,11 @@ class FakeSession:
 
 
 @pytest.mark.asyncio
-async def test_create_note_payload(monkeypatch):
+async def test_create_note_payload(monkeypatch: pytest.MonkeyPatch):
     api = MisskeyAPI("https://misskey.example", "token")
     captured = {}
 
-    async def fake_make_request(endpoint, data):
+    async def fake_make_request(endpoint: str, data: dict[str, Any]):
         captured["endpoint"] = endpoint
         captured["data"] = data
         return {"createdNote": {"id": "note-1"}}
@@ -94,7 +97,7 @@ async def test_status_error_mapping():
 
 
 @pytest.mark.asyncio
-async def test_upload_file_uses_drive_create(tmp_path):
+async def test_upload_file_uses_drive_create(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
     api = MisskeyAPI("https://misskey.example", "token")
@@ -110,19 +113,19 @@ async def test_upload_file_uses_drive_create(tmp_path):
 
 @pytest.mark.asyncio
 async def test_streaming_subscribe_and_dispatch():
-    sent = []
+    sent: list[Any] = []
 
     class FakeWebSocket:
-        async def send(self, message):
+        async def send(self, message: str):
             sent.append(json.loads(message))
 
     streaming = StreamingClient("https://misskey.example", "token")
     streaming.websocket = FakeWebSocket()
     streaming.is_connected = True
 
-    seen = {}
+    seen: dict[str, Any] = {}
 
-    async def handler(body):
+    async def handler(body: dict[str, Any]):
         seen["body"] = body
 
     channel_id = await streaming.subscribe_channel("main")

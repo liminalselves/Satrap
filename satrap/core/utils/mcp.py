@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import inspect
 from contextlib import AsyncExitStack
-from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
+from types import TracebackType
+from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, cast
 
 from satrap.core.log import logger
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
@@ -41,7 +42,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.server import MCPServer
 
-TYPE_MAP = {
+TYPE_MAP: dict[str, type] = {
     "string": str,
     "number": float,
     "integer": int,
@@ -62,7 +63,7 @@ def content_to_text(content: Any) -> str:
     """
     if content is None:
         return "OK"
-    blocks = content if isinstance(content, list) else [content]
+    blocks = cast(list[Any], content if isinstance(content, list) else [content])
     parts: List[str] = []
     for block in blocks:
         text = getattr(block, "text", None)
@@ -78,28 +79,29 @@ def content_to_text(content: Any) -> str:
     return "\n".join(p for p in parts if p) or "OK"
 
 
-def _input_schema_of(mcp_tool: Any) -> dict:
+def _input_schema_of(mcp_tool: Any) -> dict[str, Any]:
     """从 MCP 工具对象提取 input_schema, 兼容 mcp 1.x (inputSchema) 与 2.x (input_schema)"""
     schema = getattr(mcp_tool, "input_schema", None)
     if schema is None:
         schema = getattr(mcp_tool, "inputSchema", None)
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
-    schema = dict(schema)
+    schema = cast(dict[str, Any], schema)
     schema.setdefault("type", "object")
     schema.setdefault("properties", {})
     return schema
 
 
-def _params_from_schema(schema: dict) -> Dict[str, Tuple[str, str]]:
+def _params_from_schema(schema: dict[str, Any]) -> Dict[str, Tuple[str, str]]:
     """从 JSON Schema 提取参数名 -> (类型, 描述) 字典, 用于 Tool 基类的完整性校验"""
     params: Dict[str, Tuple[str, str]] = {}
-    for name, prop in (schema.get("properties") or {}).items():
+    for name, prop in cast(dict[str, Any], schema.get("properties") or {}).items():
         if not isinstance(prop, dict):
             continue
+        prop = cast(dict[str, Any], prop)
         ptype = prop.get("type", "string")
         if isinstance(ptype, list):
-            ptype = next((t for t in ptype if t != "null"), "string")
+            ptype = next((t for t in cast(list[str], ptype) if t != "null"), "string")
         params[str(name)] = (str(ptype), str(prop.get("description", "")))
     return params
 
@@ -165,7 +167,7 @@ class MCPToolAdapter(AsyncTool):
             },
         }
 
-    async def execute(self, **kwargs) -> Any:
+    async def execute(self, **kwargs: Any) -> Any:
         """执行远端 MCP 工具"""
         try:
             result = await self.session.call_tool(self.mcp_tool.name, arguments=kwargs or None)
@@ -273,7 +275,7 @@ class MCPClient:
                 return None
         return httpx_module.AsyncClient(headers=self.headers)
 
-    async def list_tools(self) -> list:
+    async def list_tools(self) -> list[Any]:
         """获取 MCP Server 暴露的所有工具"""
         session = await self.connect()
         result = await session.list_tools()
@@ -323,7 +325,7 @@ class MCPClient:
         await self.connect()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         await self.close()
 
 
@@ -365,7 +367,7 @@ class MCPServerExporter:
         """根据 params_dict 构建带类型化签名的处理函数 (供 MCPServer 生成 JSON Schema)"""
         params_dict = tool.params_dict or {}
 
-        def handler(**kwargs) -> Any:
+        def handler(**kwargs: Any) -> Any:
             return self.tools_manager.execute_tool(tool.get_tool_name(), kwargs)
 
         parameters = [
@@ -382,7 +384,7 @@ class MCPServerExporter:
     def run(
         self,
         transport: Literal["stdio", "sse", "streamable-http"] = "stdio",
-        **kwargs,
+        **kwargs: Any,
     ):
         """构建并运行 MCP Server (阻塞)"""
         self.export().run(transport=transport, **kwargs)

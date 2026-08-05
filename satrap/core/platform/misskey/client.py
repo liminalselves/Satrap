@@ -8,7 +8,11 @@ import tempfile
 import uuid
 import websockets
 from collections.abc import Awaitable, Callable
-from typing import Any, NoReturn
+from typing import Any, NoReturn, ParamSpec, TypeVar, cast
+from types import TracebackType
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
 import aiohttp
 
@@ -108,7 +112,7 @@ class StreamingClient:
             raise WebSocketError("WebSocket 未连接")
 
         channel_id = uuid.uuid4().hex
-        message = {
+        message: dict[str, Any] = {
             "type": "connect",
             "body": {
                 "channel": channel_type,
@@ -181,6 +185,7 @@ class StreamingClient:
         body = data.get("body", {})
 
         if message_type == "channel" and isinstance(body, dict):
+            body = cast(dict[str, Any], body)
             raw_channel_id = body.get("id")
             raw_event_type = body.get("type")
             channel_id = raw_channel_id if isinstance(raw_channel_id, str) else ""
@@ -225,8 +230,8 @@ def retry_async(
     - max_backoff: 最大退避时间, 默认 30.0 秒
     """
 
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
+    def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[Any]]:
+        async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
             last_exc: Exception | None = None
             func_name = getattr(func, "__name__", "unknown")
             for attempt in range(1, max_retries + 1):
@@ -293,7 +298,7 @@ class MisskeyAPI:
     async def __aenter__(self):
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
+    async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         """异步上下文管理器退出时调用"""
         await self.close()
         return False
@@ -430,9 +435,9 @@ class MisskeyAPI:
         - text: 消息内容, 可选
         """
         if isinstance(user_id_or_payload, dict):
-            payload = user_id_or_payload
+            payload = cast(dict[str, Any], user_id_or_payload)
         else:
-            payload = {"toUserId": user_id_or_payload, "text": text}
+            payload: dict[str, Any] = {"toUserId": user_id_or_payload, "text": text}
         return await self._make_request("chat/messages/create-to-user", payload)
 
     async def send_room_message(self, room_id_or_payload: Any, text: str | None = None) -> dict[str, Any]:
@@ -443,9 +448,9 @@ class MisskeyAPI:
         - text: 消息内容, 可选
         """
         if isinstance(room_id_or_payload, dict):
-            payload = room_id_or_payload
+            payload = cast(dict[str, Any], room_id_or_payload)
         else:
-            payload = {"toRoomId": room_id_or_payload, "text": text}
+            payload: dict[str, Any] = {"toRoomId": room_id_or_payload, "text": text}
         return await self._make_request("chat/messages/create-to-room", payload)
 
     async def get_mentions(self, limit: int = 10, since_id: str | None = None) -> list[dict[str, Any]]:
@@ -460,9 +465,9 @@ class MisskeyAPI:
             payload["sinceId"] = since_id
         result = await self._make_request("i/notifications", payload)
         if isinstance(result, list):
-            return result
+            return cast(list[dict[str, Any]], result)
         if isinstance(result, dict):
-            return result.get("notifications", [])
+            return cast(list[dict[str, Any]], result.get("notifications", []))
         return []
 
     async def upload_file(
@@ -502,7 +507,7 @@ class MisskeyAPI:
     async def find_files_by_hash(self, md5_hash: str) -> list[dict[str, Any]]:
         """按 MD5 查询 Drive 文件"""
         result = await self._make_request("drive/files/find-by-hash", {"md5": md5_hash})
-        return result if isinstance(result, list) else []
+        return cast(list[dict[str, Any]], result) if isinstance(result, list) else []
 
     async def find_files_by_name(
         self,
@@ -519,7 +524,7 @@ class MisskeyAPI:
         if folder_id:
             payload["folderId"] = folder_id
         result = await self._make_request("drive/files/find", payload)
-        return result if isinstance(result, list) else []
+        return cast(list[dict[str, Any]], result) if isinstance(result, list) else []
 
     async def find_files(
         self,
@@ -540,7 +545,7 @@ class MisskeyAPI:
         if type is not None:
             payload["type"] = type
         result = await self._make_request("drive/files", payload)
-        return result if isinstance(result, list) else []
+        return cast(list[dict[str, Any]], result) if isinstance(result, list) else []
 
     async def _download_bytes(self, url: str, ssl_verify: bool = True) -> bytes:
         """下载远程文件字节
@@ -569,8 +574,8 @@ class MisskeyAPI:
         url: str,
         name: str | None = None,
         folder_id: str | None = None,
-        *_,
-        **__,
+        *_: Any,
+        **__: Any,
     ) -> dict[str, Any] | None:
         """下载远程 URL 后上传到 Misskey Drive
         

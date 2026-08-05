@@ -6,7 +6,7 @@ import json
 import os
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional, Type
+from typing import Any, Dict, Optional, Type, cast
 
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.session_discovery import ensure_session_scan_paths
@@ -152,10 +152,12 @@ class SessionClassConfigManager:
                     logger.warning("[SessionClassConfigManager] 配置文件格式错误, 已忽略")
                     self._configs = {}
                     return
+                data = cast(dict[str, Any], data)
                 self._configs = {}
                 for _name, entry in data.items():
                     if not isinstance(entry, dict):
                         continue
+                    entry = cast(dict[str, Any], entry)
                     self._configs[str(_name)] = {
                         "class_path": str(entry.get("class_path", "")),
                         "is_async": bool(entry.get("is_async", False)),
@@ -371,7 +373,7 @@ class SessionClassConfigManager:
             self._configs[key]["params"] = dict(params)
             self._save_locked()
 
-    def update_config(self, name: str, **kwargs):
+    def update_config(self, name: str, **kwargs: Any):
         """部分更新 params"""
         with self._lock:
             key = self._normalize_name(name)

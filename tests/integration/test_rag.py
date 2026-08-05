@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.requires_api, pytest.mark.asy
 
 
 @pytest.fixture
-def rag(tmp_path):
+def rag(tmp_path: Path) -> LiteVectorRAG:
     base_url = os.getenv("TEST_EMBED_BASE_URL")
     api_key = os.getenv("TEST_EMBED_API_KEY")
     if not base_url or not api_key:
@@ -29,7 +30,7 @@ def rag(tmp_path):
     )
 
 
-async def test_simple_query(rag):
+async def test_simple_query(rag: LiteVectorRAG):
     await rag.add_documents(
         [
             "The quick brown fox jumps over the lazy dog.",
@@ -47,7 +48,7 @@ async def test_simple_query(rag):
     assert "dog" in results[0].lower()
 
 
-async def test_add_documents(rag):
+async def test_add_documents(rag: LiteVectorRAG):
     assert await rag.add_documents(
         ["doc1", "doc2", "doc3"],
         collection_name="test_collection",
@@ -58,7 +59,7 @@ async def test_add_documents(rag):
     assert stats["document_count"] >= 3
 
 
-async def test_add_text_file(rag, tmp_path):
+async def test_add_text_file(rag: LiteVectorRAG, tmp_path: Path):
     file_path = tmp_path / "test_rag.txt"
     file_path.write_text(
         "Line 1: RAG stands for Retrieval-Augmented Generation.\n"
@@ -78,7 +79,7 @@ async def test_add_text_file(rag, tmp_path):
     assert any("retrieval-augmented" in item.lower() for item in results)
 
 
-async def test_collection_management(rag):
+async def test_collection_management(rag: LiteVectorRAG):
     collection = "temp_collection"
 
     assert await rag.create_collection(collection)
@@ -88,7 +89,7 @@ async def test_collection_management(rag):
     assert collection not in await rag.get_collection_names()
 
 
-async def test_swift_workflow(rag):
+async def test_swift_workflow(rag: LiteVectorRAG):
     docs, scores = await rag.swift(
         collection_name="test_collection",
         add_documents=[
@@ -105,14 +106,14 @@ async def test_swift_workflow(rag):
     assert "neural networks" in docs[0].lower() or "deep learning" in docs[0].lower()
 
 
-async def test_empty_query(rag):
+async def test_empty_query(rag: LiteVectorRAG):
     await rag.add_documents(["some content"], collection_name="test_collection")
 
     assert await rag.simple_query("") is None
     assert await rag.simple_query("   ") is None
 
 
-async def test_vectorstore_overview(rag):
+async def test_vectorstore_overview(rag: LiteVectorRAG):
     await rag.add_documents(["doc A", "doc B"], collection_name="test_collection")
 
     overview = await rag.get_vectorstore_overview()

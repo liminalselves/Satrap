@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from urllib.parse import unquote
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
 
@@ -69,7 +69,7 @@ class BackendHTTPServer:
             except Exception:
                 pass
 
-    def _send_json(self, writer: asyncio.StreamWriter, status: int, data: dict):
+    def _send_json(self, writer: asyncio.StreamWriter, status: int, data: dict[str, Any]):
         """发送 JSON 响应"""
         resp_body = json.dumps(data, ensure_ascii=False).encode()
         status_text = "OK" if status == 200 else "Error"
@@ -81,7 +81,7 @@ class BackendHTTPServer:
         ).encode()
         writer.write(header + resp_body)
 
-    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict]:
+    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         """路由分发到 BackendManager 对应方法"""
         backend = self.backend
 

@@ -7,7 +7,7 @@ import os
 import uuid
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, cast
 
 import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
@@ -163,7 +163,7 @@ class BaseMessageComponent(BaseModel):
     def toDict(self) -> Dict[str, Any]:
         """同步转换为通用消息组件格式"""
         data = self.model_dump(exclude_none=True, exclude={"type"}, by_alias=False)
-        extras = getattr(self, "__pydantic_extra__", None) or {}
+        extras = cast(dict[str, Any], getattr(self, "__pydantic_extra__", None) or {})
         data.update({k: v for k, v in extras.items() if v is not None})
         if "type_" in data:
             data["type"] = data.pop("type_")
@@ -172,7 +172,7 @@ class BaseMessageComponent(BaseModel):
         type_str = self.type.value if hasattr(self.type, "value") else str(self.type)
         return {"type": type_str.lower(), "data": data}
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         """异步转换接口, 默认回退到同步 toDict()"""
         return self.toDict()
 
@@ -186,10 +186,10 @@ class Plain(BaseMessageComponent):
     def __init__(self, text: str, convert: bool = True, **kwargs: Any) -> None:
         super().__init__(text=text, convert=convert, **kwargs)
 
-    def toDict(self) -> dict:
+    def toDict(self) -> dict[str, Any]:
         return {"type": "text", "data": {"text": self.text}}
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         return self.toDict()
 
 
@@ -300,7 +300,7 @@ class Video(_FileLikeComponent):
     def fromBase64(cls, bs64_data: str, **kwargs: Any):
         return cls(file=f"base64://{bs64_data}", **kwargs)
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         """异步序列化视频, 支持按 callback 地址暴露本地文件"""
         payload_file = self.file
         if payload_file and not payload_file.startswith("http"):
@@ -319,7 +319,7 @@ class At(BaseMessageComponent):
     qq: int | str
     name: str | None = ""
 
-    def toDict(self) -> dict:
+    def toDict(self) -> dict[str, Any]:
         return {"type": "at", "data": {"qq": str(self.qq)}}
 
 
@@ -461,7 +461,7 @@ class Poke(BaseMessageComponent):
                 return text
         return None
 
-    def toDict(self) -> dict:
+    def toDict(self) -> dict[str, Any]:
         data = {"type": str(self.type_ or "126")}
         if target_id := self.target_id():
             data["id"] = target_id
@@ -491,7 +491,7 @@ class Node(BaseMessageComponent):
             content = [content]
         super().__init__(content=content, **kwargs)
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         data_content = []
         for comp in self.content:
             if isinstance(comp, (Image, Record)):
@@ -525,10 +525,10 @@ class Nodes(BaseMessageComponent):
     def __init__(self, nodes: list[Node], **kwargs: Any) -> None:
         super().__init__(nodes=nodes, **kwargs)
 
-    def toDict(self) -> dict:
+    def toDict(self) -> dict[str, Any]:
         return {"messages": [node.toDict() for node in self.nodes]}
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         """将 Nodes 转换为 OneBot 风格的消息列表"""
         return {"messages": [await node.to_dict() for node in self.nodes]}
 
@@ -563,7 +563,7 @@ class File(BaseMessageComponent):
     def __init__(self, name: str, file: str = "", url: str = "") -> None:
         super().__init__(name=name, file_=file, url=url)
 
-    def toDict(self) -> dict:
+    def toDict(self) -> dict[str, Any]:
         """同步序列化文件消息段, 不触发网络下载"""
         payload_file = self.file_ or self.url or ""
         return {"type": "file", "data": {"name": self.name, "file": payload_file}}
@@ -635,7 +635,7 @@ class File(BaseMessageComponent):
         logger.debug(f"已注册: {callback_host}/api/file/{token}")
         return f"{callback_host}/api/file/{token}"
 
-    async def to_dict(self) -> dict:
+    async def to_dict(self) -> dict[str, Any]:
         """异步序列化文件, 支持按 callback 地址暴露本地文件"""
         payload_file = await self.get_file(allow_return_url=True)
         if payload_file and not payload_file.startswith("http"):

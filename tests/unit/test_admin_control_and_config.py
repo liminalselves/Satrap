@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import pytest
+from pathlib import Path
 
 from satrap.admin_utils.config_editor import (
     config_exists,
@@ -23,11 +25,11 @@ from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config_loader import ConfigLoader
 
 
-def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch):
+def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch: pytest.MonkeyPatch):
     """DaemonClient.shutdown 应请求后端 shutdown 路由"""
-    calls = []
+    calls: list[Any] = []
 
-    def fake_request(method, path, body=None):
+    def fake_request(method: str, path: str, body: dict[str, Any] | None = None):
         calls.append((method, path, body))
         return {"ok": True}
 
@@ -54,10 +56,10 @@ async def test_http_shutdown_route_sets_backend_event():
     assert event.is_set()
 
 
-def test_config_editor_yaml_roundtrip(tmp_path):
+def test_config_editor_yaml_roundtrip(tmp_path: Path):
     """配置编辑器应能读写 YAML 配置"""
     path = tmp_path / "config.yaml"
-    data = {
+    data: dict[str, Any] = {
         "api": {"host": "127.0.0.1", "port": 19870},
         "default_session_type": "misskey",
         "platforms": [{"id": "misskey1", "type": "misskey", "settings": {}}],
@@ -71,10 +73,10 @@ def test_config_editor_yaml_roundtrip(tmp_path):
     assert loaded["platforms"][0]["id"] == "misskey1"
 
 
-def test_config_editor_json_roundtrip(tmp_path):
+def test_config_editor_json_roundtrip(tmp_path: Path):
     """配置编辑器应能读写 JSON 配置"""
     path = tmp_path / "config.json"
-    data = {"api": {"host": "127.0.0.1", "port": 19871}, "platforms": []}
+    data: dict[str, Any] = {"api": {"host": "127.0.0.1", "port": 19871}, "platforms": []}
 
     config = save_config_document(path, data)
     loaded = load_config_document(path)
@@ -83,7 +85,7 @@ def test_config_editor_json_roundtrip(tmp_path):
     assert loaded["api"]["host"] == "127.0.0.1"
 
 
-def test_parse_raw_config_rejects_non_object(tmp_path):
+def test_parse_raw_config_rejects_non_object(tmp_path: Path):
     """原始配置根节点必须是对象"""
     path = tmp_path / "config.json"
 
@@ -117,18 +119,18 @@ def test_update_common_fields_and_parse_platforms():
 
 def test_configured_platform_types_uses_config_and_health():
     """平台类型汇总应来自配置和后端运行态"""
-    config_data = {"platforms": [{"id": "misskey1", "type": "misskey", "settings": {}}]}
-    health = {"adapters": {"qq1": {"config_type": "qq"}}}
+    config_data: dict[str, Any] = {"platforms": [{"id": "misskey1", "type": "misskey", "settings": {}}]}
+    health: dict[str, Any] = {"adapters": {"qq1": {"config_type": "qq"}}}
 
     assert configured_platform_types(config_data, health) == ["misskey", "qq"]
 
 
-def test_find_config_path_defaults_to_yaml(tmp_path):
+def test_find_config_path_defaults_to_yaml(tmp_path: Path):
     """没有配置文件时默认指向 .satrap/config.yaml"""
     assert find_config_path(tmp_path) == tmp_path / ".satrap" / "config.yaml"
 
 
-def test_find_config_path_prefers_root_config(tmp_path):
+def test_find_config_path_prefers_root_config(tmp_path: Path):
     """根目录配置优先于 satrap 目录配置"""
     root_config = tmp_path / "config.yaml"
     nested_config = tmp_path / ".satrap" / "config.yaml"
@@ -139,7 +141,7 @@ def test_find_config_path_prefers_root_config(tmp_path):
     assert find_config_path(tmp_path) == root_config
 
 
-def test_create_default_config_under_satrap(tmp_path):
+def test_create_default_config_under_satrap(tmp_path: Path):
     """无配置文件时应在 .satrap/config.yaml 创建默认配置"""
     assert not config_exists(tmp_path)
 
@@ -151,7 +153,7 @@ def test_create_default_config_under_satrap(tmp_path):
     assert load_config_document(path)["platforms"] == []
 
 
-def test_config_loader_autodetect_creates_default_config(tmp_path, monkeypatch):
+def test_config_loader_autodetect_creates_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """ConfigLoader.autodetect 无配置时创建并加载 .satrap/config.yaml"""
     monkeypatch.chdir(tmp_path)
 
@@ -162,7 +164,7 @@ def test_config_loader_autodetect_creates_default_config(tmp_path, monkeypatch):
     assert config.api_port == 19870
 
 
-def test_config_loader_autodetect_keeps_root_priority(tmp_path, monkeypatch):
+def test_config_loader_autodetect_keeps_root_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """根目录已有配置时不创建 .satrap/config.yaml"""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
@@ -175,7 +177,7 @@ def test_config_loader_autodetect_keeps_root_priority(tmp_path, monkeypatch):
 
 def test_platform_upsert_add_update_and_delete():
     """平台快捷编辑应支持新增, 修改和删除"""
-    platforms = []
+    platforms: list[dict[str, Any]] = []
     platforms = upsert_platform(
         platforms,
         original_id=None,
@@ -219,7 +221,7 @@ def test_platform_upsert_add_update_and_delete():
 
 def test_platform_upsert_rejects_duplicate_id():
     """修改平台 id 时不能覆盖另一个已有平台"""
-    platforms = [
+    platforms: list[dict[str, Any]] = [
         {"id": "misskey_main", "type": "misskey", "settings": {}},
         {"id": "onebot_main", "type": "onebot", "settings": {}},
     ]
@@ -238,7 +240,7 @@ def test_platform_upsert_rejects_duplicate_id():
         raise AssertionError("应拒绝重复平台 id")
 
 
-def test_save_config_document_validates_platforms(tmp_path):
+def test_save_config_document_validates_platforms(tmp_path: Path):
     """保存配置前应校验 platforms 结构"""
     path = tmp_path / "satrap" / "config.yaml"
 

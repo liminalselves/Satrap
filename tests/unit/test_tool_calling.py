@@ -1,6 +1,7 @@
 import ast
 import json
 import operator
+from typing import Any
 
 import pytest
 
@@ -18,7 +19,7 @@ class WeatherTool(Tool):
             },
         )
 
-    def execute(self, city: str, unit: str = "celsius"):
+    def execute(self, city: str, unit: str = "celsius") -> dict[str, Any]:
         return {"city": city, "unit": unit, "condition": "晴天", "temperature": 25}
 
 
@@ -30,9 +31,9 @@ class CalculatorTool(Tool):
             params_dict={"expression": ("string", "数学表达式")},
         )
 
-    def execute(self, expression: str):
+    def execute(self, expression: str) -> dict[str, Any]:
         try:
-            operators = {
+            operators: dict[type, Any] = {
                 ast.Add: operator.add,
                 ast.Sub: operator.sub,
                 ast.Mult: operator.mul,
@@ -40,7 +41,7 @@ class CalculatorTool(Tool):
             }
             tree = ast.parse(expression, mode="eval")
 
-            def evaluate(node):
+            def evaluate(node: ast.AST) -> int | float:
                 if isinstance(node, ast.Expression):
                     return evaluate(node.body)
                 if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):

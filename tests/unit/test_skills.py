@@ -5,6 +5,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from pathlib import Path
 
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.context import AsyncContextManager, ContextManager
@@ -56,13 +57,13 @@ def get_mcp_clients():
 """
 
 
-def _write_skill(tmp_path, text=SKILL_MD, filename="coding_agent.md"):
+def _write_skill(tmp_path: Path, text: str = SKILL_MD, filename: str = "coding_agent.md"):
     path = tmp_path / filename
     path.write_text(text, encoding="utf-8")
     return path
 
 
-def _write_folder_skill(tmp_path, name="demo", skill_md=None, tools_py=None, meta=None):
+def _write_folder_skill(tmp_path: Path, name: str = "demo", skill_md: str | None = None, tools_py: str | None = None, meta: str | None = None):
     skill_dir = tmp_path / name
     skill_dir.mkdir()
     (skill_dir / "skill.md").write_text(skill_md or SKILL_MD, encoding="utf-8")
@@ -75,7 +76,7 @@ def _write_folder_skill(tmp_path, name="demo", skill_md=None, tools_py=None, met
 
 # ================= Skill 解析 =================
 
-def test_skill_from_file_with_front_matter(tmp_path):
+def test_skill_from_file_with_front_matter(tmp_path: Path):
     skill = Skill.from_file(str(_write_skill(tmp_path)))
     assert skill.name == "coding_agent"
     assert skill.description == "代码助手"
@@ -83,7 +84,7 @@ def test_skill_from_file_with_front_matter(tmp_path):
     assert "使用沙箱验证代码" in skill.instructions
 
 
-def test_skill_from_file_without_front_matter(tmp_path):
+def test_skill_from_file_without_front_matter(tmp_path: Path):
     path = _write_skill(tmp_path, text="仅正文内容", filename="plain_skill.md")
     skill = Skill.from_file(str(path))
     assert skill.name == "plain_skill"
@@ -108,7 +109,7 @@ def test_parse_front_matter_no_match():
 
 # ================= SkillsManager =================
 
-def test_scan_loads_all_skill_files(tmp_path):
+def test_scan_loads_all_skill_files(tmp_path: Path):
     _write_skill(tmp_path, filename="a.md")
     _write_skill(tmp_path, text="---\nname: b\n---\nbody", filename="b.md")
     (tmp_path / "ignore.txt").write_text("x", encoding="utf-8")
@@ -120,14 +121,14 @@ def test_scan_loads_all_skill_files(tmp_path):
     assert sorted(manager.list_skills()) == ["b", "coding_agent"]
 
 
-def test_scan_missing_directory_returns_empty(tmp_path):
+def test_scan_missing_directory_returns_empty(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path / "nope"))
     assert manager.scan() == []
 
 
 # ================= 文件夹式技能 =================
 
-def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path):
+def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path: Path):
     skill_dir = _write_folder_skill(
         tmp_path,
         name="demo",
@@ -148,21 +149,21 @@ def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path):
     assert "code_sandbox" in skill.tool_names
 
 
-def test_scan_folder_skill_name_falls_back_to_dirname(tmp_path):
+def test_scan_folder_skill_name_falls_back_to_dirname(tmp_path: Path):
     _write_folder_skill(tmp_path, name="plain_folder", skill_md="# 仅正文")
     manager = SkillsManager(skills_dir=str(tmp_path))
     skill = manager.scan()[0]
     assert skill.name == "plain_folder"
 
 
-def test_scan_mixes_folder_and_single_file_skills(tmp_path):
+def test_scan_mixes_folder_and_single_file_skills(tmp_path: Path):
     _write_folder_skill(tmp_path, name="folder_skill")
     _write_skill(tmp_path, filename="single.md", text="---\nname: single\n---\nbody")
     manager = SkillsManager(skills_dir=str(tmp_path))
     assert sorted(s.name for s in manager.scan()) == ["coding_agent", "single"]
 
 
-def test_scan_folder_skill_auto_collects_tool_classes(tmp_path):
+def test_scan_folder_skill_auto_collects_tool_classes(tmp_path: Path):
     tools_py = """\
 from satrap.core.utils.TCBuilder import Tool
 
@@ -181,20 +182,20 @@ class AutoTool(Tool):
     assert "auto_collect" in skill.tool_names
 
 
-def test_activate_registers_bundled_tools(tmp_path):
+def test_activate_registers_bundled_tools(tmp_path: Path):
     _write_folder_skill(tmp_path, name="demo", tools_py=TOOLS_PY)
     manager = SkillsManager(skills_dir=str(tmp_path))
     manager.scan()
     wf = _make_sync_workflow(tmp_path)
 
-    assert manager.activate("coding_agent", wf) is True
+    assert manager.activate("coding_agent", wf) is True   # type: ignore[arg-type]
     assert "stopwatch" in wf.tools_manager.tools
     assert wf.tools_manager.is_tool_enabled("stopwatch") is True
     assert "code_sandbox" in wf.tools_manager.tools
     assert wf.tools_manager.is_tool_enabled("code_sandbox") is True
 
 
-async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_path):
+async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_path: Path):
     _write_folder_skill(tmp_path, name="mcp_skill", tools_py=MCP_TOOLS_PY)
     manager = SkillsManager(skills_dir=str(tmp_path))
     manager.scan()
@@ -210,11 +211,11 @@ async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_pat
     await wf.ctx.initialize()
     await wf.ctx.reset_system_prompt("你是助手")
 
-    assert await manager.activate_async("coding_agent", wf) is True
+    assert await manager.activate_async("coding_agent", wf) is True   # type: ignore[arg-type]
     assert client.closed is False
     assert "<skill:coding_agent>" in wf.ctx.get_context()[0]["content"]
 
-    assert await manager.deactivate_async("coding_agent", wf) is True
+    assert await manager.deactivate_async("coding_agent", wf) is True   # type: ignore[arg-type]
     assert client.closed is True
     assert "<skill:coding_agent>" not in wf.ctx.get_context()[0]["content"]
 
@@ -224,7 +225,7 @@ def test_preset_dir_points_to_expend_skills():
     assert SKILLS_PRESET_DIR.replace("\\", "/").endswith("satrap/expend/skills")
 
 
-def _make_sync_workflow(tmp_path):
+def _make_sync_workflow(tmp_path: Path):
     class DummyTool(Tool):
         def __init__(self):
             super().__init__(
@@ -243,7 +244,7 @@ def _make_sync_workflow(tmp_path):
     return SimpleNamespace(ctx=ctx, tools_manager=tools_manager)
 
 
-def test_activate_injects_instructions_and_enables_tools(tmp_path):
+def test_activate_injects_instructions_and_enables_tools(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     _write_skill(tmp_path)
     manager.scan()
@@ -251,36 +252,36 @@ def test_activate_injects_instructions_and_enables_tools(tmp_path):
     tools_manager = wf.tools_manager
     tools_manager.disable_tool("code_sandbox")
 
-    assert manager.activate("coding_agent", wf) is True
+    assert manager.activate("coding_agent", wf) is True   # type: ignore[arg-type]
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:coding_agent>" in system_text
     assert "使用沙箱验证代码" in system_text
     assert tools_manager.is_tool_enabled("code_sandbox") is True
 
-    assert manager.activate("coding_agent", wf) is True   # 幂等
+    assert manager.activate("coding_agent", wf) is True   # type: ignore[arg-type]   # 幂等
     assert system_text.count("<skill:coding_agent>") == 1
 
 
-def test_deactivate_strips_instructions_and_disables_tools(tmp_path):
+def test_deactivate_strips_instructions_and_disables_tools(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     _write_skill(tmp_path)
     manager.scan()
     wf = _make_sync_workflow(tmp_path)
 
-    manager.activate("coding_agent", wf)
-    assert manager.deactivate("coding_agent", wf) is True
+    manager.activate("coding_agent", wf)   # type: ignore[arg-type]
+    assert manager.deactivate("coding_agent", wf) is True   # type: ignore[arg-type]
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:coding_agent>" not in system_text
     assert wf.tools_manager.is_tool_enabled("code_sandbox") is False
 
 
-def test_activate_unknown_skill_returns_false(tmp_path):
+def test_activate_unknown_skill_returns_false(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     wf = _make_sync_workflow(tmp_path)
-    assert manager.activate("ghost", wf) is False
+    assert manager.activate("ghost", wf) is False   # type: ignore[arg-type]
 
 
-async def test_activate_async_with_async_context(tmp_path):
+async def test_activate_async_with_async_context(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     _write_skill(tmp_path)
     manager.scan()
@@ -302,18 +303,18 @@ async def test_activate_async_with_async_context(tmp_path):
     await ctx.reset_system_prompt("你是助手")
     wf = SimpleNamespace(ctx=ctx, tools_manager=tools_manager)
 
-    assert await manager.activate_async("coding_agent", wf) is True
+    assert await manager.activate_async("coding_agent", wf) is True   # type: ignore[arg-type]
     assert "<skill:coding_agent>" in wf.ctx.get_context()[0]["content"]
     assert tools_manager.is_tool_enabled("code_sandbox") is True
 
-    assert await manager.deactivate_async("coding_agent", wf) is True
+    assert await manager.deactivate_async("coding_agent", wf) is True   # type: ignore[arg-type]
     assert "<skill:coding_agent>" not in wf.ctx.get_context()[0]["content"]
     assert tools_manager.is_tool_enabled("code_sandbox") is False
 
 
 # ================= SkillTool =================
 
-async def test_skill_tool_returns_instructions(tmp_path):
+async def test_skill_tool_returns_instructions(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     _write_skill(tmp_path)
     manager.scan()
@@ -328,7 +329,7 @@ async def test_skill_tool_returns_instructions(tmp_path):
     assert "coding_agent" in result
 
 
-def test_skill_tool_definition_contains_available_skills(tmp_path):
+def test_skill_tool_definition_contains_available_skills(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path))
     _write_skill(tmp_path)
     manager.scan()

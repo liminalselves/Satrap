@@ -6,7 +6,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendConfig
@@ -62,13 +62,13 @@ class DaemonClient:
         except Exception:
             return False
 
-    def reload_config(self) -> dict:
+    def reload_config(self) -> dict[str, Any]:
         return self._request("POST", "/api/config/reload")
 
-    def shutdown(self) -> dict:
+    def shutdown(self) -> dict[str, Any]:
         return self._request("POST", "/api/shutdown")
 
-    def list_session_classes(self) -> dict:
+    def list_session_classes(self) -> dict[str, Any]:
         return self._request("GET", "/api/config/session-classes")
 
     def register_session_class(
@@ -78,7 +78,7 @@ class DaemonClient:
         description: str = "",
         context_key: str = "",
         model_key: str = "",
-    ) -> dict:
+    ) -> dict[str, Any]:
         return self._request(
             "POST",
             "/api/config/session-classes",
@@ -91,34 +91,34 @@ class DaemonClient:
             },
         )
 
-    def enable_session_class(self, name: str) -> dict:
+    def enable_session_class(self, name: str) -> dict[str, Any]:
         return self._request("POST", f"/api/config/session-classes/{self._quote(name)}/enable")
 
-    def disable_session_class(self, name: str) -> dict:
+    def disable_session_class(self, name: str) -> dict[str, Any]:
         return self._request("POST", f"/api/config/session-classes/{self._quote(name)}/disable")
 
-    def get_session_class(self, name: str) -> dict:
+    def get_session_class(self, name: str) -> dict[str, Any]:
         return self._request("GET", f"/api/config/session-classes/{self._quote(name)}")
 
-    def set_session_class_params(self, name: str, params: dict) -> dict:
+    def set_session_class_params(self, name: str, params: dict[str, Any]) -> dict[str, Any]:
         return self._request("PUT", f"/api/config/session-classes/{self._quote(name)}", body={"params": params})
 
-    def unregister_session_class(self, name: str) -> dict:
+    def unregister_session_class(self, name: str) -> dict[str, Any]:
         return self._request("DELETE", f"/api/config/session-classes/{self._quote(name)}")
 
-    def list_models(self, typ: str = "llm") -> dict:
+    def list_models(self, typ: str = "llm") -> dict[str, Any]:
         return self._request("GET", f"/api/config/models?type={typ}")
 
-    def set_model(self, typ: str, name: str, params: dict) -> dict:
+    def set_model(self, typ: str, name: str, params: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}", body=params)
 
-    def update_model(self, typ: str, name: str, params: dict) -> dict:
+    def update_model(self, typ: str, name: str, params: dict[str, Any]) -> dict[str, Any]:
         return self._request("PATCH", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}", body=params)
 
-    def remove_model(self, typ: str, name: str) -> dict:
+    def remove_model(self, typ: str, name: str) -> dict[str, Any]:
         return self._request("DELETE", f"/api/config/models/{self._quote(typ)}/{self._quote(name)}")
 
-    def health(self) -> dict:
+    def health(self) -> dict[str, Any]:
         return self._request("GET", "/api/health")
 
     @staticmethod
@@ -126,7 +126,7 @@ class DaemonClient:
         """URL path segment 转义"""
         return urllib.parse.quote(value, safe="")
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(self, method: str, path: str, body: dict[str, Any] | None = None) -> dict[str, Any]:
         """发送 HTTP 请求并解析 JSON 响应"""
         url = f"{self.daemon.base_url}{path}"
         data = json.dumps(body).encode() if body is not None else None

@@ -22,7 +22,7 @@ class SafeCalculatorTool(Tool):
         "expression": ("string", "只包含数字和 + - * / ** % 以及括号的数学表达式"),
     }
 
-    _binary_ops = {
+    _binary_ops: dict[type, Any] = {
         ast.Add: operator.add,
         ast.Sub: operator.sub,
         ast.Mult: operator.mul,
@@ -30,7 +30,7 @@ class SafeCalculatorTool(Tool):
         ast.Pow: operator.pow,
         ast.Mod: operator.mod,
     }
-    _unary_ops = {
+    _unary_ops: dict[type, Any] = {
         ast.UAdd: operator.pos,
         ast.USub: operator.neg,
     }
@@ -95,7 +95,7 @@ class WeatherTool(Tool):
             print(f"\n[工具 get_weather] {result}")
             return result
 
-        result = {
+        result: dict[str, Any] = {
             "city": city,
             "temperature": temp,
             "unit": normalized_unit,

@@ -1,5 +1,5 @@
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
-from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple
+from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, cast
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
@@ -18,7 +18,7 @@ class LLMCallResponse:
     tool_calls: Optional[List[Dict[str, Any]]] = None
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
 
-    def __iter__(self) -> Iterator:
+    def __iter__(self) -> Iterator[Any]:
         """支持解包操作"""
         yield self.type
         yield self.content
@@ -141,7 +141,7 @@ class SessionConfig:
     """会话最后使用时间"""
     message_count: int = 0
     """会话消息数量"""
-    session_config: Dict[str, Any] = field(default_factory=dict)
+    session_config: Dict[str, Any] = field(default_factory=dict[str, Any])
     """除去会话 ID 以外的会话实例初始化配置"""
 
 @dataclass
@@ -153,7 +153,7 @@ class UserInfo:
     """用户所在的平台"""
     user_nickname: Optional[str] = None
     """用户昵称"""
-    user_session: List[str] = field(default_factory=list)
+    user_session: List[str] = field(default_factory=list[str])
     """用户会话列表 (会话 ID 列表)"""
 
 
@@ -310,9 +310,9 @@ class StateSnapshot:
     """版本化状态快照: 各领域数据以行字典列表存放"""
     version: int = CURRENT_SNAPSHOT_VERSION
     """快照格式版本"""
-    scope: Dict[str, str] = field(default_factory=dict)
+    scope: Dict[str, str] = field(default_factory=dict[str, str])
     """创建快照时的作用域字段"""
-    domains: Dict[str, List[JsonRow]] = field(default_factory=dict)
+    domains: Dict[str, List[JsonRow]] = field(default_factory=dict[str, List[JsonRow]])
     """领域名 -> 领域数据行列表"""
 
     @classmethod
@@ -337,14 +337,15 @@ class StateSnapshot:
         scope = value.get("scope")
         if not isinstance(scope, dict):
             raise TypeError("快照 scope 必须是字典")
-        raw_domains = value.get("domains")
+        raw_domains = cast(dict[str, Any], value.get("domains"))
         if not isinstance(raw_domains, dict):
             raise TypeError("快照 domains 必须是字典")
         domains: Dict[str, List[JsonRow]] = {}
         for name, rows in raw_domains.items():
             if not isinstance(name, str) or not isinstance(rows, list):
                 raise TypeError(f"快照领域 {name!r} 必须是行列表")
-            domains[name] = [row for row in rows if isinstance(row, dict)]
+            rows = cast(list[Any], rows)
+            domains[name] = [cast(JsonRow, row) for row in rows if isinstance(row, dict)]
         return cls(version=CURRENT_SNAPSHOT_VERSION, scope=dict(scope), domains=domains)
 
     def to_dict(self) -> Dict[str, object]:
@@ -390,7 +391,7 @@ class RestoreOptions:
     """恢复选项: 由框架统一传给各领域恢复器"""
     preserve_ids: bool
     """True=原位恢复 (回滚), False=新作用域恢复 (fork, 引用需重映射)"""
-    id_map: Dict[str, str] = field(default_factory=dict)
+    id_map: Dict[str, str] = field(default_factory=dict[str, str])
     """引用字段的旧值 -> 新值映射表, fork 时由框架构建"""
 
 
