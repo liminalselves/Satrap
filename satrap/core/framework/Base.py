@@ -1,11 +1,14 @@
 from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
 from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
-from satrap.core.utils.context import ContextManager, AsyncContextManager
+from satrap.core.utils.context import ContextManager, AsyncContextManager, _messages_domain
 from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from typing import Optional, Callable, Any, Awaitable, TypeVar, cast
-from satrap.core.type import LLMCallResponse
-import inspect, json, copy
+from satrap.core.type import LLMCallResponse, StateCheckpoint
+from satrap.core.state import StateStore
+from satrap.core.state.mutation import state_mutation_context
+import inspect, json, copy, uuid
+import asyncio
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -423,7 +426,8 @@ class ModelWorkflowFramework:
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
     def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
-        command_handler: Optional[CommandHandler] | None = None):
+        command_handler: Optional[CommandHandler] | None = None, *, db_path: str = ".satrap/chat_history.db",
+        state_store: Optional[StateStore] = None, enable_checkpoint: bool = False):
         """会话框架, 用于管理多个模型工作流的会话
         任何依赖多模型的复杂 Agent 都应当继承自该类, 并实现 `forward` 方法
 
@@ -433,9 +437,22 @@ class Session:
         - session_id: 会话 ID
         - content_callback: 内容回调函数, 用于在复杂模型调用过程中抛出模型回复内容; 如果只取最终回复, 则可以设置为 None
         - command_handler: 命令处理程序实例
+        - db_path: 会话上下文数据库路径 (与检查点存储同库)
+        - state_store: 状态检查点存储实例, 传入后启用会话级检查点/回滚/分支能力
+        - enable_checkpoint: 为 True 时自动创建指向 db_path 的 StateStore, 与显式传入 state_store 二选一
         """
-        self.session_ctx = ContextManager(session_id)
+        self._state_store = state_store
+        if self._state_store is None and enable_checkpoint:
+            self._state_store = StateStore(db_path=db_path)
+        self._workflow_contexts: dict[str, ContextManager] = {}
+        """工作流 ID -> 工作流上下文, 供会话级检查点聚合"""
+
+        self.session_ctx = ContextManager(session_id, db_path=db_path)
         """会话共享上下文"""
+
+        if self._state_store is not None:
+            self._state_store.register_domain(_messages_domain())
+            self.session_ctx.state_store = self._state_store
 
         if command_handler is None:   # 创建默认命令处理器, 输出回调指向 _content_callback
             self.cmd_handler = CommandHandler(output_callback=self._content_callback)
@@ -489,22 +506,229 @@ class Session:
         """执行会话; 调用模型并返回结果"""
         return None
     
-    def workflow_id_assign(self, wf_id: str):
+    def workflow_id_assign(self, wf_id: str) -> str:
         """为会话分配工作流 ID
+
+        重复的 wf_id 自动追加序号 (如 main -> main_2) 并记录警告, 避免工作流上下文互相污染
 
         返回:
         - 工作流 ID (str) (session_id + "_" + wf_id)
         """
         workflow_id = self.session_id + "_" + wf_id
+        if workflow_id in self.wf_list:
+            logger.warning(f"[会话] 工作流 ID 重复, 自动追加序号: {wf_id} -> {wf_id}_2")
+            suffix = 2
+            while f"{self.session_id}_{wf_id}_{suffix}" in self.wf_list:
+                suffix += 1
+            workflow_id = f"{self.session_id}_{wf_id}_{suffix}"
         self.wf_list.append(workflow_id)
         return workflow_id
+
+    def _require_session_store(self) -> StateStore:
+        """获取会话级状态存储, 未启用时抛出 ValueError"""
+        if self._state_store is None:
+            raise ValueError("未启用会话级状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
+        return self._state_store
+
+    def _all_contexts(self) -> dict[str, ContextManager]:
+        """返回 {上下文名: ContextManager}, 含会话共享上下文与全部工作流上下文"""
+        contexts: dict[str, ContextManager] = {"session": self.session_ctx}
+        contexts.update(self._workflow_contexts)
+        return contexts
+
+    def _track_workflow_context(self, wf_id: str, ctx: ContextManager) -> None:
+        """注册工作流上下文, 使其纳入会话级检查点聚合
+
+        参数:
+        - wf_id: 工作流 ID (workflow_id_assign 的返回值)
+        - ctx: 工作流的 ContextManager 实例
+        """
+        if wf_id in self._workflow_contexts:
+            logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
+        self._workflow_contexts[wf_id] = ctx
+        if self._state_store is not None:
+            if str(ctx.db_path) != str(self._state_store.db_path):
+                raise ValueError(
+                    f"工作流 {wf_id} 的上下文库 {ctx.db_path} 与会话状态库 {self._state_store.db_path} 不一致"
+                )
+            if ctx.state_store is None:
+                ctx.state_store = self._state_store
+                self._state_store.register_domain(_messages_domain())
+
+    def create_checkpoint(self, name: str = "", description: str = "") -> str:
+        """为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
+
+        参数:
+        - name: 检查点显示名称
+        - description: 检查点说明
+
+        返回:
+        - str: 批次 ID, 用于 list_checkpoints / rollback
+        """
+        self._require_session_store()
+        batch_id = f"batch-{uuid.uuid4().hex[:16]}"
+        try:
+            with state_mutation_context(
+                source="session_checkpoint", reason=f"创建会话检查点 {name or batch_id}"
+            ):
+                for ctx_name, ctx in self._all_contexts().items():
+                    ctx.create_checkpoint(
+                        name=f"{name}[{ctx_name}]" if name else ctx_name,
+                        description=description,
+                        batch_id=batch_id,
+                    )
+        except Exception:
+            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
+            store = self._require_session_store()
+            for ctx in self._all_contexts().values():
+                for cp in store.list_checkpoints(ctx._scope()):
+                    if cp.batch_id == batch_id:
+                        store.delete_checkpoint(cp.checkpoint_id)
+            raise
+        return batch_id
+
+    def list_checkpoints(self) -> list[StateCheckpoint]:
+        """列出会话的全部聚合检查点 (按批次去重, 时间升序)
+
+        返回:
+        - list[StateCheckpoint]: 检查点列表, 每个批次一个代表检查点
+        """
+        store = self._require_session_store()
+        seen: dict[str, StateCheckpoint] = {}
+        for ctx in self._all_contexts().values():
+            for cp in store.list_checkpoints(ctx._scope()):
+                if cp.batch_id:
+                    seen.setdefault(cp.batch_id, cp)
+                else:
+                    seen.setdefault(cp.checkpoint_id, cp)
+        return list(seen.values())
+
+    def rollback(self, checkpoint_id: str) -> None:
+        """回滚会话到指定检查点批次并重载全部上下文
+
+        参数:
+        - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
+        """
+        store = self._require_session_store()
+        is_batch, target = self._resolve_batch_id(store, checkpoint_id)
+        with state_mutation_context(
+            source="session_checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
+        ):
+            if is_batch:
+                store.rollback_batch(target)
+            else:
+                store.rollback(target)   # 单检查点 (非聚合)
+        for ctx in self._all_contexts().values():
+            ctx.load_context()
+
+    def retry(self, checkpoint_id: str) -> None:
+        """从指定检查点批次重试并重载全部上下文 (保留未来检查点)
+
+        参数:
+        - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
+        """
+        store = self._require_session_store()
+        is_batch, target = self._resolve_batch_id(store, checkpoint_id)
+        with state_mutation_context(
+            source="session_checkpoint_retry", reason=f"重试到检查点 {checkpoint_id}"
+        ):
+            if is_batch:
+                store.retry_batch(target)
+            else:
+                store.retry(target)   # 单检查点 (非聚合)
+        for ctx in self._all_contexts().values():
+            ctx.load_context()
+
+    def list_branches(self) -> list[StateCheckpoint]:
+        """列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
+
+        返回:
+        - list[StateCheckpoint]: 分支检查点列表 (按时间升序)
+        """
+        store = self._require_session_store()
+        branches: list[StateCheckpoint] = []
+        for ctx in self._all_contexts().values():
+            branches.extend(store.list_branches(f"{ctx.conversation_id}:fork:"))
+        return branches
+
+    def list_mutations(self) -> list[StateCheckpoint]:
+        """列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
+
+        返回:
+        - list[StateCheckpoint]: 变更记录列表 (按创建时间倒序)
+        """
+        store = self._require_session_store()
+        mutations: list[StateCheckpoint] = []
+        for ctx in self._all_contexts().values():
+            mutations.extend(store.list_mutations(ctx._scope()))
+        mutations.sort(key=lambda cp: cp.created_at, reverse=True)
+        return mutations
+
+    def _resolve_batch_id(self, store: StateStore, checkpoint_id: str) -> tuple[bool, str]:
+        """把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+
+        单检查点 (无批次) 时返回 (False, 检查点 ID)
+        """
+        cp = store.get_checkpoint(checkpoint_id)
+        if cp is not None:
+            return (bool(cp.batch_id), cp.batch_id or cp.checkpoint_id)
+        if store.list_checkpoints_by_batch(checkpoint_id):
+            return (True, checkpoint_id)
+        raise ValueError(f"检查点不存在: {checkpoint_id}")
+
+    def fork(
+        self,
+        branch_name: str,
+        checkpoint_id: str | None = None,
+    ) -> dict[str, ContextManager]:
+        """从指定检查点 (默认最近一个) fork 会话下全部上下文
+
+        参数:
+        - branch_name: 分支名称, 新上下文 ID 形如 "{原ID}:fork:{分支名}"
+        - checkpoint_id: 源检查点 ID, 默认最近一个批次
+
+        返回:
+        - dict[str, ContextManager]: {上下文名: 新上下文管理器} ("session" 与会话内各工作流)
+
+        异常:
+        - ValueError: 会话没有检查点, 或指定检查点不存在
+        """
+        store = self._require_session_store()
+        checkpoints = self.list_checkpoints()
+        if not checkpoints:
+            raise ValueError("当前会话没有检查点, 请先创建检查点")
+        if checkpoint_id is not None:
+            source = next((cp for cp in checkpoints if cp.checkpoint_id == checkpoint_id), None)
+            if source is None:
+                _, batch_id = self._resolve_batch_id(store, checkpoint_id)
+                source = next((cp for cp in checkpoints if cp.batch_id == batch_id), None)
+
+            if source is None:
+                raise ValueError(f"检查点不存在: {checkpoint_id}")
+        else:
+            source = checkpoints[-1]
+
+        batch_id = source.batch_id or source.checkpoint_id
+        batch = store.list_checkpoints_by_batch(batch_id)
+        by_scope = {cp.scope_id: cp for cp in (batch if batch else [source])}
+        new_ctxs: dict[str, ContextManager] = {}
+
+        for ctx_name, ctx in self._all_contexts().items():
+            cp = by_scope.get(ctx.conversation_id)
+            if cp is None:
+                logger.warning(f"[会话] 上下文 {ctx_name} 无对应检查点, fork 跳过")
+                continue
+
+            new_ctxs[ctx_name] = ctx.fork(branch_name, checkpoint_id=cp.checkpoint_id)
+
+        return new_ctxs
     
     def clear_memory(self):
         """清除会话内存"""
         try:
             self.session_ctx.del_context()
             for wf_id in self.wf_list:
-                wf_ctx = ContextManager(wf_id)
+                wf_ctx = ContextManager(wf_id, db_path=self.session_ctx.db_path)
                 wf_ctx.del_context()
 
             logger.info("[会话管理器] 清除工作流上下文完成")
@@ -962,7 +1186,9 @@ class AsyncSession:
 
     def __init__(self, session_id: str,
         content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,
-        command_handler: Optional[AsyncCommandHandler] | None = None
+        command_handler: Optional[AsyncCommandHandler] | None = None, *,
+        db_path: str = ".satrap/chat_history.db",
+        state_store: Optional[StateStore] = None, enable_checkpoint: bool = False
     ):
         """
         异步会话框架, 用于管理多个异步模型工作流协作的会话
@@ -995,13 +1221,26 @@ class AsyncSession:
         - session_id: 会话 ID
         - content_callback: 内容回调函数, 用于在复杂调用流程中回传模型内容
         - command_handler: 命令处理器实例, 用于处理用户输入的命令
+        - db_path: 会话上下文数据库路径 (与检查点存储同库)
+        - state_store: 状态检查点存储实例, 传入后启用会话级检查点/回滚/分支能力
+        - enable_checkpoint: 为 True 时自动创建指向 db_path 的 StateStore, 与显式传入 state_store 二选一
         """
-        self.session_ctx = AsyncContextManager(session_id)
+        self._state_store = state_store
+        if self._state_store is None and enable_checkpoint:
+            self._state_store = StateStore(db_path=db_path)
+        self._workflow_contexts: dict[str, AsyncContextManager] = {}
+        """工作流 ID -> 工作流上下文, 供会话级检查点聚合"""
+
+        self.session_ctx = AsyncContextManager(session_id, db_path=db_path)
         self.session_id = session_id
         self.wf_list: list[str] = []
         self.content_callback = content_callback
         self._initialized = False
         self._user_manager: UserManager | None = None
+
+        if self._state_store is not None:
+            self._state_store.register_domain(_messages_domain())
+            self.session_ctx.state_store = self._state_store
 
         self.command_handler = command_handler if command_handler else AsyncCommandHandler()
         # 如果未提供命令处理器, 则创建一个空的命令处理器实例
@@ -1048,11 +1287,217 @@ class AsyncSession:
         """执行会话"""
         return None
 
-    def workflow_id_assign(self, wf_id: str):
-        """为会话分配工作流 ID"""
+    def workflow_id_assign(self, wf_id: str) -> str:
+        """为会话分配工作流 ID
+
+        重复的 wf_id 自动追加序号 (如 main -> main_2) 并记录警告, 避免工作流上下文互相污染
+
+        返回:
+        - 工作流 ID (str) (session_id + "_" + wf_id)
+        """
         workflow_id = self.session_id + "_" + wf_id
+        if workflow_id in self.wf_list:
+            logger.warning(f"[会话] 工作流 ID 重复, 自动追加序号: {wf_id} -> {wf_id}_2")
+            suffix = 2
+            while f"{self.session_id}_{wf_id}_{suffix}" in self.wf_list:
+                suffix += 1
+            workflow_id = f"{self.session_id}_{wf_id}_{suffix}"
         self.wf_list.append(workflow_id)
         return workflow_id
+
+    def _require_session_store(self) -> StateStore:
+        """获取会话级状态存储, 未启用时抛出 ValueError"""
+        if self._state_store is None:
+            raise ValueError("未启用会话级状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
+        return self._state_store
+
+    def _all_contexts(self) -> dict[str, AsyncContextManager]:
+        """返回 {上下文名: AsyncContextManager}, 含会话共享上下文与全部工作流上下文"""
+        contexts: dict[str, AsyncContextManager] = {"session": self.session_ctx}
+        contexts.update(self._workflow_contexts)
+        return contexts
+
+    def _track_workflow_context(self, wf_id: str, ctx: AsyncContextManager) -> None:
+        """注册工作流上下文, 使其纳入会话级检查点聚合
+
+        参数:
+        - wf_id: 工作流 ID (workflow_id_assign 的返回值)
+        - ctx: 工作流的 AsyncContextManager 实例
+        """
+        if wf_id in self._workflow_contexts:
+            logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
+        self._workflow_contexts[wf_id] = ctx
+        if self._state_store is not None:
+            if str(ctx.db_path) != str(self._state_store.db_path):
+                raise ValueError(
+                    f"工作流 {wf_id} 的上下文库 {ctx.db_path} 与会话状态库 {self._state_store.db_path} 不一致"
+                )
+            if ctx.state_store is None:
+                ctx.state_store = self._state_store
+                self._state_store.register_domain(_messages_domain())
+
+    async def create_checkpoint(self, name: str = "", description: str = "") -> str:
+        """为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
+
+        参数:
+        - name: 检查点显示名称
+        - description: 检查点说明
+
+        返回:
+        - str: 批次 ID, 用于 list_checkpoints / rollback
+        """
+        self._require_session_store()
+        batch_id = f"batch-{uuid.uuid4().hex[:16]}"
+        try:
+            with state_mutation_context(
+                source="session_checkpoint", reason=f"创建会话检查点 {name or batch_id}"
+            ):
+                for ctx_name, ctx in self._all_contexts().items():
+                    await ctx.create_checkpoint(
+                        name=f"{name}[{ctx_name}]" if name else ctx_name,
+                        description=description,
+                        batch_id=batch_id,
+                    )
+        except Exception:
+            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
+            store = self._require_session_store()
+            for ctx in self._all_contexts().values():
+                for cp in await asyncio.to_thread(store.list_checkpoints, ctx._scope()):
+                    if cp.batch_id == batch_id:
+                        await asyncio.to_thread(store.delete_checkpoint, cp.checkpoint_id)
+            raise
+        return batch_id
+
+    async def list_checkpoints(self) -> list[StateCheckpoint]:
+        """列出会话的全部聚合检查点 (按批次去重, 时间升序)
+
+        返回:
+        - list[StateCheckpoint]: 检查点列表, 每个批次一个代表检查点
+        """
+        store = self._require_session_store()
+        seen: dict[str, StateCheckpoint] = {}
+        for ctx in self._all_contexts().values():
+            for cp in await asyncio.to_thread(store.list_checkpoints, ctx._scope()):
+                if cp.batch_id:
+                    seen.setdefault(cp.batch_id, cp)
+                else:
+                    seen.setdefault(cp.checkpoint_id, cp)
+        return list(seen.values())
+
+    async def rollback(self, checkpoint_id: str) -> None:
+        """回滚会话到指定检查点批次并重载全部上下文
+
+        参数:
+        - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
+        """
+        store = self._require_session_store()
+        is_batch, target = self._resolve_batch_id(store, checkpoint_id)
+        with state_mutation_context(
+            source="session_checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
+        ):
+            if is_batch:
+                await asyncio.to_thread(store.rollback_batch, target)
+            else:
+                await asyncio.to_thread(store.rollback, target)   # 单检查点 (非聚合)
+        for ctx in self._all_contexts().values():
+            await ctx.load_context()
+
+    async def retry(self, checkpoint_id: str) -> None:
+        """从指定检查点批次重试并重载全部上下文 (保留未来检查点)
+
+        参数:
+        - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
+        """
+        store = self._require_session_store()
+        is_batch, target = self._resolve_batch_id(store, checkpoint_id)
+        with state_mutation_context(
+            source="session_checkpoint_retry", reason=f"重试到检查点 {checkpoint_id}"
+        ):
+            if is_batch:
+                await asyncio.to_thread(store.retry_batch, target)
+            else:
+                await asyncio.to_thread(store.retry, target)   # 单检查点 (非聚合)
+        for ctx in self._all_contexts().values():
+            await ctx.load_context()
+
+    async def list_branches(self) -> list[StateCheckpoint]:
+        """列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
+
+        返回:
+        - list[StateCheckpoint]: 分支检查点列表 (按时间升序)
+        """
+        store = self._require_session_store()
+        branches: list[StateCheckpoint] = []
+        for ctx in self._all_contexts().values():
+            branches.extend(await asyncio.to_thread(store.list_branches, f"{ctx.conversation_id}:fork:"))
+        return branches
+
+    async def list_mutations(self) -> list[StateCheckpoint]:
+        """列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
+
+        返回:
+        - list[StateCheckpoint]: 变更记录列表 (按创建时间倒序)
+        """
+        store = self._require_session_store()
+        mutations: list[StateCheckpoint] = []
+        for ctx in self._all_contexts().values():
+            mutations.extend(await asyncio.to_thread(store.list_mutations, ctx._scope()))
+        mutations.sort(key=lambda cp: cp.created_at, reverse=True)
+        return mutations
+
+    def _resolve_batch_id(self, store: StateStore, checkpoint_id: str) -> tuple[bool, str]:
+        """把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+
+        单检查点 (无批次) 时返回 (False, 检查点 ID)
+        """
+        cp = store.get_checkpoint(checkpoint_id)
+        if cp is not None:
+            return (bool(cp.batch_id), cp.batch_id or cp.checkpoint_id)
+        if store.list_checkpoints_by_batch(checkpoint_id):
+            return (True, checkpoint_id)
+        raise ValueError(f"检查点不存在: {checkpoint_id}")
+
+    async def fork(
+        self,
+        branch_name: str,
+        checkpoint_id: str | None = None,
+    ) -> dict[str, AsyncContextManager]:
+        """从指定检查点 (默认最近一个) fork 会话下全部上下文
+
+        参数:
+        - branch_name: 分支名称, 新上下文 ID 形如 "{原ID}:fork:{分支名}"
+        - checkpoint_id: 源检查点 ID, 默认最近一个批次
+
+        返回:
+        - dict[str, AsyncContextManager]: {上下文名: 新上下文管理器} (已初始化)
+
+        异常:
+        - ValueError: 会话没有检查点, 或指定检查点不存在
+        """
+        store = self._require_session_store()
+        checkpoints = await self.list_checkpoints()
+        if not checkpoints:
+            raise ValueError("当前会话没有检查点, 请先创建检查点")
+        if checkpoint_id is not None:
+            source = next((cp for cp in checkpoints if cp.checkpoint_id == checkpoint_id), None)
+            if source is None:
+                _, batch_id = self._resolve_batch_id(store, checkpoint_id)
+                source = next((cp for cp in checkpoints if cp.batch_id == batch_id), None)
+            if source is None:
+                raise ValueError(f"检查点不存在: {checkpoint_id}")
+        else:
+            source = checkpoints[-1]
+        batch_id = source.batch_id or source.checkpoint_id
+        batch = await asyncio.to_thread(store.list_checkpoints_by_batch, batch_id)
+        by_scope = {cp.scope_id: cp for cp in (batch if batch else [source])}
+        new_ctxs: dict[str, AsyncContextManager] = {}
+        for ctx_name, ctx in self._all_contexts().items():
+            cp = by_scope.get(ctx.conversation_id)
+            if cp is None:
+                logger.warning(f"[会话] 上下文 {ctx_name} 无对应检查点, fork 跳过")
+                continue
+            new_ctxs[ctx_name] = await ctx.fork(branch_name, checkpoint_id=cp.checkpoint_id)
+        return new_ctxs
 
     async def clear_memory(self):
         """清除会话内存"""
@@ -1060,7 +1505,7 @@ class AsyncSession:
             await self.initialize()
             await self.session_ctx.del_context()
             for wf_id in self.wf_list:
-                wf_ctx = AsyncContextManager(wf_id)
+                wf_ctx = AsyncContextManager(wf_id, db_path=self.session_ctx.db_path)
                 await wf_ctx.initialize()
                 await wf_ctx.del_context()
                 logger.info(f"[会话管理器] 清除工作流上下文完成, 工作流ID: {wf_id}")

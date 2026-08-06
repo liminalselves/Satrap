@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from pathlib import Path
@@ -33,7 +34,7 @@ class _FakeAdapter:
     started = True
     config = _FakeConfig()
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         return {
             "status": "running",
             "started": True,

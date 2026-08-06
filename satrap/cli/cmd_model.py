@@ -135,6 +135,7 @@ def cmd_model_set(args: argparse.Namespace):
             params = parse_kv_pairs(args.set)
         if not isinstance(params, dict):
             raise ValueError("参数必须是对象")
+        params = cast(dict[str, Any], params)
 
         client = daemon_client_from_args(args)
         if client.is_alive() and not offline_requested(args):

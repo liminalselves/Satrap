@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
+from typing import Any, cast
 
 import streamlit as st
 from satrap.admin_utils.log_state import read_log_increment
@@ -90,12 +91,14 @@ def render():
     max_lines = st.slider("显示行数", 50, 500, 200)
 
     try:
+        session = cast(Any, st.session_state)
+        cached: list[str] = cast(list[str], session.log_lines)
         position, cached_lines, display_lines = read_log_increment(
             log_file=log_file,
-            position=st.session_state.log_position,
-            cached_lines=list(st.session_state.log_lines),
+            position=session.log_position,
+            cached_lines=list(cached),
             max_lines=max_lines,
-            paused=st.session_state.log_paused,
+            paused=session.log_paused,
         )
         st.session_state.log_position = position
         st.session_state.log_lines = cached_lines

@@ -1,5 +1,5 @@
 ---
-name: web_research
+name: web-research
 description: 网络调研助手; 搜索信息并抓取网页内容进行总结
 tools:
   - search

@@ -16,7 +16,7 @@ from satrap.expend.command.session_commands import (
 class FakeUserManager:
     def __init__(self, sessions: list[str] | None = None):
         self.sessions = list(sessions or [])
-        self.bound = []
+        self.bound: list[tuple[str, str]] = []
 
     def get_user_session_ids(self, user_id: str):
         return list(self.sessions)

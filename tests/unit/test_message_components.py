@@ -2,6 +2,7 @@ import base64
 from pathlib import Path
 import os
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 from satrap.core.components import (
     At,
     AtAll,
+    BaseMessageComponent,
     ComponentTypes,
     Dice,
     Face,
@@ -32,7 +34,7 @@ from satrap.core.components import (
 
 
 def test_core_components_can_serialize():
-    components = [
+    components: list[BaseMessageComponent] = [
         Plain("hello"),
         Face(id=1),
         At(qq=123),

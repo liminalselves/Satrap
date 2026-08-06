@@ -467,7 +467,7 @@ class MisskeyAPI:
         if isinstance(result, list):
             return cast(list[dict[str, Any]], result)
         if isinstance(result, dict):
-            return cast(list[dict[str, Any]], result.get("notifications", []))
+            return cast(list[dict[str, Any]], cast(dict[str, Any], result).get("notifications", []))
         return []
 
     async def upload_file(

@@ -1,6 +1,15 @@
 # 扩展模块
 
-`satrap.expend` 放的是可选扩展能力, 适合直接注册进 Agent 或在业务 Session 中组合使用。当前顶层导出包括长期记忆, RAG, 搜索, 网页抓取和代码沙箱。
+`satrap.expend` 放的是可选扩展能力, 适合直接注册进 Agent 或在业务 Session 中组合使用。
+
+目录结构:
+
+- `satrap.expend.tools`: 工具类集 (agent / mem0 / rag / sandbox_tools / search)
+- `satrap.expend.mcp`: MCP 生态扩展 (预留)
+- `satrap.expend.command`: 可复用的 Session 命令
+- `satrap.expend.skills`: 内置技能 (coding_agent / web_research)
+
+顶层导出包括长期记忆, RAG, 搜索, 网页抓取和代码沙箱 (旧路径 `satrap.expend.<mod>` 兼容):
 
 ```python
 from satrap.expend import (
@@ -16,7 +25,7 @@ from satrap.expend import (
 )
 ```
 
-`satrap.expend.agent` 里的 sub-agent 目前没有从 `satrap.expend` 顶层导出, 需要从模块路径直接导入。
+`satrap.expend.tools.agent` 里的 sub-agent 可顶层导入, 也可从模块路径直接导入:
 
 ## 搜索与网页抓取
 
@@ -203,7 +212,7 @@ asyncio.run(main())
 `SubAgent` / `AsyncSubAgent` 可以把一个任务数组分配给多个独立上下文中的子 Agent 并汇总结果。它适合拆解可并行处理的任务。
 
 ```python
-from satrap.expend.agent import SubAgent
+from satrap.expend.tools.agent import SubAgent
 
 sub_agent_tool = SubAgent(llm=llm, tools_manager=tools)
 tools.register_tool(sub_agent_tool)

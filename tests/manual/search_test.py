@@ -1,7 +1,7 @@
 # test_search.py
 import json
 import asyncio
-from satrap.expend.search import AsyncSearchTool
+from satrap.expend.tools.search import AsyncSearchTool
 
 async def test():
     tool = AsyncSearchTool(timeout=10)

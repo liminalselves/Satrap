@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import inspect
@@ -11,7 +11,7 @@ import string
 import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, cast
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
@@ -178,7 +178,7 @@ class SessionConfigStore:
             try:
                 parsed = json.loads(raw_payload)
                 if isinstance(parsed, dict):
-                    payload = parsed
+                    payload = cast(Dict[str, Any], parsed)
             except Exception:
                 payload = {}
 
@@ -418,20 +418,26 @@ class SessionManager:
         max_size: int = 1000,
         idle_timeout: int = 3600,
         db_path: str | Path | None = None,
+        default_checkpoint: bool = False,
+        default_checkpoint_db: str | None = None,
     ):
         """初始化会话管理器
-        
+    
         参数:
         - default_session_type: 默认会话类型 (默认 "default")
         - max_size: 最大会话池大小 (默认 1000)
         - idle_timeout: 最大闲置时间 (秒, 默认 3600)
         - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
+        - default_checkpoint: 实例化会话时若未显式配置 enable_checkpoint, 是否默认启用状态检查点 (默认 False)
+        - default_checkpoint_db: 实例化会话时若未显式配置 db_path, 注入的上下文库路径 (默认 None, 使用会话自身默认库)
         """
         self.registry = SessionRegistry()
         self.pool = SessionPool(max_size=max_size, idle_timeout=idle_timeout)
         self.store = SessionConfigStore(db_path=db_path)
-
+    
         self.default_session_type = default_session_type
+        self._default_checkpoint = default_checkpoint
+        self._default_checkpoint_db = default_checkpoint_db
         self._async_lock = asyncio.Lock()
         self._class_cfg_mgr: SessionClassConfigManager | None = None
 
@@ -951,7 +957,7 @@ class SessionManager:
 
         sid = user_call.session_id or _short_uid()
         now = time.time()
-        class_params: dict = {}
+        class_params: dict[str, Any] = {}
         if self._class_cfg_mgr is not None:
             class_params = dict(self._class_cfg_mgr.get_params(requested_type))
         cfg = SessionConfig(
@@ -985,6 +991,14 @@ class SessionManager:
         sig = inspect.signature(session_class)
         params = list(sig.parameters.values())
         has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
+        accepted = {p.name for p in params}
+
+        def inject_checkpoint_defaults(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+            """仅在目标未显式提供时注入检查点默认值 (构造器不接受则自然忽略)"""
+            if "enable_checkpoint" not in source and ("enable_checkpoint" in accepted or has_var_kw):
+                target.setdefault("enable_checkpoint", self._default_checkpoint)
+            if self._default_checkpoint_db is not None and "db_path" not in source and ("db_path" in accepted or has_var_kw):
+                target.setdefault("db_path", self._default_checkpoint_db)
 
         # case 1: 优先支持显式 session_config 入参
         if any(p.name == "session_config" for p in params):
@@ -998,17 +1012,16 @@ class SessionManager:
             if has_var_kw:
                 kwargs.update(payload)
             else:
-                accepted = {p.name for p in params}
                 for key, value in payload.items():
                     if key in accepted and key not in kwargs:
                         kwargs[key] = value
+            inject_checkpoint_defaults(kwargs, payload)
             return session_class(**kwargs)   # type: ignore[misc]
 
         # case 2/3: 走 session_id + 配置透传
         payload = dict(session_cfg.session_config or {})
         payload.pop("session_id", None)
 
-        accepted = {p.name for p in params}
         kwargs: Dict[str, Any] = {}
 
         if "session_id" in accepted:
@@ -1020,6 +1033,7 @@ class SessionManager:
             for key, value in payload.items():
                 if key in accepted:
                     kwargs[key] = value
+        inject_checkpoint_defaults(kwargs, payload)
 
         # 最后兜底: 仍无法提供 session_id 关键字时, 尝试位置参数
         if not kwargs and session_cfg.session_id:

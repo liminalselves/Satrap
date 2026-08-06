@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from satrap.cli.cmd_session import _configured_adapter_ids
 from satrap.core.framework.Base import Session
@@ -31,7 +32,7 @@ class _DummyAdapter(PlatformAdapter):
         return PlatformMetadata(name=self.config.id, id=self.config.id)
 
 
-def _session_class_mgr(tmp_path: Path, params: dict | None = None) -> SessionClassConfigManager:
+def _session_class_mgr(tmp_path: Path, params: dict[str, Any] | None = None) -> SessionClassConfigManager:
     mgr = SessionClassConfigManager(storage_path=tmp_path / "session_classes.json")
     mgr.register("dummy", _EchoSession)
     if params:

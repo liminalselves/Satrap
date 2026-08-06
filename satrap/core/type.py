@@ -346,7 +346,7 @@ class StateSnapshot:
                 raise TypeError(f"快照领域 {name!r} 必须是行列表")
             rows = cast(list[Any], rows)
             domains[name] = [cast(JsonRow, row) for row in rows if isinstance(row, dict)]
-        return cls(version=CURRENT_SNAPSHOT_VERSION, scope=dict(scope), domains=domains)
+        return cls(version=CURRENT_SNAPSHOT_VERSION, scope={**scope}, domains=domains)
 
     def to_dict(self) -> Dict[str, object]:
         """转换为稳定的持久化字典"""
@@ -374,6 +374,8 @@ class StateCheckpoint:
     """检查点说明"""
     snapshot_id: str = ""
     """引用的独立快照 ID"""
+    batch_id: str = ""
+    """会话级聚合检查点的批次 ID (同一批检查点共享), 非聚合时为空"""
     state_revision: int = 0
     """检查点创建时的状态版本"""
     position: int = 0
@@ -382,6 +384,10 @@ class StateCheckpoint:
     """检查点类型, manual (手动) 或 stable (自动)"""
     parent_checkpoint_id: Optional[str] = None
     """fork 来源检查点 ID"""
+    source: str = ""
+    """创建时的变更来源 (审计), 如 session_checkpoint / checkpoint_fork"""
+    reason: str = ""
+    """创建时的变更原因 (审计)"""
     created_at: float = 0.0
     """创建时间戳"""
 

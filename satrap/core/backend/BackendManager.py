@@ -26,7 +26,7 @@ from satrap.core.platform import (
 class BackendConfig:
     """后端统一配置
 
-    所有路径为 None 时使用对应 Manager 的默认路径。
+    所有路径为 None 时使用对应 Manager 的默认路径
     """
 
     # 存储路径
@@ -39,6 +39,10 @@ class BackendConfig:
     default_session_type: str = "default"
     max_sessions: int = 1000
     idle_timeout: int = 3600
+    session_checkpoint: bool = False
+    """会话实例化时默认启用状态检查点 (类级/实例级显式配置优先覆盖)"""
+    session_checkpoint_db: str | None = None
+    """会话默认上下文库路径 (None 时使用会话自身默认库)"""
 
     # Pipeline
     rate_limit: float = 1.0
@@ -47,7 +51,7 @@ class BackendConfig:
     error_feedback: bool = True
 
     # Session 类注册 (name -> class_path)
-    session_classes: Dict[str, str] = field(default_factory=dict)
+    session_classes: Dict[str, str] = field(default_factory=dict[str, str])
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
 
     # HTTP API
@@ -55,7 +59,16 @@ class BackendConfig:
     api_port: int = 19870
 
     # 平台适配器配置
-    platforms: List[Dict[str, Any]] = field(default_factory=list)
+    platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
+
+    @staticmethod
+    def _as_bool(value: Any) -> bool:
+        """宽松布尔解析: 兼容 YAML 布尔与字符串形式的 true/false/1/0/yes/no"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in ("true", "1", "yes", "on")
+        return bool(value)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackendConfig:
@@ -68,10 +81,12 @@ class BackendConfig:
             default_session_type=data.get("default_session_type", "default"),
             max_sessions=int(data.get("max_sessions", 1000)),
             idle_timeout=int(data.get("idle_timeout", 3600)),
+            session_checkpoint=cls._as_bool(data.get("session_checkpoint", False)),
+            session_checkpoint_db=data.get("session_checkpoint_db"),
             rate_limit=float(data.get("rate_limit", 1.0)),
             rate_burst=int(data.get("rate_burst", 5)),
             llm_timeout=float(data.get("llm_timeout", 120.0)),
-            error_feedback=bool(data.get("error_feedback", True)),
+            error_feedback=cls._as_bool(data.get("error_feedback", True)),
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
@@ -106,7 +121,7 @@ class BackendManager:
         self._dispatcher: EventDispatcher | None = None
 
         self._http_server: BackendHTTPServer | None = None
-        self._dispatch_task: asyncio.Task | None = None
+        self._dispatch_task: asyncio.Task[Any] | None = None
         self._shutdown_event: asyncio.Event | None = None
         self._running = False
 
@@ -127,6 +142,15 @@ class BackendManager:
     @property
     def user_manager(self) -> UserManager | None:
         return self._user_mgr
+
+    @property
+    def checkpoint_db_path(self) -> str:
+        """检查点/上下文库路径 (管理 API 使用): 显式配置 > 会话库 > 默认路径"""
+        return (
+            self.config.session_checkpoint_db
+            or self.config.session_db_path
+            or ".satrap/chat_history.db"
+        )
 
     @property
     def scheduler(self) -> PipelineScheduler | None:
@@ -259,6 +283,8 @@ class BackendManager:
             max_size=self.config.max_sessions,
             idle_timeout=self.config.idle_timeout,
             db_path=self.config.session_db_path,
+            default_checkpoint=self.config.session_checkpoint,
+            default_checkpoint_db=self.config.session_checkpoint_db,
         )
         # 关联 SessionClassConfigManager 用于启用检查
         self._session_mgr.class_cfg_mgr = self._session_cls_cfg

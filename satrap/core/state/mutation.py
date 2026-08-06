@@ -1,12 +1,13 @@
 """状态变更审计上下文
 
 基于 ContextVar 在作用域内提供统一的变更来源与原因,
-StateStore 创建检查点时自动记录当前上下文, 用于追踪每次状态变更的来源。
+StateStore 创建检查点时自动记录当前上下文, 用于追踪每次状态变更的来源
 """
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
-from typing import Iterator, Optional
+from typing import Generator, Optional, Union
 import uuid
+
 
 from satrap.core.type import MutationContext
 
@@ -22,7 +23,7 @@ def current_mutation_context() -> Optional[MutationContext]:
 
 
 @contextmanager
-def state_mutation_context(*, source: str, reason: str = "") -> Iterator[MutationContext]:
+def state_mutation_context(*, source: str, reason: str = "") -> Generator[MutationContext, None, None]:
     """在作用域内提供状态变更审计上下文
 
     参数:

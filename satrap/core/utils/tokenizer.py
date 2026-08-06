@@ -1,7 +1,9 @@
-from splintr import Tokenizer
+from splintr import Tokenizer  # pyright: ignore[reportUnknownVariableType]
 import math
+from typing import Any
 
-tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+# splintr 无类型声明, 用 Any 承载第三方对象
+tokenizer: Any = Tokenizer.from_pretrained("deepseek_v3")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 
 def tokenizer_estimate(text: str) -> int:
     """使用分词器估计文本的 token 数量"""
@@ -13,13 +15,13 @@ def experience_estimate(text: str) -> int:
     规则:
     - 中文字符每个约 0.7 个 token
     - 英文字母、数字、标点等: 每 4 个字符约 1 个 token(即 0.25 token/字符)
-    """
-
-    
+    """    
     chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
     other_chars = len(text) - chinese_chars
     estimate = chinese_chars * 0.7 + other_chars * 0.25
     return max(1, math.ceil(estimate))
+
+
 if __name__ == "__main__":
     print(tokenizer_estimate("Hello, world!"))
     print(experience_estimate("Hello, world!"))

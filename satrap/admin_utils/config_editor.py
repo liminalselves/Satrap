@@ -154,7 +154,7 @@ def validate_platforms(platforms: list[Any] | None) -> list[dict[str, Any]]:
         copied = dict(item)
         copied["id"] = pid
         copied["type"] = ptype
-        copied["settings"] = cast(dict[str, Any], dict(settings))
+        copied["settings"] = settings if isinstance(settings, dict) else {}
         result.append(copied)
     return result
 
@@ -302,7 +302,7 @@ def _platform_settings_form(platform_type: str, settings: dict[str, Any], key_pr
                 value=bool(settings.get("enable_group", True)),
                 key=f"{key_prefix}_enable_group",
             )
-        result = {
+        result: dict[str, Any] = {
             "host": host,
             "port": int(port),
             "access_token": access_token,

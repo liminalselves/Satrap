@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+from typing import Any
 
 import pytest
 from pathlib import Path
@@ -61,9 +62,9 @@ def test_global_flags_survive_subparser_defaults():
 
 def test_daemon_client_new_routes_call_expected_paths(monkeypatch: pytest.MonkeyPatch):
     """DaemonClient 新增方法应请求对应 HTTP 路由"""
-    calls = []
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
-    def fake_request(method: str, path: str, body: dict | None = None):
+    def fake_request(method: str, path: str, body: dict[str, Any] | None = None):
         calls.append((method, path, body))
         return {"ok": True}
 

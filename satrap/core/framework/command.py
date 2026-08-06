@@ -14,7 +14,7 @@ class CommandHandler:
         """
         self.output_callback = output_callback
         self.commands: Dict[str, Any] = {}   # 命令名 -> 处理函数
-        self.intros: Dict[str, str] = {}          # 命令名 -> 简介
+        self.intros: Dict[str, str] = {}     # 命令名 -> 简介
         self.prefix = cmd_prefix
         self.pref_len = len(cmd_prefix)
         self.param_split = param_split

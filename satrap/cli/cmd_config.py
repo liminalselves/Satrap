@@ -1,6 +1,6 @@
 from __future__ import annotations
 import argparse
-from typing import Any
+from typing import Any, cast
 
 import sys
 
@@ -21,14 +21,19 @@ def _warn_if_backend_running(args: argparse.Namespace):
         print("提示: 后端正在运行, 配置文件变更需 reload/restart 后生效.")
 
 
-def _set_nested(data: dict, dotted_key: str, value: Any):
+def _set_nested(data: dict[str, Any], dotted_key: str, value: Any):
     """按 dotted key 设置配置值"""
     parts = dotted_key.split(".")
-    cur = data
+    cur: Any = data
     for part in parts[:-1]:
-        cur = cur.setdefault(part, {})
-        if not isinstance(cur, dict):
+        child: Any = cur.get(part)
+        if child is None:
+            child = {}
+            cur[part] = child
+        elif not isinstance(child, dict):
             raise ValueError(f"{dotted_key} 的父级不是对象")
+        else:
+            cur = cast(dict[str, Any], child)
     cur[parts[-1]] = value
 
 

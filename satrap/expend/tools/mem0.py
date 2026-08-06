@@ -1,4 +1,4 @@
-﻿import asyncio
+import asyncio
 import json
 import uuid
 from datetime import datetime
@@ -326,7 +326,7 @@ class Mem0Memory:
             if not new_vec:
                 return None
 
-            meta = {
+            meta: dict[str, Any] = {
                 "id": memory_id,
                 "user_id": user_id,
                 "created_at": now,
@@ -356,7 +356,7 @@ class Mem0Memory:
         self,
         collection: str,
         content: str,
-        vec: list,
+        vec: list[Any],
         user_id: str,
         now: str,
     ) -> str:
@@ -389,7 +389,7 @@ class Mem0Memory:
             target_row_id = None
             for row in rows:
                 try:
-                    meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                    meta: dict[str, Any] = json.loads(row["metadata"]) if row["metadata"] else {}
                 except Exception:
                     meta = {}
                 if meta.get("id") == memory_id:
@@ -424,7 +424,7 @@ class Mem0Memory:
         memories: List[Dict[str, Any]] = []
         for row in rows:
             try:
-                meta = json.loads(row["metadata"]) if row["metadata"] else {}
+                meta: dict[str, Any] = json.loads(row["metadata"]) if row["metadata"] else {}
             except Exception:
                 meta = {}
             memories.append({"content": row["document"], **meta})

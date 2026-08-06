@@ -9,7 +9,7 @@ class DomainRegistry:
     """领域注册表
 
     注册顺序即恢复顺序: 清理与恢复按注册顺序执行,
-    跨领域存在外键引用时, 被引用领域必须先注册。
+    跨领域存在外键引用时, 被引用领域必须先注册
     """
     def __init__(self) -> None:
         self._domains: Dict[str, SnapshotDomain] = {}

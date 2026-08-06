@@ -83,7 +83,7 @@ class SubAgent(Tool):
         """
         # 1. 安全解析 (处理模型可能传字符串或数组的情况)
         try:
-            task_list = json.loads(task)
+            task_list: list[str] = json.loads(task)
             if isinstance(task_list, str):
                 task_list = [task_list]
             elif not isinstance(task_list, list):
@@ -150,11 +150,11 @@ class AsyncSubAgent(AsyncTool):
         """
         # 1. 安全解析 (处理模型可能传字符串或数组的情况)
         try:
-            task_list = json.loads(task)
+            task_list: list[str] = json.loads(task)
             if isinstance(task_list, str):
                 task_list = [task_list]
             elif not isinstance(task_list, list):
-                return f"错误：传入的 task 不是数组，而是 {type(task_list)}"
+                return f"错误：传入的task不是数组，而是 {type(task_list)}"
 
         except json.JSONDecodeError:   # 解析失败时当作单个任务处理
             logger.warning(f"[AsyncSubAgent] 警告：传入的task不是JSON数组，尝试当作单个任务处理")

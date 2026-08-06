@@ -219,10 +219,10 @@ class MyWorkflow(ModelWorkflowFramework):
 
 ## Sub-Agent 扩展
 
-`satrap.expend.agent` 提供 `SubAgent` 和 `AsyncSubAgent`, 可以把任务列表分派给子 Agent workflow。它适合需要拆分任务, 保持顺序汇总结果的场景。
+`satrap.expend.tools.agent` 提供 `SubAgent` 和 `AsyncSubAgent`, 可以把任务列表分派给子 Agent workflow。它适合需要拆分任务, 保持顺序汇总结果的场景。
 
 ```python
-from satrap.expend.agent import SubAgent
+from satrap.expend.tools.agent import SubAgent
 ```
 
 使用前需要准备子 Agent 使用的 LLM 和 ToolsManager。具体行为可以参考 `tests/unit/test_agent_sub_agent.py`。

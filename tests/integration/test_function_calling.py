@@ -9,7 +9,7 @@ from __future__ import annotations
 import ast
 import operator
 import os
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -50,7 +50,7 @@ class CalculatorTool(Tool):
                 ast.Add: operator.add,
                 ast.Sub: operator.sub,
                 ast.Mult: operator.mul,
-                ast.Div: operator.truediv,
+                ast.Div: getattr(operator, "truediv"),
             }
             tree = ast.parse(expression, mode="eval")
 

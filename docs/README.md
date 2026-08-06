@@ -10,9 +10,10 @@
 4. [工具与 Agent](tools-and-agent.md): Tool / AsyncTool, ToolsManager, workflow 和 sub-agent
 5. [扩展模块](extensions.md): 搜索, 网页抓取, 代码沙箱, RAG, 长期记忆和 sub-agent
 6. [Session, 后端与 CLI](sessions-backend-cli.md): Session 写法, 后端生命周期, CLI 常用命令
-7. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
-8. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
-9. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
+7. [检查点](checkpoint.md): 快照, 回滚, 重试, 分支与 HTTP / 面板管理
+8. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
+9. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
+10. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
 
 ## 项目结构速览
 
@@ -28,7 +29,7 @@ satrap/
     utils/            # 上下文, 工具, 多模态, sandbox 等工具模块
   cli/                # satrap 命令行实现
   pages/              # Streamlit 管理面板页面
-  expend/             # 可选扩展工具, 如搜索, RAG, mem0, sandbox
+  expend/             # 可选扩展: tools/ 工具类, mcp/ (预留), command/, skills/
 tests/                # unit, integration 和 manual 测试
 docs/                 # 项目文档
 ```

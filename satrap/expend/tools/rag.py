@@ -3,6 +3,7 @@ from satrap.core.APICall.EmbedCall import Embedding, AsyncEmbedding
 from satrap.core.utils.text_utils import TextSplitter
 from satrap.core.database import DataBase
 import asyncio, aiofiles, os, traceback
+from typing import Any
 
 from satrap.core.log import logger
 
@@ -183,12 +184,12 @@ class LiteVectorRAG:
             logger.error(f"获取集合名称失败: {e}")
             return []
 
-    async def get_vectorstore_overview(self) -> dict:
+    async def get_vectorstore_overview(self) -> dict[str, Any]:
         """获取向量库概览"""
         try:
             collections = await self.get_collection_names()
 
-            overview = {
+            overview: dict[str, Any] = {
                 "directory": self.persist_directory,
                 "total_collections": len(collections),
                 "total_documents": 0,
@@ -201,7 +202,7 @@ class LiteVectorRAG:
                 )
                 overview["total_documents"] += stats["document_count"]
                 
-                collection_info = {
+                collection_info: dict[str, Any] = {
                     "向量库名称": collection_name,
                     "文档数量": stats["document_count"],
                     "状态": "有文档" if stats["document_count"] > 0 else "空"
@@ -367,7 +368,7 @@ class LiteVectorRAG:
             chunk_overlap: int | None = None,
             K: int | None = None,
             threshold: float | None = None,
-        ):
+        ) -> tuple[list[str], list[float]]:
             """
             执行快速 RAG 流程
             
@@ -435,8 +436,8 @@ class LiteVectorRAG:
                     logger.info(f"快速流程 - 成功添加 {len(splits)} 个文档块")
                 
                 # step 2: 如果提供了查询, 执行搜索
-                documents_list = []
-                scores_list = []
+                documents_list: list[str] = []
+                scores_list: list[float] = []
 
                 if query is not None and query.strip():
                     logger.info(f"快速流程 - 执行查询: '{query}'")

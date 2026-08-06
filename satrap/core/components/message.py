@@ -417,7 +417,7 @@ class Reply(BaseMessageComponent):
     type: PlatformComponentType = PlatformComponentType.Reply
     id: str | int
     """所引用的消息 ID"""
-    chain: list[BaseMessageComponent] | None = Field(default_factory=list)
+    chain: list[BaseMessageComponent] | None = Field(default_factory=list[BaseMessageComponent])
     """被引用的消息段列表"""
     sender_id: int | str | None = 0
     """被引用消息发送者 ID"""
@@ -482,7 +482,7 @@ class Node(BaseMessageComponent):
     id: int | None = 0
     name: str | None = ""
     uin: str | None = "0"
-    content: list[BaseMessageComponent] = Field(default_factory=list)
+    content: list[BaseMessageComponent] = Field(default_factory=list[BaseMessageComponent])
     seq: str | list | None = ""
     time: int | None = 0
 
@@ -492,7 +492,7 @@ class Node(BaseMessageComponent):
         super().__init__(content=content, **kwargs)
 
     async def to_dict(self) -> dict[str, Any]:
-        data_content = []
+        data_content: list[dict[str, Any]] = []
         for comp in self.content:
             if isinstance(comp, (Image, Record)):
                 bs64_data = await comp.convert_to_base64()
@@ -537,9 +537,9 @@ class Json(BaseMessageComponent):
     """JSON 消息组件"""
 
     type: PlatformComponentType = PlatformComponentType.Json
-    data: dict
+    data: dict[str, Any]
 
-    def __init__(self, data: str | dict, **kwargs: Any) -> None:
+    def __init__(self, data: str | dict[str, Any], **kwargs: Any) -> None:
         if isinstance(data, str):
             data = json.loads(data)
         super().__init__(data=data, **kwargs)
@@ -646,7 +646,7 @@ class File(BaseMessageComponent):
         return {"type": "file", "data": {"name": self.name, "file": payload_file}}
 
 
-ComponentTypes = {
+ComponentTypes: dict[str, type[BaseMessageComponent]] = {
     "plain": Plain,
     "text": Plain,
     "image": Image,

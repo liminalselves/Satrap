@@ -62,7 +62,7 @@ class LiteVectorDB:
         if os.path.exists(index_file):  # 使用 msgpack 格式
             try:
                 with open(index_file, 'rb') as f:
-                    data: Any = msgpack.unpack(f, raw=False)
+                    data: Any = msgpack.unpack(f, raw=False)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
                     self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore
                 logger.info(f"从磁盘加载 {len(self.collections)} 个集合")
                 self._precompute_norms()  # 预计算向量模长
@@ -81,7 +81,7 @@ class LiteVectorDB:
         try:
             with open(index_file_msgpack, 'wb') as f:
                 data = self._to_memory_format(self.collections)
-                msgpack.pack(data, f)
+                msgpack.pack(data, f)  # pyright: ignore[reportUnknownMemberType]
 
         except Exception as e:
             logger.error(f"保存数据失败: {e}")

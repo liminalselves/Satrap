@@ -5,7 +5,7 @@ import ast
 import operator
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
@@ -26,8 +26,8 @@ class SafeCalculatorTool(Tool):
         ast.Add: operator.add,
         ast.Sub: operator.sub,
         ast.Mult: operator.mul,
-        ast.Div: operator.truediv,
-        ast.Pow: operator.pow,
+        ast.Div: getattr(operator, "truediv"),
+        ast.Pow: getattr(operator, "pow"),
         ast.Mod: operator.mod,
     }
     _unary_ops: dict[type, Any] = {

@@ -138,6 +138,44 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("id"); add_config_flag(p)
     add_mode_flags(p)
 
+    # satrap checkpoint
+    p_ckpt = subparsers.add_parser("checkpoint", help="状态检查点管理")
+    ckpt_sub = p_ckpt.add_subparsers(dest="action", help="操作")
+
+    def add_db_flag(p: argparse.ArgumentParser):
+        p.add_argument("--db", default=None, help="上下文库路径, 默认 .satrap/chat_history.db")
+
+    p = ckpt_sub.add_parser("create", help="为对话创建检查点")
+    p.add_argument("conversation_id")
+    p.add_argument("--name", default="")
+    p.add_argument("--description", default="")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("list", help="列出对话检查点")
+    p.add_argument("conversation_id")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("rollback", help="回滚对话到检查点")
+    p.add_argument("conversation_id")
+    p.add_argument("checkpoint_id")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("retry", help="从检查点重试 (保留未来检查点)")
+    p.add_argument("conversation_id")
+    p.add_argument("checkpoint_id")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("fork", help="从检查点分支新对话线")
+    p.add_argument("conversation_id")
+    p.add_argument("branch_name")
+    p.add_argument("--checkpoint", default=None, help="源检查点 ID, 默认最近一个")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("lineage", help="查看检查点血缘链 (根在前)")
+    p.add_argument("checkpoint_id")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("branches", help="列出对话 fork 出的全部分支")
+    p.add_argument("conversation_id")
+    add_db_flag(p)
+    p = ckpt_sub.add_parser("audit", help="查看对话检查点变更记录 (source/reason)")
+    p.add_argument("conversation_id")
+    add_db_flag(p)
+
     return parser
 
 
@@ -169,6 +207,9 @@ def main():
     elif args.command == "platform":
         from satrap.cli.cmd_platform import dispatch as dispatch_platform
         dispatch_platform(args)
+    elif args.command == "checkpoint":
+        from satrap.cli.cmd_checkpoint import dispatch as dispatch_checkpoint
+        dispatch_checkpoint(args)
     else:
         print(f"未知命令: {args.command}")
         sys.exit(1)

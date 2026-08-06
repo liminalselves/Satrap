@@ -47,11 +47,11 @@ def parse_rerank_result(
     # 2. 获取 output
     results: list[Any] | None = None
     if "results" in api_response and isinstance(api_response["results"], list):
-        results = api_response["results"]
+        results = cast(list[Any], api_response["results"])
     elif "output" in api_response and isinstance(api_response["output"], dict):
         results = cast(dict[str, Any], api_response["output"]).get("results")
     else:
-        results = api_response.get("results")
+        results = cast(list[Any] | None, api_response.get("results"))
     # 兼容保证
 
     if not results or not isinstance(results, list):
@@ -142,7 +142,7 @@ class ReRank:
             min_score = self.min_score
 
         try:
-            request = {
+            request: dict[str, Any] = {
                 "model": self.model,
                 "query": query,
                 "documents": documents,
@@ -285,7 +285,7 @@ class AsyncReRank:
             min_score = self.min_score
 
         try:
-            request = {
+            request: dict[str, Any] = {
                 "model": self.model,
                 "query": query,
                 "documents": documents,

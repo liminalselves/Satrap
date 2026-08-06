@@ -262,7 +262,7 @@ def test_stream_full_agent_separates_thinking_callback(
 
 
 class _AsyncThinkingAgentLLM:
-    async def stream_call(self, messages: list[dict], tools: list[dict] | None = None, thinking: bool = False):
+    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False):
         assert thinking is True
         yield LLMCallStreamEvent(kind="thinking_delta", delta="异步检查")
         yield LLMCallStreamEvent(kind="content_delta", delta="异步完成")
@@ -320,7 +320,7 @@ class _AsyncToolAgentLLM:
             LLMCallResponse(type="message", content="结果是 5"),
         ]
 
-    async def stream_call(self, messages: list[dict], tools: list[dict] | None = None, thinking: bool = False):
+    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False):
         assert thinking is False
         response = self.responses.pop(0)
         if response.content:

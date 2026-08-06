@@ -4,5 +4,10 @@
     "build",
     ".satrap",
     ".astro"
-  ]
+  ],
+  "reportUnknownParameterType": "warning",
+  "reportUnknownVariableType": "warning",
+  "reportUnknownArgumentType": "warning",
+  "reportUnknownMemberType": "warning",
+  "reportUnknownLambdaType": "warning"
 }

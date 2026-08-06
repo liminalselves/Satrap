@@ -54,8 +54,8 @@ def create_tool_defined(
     返回:
     - 一个字典, 符合 OpenAI function calling 的工具定义格式; 如果创建失败, 返回空字典
     """
-    properties = {}
-    required = []
+    properties: dict[str, dict[str, str]] = {}
+    required: list[str] = []
 
     try:
         for param_name, (param_type, param_desc) in params_dict.items():
@@ -388,7 +388,7 @@ class ToolsManager:
             return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
-    def get_call_info(call_info: Dict[str, Any]):
+    def get_call_info(call_info: Dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """获取工具调用信息
 
         参数:
@@ -400,8 +400,8 @@ class ToolsManager:
         if not isinstance(call_info, dict):
             return "", {}
 
-        tool_name = call_info.get("name", "")
-        arguments = call_info.get("arguments", {})
+        tool_name: str = str(call_info.get("name", ""))
+        arguments: Any = call_info.get("arguments", {})
         if arguments is None:
             arguments = {}
         return tool_name, arguments
@@ -607,7 +607,7 @@ class AsyncToolsManager:
             return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
-    def get_call_info(call_info: Dict[str, Any]):
+    def get_call_info(call_info: Dict[str, Any]) -> tuple[str, dict[str, Any]]:
         """获取工具调用信息
 
         参数:
@@ -619,8 +619,8 @@ class AsyncToolsManager:
         if not isinstance(call_info, dict):
             return "", {}
 
-        tool_name = call_info.get("name", "")
-        arguments = call_info.get("arguments", {})
+        tool_name: str = str(call_info.get("name", ""))
+        arguments: Any = call_info.get("arguments", {})
         if arguments is None:
             arguments = {}
         return tool_name, arguments

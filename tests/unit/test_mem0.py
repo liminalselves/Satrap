@@ -1,10 +1,11 @@
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from satrap.expend.mem0 import Mem0Memory
+from satrap.expend.tools.mem0 import Mem0Memory
 
 
 class FakeEmbedding:
@@ -13,7 +14,7 @@ class FakeEmbedding:
     def __init__(self, dim: int = 16):
         self.dim = dim
 
-    async def embed(self, text: str | list[str] | None):
+    async def embed(self, text: str | list[str] | None) -> list[float] | list[list[float]]:
         if text is None:
             return []
         if isinstance(text, list):
@@ -36,7 +37,7 @@ class FakeLLM:
         self.update_memory_id: str | None = None
         self.update_new_content: str | None = None
 
-    async def structured_output(self, messages: list[dict], format: str):
+    async def structured_output(self, messages: list[dict[str, Any]], format: str):
         if "memories" in format:
             return json.dumps({"memories": self.extract_facts}, ensure_ascii=False)
 
@@ -59,7 +60,7 @@ class FakeLLM:
             )
         return json.dumps({"action": "NOOP"}, ensure_ascii=False)
 
-    async def chat(self, messages: list[dict]):
+    async def chat(self, messages: list[dict[str, Any]]):
         return "这是一条测试摘要"
 
 

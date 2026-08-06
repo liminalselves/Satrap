@@ -1,6 +1,6 @@
 ---
-name: coding_agent
-description: 代码生成与调试助手; 编写、审查和调试 Python 代码
+name: coding-agent
+description: 代码生成与调试助手, 编写、审查和调试 Python 代码
 tools:
   - code_sandbox
   - search

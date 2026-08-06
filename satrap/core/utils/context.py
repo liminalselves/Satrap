@@ -12,6 +12,7 @@ import sqlite3
 import json
 import copy
 import re
+import threading
 
 from satrap.core.log import logger
 from types import TracebackType
@@ -69,13 +70,12 @@ def _messages_domain() -> SnapshotDomain:
         )
 
     def position_provider(conn: sqlite3.Connection, scope: StateScope) -> int:
-        """提供消息水位: 当前对话最大消息行 ID"""
+        """提供消息水位: 当前对话消息条数 (追加式指针检查点的截断基准)"""
         row = conn.execute(
-            "SELECT COALESCE(MAX(id), 0) AS position FROM chat_history "
-            "WHERE conversation_id = ?",
+            "SELECT COUNT(*) AS count FROM chat_history WHERE conversation_id = ?",
             (scope.scope_id,),
         ).fetchone()
-        return int(row["position"])
+        return int(row["count"])
 
     return SnapshotDomain(
         name="messages",
@@ -117,6 +117,7 @@ class ContextManager:
         exceed_process: str = "sliding",
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
+        auto_checkpoint: bool = True,
     ):
         """
         初始化上下文管理器
@@ -134,6 +135,7 @@ class ContextManager:
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
+        - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
 
         返回:
         - None
@@ -141,6 +143,7 @@ class ContextManager:
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
+        self.auto_checkpoint = auto_checkpoint
         # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
         self.state_store = state_store
         if self.state_store is None and enable_checkpoint:
@@ -148,6 +151,9 @@ class ContextManager:
         if self.state_store is not None:
             self.state_store.register_domain(_messages_domain())
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
+        self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
+        self._conn: Optional[sqlite3.Connection] = None   # 复用数据库连接 (惰性创建)
+        self._conn_lock = threading.Lock()   # 连接创建/释放互斥 (读写路径假定单线程使用)
         self._init_db_table()   # 初始化数据库表结构
         self.load_context()     # 加载数据
 
@@ -158,8 +164,31 @@ class ContextManager:
         logger.info(f"[上下文管理器] 初始化完成, 对话ID: {self.conversation_id}")
 
     def _get_conn(self):
-        """获取数据库连接"""
-        return sqlite3.connect(self.db_path)
+        """获取数据库连接 (进程内复用, 避免每次操作建连开销)
+
+        注意: 复用连接假定 ContextManager 单线程使用 (Session 内串行调用),
+        连接创建与释放由 _conn_lock 保护。
+        """
+        with self._conn_lock:
+            if self._conn is None:
+                self._conn = sqlite3.connect(self.db_path)
+        return self._conn
+
+    def close(self):
+        """关闭复用连接 (进程退出或不再使用时调用, 未调用时由 GC 兜底)"""
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _init_db_table(self):
         """初始化数据库表结构"""
@@ -188,7 +217,6 @@ class ContextManager:
                     pass
 
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.error(f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}")
 
@@ -209,7 +237,6 @@ class ContextManager:
                 (self.conversation_id,)
             )
             rows = cursor.fetchall()
-            conn.close()
 
             self._messages: List[Dict[str, Any]] = []
             for row in rows:
@@ -221,18 +248,32 @@ class ContextManager:
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
+            self._saved_count = len(rows)
         except Exception as e:
             logger.error(f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages: List[Dict[str, Any]] = []
+            self._saved_count = 0
 
     def save_context(self):
-        """保存当前上下文到数据库"""
+        """保存当前上下文到数据库
+
+        增量策略: 纯追加时只 INSERT 尾部新消息 (O(1));
+        编辑/外部修改 (标记 dirty) 或状态未知时全量重写
+        """
         conn = self._get_conn()
         cursor = conn.cursor()
+        prev_saved = self._saved_count   # 失败时恢复水位, 保证重试幂等
         try:
-            cursor.execute("DELETE FROM chat_history WHERE conversation_id = ?", (self.conversation_id,))
-            
-            if self._messages:
+            if self._saved_count < 0 or self._saved_count > len(self._messages):
+                # 全量重写: 消息列表被编辑过, 行 id 将重新分配
+                cursor.execute(
+                    "DELETE FROM chat_history WHERE conversation_id = ?",
+                    (self.conversation_id,),
+                )
+                self._saved_count = 0
+
+            new_messages = self._messages[self._saved_count:]
+            if new_messages:
                 data_to_insert = [
                     (
                         self.conversation_id,
@@ -243,20 +284,24 @@ class ContextManager:
                         json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
                         msg.get("reasoning_content"),
                     )
-                    for msg in self._messages
+                    for msg in new_messages
                 ]
                 cursor.executemany(
                     "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                     data_to_insert
                 )
             conn.commit()
+            # 提交成功后才推进已保存水位
+            self._saved_count = len(self._messages)
 
         except Exception as e:
             logger.error(f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
             conn.rollback()
+            self._saved_count = prev_saved   # 恢复水位, 下次保存重试 (全量重写路径幂等)
 
-        finally:
-            conn.close()
+    def _mark_dirty(self) -> None:
+        """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
+        self._saved_count = -1
 
     # ================= 检查点支持 =================
 
@@ -270,18 +315,45 @@ class ContextManager:
             raise ValueError("未启用状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
         return self.state_store
 
-    def create_checkpoint(self, name: str = "", description: str = "") -> StateCheckpoint:
+    def _maybe_auto_checkpoint(self) -> None:
+        """消息写入后自动保存稳定检查点 (同水位去重, 指针式零快照, 失败不阻断主流程)"""
+        if not self.auto_checkpoint or self.state_store is None:
+            return
+        try:
+            self.state_store.ensure_stable_checkpoint(self._scope())
+        except Exception as e:
+            logger.warning(f"[上下文管理器] 自动检查点保存失败: {e}")
+
+    def _protect_before_edit(self) -> None:
+        """编辑类操作前: 物化当前状态为保护检查点, 并清理失效的指针检查点
+
+        追加式消息被改写/删除后, 旧指针检查点的水位截断语义失效,
+        因此物化保护后删除该作用域全部指针检查点 (保护检查点保留, 可撤销编辑)
+        失败不阻断编辑主流程
+        """
+        if self.state_store is None:
+            return
+        try:
+            with state_mutation_context(
+                source="edit_protect", reason="编辑前状态保护"
+            ):
+                self.state_store.materialize_edit_protection(self._scope())
+        except Exception as e:
+            logger.warning(f"[上下文管理器] 编辑前状态保护失败: {e}")
+
+    def create_checkpoint(self, name: str = "", description: str = "", batch_id: str = "") -> StateCheckpoint:
         """为当前对话创建状态检查点
 
         参数:
         - name: 检查点显示名称
         - description: 检查点说明
+        - batch_id: 会话级聚合检查点的批次 ID, 同批检查点共享; 非聚合时留空
 
         返回:
         - StateCheckpoint: 创建的检查点
         """
         return self._require_state_store().create_checkpoint(
-            self._scope(), name=name, description=description
+            self._scope(), name=name, description=description, batch_id=batch_id
         )
 
     def list_checkpoints(self) -> List[StateCheckpoint]:
@@ -303,6 +375,19 @@ class ContextManager:
             source="checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
         ):
             store.rollback(checkpoint_id)
+        self.load_context()
+
+    def retry(self, checkpoint_id: str) -> None:
+        """从指定检查点重试并重载上下文 (保留未来检查点)
+
+        参数:
+        - checkpoint_id: 目标检查点 ID
+        """
+        store = self._require_state_store()
+        with state_mutation_context(
+            source="checkpoint_retry", reason=f"重试到检查点 {checkpoint_id}"
+        ):
+            store.retry(checkpoint_id)
         self.load_context()
 
     def fork(
@@ -340,6 +425,7 @@ class ContextManager:
             context_threshold=self.context_threshold,
             exceed_process=self.exceed_process,
             state_store=store,
+            auto_checkpoint=self.auto_checkpoint,
         )
 
     def get_context(self) -> List[Dict[str, Any]]:
@@ -373,6 +459,7 @@ class ContextManager:
         """
         self._messages.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
         self._sync()
+        self._maybe_auto_checkpoint()
 
     def reset_system_prompt(self, message: str):
         """
@@ -381,9 +468,11 @@ class ContextManager:
         参数:
         - message: 新的系统提示词
         """
+        self._protect_before_edit()
         self._messages = [m for m in self._messages if m.get("role") != "system"]
         # 在开头插入新的系统消息
         self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         self._sync()
 
     def add_bot_message(self, message: str, tools_calls: list[dict[str, Any]] | None = None, ignore_think: bool = True, reasoning: str | None = None):
@@ -415,6 +504,7 @@ class ContextManager:
             )
 
         self._sync()
+        self._maybe_auto_checkpoint()
 
     def add_chat(self, user_message: str, bot_message: str):
         """
@@ -427,6 +517,7 @@ class ContextManager:
         self._messages.append({"role": "user", "content": user_message})
         self._messages.append({"role": "assistant", "content": bot_message})
         self._sync()
+        self._maybe_auto_checkpoint()
 
     def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any] | str):
         """
@@ -439,6 +530,7 @@ class ContextManager:
         self._messages.append({"role": "tool", "tool_call_id": tool_call_id,
             "content": json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result})
         self._sync()
+        self._maybe_auto_checkpoint()
 
     def add_tool_call_flow(self, message: str, tool_messages: list[dict[str, Any]], tool_results: list[dict[str, Any]]):
         """
@@ -469,6 +561,7 @@ class ContextManager:
         - message: 要添加的消息内容
         - separator: 拼接时插入的分隔符，默认为空字符串
         """
+        self._protect_before_edit()
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
@@ -478,6 +571,7 @@ class ContextManager:
         else:
             # 没有系统消息, 则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         self._sync()
 
     def add_at_system_end(self, message: str, separator: str = ""):
@@ -488,6 +582,7 @@ class ContextManager:
         - message: 要添加的消息内容
         - separator: 拼接时插入的分隔符，默认为空字符串
         """
+        self._protect_before_edit()
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
@@ -497,6 +592,7 @@ class ContextManager:
         else:
             # 没有系统消息, 则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         self._sync()
 
     def add_turn_messages(self, turn_messages: list[dict[str, Any]]):
@@ -513,6 +609,7 @@ class ContextManager:
         
         self._messages.extend(serialized)
         self._sync()
+        self._maybe_auto_checkpoint()
 
     def static_message(self) -> int:
         """
@@ -525,13 +622,17 @@ class ContextManager:
 
     def del_context(self):
         """删除当前上下文中的所有消息, 保留系统消息"""
+        self._protect_before_edit()
         self._messages = [copy.deepcopy(msg) for msg in self._messages if msg.get("role") == "system"]
+        self._mark_dirty()
         self._sync()
         logger.info(f"上下文已清空, ID: {self.conversation_id}")
 
     def del_system_message(self):
         """删除上下文中的系统消息"""
+        self._protect_before_edit()
         self._messages[:] = [msg for msg in self._messages if msg.get("role") != "system"]
+        self._mark_dirty()
         self._sync()
 
     def del_message(self, index: int):
@@ -541,15 +642,12 @@ class ContextManager:
         参数:
         - index: 消息的索引
         """
-        try:
-            if 0 <= index < len(self._messages):
-                self._messages.pop(index)
-            elif -len(self._messages) <= index < 0:
-                self._messages.pop(index)
-
-        except IndexError:
+        if 0 <= index < len(self._messages) or -len(self._messages) <= index < 0:
+            self._protect_before_edit()
+            self._messages.pop(index)
+        else:
             logger.error(f"[上下文管理] 删除消息失败: 索引 {index} 超出范围, ID: {self.conversation_id}")
-            pass
+        self._mark_dirty()
         self._sync()
 
     def del_last_message(self, n: int = 1):
@@ -559,9 +657,11 @@ class ContextManager:
         参数:
         - n: 删除的数量
         """
+        self._protect_before_edit()
         for _ in range(n):
             if self._messages:
                 self._messages.pop()
+        self._mark_dirty()
         self._sync()
 
     def del_last_chat(self, n: int = 1):
@@ -571,6 +671,7 @@ class ContextManager:
         参数:
         - n: 删除的组数
         """
+        self._protect_before_edit()
         indices_to_remove: list[int] = []
         groups_removed = 0
 
@@ -591,8 +692,9 @@ class ContextManager:
 
         for index in indices_to_remove:
             self._messages.pop(index)
-        # 执行删除   
+        # 执行删除
 
+        self._mark_dirty()
         self._sync()
 
     def export_json(self, file_path: str):
@@ -764,6 +866,7 @@ class AsyncContextManager:
         exceed_process: str = "sliding",
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
+        auto_checkpoint: bool = True,
     ):
         """
         初始化异步上下文管理器
@@ -783,16 +886,19 @@ class AsyncContextManager:
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
+        - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
 
         """
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
+        self.auto_checkpoint = auto_checkpoint
         # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
         self.state_store = state_store
         if self.state_store is None and enable_checkpoint:
             self.state_store = StateStore(db_path=self.db_path)
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
+        self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self.max_context = max_context                     # 最大上下文长度
         self.context_threshold = context_threshold         # 上下文阈值
         self.exceed_process = exceed_process               # 超过阈值时的处理方式
@@ -863,7 +969,7 @@ class AsyncContextManager:
                     "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC", 
                     (self.conversation_id,)
                 )
-                rows = await cursor.fetchall()
+                rows = list(await cursor.fetchall())
 
             self._messages: List[Dict[str, Any]] = []
             for row in rows:
@@ -875,17 +981,31 @@ class AsyncContextManager:
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
+            self._saved_count = len(rows)
         except Exception as e:
             logger.error(f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages = []
+            self._saved_count = 0
 
     async def save_context(self):
-        """保存当前上下文到数据库"""
+        """保存当前上下文到数据库
+
+        增量策略: 纯追加时只 INSERT 尾部新消息 (O(1));
+        编辑/外部修改 (标记 dirty) 或状态未知时全量重写
+        """
+        prev_saved = self._saved_count   # 失败时恢复水位, 保证重试幂等
         try:
             async with aiosqlite.connect(self.db_path) as conn:
-                await conn.execute("DELETE FROM chat_history WHERE conversation_id = ?", (self.conversation_id,))
-                
-                if self._messages:
+                if self._saved_count < 0 or self._saved_count > len(self._messages):
+                    # 全量重写: 消息列表被编辑过, 行 id 将重新分配
+                    await conn.execute(
+                        "DELETE FROM chat_history WHERE conversation_id = ?",
+                        (self.conversation_id,),
+                    )
+                    self._saved_count = 0
+
+                new_messages = self._messages[self._saved_count:]
+                if new_messages:
                     data_to_insert = [
                         (
                             self.conversation_id,
@@ -896,16 +1016,23 @@ class AsyncContextManager:
                             json.dumps(msg["tool_calls"], ensure_ascii=False) if msg.get("tool_calls") else None,
                             msg.get("reasoning_content"),
                         )
-                        for msg in self._messages
+                        for msg in new_messages
                     ]
                     await conn.executemany(
                         "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                         data_to_insert
                     )
                 await conn.commit()
+                # 提交成功后才推进已保存水位
+                self._saved_count = len(self._messages)
 
         except Exception as e:
             logger.error(f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
+            self._saved_count = prev_saved   # 恢复水位, 下次保存重试 (全量重写路径幂等)
+
+    def _mark_dirty(self) -> None:
+        """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
+        self._saved_count = -1
 
     # ================= 检查点支持 =================
 
@@ -919,18 +1046,47 @@ class AsyncContextManager:
             raise ValueError("未启用状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
         return self.state_store
 
-    async def create_checkpoint(self, name: str = "", description: str = "") -> StateCheckpoint:
+    async def _maybe_auto_checkpoint(self) -> None:
+        """消息写入后自动保存稳定检查点 (同水位去重, 失败不阻断主流程)"""
+        if not self.auto_checkpoint or self.state_store is None:
+            return
+        try:
+            await asyncio.to_thread(self.state_store.ensure_stable_checkpoint, self._scope())
+        except Exception as e:
+            logger.warning(f"[异步上下文管理器] 自动检查点保存失败: {e}")
+
+    async def _protect_before_edit(self) -> None:
+        """编辑类操作前: 物化当前状态为保护检查点, 并清理失效的指针检查点
+
+        失败不阻断编辑主流程
+        """
+        if self.state_store is None:
+            return
+        try:
+            with state_mutation_context(
+                source="edit_protect", reason="编辑前状态保护"
+            ):
+                await asyncio.to_thread(
+                    self.state_store.materialize_edit_protection, self._scope()
+                )
+        except Exception as e:
+            logger.warning(f"[异步上下文管理器] 编辑前状态保护失败: {e}")
+
+    async def create_checkpoint(self, name: str = "", description: str = "", batch_id: str = "") -> StateCheckpoint:
         """为当前对话创建状态检查点
 
         参数:
         - name: 检查点显示名称
         - description: 检查点说明
+        - batch_id: 会话级聚合检查点的批次 ID, 同批检查点共享; 非聚合时留空
 
         返回:
         - StateCheckpoint: 创建的检查点
         """
         store = self._require_state_store()
-        return await asyncio.to_thread(store.create_checkpoint, self._scope(), name, description)
+        return await asyncio.to_thread(
+            store.create_checkpoint, self._scope(), name, description, "manual", None, batch_id
+        )
 
     async def list_checkpoints(self) -> List[StateCheckpoint]:
         """列出当前对话的全部检查点 (按创建时间升序)
@@ -952,6 +1108,19 @@ class AsyncContextManager:
             source="checkpoint_rollback", reason=f"回滚到检查点 {checkpoint_id}"
         ):
             await asyncio.to_thread(store.rollback, checkpoint_id)
+        await self.load_context()
+
+    async def retry(self, checkpoint_id: str) -> None:
+        """从指定检查点重试并重载上下文 (保留未来检查点)
+
+        参数:
+        - checkpoint_id: 目标检查点 ID
+        """
+        store = self._require_state_store()
+        with state_mutation_context(
+            source="checkpoint_retry", reason=f"重试到检查点 {checkpoint_id}"
+        ):
+            await asyncio.to_thread(store.retry, checkpoint_id)
         await self.load_context()
 
     async def fork(
@@ -989,6 +1158,7 @@ class AsyncContextManager:
             context_threshold=self.context_threshold,
             exceed_process=self.exceed_process,
             state_store=store,
+            auto_checkpoint=self.auto_checkpoint,
         )
         await new_ctx.initialize()
         return new_ctx
@@ -1024,6 +1194,7 @@ class AsyncContextManager:
         """
         self._messages.append({"role": "user", "content": build_multimodal_content(message, img_urls)})
         await self._sync()
+        await self._maybe_auto_checkpoint()
 
     async def reset_system_prompt(self, message: str):
         """
@@ -1032,9 +1203,11 @@ class AsyncContextManager:
         参数:
         - message: 新的系统提示词
         """
+        await self._protect_before_edit()
         self._messages = [m for m in self._messages if m.get("role") != "system"]
         # 在开头插入新的系统消息
         self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         await self._sync()
 
     async def add_bot_message(self, message: str, tools_calls: list[dict[str, Any]] | None = None, ignore_think: bool = True, reasoning: str | None = None):
@@ -1066,6 +1239,7 @@ class AsyncContextManager:
             )
 
         await self._sync()
+        await self._maybe_auto_checkpoint()
 
     async def add_chat(self, user_message: str, bot_message: str):
         """
@@ -1078,6 +1252,7 @@ class AsyncContextManager:
         self._messages.append({"role": "user", "content": user_message})
         self._messages.append({"role": "assistant", "content": bot_message})
         await self._sync()
+        await self._maybe_auto_checkpoint()
 
     async def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any]):
         """
@@ -1089,6 +1264,7 @@ class AsyncContextManager:
         """
         self._messages.append({"role": "tool", "tool_call_id": tool_call_id, "content": json.dumps(tool_result, ensure_ascii=False)})
         await self._sync()
+        await self._maybe_auto_checkpoint()
 
     async def add_tool_call_flow(self, message: str, tool_messages: list[dict[str, Any]], tool_results: list[dict[str, Any]]):
         """
@@ -1119,6 +1295,7 @@ class AsyncContextManager:
         - message: 要添加的消息内容
         - separator: 拼接时插入的分隔符，默认为空字符串
         """
+        await self._protect_before_edit()
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
@@ -1128,6 +1305,7 @@ class AsyncContextManager:
         else:
             # 没有系统消息，则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         await self._sync()
 
 
@@ -1139,6 +1317,7 @@ class AsyncContextManager:
         - message: 要添加的消息内容
         - separator: 拼接时插入的分隔符, 默认为空字符串
         """
+        await self._protect_before_edit()
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
@@ -1148,6 +1327,7 @@ class AsyncContextManager:
         else:
             # 没有系统消息, 则新建一条并插入到开头
             self._messages.insert(0, {"role": "system", "content": message})
+        self._mark_dirty()
         await self._sync()
 
     async def add_turn_messages(self, turn_messages: list[dict[str, Any]]):
@@ -1164,6 +1344,7 @@ class AsyncContextManager:
 
         self._messages.extend(serialized)
         await self._sync()
+        await self._maybe_auto_checkpoint()
 
     def static_message(self) -> int:
         """
@@ -1176,13 +1357,17 @@ class AsyncContextManager:
 
     async def del_context(self):
         """删除当前上下文中的所有消息, 保留系统消息"""
+        await self._protect_before_edit()
         self._messages = [copy.deepcopy(msg) for msg in self._messages if msg.get("role") == "system"]
+        self._mark_dirty()
         await self._sync()
         logger.info(f"上下文已清空：{self.conversation_id}, ID: {self.conversation_id}")
 
     async def del_system_message(self):
         """删除上下文中的系统消息"""
+        await self._protect_before_edit()
         self._messages[:] = [msg for msg in self._messages if msg.get("role") != "system"]
+        self._mark_dirty()
         await self._sync()
 
     async def del_message(self, index: int):
@@ -1192,15 +1377,12 @@ class AsyncContextManager:
         参数:
         - index: 消息的索引
         """
-        try:
-            if 0 <= index < len(self._messages):
-                self._messages.pop(index)
-            elif -len(self._messages) <= index < 0:
-                self._messages.pop(index)
-
-        except IndexError:
-            logger.error(f"[异步上下文管理器] 删除消息失败：索引 {index} 超出范围, ID: {self.conversation_id}")
-            pass
+        if 0 <= index < len(self._messages) or -len(self._messages) <= index < 0:
+            await self._protect_before_edit()
+            self._messages.pop(index)
+        else:
+            logger.error(f"[异步上下文管理] 删除消息失败: 索引 {index} 超出范围, ID: {self.conversation_id}")
+        self._mark_dirty()
         await self._sync()
 
     async def del_last_message(self, n: int = 1):
@@ -1210,9 +1392,11 @@ class AsyncContextManager:
         参数:
         - n: 删除的数量
         """
+        await self._protect_before_edit()
         for _ in range(n):
             if self._messages:
                 self._messages.pop()
+        self._mark_dirty()
         await self._sync()
 
     async def del_last_chat(self, n: int = 1):
@@ -1222,6 +1406,7 @@ class AsyncContextManager:
         参数:
         - n: 删除的组数
         """
+        await self._protect_before_edit()
         indices_to_remove: list[int] = []
         groups_removed = 0
 
@@ -1243,7 +1428,8 @@ class AsyncContextManager:
         # 需要排序索引以确保 pop 顺序正确 (从大到小 pop 避免索引偏移)
         for index in sorted(indices_to_remove, reverse=True):
             self._messages.pop(index)
-        
+
+        self._mark_dirty()
         await self._sync()
 
     async def export_json(self, file_path: str):

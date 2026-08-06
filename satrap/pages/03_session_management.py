@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import streamlit as st
 from satrap.admin_utils.state import ensure_state, trigger_backend_reload
@@ -80,11 +80,11 @@ def _register_dialog():
 
         choices = [item for item in results if item.get("class_path")]
         if choices:
-            labels = [
+            labels: list[str] = [
                 f"{Path(item['file_path']).name} -> {item['class_name']} ({'async' if item.get('is_async') else 'sync'})"
                 for item in choices
             ]
-            selected_index = st.selectbox("选择会话类", range(len(labels)), format_func=lambda i: labels[i])
+            selected_index = st.selectbox("选择会话类", range(len(labels)), format_func=lambda i: labels[i])  # pyright: ignore[reportUnknownLambdaType]
             selected = choices[int(selected_index)]
             selected_class_path = str(selected.get("class_path", ""))
             default_name = _class_name_to_config_name(str(selected.get("class_name", "")))
@@ -136,7 +136,7 @@ def _param_dialog(name: str):
             new_params = json.loads(new_params_str)
             if not isinstance(new_params, dict):
                 raise ValueError("params 必须是 JSON 对象")
-            scm.set_config(name, new_params)
+            scm.set_config(name, cast(dict[str, Any], new_params))
             st.success("已保存")
             _reload_caches()
             trigger_backend_reload()
@@ -173,7 +173,7 @@ def _create_session_dialog(name: str):
 
         config = st.session_state.config
         sm = SessionManager(db_path=config.session_db_path)
-        extra = {}
+        extra: dict[str, Any] = {}
         if llm_name and model_key:
             extra[model_key] = llm_name
         elif llm_name:
@@ -271,7 +271,7 @@ def render():
         st.info("暂无已注册的会话类")
         return
 
-    rows = []
+    rows: list[dict[str, Any]] = []
     for sname, entry in configs.items():
         status = "启用" if entry.get("enabled", True) else "停用"
         mk = entry.get("model_key", "") or "-"
@@ -283,7 +283,7 @@ def render():
             "Class Path": cp,
         })
 
-    st.dataframe(rows, use_container_width=True, hide_index=True)
+    st.dataframe(rows, use_container_width=True, hide_index=True)  # pyright: ignore[reportUnknownMemberType]
 
     st.divider()
     st.caption("对单个会话类的操作:")

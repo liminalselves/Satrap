@@ -6,7 +6,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Type, Dict
+from typing import Any, List, Optional, Type, Dict, cast
 
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionManager import SessionManager
@@ -96,7 +96,7 @@ class UserInfoStore:
             try:
                 parsed = json.loads(raw_sessions)
                 if isinstance(parsed, list):
-                    sessions = [str(item) for item in parsed if item is not None]
+                    sessions = [str(item) for item in cast(list[Any], parsed) if item is not None]
             except Exception:
                 sessions = []
 

@@ -332,7 +332,7 @@ class MCPClient:
 class MCPServerExporter:
     """MCP Server 导出器; 将本地 ToolsManager 中的工具导出为 MCP Server
 
-    基于 mcp 2.x 的 `MCPServer`, 供其他 MCP 客户端 (如 Claude Desktop) 调用本地工具。
+    基于 mcp 2.x 的 `MCPServer`, 供其他 MCP 客户端 (如 Claude Desktop) 调用本地工具
 
     用法:
     ``` python

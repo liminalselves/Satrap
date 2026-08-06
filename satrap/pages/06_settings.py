@@ -65,8 +65,10 @@ def _render_platform_editor(config_data: dict[str, Any], config_path: Path, back
     platform_ids = [str(item.get("id", "")).strip() for item in platforms if str(item.get("id", "")).strip()]
     selected = st.selectbox("选择已有平台", ["新增平台配置"] + platform_ids, key="platform_editor_selected")
     current = next((item for item in platforms if item.get("id") == selected), None)
-    current_settings = dict((current or {}).get("settings") or {})
-    current_type = str((current or {}).get("type") or "misskey")
+    current_dict = cast(dict[str, Any], current) if isinstance(current, dict) else {}
+    raw_settings = current_dict.get("settings")
+    current_settings: dict[str, Any] = {**raw_settings} if isinstance(raw_settings, dict) else {}
+    current_type = str(current_dict.get("type") or "misskey")
 
     type_options = ["misskey", "onebot"]
     if current_type and current_type not in type_options:
@@ -76,7 +78,7 @@ def _render_platform_editor(config_data: dict[str, Any], config_path: Path, back
     with col_id:
         platform_id = st.text_input(
             "平台名称",
-            value=str((current or {}).get("id") or ""),
+            value=str(current_dict.get("id") or ""),
             placeholder="misskey_main",
             key=f"platform_editor_id_{selected}",
         )

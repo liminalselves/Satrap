@@ -70,7 +70,7 @@ def build_id_map(
 ) -> Dict[str, str]:
     """构建引用字段的旧值 -> 新值映射表
 
-    新值格式: {新作用域 ID}:{旧值}, 保证 fork 后引用唯一且可读。
+    新值格式: {新作用域 ID}:{旧值}, 保证 fork 后引用唯一且可读
 
     参数:
     - registry: 领域注册表
@@ -80,7 +80,7 @@ def build_id_map(
     返回:
     - Dict[str, str]: 旧值到新值的映射
     """
-    old_values = set()
+    old_values: set[str] = set()
     for domain in registry.all():
         for field in domain.reference_fields:
             for row in snapshot.domains.get(domain.name, []):
@@ -98,7 +98,7 @@ def _remap_rows(
 ) -> List[JsonRow]:
     """按领域声明的引用字段与 id_map 改写行数据 (仅 fork 时生效)
 
-    回滚 (preserve_ids=True) 时原样返回, 保证引用不被改写。
+    回滚 (preserve_ids=True) 时原样返回, 保证引用不被改写
     """
     if options.preserve_ids or not domain.reference_fields or not options.id_map:
         return rows

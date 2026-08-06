@@ -1,6 +1,7 @@
 """StateStore 检查点 / 回滚 / 分支 单元测试"""
 import sqlite3
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -81,7 +82,7 @@ def _write_kv(db_path: str, scope_id: str, key: str, value: str, ref_col: str | 
         conn.close()
 
 
-def _read_kv(db_path: str, scope_id: str) -> list[dict]:
+def _read_kv(db_path: str, scope_id: str) -> list[dict[str, Any]]:
     """读取作用域下的全部 KV 数据"""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -90,7 +91,7 @@ def _read_kv(db_path: str, scope_id: str) -> list[dict]:
             "SELECT key, value, ref_col FROM kv_data WHERE scope_id = ? ORDER BY id",
             (scope_id,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        return [cast(dict[str, Any], dict(row)) for row in rows]
     finally:
         conn.close()
 
@@ -157,7 +158,7 @@ class TestRollback:
     def test_rollback_restores_data(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1")
-        cp = store.create_checkpoint(scope, name="起点")
+        cp = store.create_checkpoint(scope, name="起点", materialize=True)
 
         _write_kv(str(store.db_path), "conv-1", "b", "2")
         _write_kv(str(store.db_path), "conv-1", "c", "3")
@@ -171,15 +172,19 @@ class TestRollback:
     def test_rollback_cleans_future_checkpoints(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1")
-        cp1 = store.create_checkpoint(scope, name="起点")
+        cp1 = store.create_checkpoint(scope, name="起点", materialize=True)
 
         _write_kv(str(store.db_path), "conv-1", "b", "2")
-        cp2 = store.create_checkpoint(scope, name="中期")
+        cp2 = store.create_checkpoint(scope, name="中期", materialize=True)
 
         store.rollback(cp1.checkpoint_id)
 
         checkpoints = store.list_checkpoints(scope)
-        assert [cp.checkpoint_id for cp in checkpoints] == [cp1.checkpoint_id]
+        # 未来检查点被清理, 但回滚前保护检查点保留 (可撤销)
+        assert store.get_checkpoint(cp2.checkpoint_id) is None
+        remaining = [cp for cp in checkpoints if cp.source != "rollback_snapshot"]
+        assert [cp.checkpoint_id for cp in remaining] == [cp1.checkpoint_id]
+        assert any(cp.source == "rollback_snapshot" for cp in checkpoints)
         # 未来检查点的快照应被级联清理
         assert store.get_checkpoint(cp2.checkpoint_id) is None
 
@@ -190,7 +195,7 @@ class TestRollback:
     def test_rollback_records_mutation_source(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1")
-        cp = store.create_checkpoint(scope)
+        cp = store.create_checkpoint(scope, materialize=True)
 
         with state_mutation_context(source="checkpoint_rollback", reason="测试回滚"):
             store.rollback(cp.checkpoint_id)
@@ -249,7 +254,7 @@ class TestFork:
     def test_fork_creates_independent_scope(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1")
-        cp = store.create_checkpoint(scope, name="起点")
+        cp = store.create_checkpoint(scope, name="起点", materialize=True)
         _write_kv(str(store.db_path), "conv-1", "b", "2")
 
         new_scope = store.fork(cp.checkpoint_id, "conv-1:fork:bad_end")
@@ -268,7 +273,7 @@ class TestFork:
     def test_fork_remaps_reference_fields(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1", ref_col="call-123")
-        cp = store.create_checkpoint(scope)
+        cp = store.create_checkpoint(scope, materialize=True)
 
         store.fork(cp.checkpoint_id, "conv-1:fork:alt")
 
@@ -294,7 +299,7 @@ class TestSnapshotValidation:
     def test_unsupported_snapshot_version_raises(self, store: StateStore):
         scope = StateScope("test", "conv-1")
         _write_kv(str(store.db_path), "conv-1", "a", "1")
-        cp = store.create_checkpoint(scope)
+        cp = store.create_checkpoint(scope, materialize=True)
 
         # 手工篡改快照版本
         conn = sqlite3.connect(str(store.db_path))
@@ -367,7 +372,10 @@ class TestContextManagerCheckpoint:
     def test_fork_returns_new_context(self, tmp_path: Path):
         """从检查点 fork 新剧情线, 父对话保持完整"""
         ctx = ContextManager(
-            "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
+            "demo",
+            db_path=str(tmp_path / "chat_history.db"),
+            enable_checkpoint=True,
+            auto_checkpoint=False,
         )
         ctx.add_user_message("你好")
         ctx.add_bot_message("你好呀")
@@ -392,7 +400,10 @@ class TestContextManagerCheckpoint:
 
     def test_fork_without_checkpoint_raises(self, tmp_path: Path):
         ctx = ContextManager(
-            "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
+            "demo",
+            db_path=str(tmp_path / "chat_history.db"),
+            enable_checkpoint=True,
+            auto_checkpoint=False,
         )
         ctx.add_user_message("没有检查点")
         with pytest.raises(ValueError, match="没有检查点"):
@@ -423,7 +434,10 @@ class TestAsyncContextManagerCheckpoint:
     async def test_fork_returns_initialized_context(self, tmp_path: Path):
         """异步版: fork 返回已初始化新分支, 父对话保持完整"""
         ctx = AsyncContextManager(
-            "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
+            "demo",
+            db_path=str(tmp_path / "chat_history.db"),
+            enable_checkpoint=True,
+            auto_checkpoint=False,
         )
         await ctx.initialize()
         await ctx.add_user_message("你好")

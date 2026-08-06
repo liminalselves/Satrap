@@ -9,7 +9,7 @@ from satrap.core.framework import ModelWorkflowFramework
 from satrap.core.log import logger
 from satrap.core.utils.TCBuilder import ToolsManager
 from satrap.core.utils.sandbox import CodeSandbox
-from satrap.expend.sandbox_tools import CodeSandboxTool
+from satrap.expend.tools.sandbox_tools import CodeSandboxTool
 
 
 @dataclass
@@ -25,7 +25,7 @@ class DemoConfig:
 
 
 class CodingAgentWorkflow(ModelWorkflowFramework):
-    """基于 Satrap 框架的简单编码代理工作流，使用父类的 agent_executor 处理工具调用。"""
+    """基于 Satrap 框架的简单编码代理工作流，使用父类的 agent_executor 处理工具调用"""
 
     def __init__(
         self,
@@ -169,7 +169,7 @@ def load_config(args: argparse.Namespace) -> DemoConfig:
 
 
 def validate_config(cfg: DemoConfig) -> None:
-    missing = []
+    missing: list[str] = []
     if not cfg.api_key:
         missing.append("api_key")
     if not cfg.model:

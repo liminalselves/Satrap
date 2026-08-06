@@ -5,7 +5,7 @@ import os
 import threading
 from dataclasses import asdict, fields
 from pathlib import Path
-from typing import Any, Dict, Literal, TypeVar
+from typing import Any, Dict, Literal, TypeVar, cast
 
 from satrap.core.log import logger
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
@@ -76,7 +76,7 @@ class ModelConfigManager:
     @classmethod
     def _deserialize_named_configs(
         cls,
-        raw: Any,
+        raw: dict[str, Any],
         config_cls: type[TConfig],
         default_name: str,
     ) -> Dict[str, TConfig]:
@@ -100,7 +100,7 @@ class ModelConfigManager:
         for name, value in raw.items():
             if not isinstance(value, dict):
                 continue
-            cfg = cls._from_dict(value, config_cls)
+            cfg = cls._from_dict(cast(dict[str, Any], value), config_cls)
             cfg_name = cfg.name or str(name)
             cfg.name = cfg_name
             result[cfg_name] = cfg
@@ -148,7 +148,7 @@ class ModelConfigManager:
 
             try:
                 with self.storage_path.open("r", encoding="utf-8") as f:
-                    data = json.load(f)
+                    data: dict[str, Any] = json.load(f)
             except Exception as e:
                 logger.error(f"[ModelConfigManager] 读取配置失败: {e}")
                 return

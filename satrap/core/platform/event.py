@@ -488,7 +488,7 @@ class MessageEvent:
         session_id: str = "",
         image_urls: list[str] | None = None,
         audio_urls: list[str] | None = None,
-        contexts: list | None = None,
+        contexts: list[Any] | None = None,
         system_prompt: str = "",
         conversation: Any = None,
     ) -> ProviderRequest:
@@ -619,7 +619,7 @@ class MessageEvent:
         """是否已执行过发送操作（如已通过 content_callback 发送）"""
         return self._has_send_oper
 
-    async def process_buffer(self, buffer: str, pattern: re.Pattern) -> str:
+    async def process_buffer(self, buffer: str, pattern: re.Pattern[str]) -> str:
         """按正则模式逐步从缓冲区提取并发送匹配内容, 每次发送后等待 1.5 秒
         
         参数:

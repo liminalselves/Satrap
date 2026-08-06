@@ -30,12 +30,12 @@ def is_remote_url(value: str) -> bool:
 
 def is_image_content_part(part: Any) -> bool:
     """判断 content 片段是否为图片片段"""
-    return isinstance(part, dict) and part.get("type") == "image_url"
+    return bool(isinstance(part, dict) and part.get("type") == "image_url")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
 def is_text_content_part(part: Any) -> bool:
     """判断 content 片段是否为文本片段"""
-    return isinstance(part, dict) and part.get("type") == "text"
+    return bool(isinstance(part, dict) and part.get("type") == "text")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
 def content_text_projection(content: ChatContent | None) -> str:

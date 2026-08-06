@@ -198,7 +198,7 @@ class FetchPageTool(Tool):
             if len(text) > max_length:
                 text = text[:max_length] + "...(内容已截断)"
 
-            result = {
+            result: dict[str, Any] = {
                 "url": url,
                 "title": title,
                 "content": text,
@@ -268,7 +268,7 @@ class AsyncFetchPageTool(AsyncTool):
                     if len(text) > max_length:
                         text = text[:max_length] + "...(内容已截断)"
 
-                    result = {
+                    result: dict[str, Any] = {
                         "url": url,
                         "title": title,
                         "content": text,

@@ -5,7 +5,7 @@ import os
 import random
 import re
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import Any, cast
 
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.log import logger
@@ -56,7 +56,7 @@ class MisskeyAdapter(PlatformAdapter):
         self,
         config: PlatformConfig,
         event_handler: EventHandler | None = None,
-        event_queue: asyncio.Queue | None = None,
+        event_queue: asyncio.Queue[Any] | None = None,
     ) -> None:
         """初始化 MisskeyAdapter 实例
 
@@ -186,7 +186,7 @@ class MisskeyAdapter(PlatformAdapter):
             notification_type = data.get("type")
             if notification_type not in ("mention", "reply", "quote"):
                 return
-            note = data.get("note") if isinstance(data.get("note"), dict) else data
+            note = cast(dict[str, Any], data.get("note")) if isinstance(data.get("note"), dict) else data
             if not isinstance(note, dict) or not self._is_bot_mentioned(note):
                 return
             message = await self.convert_message(note)
@@ -234,8 +234,9 @@ class MisskeyAdapter(PlatformAdapter):
             return True
         if self.bot_self_id and self.bot_self_id in mentions:
             return True
-        reply = note.get("reply")
-        if isinstance(reply, dict):
+        reply_raw = note.get("reply")
+        if isinstance(reply_raw, dict):
+            reply = cast(dict[str, Any], reply_raw)
             reply_user_id = str(reply.get("user", {}).get("id", ""))
             return reply_user_id == self.bot_self_id and bool(text)
         return False
@@ -269,9 +270,13 @@ class MisskeyAdapter(PlatformAdapter):
         - poll: Misskey 投票数据
         - message_parts: 消息组件列表，用于存储格式化后的投票文本
         """
-        if not isinstance(message.raw_message, dict):
-            message.raw_message = {}
-        message.raw_message["poll"] = poll
+        raw = message.raw_message
+        if isinstance(raw, dict):
+            raw = cast(dict[str, Any], raw)
+        else:
+            raw = {}
+        raw["poll"] = poll
+        message.raw_message = raw
         poll_text = format_poll(poll)
 
         if poll_text:
@@ -295,9 +300,9 @@ class MisskeyAdapter(PlatformAdapter):
             message_parts.extend(text_parts)
         message_parts.extend(process_files(message, raw_data.get("files", []) or []))
 
-        poll = raw_data.get("poll")
-        if isinstance(poll, dict):
-            self._process_poll_data(message, poll, message_parts)
+        poll_raw = raw_data.get("poll")
+        if isinstance(poll_raw, dict):
+            self._process_poll_data(message, cast(dict[str, Any], poll_raw), message_parts)
 
         message.message_str = " ".join(part for part in message_parts if part.strip())
         return message

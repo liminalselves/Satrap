@@ -1,0 +1,66 @@
+"""checkpoint CLI 分发兜底测试
+
+覆盖:
+- 业务错误 (检查点不存在) 以退出码 1 结束且不抛裸 traceback
+- 未知操作以退出码 2 结束
+- 成功路径正常执行
+"""
+from argparse import Namespace
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from satrap.cli.cmd_checkpoint import dispatch
+from satrap.core.utils.context import ContextManager
+
+
+def _args(db: str, **overrides: Any) -> Namespace:
+    base: dict[str, Any] = dict(
+        action="list", conversation_id="conv-cli", checkpoint_id="",
+        branch_name="", checkpoint="", name="", description="", db=db,
+    )
+    base.update(overrides)
+    return Namespace(**base)
+
+
+def _seed_conv(db: str) -> str:
+    """准备带一个检查点的对话, 返回检查点 ID"""
+    ctx = ContextManager("conv-cli", db_path=db, enable_checkpoint=True)
+    try:
+        ctx.add_user_message("一")
+        return ctx.create_checkpoint(name="起点").checkpoint_id
+    finally:
+        ctx.close()
+
+
+def test_dispatch_business_error_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """业务错误 (检查点不存在) 以退出码 1 结束, 输出友好信息"""
+    db = str(tmp_path / "chat_history.db")
+    _seed_conv(db)
+
+    args = _args(db, action="rollback", checkpoint_id="not-exist")
+    with pytest.raises(SystemExit) as ei:
+        dispatch(args)
+    assert ei.value.code == 1
+    assert "错误:" in capsys.readouterr().out
+
+
+def test_dispatch_unknown_action_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """未知操作以退出码 2 结束"""
+    args = _args(str(tmp_path / "x.db"), action="nope")
+    with pytest.raises(SystemExit) as ei:
+        dispatch(args)
+    assert ei.value.code == 2
+    assert "未知操作" in capsys.readouterr().out
+
+
+def test_dispatch_success_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
+    """create / list / lineage 成功路径不抛异常"""
+    db = str(tmp_path / "chat_history.db")
+    cp_id = _seed_conv(db)
+
+    dispatch(_args(db, action="list"))
+    dispatch(_args(db, action="create", name="新检查点"))
+    dispatch(_args(db, action="lineage", checkpoint_id=cp_id))
+    capsys.readouterr()   # 吞掉输出

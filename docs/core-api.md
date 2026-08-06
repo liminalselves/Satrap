@@ -232,27 +232,34 @@ tools:
 ```python
 from satrap import SkillsManager
 
-skills = SkillsManager(skills_dir=".satrap/skills")
+skills = SkillsManager()   # 默认扫官方预设 + 用户目录 .satrap/skills
 skills.scan()   # 扫描并加载全部技能 (文件夹式 + 单文件式)
 
-skills.activate("coding_agent", workflow)          # 同步 workflow: 注入指令 + 注册/启用工具
-await skills.activate_async("coding_agent", workflow)   # 异步 workflow (额外自动连接自带 MCP 客户端)
+skills.activate("coding-agent", workflow)          # 同步 workflow: 注入指令 + 注册/启用工具
+await skills.activate_async("coding-agent", workflow)   # 异步 workflow (额外自动连接自带 MCP 客户端)
 
-skills.deactivate("coding_agent", workflow)        # 取消激活
-await skills.deactivate_async("coding_agent", workflow)   # 异步取消 (额外关闭自带 MCP 连接)
+skills.deactivate("coding-agent", workflow)        # 取消激活
+await skills.deactivate_async("coding-agent", workflow)   # 异步取消 (额外关闭自带 MCP 连接)
 ```
+
+扫描目录分两层: 官方预设 (`satrap/expend/skills`, 只读基线) + 用户技能目录 (默认 `.satrap/skills`, 构造参数 `skills_dir` 可覆盖, `include_preset=False` 可关闭官方合并)。
+
+同名技能冲突规则:
+
+- 技能身份识别符 `satrap-skill-id` (meta.yaml 中声明): 同名技能携带不同 id 时共存不冲突, 可用 id 或名称激活
+- 无 id 的旧式技能与官方同名时官方优先 (用户想定制官方技能应使用不同 id)
 
 常用方法:
 
 | 方法 | 说明 |
 | --- | --- |
-| `scan()` | 扫描目录下的全部技能 (文件夹式与单文件式) |
+| `scan()` | 扫描技能 (默认官方预设 + 用户目录; 传参时仅扫指定目录) |
 | `load_skill(name, file_path)` | 加载单个技能文件 |
 | `get_skill()` / `has_skill()` / `list_skills()` | 查询已加载技能 |
 | `activate()` / `deactivate()` | 同步装配 / 卸载技能 |
 | `activate_async()` / `deactivate_async()` | 异步装配 / 卸载技能 (含自带 MCP 连接/关闭) |
 
-`SKILLS_PRESET_DIR` 指向内置示例技能目录 (`satrap/expend/skills`, 内含 `coding_agent` 与 `web_research` 两个技能文件夹), 可复制到自己的技能目录使用。
+`SKILLS_PRESET_DIR` 指向内置示例技能目录 (`satrap/expend/skills`, 内含 `coding-agent` 与 `web-research` 两个技能文件夹), 可复制到自己的技能目录使用。
 
 技能支持动态加载路线: 注册 `SkillTool` 后模型可按需调用 `load_skill` 获取技能指令:
 

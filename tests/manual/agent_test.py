@@ -28,7 +28,7 @@ class WeatherTool(Tool):
         实际应用中，这里应该调用真实的天气 API
         """
         # 模拟天气数据
-        weather_data = {
+        weather_data: Dict[str, Dict[str, Any]] = {
             "beijing": {"temp": 25, "condition": "晴天", "humidity": 45},
             "shanghai": {"temp": 28, "condition": "多云", "humidity": 60},
             "guangzhou": {"temp": 32, "condition": "雷阵雨", "humidity": 80},

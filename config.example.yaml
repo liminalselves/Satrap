@@ -11,6 +11,8 @@ user_db_path: null                    # 用户信息数据库路径, SQLite
 default_session_type: default         # 默认 Session 类型
 max_sessions: 1000                    # 最大活跃 Session 数
 idle_timeout: 3600                    # Session 闲置超时, 单位秒
+session_checkpoint: false             # 会话实例化时默认启用状态检查点 (类级/实例级显式配置优先)
+session_checkpoint_db: null           # 会话默认上下文库路径 (检查点与消息同库), null 使用各 Session 默认库
 
 # --- 管线参数 ---
 rate_limit: 1.0                       # 限流速率

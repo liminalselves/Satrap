@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from typing import Any
 
 from satrap.core.APICall.EmbedCall import parse_embedding_response
 
@@ -22,7 +23,7 @@ def test_parse_embedding_response_orders_object_items_by_index():
 
 
 def test_parse_embedding_response_supports_mapping_items():
-    response = {
+    response: dict[str, Any] = {
         "data": [
             {"index": 1, "embedding": [1.0]},
             {"index": 0, "embedding": [0.0]},

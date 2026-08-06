@@ -58,7 +58,7 @@ def is_group_session(session_id: str) -> bool:
 def normalize_segments(message: Any) -> list[dict[str, Any]]:
     """将 OneBot message 字段统一为 segment 列表"""
     if isinstance(message, list):
-        return [seg for seg in message if isinstance(seg, dict)]
+        return [seg for seg in cast(list[Any], message) if isinstance(seg, dict)]
     if isinstance(message, str):
         return [{"type": "text", "data": {"text": message}}]
     return []

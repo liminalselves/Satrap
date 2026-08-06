@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -19,7 +20,7 @@ from satrap.core.utils.mcp import (
 )
 
 
-def _make_mcp_tool(name: str = "read_file", description: str = "读取文件", schema: dict | None = None):
+def _make_mcp_tool(name: str = "read_file", description: str = "读取文件", schema: dict[str, Any] | None = None):
     return MCPTool(
         name=name,
         description=description,
@@ -41,20 +42,20 @@ class FakeSession:
         self._content = content if content is not None else [SimpleNamespace(type="text", text="ok")]
         self._is_error = is_error
         self._error = error
-        self.calls = []
+        self.calls: list[tuple[str, dict[str, Any] | None]] = []
         self.tools = [_make_mcp_tool()]
 
     async def list_tools(self):
         return SimpleNamespace(tools=self.tools)
 
-    async def call_tool(self, name: str, arguments: dict | None = None):
+    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
         self.calls.append((name, arguments))
         if self._error:
             raise self._error
         return SimpleNamespace(content=self._content, is_error=self._is_error)
 
 
-def _make_adapter(session: FakeSession | None = None, name: str = "read_file", schema: dict | None = None):
+def _make_adapter(session: FakeSession | None = None, name: str = "read_file", schema: dict[str, Any] | None = None):
     session = session or FakeSession()
     return MCPToolAdapter(session, _make_mcp_tool(name=name, schema=schema))
 
@@ -62,7 +63,7 @@ def _make_adapter(session: FakeSession | None = None, name: str = "read_file", s
 # ================= MCPToolAdapter =================
 
 def test_adapter_tool_definition_preserves_full_schema():
-    schema = {
+    schema: dict[str, Any] = {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "查询词", "enum": ["a", "b"]},
@@ -134,7 +135,7 @@ async def test_adapter_in_async_tools_manager():
         async def list_tools(self):
             return SimpleNamespace(tools=[])
 
-        async def call_tool(self, name: str, arguments: dict | None = None):
+        async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
             return SimpleNamespace(
                 content=[SimpleNamespace(type="text", text=str(arguments))],
                 is_error=False,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import streamlit as st
 from satrap.admin_utils.backend_control import (
@@ -117,14 +118,14 @@ def render():
         st.info(f"后端 API 地址可用 ({daemon_info(st.session_state.config).base_url}), 运行中适配器: {adapter_count} 个")
         adapters = health_data.get("adapters", {})
         if adapters:
-            ad_data = []
+            ad_data: list[dict[str, Any]] = []
             for aid, info in adapters.items():
                 ad_data.append({
                     "id": aid,
                     "status": info.get("status", "?"),
                     "started": "" if info.get("started") else "否",
                 })
-            st.dataframe(ad_data, use_container_width=True)
+            st.dataframe(ad_data, use_container_width=True)  # pyright: ignore[reportUnknownMemberType]
     else:
         detail = f"({err})" if err else ""
         st.warning(f"后端未运行, 部分实时状态不可用 {detail}")

@@ -40,7 +40,7 @@ class OneBotAdapter(PlatformAdapter):
         self,
         config: PlatformConfig,
         event_handler: EventHandler | None = None,
-        event_queue: asyncio.Queue | None = None,
+        event_queue: asyncio.Queue[Any] | None = None,
     ) -> None:
         """初始化 OneBotAdapter 实例"""
         super().__init__(config, event_handler, event_queue)
@@ -206,7 +206,7 @@ class OneBotAdapter(PlatformAdapter):
                 result = await self.send_message(session_id, chain)
             return result
 
-        components = []
+        components: list[Any] = []
         async for chain in generator:
             components.extend(chain.components)
         if components:

@@ -11,16 +11,23 @@ Skill = 一段指令文本 (instructions) + 一组关联工具 + 可选自带工
 
 ``` text
 skills/
-└── coding_agent/          # 技能文件夹, 文件夹名即技能名 (若 skill.md 未声明 name)
+└── coding-agent/        # 技能文件夹, 文件夹名即技能名 (若 skill.md 未声明 name)
     ├── skill.md           # 技能指令 (Markdown, 支持 YAML front matter)
     ├── tools.py           # 可选: 自带工具与 MCP 客户端 (约定见下)
-    └── meta.yaml          # 可选: 作者, 版本等信息
+    └── meta.yaml          # 可选: 作者, 版本, satrap-skill-id 等
 ```
+
+扫描目录区分两层:
+- 官方预设目录 `satrap/expend/skills` (只读基线)
+- 用户技能目录 `skills_dir` (默认 `.satrap/skills`, 用户自添加, 同名无 id 时官方优先)
+
+`meta.yaml` 的 `satrap-skill-id` 是技能身份识别符 (小写字母/数字/连字符):
+同名技能携带不同 id 时共存不冲突; 无 id 的旧式技能同名时官方优先。
 
 `skill.md` 的 front matter:
 ``` markdown
 ---
-name: coding_agent
+name: coding-agent
 description: 代码生成与调试助手
 tools:
   - code_sandbox
@@ -35,17 +42,17 @@ tools:
 - 未定义 get_tools 时, 模块内定义的 Tool / AsyncTool 子类会被自动实例化并收集
 - 自带工具名会自动加入技能工具列表, 无需在 front matter 中重复声明
 
-也兼容旧式单文件技能: 直接把 .md 文件放在扫描目录下即可。
+也兼容旧式单文件技能: 直接把 .md 文件放在扫描目录下即可
 
 用法示例:
 ``` python
 from satrap import SkillsManager   # 或 from satrap.core.utils.skills import SkillsManager
 
-skills = SkillsManager(skills_dir=".satrap/skills")
-skills.scan()
-skills.activate("coding_agent", workflow)          # 同步 workflow
-await skills.activate_async("coding_agent", workflow)   # 异步 workflow (含 MCP 连接)
-skills.deactivate("coding_agent", workflow)        # 取消激活
+skills = SkillsManager()           # 用户技能目录默认 .satrap/skills
+skills.scan()                      # 扫描官方预设 + 用户目录 (同名无 id 时官方优先)
+skills.activate("coding-agent", workflow)          # 同步 workflow
+await skills.activate_async("coding-agent", workflow)   # 异步 workflow (含 MCP 连接)
+skills.deactivate("coding-agent", workflow)        # 取消激活
 ```
 """
 
@@ -68,7 +75,10 @@ SKILLS_PRESET_DIR = os.path.join(
     "expend",
     "skills",
 )
-"""内置技能示例目录 (satrap/expend/skills)"""
+"""官方预设技能目录 (satrap/expend/skills), 只读基线"""
+
+DEFAULT_USER_SKILLS_DIR = ".satrap/skills"
+"""默认用户技能目录 (相对工作目录), 用户自添加技能"""
 
 _FRONT_MATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 _SKILL_TOOLS_MODULE_COUNTER = 0
@@ -87,6 +97,7 @@ class Skill:
         meta: Optional[Dict[str, Any]] = None,
         tools: Optional[List[Any]] = None,
         mcp_clients: Optional[List[Any]] = None,
+        skill_id: Optional[str] = None,
     ):
         """
         参数:
@@ -98,8 +109,10 @@ class Skill:
         - meta: 元信息 (作者, 版本等, 来自 meta.yaml)
         - tools: 自带工具实例列表 (来自 tools.py)
         - mcp_clients: 自带 MCP 客户端实例列表 (来自 tools.py)
+        - skill_id: 技能身份识别符 (来自 meta.yaml 的 satrap-skill-id), 同名区分
         """
         self.name = name
+        self.skill_id = skill_id
         self.instructions = instructions
         self.tool_names = list(tool_names or [])
         self.description = description
@@ -124,7 +137,7 @@ class Skill:
             or default_name
             or os.path.splitext(os.path.basename(file_path))[0]
         )
-        tools = meta.get("tools") or []
+        tools: list[str] | str = meta.get("tools") or []
         if isinstance(tools, str):
             tools = [t.strip() for t in tools.split(",") if t.strip()]
         description = str(meta.get("description") or "")
@@ -137,15 +150,20 @@ class Skill:
         )
 
     def to_text(self) -> str:
-        """生成可注入系统提示词的指令块 (带技能标记, 便于反激活时剥离)"""
-        lines = [f"<skill:{self.name}>"]
+        """生成可注入系统提示词的指令块 (带技能标记, 便于反激活时剥离)
+
+        标记使用注册 key (satrap-skill-id or name), 同名不同 id 的技能注入标记互不相同,
+        反激活时按 key 剥离不会误伤同名的其他技能
+        """
+        key = self.skill_id or self.name
+        lines = [f"<skill:{key}>"]
         if self.description:
             lines.append(f"描述: {self.description}")
         if self.instructions:
             lines.append(self.instructions)
         if self.tool_names:
             lines.append(f"可用工具: {', '.join(self.tool_names)}")
-        lines.append(f"</skill:{self.name}>")
+        lines.append(f"</skill:{key}>")
         return "\n".join(lines)
 
     def __repr__(self) -> str:
@@ -232,15 +250,39 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
 class SkillsManager:
     """技能管理器; 负责扫描, 加载技能, 并将其装配到 workflow"""
 
-    def __init__(self, skills_dir: Optional[str] = None):
+    def __init__(self, skills_dir: Optional[str] = None, include_preset: bool = True):
         """
         参数:
-        - skills_dir: 技能扫描目录, 默认 None (不自动扫描, 需调用 scan 指定)
+        - skills_dir: 用户技能扫描目录, 默认 ".satrap/skills" (None 时使用默认值)
+        - include_preset: 是否同时扫描官方预设目录 (satrap/expend/skills), 默认 True
+
+        扫描时官方预设目录在前, 用户目录在后; 同名技能无 satrap-skill-id 时官方优先,
+        携带不同 id 的同名技能共存不冲突。
         """
-        self.skills_dir = skills_dir
+        self.skills_dir = skills_dir or DEFAULT_USER_SKILLS_DIR
+        self.include_preset = include_preset
         self.skills: Dict[str, Skill] = {}
         self._active: Dict[int, str] = {}            # workflow id -> skill name, 防止重复注入
         self._active_mcp: Dict[int, List[Any]] = {}  # workflow id -> 已连接的 MCP 客户端
+
+    @staticmethod
+    def _is_preset(skill: Skill) -> bool:
+        """技能是否来自官方预设目录"""
+        return bool(skill.source and skill.source.startswith(SKILLS_PRESET_DIR))
+
+    def _register_skill(self, skill: Skill) -> None:
+        """登记技能 (key 优先取 satrap-skill-id, 同 key 冲突时官方优先)
+
+        同名技能携带不同 id 时 key 不同, 共存不冲突;
+        同 key 冲突 (同名无 id 或同 id) 时: 已有官方版本则保留官方,
+        用户想定制官方技能应使用不同的 satrap-skill-id。
+        """
+        key = skill.skill_id or skill.name
+        existing = self.skills.get(key)
+        if existing is not None and self._is_preset(existing) and not self._is_preset(skill):
+            logger.info(f"[技能管理] 技能 {skill.name} 与官方同标识, 保留官方版本")
+            return
+        self.skills[key] = skill
 
     def scan(self, skills_dir: Optional[str] = None) -> List[Skill]:
         """扫描技能目录并加载全部技能
@@ -250,32 +292,41 @@ class SkillsManager:
         - 单文件式: 目录下的 .md / .markdown 文件
 
         参数:
-        - skills_dir: 扫描目录, 默认使用构造时的 skills_dir
+        - skills_dir: 显式指定扫描目录时只扫描该目录; 否则扫描官方预设 + 构造时的用户目录
 
         返回:
         - 加载的技能列表
         """
-        base = skills_dir or self.skills_dir
-        if not base or not os.path.isdir(base):
-            logger.warning(f"[技能管理] 技能目录不存在: {base}")
-            return []
+        if skills_dir is not None:
+            dirs: List[str] = [skills_dir]
+        else:
+            dirs = [SKILLS_PRESET_DIR] if self.include_preset else []
+            dirs.append(self.skills_dir)
+
         found: List[Skill] = []
-        for entry in sorted(os.listdir(base)):
-            entry_path = os.path.join(base, entry)
-            try:
-                if os.path.isdir(entry_path):
-                    skill = self._load_skill_dir(entry_path)
-                    if skill is not None:
-                        self.skills[skill.name] = skill
+        for base in dirs:
+            if not os.path.isdir(base):
+                if base == self.skills_dir:
+                    logger.info(f"[技能管理] 用户技能目录不存在, 已跳过: {base}")
+                else:
+                    logger.warning(f"[技能管理] 技能目录不存在: {base}")
+                continue
+            for entry in sorted(os.listdir(base)):
+                entry_path = os.path.join(base, entry)
+                try:
+                    if os.path.isdir(entry_path):
+                        skill = self._load_skill_dir(entry_path)
+                        if skill is not None:
+                            self._register_skill(skill)
+                            found.append(skill)
+                            logger.info(f"[技能管理] 已加载技能: {skill.name} <- {entry}/")
+                    elif entry.endswith((".md", ".markdown")):
+                        skill = Skill.from_file(entry_path)
+                        self._register_skill(skill)
                         found.append(skill)
-                        logger.info(f"[技能管理] 已加载技能: {skill.name} <- {entry}/")
-                elif entry.endswith((".md", ".markdown")):
-                    skill = Skill.from_file(entry_path)
-                    self.skills[skill.name] = skill
-                    found.append(skill)
-                    logger.info(f"[技能管理] 已加载技能: {skill.name} <- {entry}")
-            except Exception as e:
-                logger.error(f"[技能管理] 加载技能 {entry} 失败: {e}")
+                        logger.info(f"[技能管理] 已加载技能: {skill.name} <- {entry}")
+                except Exception as e:
+                    logger.error(f"[技能管理] 加载技能 {entry} 失败: {e}")
         return found
 
     def _load_skill_dir(self, skill_dir: str) -> Optional[Skill]:
@@ -305,6 +356,10 @@ class SkillsManager:
                 name = tool.get_tool_name()
                 if name not in skill.tool_names:
                     skill.tool_names.append(name)
+        # satrap-skill-id: 技能身份识别符 (同名技能区分)
+        raw_id = str(skill.meta.get("satrap-skill-id") or "").strip()
+        if raw_id:
+            skill.skill_id = raw_id
         return skill
 
     def load_skill(self, name: str, file_path: str) -> Skill:
@@ -312,19 +367,25 @@ class SkillsManager:
         skill = Skill.from_file(file_path)
         if name and name != skill.name:
             skill.name = name
-        self.skills[skill.name] = skill
+        self._register_skill(skill)
         return skill
 
     def get_skill(self, name: str) -> Optional[Skill]:
-        """按名称获取技能"""
-        return self.skills.get(name)
+        """按名称或 satrap-skill-id 获取技能 (同名多个时返回官方优先) """
+        skill = self.skills.get(name)
+        if skill is not None:
+            return skill
+        for s in self.skills.values():
+            if s.name == name:
+                return s
+        return None
 
     def has_skill(self, name: str) -> bool:
-        """检查技能是否存在"""
-        return name in self.skills
+        """检查技能是否存在 (名称或 satrap-skill-id) """
+        return self.get_skill(name) is not None
 
     def list_skills(self) -> List[str]:
-        """获取所有已加载技能的名称列表"""
+        """获取所有已加载技能的可识别标识列表 (名称或 satrap-skill-id) """
         return list(self.skills.keys())
 
     # ================= 装配到 workflow =================
@@ -339,12 +400,13 @@ class SkillsManager:
         返回:
         - bool: 是否激活成功
         """
-        skill = self.skills.get(skill_name)
+        skill = self.get_skill(skill_name)
         if skill is None:
             logger.warning(f"[技能管理] 技能 {skill_name} 不存在")
             return False
         wf_id = id(workflow)
-        if self._active.get(wf_id) == skill_name:
+        key = skill.skill_id or skill.name
+        if self._active.get(wf_id) == key:
             return True
 
         workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
@@ -352,20 +414,21 @@ class SkillsManager:
         enabled = self._apply_tools(workflow, skill.tool_names, enable=True)
         if skill.mcp_clients:
             logger.warning(
-                f"[技能管理] 技能 {skill_name} 含 MCP 客户端, 请使用 activate_async 激活以自动连接"
+                f"[技能管理] 技能 {skill.name} 含 MCP 客户端, 请使用 activate_async 激活以自动连接"
             )
-        self._active[wf_id] = skill_name
-        logger.info(f"[技能管理] 技能 {skill_name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
+        self._active[wf_id] = key
+        logger.info(f"[技能管理] 技能 {skill.name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
     async def activate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """将技能装配进 workflow (异步版): 额外自动连接并注册技能自带的 MCP 客户端"""
-        skill = self.skills.get(skill_name)
+        skill = self.get_skill(skill_name)
         if skill is None:
             logger.warning(f"[技能管理] 技能 {skill_name} 不存在")
             return False
         wf_id = id(workflow)
-        if self._active.get(wf_id) == skill_name:
+        key = skill.skill_id or skill.name
+        if self._active.get(wf_id) == key:
             return True
 
         result = workflow.ctx.add_at_system_end(skill.to_text(), separator="\n\n")
@@ -382,42 +445,44 @@ class SkillsManager:
                     await client.register_tools(tools_manager)
                     connected.append(client)
                 except Exception as e:
-                    logger.error(f"[技能管理] 技能 {skill_name} 的 MCP 客户端连接失败: {e}")
+                    logger.error(f"[技能管理] 技能 {skill.name} 的 MCP 客户端连接失败: {e}")
         if connected:
             self._active_mcp[wf_id] = connected
 
-        self._active[wf_id] = skill_name
-        logger.info(f"[技能管理] 技能 {skill_name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
+        self._active[wf_id] = key
+        logger.info(f"[技能管理] 技能 {skill.name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
     def deactivate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """取消技能激活: 从系统提示词剥离指令块 + 禁用关联工具 (同步版)"""
-        skill = self.skills.get(skill_name)
+        skill = self.get_skill(skill_name)
         if skill is None:
             logger.warning(f"[技能管理] 技能 {skill_name} 不存在")
             return False
         wf_id = id(workflow)
-        if self._active.get(wf_id) != skill_name:
+        key = skill.skill_id or skill.name
+        if self._active.get(wf_id) != key:
             return True
 
-        self._strip_from_system(workflow, skill_name)
+        self._strip_from_system(workflow, key)
         self._sync_context(workflow)
         self._apply_tools(workflow, skill.tool_names, enable=False)
         self._active.pop(wf_id, None)
-        logger.info(f"[技能管理] 技能 {skill_name} 已取消激活")
+        logger.info(f"[技能管理] 技能 {skill.name} 已取消激活")
         return True
 
     async def deactivate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
         """取消技能激活 (异步版): 额外关闭技能自带的 MCP 客户端连接"""
-        skill = self.skills.get(skill_name)
+        skill = self.get_skill(skill_name)
         if skill is None:
             logger.warning(f"[技能管理] 技能 {skill_name} 不存在")
             return False
         wf_id = id(workflow)
-        if self._active.get(wf_id) != skill_name:
+        key = skill.skill_id or skill.name
+        if self._active.get(wf_id) != key:
             return True
 
-        self._strip_from_system(workflow, skill_name)
+        self._strip_from_system(workflow, key)
         sync_result = self._sync_context(workflow)
         if inspect.isawaitable(sync_result):
             await sync_result
@@ -429,7 +494,7 @@ class SkillsManager:
             except Exception as e:
                 logger.error(f"[技能管理] MCP 客户端关闭失败: {e}")
         self._active.pop(wf_id, None)
-        logger.info(f"[技能管理] 技能 {skill_name} 已取消激活")
+        logger.info(f"[技能管理] 技能 {skill.name} 已取消激活")
         return True
 
     # ================= 内部方法 =================
@@ -480,7 +545,16 @@ class SkillsManager:
 
     @staticmethod
     def _sync_context(workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]):
-        """触发上下文落库, 返回 _sync() 的结果 (异步管理器返回协程)"""
+        """触发上下文落库, 返回 _sync() 的结果 (异步管理器返回协程)
+
+        技能指令直接改写上下文中的系统消息内容, 属于外部编辑,
+        落库前需标记 dirty 以触发全量重写
+        """
+        ctx = getattr(workflow, "ctx", None)
+        if ctx is not None:
+            mark = getattr(ctx, "_mark_dirty", None)
+            if mark is not None:
+                mark()
         sync = getattr(workflow.ctx, "_sync", None)
         if sync is not None:
             return sync()
@@ -490,7 +564,7 @@ class SkillsManager:
 class SkillTool(AsyncTool):
     """技能加载工具; 模型可按需调用以获取技能指令 (动态技能加载路线)
 
-    注册进 AsyncToolsManager 后, 模型在需要特定专业能力时会调用 `load_skill` 获取指令。
+    注册进 AsyncToolsManager 后, 模型在需要特定专业能力时会调用 `load_skill` 获取指令
     """
 
     tool_name = "load_skill"

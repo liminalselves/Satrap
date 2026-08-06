@@ -1,4 +1,4 @@
-﻿from typing import Dict, Any
+from typing import Dict, Any
 import subprocess
 import shutil
 import os
@@ -36,7 +36,7 @@ class CodeSandbox:
 
         return abs_path
 
-    def _run_python(self, args: list, cwd: str | None = None) -> Dict[str, Any]:
+    def _run_python(self, args: list[str], cwd: str | None = None) -> Dict[str, Any]:
         """
         执行 Python 命令; 返回包含 stdout, stderr 和返回码的字典
 
@@ -171,7 +171,7 @@ class CodeSandbox:
         else:
             search_path = self.sandbox_path
 
-        file_list = []
+        file_list: list[str] = []
      
         for root, dirs, files in os.walk(search_path):   # 使用 os.walk 递归遍历目录
             rel_root = os.path.relpath(root, self.sandbox_path)   # 计算相对于沙箱根目录的路径

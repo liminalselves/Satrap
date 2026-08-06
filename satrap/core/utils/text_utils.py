@@ -48,7 +48,7 @@ class TextSplitter:
         返回:
         - 分割后的字符串列表
         """
-        all_chunks = []
+        all_chunks: list[str] = []
         for doc in documents:
             chunks = self.split_text(doc)
             all_chunks.extend(chunks)
@@ -66,7 +66,7 @@ class TextSplitter:
         - 分割后的文本块列表
         """
         # Step.1 确定当前使用的分隔符
-        final_chunks = []
+        final_chunks: list[str] = []
         separator = separators[-1] if separators else ""
         new_separators = []
 
@@ -97,7 +97,7 @@ class TextSplitter:
             # 如果没有找到分隔符或分隔符为空字符串, 则按字符逐个分割
 
         # Step.3 递归处理过大的片段并合并
-        good_splits = []
+        good_splits: list[str] = []
         for s in splits:
             if len(s) < self.chunk_size:
                 good_splits.append(s)
@@ -123,7 +123,7 @@ class TextSplitter:
         返回:
         - 合并完成的最终文本块列表
         """
-        docs = []
+        docs: list[str] = []
         current_doc: List[str] = []
         total_len = 0
         separator_len = len(separator)

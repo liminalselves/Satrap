@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from satrap.expend.rag import LiteVectorRAG
+from satrap.expend.tools.rag import LiteVectorRAG
 
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_api, pytest.mark.asyncio]

@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import json
-from urllib.parse import unquote
+from urllib.parse import parse_qs, unquote, urlsplit
 from typing import TYPE_CHECKING, Any
 
+from satrap.api import checkpoint as checkpoint_api
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
+
+
+def _query_param(path: str, key: str) -> str:
+    """提取请求路径 query 参数值 (缺失或未传返回空串)"""
+    values = parse_qs(urlsplit(path).query).get(key)
+    return unquote(values[0]) if values else ""
 
 
 class BackendHTTPServer:
@@ -218,6 +225,55 @@ class BackendHTTPServer:
                         return 200, {"ok": True}
                     return 404, {"error": "not found"}
             except Exception as e:
+                return 400, {"error": str(e)}
+
+        # GET /api/checkpoints?conversation=xxx
+        # GET /api/checkpoint/branches?conversation=xxx
+        # GET /api/checkpoint/lineage?checkpoint_id=xxx
+        # GET /api/checkpoint/audit?conversation=xxx
+        # POST /api/checkpoint/{create|rollback|retry|fork}
+        db = backend.checkpoint_db_path
+        if path.startswith("/api/checkpoint"):
+            try:
+                if method == "GET" and path.startswith("/api/checkpoints"):
+                    conv = _query_param(path, "conversation")
+                    return 200, checkpoint_api.list_checkpoints(db, conv)
+                if method == "GET" and path.startswith("/api/checkpoint/branches"):
+                    conv = _query_param(path, "conversation")
+                    return 200, checkpoint_api.list_branches(db, conv)
+                if method == "GET" and path.startswith("/api/checkpoint/lineage"):
+                    cid = _query_param(path, "checkpoint_id")
+                    return 200, checkpoint_api.trace_lineage(db, cid)
+                if method == "GET" and path.startswith("/api/checkpoint/audit"):
+                    conv = _query_param(path, "conversation")
+                    return 200, checkpoint_api.list_mutations(db, conv)
+                if method == "POST":
+                    payload = json.loads(body or b"{}")
+                    conv = str(payload.get("conversation", "")).strip()
+                    if not conv:
+                        return 400, {"error": "缺少 conversation 参数"}
+                    if path == "/api/checkpoint/create":
+                        return 200, checkpoint_api.create_checkpoint(
+                            db, conv,
+                            name=str(payload.get("name", "")),
+                            description=str(payload.get("description", "")),
+                        )
+                    if path == "/api/checkpoint/rollback":
+                        return 200, checkpoint_api.rollback_checkpoint(
+                            db, conv, str(payload.get("checkpoint_id", ""))
+                        )
+                    if path == "/api/checkpoint/retry":
+                        return 200, checkpoint_api.retry_checkpoint(
+                            db, conv, str(payload.get("checkpoint_id", ""))
+                        )
+                    if path == "/api/checkpoint/fork":
+                        cid = payload.get("checkpoint_id")
+                        return 200, checkpoint_api.fork_checkpoint(
+                            db, conv,
+                            branch_name=str(payload.get("branch_name", "")),
+                            checkpoint_id=str(cid) if cid else None,
+                        )
+            except (ValueError, KeyError, IndexError) as e:
                 return 400, {"error": str(e)}
 
         return 404, {"error": f"unknown route: {method} {path}"}

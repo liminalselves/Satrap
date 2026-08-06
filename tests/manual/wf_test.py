@@ -60,7 +60,7 @@ class WeatherWorkflow(ModelWorkflowFramework):
 
         # 3. 使用 agent_executor 自动处理多轮工具调用
         #    注意：agent_executor 内部会循环调用模型直到无工具调用，
-        #    并且中间思考内容不会进入上下文。
+        #    并且中间思考内容不会进入上下文
         final_context, _ = self.agent_executor(response)
 
         # 4. 获取最终回答（最后一条 assistant 消息的内容）

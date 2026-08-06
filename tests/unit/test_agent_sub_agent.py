@@ -9,7 +9,7 @@ import pytest
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
-from satrap.expend.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
+from satrap.expend.tools.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

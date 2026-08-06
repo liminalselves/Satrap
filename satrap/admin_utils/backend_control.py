@@ -48,7 +48,7 @@ def check_backend(config: BackendConfig) -> tuple[dict[str, Any] | None, str | N
     return None, health.get("error")
 
 
-def managed_process() -> subprocess.Popen | None:
+def managed_process() -> subprocess.Popen[Any] | None:
     """返回当前面板启动的后端进程"""
     return st.session_state.get(PROC_KEY)
 
@@ -111,7 +111,7 @@ def read_err_log() -> str:
         clean_err_log()
 
 
-def wait_backend_ready(config: BackendConfig, proc: subprocess.Popen, seconds: float = 8) -> bool:
+def wait_backend_ready(config: BackendConfig, proc: subprocess.Popen[Any], seconds: float = 8) -> bool:
     """等待后端 health 接口就绪"""
     client = daemon_client(config, timeout=1)
     deadline = time.time() + seconds
