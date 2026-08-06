@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from typing import TYPE_CHECKING, Any
 
 from satrap.api import checkpoint as checkpoint_api
+from satrap.api import user as user_api
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
 
 if TYPE_CHECKING:
@@ -225,6 +226,55 @@ class BackendHTTPServer:
                         return 200, {"ok": True}
                     return 404, {"error": "not found"}
             except Exception as e:
+                return 400, {"error": str(e)}
+
+        # GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
+        # GET /api/user/sessions?user_id=xxx
+        # POST /api/user/{create|update|delete|bind|unbind}
+        user_db = getattr(getattr(backend, "config", None), "user_db_path", None) or ".satrap/user_info.db"
+        if path.startswith("/api/user"):
+            try:
+                if method == "GET" and path.startswith("/api/users"):
+                    user_id = _query_param(path, "user_id")
+                    if user_id:
+                        return 200, user_api.get_user(user_db, user_id)
+                    limit = int(_query_param(path, "limit") or "200")
+                    return 200, user_api.list_users(user_db, limit=limit)
+                if method == "GET" and path.startswith("/api/user/sessions"):
+                    user_id = _query_param(path, "user_id")
+                    if not user_id:
+                        return 400, {"error": "缺少 user_id 参数"}
+                    return 200, user_api.list_user_sessions(user_db, user_id)
+                if method == "POST":
+                    payload = json.loads(body or b"{}")
+                    user_id = str(payload.get("user_id", "")).strip()
+                    if not user_id:
+                        return 400, {"error": "缺少 user_id 参数"}
+                    if path == "/api/user/create":
+                        return 200, user_api.create_user(
+                            user_db, user_id,
+                            platform=str(payload.get("platform", "")),
+                            nickname=str(payload.get("nickname", "")),
+                        )
+                    if path == "/api/user/update":
+                        return 200, user_api.update_user(
+                            user_db, user_id,
+                            nickname=payload.get("nickname"),
+                            platform=payload.get("platform"),
+                        )
+                    if path == "/api/user/delete":
+                        return 200, user_api.delete_user(user_db, user_id)
+                    if path == "/api/user/bind":
+                        session_id = str(payload.get("session_id", "")).strip()
+                        if not session_id:
+                            return 400, {"error": "缺少 session_id 参数"}
+                        return 200, user_api.bind_session(user_db, user_id, session_id)
+                    if path == "/api/user/unbind":
+                        session_id = str(payload.get("session_id", "")).strip()
+                        if not session_id:
+                            return 400, {"error": "缺少 session_id 参数"}
+                        return 200, user_api.unbind_session(user_db, user_id, session_id)
+            except (ValueError, KeyError, IndexError) as e:
                 return 400, {"error": str(e)}
 
         # GET /api/checkpoints?conversation=xxx

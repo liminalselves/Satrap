@@ -19,6 +19,7 @@ class CommandHandler:
         self.pref_len = len(cmd_prefix)
         self.param_split = param_split
         self.param_split_len = len(param_split)
+        self._disabled_commands: set[str] = set()
 
         self.register_help()   # 默认注册帮助命令
 
@@ -63,6 +64,8 @@ class CommandHandler:
             return False   # 不以指定前缀开头, 不是命令
         
         for cmd in self.commands.keys():
+            if cmd in self._disabled_commands:
+                continue
             if message[self.pref_len:].startswith(cmd + self.param_split) or message[self.pref_len:] == cmd:
                 return True    # 消息以某个已注册命令开头, 是命令消息
 
@@ -76,7 +79,7 @@ class CommandHandler:
         - args: 参数列表
         """
         try:
-            if cmd in self.commands:
+            if cmd in self.commands and cmd not in self._disabled_commands:
                 return self.commands[cmd](*args)
             else:
                 logger.warning(f"未注册命令: {cmd}")
@@ -127,6 +130,66 @@ class CommandHandler:
         self.commands[name] = handler
         self.intros[name] = intro
 
+    def unregister_command(self, name: str) -> bool:
+        """注销命令
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已注销
+        """
+        if name not in self.commands:
+            return False
+        self.commands.pop(name, None)
+        self.intros.pop(name, None)
+        self._disabled_commands.discard(name)
+        return True
+
+    def enable_command(self, name: str) -> bool:
+        """启用命令
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已启用
+        """
+        if name not in self.commands:
+            return False
+        self._disabled_commands.discard(name)
+        return True
+
+    def disable_command(self, name: str) -> bool:
+        """停用命令 (停用后消息不再按命令处理)
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已停用
+        """
+        if name not in self.commands:
+            return False
+        self._disabled_commands.add(name)
+        return True
+
+    def is_command_enabled(self, name: str) -> bool:
+        """检查命令是否启用
+
+        参数:
+        - name: 命令名
+        """
+        return name in self.commands and name not in self._disabled_commands
+
+    def list_commands(self) -> Dict[str, str]:
+        """列出已注册命令及其简介
+
+        返回:
+        - Dict[命令名, 简介]
+        """
+        return self.intros.copy()
+
     def process_message(self, message: str) -> tuple[Any, bool]:
         """处理输入消息, 执行对应命令
 
@@ -175,6 +238,7 @@ class AsyncCommandHandler:
         self.pref_len = len(cmd_prefix)
         self.param_split = param_split
         self.param_split_len = len(param_split)
+        self._disabled_commands: set[str] = set()
 
         self.register_help()   # 默认注册帮助命令
 
@@ -219,6 +283,8 @@ class AsyncCommandHandler:
             return False   # 不以指定前缀开头, 不是命令
         
         for cmd in self.commands.keys():
+            if cmd in self._disabled_commands:
+                continue
             if message[self.pref_len:].startswith(cmd + self.param_split) or message[self.pref_len:] == cmd:
                 return True    # 消息以某个已注册命令开头, 是命令消息
 
@@ -232,7 +298,7 @@ class AsyncCommandHandler:
         - args: 参数列表
         """
         try:
-            if cmd in self.commands:
+            if cmd in self.commands and cmd not in self._disabled_commands:
                 handler = self.commands[cmd]
                 # 直接异步调用, handler 必须为异步函数
                 return await handler(*args)
@@ -276,6 +342,66 @@ class AsyncCommandHandler:
         """
         self.commands[name] = handler
         self.intros[name] = intro
+
+    def unregister_command(self, name: str) -> bool:
+        """注销命令
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已注销
+        """
+        if name not in self.commands:
+            return False
+        self.commands.pop(name, None)
+        self.intros.pop(name, None)
+        self._disabled_commands.discard(name)
+        return True
+
+    def enable_command(self, name: str) -> bool:
+        """启用命令
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已启用
+        """
+        if name not in self.commands:
+            return False
+        self._disabled_commands.discard(name)
+        return True
+
+    def disable_command(self, name: str) -> bool:
+        """停用命令 (停用后消息不再按命令处理)
+
+        参数:
+        - name: 命令名
+
+        返回:
+        - bool: 是否存在并已停用
+        """
+        if name not in self.commands:
+            return False
+        self._disabled_commands.add(name)
+        return True
+
+    def is_command_enabled(self, name: str) -> bool:
+        """检查命令是否启用
+
+        参数:
+        - name: 命令名
+        """
+        return name in self.commands and name not in self._disabled_commands
+
+    def list_commands(self) -> Dict[str, str]:
+        """列出已注册命令及其简介
+
+        返回:
+        - Dict[命令名, 简介]
+        """
+        return self.intros.copy()
 
     async def process_message(self, message: str) -> tuple[Any, bool]:
         """异步处理输入消息, 执行对应命令

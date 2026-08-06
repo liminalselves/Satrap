@@ -21,7 +21,7 @@ class _FakeLLM:
         self.messages: list[dict[str, Any]] = []
         self.tools: list[dict[str, Any]] | None = []
 
-    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None):
         self.messages = copy.deepcopy(messages)
         self.tools = tools
         return LLMCallResponse(type="message", content="同步回复")
@@ -31,7 +31,7 @@ class _FailingLLM:
     def __init__(self):
         self.messages: list[dict[str, Any]] = []
 
-    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None):
         self.messages = copy.deepcopy(messages)
         return False
 
@@ -41,7 +41,7 @@ class _FakeAsyncLLM:
         self.messages: list[dict[str, Any]] = []
         self.tools: list[dict[str, Any]] | None = []
 
-    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None):
         self.messages = copy.deepcopy(messages)
         self.tools = tools
         return LLMCallResponse(type="message", content="异步回复")
@@ -51,7 +51,7 @@ class _FailingAsyncLLM:
     def __init__(self):
         self.messages: list[dict[str, Any]] = []
 
-    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None):
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None):
         self.messages = copy.deepcopy(messages)
         return False
 
@@ -74,7 +74,7 @@ def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
 
 def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
+        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "自定义回复"}], True)
 
@@ -135,7 +135,7 @@ def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
 
 def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
-        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
+        def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "临时回复"}], True)
 
@@ -212,7 +212,7 @@ async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_pa
 @pytest.mark.asyncio
 async def test_async_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
+        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "异步临时回复"}], True)
 
@@ -267,7 +267,7 @@ async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_
 @pytest.mark.asyncio
 async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
-        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10):
+        async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
             return ([{"role": "assistant", "content": "异步自定义回复"}], True)
 

@@ -311,7 +311,7 @@ class UserManager:
         参数:
         - session_manager: 共享的 SessionManager 实例
         - db_path: 用户信息数据库路径, 默认 .satrap/user_info.db
-        - auto_create: 预留开关, 兼容自动创建用户场景
+        - auto_create: 是否允许自动创建用户, 关闭后未知用户不落库
         """
         self.sm = session_manager
         self.store = UserInfoStore(db_path=db_path)
@@ -324,13 +324,16 @@ class UserManager:
         user_id: str,
         platform: str = "",
         nickname: str = "",
-    ) -> UserInfo:
-        """查询用户, 不存在则创建并持久化
+    ) -> Optional[UserInfo]:
+        """查询用户; auto_create 开启时不存在则创建并持久化
 
         参数:
         - user_id: 用户 ID
         - platform: 平台名称
         - nickname: 昵称
+
+        返回:
+        - UserInfo: 用户信息; auto_create=False 且用户不存在时返回 None
         """
         with self._lock:
             existed = self.store.get(user_id)
@@ -345,6 +348,9 @@ class UserManager:
                 if changed:
                     self.store.upsert(existed)
                 return existed
+
+            if not self.auto_create:
+                return None
 
             created = UserInfo(
                 user_id=user_id,
@@ -531,7 +537,11 @@ class UserManager:
         """
         with self._lock:
             try:
-                self.get_or_create_user(user_id)
+                if self.get_or_create_user(user_id) is None:
+                    logger.warning(
+                        f"[UserManager] create_user_session 跳过: 用户不存在且 auto_create=False, user_id={user_id}"
+                    )
+                    return ""
                 cfg = self.sm.register_session(
                     session_class=session_class,
                     session_type_name=session_type_name,
@@ -570,7 +580,12 @@ class UserManager:
 
         返回: session_id (格式: "{session_type}:{platform}:{user_id}")
         """
-        self.get_or_create_user(user_id=user_id, platform=platform)
+        if self.get_or_create_user(user_id=user_id, platform=platform) is None:
+            logger.warning(
+                f"[UserManager] resolve_session 跳过: 用户不存在且 auto_create=False, "
+                f"user_id={user_id}, platform={platform}"
+            )
+            return ""
 
         existed = self.store.get_context_session(user_id, platform, session_type)
         if existed is not None:
@@ -643,7 +658,11 @@ class UserManager:
                     logger.error("[UserManager] route_call 失败: user_call 必须是 UserCall 实例")
                     return ""
 
-                self.get_or_create_user(user_id=user_id)
+                if self.get_or_create_user(user_id=user_id) is None:
+                    logger.warning(
+                        f"[UserManager] route_call 拒绝: 用户不存在且 auto_create=False, user_id={user_id}"
+                    )
+                    return ""
 
                 if not user_call.session_id:
                     session_ids = self.get_user_session_ids(user_id=user_id)

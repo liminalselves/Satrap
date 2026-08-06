@@ -118,16 +118,17 @@ def test_default_checkpoint_injected(tmp_path: Path):
 def test_explicit_config_overrides_default(tmp_path: Path):
     """session_config 显式配置优先于 SessionManager 默认值"""
     db = str(tmp_path / "chat_history.db")
+    db_custom = str(tmp_path / "custom.db")
     sm = _make_mgr(tmp_path, default_checkpoint=True, default_checkpoint_db=db)
 
     entry = sm._create_entry(
-        _make_cfg("sid-2", {"enable_checkpoint": False, "db_path": "custom.db"})
+        _make_cfg("sid-2", {"enable_checkpoint": False, "db_path": db_custom})
     )
 
     assert entry is not None
     received = _RecordingSession.received
     assert received["enable_checkpoint"] is False
-    assert received["db_path"] == "custom.db"
+    assert received["db_path"] == db_custom
 
 
 def test_default_off_keeps_behavior(tmp_path: Path):

@@ -388,6 +388,20 @@ class SkillsManager:
         """获取所有已加载技能的可识别标识列表 (名称或 satrap-skill-id) """
         return list(self.skills.keys())
 
+    def unregister_skill(self, name: str) -> bool:
+        """从管理器移除已加载技能 (不影响其他 workflow 已激活的副本)
+
+        参数:
+        - name: 技能名称
+
+        返回:
+        - bool: 是否存在并已移除
+        """
+        if name not in self.skills:
+            return False
+        del self.skills[name]
+        return True
+
     # ================= 装配到 workflow =================
 
     def activate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:

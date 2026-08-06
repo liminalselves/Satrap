@@ -118,7 +118,57 @@ satrap restart
 
 默认 HTTP API 地址为 `http://127.0.0.1:19870`。`satrap status`, `reload`, `stop`, `restart` 会通过这个 API 与后端通信。
 
-## 管理面板
+## 用户管理
+
+用户信息与用户-会话绑定关系存储在用户信息库 (默认 `.satrap/user_info.db`, 可通过配置项 `user_db_path` 指定)。
+
+### CLI 命令
+
+```bash
+# 列出全部用户
+satrap user list
+
+# 查看单个用户详情 (含绑定的会话)
+satrap user info misskey:user1
+
+# 创建用户 (已存在则更新平台/昵称)
+satrap user create misskey:user1 --platform misskey --nickname 小美
+
+# 更新昵称/平台
+satrap user update misskey:user1 --nickname 新昵称
+
+# 删除用户信息 (不删除会话本身)
+satrap user delete misskey:user1
+
+# 绑定 / 解绑会话
+satrap user bind misskey:user1 demo-session
+satrap user unbind misskey:user1 demo-session
+
+# 列出用户绑定的会话
+satrap user sessions misskey:user1
+```
+
+所有子命令支持 `--db` 指定用户信息库路径。
+
+### HTTP API
+
+| 端点 | 说明 |
+|---|---|
+| `GET /api/users` | 用户列表, 支持 `?limit=` |
+| `GET /api/users?user_id=xxx` | 用户详情 |
+| `GET /api/user/sessions?user_id=xxx` | 用户绑定的会话列表 |
+| `POST /api/user/create` | 创建用户 `{user_id, platform, nickname}` |
+| `POST /api/user/update` | 更新昵称/平台 `{user_id, nickname, platform}` |
+| `POST /api/user/delete` | 删除用户 `{user_id}` |
+| `POST /api/user/bind` | 绑定会话 `{user_id, session_id}` |
+| `POST /api/user/unbind` | 解绑会话 `{user_id, session_id}` |
+
+### 自动创建语义
+
+`UserManager(auto_create=True)` 时, 未知用户会随消息路由自动创建 (平台接入默认行为);
+关闭 `auto_create` 后, 未知用户不会被自动创建, `resolve_session` / `route_call` / `create_user_session` 对未知用户返回空, 需要先通过 CLI / API / 管理面板显式建号。
+
+### 管理面板
 
 ```bash
 pip install -e .[admin]
@@ -133,6 +183,8 @@ streamlit run satrap/admin.py
 - 平台状态
 - 日志监控
 - 系统设置
+- 检查点管理
+- 用户管理
 
 ## 离线写入
 

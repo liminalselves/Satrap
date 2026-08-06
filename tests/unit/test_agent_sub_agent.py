@@ -92,7 +92,7 @@ class _FakeLLM:
     def __init__(self):
         self.call_count = 0
 
-    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> LLMCallResponse | bool:
+    def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None) -> LLMCallResponse | bool:
         self.call_count += 1
         return LLMCallResponse(type="message", content=f"fake reply #{self.call_count}")
 
@@ -101,7 +101,7 @@ class _FakeAsyncLLM:
     def __init__(self):
         self.call_count = 0
 
-    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> LLMCallResponse | bool:
+    async def call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, img_urls: list[str] | None = None) -> LLMCallResponse | bool:
         self.call_count += 1
         return LLMCallResponse(type="message", content=f"async fake reply #{self.call_count}")
 

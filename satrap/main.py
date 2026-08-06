@@ -176,6 +176,44 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("conversation_id")
     add_db_flag(p)
 
+    # satrap user
+    p_user = subparsers.add_parser("user", help="用户管理")
+    user_sub = p_user.add_subparsers(dest="action", help="操作")
+
+    def add_user_db_flag(p: argparse.ArgumentParser):
+        p.add_argument("--db", default=None, help="用户信息库路径, 默认 .satrap/user_info.db")
+
+    p = user_sub.add_parser("list", help="列出全部用户")
+    p.add_argument("--limit", type=int, default=200)
+    add_user_db_flag(p)
+    p = user_sub.add_parser("info", help="查看用户详情")
+    p.add_argument("user_id")
+    add_user_db_flag(p)
+    p = user_sub.add_parser("create", help="创建用户 (已存在则更新平台/昵称)")
+    p.add_argument("user_id")
+    p.add_argument("--platform", default="")
+    p.add_argument("--nickname", default="")
+    add_user_db_flag(p)
+    p = user_sub.add_parser("update", help="更新用户昵称/平台")
+    p.add_argument("user_id")
+    p.add_argument("--nickname", default=None)
+    p.add_argument("--platform", default=None)
+    add_user_db_flag(p)
+    p = user_sub.add_parser("delete", help="删除用户信息 (不删除会话本身)")
+    p.add_argument("user_id")
+    add_user_db_flag(p)
+    p = user_sub.add_parser("bind", help="绑定会话到用户")
+    p.add_argument("user_id")
+    p.add_argument("session_id")
+    add_user_db_flag(p)
+    p = user_sub.add_parser("unbind", help="解绑会话")
+    p.add_argument("user_id")
+    p.add_argument("session_id")
+    add_user_db_flag(p)
+    p = user_sub.add_parser("sessions", help="列出用户绑定的会话")
+    p.add_argument("user_id")
+    add_user_db_flag(p)
+
     return parser
 
 
@@ -210,6 +248,9 @@ def main():
     elif args.command == "checkpoint":
         from satrap.cli.cmd_checkpoint import dispatch as dispatch_checkpoint
         dispatch_checkpoint(args)
+    elif args.command == "user":
+        from satrap.cli.cmd_user import dispatch as dispatch_user
+        dispatch_user(args)
     else:
         print(f"未知命令: {args.command}")
         sys.exit(1)

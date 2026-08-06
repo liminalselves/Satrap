@@ -9,6 +9,7 @@ from satrap.core.state import StateStore
 from satrap.core.state.mutation import state_mutation_context
 import inspect, json, copy, uuid
 import asyncio
+from pathlib import Path
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -31,6 +32,7 @@ class ModelWorkflowFramework:
         content_callback: Optional[Callable[[str], None]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], None]] = None,
+        *, db_path: str = ".satrap/chat_history.db",
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -78,7 +80,7 @@ class ModelWorkflowFramework:
         ```
         """
         self.llm = llm
-        self.ctx = ContextManager(context_id)
+        self.ctx = ContextManager(context_id, db_path=db_path)
         self.tools_manager = tools_manager if tools_manager else ToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
         self.return_thinking = return_thinking
         self.thinking_callback = thinking_callback
@@ -96,7 +98,8 @@ class ModelWorkflowFramework:
             self.content_callback(content)
 
     def agent_executor(self, model_response: LLMCallResponse,
-        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list[Any]]], bool]:
+        callback: bool = False, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> tuple[list[dict[str, str | list[Any]]], bool]:
         """智能体执行器, 用于执行智能体调用流程
 
         参数:
@@ -138,6 +141,7 @@ class ModelWorkflowFramework:
                 new_response = self.llm.call(
                     new_context,
                     tools=self.tools_manager.get_tools_definitions(),
+                    img_urls=img_urls,
                 )   # 调用模型
 
                 if not new_response:   # 模型调用失败, 无响应返回
@@ -158,7 +162,7 @@ class ModelWorkflowFramework:
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
                     self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
                     final_context = self.ctx.get_context()
-                    final_response = self.llm.call(final_context, tools=[])
+                    final_response = self.llm.call(final_context, tools=[], img_urls=img_urls)
 
                     if not final_response:
                         logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
@@ -215,19 +219,21 @@ class ModelWorkflowFramework:
         self.ctx._messages = copy.deepcopy(system_messages)
         self.ctx._sync()
 
-    def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+    def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> str:
         """完整执行一轮 Agent 流程, 返回最终模型输出"""
         self.ctx.add_user_message(user_input)
 
         response = self.llm.call(
             self.ctx.get_context(),
             tools=self.tools_manager.get_tools_definitions(),
+            img_urls=img_urls,
         )
         if not response:
             return "模型调用失败"
 
         context, success = self.agent_executor(
-            response, callback=callback, max_iterations=max_iterations,
+            response, callback=callback, max_iterations=max_iterations, img_urls=img_urls,
         )
         if not success:
             return "执行失败"
@@ -240,6 +246,7 @@ class ModelWorkflowFramework:
         tools: list[dict[str, Any]] | None,
         callback: bool,
         thinking: bool,
+        img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
         """消费一次流式请求并返回完整响应
         
@@ -250,7 +257,7 @@ class ModelWorkflowFramework:
         - thinking: 是否要求模型进行思考, 默认为 False
         """
         response: Any = None
-        for event in self.llm.stream_call(messages, tools=tools, thinking=thinking):
+        for event in self.llm.stream_call(messages, tools=tools, thinking=thinking, img_urls=img_urls):
             if callback and event.kind == "content_delta":
                 self._content_callback(event.delta)
 
@@ -276,6 +283,7 @@ class ModelWorkflowFramework:
         callback: bool = True,
         max_iterations: int = 10,
         thinking: bool = False,
+        img_urls: list[str] | None = None,
     ) -> str:
         """流式执行一轮 Agent 流程并返回最终模型输出
         
@@ -296,6 +304,7 @@ class ModelWorkflowFramework:
             self.tools_manager.get_tools_definitions(),
             callback,
             thinking,
+            img_urls=img_urls,
         )
         if not isinstance(response, LLMCallResponse):
             return "模型调用失败"
@@ -327,6 +336,7 @@ class ModelWorkflowFramework:
                 self.tools_manager.get_tools_definitions(),
                 callback,
                 thinking,
+                img_urls=img_urls,
             )
             if not isinstance(new_response, LLMCallResponse):
                 clear_reasoning_content(turn_messages)
@@ -342,6 +352,7 @@ class ModelWorkflowFramework:
                     [],
                     callback,
                     thinking,
+                    img_urls=img_urls,
                 )
                 if not isinstance(final_response, LLMCallResponse):
                     return "执行失败"
@@ -355,7 +366,8 @@ class ModelWorkflowFramework:
         self.ctx.add_turn_messages(turn_messages)
         return self.get_bot_message(self.ctx.get_context())
 
-    def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+    def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> str:
         """使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出"""
         system_messages = self._get_system_messages(self.ctx.get_context())
         self._restore_context_keep_system(system_messages)
@@ -366,12 +378,13 @@ class ModelWorkflowFramework:
             response = self.llm.call(
                 self.ctx.get_context(),
                 tools=self.tools_manager.get_tools_definitions(),
+                img_urls=img_urls,
             )
             if not response:
                 return "模型调用失败"
 
             context, success = self.agent_executor(
-                response, callback=callback, max_iterations=max_iterations,
+                response, callback=callback, max_iterations=max_iterations, img_urls=img_urls,
             )
             if not success:
                 return "执行失败"
@@ -386,6 +399,7 @@ class ModelWorkflowFramework:
         callback: bool = True,
         max_iterations: int = 10,
         thinking: bool = False,
+        img_urls: list[str] | None = None,
     ) -> str:
         """使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
 
@@ -407,6 +421,7 @@ class ModelWorkflowFramework:
                 callback=callback,
                 max_iterations=max_iterations,
                 thinking=thinking,
+                img_urls=img_urls,
             )
         finally:
             self._restore_context_keep_system(system_messages)
@@ -547,7 +562,7 @@ class Session:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
         self._workflow_contexts[wf_id] = ctx
         if self._state_store is not None:
-            if str(ctx.db_path) != str(self._state_store.db_path):
+            if Path(str(ctx.db_path)).resolve() != Path(str(self._state_store.db_path)).resolve():
                 raise ValueError(
                     f"工作流 {wf_id} 的上下文库 {ctx.db_path} 与会话状态库 {self._state_store.db_path} 不一致"
                 )
@@ -776,6 +791,7 @@ class AsyncModelWorkflowFramework:
         content_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        *, db_path: str = ".satrap/chat_history.db",
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -803,7 +819,7 @@ class AsyncModelWorkflowFramework:
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
         """
         self.llm = llm
-        self.ctx = AsyncContextManager(context_id)
+        self.ctx = AsyncContextManager(context_id, db_path=db_path)
         self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()
         # 如果未提供工具管理器, 则创建一个空的工具管理器实例
 
@@ -841,7 +857,8 @@ class AsyncModelWorkflowFramework:
         return value
 
     async def agent_executor(self, model_response: LLMCallResponse,
-        callback: bool = False, max_iterations: int = 10) -> tuple[list[dict[str, str | list[Any]]], bool]:
+        callback: bool = False, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> tuple[list[dict[str, str | list[Any]]], bool]:
         """异步智能体执行器, 用于执行智能体调用流程
         
         参数:
@@ -883,6 +900,7 @@ class AsyncModelWorkflowFramework:
                 new_response = await self.llm.call(
                     new_context,
                     tools=self.tools_manager.get_tools_definitions(),
+                    img_urls=img_urls,
                 )   # 调用模型
 
                 if not new_response:   # 模型调用失败, 无响应返回
@@ -903,7 +921,7 @@ class AsyncModelWorkflowFramework:
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
                     await self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
                     final_context = self.ctx.get_context()
-                    final_response = await self.llm.call(final_context, tools=[])
+                    final_response = await self.llm.call(final_context, tools=[], img_urls=img_urls)
 
                     if not final_response:
                         logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
@@ -959,19 +977,21 @@ class AsyncModelWorkflowFramework:
         self.ctx._messages = copy.deepcopy(system_messages)
         await self.ctx._sync()
 
-    async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+    async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> str:
         """完整执行一轮异步 Agent 流程, 返回最终模型输出"""
         await self.ctx.add_user_message(user_input)
 
         response = await self.llm.call(
             self.ctx.get_context(),
             tools=self.tools_manager.get_tools_definitions(),
+            img_urls=img_urls,
         )
         if not response:
             return "模型调用失败"
 
         context, success = await self.agent_executor(
-            response, callback=callback, max_iterations=max_iterations,
+            response, callback=callback, max_iterations=max_iterations, img_urls=img_urls,
         )
         if not success:
             return "执行失败"
@@ -984,6 +1004,7 @@ class AsyncModelWorkflowFramework:
         tools: list[dict[str, Any]] | None,
         callback: bool,
         thinking: bool,
+        img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
         """消费一次异步流式请求并返回完整响应
         
@@ -997,7 +1018,7 @@ class AsyncModelWorkflowFramework:
         - LLMCallResponse | bool: 模型调用响应, 或 False 表示失败
         """
         response: Any = None
-        async for event in self.llm.stream_call(messages, tools=tools, thinking=thinking):
+        async for event in self.llm.stream_call(messages, tools=tools, thinking=thinking, img_urls=img_urls):
             if callback and event.kind == "content_delta":
                 await self._content_callback(event.delta)
 
@@ -1023,6 +1044,7 @@ class AsyncModelWorkflowFramework:
         callback: bool = True,
         max_iterations: int = 10,
         thinking: bool = False,
+        img_urls: list[str] | None = None,
     ) -> str:
         """异步流式执行一轮 Agent 流程并返回最终模型输出
         
@@ -1043,6 +1065,7 @@ class AsyncModelWorkflowFramework:
             self.tools_manager.get_tools_definitions(),
             callback,
             thinking,
+            img_urls=img_urls,
         )
         if not isinstance(response, LLMCallResponse):
             return "模型调用失败"
@@ -1074,6 +1097,7 @@ class AsyncModelWorkflowFramework:
                 self.tools_manager.get_tools_definitions(),
                 callback,
                 thinking,
+                img_urls=img_urls,
             )
 
             if not isinstance(new_response, LLMCallResponse):
@@ -1090,6 +1114,7 @@ class AsyncModelWorkflowFramework:
                     [],
                     callback,
                     thinking,
+                    img_urls=img_urls,
                 )
                 if not isinstance(final_response, LLMCallResponse):
                     return "执行失败"
@@ -1103,7 +1128,8 @@ class AsyncModelWorkflowFramework:
         await self.ctx.add_turn_messages(turn_messages)
         return self.get_bot_message(self.ctx.get_context())
 
-    async def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10) -> str:
+    async def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        img_urls: list[str] | None = None) -> str:
         """使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出"""
         system_messages = self._get_system_messages(self.ctx.get_context())
         await self._restore_context_keep_system(system_messages)
@@ -1114,12 +1140,13 @@ class AsyncModelWorkflowFramework:
             response = await self.llm.call(
                 self.ctx.get_context(),
                 tools=self.tools_manager.get_tools_definitions(),
+                img_urls=img_urls,
             )
             if not response:
                 return "模型调用失败"
 
             context, success = await self.agent_executor(
-                response, callback=callback, max_iterations=max_iterations,
+                response, callback=callback, max_iterations=max_iterations, img_urls=img_urls,
             )
             if not success:
                 return "执行失败"
@@ -1134,6 +1161,7 @@ class AsyncModelWorkflowFramework:
         callback: bool = True,
         max_iterations: int = 10,
         thinking: bool = False,
+        img_urls: list[str] | None = None,
     ) -> str:
         """使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
 
@@ -1155,6 +1183,7 @@ class AsyncModelWorkflowFramework:
                 callback=callback,
                 max_iterations=max_iterations,
                 thinking=thinking,
+                img_urls=img_urls,
             )
         finally:
             await self._restore_context_keep_system(system_messages)
@@ -1328,7 +1357,7 @@ class AsyncSession:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
         self._workflow_contexts[wf_id] = ctx
         if self._state_store is not None:
-            if str(ctx.db_path) != str(self._state_store.db_path):
+            if Path(str(ctx.db_path)).resolve() != Path(str(self._state_store.db_path)).resolve():
                 raise ValueError(
                     f"工作流 {wf_id} 的上下文库 {ctx.db_path} 与会话状态库 {self._state_store.db_path} 不一致"
                 )
