@@ -237,7 +237,7 @@ export function Users() {
                       {selectedUser.user_session.map((sid) => (
                         <div
                           key={sid}
-                          className="flex items-center justify-between p-2 rounded bg-bg-glass"
+                          className="flex items-center justify-between p-2 rounded-sm bg-glass"
                         >
                           <code className="text-sm text-text-primary">{sid}</code>
                           <Button

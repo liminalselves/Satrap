@@ -12,12 +12,16 @@ import { Settings } from '@/pages/Settings';
 function App() {
   return (
     <>
-      {/* 柔和流体背景 */}
+      {/* 柔和流体背景 - 8个球体 */}
       <div className="animated-bg">
         <div className="fluid-blob fluid-blob-1" />
         <div className="fluid-blob fluid-blob-2" />
         <div className="fluid-blob fluid-blob-3" />
         <div className="fluid-blob fluid-blob-4" />
+        <div className="fluid-blob fluid-blob-5" />
+        <div className="fluid-blob fluid-blob-6" />
+        <div className="fluid-blob fluid-blob-7" />
+        <div className="fluid-blob fluid-blob-8" />
       </div>
       
       <Routes>

@@ -17,8 +17,8 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
     const variantClasses = {
       default: 'glass-button',
       primary: 'glass-button glass-button-primary',
-      subtle: 'bg-transparent border-transparent hover:bg-glass',
-      ghost: 'bg-transparent border-transparent hover:bg-glass-hover',
+      subtle: 'glass-button bg-transparent border-transparent hover:bg-glass',
+      ghost: 'glass-button bg-transparent border-transparent hover:bg-glass-hover',
       danger: 'glass-button bg-glass-error border-glass-error-border text-error hover:bg-error hover:text-white',
     };
 

@@ -221,7 +221,7 @@ export function Checkpoints() {
                 {branches.map((b) => (
                   <div
                     key={b.scope_id}
-                    className="flex items-center justify-between p-3 rounded-glass-sm bg-bg-glass"
+                    className="flex items-center justify-between p-3 rounded-sm bg-glass"
                   >
                     <div>
                       <span className="font-medium text-text-primary">{b.scope_id}</span>

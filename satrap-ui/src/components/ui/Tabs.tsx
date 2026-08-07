@@ -53,11 +53,11 @@ export function TabsTrigger({
     <button
       onClick={() => setActiveTab(value)}
       className={cn(
-        'px-4 py-2 text-sm font-medium transition-colors duration-200',
+        'px-4 py-2 text-sm font-medium transition-all duration-200 rounded-t-md',
         'border-b-2 -mb-px',
         isActive
-          ? 'text-accent border-accent'
-          : 'text-text-secondary border-transparent hover:text-text-primary',
+          ? 'text-accent border-accent bg-glass'
+          : 'text-text-secondary border-transparent hover:text-text-primary hover:bg-glass-hover',
         className
       )}
     >

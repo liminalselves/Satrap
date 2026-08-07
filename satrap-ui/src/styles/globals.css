@@ -16,44 +16,54 @@
     --glass-bg: rgba(255, 255, 255, 0.03);
     --glass-bg-hover: rgba(255, 255, 255, 0.05);
     --glass-bg-active: rgba(255, 255, 255, 0.08);
-    --glass-border: rgba(255, 255, 255, 0.08);
-    --glass-border-hover: rgba(255, 255, 255, 0.12);
+    --glass-border: rgba(255, 255, 255, 0.06);
+    --glass-border-hover: rgba(255, 255, 255, 0.08);
     --glass-highlight: rgba(255, 255, 255, 0.1);
     
     /* 染色玻璃 - 蓝色系 */
     --glass-accent-bg: rgba(0, 120, 212, 0.08);
-    --glass-accent-border: rgba(0, 120, 212, 0.2);
-    --glass-accent-glow: rgba(0, 120, 212, 0.15);
+    --glass-accent-border: rgba(0, 120, 212, 0.15);
+    --glass-accent-glow: rgba(0, 120, 212, 0.12);
     
     /* 染色玻璃 - 紫色系 */
     --glass-purple-bg: rgba(139, 98, 179, 0.08);
-    --glass-purple-border: rgba(139, 98, 179, 0.2);
-    --glass-purple-glow: rgba(139, 98, 179, 0.15);
+    --glass-purple-border: rgba(139, 98, 179, 0.15);
+    --glass-purple-glow: rgba(139, 98, 179, 0.12);
     
     /* 染色玻璃 - 青色系 */
     --glass-teal-bg: rgba(0, 153, 153, 0.08);
-    --glass-teal-border: rgba(0, 153, 153, 0.2);
-    --glass-teal-glow: rgba(0, 153, 153, 0.15);
+    --glass-teal-border: rgba(0, 153, 153, 0.15);
+    --glass-teal-glow: rgba(0, 153, 153, 0.12);
     
     /* 染色玻璃 - 粉色系 */
     --glass-pink-bg: rgba(229, 105, 158, 0.08);
-    --glass-pink-border: rgba(229, 105, 158, 0.2);
-    --glass-pink-glow: rgba(229, 105, 158, 0.15);
+    --glass-pink-border: rgba(229, 105, 158, 0.15);
+    --glass-pink-glow: rgba(229, 105, 158, 0.12);
+    
+    /* 染色玻璃 - 橙色系 */
+    --glass-orange-bg: rgba(255, 140, 0, 0.08);
+    --glass-orange-border: rgba(255, 140, 0, 0.15);
+    --glass-orange-glow: rgba(255, 140, 0, 0.12);
+    
+    /* 染色玻璃 - 绿色系 */
+    --glass-green-bg: rgba(19, 161, 14, 0.08);
+    --glass-green-border: rgba(19, 161, 14, 0.15);
+    --glass-green-glow: rgba(19, 161, 14, 0.12);
     
     /* 染色玻璃 - 成功 */
     --glass-success-bg: rgba(19, 161, 14, 0.08);
-    --glass-success-border: rgba(19, 161, 14, 0.2);
-    --glass-success-glow: rgba(19, 161, 14, 0.15);
+    --glass-success-border: rgba(19, 161, 14, 0.15);
+    --glass-success-glow: rgba(19, 161, 14, 0.12);
     
     /* 染色玻璃 - 警告 */
     --glass-warning-bg: rgba(255, 140, 0, 0.08);
-    --glass-warning-border: rgba(255, 140, 0, 0.2);
-    --glass-warning-glow: rgba(255, 140, 0, 0.15);
+    --glass-warning-border: rgba(255, 140, 0, 0.15);
+    --glass-warning-glow: rgba(255, 140, 0, 0.12);
     
     /* 染色玻璃 - 错误 */
     --glass-error-bg: rgba(232, 17, 35, 0.08);
-    --glass-error-border: rgba(232, 17, 35, 0.2);
-    --glass-error-glow: rgba(232, 17, 35, 0.15);
+    --glass-error-border: rgba(232, 17, 35, 0.15);
+    --glass-error-glow: rgba(232, 17, 35, 0.12);
     
     /* 主色调 */
     --color-accent: #0078d4;
@@ -68,6 +78,10 @@
     --color-teal-light: #33b5b5;
     --color-pink: #e5699e;
     --color-pink-light: #f09ec0;
+    --color-orange: #ff8c00;
+    --color-orange-light: #ffaa44;
+    --color-green: #13a10e;
+    --color-green-light: #3cb44b;
     
     /* 状态色 */
     --color-success: #13a10e;
@@ -91,6 +105,8 @@
     --shadow-glow-purple: 0 0 30px var(--glass-purple-glow);
     --shadow-glow-teal: 0 0 30px var(--glass-teal-glow);
     --shadow-glow-pink: 0 0 30px var(--glass-pink-glow);
+    --shadow-glow-orange: 0 0 30px var(--glass-orange-glow);
+    --shadow-glow-green: 0 0 30px var(--glass-green-glow);
     
     /* 圆角 */
     --radius-sm: 6px;
@@ -98,11 +114,24 @@
     --radius-lg: 14px;
     --radius-xl: 20px;
     
-    /* 动态背景颜色 - 暗色模式 - 柔和 */
-    --bg-gradient-1: rgba(100, 180, 255, 0.40);
-    --bg-gradient-2: rgba(180, 140, 230, 0.35);
-    --bg-gradient-3: rgba(120, 220, 220, 0.30);
-    --bg-gradient-4: rgba(255, 160, 200, 0.25);
+    /* 动态背景颜色 - 暗色模式 - 加强版 */
+    --bg-gradient-1: rgba(100, 180, 255, 0.50);
+    --bg-gradient-2: rgba(180, 140, 230, 0.45);
+    --bg-gradient-3: rgba(120, 220, 220, 0.40);
+    --bg-gradient-4: rgba(255, 160, 200, 0.38);
+    --bg-gradient-5: rgba(255, 200, 150, 0.35);
+    --bg-gradient-6: rgba(150, 255, 180, 0.32);
+    --bg-gradient-7: rgba(200, 180, 255, 0.30);
+    --bg-gradient-8: rgba(255, 220, 180, 0.28);
+    
+    /* 暗色模式反光颜色 */
+    --reflect-accent: rgba(0, 120, 212, 0.25);
+    --reflect-purple: rgba(139, 98, 179, 0.25);
+    --reflect-teal: rgba(0, 153, 153, 0.25);
+    --reflect-pink: rgba(229, 105, 158, 0.25);
+    --reflect-orange: rgba(255, 140, 0, 0.25);
+    --reflect-green: rgba(19, 161, 14, 0.25);
+    --reflect-default: rgba(255, 255, 255, 0.15);
   }
 
   /* ===== 亮色模式 ===== */
@@ -112,47 +141,57 @@
     --color-bg-layer2: rgba(255, 255, 255, 0.6);
     --color-bg-layer3: rgba(255, 255, 255, 0.5);
     
-    --glass-bg: rgba(255, 255, 255, 0.5);
-    --glass-bg-hover: rgba(255, 255, 255, 0.65);
-    --glass-bg-active: rgba(255, 255, 255, 0.8);
-    --glass-border: rgba(0, 0, 0, 0.06);
-    --glass-border-hover: rgba(0, 0, 0, 0.1);
-    --glass-highlight: rgba(255, 255, 255, 0.8);
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-bg-hover: rgba(255, 255, 255, 0.85);
+    --glass-bg-active: rgba(255, 255, 255, 0.95);
+    --glass-border: rgba(0, 0, 0, 0.08);
+    --glass-border-hover: rgba(0, 0, 0, 0.12);
+    --glass-highlight: rgba(255, 255, 255, 0.9);
     
     /* 染色玻璃 - 蓝色系 */
-    --glass-accent-bg: rgba(0, 120, 212, 0.06);
-    --glass-accent-border: rgba(0, 120, 212, 0.15);
-    --glass-accent-glow: rgba(0, 120, 212, 0.1);
+    --glass-accent-bg: rgba(0, 120, 212, 0.12);
+    --glass-accent-border: rgba(0, 120, 212, 0.20);
+    --glass-accent-glow: rgba(0, 120, 212, 0.15);
     
     /* 染色玻璃 - 紫色系 */
-    --glass-purple-bg: rgba(139, 98, 179, 0.06);
-    --glass-purple-border: rgba(139, 98, 179, 0.15);
-    --glass-purple-glow: rgba(139, 98, 179, 0.1);
+    --glass-purple-bg: rgba(139, 98, 179, 0.12);
+    --glass-purple-border: rgba(139, 98, 179, 0.20);
+    --glass-purple-glow: rgba(139, 98, 179, 0.15);
     
     /* 染色玻璃 - 青色系 */
-    --glass-teal-bg: rgba(0, 153, 153, 0.06);
-    --glass-teal-border: rgba(0, 153, 153, 0.15);
-    --glass-teal-glow: rgba(0, 153, 153, 0.1);
+    --glass-teal-bg: rgba(0, 153, 153, 0.12);
+    --glass-teal-border: rgba(0, 153, 153, 0.20);
+    --glass-teal-glow: rgba(0, 153, 153, 0.15);
     
     /* 染色玻璃 - 粉色系 */
-    --glass-pink-bg: rgba(229, 105, 158, 0.06);
-    --glass-pink-border: rgba(229, 105, 158, 0.15);
-    --glass-pink-glow: rgba(229, 105, 158, 0.1);
+    --glass-pink-bg: rgba(229, 105, 158, 0.12);
+    --glass-pink-border: rgba(229, 105, 158, 0.20);
+    --glass-pink-glow: rgba(229, 105, 158, 0.15);
+    
+    /* 染色玻璃 - 橙色系 */
+    --glass-orange-bg: rgba(247, 99, 12, 0.12);
+    --glass-orange-border: rgba(247, 99, 12, 0.20);
+    --glass-orange-glow: rgba(247, 99, 12, 0.15);
+    
+    /* 染色玻璃 - 绿色系 */
+    --glass-green-bg: rgba(16, 124, 16, 0.12);
+    --glass-green-border: rgba(16, 124, 16, 0.20);
+    --glass-green-glow: rgba(16, 124, 16, 0.15);
     
     /* 染色玻璃 - 成功 */
-    --glass-success-bg: rgba(16, 124, 16, 0.06);
-    --glass-success-border: rgba(16, 124, 16, 0.15);
-    --glass-success-glow: rgba(16, 124, 16, 0.1);
+    --glass-success-bg: rgba(16, 124, 16, 0.12);
+    --glass-success-border: rgba(16, 124, 16, 0.20);
+    --glass-success-glow: rgba(16, 124, 16, 0.15);
     
     /* 染色玻璃 - 警告 */
-    --glass-warning-bg: rgba(247, 99, 12, 0.06);
-    --glass-warning-border: rgba(247, 99, 12, 0.15);
-    --glass-warning-glow: rgba(247, 99, 12, 0.1);
+    --glass-warning-bg: rgba(247, 99, 12, 0.12);
+    --glass-warning-border: rgba(247, 99, 12, 0.20);
+    --glass-warning-glow: rgba(247, 99, 12, 0.15);
     
     /* 染色玻璃 - 错误 */
-    --glass-error-bg: rgba(209, 52, 56, 0.06);
-    --glass-error-border: rgba(209, 52, 56, 0.15);
-    --glass-error-glow: rgba(209, 52, 56, 0.1);
+    --glass-error-bg: rgba(209, 52, 56, 0.12);
+    --glass-error-border: rgba(209, 52, 56, 0.20);
+    --glass-error-glow: rgba(209, 52, 56, 0.15);
     
     --color-accent: #0078d4;
     --color-accent-light: #106ebe;
@@ -165,6 +204,10 @@
     --color-teal-light: #009999;
     --color-pink: #c2397d;
     --color-pink-light: #e5699e;
+    --color-orange: #f7630c;
+    --color-orange-light: #ff8c00;
+    --color-green: #107c10;
+    --color-green-light: #13a10e;
     
     --color-success: #107c10;
     --color-success-light: #13a10e;
@@ -182,11 +225,24 @@
     --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.08);
     --shadow-glass-hover: 0 12px 40px rgba(0, 0, 0, 0.12);
     
-    /* 动态背景颜色 - 亮色模式 - 柔和 */
-    --bg-gradient-1: rgba(150, 200, 255, 0.45);
-    --bg-gradient-2: rgba(200, 170, 240, 0.40);
-    --bg-gradient-3: rgba(160, 230, 230, 0.35);
-    --bg-gradient-4: rgba(255, 190, 220, 0.30);
+    /* 动态背景颜色 - 亮色模式 - 加强版 */
+    --bg-gradient-1: rgba(150, 200, 255, 0.55);
+    --bg-gradient-2: rgba(200, 170, 240, 0.50);
+    --bg-gradient-3: rgba(160, 230, 230, 0.45);
+    --bg-gradient-4: rgba(255, 190, 220, 0.42);
+    --bg-gradient-5: rgba(255, 210, 170, 0.38);
+    --bg-gradient-6: rgba(170, 255, 200, 0.35);
+    --bg-gradient-7: rgba(220, 200, 255, 0.32);
+    --bg-gradient-8: rgba(255, 230, 200, 0.30);
+    
+    /* 亮色模式反光颜色 */
+    --reflect-accent: rgba(0, 120, 212, 0.35);
+    --reflect-purple: rgba(139, 98, 179, 0.35);
+    --reflect-teal: rgba(0, 153, 153, 0.35);
+    --reflect-pink: rgba(229, 105, 158, 0.35);
+    --reflect-orange: rgba(255, 140, 0, 0.35);
+    --reflect-green: rgba(19, 161, 14, 0.35);
+    --reflect-default: rgba(0, 0, 0, 0.08);
   }
 
   * {
@@ -199,12 +255,6 @@
 
   body {
     background-color: var(--color-bg-base);
-    background-image: 
-      radial-gradient(ellipse 100% 80% at 10% 20%, var(--bg-gradient-1) 0%, transparent 60%),
-      radial-gradient(ellipse 80% 60% at 90% 70%, var(--bg-gradient-2) 0%, transparent 55%),
-      radial-gradient(ellipse 70% 70% at 50% 90%, var(--bg-gradient-3) 0%, transparent 50%),
-      radial-gradient(ellipse 60% 50% at 70% 10%, var(--bg-gradient-4) 0%, transparent 45%);
-    background-attachment: fixed;
     color: var(--color-text-primary);
     font-family: 'Segoe UI Variable', 'Segoe UI', -apple-system, BlinkMacSystemFont, Roboto, sans-serif;
     font-size: 14px;
@@ -231,49 +281,86 @@
     pointer-events: none;
   }
 
-  /* 流体球体 */
+  /* 流体球体 - 更平滑的动画 */
   .fluid-blob {
     position: absolute;
     border-radius: 50%;
-    filter: blur(60px);
-    opacity: 0.7;
-    animation: fluidMove 20s ease-in-out infinite;
+    filter: blur(80px);
+    opacity: 0.6;
+    animation: fluidMove 30s ease-in-out infinite;
+    will-change: transform, border-radius;
   }
 
   .fluid-blob-1 {
-    width: 60vmax;
-    height: 60vmax;
-    top: -20%;
-    left: -10%;
-    background: linear-gradient(135deg, var(--bg-gradient-1) 0%, transparent 70%);
+    width: 70vmax;
+    height: 70vmax;
+    top: -25%;
+    left: -15%;
+    background: radial-gradient(circle, var(--bg-gradient-1) 0%, transparent 70%);
     animation-delay: 0s;
   }
 
   .fluid-blob-2 {
-    width: 50vmax;
-    height: 50vmax;
-    top: 30%;
-    right: -15%;
-    background: linear-gradient(225deg, var(--bg-gradient-2) 0%, transparent 70%);
-    animation-delay: -5s;
+    width: 60vmax;
+    height: 60vmax;
+    top: 20%;
+    right: -20%;
+    background: radial-gradient(circle, var(--bg-gradient-2) 0%, transparent 70%);
+    animation-delay: -4s;
   }
 
   .fluid-blob-3 {
-    width: 45vmax;
-    height: 45vmax;
-    bottom: -10%;
-    left: 20%;
-    background: linear-gradient(315deg, var(--bg-gradient-3) 0%, transparent 70%);
-    animation-delay: -10s;
+    width: 55vmax;
+    height: 55vmax;
+    bottom: -15%;
+    left: 15%;
+    background: radial-gradient(circle, var(--bg-gradient-3) 0%, transparent 70%);
+    animation-delay: -8s;
   }
 
   .fluid-blob-4 {
+    width: 50vmax;
+    height: 50vmax;
+    top: 5%;
+    left: 35%;
+    background: radial-gradient(circle, var(--bg-gradient-4) 0%, transparent 70%);
+    animation-delay: -12s;
+  }
+
+  .fluid-blob-5 {
+    width: 45vmax;
+    height: 45vmax;
+    top: 40%;
+    left: -10%;
+    background: radial-gradient(circle, var(--bg-gradient-5) 0%, transparent 70%);
+    animation-delay: -16s;
+  }
+
+  .fluid-blob-6 {
     width: 40vmax;
     height: 40vmax;
-    top: 10%;
-    left: 40%;
-    background: linear-gradient(45deg, var(--bg-gradient-4) 0%, transparent 70%);
-    animation-delay: -15s;
+    bottom: 20%;
+    right: 10%;
+    background: radial-gradient(circle, var(--bg-gradient-6) 0%, transparent 70%);
+    animation-delay: -20s;
+  }
+
+  .fluid-blob-7 {
+    width: 35vmax;
+    height: 35vmax;
+    top: 60%;
+    left: 50%;
+    background: radial-gradient(circle, var(--bg-gradient-7) 0%, transparent 70%);
+    animation-delay: -24s;
+  }
+
+  .fluid-blob-8 {
+    width: 30vmax;
+    height: 30vmax;
+    top: 30%;
+    left: 60%;
+    background: radial-gradient(circle, var(--bg-gradient-8) 0%, transparent 70%);
+    animation-delay: -28s;
   }
 
   @keyframes fluidMove {
@@ -281,17 +368,21 @@
       transform: translate(0, 0) scale(1) rotate(0deg);
       border-radius: 50%;
     }
-    25% {
-      transform: translate(5%, 8%) scale(1.1) rotate(5deg);
-      border-radius: 45% 55% 50% 50%;
+    20% {
+      transform: translate(8%, 12%) scale(1.15) rotate(8deg);
+      border-radius: 42% 58% 52% 48%;
     }
-    50% {
-      transform: translate(-3%, 5%) scale(0.95) rotate(-3deg);
-      border-radius: 55% 45% 48% 52%;
+    40% {
+      transform: translate(-5%, 8%) scale(0.92) rotate(-5deg);
+      border-radius: 58% 42% 45% 55%;
     }
-    75% {
-      transform: translate(8%, -5%) scale(1.05) rotate(2deg);
-      border-radius: 48% 52% 55% 45%;
+    60% {
+      transform: translate(12%, -8%) scale(1.08) rotate(3deg);
+      border-radius: 45% 55% 58% 42%;
+    }
+    80% {
+      transform: translate(-8%, -5%) scale(0.95) rotate(-8deg);
+      border-radius: 52% 48% 42% 58%;
     }
   }
 }
@@ -318,7 +409,7 @@
     pointer-events: none;
   }
 
-  /* ===== 染色玻璃卡片 ===== */
+  /* ===== 染色玻璃卡片 - 无边框hover效果 ===== */
   .glass-card {
     background: var(--glass-bg);
     backdrop-filter: blur(24px) saturate(180%);
@@ -329,6 +420,8 @@
     position: relative;
     overflow: hidden;
     transition: all 200ms ease;
+    /* 反光效果变量 */
+    --reflect-color: var(--reflect-default);
   }
 
   .glass-card::before {
@@ -342,86 +435,139 @@
     pointer-events: none;
   }
 
+  /* 玻璃反光效果 - 统一大小 150px */
+  .glass-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle var(--reflect-size, 150px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), var(--reflect-color) 0%, transparent 100%);
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+  }
+
+  /* 悬浮状态：完整反光和阴影 */
+  .glass-card.glass-hovering::after,
+  .glass-card:hover::after {
+    opacity: 1;
+  }
+
+  .glass-card.glass-hovering,
   .glass-card:hover {
     background: var(--glass-bg-hover);
-    border-color: var(--glass-border-hover);
     box-shadow: var(--shadow-glass-hover);
     transform: translateY(-2px);
+  }
+
+  /* 附近状态：淡反光和轻微阴影 */
+  .glass-card.glass-nearby::after {
+    opacity: 0.5;
+  }
+
+  .glass-card.glass-nearby {
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
+    transform: translateY(-1px);
   }
 
   /* 染色玻璃卡片 - 蓝色 */
   .glass-card-accent {
     background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-accent-border);
+    --reflect-color: var(--reflect-accent);
   }
 
   .glass-card-accent:hover {
     background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg-hover) 100%);
-    border-color: var(--color-accent);
     box-shadow: var(--shadow-glass-hover), var(--shadow-glow-accent);
   }
 
   /* 染色玻璃卡片 - 紫色 */
   .glass-card-purple {
     background: linear-gradient(135deg, var(--glass-purple-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-purple-border);
+    --reflect-color: var(--reflect-purple);
   }
 
   .glass-card-purple:hover {
     background: linear-gradient(135deg, var(--glass-purple-bg) 0%, var(--glass-bg-hover) 100%);
-    border-color: var(--color-purple);
     box-shadow: var(--shadow-glass-hover), var(--shadow-glow-purple);
   }
 
   /* 染色玻璃卡片 - 青色 */
   .glass-card-teal {
     background: linear-gradient(135deg, var(--glass-teal-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-teal-border);
+    --reflect-color: var(--reflect-teal);
   }
 
   .glass-card-teal:hover {
     background: linear-gradient(135deg, var(--glass-teal-bg) 0%, var(--glass-bg-hover) 100%);
-    border-color: var(--color-teal);
     box-shadow: var(--shadow-glass-hover), var(--shadow-glow-teal);
   }
 
   /* 染色玻璃卡片 - 粉色 */
   .glass-card-pink {
     background: linear-gradient(135deg, var(--glass-pink-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-pink-border);
+    --reflect-color: var(--reflect-pink);
   }
 
   .glass-card-pink:hover {
     background: linear-gradient(135deg, var(--glass-pink-bg) 0%, var(--glass-bg-hover) 100%);
-    border-color: var(--color-pink);
     box-shadow: var(--shadow-glass-hover), var(--shadow-glow-pink);
+  }
+
+  /* 染色玻璃卡片 - 橙色 */
+  .glass-card-orange {
+    background: linear-gradient(135deg, var(--glass-orange-bg) 0%, var(--glass-bg) 100%);
+    --reflect-color: var(--reflect-orange);
+  }
+
+  .glass-card-orange:hover {
+    background: linear-gradient(135deg, var(--glass-orange-bg) 0%, var(--glass-bg-hover) 100%);
+    box-shadow: var(--shadow-glass-hover), var(--shadow-glow-orange);
+  }
+
+  /* 染色玻璃卡片 - 绿色 */
+  .glass-card-green {
+    background: linear-gradient(135deg, var(--glass-green-bg) 0%, var(--glass-bg) 100%);
+    --reflect-color: var(--reflect-green);
+  }
+
+  .glass-card-green:hover {
+    background: linear-gradient(135deg, var(--glass-green-bg) 0%, var(--glass-bg-hover) 100%);
+    box-shadow: var(--shadow-glass-hover), var(--shadow-glow-green);
   }
 
   /* 染色玻璃卡片 - 成功 */
   .glass-card-success {
     background: linear-gradient(135deg, var(--glass-success-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-success-border);
+    --reflect-color: var(--reflect-green);
   }
 
   /* 染色玻璃卡片 - 警告 */
   .glass-card-warning {
     background: linear-gradient(135deg, var(--glass-warning-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-warning-border);
+    --reflect-color: var(--reflect-orange);
   }
 
   /* 染色玻璃卡片 - 错误 */
   .glass-card-error {
     background: linear-gradient(135deg, var(--glass-error-bg) 0%, var(--glass-bg) 100%);
-    border-color: var(--glass-error-border);
   }
 
-  /* ===== 玻璃侧栏 ===== */
+  /* ===== 玻璃侧栏 - 完整圆角 ===== */
   .glass-sidebar {
     background: var(--glass-bg);
     backdrop-filter: blur(30px) saturate(180%);
     -webkit-backdrop-filter: blur(30px) saturate(180%);
-    border-right: 1px solid var(--glass-border);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-xl);
     position: relative;
+    margin: 8px;
+    height: calc(100vh - 16px);
+    overflow: hidden;
+    /* 反光效果变量 */
+    --reflect-color: var(--reflect-default);
   }
 
   .glass-sidebar::before {
@@ -435,7 +581,67 @@
     pointer-events: none;
   }
 
-  /* ===== 玻璃导航项 ===== */
+  /* 侧栏反光效果 - 统一大小 */
+  .glass-sidebar::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle var(--reflect-size, 150px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), var(--reflect-color) 0%, transparent 100%);
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+  }
+
+  .glass-sidebar.glass-hovering::after,
+  .glass-sidebar:hover::after {
+    opacity: 1;
+  }
+
+  .glass-sidebar.glass-nearby::after {
+    opacity: 0.5;
+  }
+
+  /* ===== 玻璃顶栏 - 圆角 ===== */
+  .glass-header {
+    background: var(--glass-bg);
+    backdrop-filter: blur(20px) saturate(180%);
+    -webkit-backdrop-filter: blur(20px) saturate(180%);
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius-lg);
+    margin: 8px 8px 0 8px;
+    position: relative;
+    overflow: hidden;
+    /* 反光效果变量 */
+    --reflect-color: var(--reflect-default);
+  }
+
+  /* 顶栏反光效果 - 统一大小 */
+  .glass-header::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle var(--reflect-size, 150px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), var(--reflect-color) 0%, transparent 100%);
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+  }
+
+  .glass-header.glass-hovering::after,
+  .glass-header:hover::after {
+    opacity: 1;
+  }
+
+  .glass-header.glass-nearby::after {
+    opacity: 0.5;
+  }
+
+  /* ===== 玻璃导航项 - 彩色版本 - 无边框设计 ===== */
   .glass-nav-item {
     display: flex;
     align-items: center;
@@ -446,37 +652,131 @@
     font-weight: 500;
     color: var(--color-text-secondary);
     border-radius: var(--radius-md);
-    transition: all 150ms ease;
+    transition: all 200ms ease;
     cursor: pointer;
     position: relative;
     overflow: hidden;
+    /* 无边框设计 */
+    border: none;
+    /* 反光变量 */
+    --nav-reflect-color: var(--reflect-default);
   }
 
-  .glass-nav-item::before {
+  /* 导航项反光效果 - 默认隐藏 */
+  .glass-nav-item::after {
     content: '';
     position: absolute;
     top: 0;
     left: 0;
-    right: 0;
-    bottom: 0;
-    background: var(--glass-bg);
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle var(--reflect-size, 80px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), var(--nav-reflect-color) 0%, transparent 100%);
     opacity: 0;
     transition: opacity 150ms ease;
     pointer-events: none;
+    border-radius: inherit;
   }
 
+  /* 悬浮效果：不变色，只有反射和轻微阴影 */
+  .glass-nav-item.glass-hovering,
   .glass-nav-item:hover {
     color: var(--color-text-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+    transform: translateY(-1px);
   }
 
-  .glass-nav-item:hover::before {
+  /* 悬浮时显示完整反光 */
+  .glass-nav-item.glass-hovering::after,
+  .glass-nav-item:hover::after {
     opacity: 1;
   }
 
-  .glass-nav-item.active {
-    background: var(--glass-accent-bg);
+  /* 附近状态：淡反光和轻微阴影 */
+  .glass-nav-item.glass-nearby {
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+  }
+
+  .glass-nav-item.glass-nearby::after {
+    opacity: 0.5;
+  }
+
+  /* 导航项颜色变体 - 设置反光颜色 */
+  .glass-nav-item.nav-accent {
+    --nav-reflect-color: var(--reflect-accent);
+  }
+  .glass-nav-item.nav-accent:hover {
     color: var(--color-accent);
-    border: 1px solid var(--glass-accent-border);
+  }
+  .glass-nav-item.nav-accent.active {
+    background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-accent);
+    box-shadow: var(--shadow-glow-accent);
+  }
+
+  .glass-nav-item.nav-purple {
+    --nav-reflect-color: var(--reflect-purple);
+  }
+  .glass-nav-item.nav-purple:hover {
+    color: var(--color-purple);
+  }
+  .glass-nav-item.nav-purple.active {
+    background: linear-gradient(135deg, var(--glass-purple-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-purple);
+    box-shadow: var(--shadow-glow-purple);
+  }
+
+  .glass-nav-item.nav-teal {
+    --nav-reflect-color: var(--reflect-teal);
+  }
+  .glass-nav-item.nav-teal:hover {
+    color: var(--color-teal);
+  }
+  .glass-nav-item.nav-teal.active {
+    background: linear-gradient(135deg, var(--glass-teal-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-teal);
+    box-shadow: var(--shadow-glow-teal);
+  }
+
+  .glass-nav-item.nav-pink {
+    --nav-reflect-color: var(--reflect-pink);
+  }
+  .glass-nav-item.nav-pink:hover {
+    color: var(--color-pink);
+  }
+  .glass-nav-item.nav-pink.active {
+    background: linear-gradient(135deg, var(--glass-pink-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-pink);
+    box-shadow: var(--shadow-glow-pink);
+  }
+
+  .glass-nav-item.nav-orange {
+    --nav-reflect-color: var(--reflect-orange);
+  }
+  .glass-nav-item.nav-orange:hover {
+    color: var(--color-orange);
+  }
+  .glass-nav-item.nav-orange.active {
+    background: linear-gradient(135deg, var(--glass-orange-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-orange);
+    box-shadow: var(--shadow-glow-orange);
+  }
+
+  .glass-nav-item.nav-green {
+    --nav-reflect-color: var(--reflect-green);
+  }
+  .glass-nav-item.nav-green:hover {
+    color: var(--color-green);
+  }
+  .glass-nav-item.nav-green.active {
+    background: linear-gradient(135deg, var(--glass-green-bg) 0%, var(--glass-bg) 100%);
+    backdrop-filter: blur(12px);
+    color: var(--color-green);
+    box-shadow: var(--shadow-glow-green);
   }
 
   /* ===== 玻璃按钮 ===== */
@@ -513,7 +813,6 @@
 
   .glass-button:hover {
     background: var(--glass-bg-hover);
-    border-color: var(--glass-border-hover);
     transform: translateY(-1px);
   }
 
@@ -701,7 +1000,6 @@
 
   .theme-toggle:hover {
     background: var(--glass-bg-hover);
-    border-color: var(--glass-border-hover);
   }
 }
 
@@ -738,6 +1036,10 @@
   .text-teal-light { color: var(--color-teal-light); }
   .text-pink { color: var(--color-pink); }
   .text-pink-light { color: var(--color-pink-light); }
+  .text-orange { color: var(--color-orange); }
+  .text-orange-light { color: var(--color-orange-light); }
+  .text-green { color: var(--color-green); }
+  .text-green-light { color: var(--color-green-light); }
   .text-success { color: var(--color-success); }
   .text-warning { color: var(--color-warning); }
   .text-error { color: var(--color-error); }
@@ -748,6 +1050,37 @@
   .bg-purple-subtle { background: var(--glass-purple-bg); }
   .bg-teal-subtle { background: var(--glass-teal-bg); }
   .bg-pink-subtle { background: var(--glass-pink-bg); }
+  .bg-orange-subtle { background: var(--glass-orange-bg); }
+  .bg-green-subtle { background: var(--glass-green-bg); }
+}
+
+/* ===== Toast 通知样式 ===== */
+.glass-toast {
+  background: var(--glass-bg);
+  backdrop-filter: blur(24px) saturate(180%);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-glass);
+}
+
+.glass-toast-success {
+  background: linear-gradient(135deg, var(--glass-success-bg) 0%, var(--glass-bg) 100%);
+  border-color: var(--glass-success-border);
+}
+
+.glass-toast-error {
+  background: linear-gradient(135deg, var(--glass-error-bg) 0%, var(--glass-bg) 100%);
+  border-color: var(--glass-error-border);
+}
+
+.glass-toast-warning {
+  background: linear-gradient(135deg, var(--glass-warning-bg) 0%, var(--glass-bg) 100%);
+  border-color: var(--glass-warning-border);
+}
+
+.glass-toast-info {
+  background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg) 100%);
+  border-color: var(--glass-accent-border);
 }
 
 /* ===== 动画 ===== */

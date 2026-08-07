@@ -158,7 +158,7 @@ export function Platforms() {
             {Object.entries(adapters).map(([id, info]) => (
               <div
                 key={id}
-                className="flex items-center justify-between p-4 rounded-glass-sm bg-bg-glass"
+                className="flex items-center justify-between p-4 rounded-sm bg-glass"
               >
                 <div className="flex items-center gap-4">
                   <div>
@@ -197,7 +197,7 @@ export function Platforms() {
             {platforms.map((platform) => (
               <div
                 key={platform.id}
-                className="flex items-center justify-between p-4 rounded-glass-sm bg-bg-glass"
+                className="flex items-center justify-between p-4 rounded-sm bg-glass"
               >
                 <div>
                   <span className="font-medium text-text-primary">{platform.id}</span>

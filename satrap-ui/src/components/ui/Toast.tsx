@@ -33,18 +33,26 @@ function ToastItem({ toast, onClose }: ToastItemProps) {
     info: <Info className="h-5 w-5 text-accent" />,
   };
 
+  const bgClasses = {
+    success: 'glass-toast glass-toast-success',
+    error: 'glass-toast glass-toast-error',
+    warning: 'glass-toast glass-toast-warning',
+    info: 'glass-toast glass-toast-info',
+  };
+
   return (
     <div
       className={cn(
-        'glass-strong rounded-glass p-4 flex items-start gap-3 min-w-[300px] max-w-md',
-        'animate-slide-up'
+        bgClasses[toast.type],
+        'rounded-lg p-4 flex items-start gap-3 min-w-[300px] max-w-md',
+        'animate-slide-in'
       )}
     >
       {icons[toast.type]}
       <p className="flex-1 text-sm text-text-primary">{toast.message}</p>
       <button
         onClick={() => onClose(toast.id)}
-        className="text-text-tertiary hover:text-text-primary transition-colors"
+        className="p-1 rounded-md text-text-tertiary hover:text-text-primary hover:bg-glass-hover transition-colors"
       >
         <X className="h-4 w-4" />
       </button>

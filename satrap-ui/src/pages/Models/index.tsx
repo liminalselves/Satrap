@@ -178,7 +178,7 @@ export function Models() {
                     {config.api_key && (
                       <div className="flex items-center gap-2 mb-3 text-sm">
                         <span className="text-text-tertiary">API Key:</span>
-                        <code className="flex-1 px-2 py-1 rounded bg-bg-glass text-text-secondary">
+                        <code className="flex-1 px-2 py-1 rounded bg-glass text-text-secondary">
                           {showApiKey[name] ? config.api_key : '••••••••'}
                         </code>
                         <button

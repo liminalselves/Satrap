@@ -195,7 +195,7 @@ export function Logs() {
         <div
           ref={containerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-auto custom-scrollbar p-4 font-mono text-sm bg-glass"
+          className="flex-1 overflow-auto custom-scrollbar p-4 font-mono text-sm"
         >
           {filteredLogs.length === 0 ? (
             <div className="text-text-tertiary text-center py-8">
@@ -216,7 +216,7 @@ export function Logs() {
         </div>
 
         {/* 状态栏 */}
-        <div className="px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary bg-glass">
+        <div className="px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary">
           <span>共 {filteredLogs.length} 条日志</span>
           <span>{autoScroll ? '自动滚动' : '已暂停滚动'}</span>
         </div>
