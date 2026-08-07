@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Type, cast
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.session_discovery import ensure_session_scan_paths
 from satrap.core.log import logger
+from satrap.core.utils.paths import get_data_dir
 
 
 class SessionClassConfigManager:
@@ -51,7 +52,7 @@ class SessionClassConfigManager:
         env_path = os.getenv("SATRAP_SESSION_CLASS_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        return Path.cwd() / ".satrap" / "session_class_config.json"
+        return get_data_dir() / "session_class_config.json"
 
     @staticmethod
     def _normalize_name(name: str | None) -> str:

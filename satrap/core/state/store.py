@@ -18,6 +18,8 @@ import threading
 import time
 import uuid
 
+from satrap.core.utils.paths import get_data_dir
+
 from satrap.core.log import logger
 from satrap.core.state.mutation import current_mutation_context
 from satrap.core.state.registry import DomainRegistry
@@ -60,7 +62,7 @@ class StateStore:
         - db_path: 数据库文件路径, 默认 ".satrap/state.db"
         - registry: 领域注册表, 默认新建
         """
-        self.db_path = Path(db_path) if db_path else Path.cwd() / ".satrap" / "state.db"
+        self.db_path = Path(db_path) if db_path else get_data_dir() / "state.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.registry = registry or DomainRegistry()
         self._lock = threading.RLock()

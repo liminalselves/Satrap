@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.utils.paths import get_data_dir, get_project_root
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
@@ -363,8 +364,8 @@ class BackendHTTPServer:
     def _find_log_file(self) -> Path | None:
         """查找日志文件"""
         log_dirs = [
-            Path.cwd() / ".satrap" / "logs",
-            Path.cwd(),
+            get_data_dir() / "logs",
+            get_project_root(),
         ]
         
         for log_dir in log_dirs:
@@ -529,7 +530,7 @@ class BackendHTTPServer:
         # GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
         # GET /api/user/sessions?user_id=xxx
         # POST /api/user/{create|update|delete|bind|unbind}
-        user_db = getattr(getattr(backend, "config", None), "user_db_path", None) or ".satrap/user_info.db"
+        user_db = getattr(getattr(backend, "config", None), "user_db_path", None) or str(get_data_dir() / "user_info.db")
         if path.startswith("/api/user"):
             try:
                 if method == "GET" and path.startswith("/api/users"):

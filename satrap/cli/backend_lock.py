@@ -7,12 +7,14 @@ from pathlib import Path
 from typing import IO
 import msvcrt
 
+from satrap.core.utils.paths import get_data_dir
+
 
 class BackendInstanceLock:
     """后端单实例锁, 防止同一工作目录启动多个后端"""
 
     def __init__(self, path: str | Path | None = None):
-        self.path = Path(path) if path is not None else Path.cwd() / ".satrap" / "backend.lock"
+        self.path = Path(path) if path is not None else get_data_dir() / "backend.lock"
         self._fh: IO[str] | None = None
 
     def acquire(self, host: str, port: int) -> bool:

@@ -18,7 +18,7 @@ from typing import Any, Iterator, cast
 
 import pytest
 
-from satrap.edictum import AsyncSimpleSession, SessionPlugin, SimpleSession
+from satrap.edictum import AsyncSimpleSession, SessionHandler, SimpleSession
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
@@ -318,8 +318,8 @@ def test_plugins_execute_in_priority_order(tmp_path: Path):
         order.append("high")
         return text + "a"
 
-    session.add_plugin(SessionPlugin(name="low", priority=200, before_user_send=low))
-    session.add_plugin(SessionPlugin(name="high", priority=100, before_user_send=high))
+    session.add_handler(SessionHandler(name="low", priority=200, before_user_send=low))
+    session.add_handler(SessionHandler(name="high", priority=100, before_user_send=high))
 
     session.run("x")
     assert order == ["high", "low"]
@@ -331,7 +331,7 @@ def test_plugin_none_passthrough(tmp_path: Path):
     """before_user_send 返回 None 不改写"""
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_plugin(SessionPlugin(name="p", before_user_send=lambda t: None))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: None))
 
     session.run("原样")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
@@ -353,7 +353,7 @@ def test_plugin_after_callbacks_receive_values(tmp_path: Path):
     def after_reply(text: str) -> None:
         seen["reply"] = text
 
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(
         name="p",
         before_user_send=lambda t: t + "!",
         after_user_send=after_send,
@@ -376,23 +376,23 @@ def test_plugin_enable_disable_and_remove(tmp_path: Path):
         calls.append("called")
         return None
 
-    session.add_plugin(SessionPlugin(name="p", before_user_send=fn))
+    session.add_handler(SessionHandler(name="p", before_user_send=fn))
     session.run("a")
     assert calls == ["called"]
 
-    assert session.disable_plugin("p") is True
+    assert session.disable_handler("p") is True
     session.run("b")
     assert calls == ["called"]
 
-    assert session.enable_plugin("p") is True
+    assert session.enable_handler("p") is True
     session.run("c")
     assert calls == ["called", "called"]
 
-    assert session.remove_plugin("p") is True
+    assert session.remove_handler("p") is True
     session.run("d")
     assert calls == ["called", "called"]
-    assert session.remove_plugin("p") is False
-    assert session.disable_plugin("missing") is False
+    assert session.remove_handler("p") is False
+    assert session.disable_handler("missing") is False
 
 
 def test_plugin_priority_adjust(tmp_path: Path):
@@ -401,10 +401,10 @@ def test_plugin_priority_adjust(tmp_path: Path):
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
 
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(
         name="a", priority=100, before_user_send=lambda t: order.append("a") or None,
     ))
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(
         name="b", priority=200, before_user_send=lambda t: order.append("b") or None,
     ))
 
@@ -412,10 +412,10 @@ def test_plugin_priority_adjust(tmp_path: Path):
     assert order == ["a", "b"]
 
     order.clear()
-    assert session.set_plugin_priority("b", 50) is True
+    assert session.set_handler_priority("b", 50) is True
     session.run("x")
     assert order == ["b", "a"]
-    assert session.set_plugin_priority("missing", 1) is False
+    assert session.set_handler_priority("missing", 1) is False
 
 
 def test_plugin_duplicate_name_overwrites(tmp_path: Path):
@@ -432,18 +432,18 @@ def test_plugin_duplicate_name_overwrites(tmp_path: Path):
         calls.append("second")
         return None
 
-    session.add_plugin(SessionPlugin(name="p", before_user_send=first))
-    session.add_plugin(SessionPlugin(name="p", before_user_send=second))
+    session.add_handler(SessionHandler(name="p", before_user_send=first))
+    session.add_handler(SessionHandler(name="p", before_user_send=second))
     session.run("x")
     assert calls == ["second"]
-    assert len(session.list_plugins()) == 1
+    assert len(session.list_handlers()) == 1
 
 
 def test_plugin_empty_name_raises(tmp_path: Path):
     """空插件名抛 ValueError"""
     session = _make_session(tmp_path)
     with pytest.raises(ValueError):
-        session.add_plugin(SessionPlugin(name=""))
+        session.add_handler(SessionHandler(name=""))
 
 
 # ================= checkpoint =================
@@ -578,7 +578,7 @@ async def test_async_plugin_async_callbacks(tmp_path: Path):
     async def after(text: str) -> None:
         seen.append(f"after:{text}")
 
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(
         name="p", before_user_send=before, after_model_reply=after,
     ))
 
@@ -622,7 +622,7 @@ def test_sync_plugin_missing_before_user_send(tmp_path: Path):
     seen: list[str] = []
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(
         name="p", after_user_send=lambda t: seen.append(t),
     ))
     session.run("hi")
@@ -640,7 +640,7 @@ def test_sync_skill_manager_missing_branches(tmp_path: Path):
 def test_sync_plugin_missing_enable(tmp_path: Path):
     """enable_plugin 不存在的插件返回 False"""
     session = _make_session(tmp_path)
-    assert session.enable_plugin("missing") is False
+    assert session.enable_handler("missing") is False
 
 
 def test_sync_reload_llm(tmp_path: Path):
@@ -706,8 +706,8 @@ async def test_async_plugin_sync_callbacks_and_continue(tmp_path: Path):
     def before_reply() -> None:
         seen["before_reply"] = True
 
-    session.add_plugin(SessionPlugin(name="a", after_user_send=after_send))
-    session.add_plugin(SessionPlugin(
+    session.add_handler(SessionHandler(name="a", after_user_send=after_send))
+    session.add_handler(SessionHandler(
         name="b", before_user_send=before_send, before_model_reply=before_reply,
     ))
 
@@ -819,19 +819,19 @@ async def test_async_plugin_management(tmp_path: Path):
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
     with pytest.raises(ValueError):
-        session.add_plugin(SessionPlugin(name=""))
+        session.add_handler(SessionHandler(name=""))
 
-    session.add_plugin(SessionPlugin(name="p", priority=100))
-    assert len(session.list_plugins()) == 1
-    assert session.set_plugin_priority("p", 50) is True
-    assert session.set_plugin_priority("missing", 1) is False
+    session.add_handler(SessionHandler(name="p", priority=100))
+    assert len(session.list_handlers()) == 1
+    assert session.set_handler_priority("p", 50) is True
+    assert session.set_handler_priority("missing", 1) is False
 
-    assert session.disable_plugin("p") is True
-    assert session.enable_plugin("p") is True
-    assert session.disable_plugin("missing") is False
-    assert session.enable_plugin("missing") is False
-    assert session.remove_plugin("p") is True
-    assert session.remove_plugin("p") is False
+    assert session.disable_handler("p") is True
+    assert session.enable_handler("p") is True
+    assert session.disable_handler("missing") is False
+    assert session.enable_handler("missing") is False
+    assert session.remove_handler("p") is True
+    assert session.remove_handler("p") is False
 
 
 # ================= 审查问题修复回归测试 =================
@@ -893,7 +893,7 @@ def test_plugin_empty_string_rewrite(tmp_path: Path):
     """H2 修复: before_user_send 返回空串 = 拦截/清空输入"""
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_plugin(SessionPlugin(name="p", before_user_send=lambda t: ""))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: ""))
     session.run("你好")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == ""
@@ -906,7 +906,7 @@ async def test_async_plugin_empty_string_rewrite(tmp_path: Path):
     session = AsyncSimpleSession(
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
-    session.add_plugin(SessionPlugin(name="p", before_user_send=lambda t: ""))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: ""))
     await session.run("hi")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == ""
@@ -919,7 +919,7 @@ def test_plugin_non_str_raises_sync(tmp_path: Path):
 
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_plugin(SessionPlugin(name="p", before_user_send=cast(Any, bad)))
+    session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
     with pytest.raises(AssertionError):
         session.run("hi")
 
@@ -934,7 +934,7 @@ async def test_plugin_non_str_raises_async(tmp_path: Path):
     session = AsyncSimpleSession(
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
-    session.add_plugin(SessionPlugin(name="p", before_user_send=cast(Any, bad)))
+    session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
     with pytest.raises(TypeError):
         await session.run("hi")
 
@@ -1014,3 +1014,495 @@ def test_img_urls_passed_in_tool_loop(tmp_path: Path):
     assert len(llm.calls) == 2
     assert llm.calls[0]["img_urls"] == ["http://x/a.png"]
     assert llm.calls[1]["img_urls"] == ["http://x/a.png"]
+
+
+# ================= 目录插件测试 =================
+
+
+def _write_plugin_dir(tmp_path: Path, name: str = "demo", *, with_mcp: bool = False) -> Path:
+    """构造最小插件目录: meta.yaml + tools.py + skills/ + handlers.py (可带 mcp.py)"""
+    plugin_dir = tmp_path / "plugins" / name
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text(
+        f"name: {name}\nversion: 0.1.0\nauthor: tester\nrepo: https://example.com/{name}\n"
+        "description: 测试插件\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "tools.py").write_text(
+        "from satrap.core.utils.TCBuilder import Tool\n\n"
+        "class GreetTool(Tool):\n"
+        "    tool_name = 'greet'\n"
+        "    description = '问候'\n"
+        "    params_dict = {'name': ('string', '名字')}\n"
+        "    def execute(self, name: str = '') -> str:\n"
+        "        return f'hi {name}'\n",
+        encoding="utf-8",
+    )
+    skill_dir = plugin_dir / "skills" / "pskill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.md").write_text(
+        "---\nname: pskill\n---\n\n# 插件技能\n插件自带技能指令\n", encoding="utf-8",
+    )
+    (plugin_dir / "handlers.py").write_text(
+        "from satrap.edictum import SessionHandler\n\n"
+        "def before_user_send(text: str):\n"
+        "    return text + ' [插件]'\n"
+        "handlers = [SessionHandler(name='demo.handler', before_user_send=before_user_send)]\n",
+        encoding="utf-8",
+    )
+    if with_mcp:
+        (plugin_dir / "mcp.py").write_text(
+            "clients = {}\n", encoding="utf-8",
+        )
+    return plugin_dir
+
+
+def test_install_plugin_full_package(tmp_path: Path):
+    """插件: 工具进 manager, skill 注册, handler 生效, meta 信息完整"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    plugin = session.install_plugin(str(plugin_dir))
+    assert plugin.name == "demo"
+    assert plugin.version == "0.1.0"
+    assert plugin.author == "tester"
+    assert plugin.repo == "https://example.com/demo"
+    assert session.list_plugins() == [plugin]
+
+    # 工具已注册
+    assert session.list_tools() == ["greet"]
+    # 技能已注册 (未激活)
+    assert "pskill" in session.list_skills()
+    # handler 生效
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [插件]"
+    # 技能可激活
+    assert session.add_skill("pskill") is True
+    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+
+
+def test_install_plugin_skips_mcp_sync(tmp_path: Path):
+    """同步版安装含 mcp.py 的插件: 跳过 mcp, 其余能力照常"""
+    plugin_dir = _write_plugin_dir(tmp_path, with_mcp=True)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    plugin = session.install_plugin(str(plugin_dir))
+    assert plugin.mcp == {}
+    assert session.list_tools() == ["greet"]
+    assert session.list_handlers()
+
+
+def test_plugin_aggregate_enable_disable(tmp_path: Path):
+    """插件聚合启停: disable 压制全部能力, enable 按独立状态恢复"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+    session.add_skill("pskill")
+
+    session.disable_plugin("demo")
+    assert plugin.enabled is False
+    session.run("hi")
+    tools_def = llm.calls[-1]["tools"]
+    assert not any(t["function"]["name"] == "greet" for t in tools_def)
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"
+
+    assert session.enable_plugin("demo") is True
+    assert plugin.enabled is True
+    session.run("hi")
+    tools_def = llm.calls[-1]["tools"]
+    assert any(t["function"]["name"] == "greet" for t in tools_def)
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [插件]"
+
+    assert session.disable_plugin("missing") is False
+
+
+def test_plugin_independent_enable_disable(tmp_path: Path):
+    """插件内能力独立启停: 聚合恢复不覆盖独立停用"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    # 独立停用工具
+    assert plugin.disable_tool("greet") is True
+    assert plugin.disable_tool("missing") is False
+    session.run("hi")
+    tools_def = llm.calls[-1]["tools"]
+    assert not any(t["function"]["name"] == "greet" for t in tools_def)
+
+    # 聚合停用再启用: 独立停用的工具保持停用
+    session.disable_plugin("demo")
+    session.enable_plugin("demo")
+    session.run("hi")
+    tools_def = llm.calls[-1]["tools"]
+    assert not any(t["function"]["name"] == "greet" for t in tools_def)
+
+    # 独立恢复
+    assert plugin.enable_tool("greet") is True
+    session.run("hi")
+    tools_def = llm.calls[-1]["tools"]
+    assert any(t["function"]["name"] == "greet" for t in tools_def)
+
+    caps = {c["name"]: c for c in plugin.list_capabilities()["tools"]}
+    assert caps["greet"]["enabled"] is True
+
+
+def test_plugin_uninstall_reclaims(tmp_path: Path):
+    """插件卸载: 工具注销, skill 移除, handler 移除, 不留孤儿"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    session.install_plugin(str(plugin_dir))
+    session.add_skill("pskill")
+
+    assert session.uninstall_plugin("demo") is True
+    assert session.list_plugins() == []
+    assert session.list_tools() == []
+    assert session.list_skills() == []
+    assert session.list_handlers() == []
+    assert session.uninstall_plugin("demo") is False
+
+
+def test_install_plugin_errors(tmp_path: Path):
+    """插件安装校验: 缺 meta.yaml / 重名 / 工具冲突"""
+    session = _make_session(tmp_path)
+
+    # 缺 meta.yaml
+    bad_dir = tmp_path / "bad"
+    bad_dir.mkdir()
+    with pytest.raises(ValueError):
+        session.install_plugin(str(bad_dir))
+
+    # 重名
+    plugin_dir = _write_plugin_dir(tmp_path)
+    session.install_plugin(str(plugin_dir))
+    with pytest.raises(ValueError):
+        session.install_plugin(str(plugin_dir))
+
+    # 工具冲突
+    session2 = _make_session(tmp_path)
+    session2.add_tool(_EchoTool())
+    conflict_dir = tmp_path / "plugins" / "conflict"
+    conflict_dir.mkdir(parents=True)
+    (conflict_dir / "meta.yaml").write_text("name: conflict\n", encoding="utf-8")
+    (conflict_dir / "tools.py").write_text(
+        "from satrap.core.utils.TCBuilder import Tool\n"
+        "class EchoTool(Tool):\n"
+        "    tool_name = 'echo'\n"
+        "    description = 'x'\n"
+        "    params_dict = {}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError):
+        session2.install_plugin(str(conflict_dir))
+
+
+def test_plugin_handlers_convention_functions(tmp_path: Path):
+    """handlers.py 用 4 约定函数 (不导出 handlers 列表) 自动构建处理器"""
+    plugin_dir = tmp_path / "plugins" / "conv"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: conv\n", encoding="utf-8")
+    (plugin_dir / "handlers.py").write_text(
+        "def before_user_send(text: str):\n"
+        "    return text.upper()\n",
+        encoding="utf-8",
+    )
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    session.install_plugin(str(plugin_dir))
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "HI"
+
+
+@pytest.mark.asyncio
+async def test_async_install_plugin_with_mcp(tmp_path: Path):
+    """异步插件: mcp.py 客户端自动接入, 卸载时断开连接"""
+    mark = tmp_path / "closed.flag"
+    plugin_dir = _write_plugin_dir(tmp_path, name="ademo", with_mcp=True)
+    (plugin_dir / "mcp.py").write_text(
+        "from satrap.core.utils.TCBuilder import AsyncTool\n\n"
+        "class _T(AsyncTool):\n"
+        "    tool_name = 'mcp_greet'\n"
+        "    description = 'x'\n"
+        "    params_dict = {}\n"
+        "    async def execute(self) -> str:\n"
+        "        return 'ok'\n"
+        "class _FakeClient:\n"
+        "    def __init__(self, mark):\n"
+        "        self.mark = mark\n"
+        "    async def register_tools(self, tm, name_prefix=None):\n"
+        "        for a in [_T()]:\n"
+        "            tm.register_tool(a)\n"
+        "        return [_T()]\n"
+        "    async def close(self):\n"
+        "        open(self.mark, 'w', encoding='utf-8').write('closed')\n"
+        f"clients = {{'fs': _FakeClient({str(mark)!r})}}\n",
+        encoding="utf-8",
+    )
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    plugin = await session.install_plugin(str(plugin_dir))
+    assert plugin.name == "ademo"
+    assert plugin.mcp == {"fs": True}
+    assert session.list_tools() == ["mcp_greet"]
+
+    assert await session.uninstall_plugin("ademo") is True
+    assert mark.is_file()
+    assert session.list_tools() == []
+    assert session.list_plugins() == []
+    assert await session.uninstall_plugin("ademo") is False
+
+
+@pytest.mark.asyncio
+async def test_async_plugin_aggregate_enable_disable(tmp_path: Path):
+    """异步插件聚合启停: MCP 工具随插件启停"""
+    plugin_dir = _write_plugin_dir(tmp_path, name="ademo", with_mcp=True)
+    (plugin_dir / "mcp.py").write_text(
+        "from satrap.core.utils.TCBuilder import AsyncTool\n\n"
+        "class _T(AsyncTool):\n"
+        "    tool_name = 'mcp_greet'\n"
+        "    description = 'x'\n"
+        "    params_dict = {}\n"
+        "    async def execute(self) -> str:\n"
+        "        return 'ok'\n"
+        "class _FakeClient:\n"
+        "    async def register_tools(self, tm, name_prefix=None):\n"
+        "        for a in [_T()]:\n"
+        "            tm.register_tool(a)\n"
+        "        return [_T()]\n"
+        "    async def close(self):\n"
+        "        pass\n"
+        "clients = {'fs': _FakeClient()}\n",
+        encoding="utf-8",
+    )
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    await session.install_plugin(str(plugin_dir))
+    assert session.is_tool_enabled("mcp_greet") is True
+
+    assert await session.disable_plugin("ademo") is True
+    assert session.is_tool_enabled("mcp_greet") is False
+
+    assert await session.enable_plugin("ademo") is True
+    assert session.is_tool_enabled("mcp_greet") is True
+    assert await session.disable_plugin("missing") is False
+
+
+# ================= 目录插件补充分支测试 =================
+
+
+def test_plugin_meta_not_dict_raises(tmp_path: Path):
+    """meta.yaml 非字典格式抛 ValueError"""
+    plugin_dir = tmp_path / "plugins" / "badmeta"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("- a\n- b\n", encoding="utf-8")
+    session = _make_session(tmp_path)
+    with pytest.raises(ValueError):
+        session.install_plugin(str(plugin_dir))
+
+
+def test_plugin_minimal_and_loose_files(tmp_path: Path):
+    """最小插件: 无 handlers/skills/mcp 分支; skills/ 下非目录文件跳过"""
+    plugin_dir = tmp_path / "plugins" / "minimal"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: minimal\n", encoding="utf-8")
+    (plugin_dir / "tools.py").write_text(
+        "from satrap.core.utils.TCBuilder import Tool\n"
+        "class MiniTool(Tool):\n"
+        "    tool_name = 'mini'\n"
+        "    description = 'x'\n"
+        "    params_dict = {}\n",
+        encoding="utf-8",
+    )
+    skills_root = plugin_dir / "skills"
+    skills_root.mkdir()
+    (skills_root / "loose.md").write_text("# 松散文件\n", encoding="utf-8")  # 非目录, 跳过
+    (plugin_dir / "handlers.py").write_text("x = 1\n", encoding="utf-8")  # 无约定内容 -> 空
+
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+    assert session.list_tools() == ["mini"]
+    assert plugin.handlers == {}
+    assert plugin.skills == {}
+    assert session.list_handlers() == []
+
+
+def test_plugin_skills_py_declared(tmp_path: Path):
+    """skills.py 导出 skills 列表注册技能"""
+    plugin_dir = tmp_path / "plugins" / "skpy"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: skpy\n", encoding="utf-8")
+    (plugin_dir / "skills.py").write_text(
+        "from satrap.core.utils.skills import Skill\n"
+        "skills = [Skill(name='skpy-skill', instructions='# 声明技能\\n声明式技能指令')]\n",
+        encoding="utf-8",
+    )
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    session.install_plugin(str(plugin_dir))
+    assert "skpy-skill" in session.list_skills()
+    assert session.add_skill("skpy-skill") is True
+    session.run("hi")
+    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+    assert system_msgs and "声明式技能指令" in str(system_msgs[0]["content"])
+
+
+def test_plugin_skill_independent_ops(tmp_path: Path):
+    """插件技能独立启停 (同步版)"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert plugin.enable_skill("pskill") is True
+    session.run("hi")
+    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+
+    assert plugin.disable_skill("pskill") is True
+    session.run("hi")
+    system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
+    assert not any("插件技能" in str(m["content"]) for m in system_msgs)
+
+    assert plugin.enable_skill("missing") is False
+    assert plugin.disable_skill("missing") is False
+
+
+def test_plugin_handler_independent_ops(tmp_path: Path):
+    """插件处理器独立启停"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert plugin.disable_handler("demo.handler") is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"
+
+    assert plugin.enable_handler("demo.handler") is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [插件]"
+
+    assert plugin.disable_handler("missing") is False
+    assert plugin.enable_handler("missing") is False
+    assert plugin.enable_tool("missing") is False
+
+
+@pytest.mark.asyncio
+async def test_async_plugin_without_mcp(tmp_path: Path):
+    """异步安装无 mcp.py 的插件: 正常注册其余能力"""
+    plugin_dir = _write_plugin_dir(tmp_path, name="ademo")
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    plugin = await session.install_plugin(str(plugin_dir))
+    assert plugin.mcp == {}
+    assert session.list_skills() == ["pskill"]
+    assert session.list_handlers()
+
+
+@pytest.mark.asyncio
+async def test_async_plugin_mcp_independent_and_build_clients(tmp_path: Path):
+    """异步插件: build_clients 工厂 + MCP 连接独立启停"""
+    plugin_dir = tmp_path / "plugins" / "bmcp"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: bmcp\n", encoding="utf-8")
+    (plugin_dir / "mcp.py").write_text(
+        "from satrap.core.utils.TCBuilder import AsyncTool\n\n"
+        "class _T(AsyncTool):\n"
+        "    tool_name = 'bmcp_tool'\n"
+        "    description = 'x'\n"
+        "    params_dict = {}\n"
+        "    async def execute(self) -> str:\n"
+        "        return 'ok'\n"
+        "class _FakeClient:\n"
+        "    def __init__(self):\n"
+        "        self.adapters = [_T()]\n"
+        "    async def register_tools(self, tm, name_prefix=None):\n"
+        "        for a in self.adapters:\n"
+        "            tm.register_tool(a)\n"
+        "        return list(self.adapters)\n"
+        "    async def close(self):\n"
+        "        pass\n"
+        "def build_clients():\n"
+        "    return {'fs': _FakeClient()}\n",
+        encoding="utf-8",
+    )
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    plugin = await session.install_plugin(str(plugin_dir))
+    assert plugin.mcp == {"fs": True}
+    assert session.list_tools() == ["bmcp_tool"]
+
+    assert plugin.disable_mcp("fs") is True
+    assert session.is_tool_enabled("bmcp_tool") is False
+    assert plugin.enable_mcp("fs") is True
+    assert session.is_tool_enabled("bmcp_tool") is True
+    assert plugin.disable_mcp("missing") is False
+    assert plugin.enable_mcp("missing") is False
+
+    # 聚合停用再启用: 独立停用的 MCP 保持停用
+    plugin.disable_mcp("fs")
+    await session.disable_plugin("bmcp")
+    await session.enable_plugin("bmcp")
+    assert session.is_tool_enabled("bmcp_tool") is False
+
+
+def test_plugin_skill_ops_while_disabled(tmp_path: Path):
+    """插件停用期间技能独立操作: 只改状态不激活"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    session.disable_plugin("demo")
+    assert plugin.enable_skill("pskill") is True  # 停用中: 只改状态
+    session.run("hi")
+    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+    assert not any("插件技能" in str(m["content"]) for m in system_msgs)
+
+    session.enable_plugin("demo")
+    session.run("hi")
+    system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
+    assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+
+
+@pytest.mark.asyncio
+async def test_async_plugin_mcp_build_clients_not_dict(tmp_path: Path):
+    """mcp.py build_clients 返回非 dict: 忽略不报错"""
+    plugin_dir = tmp_path / "plugins" / "bd"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: bd\n", encoding="utf-8")
+    (plugin_dir / "mcp.py").write_text(
+        "def build_clients():\n"
+        "    return ['not-a-dict']\n",
+        encoding="utf-8",
+    )
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    plugin = await session.install_plugin(str(plugin_dir))
+    assert plugin.mcp == {}
+    assert session.list_tools() == []

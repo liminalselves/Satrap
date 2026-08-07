@@ -9,6 +9,7 @@ from typing import Any, Dict, Literal, TypeVar, cast
 
 from satrap.core.log import logger
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.utils.paths import get_data_dir
 
 
 ConfigTarget = Literal["llm", "embedding", "rerank"]
@@ -55,7 +56,7 @@ class ModelConfigManager:
         env_path = os.getenv("SATRAP_MODEL_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        return Path.cwd() / ".satrap" / "model_config.json"
+        return get_data_dir() / "model_config.json"
 
     @staticmethod
     def _safe_key(api_key: str | None) -> str | None:

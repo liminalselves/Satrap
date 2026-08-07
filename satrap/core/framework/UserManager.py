@@ -13,6 +13,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.log import logger
 from satrap.core.type import SessionConfig, UserCall, UserInfo
+from satrap.core.utils.paths import get_data_dir
 
 
 @dataclass
@@ -37,7 +38,7 @@ class UserInfoStore:
         - db_path: 数据库文件路径, 默认当前目录下的 .satrap/user_info.db
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else (Path.cwd() / ".satrap" / "user_info.db")
+        self.db_path = Path(db_path) if db_path else (get_data_dir() / "user_info.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 

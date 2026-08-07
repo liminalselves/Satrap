@@ -6,7 +6,7 @@ from .core.utils.skills import Skill, SkillsManager, SkillTool
 from .core.APICall.LLMCall import LLM, AsyncLLM
 from .core.type import LLMCallResponse, LLMCallStreamEvent
 from .core.log import Logger
-from .edictum import SimpleSession, AsyncSimpleSession, SessionPlugin
+from .edictum import AsyncSimpleSession, Plugin, SessionHandler, SimpleSession
 
 __all__ = [
     "ContextManager",
@@ -31,5 +31,6 @@ __all__ = [
     "Logger",
     "SimpleSession",
     "AsyncSimpleSession",
-    "SessionPlugin",
+    "SessionHandler",
+    "Plugin",
 ]

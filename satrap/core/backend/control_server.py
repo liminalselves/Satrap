@@ -3,13 +3,21 @@
 这是一个简单的 HTTP 服务，独立于主后端运行，
 提供启动、停止、重启后端的功能，以及配置文件的读写。
 默认监听 127.0.0.1:19871
+
+特性:
+- 单实例锁防止重复启动
+- PID 文件管理
+- 前端关闭时自动停止后端
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import subprocess
 import sys
+import atexit
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +25,14 @@ import yaml
 
 # 项目根目录
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# 数据目录
+DATA_DIR = PROJECT_ROOT / ".satrap"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+# PID 文件路径
+CONTROL_PID_FILE = DATA_DIR / "control_server.pid"
+BACKEND_PID_FILE = DATA_DIR / "backend.pid"
 
 # 后端进程
 _backend_process: subprocess.Popen | None = None
@@ -30,6 +46,126 @@ CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
+
+
+def _write_pid_file(pid_file: Path, pid: int) -> None:
+    """写入 PID 文件"""
+    try:
+        pid_file.write_text(str(pid), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_pid_file(pid_file: Path) -> int | None:
+    """读取 PID 文件"""
+    try:
+        if pid_file.exists():
+            return int(pid_file.read_text(encoding="utf-8").strip())
+    except Exception:
+        pass
+    return None
+
+
+def _remove_pid_file(pid_file: Path) -> None:
+    """删除 PID 文件"""
+    try:
+        if pid_file.exists():
+            pid_file.unlink()
+    except Exception:
+        pass
+
+
+def _is_process_running(pid: int) -> bool:
+    """检查进程是否在运行"""
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if handle:
+            kernel32.CloseHandle(handle)
+            return True
+        return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
+def _check_single_instance() -> bool:
+    """检查是否已有控制服务实例在运行
+    
+    返回 True 表示可以继续启动，False 表示已有实例
+    """
+    if not CONTROL_PID_FILE.exists():
+        return True
+    
+    old_pid = _read_pid_file(CONTROL_PID_FILE)
+    if old_pid is None:
+        return True
+    
+    if _is_process_running(old_pid):
+        # 检查是否是我们的控制服务
+        try:
+            import urllib.request
+            url = "http://127.0.0.1:19871/status"
+            with urllib.request.urlopen(url, timeout=1) as response:
+                if response.status == 200:
+                    return False  # 已有实例在运行
+        except Exception:
+            pass
+    
+    # 旧进程已不存在，清理 PID 文件
+    _remove_pid_file(CONTROL_PID_FILE)
+    return True
+
+
+def _cleanup_backend() -> None:
+    """清理后端进程"""
+    global _backend_process
+    
+    # 尝试通过 API 停止
+    try:
+        import urllib.request
+        req = urllib.request.Request(
+            "http://127.0.0.1:19870/api/shutdown",
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2)
+    except Exception:
+        pass
+    
+    # 终止我们启动的进程
+    if _backend_process is not None:
+        try:
+            _backend_process.terminate()
+            _backend_process.wait(timeout=5)
+        except Exception:
+            try:
+                _backend_process.kill()
+            except Exception:
+                pass
+        _backend_process = None
+    
+    # 通过 PID 文件终止
+    backend_pid = _read_pid_file(BACKEND_PID_FILE)
+    if backend_pid and _is_process_running(backend_pid):
+        try:
+            if sys.platform == "win32":
+                os.kill(backend_pid, signal.SIGTERM)
+            else:
+                os.kill(backend_pid, signal.SIGTERM)
+        except Exception:
+            pass
+    
+    _remove_pid_file(BACKEND_PID_FILE)
+
+
+def _cleanup_control() -> None:
+    """清理控制服务"""
+    _cleanup_backend()
+    _remove_pid_file(CONTROL_PID_FILE)
 
 
 def _get_backend_cmd(host: str = "127.0.0.1", port: int = 19870) -> list[str]:
@@ -103,6 +239,16 @@ async def _handle_request(
             elif _backend_process is not None and _backend_process.poll() is None:
                 body = {"ok": True, "message": "后端正在启动中"}
             else:
+                # 检查是否有其他后端进程
+                old_backend_pid = _read_pid_file(BACKEND_PID_FILE)
+                if old_backend_pid and _is_process_running(old_backend_pid):
+                    # 尝试终止旧进程
+                    try:
+                        os.kill(old_backend_pid, signal.SIGTERM)
+                        await asyncio.sleep(1)
+                    except Exception:
+                        pass
+                
                 # 启动后端
                 cmd = _get_backend_cmd()
                 
@@ -123,6 +269,9 @@ async def _handle_request(
                         creationflags=creationflags,
                     )
                     
+                    # 记录后端 PID
+                    _write_pid_file(BACKEND_PID_FILE, _backend_process.pid)
+                    
                     # 等待后端就绪
                     for _ in range(30):  # 最多等待 15 秒
                         await asyncio.sleep(0.5)
@@ -139,40 +288,12 @@ async def _handle_request(
         
         # POST /stop - 停止后端
         elif method == "POST" and path == "/stop":
-            # 先尝试通过 API 停止
-            import urllib.request
-            
-            try:
-                req = urllib.request.Request(
-                    "http://127.0.0.1:19870/api/shutdown",
-                    method="POST",
-                )
-                urllib.request.urlopen(req, timeout=2)
-            except Exception:
-                pass
-            
-            # 如果是我们启动的进程，也终止它
-            if _backend_process is not None:
-                try:
-                    _backend_process.terminate()
-                    _backend_process.wait(timeout=5)
-                except Exception:
-                    _backend_process.kill()
-                _backend_process = None
-            
+            _cleanup_backend()
             body = {"ok": True, "message": "后端已停止"}
         
         # POST /restart - 重启后端
         elif method == "POST" and path == "/restart":
-            # 停止
-            if _backend_process is not None:
-                try:
-                    _backend_process.terminate()
-                    _backend_process.wait(timeout=5)
-                except Exception:
-                    _backend_process.kill()
-                _backend_process = None
-            
+            _cleanup_backend()
             await asyncio.sleep(1)
             
             # 启动
@@ -193,10 +314,32 @@ async def _handle_request(
                     startupinfo=startupinfo,
                     creationflags=creationflags,
                 )
+                _write_pid_file(BACKEND_PID_FILE, _backend_process.pid)
                 body = {"ok": True, "message": "后端重启中"}
             except Exception as e:
                 body = {"ok": False, "error": str(e)}
                 status = 500
+        
+        # POST /shutdown - 停止控制服务和后端
+        elif method == "POST" and path == "/shutdown":
+            body = {"ok": True, "message": "控制服务即将停止"}
+            
+            # 发送响应后再停止
+            response_body = json.dumps(body).encode()
+            response = f"HTTP/1.1 {status} OK\r\n"
+            response += "Content-Type: application/json\r\n"
+            response += f"Content-Length: {len(response_body)}\r\n"
+            for k, v in CORS_HEADERS.items():
+                response += f"{k}: {v}\r\n"
+            response += "\r\n"
+            
+            writer.write(response.encode() + response_body)
+            await writer.drain()
+            writer.close()
+            
+            # 延迟停止
+            asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))
+            return
         
         # GET /config - 读取配置文件
         elif method == "GET" and path == "/config":
@@ -268,15 +411,32 @@ async def _handle_request(
 
 async def run_server(host: str = "127.0.0.1", port: int = 19871):
     """运行控制服务"""
+    # 检查单实例
+    if not _check_single_instance():
+        print("Control server is already running")
+        sys.exit(1)
+    
+    # 写入 PID 文件
+    _write_pid_file(CONTROL_PID_FILE, os.getpid())
+    
+    # 注册退出清理
+    atexit.register(_cleanup_control)
+    
+    # 注册信号处理
+    if sys.platform != "win32":
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+    
     server = await asyncio.start_server(_handle_request, host, port)
     print(f"Backend control server running at http://{host}:{port}")
     print("Endpoints:")
-    print("  GET  /status  - Get backend status")
-    print("  POST /start   - Start backend")
-    print("  POST /stop    - Stop backend")
-    print("  POST /restart - Restart backend")
-    print("  GET  /config  - Read config file")
-    print("  PUT  /config  - Save config file")
+    print("  GET  /status   - Get backend status")
+    print("  POST /start    - Start backend")
+    print("  POST /stop     - Stop backend")
+    print("  POST /restart  - Restart backend")
+    print("  POST /shutdown - Stop control server and backend")
+    print("  GET  /config   - Read config file")
+    print("  PUT  /config   - Save config file")
     
     async with server:
         await server.serve_forever()
@@ -295,6 +455,8 @@ def main():
         asyncio.run(run_server(args.host, args.port))
     except KeyboardInterrupt:
         print("\nShutting down...")
+    finally:
+        _cleanup_control()
 
 
 if __name__ == "__main__":

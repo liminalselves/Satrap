@@ -18,6 +18,7 @@ from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction
 from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.utils.paths import get_data_dir
 from satrap.core.log import logger
 from typing import TYPE_CHECKING
 
@@ -127,7 +128,7 @@ class SessionConfigStore:
         - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else (Path.cwd() / ".satrap" / "session_config.db")
+        self.db_path = Path(db_path) if db_path else (get_data_dir() / "session_config.db")
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 

@@ -2,7 +2,7 @@ import { useEffect, useCallback, useState } from 'react';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useWebSocket } from '@/hooks/useWebSocket';
-import { controlApi, BackendStatus } from '@/api/control';
+import { controlApi } from '@/api/control';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -22,11 +22,20 @@ import {
 } from 'lucide-react';
 
 export function Dashboard() {
-  const { health, loading, refreshHealth, reloadConfig, shutdown, setHealth } = useBackendStore();
+  const { 
+    health, 
+    loading, 
+    isRunning,
+    controlStatus,
+    refreshHealth, 
+    refreshControlStatus,
+    reloadConfig, 
+    shutdown, 
+    setHealth,
+  } = useBackendStore();
   const { llmConfigs, embeddingConfigs, rerankConfigs, sessionClasses, fetchAllModels, fetchSessionClasses } = useConfigStore();
   
-  // 后端控制状态
-  const [controlStatus, setControlStatus] = useState<BackendStatus | null>(null);
+  // 后端控制加载状态
   const [controlLoading, setControlLoading] = useState(false);
 
   // WebSocket 状态推送
@@ -61,27 +70,17 @@ export function Dashboard() {
     };
   }, [connect, disconnect, handleStatus]);
 
-  // 获取控制服务状态
-  const fetchControlStatus = useCallback(async () => {
-    try {
-      const status = await controlApi.status();
-      setControlStatus(status);
-    } catch {
-      setControlStatus(null);
-    }
-  }, []);
-
   // 初始加载
   useEffect(() => {
     refreshHealth();
+    refreshControlStatus();
     fetchAllModels();
     fetchSessionClasses();
-    fetchControlStatus();
     
     // 定期检查控制服务状态
-    const interval = setInterval(fetchControlStatus, 5000);
+    const interval = setInterval(refreshControlStatus, 5000);
     return () => clearInterval(interval);
-  }, [refreshHealth, fetchAllModels, fetchSessionClasses, fetchControlStatus]);
+  }, [refreshHealth, refreshControlStatus, fetchAllModels, fetchSessionClasses]);
 
   const handleReload = async () => {
     const ok = await reloadConfig();
@@ -111,7 +110,7 @@ export function Dashboard() {
         // 延迟刷新状态
         setTimeout(() => {
           refreshHealth();
-          fetchControlStatus();
+          refreshControlStatus();
         }, 2000);
       } else {
         toast('error', result.error || '启动失败');
@@ -132,7 +131,7 @@ export function Dashboard() {
         toast('success', result.message || '后端已停止');
         setTimeout(() => {
           refreshHealth();
-          fetchControlStatus();
+          refreshControlStatus();
         }, 1000);
       } else {
         toast('error', result.error || '停止失败');
@@ -154,7 +153,7 @@ export function Dashboard() {
         toast('success', result.message || '后端重启中');
         setTimeout(() => {
           refreshHealth();
-          fetchControlStatus();
+          refreshControlStatus();
         }, 3000);
       } else {
         toast('error', result.error || '重启失败');
@@ -169,7 +168,6 @@ export function Dashboard() {
   const adapterCount = health?.adapters ? Object.keys(health.adapters).length : 0;
   const modelCount = Object.keys(llmConfigs).length + Object.keys(embeddingConfigs).length + Object.keys(rerankConfigs).length;
   const sessionCount = Object.keys(sessionClasses).length;
-  const isRunning = health?.running || controlStatus?.running;
 
   return (
     <div className="space-y-6">
@@ -187,7 +185,7 @@ export function Dashboard() {
           {/* 后端控制按钮 - 统一使用 default 样式 */}
           {isRunning ? (
             <>
-              <Button variant="default" onClick={() => { refreshHealth(); fetchControlStatus(); }} disabled={loading}>
+              <Button variant="default" onClick={() => { refreshHealth(); refreshControlStatus(); }} disabled={loading}>
                 <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
                 刷新
               </Button>

@@ -2,8 +2,9 @@
 
 SimpleSession / AsyncSimpleSession: 基于 Session 的高可扩展单 workflow Agent 框架
 - 单个主 workflow / 单一主模型, 内部直接使用 full_agent (React 范式)
-- 命令 / 工具 / MCP / skill / 插件五类能力的注入、删除、启用/停用、查看
-- 插件: 函数直注流程 (非 hook), 4 处理点, 优先级排序, before 可改写/拦截
+- 命令 / 工具 / MCP / skill / 处理器 / 插件六类能力的注入、删除、启用/停用、查看
+- 处理器 (SessionHandler): 函数直注流程 (非 hook), 4 处理点, 优先级排序, before 可改写/拦截
+- 插件 (Plugin): 目录化组合包 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py), 双层启停
 - checkpoint 全套 (继承 Session 聚合检查点)
 - 多模态 (img_urls) + 流式/非流式切换
 """
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
@@ -24,6 +26,14 @@ from satrap.core.framework.Base import (
 from satrap.core.log import logger
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.skills import SkillsManager
+from satrap.edictum.plugin import (
+    Plugin,
+    collect_handlers,
+    collect_mcp_clients,
+    collect_skills,
+    collect_tools,
+    load_plugin_meta,
+)
 
 # 插件回调: 同步版仅调用同步函数; 异步版同步/异步均可 (运行期区分)
 BeforeUserSend = Callable[[str], str | None] | Callable[[str], Awaitable[str | None]]
@@ -33,8 +43,8 @@ AfterModelReply = Callable[[str], None] | Callable[[str], Awaitable[None]]
 
 
 @dataclass
-class SessionPlugin:
-    """插件: 4 个处理点直接注入流程, 非 hook
+class SessionHandler:
+    """处理器: 4 个处理点直接注入流程, 非 hook
 
     - before_user_send: 用户消息处理前, 返回 str 改写输入, 返回 None 透传
     - after_user_send: 用户消息处理后 (通知, 收到改写后的文本)
@@ -107,7 +117,8 @@ class SimpleSession(Session):
             db_path=db_path,
         )
         self._track_workflow_context(wf_id, self._wf.ctx)
-        self._plugins: dict[str, SessionPlugin] = {}
+        self._handlers: dict[str, SessionHandler] = {}
+        self._plugins: dict[str, Plugin] = {}
         self._skills_manager: SkillsManager | None = None
         self.stream = stream
         if tools:
@@ -154,7 +165,7 @@ class SimpleSession(Session):
         - max_iterations: 最大工具调用迭代次数
         """
         text = user_input
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.before_user_send is None:
                 continue
             out = p.before_user_send(text)
@@ -162,12 +173,12 @@ class SimpleSession(Session):
                 assert isinstance(out, str), f"插件 {p.name}.before_user_send 必须返回 str 或 None"
                 text = out
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.after_user_send is None:
                 continue
             p.after_user_send(text)
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.before_model_reply is None:
                 continue
             p.before_model_reply()
@@ -183,7 +194,7 @@ class SimpleSession(Session):
                 text, img_urls=img_urls, max_iterations=max_iterations,
             )
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.after_model_reply is None:
                 continue
             p.after_model_reply(result)
@@ -290,52 +301,181 @@ class SimpleSession(Session):
             return []
         return self._skills_manager.list_skills()
 
-    # ---------------- 插件管理 ----------------
+    # ---------------- 处理器管理 ----------------
 
-    def add_plugin(self, plugin: SessionPlugin):
-        """注册插件 (同名校覆盖)"""
-        if not plugin.name:
-            raise ValueError("插件 name 不能为空")
-        self._plugins[plugin.name] = plugin
+    def add_handler(self, handler: SessionHandler):
+        """注册处理器 (同名校覆盖)"""
+        if not handler.name:
+            raise ValueError("处理器 name 不能为空")
+        self._handlers[handler.name] = handler
 
-    def remove_plugin(self, name: str) -> bool:
-        """注销插件"""
-        return self._plugins.pop(name, None) is not None
+    def remove_handler(self, name: str) -> bool:
+        """注销处理器"""
+        return self._handlers.pop(name, None) is not None
+
+    def enable_handler(self, name: str) -> bool:
+        """启用处理器"""
+        handler = self._handlers.get(name)
+        if handler is None:
+            return False
+        handler.enabled = True
+        return True
+
+    def disable_handler(self, name: str) -> bool:
+        """停用处理器"""
+        handler = self._handlers.get(name)
+        if handler is None:
+            return False
+        handler.enabled = False
+        return True
+
+    def list_handlers(self) -> list[SessionHandler]:
+        """列出处理器 (按优先级升序)"""
+        return sorted(self._handlers.values(), key=lambda p: p.priority)
+
+    def set_handler_priority(self, name: str, priority: int) -> bool:
+        """调整处理器优先级 (越小越先执行)"""
+        handler = self._handlers.get(name)
+        if handler is None:
+            return False
+        handler.priority = priority
+        return True
+
+    def _enabled_handlers(self) -> list[SessionHandler]:
+        """返回启用中的处理器 (按优先级升序)"""
+        return sorted(
+            (p for p in self._handlers.values() if p.enabled),
+            key=lambda p: p.priority,
+        )
+
+    # ---------------- 插件管理 (目录插件包) ----------------
+
+    def install_plugin(self, path: str) -> Plugin:
+        """安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
+
+        同步版跳过 mcp.py (工具为 AsyncTool, 仅异步版支持), 其余能力照常注册
+        """
+        plugin_dir = Path(path)
+        meta = load_plugin_meta(plugin_dir)
+        name = str(meta.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
+        if name in self._plugins:
+            raise ValueError(f"插件 {name} 已安装")
+
+        tool_states: dict[str, bool] = {}
+        for t in collect_tools(plugin_dir, name, Tool):
+            tname = t.get_tool_name()
+            if tname in self._wf.tools_manager.tools or tname in tool_states:
+                raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+            self._wf.tools_manager.register_tool(t)
+            tool_states[tname] = True
+
+        mgr = self._get_skills_manager()
+        skill_states: dict[str, bool] = {}
+        for s in collect_skills(plugin_dir, name):
+            key = s.skill_id or s.name
+            if key in mgr.skills or key in skill_states:
+                raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
+            mgr._register_skill(s)
+            skill_states[key] = True
+
+        handler_states: dict[str, bool] = {}
+        for h in collect_handlers(plugin_dir, name):
+            if h.name in self._handlers or h.name in handler_states:
+                raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+            self._handlers[h.name] = h
+            handler_states[h.name] = True
+
+        if (plugin_dir / "mcp.py").is_file():
+            logger.warning(
+                f"[edictum] 插件 {name} 含 mcp.py, 仅异步版 (AsyncSimpleSession) 支持, 已跳过"
+            )
+
+        plugin = Plugin(
+            name=name,
+            version=str(meta.get("version") or ""),
+            author=str(meta.get("author") or ""),
+            repo=str(meta.get("repo") or ""),
+            description=str(meta.get("description") or ""),
+            path=str(plugin_dir),
+        )
+        plugin._session = self
+        plugin.tools = tool_states
+        plugin.skills = skill_states
+        plugin.handlers = handler_states
+        self._plugins[name] = plugin
+        logger.info(f"[edictum] 插件 {name} 已安装")
+        return plugin
+
+    def uninstall_plugin(self, name: str) -> bool:
+        """卸载插件: 回收其全部能力, 不留孤儿"""
+        plugin = self._plugins.pop(name, None)
+        if plugin is None:
+            return False
+        for tname in plugin.tools:
+            self._wf.tools_manager.unregister_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname in plugin.skills:
+                mgr.deactivate(sname, self._wf)
+                mgr.unregister_skill(sname)
+        for hname in plugin.handlers:
+            self._handlers.pop(hname, None)
+        logger.info(f"[edictum] 插件 {name} 已卸载")
+        return True
 
     def enable_plugin(self, name: str) -> bool:
-        """启用插件"""
+        """启用插件 (按独立状态恢复名下能力, 独立停用的保持停用)"""
         plugin = self._plugins.get(name)
         if plugin is None:
             return False
+        if plugin.enabled:
+            return True
         plugin.enabled = True
+        for tname, st in plugin.tools.items():
+            if st:
+                self._wf.tools_manager.enable_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname, st in plugin.skills.items():
+                if st:
+                    mgr.activate(sname, self._wf)
+        for hname, st in plugin.handlers.items():
+            if st and hname in self._handlers:
+                self._handlers[hname].enabled = True
         return True
 
     def disable_plugin(self, name: str) -> bool:
-        """停用插件"""
+        """停用插件 (压制名下全部能力, 不改独立状态)"""
         plugin = self._plugins.get(name)
         if plugin is None:
             return False
+        if not plugin.enabled:
+            return True
         plugin.enabled = False
+        for tname in plugin.tools:
+            self._wf.tools_manager.disable_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname in plugin.skills:
+                mgr.deactivate(sname, self._wf)
+        for hname in plugin.handlers:
+            if hname in self._handlers:
+                self._handlers[hname].enabled = False
         return True
 
-    def list_plugins(self) -> list[SessionPlugin]:
-        """列出插件 (按优先级升序)"""
-        return sorted(self._plugins.values(), key=lambda p: p.priority)
+    def list_plugins(self) -> list[Plugin]:
+        """列出已安装插件"""
+        return list(self._plugins.values())
 
-    def set_plugin_priority(self, name: str, priority: int) -> bool:
-        """调整插件优先级 (越小越先执行)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return False
-        plugin.priority = priority
-        return True
+    def _activate_plugin_skill(self, name: str) -> bool:
+        """插件技能独立启用钩子 (同步版)"""
+        return self._get_skills_manager().activate(name, self._wf)
 
-    def _enabled_plugins(self) -> list[SessionPlugin]:
-        """返回启用中的插件 (按优先级升序)"""
-        return sorted(
-            (p for p in self._plugins.values() if p.enabled),
-            key=lambda p: p.priority,
-        )
+    def _deactivate_plugin_skill(self, name: str) -> bool:
+        """插件技能独立停用钩子 (同步版)"""
+        return self._get_skills_manager().deactivate(name, self._wf)
 
     # ---------------- 模型与流式 ----------------
 
@@ -392,7 +532,8 @@ class AsyncSimpleSession(AsyncSession):
         self._init_model_params: dict[str, Any] = {}
         self._db_path = db_path
         self._wf: AsyncModelWorkflowFramework | None = None
-        self._plugins: dict[str, SessionPlugin] = {}
+        self._handlers: dict[str, SessionHandler] = {}
+        self._plugins: dict[str, Plugin] = {}
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         self._init_lock = asyncio.Lock()
@@ -481,7 +622,7 @@ class AsyncSimpleSession(AsyncSession):
         """
         wf = self._require_wf()
         text = user_input
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.before_user_send is None:
                 continue
             out = await self._call_plugin(p.before_user_send, text)
@@ -492,12 +633,12 @@ class AsyncSimpleSession(AsyncSession):
                     )
                 text = out
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.after_user_send is None:
                 continue
             await self._call_plugin(p.after_user_send, text)
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.before_model_reply is None:
                 continue
             await self._call_plugin(p.before_model_reply)
@@ -513,7 +654,7 @@ class AsyncSimpleSession(AsyncSession):
                 text, img_urls=img_urls, max_iterations=max_iterations,
             )
 
-        for p in self._enabled_plugins():
+        for p in self._enabled_handlers():
             if p.after_model_reply is None:
                 continue
             await self._call_plugin(p.after_model_reply, result)
@@ -703,52 +844,212 @@ class AsyncSimpleSession(AsyncSession):
         """列出已接入的 MCP 连接名"""
         return list(self._mcp_clients.keys())
 
-    # ---------------- 插件管理 ----------------
+    # ---------------- 处理器管理 ----------------
 
-    def add_plugin(self, plugin: SessionPlugin):
-        """注册插件 (同名校覆盖)"""
-        if not plugin.name:
-            raise ValueError("插件 name 不能为空")
-        self._plugins[plugin.name] = plugin
+    def add_handler(self, handler: SessionHandler):
+        """注册处理器 (同名校覆盖)"""
+        if not handler.name:
+            raise ValueError("处理器 name 不能为空")
+        self._handlers[handler.name] = handler
 
-    def remove_plugin(self, name: str) -> bool:
-        """注销插件"""
-        return self._plugins.pop(name, None) is not None
+    def remove_handler(self, name: str) -> bool:
+        """注销处理器"""
+        return self._handlers.pop(name, None) is not None
 
-    def enable_plugin(self, name: str) -> bool:
-        """启用插件"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
+    def enable_handler(self, name: str) -> bool:
+        """启用处理器"""
+        handler = self._handlers.get(name)
+        if handler is None:
             return False
-        plugin.enabled = True
+        handler.enabled = True
         return True
 
-    def disable_plugin(self, name: str) -> bool:
-        """停用插件"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
+    def disable_handler(self, name: str) -> bool:
+        """停用处理器"""
+        handler = self._handlers.get(name)
+        if handler is None:
             return False
-        plugin.enabled = False
+        handler.enabled = False
         return True
 
-    def list_plugins(self) -> list[SessionPlugin]:
-        """列出插件 (按优先级升序)"""
-        return sorted(self._plugins.values(), key=lambda p: p.priority)
+    def list_handlers(self) -> list[SessionHandler]:
+        """列出处理器 (按优先级升序)"""
+        return sorted(self._handlers.values(), key=lambda p: p.priority)
 
-    def set_plugin_priority(self, name: str, priority: int) -> bool:
-        """调整插件优先级 (越小越先执行)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
+    def set_handler_priority(self, name: str, priority: int) -> bool:
+        """调整处理器优先级 (越小越先执行)"""
+        handler = self._handlers.get(name)
+        if handler is None:
             return False
-        plugin.priority = priority
+        handler.priority = priority
         return True
 
-    def _enabled_plugins(self) -> list[SessionPlugin]:
-        """返回启用中的插件 (按优先级升序)"""
+    def _enabled_handlers(self) -> list[SessionHandler]:
+        """返回启用中的处理器 (按优先级升序)"""
         return sorted(
-            (p for p in self._plugins.values() if p.enabled),
+            (p for p in self._handlers.values() if p.enabled),
             key=lambda p: p.priority,
         )
+
+    # ---------------- 插件管理 (目录插件包) ----------------
+
+    async def install_plugin(self, path: str) -> Plugin:
+        """安装目录插件 (异步版支持 mcp.py, 自动接入 MCP 客户端)"""
+        if self._wf is None:
+            await self.initialize()
+        plugin_dir = Path(path)
+        meta = load_plugin_meta(plugin_dir)
+        name = str(meta.get("name") or "").strip()
+        if not name:
+            raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
+        if name in self._plugins:
+            raise ValueError(f"插件 {name} 已安装")
+        wf = self._require_wf()
+
+        tool_states: dict[str, bool] = {}
+        for t in collect_tools(plugin_dir, name, AsyncTool):
+            tname = t.get_tool_name()
+            if tname in wf.tools_manager.tools or tname in tool_states:
+                raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+            wf.tools_manager.register_tool(t)
+            tool_states[tname] = True
+
+        mgr = self._get_skills_manager()
+        skill_states: dict[str, bool] = {}
+        for s in collect_skills(plugin_dir, name):
+            key = s.skill_id or s.name
+            if key in mgr.skills or key in skill_states:
+                raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
+            mgr._register_skill(s)
+            skill_states[key] = True
+
+        handler_states: dict[str, bool] = {}
+        for h in collect_handlers(plugin_dir, name):
+            if h.name in self._handlers or h.name in handler_states:
+                raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+            self._handlers[h.name] = h
+            handler_states[h.name] = True
+
+        mcp_states: dict[str, bool] = {}
+        mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
+        for mcp_name, client in collect_mcp_clients(plugin_dir, name).items():
+            if mcp_name in self._mcp_clients or mcp_name in mcp_states:
+                raise ValueError(f"插件 {name} 的 MCP 连接 {mcp_name} 与已接入连接冲突")
+            try:
+                adapters = await client.register_tools(wf.tools_manager, name_prefix=name)
+            except Exception:
+                close = getattr(client, "close", None)
+                if close is not None:
+                    await close()
+                raise
+            mcp_clients[mcp_name] = (client, list(adapters))
+            mcp_states[mcp_name] = True
+
+        plugin = Plugin(
+            name=name,
+            version=str(meta.get("version") or ""),
+            author=str(meta.get("author") or ""),
+            repo=str(meta.get("repo") or ""),
+            description=str(meta.get("description") or ""),
+            path=str(plugin_dir),
+        )
+        plugin._session = self
+        plugin.tools = tool_states
+        plugin.skills = skill_states
+        plugin.mcp = mcp_states
+        plugin._mcp_clients = mcp_clients
+        plugin.handlers = handler_states
+        self._plugins[name] = plugin
+        logger.info(f"[edictum] 插件 {name} 已安装")
+        return plugin
+
+    async def uninstall_plugin(self, name: str) -> bool:
+        """卸载插件: 回收其全部能力 (含断开 MCP 连接), 不留孤儿"""
+        plugin = self._plugins.pop(name, None)
+        if plugin is None:
+            return False
+        wf = self._require_wf()
+        for tname in plugin.tools:
+            wf.tools_manager.unregister_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname in plugin.skills:
+                await mgr.deactivate_async(sname, wf)
+                mgr.unregister_skill(sname)
+        for mcp_name, (client, adapters) in plugin._mcp_clients.items():
+            for adapter in adapters:
+                wf.tools_manager.unregister_tool(adapter.get_tool_name())
+            close = getattr(client, "close", None)
+            if close is not None:
+                try:
+                    await close()
+                except Exception as e:
+                    logger.warning(f"[edictum] 插件 {name} 的 MCP {mcp_name} 断开失败: {e}")
+        for hname in plugin.handlers:
+            self._handlers.pop(hname, None)
+        logger.info(f"[edictum] 插件 {name} 已卸载")
+        return True
+
+    async def enable_plugin(self, name: str) -> bool:
+        """启用插件 (按独立状态恢复名下能力, 独立停用的保持停用)"""
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return False
+        if plugin.enabled:
+            return True
+        plugin.enabled = True
+        wf = self._require_wf()
+        for tname, st in plugin.tools.items():
+            if st:
+                wf.tools_manager.enable_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname, st in plugin.skills.items():
+                if st:
+                    await mgr.activate_async(sname, wf)
+        for mcp_name, st in plugin.mcp.items():
+            if st:
+                for adapter in plugin._mcp_clients.get(mcp_name, (None, []))[1]:
+                    wf.tools_manager.enable_tool(adapter.get_tool_name())
+        for hname, st in plugin.handlers.items():
+            if st and hname in self._handlers:
+                self._handlers[hname].enabled = True
+        return True
+
+    async def disable_plugin(self, name: str) -> bool:
+        """停用插件 (压制名下全部能力, 不改独立状态)"""
+        plugin = self._plugins.get(name)
+        if plugin is None:
+            return False
+        if not plugin.enabled:
+            return True
+        plugin.enabled = False
+        wf = self._require_wf()
+        for tname in plugin.tools:
+            wf.tools_manager.disable_tool(tname)
+        mgr = self._skills_manager
+        if mgr is not None:
+            for sname in plugin.skills:
+                await mgr.deactivate_async(sname, wf)
+        for mcp_name in plugin.mcp:
+            for adapter in plugin._mcp_clients.get(mcp_name, (None, []))[1]:
+                wf.tools_manager.disable_tool(adapter.get_tool_name())
+        for hname in plugin.handlers:
+            if hname in self._handlers:
+                self._handlers[hname].enabled = False
+        return True
+
+    def list_plugins(self) -> list[Plugin]:
+        """列出已安装插件"""
+        return list(self._plugins.values())
+
+    async def _activate_plugin_skill(self, name: str) -> bool:
+        """插件技能独立启用钩子 (异步版)"""
+        return await self._get_skills_manager().activate_async(name, self._require_wf())
+
+    async def _deactivate_plugin_skill(self, name: str) -> bool:
+        """插件技能独立停用钩子 (异步版)"""
+        return await self._get_skills_manager().deactivate_async(name, self._require_wf())
 
     # ---------------- 模型与流式 ----------------
 
