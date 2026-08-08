@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/Toast';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { controlApi } from '@/api/control';
+import { PageHeader, AlertCard } from '@/components/common';
 import { Save, RotateCcw, Power, Play, RefreshCw, FileText, AlertCircle } from 'lucide-react';
 import * as yaml from 'js-yaml';
 
@@ -53,13 +54,12 @@ export function Settings() {
     }
   }, []);
 
-  // 初始加载
   useEffect(() => {
     loadConfig();
   }, [loadConfig]);
 
   // 保存配置
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     setSaving(true);
     try {
       const result = await controlApi.saveConfig(config);
@@ -69,24 +69,22 @@ export function Settings() {
       } else {
         toast('error', result.error || '保存失败');
       }
-    } catch (e) {
+    } catch {
       toast('error', '控制服务未运行，无法保存配置');
     } finally {
       setSaving(false);
     }
-  };
+  }, [config]);
 
   // 保存原始配置
-  const handleSaveRaw = async () => {
+  const handleSaveRaw = useCallback(async () => {
     setSaving(true);
     try {
-      // 使用安全的 YAML 加载方式
       const parsed = yaml.load(rawConfig, { 
-        schema: yaml.JSON_SCHEMA, // 只允许 JSON 安全的类型
-        json: true // 禁用 YAML 特有标签
+        schema: yaml.JSON_SCHEMA,
+        json: true
       }) as ConfigData;
       
-      // 验证配置结构
       if (typeof parsed !== 'object' || parsed === null) {
         toast('error', '配置必须是对象格式');
         return;
@@ -108,77 +106,68 @@ export function Settings() {
     } finally {
       setSaving(false);
     }
-  };
+  }, [rawConfig]);
 
   // 重载配置
-  const handleReload = async () => {
+  const handleReload = useCallback(async () => {
     const ok = await reloadConfig();
-    if (ok) {
-      toast('success', '配置已重载');
-    } else {
-      toast('error', '重载失败');
-    }
-  };
+    toast(ok ? 'success' : 'error', ok ? '配置已重载' : '重载失败');
+  }, [reloadConfig]);
 
   // 停止后端
-  const handleShutdown = async () => {
+  const handleShutdown = useCallback(async () => {
     if (!confirm('确定要停止后端吗？')) return;
     const ok = await shutdown();
-    if (ok) {
-      toast('success', '后端已停止');
-    } else {
-      toast('error', '停止失败');
-    }
-  };
+    toast(ok ? 'success' : 'error', ok ? '后端已停止' : '停止失败');
+  }, [shutdown]);
 
   // 启动后端
-  const handleStart = async () => {
+  const handleStart = useCallback(async () => {
     try {
       const result = await controlApi.start();
-      if (result.ok) {
-        toast('success', result.message || '后端启动中');
-      } else {
-        toast('error', result.error || '启动失败');
-      }
+      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端启动中') : (result.error || '启动失败'));
     } catch {
       toast('error', '控制服务未运行');
     }
-  };
+  }, []);
 
   // 更新配置字段
-  const updateConfig = (key: string, value: unknown) => {
+  const updateConfig = useCallback((key: string, value: unknown) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
-  };
+  }, []);
 
-  const updateApiConfig = (key: string, value: unknown) => {
+  const updateApiConfig = useCallback((key: string, value: unknown) => {
     setConfig((prev) => ({
       ...prev,
       api: { ...(prev.api || {}), [key]: value },
     }));
-  };
+  }, []);
+
+  // 后端地址
+  const backendUrl = useMemo(() => {
+    if (!health?.running || !config.api) return null;
+    return `http://${config.api.host || '127.0.0.1'}:${config.api.port || 19870}`;
+  }, [health?.running, config.api]);
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-text-primary">系统设置</h1>
-        <p className="text-text-secondary mt-1">配置系统参数和后端控制</p>
-      </div>
+      <PageHeader
+        title="系统设置"
+        description="配置系统参数和后端控制"
+      />
 
       {/* 控制服务状态 */}
       {!controlAvailable && (
-        <Card variant="warning">
-          <div className="flex items-center gap-4">
-            <div className="p-3 rounded-lg bg-glass-warning">
-              <AlertCircle className="h-6 w-6 text-warning" />
-            </div>
-            <div className="flex-1">
-              <h3 className="text-lg font-semibold text-text-primary">控制服务未运行</h3>
-              <p className="text-text-secondary mt-1">
-                请运行 <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.core.backend.control_server</code> 启动控制服务以编辑配置
-              </p>
-            </div>
-          </div>
-        </Card>
+        <AlertCard
+          variant="warning"
+          icon={<AlertCircle className="h-6 w-6 text-warning" />}
+          title="控制服务未运行"
+          description={
+            <p>
+              请运行 <code className="px-2 py-1 rounded bg-glass text-accent">python -m satrap.core.backend.control_server</code> 启动控制服务以编辑配置
+            </p>
+          }
+        />
       )}
 
       {/* 后端控制 */}
@@ -190,10 +179,8 @@ export function Settings() {
             <span className="text-text-primary">
               {health?.running ? '后端运行中' : '后端未运行'}
             </span>
-            {health?.running && config.api && (
-              <span className="text-text-secondary text-sm">
-                {`http://${config.api.host || '127.0.0.1'}:${config.api.port || 19870}`}
-              </span>
+            {backendUrl && (
+              <span className="text-text-secondary text-sm">{backendUrl}</span>
             )}
           </div>
           <div className="flex gap-2">

@@ -2,7 +2,11 @@
 chcp 65001 >nul
 title Satrap UI Dev Server
 
-cd /d "%~dp0satrap-ui"
+:: 项目根目录（脚本在 scripts 子目录中）
+set "SCRIPT_DIR=%~dp0"
+set "PROJECT_ROOT=%SCRIPT_DIR%.."
+
+cd /d "%PROJECT_ROOT%\satrap-ui"
 
 echo Starting Satrap UI development server...
 echo.

@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, ReactNode } from 'react';
+import { createContext, useContext, useState, ReactNode, useCallback } from 'react';
 import { cn } from '@/utils/cn';
 
 interface TabsContextValue {
@@ -8,16 +8,25 @@ interface TabsContextValue {
 
 const TabsContext = createContext<TabsContextValue | null>(null);
 
+export interface TabsProps {
+  defaultValue: string;
+  children: ReactNode;
+  className?: string;
+  onValueChange?: (value: string) => void;
+}
+
 export function Tabs({
   defaultValue,
   children,
   className,
-}: {
-  defaultValue: string;
-  children: ReactNode;
-  className?: string;
-}) {
-  const [activeTab, setActiveTab] = useState(defaultValue);
+  onValueChange,
+}: TabsProps) {
+  const [activeTab, setActiveTabState] = useState(defaultValue);
+
+  const setActiveTab = useCallback((value: string) => {
+    setActiveTabState(value);
+    onValueChange?.(value);
+  }, [onValueChange]);
 
   return (
     <TabsContext.Provider value={{ activeTab, setActiveTab }}>

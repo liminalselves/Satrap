@@ -878,7 +878,7 @@ class AsyncContextManager:
         - keep_in_memory:
             True: 加载数据后在内存操作，需手动调用 save_context() 写入数据库 <br>
             False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
-        - db_path: SQLite 数据库路径, 默认 "./satrap/satrapdata/chat_history.db"
+        - db_path: SQLite 数据库路径, 默认 ".satrap/chat_history.db"
         - max_context: 最大上下文长度, 默认 128k
         - context_threshold: 上下文阈值, 超过阈值时删除旧消息, 默认 0.9 (即 90% 上下文长度)
         - exceed_process: 超过阈值时的处理方式, 默认 "sliding" (滑动窗口)

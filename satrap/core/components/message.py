@@ -13,9 +13,10 @@ import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
 
 from satrap.core.log import logger
+from satrap.core.utils.paths import get_data_dir
 
 
-_SATRAP_DATA_DIR = Path(__file__).resolve().parents[2] / "satrapdata"
+_SATRAP_DATA_DIR = get_data_dir() / "satrapdata"
 _SATRAP_TEMP_DIR = _SATRAP_DATA_DIR / "temp"
 _callback_api_base: str = ""
 

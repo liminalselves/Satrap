@@ -1,12 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/Table';
 import { toast } from '@/components/ui/Toast';
 import { userApi } from '@/api/user';
+import { PageHeader, DataTable, FormModal, ActionButtons, Column, FormField } from '@/components/common';
 import { Plus, Edit2, Trash2, Link, Unlink } from 'lucide-react';
 import type { UserInfo } from '@/api/types';
 
@@ -24,7 +22,7 @@ export function Users() {
   });
   const [bindSessionId, setBindSessionId] = useState('');
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
       const data = await userApi.list(500);
@@ -34,14 +32,13 @@ export function Users() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchUsers();
-  }, []);
+  }, [fetchUsers]);
 
-  const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleCreate = useCallback(async () => {
     try {
       await userApi.create(formData.user_id, formData.platform, formData.nickname);
       toast('success', '用户已创建');
@@ -51,10 +48,9 @@ export function Users() {
     } catch (e) {
       toast('error', '创建失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  };
+  }, [formData, fetchUsers]);
 
-  const handleUpdate = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleUpdate = useCallback(async () => {
     if (!selectedUser) return;
     try {
       await userApi.update(selectedUser.user_id, {
@@ -67,9 +63,9 @@ export function Users() {
     } catch {
       toast('error', '保存失败');
     }
-  };
+  }, [selectedUser, formData, fetchUsers]);
 
-  const handleDelete = async (userId: string) => {
+  const handleDelete = useCallback(async (userId: string) => {
     if (!confirm(`确定要删除用户 "${userId}" 吗？`)) return;
     try {
       await userApi.delete(userId);
@@ -81,10 +77,9 @@ export function Users() {
     } catch {
       toast('error', '删除失败');
     }
-  };
+  }, [selectedUser, fetchUsers]);
 
-  const handleBind = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleBind = useCallback(async () => {
     if (!selectedUser) return;
     try {
       await userApi.bindSession(selectedUser.user_id, bindSessionId);
@@ -92,15 +87,14 @@ export function Users() {
       setShowBindModal(false);
       setBindSessionId('');
       fetchUsers();
-      // 更新选中的用户信息
       const updated = await userApi.get(selectedUser.user_id);
       if (updated.user) setSelectedUser(updated.user);
     } catch {
       toast('error', '绑定失败');
     }
-  };
+  }, [selectedUser, bindSessionId, fetchUsers]);
 
-  const handleUnbind = async (sessionId: string) => {
+  const handleUnbind = useCallback(async (sessionId: string) => {
     if (!selectedUser) return;
     try {
       await userApi.unbindSession(selectedUser.user_id, sessionId);
@@ -111,9 +105,9 @@ export function Users() {
     } catch {
       toast('error', '解绑失败');
     }
-  };
+  }, [selectedUser, fetchUsers]);
 
-  const openEdit = (user: UserInfo) => {
+  const openEdit = useCallback((user: UserInfo) => {
     setSelectedUser(user);
     setFormData({
       user_id: user.user_id,
@@ -121,84 +115,98 @@ export function Users() {
       nickname: user.user_nickname || '',
     });
     setShowEditModal(true);
-  };
+  }, []);
+
+  const handleFieldChange = useCallback((key: string, value: unknown) => {
+    setFormData((prev) => ({ ...prev, [key]: value }));
+  }, []);
+
+  // 表格列定义
+  const columns: Column<UserInfo>[] = useMemo(() => [
+    {
+      key: 'user_id',
+      title: '用户 ID',
+      render: (user) => <span className="font-mono">{user.user_id}</span>,
+    },
+    {
+      key: 'user_platform',
+      title: '平台',
+      render: (user) => user.user_platform || '-',
+    },
+    {
+      key: 'user_nickname',
+      title: '昵称',
+      render: (user) => user.user_nickname || '-',
+    },
+    {
+      key: 'sessions',
+      title: '会话数',
+      render: (user) => <Badge variant="info">{user.user_session?.length || 0}</Badge>,
+    },
+    {
+      key: 'actions',
+      title: '操作',
+      render: (user) => (
+        <ActionButtons
+          actions={[
+            {
+              key: 'edit',
+              icon: <Edit2 className="h-4 w-4" />,
+              onClick: () => openEdit(user),
+              title: '编辑',
+            },
+            {
+              key: 'delete',
+              icon: <Trash2 className="h-4 w-4" />,
+              onClick: () => handleDelete(user.user_id),
+              title: '删除',
+              className: 'text-error',
+            },
+          ]}
+        />
+      ),
+    },
+  ], [openEdit, handleDelete]);
+
+  // 表单字段
+  const createFields: FormField[] = useMemo(() => [
+    { key: 'user_id', label: '用户 ID', placeholder: '如: misskey:xxxxxxxx', required: true },
+    { key: 'platform', label: '平台', placeholder: '如: misskey / onebot' },
+    { key: 'nickname', label: '昵称' },
+  ], []);
+
+  const editFields: FormField[] = useMemo(() => [
+    { key: 'user_id', label: '用户 ID', disabled: true },
+    { key: 'platform', label: '平台' },
+    { key: 'nickname', label: '昵称' },
+  ], []);
+
+  const bindFields: FormField[] = useMemo(() => [
+    { key: 'session_id', label: 'Session ID', placeholder: '如: sr7dws', required: true },
+  ], []);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">用户管理</h1>
-          <p className="text-text-secondary mt-1">管理系统用户和会话绑定</p>
-        </div>
-        <Button variant="primary" onClick={() => setShowCreateModal(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          新建用户
-        </Button>
-      </div>
+      <PageHeader
+        title="用户管理"
+        description="管理系统用户和会话绑定"
+        actions={
+          <Button variant="primary" onClick={() => setShowCreateModal(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            新建用户
+          </Button>
+        }
+      />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* 用户列表 */}
         <div className="lg:col-span-2">
-          <Card>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>用户 ID</TableHead>
-                  <TableHead>平台</TableHead>
-                  <TableHead>昵称</TableHead>
-                  <TableHead>会话数</TableHead>
-                  <TableHead>操作</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {users.map((user) => (
-                  <TableRow
-                    key={user.user_id}
-                    className={selectedUser?.user_id === user.user_id ? 'bg-accent/10' : ''}
-                    onClick={() => setSelectedUser(user)}
-                  >
-                    <TableCell className="font-mono">{user.user_id}</TableCell>
-                    <TableCell>{user.user_platform || '-'}</TableCell>
-                    <TableCell>{user.user_nickname || '-'}</TableCell>
-                    <TableCell>
-                      <Badge variant="info">{user.user_session?.length || 0}</Badge>
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openEdit(user);
-                          }}
-                        >
-                          <Edit2 className="h-4 w-4" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDelete(user.user_id);
-                          }}
-                          className="text-error"
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-
-            {users.length === 0 && !loading && (
-              <div className="text-center py-12 text-text-secondary">
-                暂无用户
-              </div>
-            )}
-          </Card>
+          <DataTable
+            columns={columns}
+            data={users}
+            keyExtractor={(user) => user.user_id}
+            emptyMessage={loading ? '加载中...' : '暂无用户'}
+          />
         </div>
 
         {/* 用户详情 */}
@@ -264,123 +272,40 @@ export function Users() {
       </div>
 
       {/* 创建用户模态框 */}
-      <Modal
+      <FormModal
         open={showCreateModal}
         onClose={() => setShowCreateModal(false)}
         title="新建用户"
-      >
-        <form onSubmit={handleCreate} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              用户 ID *
-            </label>
-            <Input
-              value={formData.user_id}
-              onChange={(e) => setFormData({ ...formData, user_id: e.target.value })}
-              placeholder="如: misskey:xxxxxxxx"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              平台
-            </label>
-            <Input
-              value={formData.platform}
-              onChange={(e) => setFormData({ ...formData, platform: e.target.value })}
-              placeholder="如: misskey / onebot"
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              昵称
-            </label>
-            <Input
-              value={formData.nickname}
-              onChange={(e) => setFormData({ ...formData, nickname: e.target.value })}
-            />
-          </div>
-          <div className="flex gap-3 pt-4">
-            <Button type="submit" variant="primary" className="flex-1">
-              创建
-            </Button>
-            <Button type="button" variant="default" onClick={() => setShowCreateModal(false)}>
-              取消
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        fields={createFields}
+        values={formData}
+        onChange={handleFieldChange}
+        onSubmit={handleCreate}
+        submitText="创建"
+      />
 
       {/* 编辑用户模态框 */}
-      <Modal
+      <FormModal
         open={showEditModal}
         onClose={() => setShowEditModal(false)}
         title="编辑用户"
-      >
-        <form onSubmit={handleUpdate} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              用户 ID
-            </label>
-            <Input value={formData.user_id} disabled />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              平台
-            </label>
-            <Input
-              value={formData.platform}
-              onChange={(e) => setFormData({ ...formData, platform: e.target.value })}
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              昵称
-            </label>
-            <Input
-              value={formData.nickname}
-              onChange={(e) => setFormData({ ...formData, nickname: e.target.value })}
-            />
-          </div>
-          <div className="flex gap-3 pt-4">
-            <Button type="submit" variant="primary" className="flex-1">
-              保存
-            </Button>
-            <Button type="button" variant="default" onClick={() => setShowEditModal(false)}>
-              取消
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        fields={editFields}
+        values={formData}
+        onChange={handleFieldChange}
+        onSubmit={handleUpdate}
+        submitText="保存"
+      />
 
       {/* 绑定会话模态框 */}
-      <Modal
+      <FormModal
         open={showBindModal}
         onClose={() => setShowBindModal(false)}
         title="绑定会话"
-      >
-        <form onSubmit={handleBind} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              Session ID
-            </label>
-            <Input
-              value={bindSessionId}
-              onChange={(e) => setBindSessionId(e.target.value)}
-              placeholder="如: sr7dws"
-              required
-            />
-          </div>
-          <div className="flex gap-3 pt-4">
-            <Button type="submit" variant="primary" className="flex-1">
-              绑定
-            </Button>
-            <Button type="button" variant="default" onClick={() => setShowBindModal(false)}>
-              取消
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        fields={bindFields}
+        values={{ session_id: bindSessionId }}
+        onChange={(_, value) => setBindSessionId(value as string)}
+        onSubmit={handleBind}
+        submitText="绑定"
+      />
     </div>
   );
 }

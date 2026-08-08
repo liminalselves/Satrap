@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, useMemo, memo } from 'react';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -6,6 +6,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Select } from '@/components/ui/Select';
 import { LOG_LEVELS } from '@/utils/constants';
 import { useWebSocket } from '@/hooks/useWebSocket';
+import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
 
 interface LogLine {
@@ -14,6 +15,47 @@ interface LogLine {
   level: string;
   timestamp: Date;
 }
+
+// 日志行组件 - 使用 memo 优化渲染
+const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
+  const levelColor = useMemo(() => {
+    switch (log.level) {
+      case 'ERROR':
+      case 'CRITICAL':
+        return 'text-error';
+      case 'WARNING':
+        return 'text-warning';
+      case 'INFO':
+        return 'text-success';
+      case 'DEBUG':
+        return 'text-purple';
+      default:
+        return 'text-text-primary';
+    }
+  }, [log.level]);
+
+  const levelDot = useMemo(() => {
+    switch (log.level) {
+      case 'ERROR':
+      case 'CRITICAL':
+        return 'status-dot-error';
+      case 'WARNING':
+        return 'status-dot-warning';
+      case 'INFO':
+        return 'status-dot-success';
+      default:
+        return '';
+    }
+  }, [log.level]);
+
+  return (
+    <div className={`py-1 hover:bg-glass-hover px-2 rounded flex items-start gap-2 ${levelColor}`}>
+      <span className={`status-dot mt-1.5 ${levelDot}`} />
+      <span className="text-text-tertiary mr-1">[{log.level}]</span>
+      <span className="flex-1">{log.content}</span>
+    </div>
+  );
+});
 
 export function Logs() {
   const [logs, setLogs] = useState<LogLine[]>([]);
@@ -25,15 +67,12 @@ export function Logs() {
   const logIdRef = useRef(0);
   const pausedRef = useRef(paused);
   
-  // 同步 paused 到 ref，供 WebSocket 回调使用
   useEffect(() => {
     pausedRef.current = paused;
   }, [paused]);
 
-  // WebSocket 连接
   const { connect, disconnect, isConnected } = useWebSocket('/ws/logs');
 
-  // 处理接收到的日志
   const handleLog = useCallback((data: { content: string; level: string }) => {
     if (pausedRef.current) return;
     
@@ -43,22 +82,17 @@ export function Logs() {
       level: data.level,
       timestamp: new Date(),
     };
-    setLogs((prev) => [...prev.slice(-499), newLog]); // 保留最近500条
+    setLogs((prev) => [...prev.slice(-499), newLog]);
   }, []);
 
-  // 连接 WebSocket
   useEffect(() => {
     connect({
       onLog: handleLog,
       onError: (msg) => console.error('WebSocket error:', msg),
     });
-
-    return () => {
-      disconnect();
-    };
+    return () => disconnect();
   }, [connect, disconnect, handleLog]);
 
-  // 自动滚动
   useEffect(() => {
     if (autoScroll && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
@@ -72,11 +106,20 @@ export function Logs() {
     setAutoScroll(isAtBottom);
   }, []);
 
-  const clearLogs = () => {
+  const clearLogs = useCallback(() => {
     setLogs([]);
-  };
+  }, []);
 
-  const exportLogs = () => {
+  const filteredLogs = useMemo(() => 
+    logs.filter((log) => {
+      if (levelFilter.length > 0 && !levelFilter.includes(log.level)) return false;
+      if (searchQuery && !log.content.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+      return true;
+    }),
+    [logs, levelFilter, searchQuery]
+  );
+
+  const exportLogs = useCallback(() => {
     const content = filteredLogs.map((l) => l.content).join('\n');
     const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -85,61 +128,27 @@ export function Logs() {
     a.download = `satrap-logs-${new Date().toISOString()}.txt`;
     a.click();
     URL.revokeObjectURL(url);
-  };
+  }, [filteredLogs]);
 
-  const getLevelColor = (level: string) => {
-    switch (level) {
-      case 'ERROR':
-      case 'CRITICAL':
-        return 'text-error';
-      case 'WARNING':
-        return 'text-warning';
-      case 'INFO':
-        return 'text-success';
-      case 'DEBUG':
-        return 'text-purple';
-      default:
-        return 'text-text-primary';
-    }
-  };
-
-  const getLevelDot = (level: string) => {
-    switch (level) {
-      case 'ERROR':
-      case 'CRITICAL':
-        return 'status-dot-error';
-      case 'WARNING':
-        return 'status-dot-warning';
-      case 'INFO':
-        return 'status-dot-success';
-      default:
-        return '';
-    }
-  };
-
-  const filteredLogs = logs.filter((log) => {
-    if (levelFilter.length > 0 && !levelFilter.includes(log.level)) return false;
-    if (searchQuery && !log.content.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-    return true;
-  });
+  const headerActions = useMemo(() => (
+    <>
+      <Badge variant={isConnected ? 'success' : 'error'} className="flex items-center gap-1">
+        {isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
+        {isConnected ? '已连接' : '未连接'}
+      </Badge>
+      <Badge variant={paused ? 'warning' : 'success'}>
+        {paused ? '已暂停' : '实时更新中'}
+      </Badge>
+    </>
+  ), [isConnected, paused]);
 
   return (
     <div className="space-y-4 h-full flex flex-col">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">日志监控</h1>
-          <p className="text-text-secondary mt-1">实时查看系统运行日志</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={isConnected ? 'success' : 'error'} className="flex items-center gap-1">
-            {isConnected ? <Wifi className="h-3 w-3" /> : <WifiOff className="h-3 w-3" />}
-            {isConnected ? '已连接' : '未连接'}
-          </Badge>
-          <Badge variant={paused ? 'warning' : 'success'}>
-            {paused ? '已暂停' : '实时更新中'}
-          </Badge>
-        </div>
-      </div>
+      <PageHeader
+        title="日志监控"
+        description="实时查看系统运行日志"
+        actions={headerActions}
+      />
 
       {/* 工具栏 */}
       <Card className="p-4">
@@ -203,14 +212,7 @@ export function Logs() {
             </div>
           ) : (
             filteredLogs.map((log) => (
-              <div
-                key={log.id}
-                className={`py-1 hover:bg-glass-hover px-2 rounded flex items-start gap-2 ${getLevelColor(log.level)}`}
-              >
-                <span className={`status-dot mt-1.5 ${getLevelDot(log.level)}`} />
-                <span className="text-text-tertiary mr-1">[{log.level}]</span>
-                <span className="flex-1">{log.content}</span>
-              </div>
+              <LogLineItem key={log.id} log={log} />
             ))
           )}
         </div>

@@ -1,14 +1,23 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
-import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Modal } from '@/components/ui/Modal';
-import { Input } from '@/components/ui/Input';
-import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '@/components/ui/Table';
 import { toast } from '@/components/ui/Toast';
 import { sessionApi } from '@/api/session';
+import { PageHeader, DataTable, FormModal, ActionButtons, Column, FormField } from '@/components/common';
 import { Plus, Power, PowerOff, Trash2, Settings } from 'lucide-react';
+
+interface SessionClassConfig {
+  class_path: string;
+  enabled: boolean;
+  model_key?: string;
+  params?: Record<string, unknown>;
+}
+
+interface SessionClassItem {
+  name: string;
+  config: SessionClassConfig;
+}
 
 export function Sessions() {
   const { sessionClasses, fetchSessionClasses } = useConfigStore();
@@ -26,7 +35,14 @@ export function Sessions() {
     fetchSessionClasses();
   }, [fetchSessionClasses]);
 
-  const handleEnable = async (name: string) => {
+  // 转换为表格数据
+  const tableData: SessionClassItem[] = useMemo(() => 
+    Object.entries(sessionClasses).map(([name, config]) => ({ name, config })),
+    [sessionClasses]
+  );
+
+  // 操作处理
+  const handleEnable = useCallback(async (name: string) => {
     try {
       await sessionApi.enable(name);
       toast('success', `已启用 ${name}`);
@@ -34,9 +50,9 @@ export function Sessions() {
     } catch {
       toast('error', '启用失败');
     }
-  };
+  }, [fetchSessionClasses]);
 
-  const handleDisable = async (name: string) => {
+  const handleDisable = useCallback(async (name: string) => {
     try {
       await sessionApi.disable(name);
       toast('success', `已禁用 ${name}`);
@@ -44,9 +60,9 @@ export function Sessions() {
     } catch {
       toast('error', '禁用失败');
     }
-  };
+  }, [fetchSessionClasses]);
 
-  const handleUnregister = async (name: string) => {
+  const handleUnregister = useCallback(async (name: string) => {
     if (!confirm(`确定要注销会话类 "${name}" 吗？`)) return;
     try {
       await sessionApi.unregister(name);
@@ -55,16 +71,16 @@ export function Sessions() {
     } catch {
       toast('error', '注销失败');
     }
-  };
+  }, [fetchSessionClasses]);
 
-  const handleEditParams = (name: string) => {
+  const handleEditParams = useCallback((name: string) => {
     const config = sessionClasses[name];
     setSelectedClass(name);
     setParamsJson(JSON.stringify(config?.params || {}, null, 2));
     setShowParamsModal(true);
-  };
+  }, [sessionClasses]);
 
-  const handleSaveParams = async () => {
+  const handleSaveParams = useCallback(async () => {
     if (!selectedClass) return;
     try {
       const params = JSON.parse(paramsJson);
@@ -75,10 +91,9 @@ export function Sessions() {
     } catch (e) {
       toast('error', '保存失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  };
+  }, [selectedClass, paramsJson, fetchSessionClasses]);
 
-  const handleRegister = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleRegister = useCallback(async () => {
     try {
       await sessionApi.register(registerForm);
       toast('success', '注册成功');
@@ -88,173 +103,130 @@ export function Sessions() {
     } catch (e) {
       toast('error', '注册失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  };
+  }, [registerForm, fetchSessionClasses]);
+
+  // 表格列定义
+  const columns: Column<SessionClassItem>[] = useMemo(() => [
+    {
+      key: 'name',
+      title: '名称',
+      render: (item) => <span className="font-medium">{item.name}</span>,
+    },
+    {
+      key: 'class_path',
+      title: 'Class Path',
+      render: (item) => (
+        <span className="font-mono text-sm text-text-secondary">{item.config.class_path}</span>
+      ),
+    },
+    {
+      key: 'enabled',
+      title: '状态',
+      render: (item) => (
+        <Badge variant={item.config.enabled ? 'success' : 'default'}>
+          {item.config.enabled ? '启用' : '禁用'}
+        </Badge>
+      ),
+    },
+    {
+      key: 'model_key',
+      title: '模型键',
+      render: (item) => item.config.model_key || '-',
+    },
+    {
+      key: 'actions',
+      title: '操作',
+      render: (item) => (
+        <ActionButtons
+          actions={[
+            item.config.enabled
+              ? {
+                  key: 'disable',
+                  icon: <PowerOff className="h-4 w-4" />,
+                  onClick: () => handleDisable(item.name),
+                  title: '禁用',
+                }
+              : {
+                  key: 'enable',
+                  icon: <Power className="h-4 w-4" />,
+                  onClick: () => handleEnable(item.name),
+                  title: '启用',
+                },
+            {
+              key: 'edit',
+              icon: <Settings className="h-4 w-4" />,
+              onClick: () => handleEditParams(item.name),
+              title: '编辑参数',
+            },
+            {
+              key: 'delete',
+              icon: <Trash2 className="h-4 w-4" />,
+              onClick: () => handleUnregister(item.name),
+              title: '注销',
+              className: 'text-error hover:text-error',
+            },
+          ]}
+        />
+      ),
+    },
+  ], [handleEnable, handleDisable, handleEditParams, handleUnregister]);
+
+  // 注册表单字段
+  const registerFields: FormField[] = useMemo(() => [
+    { key: 'name', label: '名称', required: true },
+    { key: 'class_path', label: 'Class Path', placeholder: '如: misskey_session.MisskeySession', required: true },
+    { key: 'description', label: '描述（可选）' },
+  ], []);
+
+  // 参数表单字段
+  const paramsFields: FormField[] = useMemo(() => [
+    { key: 'params', label: '参数 (JSON 格式)', type: 'textarea', rows: 16 },
+  ], []);
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">会话管理</h1>
-          <p className="text-text-secondary mt-1">管理会话类注册和配置</p>
-        </div>
-        <Button variant="primary" onClick={() => setShowRegisterModal(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          注册会话类
-        </Button>
-      </div>
+      <PageHeader
+        title="会话管理"
+        description="管理会话类注册和配置"
+        actions={
+          <Button variant="primary" onClick={() => setShowRegisterModal(true)}>
+            <Plus className="h-4 w-4 mr-2" />
+            注册会话类
+          </Button>
+        }
+      />
 
-      <Card>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>名称</TableHead>
-              <TableHead>Class Path</TableHead>
-              <TableHead>状态</TableHead>
-              <TableHead>模型键</TableHead>
-              <TableHead>操作</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {Object.entries(sessionClasses).map(([name, config]) => (
-              <TableRow key={name}>
-                <TableCell className="font-medium">{name}</TableCell>
-                <TableCell className="font-mono text-sm text-text-secondary">
-                  {config.class_path}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={config.enabled ? 'success' : 'default'}>
-                    {config.enabled ? '启用' : '禁用'}
-                  </Badge>
-                </TableCell>
-                <TableCell>{config.model_key || '-'}</TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    {config.enabled ? (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleDisable(name)}
-                        title="禁用"
-                      >
-                        <PowerOff className="h-4 w-4" />
-                      </Button>
-                    ) : (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEnable(name)}
-                        title="启用"
-                      >
-                        <Power className="h-4 w-4" />
-                      </Button>
-                    )}
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleEditParams(name)}
-                      title="编辑参数"
-                    >
-                      <Settings className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleUnregister(name)}
-                      title="注销"
-                      className="text-error hover:text-error"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-
-        {Object.keys(sessionClasses).length === 0 && (
-          <div className="text-center py-12 text-text-secondary">
-            暂无已注册的会话类
-          </div>
-        )}
-      </Card>
+      <DataTable
+        columns={columns}
+        data={tableData}
+        keyExtractor={(item) => item.name}
+        emptyMessage="暂无已注册的会话类"
+      />
 
       {/* 注册模态框 */}
-      <Modal
+      <FormModal
         open={showRegisterModal}
         onClose={() => setShowRegisterModal(false)}
         title="注册新会话类"
-      >
-        <form onSubmit={handleRegister} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              名称
-            </label>
-            <Input
-              value={registerForm.name}
-              onChange={(e) => setRegisterForm({ ...registerForm, name: e.target.value })}
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              Class Path
-            </label>
-            <Input
-              value={registerForm.class_path}
-              onChange={(e) => setRegisterForm({ ...registerForm, class_path: e.target.value })}
-              placeholder="如: misskey_session.MisskeySession"
-              required
-            />
-          </div>
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              描述（可选）
-            </label>
-            <Input
-              value={registerForm.description}
-              onChange={(e) => setRegisterForm({ ...registerForm, description: e.target.value })}
-            />
-          </div>
-          <div className="flex gap-3 pt-4">
-            <Button type="submit" variant="primary" className="flex-1">
-              注册
-            </Button>
-            <Button type="button" variant="default" onClick={() => setShowRegisterModal(false)}>
-              取消
-            </Button>
-          </div>
-        </form>
-      </Modal>
+        fields={registerFields}
+        values={registerForm}
+        onChange={(key, value) => setRegisterForm({ ...registerForm, [key]: value })}
+        onSubmit={handleRegister}
+        submitText="注册"
+      />
 
       {/* 参数编辑模态框 */}
-      <Modal
+      <FormModal
         open={showParamsModal}
         onClose={() => setShowParamsModal(false)}
         title={`编辑参数: ${selectedClass}`}
+        fields={paramsFields}
+        values={{ params: paramsJson }}
+        onChange={(_, value) => setParamsJson(value as string)}
+        onSubmit={handleSaveParams}
+        submitText="保存"
         size="lg"
-      >
-        <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
-              参数 (JSON 格式)
-            </label>
-            <textarea
-              value={paramsJson}
-              onChange={(e) => setParamsJson(e.target.value)}
-              className="glass-input w-full h-64 font-mono text-sm resize-none"
-            />
-          </div>
-          <div className="flex gap-3">
-            <Button variant="primary" onClick={handleSaveParams} className="flex-1">
-              保存
-            </Button>
-            <Button variant="default" onClick={() => setShowParamsModal(false)}>
-              取消
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      />
     </div>
   );
 }
