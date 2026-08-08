@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable, Optional
@@ -28,6 +29,8 @@ from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, Tool
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import (
     Plugin,
+    collect_cleanup,
+    collect_commands,
     collect_handlers,
     collect_mcp_clients,
     collect_skills,
@@ -40,6 +43,32 @@ BeforeUserSend = Callable[[str], str | None] | Callable[[str], Awaitable[str | N
 AfterUserSend = Callable[[str], None] | Callable[[str], Awaitable[None]]
 BeforeModelReply = Callable[[], None] | Callable[[], Awaitable[None]]
 AfterModelReply = Callable[[str], None] | Callable[[str], Awaitable[None]]
+
+
+def _command_intro(handler: Callable[..., Any]) -> str:
+    """从命令函数 docstring 提取简介 (首行)"""
+    doc = inspect.getdoc(handler)
+    if doc:
+        first = doc.strip().splitlines()[0].strip()
+        if first:
+            return first
+    return "None"
+
+
+def _add_plugin_sys_path(plugin_dir: Path) -> None:
+    """将插件目录加入 sys.path, 使插件内私有模块可互相 import (如 core.permission)"""
+    plugin_path = str(plugin_dir.resolve())
+    if plugin_path not in sys.path:
+        sys.path.insert(0, plugin_path)
+
+
+def _remove_plugin_sys_path(plugin_dir: Path) -> None:
+    """卸载时尝试从 sys.path 移除插件目录 (多个插件共用时静默忽略)"""
+    plugin_path = str(plugin_dir.resolve())
+    try:
+        sys.path.remove(plugin_path)
+    except ValueError:
+        pass
 
 
 @dataclass
@@ -120,6 +149,8 @@ class SimpleSession(Session):
         self._handlers: dict[str, SessionHandler] = {}
         self._plugins: dict[str, Plugin] = {}
         self._skills_manager: SkillsManager | None = None
+        self.user_input_provider: Callable[[str], str] | None = None
+        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
         self.stream = stream
         if tools:
             for tool in tools:
@@ -353,66 +384,93 @@ class SimpleSession(Session):
     def install_plugin(self, path: str) -> Plugin:
         """安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
 
-        同步版跳过 mcp.py (工具为 AsyncTool, 仅异步版支持), 其余能力照常注册
+        同步版跳过 mcp.py (工具为 AsyncTool, 仅异步版支持), 其余能力照常注册;
+        任一步失败时回滚已注册能力与 sys.path, 不留孤儿
         """
         plugin_dir = Path(path)
-        meta = load_plugin_meta(plugin_dir)
-        name = str(meta.get("name") or "").strip()
-        if not name:
-            raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
-        if name in self._plugins:
-            raise ValueError(f"插件 {name} 已安装")
-
+        _add_plugin_sys_path(plugin_dir)
         tool_states: dict[str, bool] = {}
-        for t in collect_tools(plugin_dir, name, Tool):
-            tname = t.get_tool_name()
-            if tname in self._wf.tools_manager.tools or tname in tool_states:
-                raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
-            self._wf.tools_manager.register_tool(t)
-            tool_states[tname] = True
-
-        mgr = self._get_skills_manager()
         skill_states: dict[str, bool] = {}
-        for s in collect_skills(plugin_dir, name):
-            key = s.skill_id or s.name
-            if key in mgr.skills or key in skill_states:
-                raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
-            mgr._register_skill(s)
-            skill_states[key] = True
-
         handler_states: dict[str, bool] = {}
-        for h in collect_handlers(plugin_dir, name):
-            if h.name in self._handlers or h.name in handler_states:
-                raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
-            self._handlers[h.name] = h
-            handler_states[h.name] = True
+        command_states: dict[str, bool] = {}
+        try:
+            meta = load_plugin_meta(plugin_dir)
+            name = str(meta.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
+            if name in self._plugins:
+                raise ValueError(f"插件 {name} 已安装")
 
-        if (plugin_dir / "mcp.py").is_file():
-            logger.warning(
-                f"[edictum] 插件 {name} 含 mcp.py, 仅异步版 (AsyncSimpleSession) 支持, 已跳过"
+            for t in collect_tools(plugin_dir, name, Tool, self):
+                tname = t.get_tool_name()
+                if tname in self._wf.tools_manager.tools or tname in tool_states:
+                    raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+                self._wf.tools_manager.register_tool(t)
+                tool_states[tname] = True
+
+            mgr = self._get_skills_manager()
+            for s in collect_skills(plugin_dir, name):
+                key = s.skill_id or s.name
+                if key in mgr.skills or key in skill_states:
+                    raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
+                mgr._register_skill(s)
+                skill_states[key] = True
+
+            for h in collect_handlers(plugin_dir, name, self):
+                if h.name in self._handlers or h.name in handler_states:
+                    raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+                self._handlers[h.name] = h
+                handler_states[h.name] = True
+
+            sync_commands, _async_commands = collect_commands(plugin_dir, name, self)
+            for cname, chandler in sync_commands.items():
+                if cname in self.cmd_handler.commands or cname in command_states:
+                    raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
+                self.cmd_handler.register_command(cname, chandler, intro=_command_intro(chandler))
+                command_states[cname] = True
+
+            if (plugin_dir / "mcp.py").is_file():
+                logger.warning(
+                    f"[edictum] 插件 {name} 含 mcp.py, 仅异步版 (AsyncSimpleSession) 支持, 已跳过"
+                )
+
+            plugin = Plugin(
+                name=name,
+                version=str(meta.get("version") or ""),
+                author=str(meta.get("author") or ""),
+                repo=str(meta.get("repo") or ""),
+                description=str(meta.get("description") or ""),
+                path=str(plugin_dir),
             )
-
-        plugin = Plugin(
-            name=name,
-            version=str(meta.get("version") or ""),
-            author=str(meta.get("author") or ""),
-            repo=str(meta.get("repo") or ""),
-            description=str(meta.get("description") or ""),
-            path=str(plugin_dir),
-        )
-        plugin._session = self
-        plugin.tools = tool_states
-        plugin.skills = skill_states
-        plugin.handlers = handler_states
-        self._plugins[name] = plugin
-        logger.info(f"[edictum] 插件 {name} 已安装")
-        return plugin
+            plugin._session = self
+            plugin._cleanup = collect_cleanup(plugin_dir, name, self)
+            plugin.tools = tool_states
+            plugin.skills = skill_states
+            plugin.handlers = handler_states
+            plugin.commands = command_states
+            self._plugins[name] = plugin
+            logger.info(f"[edictum] 插件 {name} 已安装")
+            return plugin
+        except Exception:
+            _remove_plugin_sys_path(plugin_dir)
+            for tname in tool_states:
+                self._wf.tools_manager.unregister_tool(tname)
+            mgr = self._skills_manager
+            if mgr is not None:
+                for key in skill_states:
+                    mgr.unregister_skill(key)
+            for hname in handler_states:
+                self._handlers.pop(hname, None)
+            for cname in command_states:
+                self.cmd_handler.unregister_command(cname)
+            raise
 
     def uninstall_plugin(self, name: str) -> bool:
-        """卸载插件: 回收其全部能力, 不留孤儿"""
+        """卸载插件: 回收其全部能力 (含清理回调), 不留孤儿"""
         plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
+        _remove_plugin_sys_path(Path(plugin.path))
         for tname in plugin.tools:
             self._wf.tools_manager.unregister_tool(tname)
         mgr = self._skills_manager
@@ -422,6 +480,14 @@ class SimpleSession(Session):
                 mgr.unregister_skill(sname)
         for hname in plugin.handlers:
             self._handlers.pop(hname, None)
+        for cname in plugin.commands:
+            self.cmd_handler.unregister_command(cname)
+        cleanup = plugin._cleanup
+        if cleanup is not None:
+            try:
+                cleanup(self)
+            except Exception as e:
+                logger.warning(f"[edictum] 插件 {name} 清理回调失败: {e}")
         logger.info(f"[edictum] 插件 {name} 已卸载")
         return True
 
@@ -444,6 +510,9 @@ class SimpleSession(Session):
         for hname, st in plugin.handlers.items():
             if st and hname in self._handlers:
                 self._handlers[hname].enabled = True
+        for cname, st in plugin.commands.items():
+            if st:
+                self.cmd_handler.enable_command(cname)
         return True
 
     def disable_plugin(self, name: str) -> bool:
@@ -463,6 +532,8 @@ class SimpleSession(Session):
         for hname in plugin.handlers:
             if hname in self._handlers:
                 self._handlers[hname].enabled = False
+        for cname in plugin.commands:
+            self.cmd_handler.disable_command(cname)
         return True
 
     def list_plugins(self) -> list[Plugin]:
@@ -537,6 +608,8 @@ class AsyncSimpleSession(AsyncSession):
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         self._init_lock = asyncio.Lock()
+        self.user_input_provider: Callable[[str], str | Awaitable[str]] | None = None
+        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
         self.stream = stream
 
     async def _async_init(self):
@@ -894,80 +967,121 @@ class AsyncSimpleSession(AsyncSession):
     # ---------------- 插件管理 (目录插件包) ----------------
 
     async def install_plugin(self, path: str) -> Plugin:
-        """安装目录插件 (异步版支持 mcp.py, 自动接入 MCP 客户端)"""
+        """安装目录插件 (异步版支持 mcp.py, 自动接入 MCP 客户端)
+
+        任一步失败时回滚已注册能力/MCP 连接与 sys.path, 不留孤儿
+        """
         if self._wf is None:
             await self.initialize()
         plugin_dir = Path(path)
-        meta = load_plugin_meta(plugin_dir)
-        name = str(meta.get("name") or "").strip()
-        if not name:
-            raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
-        if name in self._plugins:
-            raise ValueError(f"插件 {name} 已安装")
-        wf = self._require_wf()
-
+        _add_plugin_sys_path(plugin_dir)
         tool_states: dict[str, bool] = {}
-        for t in collect_tools(plugin_dir, name, AsyncTool):
-            tname = t.get_tool_name()
-            if tname in wf.tools_manager.tools or tname in tool_states:
-                raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
-            wf.tools_manager.register_tool(t)
-            tool_states[tname] = True
-
-        mgr = self._get_skills_manager()
         skill_states: dict[str, bool] = {}
-        for s in collect_skills(plugin_dir, name):
-            key = s.skill_id or s.name
-            if key in mgr.skills or key in skill_states:
-                raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
-            mgr._register_skill(s)
-            skill_states[key] = True
-
         handler_states: dict[str, bool] = {}
-        for h in collect_handlers(plugin_dir, name):
-            if h.name in self._handlers or h.name in handler_states:
-                raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
-            self._handlers[h.name] = h
-            handler_states[h.name] = True
-
+        command_states: dict[str, bool] = {}
         mcp_states: dict[str, bool] = {}
         mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
-        for mcp_name, client in collect_mcp_clients(plugin_dir, name).items():
-            if mcp_name in self._mcp_clients or mcp_name in mcp_states:
-                raise ValueError(f"插件 {name} 的 MCP 连接 {mcp_name} 与已接入连接冲突")
-            try:
-                adapters = await client.register_tools(wf.tools_manager, name_prefix=name)
-            except Exception:
+        try:
+            meta = load_plugin_meta(plugin_dir)
+            name = str(meta.get("name") or "").strip()
+            if not name:
+                raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
+            if name in self._plugins:
+                raise ValueError(f"插件 {name} 已安装")
+            wf = self._require_wf()
+
+            for t in collect_tools(plugin_dir, name, AsyncTool, self):
+                tname = t.get_tool_name()
+                if tname in wf.tools_manager.tools or tname in tool_states:
+                    raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+                wf.tools_manager.register_tool(t)
+                tool_states[tname] = True
+
+            mgr = self._get_skills_manager()
+            for s in collect_skills(plugin_dir, name):
+                key = s.skill_id or s.name
+                if key in mgr.skills or key in skill_states:
+                    raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
+                mgr._register_skill(s)
+                skill_states[key] = True
+
+            for h in collect_handlers(plugin_dir, name, self):
+                if h.name in self._handlers or h.name in handler_states:
+                    raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+                self._handlers[h.name] = h
+                handler_states[h.name] = True
+
+            _sync_commands, async_commands = collect_commands(plugin_dir, name, self)
+            for cname, chandler in async_commands.items():
+                if cname in self.command_handler.commands or cname in command_states:
+                    raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
+                self.command_handler.register_command(cname, chandler, intro=_command_intro(chandler))
+                command_states[cname] = True
+
+            for mcp_name, client in collect_mcp_clients(plugin_dir, name).items():
+                if mcp_name in self._mcp_clients or mcp_name in mcp_states:
+                    raise ValueError(f"插件 {name} 的 MCP 连接 {mcp_name} 与已接入连接冲突")
+                try:
+                    adapters = await client.register_tools(wf.tools_manager, name_prefix=name)
+                except Exception:
+                    close = getattr(client, "close", None)
+                    if close is not None:
+                        await close()
+                    raise
+                mcp_clients[mcp_name] = (client, list(adapters))
+                mcp_states[mcp_name] = True
+
+            plugin = Plugin(
+                name=name,
+                version=str(meta.get("version") or ""),
+                author=str(meta.get("author") or ""),
+                repo=str(meta.get("repo") or ""),
+                description=str(meta.get("description") or ""),
+                path=str(plugin_dir),
+            )
+            plugin._session = self
+            plugin._cleanup = collect_cleanup(plugin_dir, name, self)
+            plugin.tools = tool_states
+            plugin.skills = skill_states
+            plugin.mcp = mcp_states
+            plugin._mcp_clients = mcp_clients
+            plugin.handlers = handler_states
+            plugin.commands = command_states
+            self._plugins[name] = plugin
+            logger.info(f"[edictum] 插件 {name} 已安装")
+            return plugin
+        except Exception:
+            _remove_plugin_sys_path(plugin_dir)
+            wf = self._wf
+            if wf is not None:
+                for tname in tool_states:
+                    wf.tools_manager.unregister_tool(tname)
+            mgr = self._skills_manager
+            if mgr is not None:
+                for key in skill_states:
+                    mgr.unregister_skill(key)
+            for hname in handler_states:
+                self._handlers.pop(hname, None)
+            for cname in command_states:
+                self.command_handler.unregister_command(cname)
+            for mcp_name, (client, adapters) in mcp_clients.items():
+                if wf is not None:
+                    for adapter in adapters:
+                        wf.tools_manager.unregister_tool(adapter.get_tool_name())
                 close = getattr(client, "close", None)
                 if close is not None:
-                    await close()
-                raise
-            mcp_clients[mcp_name] = (client, list(adapters))
-            mcp_states[mcp_name] = True
-
-        plugin = Plugin(
-            name=name,
-            version=str(meta.get("version") or ""),
-            author=str(meta.get("author") or ""),
-            repo=str(meta.get("repo") or ""),
-            description=str(meta.get("description") or ""),
-            path=str(plugin_dir),
-        )
-        plugin._session = self
-        plugin.tools = tool_states
-        plugin.skills = skill_states
-        plugin.mcp = mcp_states
-        plugin._mcp_clients = mcp_clients
-        plugin.handlers = handler_states
-        self._plugins[name] = plugin
-        logger.info(f"[edictum] 插件 {name} 已安装")
-        return plugin
+                    try:
+                        await close()
+                    except Exception:
+                        pass
+            raise
 
     async def uninstall_plugin(self, name: str) -> bool:
         """卸载插件: 回收其全部能力 (含断开 MCP 连接), 不留孤儿"""
         plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
+        _remove_plugin_sys_path(Path(plugin.path))
         wf = self._require_wf()
         for tname in plugin.tools:
             wf.tools_manager.unregister_tool(tname)
@@ -987,6 +1101,14 @@ class AsyncSimpleSession(AsyncSession):
                     logger.warning(f"[edictum] 插件 {name} 的 MCP {mcp_name} 断开失败: {e}")
         for hname in plugin.handlers:
             self._handlers.pop(hname, None)
+        for cname in plugin.commands:
+            self.command_handler.unregister_command(cname)
+        cleanup = plugin._cleanup
+        if cleanup is not None:
+            try:
+                cleanup(self)
+            except Exception as e:
+                logger.warning(f"[edictum] 插件 {name} 清理回调失败: {e}")
         logger.info(f"[edictum] 插件 {name} 已卸载")
         return True
 
@@ -1014,6 +1136,9 @@ class AsyncSimpleSession(AsyncSession):
         for hname, st in plugin.handlers.items():
             if st and hname in self._handlers:
                 self._handlers[hname].enabled = True
+        for cname, st in plugin.commands.items():
+            if st:
+                self.command_handler.enable_command(cname)
         return True
 
     async def disable_plugin(self, name: str) -> bool:
@@ -1037,6 +1162,8 @@ class AsyncSimpleSession(AsyncSession):
         for hname in plugin.handlers:
             if hname in self._handlers:
                 self._handlers[hname].enabled = False
+        for cname in plugin.commands:
+            self.command_handler.disable_command(cname)
         return True
 
     def list_plugins(self) -> list[Plugin]:

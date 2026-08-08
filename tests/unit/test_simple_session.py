@@ -1019,8 +1019,8 @@ def test_img_urls_passed_in_tool_loop(tmp_path: Path):
 # ================= 目录插件测试 =================
 
 
-def _write_plugin_dir(tmp_path: Path, name: str = "demo", *, with_mcp: bool = False) -> Path:
-    """构造最小插件目录: meta.yaml + tools.py + skills/ + handlers.py (可带 mcp.py)"""
+def _write_plugin_dir(tmp_path: Path, name: str = "demo", *, with_mcp: bool = False, with_commands: bool = False) -> Path:
+    """构造最小插件目录: meta.yaml + tools.py + skills/ + handlers.py (可带 mcp.py / commands.py)"""
     plugin_dir = tmp_path / "plugins" / name
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "meta.yaml").write_text(
@@ -1054,6 +1054,48 @@ def _write_plugin_dir(tmp_path: Path, name: str = "demo", *, with_mcp: bool = Fa
         (plugin_dir / "mcp.py").write_text(
             "clients = {}\n", encoding="utf-8",
         )
+    if with_commands:
+        (plugin_dir / "commands.py").write_text(
+            "def cmd_hello(name: str = ''):\n"
+            "    \"\"\"打招呼命令\"\"\"\n"
+            "    return f'hello {name}'\n",
+            encoding="utf-8",
+        )
+    return plugin_dir
+
+
+def _write_plugin_with_factory(tmp_path: Path, *, session_arg: bool) -> Path:
+    """构造 get_tools 工厂插件目录 (带会话注入 / 无参降级两版)"""
+    plugin_dir = tmp_path / "plugins" / "factory"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: factory\n", encoding="utf-8")
+    if session_arg:
+        tools_src = (
+            "from satrap.core.utils.TCBuilder import Tool\n\n"
+            "class ProbeTool(Tool):\n"
+            "    tool_name = 'probe'\n"
+            "    description = '探针'\n"
+            "    params_dict = {}\n"
+            "    def execute(self) -> str:\n"
+            "        return getattr(self, 'session_id', 'none')\n\n"
+            "def get_tools(session):\n"
+            "    tool = ProbeTool()\n"
+            "    tool.session_id = session.session_id\n"
+            "    return [tool]\n"
+        )
+    else:
+        tools_src = (
+            "from satrap.core.utils.TCBuilder import Tool\n\n"
+            "class ProbeTool(Tool):\n"
+            "    tool_name = 'probe'\n"
+            "    description = '探针'\n"
+            "    params_dict = {}\n"
+            "    def execute(self) -> str:\n"
+            "        return 'ok'\n\n"
+            "def get_tools():\n"
+            "    return [ProbeTool()]\n"
+        )
+    (plugin_dir / "tools.py").write_text(tools_src, encoding="utf-8")
     return plugin_dir
 
 
@@ -1082,6 +1124,104 @@ def test_install_plugin_full_package(tmp_path: Path):
     assert session.add_skill("pskill") is True
     system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
     assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
+
+
+def test_plugin_commands_install_and_execute(tmp_path: Path):
+    """插件命令: 注册进命令系统, 可执行, intro 取自 docstring 首行"""
+    plugin_dir = _write_plugin_dir(tmp_path, with_commands=True)
+    session = _make_session(tmp_path, _FakeLLM())
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert "hello" in plugin.commands
+    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": True}]
+    assert session.list_commands()["hello"] == "打招呼命令"
+    result, is_cmd = session.cmd_handler.process_message("/hello world")
+    assert is_cmd and result == "hello world"
+
+
+def test_plugin_commands_conflict(tmp_path: Path):
+    """插件命令与已注册命令冲突: 拒绝安装"""
+    plugin_dir = _write_plugin_dir(tmp_path, with_commands=True)
+    session = _make_session(tmp_path, _FakeLLM())
+    session.add_command("hello", lambda: "x")
+    with pytest.raises(ValueError, match="命令 hello"):
+        session.install_plugin(str(plugin_dir))
+
+
+def test_plugin_commands_uninstall(tmp_path: Path):
+    """卸载插件: 命令回收, 不留孤儿"""
+    plugin_dir = _write_plugin_dir(tmp_path, with_commands=True)
+    session = _make_session(tmp_path, _FakeLLM())
+    plugin = session.install_plugin(str(plugin_dir))
+    assert session.uninstall_plugin("demo") is True
+    assert "hello" not in session.list_commands()
+    assert plugin.commands == {"hello": True}
+
+
+def test_plugin_commands_independent_and_aggregate_toggle(tmp_path: Path):
+    """插件命令: 独立启停 + 聚合启停 (压制不改变独立状态)"""
+    plugin_dir = _write_plugin_dir(tmp_path, with_commands=True)
+    session = _make_session(tmp_path, _FakeLLM())
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert plugin.disable_command("hello") is True
+    assert session.is_command_enabled("hello") is False
+    assert plugin.enable_command("hello") is True
+    assert session.is_command_enabled("hello") is True
+    assert plugin.disable_command("nope") is False
+
+    assert session.disable_plugin("demo") is True
+    assert session.is_command_enabled("hello") is False
+    assert plugin.commands["hello"] is True
+    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": False}]
+    assert session.enable_plugin("demo") is True
+    assert session.is_command_enabled("hello") is True
+
+
+def test_plugin_tools_factory_with_session(tmp_path: Path):
+    """get_tools(session) 工厂: 工具拿到会话依赖"""
+    plugin_dir = _write_plugin_with_factory(tmp_path, session_arg=True)
+    session = _make_session(tmp_path, _FakeLLM())
+    session.install_plugin(str(plugin_dir))
+
+    assert "probe" in session.list_tools()
+    tool = session.tools_manager.tools["probe"]
+    assert tool.session_id == session.session_id
+
+
+def test_plugin_tools_factory_fallback_no_session(tmp_path: Path):
+    """get_tools() 无参工厂: 传 session 不匹配时降级无参调用"""
+    plugin_dir = _write_plugin_with_factory(tmp_path, session_arg=False)
+    session = _make_session(tmp_path, _FakeLLM())
+    session.install_plugin(str(plugin_dir))
+
+    assert "probe" in session.list_tools()
+    assert session.tools_manager.tools["probe"].execute() == "ok"
+
+
+@pytest.mark.asyncio
+async def test_plugin_async_commands(tmp_path: Path):
+    """异步插件命令: cmd_*_async 约定注册并可执行"""
+    plugin_dir = tmp_path / "plugins" / "ademo"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: ademo\n", encoding="utf-8")
+    (plugin_dir / "commands.py").write_text(
+        "async def cmd_ping(text: str = ''):\n"
+        "    \"\"\"ping 命令\"\"\"\n"
+        "    return f'pong {text}'\n",
+        encoding="utf-8",
+    )
+    session = AsyncSimpleSession(
+        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    plugin = await session.install_plugin(str(plugin_dir))
+
+    assert "ping" in plugin.commands
+    assert session.list_commands()["ping"] == "ping 命令"
+    result, is_cmd = await session.command_handler.process_message("/ping hi")
+    assert is_cmd and result == "pong hi"
+    assert await session.uninstall_plugin("ademo") is True
+    assert "ping" not in session.list_commands()
 
 
 def test_install_plugin_skips_mcp_sync(tmp_path: Path):

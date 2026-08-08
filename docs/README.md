@@ -12,9 +12,10 @@
 6. [Session, 后端与 CLI](sessions-backend-cli.md): Session 写法, 后端生命周期, CLI 常用命令
 7. [检查点](checkpoint.md): 快照, 回滚, 重试, 分支与 HTTP / 面板管理
 8. [简易 Agent 框架](simple-session.md): edictum SimpleSession / AsyncSimpleSession, 插件, MCP 接入与流式
-9. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
-10. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
-11. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
+9. [satrap_coding 插件](satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / 沙箱 / 记忆 / 子代理 / 目标与计划模式
+10. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
+11. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
+12. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
 
 ## 项目结构速览
 

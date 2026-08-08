@@ -1,0 +1,5 @@
+name: satrap_coding
+version: 0.1.0
+author: Satrap Team
+repo: https://github.com/satrap/satrap_coding
+description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 记忆 / 子代理 / 目标与计划模式"
