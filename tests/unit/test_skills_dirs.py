@@ -24,7 +24,7 @@ from satrap.core.utils.TCBuilder import ToolsManager
 from satrap.core.utils.context import ContextManager
 
 USER_SAME_NAME_MD = """---
-name: coding-agent
+name: web-research
 description: 用户定制版
 tools:
   - code_sandbox
@@ -50,7 +50,7 @@ def test_default_user_dir_and_preset_merge():
 
     loaded = mgr.scan()
     names = {s.name for s in loaded}
-    assert {"coding-agent", "web-research"} <= names
+    assert "web-research" in names   # 官方预设技能
 
     # 官方技能解析出 satrap-skill-id
     for s in loaded:
@@ -58,7 +58,6 @@ def test_default_user_dir_and_preset_merge():
             assert s.skill_id == s.name
 
     # 官方技能以 id 为 key 可寻
-    assert mgr.get_skill("coding-agent") is not None
     assert mgr.get_skill("web-research") is not None
 
 
@@ -66,19 +65,19 @@ def test_preset_meta_skill_id_from_disk():
     """官方 meta.yaml 的 satrap-skill-id 真实可读"""
     mgr = SkillsManager(skills_dir=str(Path("nope-dir")))
     mgr.scan()
-    s = mgr.get_skill("coding-agent")
+    s = mgr.get_skill("web-research")
     assert s is not None
-    assert s.skill_id == "coding-agent"
+    assert s.skill_id == "web-research"
     assert s.source is not None and s.source.startswith(SKILLS_PRESET_DIR)
 
 
 def test_same_name_no_id_official_wins(tmp_path: Path):
     """用户同名技能 (无 meta id) 不覆盖官方"""
-    _write_folder_skill(tmp_path, "coding-agent", USER_SAME_NAME_MD)
+    _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD)
     mgr = SkillsManager(skills_dir=str(tmp_path))   # include_preset 默认 True
     mgr.scan()
 
-    s = mgr.get_skill("coding-agent")
+    s = mgr.get_skill("web-research")
     assert s is not None
     assert "用户指令正文" not in s.instructions   # 官方版本生效
     assert s.source is not None and s.source.startswith(SKILLS_PRESET_DIR)
@@ -86,43 +85,43 @@ def test_same_name_no_id_official_wins(tmp_path: Path):
 
 def test_same_name_different_id_coexist(tmp_path: Path):
     """同名技能携带不同 satrap-skill-id 时共存, 各按 id 可寻"""
-    meta = "author: user\nsatrap-skill-id: my-coding-agent\n"
-    _write_folder_skill(tmp_path, "coding-agent", USER_SAME_NAME_MD, meta)
+    meta = "author: user\nsatrap-skill-id: my-web-research\n"
+    _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path))
     mgr.scan()
 
-    assert sorted(mgr.list_skills()) == ["coding-agent", "my-coding-agent", "web-research"]
+    assert sorted(mgr.list_skills()) == ["my-web-research", "web-research"]
 
-    official = mgr.get_skill("coding-agent")
-    mine = mgr.get_skill("my-coding-agent")
-    assert official is not None and official.skill_id == "coding-agent"
-    assert mine is not None and mine.skill_id == "my-coding-agent"
+    official = mgr.get_skill("web-research")
+    mine = mgr.get_skill("my-web-research")
+    assert official is not None and official.skill_id == "web-research"
+    assert mine is not None and mine.skill_id == "my-web-research"
     assert "用户指令正文" in mine.instructions
 
     # 按 name 查找返回官方 (官方优先)
-    by_name = mgr.get_skill("coding-agent")
-    assert by_name is not None and by_name.skill_id == "coding-agent"
+    by_name = mgr.get_skill("web-research")
+    assert by_name is not None and by_name.skill_id == "web-research"
 
 
 def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
     """同名不同 id 技能在同一 workflow 顺序激活, 标记互不相同且停用不误伤"""
-    meta = "author: user\nsatrap-skill-id: user-coding\n"
-    _write_folder_skill(tmp_path, "coding-agent", USER_SAME_NAME_MD, meta)
+    meta = "author: user\nsatrap-skill-id: user-web\n"
+    _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path))
     mgr.scan()
 
     wf = _make_workflow(tmp_path)
-    assert mgr.activate("coding-agent", wf) is True   # type: ignore[arg-type]   # 官方版本
-    assert mgr.activate("user-coding", wf) is True   # type: ignore[arg-type]   # 用户版本 (同名, 不应被跳过)
+    assert mgr.activate("web-research", wf) is True   # type: ignore[arg-type]   # 官方版本
+    assert mgr.activate("user-web", wf) is True   # type: ignore[arg-type]   # 用户版本 (同名, 不应被跳过)
 
     system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:coding-agent>" in system_text
-    assert "<skill:user-coding>" in system_text
+    assert "<skill:web-research>" in system_text
+    assert "<skill:user-web>" in system_text
 
-    assert mgr.deactivate("user-coding", wf) is True   # type: ignore[arg-type]
+    assert mgr.deactivate("user-web", wf) is True   # type: ignore[arg-type]
     system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:user-coding>" not in system_text
-    assert "<skill:coding-agent>" in system_text   # 官方版本未被误伤
+    assert "<skill:user-web>" not in system_text
+    assert "<skill:web-research>" in system_text   # 官方版本未被误伤
 
 
 def test_include_preset_false_scans_user_only(tmp_path: Path):
@@ -158,15 +157,15 @@ def _make_workflow(tmp_path: Path):
 
 def test_activate_by_skill_id(tmp_path: Path):
     """通过 satrap-skill-id 激活与停用"""
-    meta = "author: user\nsatrap-skill-id: my-coding-agent\n"
-    _write_folder_skill(tmp_path, "coding-agent", USER_SAME_NAME_MD, meta)
+    meta = "author: user\nsatrap-skill-id: my-web-research\n"
+    _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
     mgr.scan()
 
     wf = _make_workflow(tmp_path)
-    assert mgr.activate("my-coding-agent", wf) is True   # type: ignore[arg-type]
+    assert mgr.activate("my-web-research", wf) is True   # type: ignore[arg-type]
     system_text = wf.ctx.get_context()[0]["content"]
-    assert "<skill:my-coding-agent>" in system_text
+    assert "<skill:my-web-research>" in system_text
 
-    assert mgr.deactivate("my-coding-agent", wf) is True   # type: ignore[arg-type]
-    assert "<skill:my-coding-agent>" not in wf.ctx.get_context()[0]["content"]
+    assert mgr.deactivate("my-web-research", wf) is True   # type: ignore[arg-type]
+    assert "<skill:my-web-research>" not in wf.ctx.get_context()[0]["content"]

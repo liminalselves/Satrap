@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from satrap.edictum import AsyncSimpleSession, SimpleSession
+
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
@@ -23,7 +25,11 @@ def _parse_args(args: list[str], default: str = "") -> str:
     return " ".join(str(a) for a in args).strip()
 
 
-def _cmd_goal_impl(state: dict[str, Any], session: Any, args: list[str]) -> str:
+SessionType = SimpleSession | AsyncSimpleSession
+"""插件支持的会话类型"""
+
+
+def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str]) -> str:
     """目标命令: 设置 / status / done / clear / todo / todo-done"""
     goals = state["goals"]
     assert isinstance(goals, GoalState)
@@ -141,7 +147,7 @@ def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
     return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | rules | rule <操作> <风险级>; 当前策略: {engine.mode}"
 
 
-def build_commands(session: Any) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
+def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """构建插件命令: 返回 (同步命令, 异步命令) 映射"""
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 

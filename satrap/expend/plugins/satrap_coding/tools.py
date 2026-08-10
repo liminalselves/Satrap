@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable, cast
 from satrap.core.log import logger
 from satrap.core.utils.paths import get_project_root
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.edictum import AsyncSimpleSession
+from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.command.session_commands import _parse_user_id
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
@@ -56,7 +56,7 @@ def user_scope(session_id: str) -> str:
     return _parse_user_id(session_id) or session_id
 
 
-def _make_sync_judge(session: Any) -> Callable[[str, RiskLevel, str], str]:
+def _make_sync_judge(session: SimpleSession) -> Callable[[str, RiskLevel, str], str]:
     """构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)"""
 
     def judge(operation: str, risk: RiskLevel, description: str) -> str:
@@ -73,7 +73,7 @@ def _make_sync_judge(session: Any) -> Callable[[str, RiskLevel, str], str]:
     return judge
 
 
-def _make_async_judge(session: Any) -> Callable[[str, RiskLevel, str], Awaitable[str]]:
+def _make_async_judge(session: AsyncSimpleSession) -> Callable[[str, RiskLevel, str], Awaitable[str]]:
     """构造异步 auto-agent 审批判断"""
 
     async def judge(operation: str, risk: RiskLevel, description: str) -> str:
@@ -91,7 +91,7 @@ def _make_async_judge(session: Any) -> Callable[[str, RiskLevel, str], Awaitable
 
 
 def _ask_user_sync(
-    session: Any,
+    session: SimpleSession,
     question: str,
     options: list[str] | None = None,
 ) -> str | None:
@@ -111,7 +111,7 @@ def _ask_user_sync(
 
 
 async def _ask_user_async(
-    session: Any,
+    session: AsyncSimpleSession,
     question: str,
     options: list[str] | None = None,
 ) -> str | None:
@@ -134,7 +134,7 @@ async def _ask_user_async(
 
 
 def _approve_sync(
-    session: Any,
+    session: SimpleSession,
     engine: PermissionEngine,
     operation: str,
     risk: RiskLevel,
@@ -160,7 +160,7 @@ def _approve_sync(
 
 
 async def _approve_async(
-    session: Any,
+    session: AsyncSimpleSession,
     engine: PermissionEngine,
     operation: str,
     risk: RiskLevel,
@@ -255,19 +255,19 @@ def _protection_reason_full(path: Path) -> str | None:
     return None
 
 
-def _session_sandbox_root(session: Any) -> Path:
+def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:
     """获取会话沙箱根 (会话属性优先, 否则默认)"""
     return Path(getattr(session, "coding_sandbox_root", None) or DEFAULT_SANDBOX_ROOT).resolve()
 
 
-def _in_sandbox(path: Path, session: Any) -> bool:
+def _in_sandbox(path: Path, session: SimpleSession | AsyncSimpleSession) -> bool:
     """目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)"""
     root = _session_sandbox_root(session)
     return path == root or path.is_relative_to(root)
 
 
 def _approve_file_write(
-    session: Any, engine: PermissionEngine, path: Path, action: str,
+    session: SimpleSession, engine: PermissionEngine, path: Path, action: str,
 ) -> tuple[bool, str]:
     """文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批"""
     if _in_sandbox(path, session):
@@ -276,7 +276,7 @@ def _approve_file_write(
 
 
 async def _approve_file_write_async(
-    session: Any, engine: PermissionEngine, path: Path, action: str,
+    session: AsyncSimpleSession, engine: PermissionEngine, path: Path, action: str,
 ) -> tuple[bool, str]:
     """异步文件写审批: 沙箱内免审批, 其余按策略审批"""
     if _in_sandbox(path, session):
@@ -354,7 +354,7 @@ class WriteFileTool(Tool):
             return f"错误: 写入失败: {e}"
 
     # 会话注入 (工厂在注册前设置)
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: SimpleSession) -> None:
         self._session = session
 
 
@@ -403,7 +403,7 @@ class EditFileTool(Tool):
         except OSError as e:
             return f"错误: 写入失败: {e}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: SimpleSession) -> None:
         self._session = session
 
 
@@ -465,7 +465,7 @@ class SearchReplaceTool(Tool):
         detail = ", ".join(f"'{old[:20]}' {c} 处" for (old, _, _), c in zip(pairs, counts))
         return f"已批量替换: {abs_path} ({detail})"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: SimpleSession) -> None:
         self._session = session
 
 
@@ -623,7 +623,7 @@ class AskUserTool(Tool):
             return "需要用户回复: " + question + " (未配置 user_input_provider, 请回复后继续)"
         return f"用户回复: {answer}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: SimpleSession) -> None:
         self._session = session
 
 
@@ -794,7 +794,7 @@ class ShellTool(Tool):
         except OSError as e:
             return f"错误: 执行失败: {e}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: SimpleSession) -> None:
         self._session = session
 
 
@@ -907,15 +907,16 @@ class AsyncAskUserTool(AsyncTool):
 
     def __init__(self) -> None:
         super().__init__()
-        self._session: Any = None
+        self._session: AsyncSimpleSession | None = None
 
     async def execute(self, question: str, options: list[str] | None = None) -> str:
+        assert self._session is not None, "ask_user 未绑定会话"
         answer = await _ask_user_async(self._session, question, options)
         if answer is None:
             return "需要用户回复: " + question + " (未配置 user_input_provider, 请回复后继续)"
         return f"用户回复: {answer}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
 
@@ -1042,9 +1043,10 @@ class AsyncShellTool(AsyncTool):
     def __init__(self, engine: PermissionEngine) -> None:
         super().__init__()
         self.engine = engine
-        self._session: Any = None
+        self._session: AsyncSimpleSession | None = None
 
     async def execute(self, command: str, cwd: str = "", timeout: int = 120, shell: str = "powershell") -> str:
+        assert self._session is not None, "shell 未绑定会话"
         risk, escape = classify_command(command)
         if escape:
             allowed, message = await _approve_async(
@@ -1089,7 +1091,7 @@ class AsyncShellTool(AsyncTool):
         except OSError as e:
             return f"错误: 执行失败: {e}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
 
@@ -1167,9 +1169,10 @@ class AsyncWriteFileTool(AsyncTool):
     def __init__(self, engine: PermissionEngine) -> None:
         super().__init__()
         self.engine = engine
-        self._session: Any = None
+        self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, content: str, append: bool = False) -> str:
+        assert self._session is not None, "write_file 未绑定会话"
         try:
             abs_path = _resolve_path(path)
         except ValueError as e:
@@ -1195,7 +1198,7 @@ class AsyncWriteFileTool(AsyncTool):
         except OSError as e:
             return f"错误: 写入失败: {e}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
 
@@ -1214,9 +1217,10 @@ class AsyncEditFileTool(AsyncTool):
     def __init__(self, engine: PermissionEngine) -> None:
         super().__init__()
         self.engine = engine
-        self._session: Any = None
+        self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, old: str, new: str, replace_all: bool = False) -> str:
+        assert self._session is not None, "edit_file 未绑定会话"
         try:
             abs_path = _resolve_path(path)
         except ValueError as e:
@@ -1248,7 +1252,7 @@ class AsyncEditFileTool(AsyncTool):
         except OSError as e:
             return f"错误: 写入失败: {e}"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
 
@@ -1271,9 +1275,10 @@ class AsyncSearchReplaceTool(AsyncTool):
     def __init__(self, engine: PermissionEngine) -> None:
         super().__init__()
         self.engine = engine
-        self._session: Any = None
+        self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, replacements: list[dict[str, Any]]) -> str:
+        assert self._session is not None, "search_replace 未绑定会话"
         try:
             abs_path = _resolve_path(path)
         except ValueError as e:
@@ -1317,7 +1322,7 @@ class AsyncSearchReplaceTool(AsyncTool):
         detail = ", ".join(f"'{old[:20]}' {c} 处" for (old, _, _), c in zip(pairs, counts))
         return f"已批量替换: {abs_path} ({detail})"
 
-    def _bind(self, session: Any) -> None:
+    def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
 
@@ -1459,7 +1464,7 @@ DEFAULT_SANDBOX_ROOT = DATA_ROOT / "sandbox"
 """默认沙箱根目录 (可被 session.coding_sandbox_root 覆盖; 工作区与文件免审批判定共用)"""
 
 
-def get_tools(session: Any) -> list[Any]:
+def get_tools(session: SimpleSession | AsyncSimpleSession) -> list[Any]:
     """按会话形态构建全部工具 (注入 llm / 权限引擎 / 记忆库 / 会话引用)"""
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 

@@ -332,12 +332,6 @@ class PlatformAdapterRegistry:
         if not key:
             logger.error("[PlatformAdapterRegistry] 注册失败: adapter_type 不能为空")
             return
-        if not issubclass(adapter_cls, PlatformAdapter):
-            logger.error(
-                f"[PlatformAdapterRegistry] 注册失败: {adapter_cls.__name__} 必须继承 PlatformAdapter"
-            )
-            return
-
         self._mapping[key] = adapter_cls
         logger.info(f"[PlatformAdapterRegistry] 已注册平台适配器: {key} -> {adapter_cls.__name__}")
 

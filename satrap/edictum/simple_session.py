@@ -13,9 +13,12 @@ from __future__ import annotations
 import asyncio
 import inspect
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable
+from uuid import uuid4
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import (
@@ -38,11 +41,105 @@ from satrap.edictum.plugin import (
     load_plugin_meta,
 )
 
-# 插件回调: 同步版仅调用同步函数; 异步版同步/异步均可 (运行期区分)
-BeforeUserSend = Callable[[str], str | None] | Callable[[str], Awaitable[str | None]]
-AfterUserSend = Callable[[str], None] | Callable[[str], Awaitable[None]]
-BeforeModelReply = Callable[[], None] | Callable[[], Awaitable[None]]
-AfterModelReply = Callable[[str], None] | Callable[[str], Awaitable[None]]
+# 处理器回调: 同步版仅调用同步函数; 异步版同步/异步均可 (运行期区分)
+# 新签名统一携带 HandlerContext (破坏性升级, 见 SessionHandler docstring)
+# 注意: 类型别名在模块加载时立即求值, HandlerResult 必须先定义 (不能用后置 ForwardRef)
+
+
+class HandlerResult:
+    """before_user_send 第三态返回: 短路指令 (文本均为 str, 与 run() -> str 契约对齐)
+
+    - continue_with(text): 等价 str 改写, 继续执行后续 handler
+    - respond(text): 跳过模型直接返回 text (后续 handler 短路, after_model_reply 仍执行)
+    - reject(reason): 业务拒绝, reason 作为 run 的返回文本 (正常返回)
+    - abort(reason): 故障终止, 抛 HandlerAbortError(reason)
+    """
+
+    __slots__ = ("action", "text")
+
+    def __init__(self, action: str, text: str) -> None:
+        if action not in ("continue", "respond", "reject", "abort"):
+            raise ValueError(f"未知 HandlerResult action: {action!r}")
+        self.action = action
+        self.text = text
+
+    @classmethod
+    def continue_with(cls, text: str) -> "HandlerResult":
+        """改写输入并继续"""
+        return cls("continue", text)
+
+    @classmethod
+    def respond(cls, text: str) -> "HandlerResult":
+        """跳过模型直接返回 text"""
+        return cls("respond", text)
+
+    @classmethod
+    def reject(cls, reason: str) -> "HandlerResult":
+        """业务拒绝, reason 作为返回文本"""
+        return cls("reject", reason)
+
+    @classmethod
+    def abort(cls, reason: str) -> "HandlerResult":
+        """故障终止, 抛 HandlerAbortError"""
+        return cls("abort", reason)
+
+
+class HandlerAbortError(Exception):
+    """HandlerResult.abort 触发的故障终止异常"""
+
+
+BeforeUserSend = Callable[[str, "HandlerContext"], str | None | HandlerResult]
+AfterUserSend = Callable[[str, "HandlerContext"], None]
+BeforeModelReply = Callable[["HandlerContext"], None]
+AfterModelReply = Callable[[str | None, "HandlerContext"], str | None]
+
+
+@dataclass(frozen=True)
+class HandlerConfig:
+    """一轮 run 的只读配置快照 (冻结, handler 不可改)"""
+
+    original_input: str
+    """原始用户输入"""
+    img_urls: list[str] | None
+    thinking: bool
+    max_iterations: int
+    call_id: str
+    """每轮 run 唯一标识"""
+
+
+@dataclass
+class HandlerContext:
+    """一轮 run 的上下文: config 为冻结只读快照; text/error/outcome 为运行期可变状态
+
+    - text: 当前文本 (before_user_send 改写后更新; handler 可读, 改动不影响 run 主流程)
+    - error: 模型调用异常 (after_model_reply 可见; 非 None 时返回值被忽略)
+    - outcome: 短路语义 (respond/reject/abort 置位, 正常路径为 None)
+    """
+
+    config: HandlerConfig
+    text: str
+    error: BaseException | None = None
+    outcome: str | None = None
+
+
+HANDLER_TIMEOUT = 30
+"""异步处理器单次调用的默认超时秒数 (SessionHandler.timeout 可覆盖)"""
+
+
+def _assert_sync_callbacks(handler: SessionHandler) -> None:
+    """协议级校验: 全同步协议拒绝任何 coroutinefunction 回调 (add_handler 与插件安装共用)
+
+    运行时类型约束无效: 误传 async def 会在同步路径静默忽略、在 to_thread 路径产生
+    无人 await 的 coroutine, 均导致回调不生效——故统一显式拒绝
+    """
+    for fn in (
+        handler.before_user_send, handler.after_user_send,
+        handler.before_model_reply, handler.after_model_reply,
+    ):
+        if fn is not None and inspect.iscoroutinefunction(fn):
+            raise TypeError(
+                f"处理器 {handler.name} 含异步回调, 全同步协议不支持 (回调请改为同步函数)"
+            )
 
 
 def _command_intro(handler: Callable[..., Any]) -> str:
@@ -75,24 +172,177 @@ def _remove_plugin_sys_path(plugin_dir: Path) -> None:
 class SessionHandler:
     """处理器: 4 个处理点直接注入流程, 非 hook
 
-    - before_user_send: 用户消息处理前, 返回 str 改写输入, 返回 None 透传
-    - after_user_send: 用户消息处理后 (通知, 收到改写后的文本)
-    - before_model_reply: 模型调用前 (通知)
-    - after_model_reply: 模型回复后 (通知, 收到最终回复文本)
-    - priority: 越小越先执行
-    - enabled: 停用后不参与流程
+    - before_user_send: 用户消息处理前; 返回 str / HandlerResult.continue_with 改写输入,
+      None 透传; respond / reject 短路跳过模型; abort 抛 HandlerAbortError
+    - after_user_send: 用户消息处理后 (通知, 收到改写后的文本与上下文)
+    - before_model_reply: Agent/模型调用前 (通知; 命名沿用历史, 语义为"Agent 调用前")
+    - after_model_reply: 模型回复后 (通知, 收到最终回复文本; 返回 str 改写最终结果;
+      异常路径 result=None 且 ctx.error 非 None 时返回值被忽略)
+    - priority: 越小越先执行; 同值按注册顺序执行 (稳定契约)
+    - enabled: 独立启用位; 实际生效 = enabled ∧ 所属插件 enabled (执行路径合成)
+    - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示独立注册
+    - timeout: 异步调用超时秒数 (仅异步版生效), None 用全局默认; 超时 = "放弃等待"而非
+      "终止执行" (底层 to_thread 工作线程仍跑完, handler 网络调用应自设超时); 负数拒绝
+    - error_policy: 回调异常策略, "continue" 隔离继续 (默认), "abort" 抛 HandlerAbortError
+    - 回调全同步协议: 所有回调必须为同步函数, 异步会话经 asyncio.to_thread 执行
+    - 命令入口 (cmd_handler.process_message) 不经过处理器, 仅覆盖 run()
     """
 
     name: str
     priority: int = 100
     enabled: bool = True
+    owner_plugin: str | None = None
+    timeout: float | None = None
+    error_policy: str = "continue"
     before_user_send: BeforeUserSend | None = None
     after_user_send: AfterUserSend | None = None
     before_model_reply: BeforeModelReply | None = None
     after_model_reply: AfterModelReply | None = None
 
+    def close(self) -> None:
+        """释放 handler 持有的资源 (句柄/连接/线程/缓存任务)
 
-class SimpleSession(Session):
+        契约: 同步函数 (异步清理需以同步手段完成或经 to_thread 包装); 幂等 (可重复调用);
+        容忍回调曾被超时取消的中间状态; 异常由调用方记日志不阻断; 子类覆盖实现具体清理
+        """
+
+
+class _HandlerRegistryMixin:
+    """Handler 注册表: 增删启停 + 优先级 + 排序 (同步/异步会话共用)"""
+
+    def _init_handler_registry(self) -> None:
+        """初始化注册表与插件表 (宿主 __init__ 必须调用; 忘调时合成过滤 AttributeError 快速失败)"""
+        self._handlers: dict[str, SessionHandler] = {}
+        self._plugins: dict[str, Plugin] = {}
+        self._registry_lock = threading.RLock()
+        """注册表锁: 防护跨线程并发 (同线程协程交错由 run_lock 串行化兜底)"""
+        self._active_runs = 0
+        """进行中的 run 计数 (延迟 close 决策依据)"""
+        self._pending_close: list[SessionHandler] = []
+        """延迟 close 队列: run 结束后冲刷 (防 run 快照持有的 handler 被提前 close)"""
+
+    def _validate_handler(self, handler: SessionHandler) -> None:
+        """公共校验: name 非空 + timeout 非负 (add_handler 与插件安装共用)"""
+        if not handler.name:
+            raise ValueError("处理器 name 不能为空")
+        if handler.timeout is not None and handler.timeout < 0:
+            raise ValueError(f"处理器 {handler.name} 的 timeout 不能为负数")
+
+    def add_handler(self, handler: SessionHandler, replace: bool = False) -> bool:
+        """注册处理器 (协议级校验: 拒绝异步回调; 同名冲突抛 ValueError; replace=True 覆盖并 close 旧对象)"""
+        self._validate_handler(handler)
+        _assert_sync_callbacks(handler)
+        old: SessionHandler | None = None
+        with self._registry_lock:
+            prev = self._handlers.get(handler.name)
+            if prev is not None and prev is not handler:
+                if not replace:
+                    raise ValueError(f"处理器 {handler.name} 已存在 (replace=True 显式覆盖)")
+                if prev.owner_plugin is not None:
+                    logger.info(f"[edictum] 覆盖插件 {prev.owner_plugin} 的处理器 {handler.name}, 继承归属")
+                    handler.owner_plugin = handler.owner_plugin or prev.owner_plugin
+                self._sync_owner_roster(prev)
+                if self._active_runs > 0:
+                    self._pending_close.append(prev)
+                else:
+                    old = prev
+            self._handlers[handler.name] = handler
+        if old is not None:
+            self._close_handler(old.name, old)
+        return True
+
+    def remove_handler(self, name: str) -> bool:
+        """注销处理器 (run 进行中延迟 close 到 run 结束; 否则立即 close)"""
+        with self._registry_lock:
+            existed = name in self._handlers
+            handler = self._take_handler_locked(name)
+        if handler is not None:
+            self._close_handler(name, handler)
+        return existed
+
+    def enable_handler(self, name: str) -> bool:
+        """启用处理器 (独立位)
+
+        返回 True 表示独立位已更新; 实际生效 = 独立位 ∧ 插件聚合开关,
+        以 list_capabilities 合成值为准
+        """
+        with self._registry_lock:
+            handler = self._handlers.get(name)
+            if handler is None:
+                return False
+            handler.enabled = True
+        return True
+
+    def disable_handler(self, name: str) -> bool:
+        """停用处理器 (独立位; 所属插件禁用时执行路径合成仍过滤)"""
+        with self._registry_lock:
+            handler = self._handlers.get(name)
+            if handler is None:
+                return False
+            handler.enabled = False
+        return True
+
+    def list_handlers(self) -> list[SessionHandler]:
+        """列出处理器 (按优先级升序, 同值按注册序)"""
+        with self._registry_lock:
+            return sorted(self._handlers.values(), key=lambda h: h.priority)
+
+    def set_handler_priority(self, name: str, priority: int) -> bool:
+        """调整处理器优先级 (越小越先执行)"""
+        with self._registry_lock:
+            handler = self._handlers.get(name)
+            if handler is None:
+                return False
+            handler.priority = priority
+        return True
+
+    def _enabled_handlers(self) -> list[SessionHandler]:
+        """返回生效中的处理器快照: 独立启用 ∧ 所属插件启用, 按优先级升序 (同值按注册序)
+
+        一致性快照: 同一次 run 内 handler 增删/启停/优先级变更不生效, 下次 run 生效
+        """
+        with self._registry_lock:
+            return sorted(
+                (h for h in self._handlers.values()
+                 if h.enabled and (h.owner_plugin is None
+                     or (self._plugins.get(h.owner_plugin) is not None and self._plugins[h.owner_plugin].enabled))),
+                key=lambda h: h.priority,
+            )
+
+    def _take_handler_locked(self, name: str) -> SessionHandler | None:
+        """从注册表移除 handler (调用方须持 _registry_lock)
+
+        同步清理所属插件名册; run 进行中 → 入延迟 close 队列并返回 None, 否则返回 handler
+        """
+        handler = self._handlers.pop(name, None)
+        if handler is None:
+            return None
+        self._sync_owner_roster(handler)
+        if self._active_runs > 0:
+            self._pending_close.append(handler)
+            return None
+        return handler
+
+    def _sync_owner_roster(self, handler: SessionHandler) -> None:
+        """remove/replace 时同步清理所属插件的 handlers 名册, 防 list_capabilities 残留
+        (调用方须持 _registry_lock)"""
+        owner = handler.owner_plugin
+        if owner is None:
+            return
+        plugin = self._plugins.get(owner)
+        if plugin is not None:
+            plugin.handlers.pop(handler.name, None)
+
+    @staticmethod
+    def _close_handler(name: str, handler: SessionHandler) -> None:
+        """调用 handler.close(), 异常记日志不阻断"""
+        try:
+            handler.close()
+        except Exception as e:
+            logger.warning(f"[edictum] 处理器 {name}.close() 异常: {e}")
+
+
+class SimpleSession(Session, _HandlerRegistryMixin):
     """同步简易会话: 单 workflow 单主模型, 直接使用 full_agent (React 范式)
 
     使用示例:
@@ -146,9 +396,11 @@ class SimpleSession(Session):
             db_path=db_path,
         )
         self._track_workflow_context(wf_id, self._wf.ctx)
-        self._handlers: dict[str, SessionHandler] = {}
-        self._plugins: dict[str, Plugin] = {}
+        self._init_handler_registry()
+        self._wf.tools_manager.effectiveness_guard = self._tool_effective
         self._skills_manager: SkillsManager | None = None
+        self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
+        """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
         self.user_input_provider: Callable[[str], str] | None = None
         """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
         self.stream = stream
@@ -194,43 +446,115 @@ class SimpleSession(Session):
         - img_urls: 图片 URL 列表 (多模态)
         - thinking: 是否要求模型思考
         - max_iterations: 最大工具调用迭代次数
+
+        处理器语义:
+        - before_user_send 可链式改写 (str/None/HandlerResult); respond/reject 短路跳过模型;
+          abort 抛 HandlerAbortError (ctx.outcome 记录短路语义)
+        - after_model_reply 在 finally 中执行; 异常路径 result=None 且 ctx.error 有值, 改写被忽略
+        - handler 异常隔离 (error_policy="abort" 时抛 HandlerAbortError); 同一次 run 内
+          handler 状态变更为一致性快照 (下次生效)
+        - run 期间 remove/replace 的 handler 延迟 close, 本轮 run 结束后冲刷
         """
-        text = user_input
-        for p in self._enabled_handlers():
-            if p.before_user_send is None:
-                continue
-            out = p.before_user_send(text)
-            if out is not None:
-                assert isinstance(out, str), f"插件 {p.name}.before_user_send 必须返回 str 或 None"
-                text = out
-
-        for p in self._enabled_handlers():
-            if p.after_user_send is None:
-                continue
-            p.after_user_send(text)
-
-        for p in self._enabled_handlers():
-            if p.before_model_reply is None:
-                continue
-            p.before_model_reply()
-
-        if self.stream:
-            result = self._wf.stream_full_agent(
-                text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
+        with self._registry_lock:
+            self._active_runs += 1
+            handlers = self._enabled_handlers()
+        try:
+            call_id = uuid4().hex
+            ctx = HandlerContext(
+                config=HandlerConfig(
+                    original_input=user_input, img_urls=img_urls, thinking=thinking,
+                    max_iterations=max_iterations, call_id=call_id,
+                ),
+                text=user_input,
             )
-        else:
-            if thinking:
-                raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
-            result = self._wf.full_agent(
-                text, img_urls=img_urls, max_iterations=max_iterations,
-            )
+            text = user_input
+            final_override: str | None = None
+            for p in handlers:
+                if p.before_user_send is None:
+                    continue
+                out = self._invoke_handler(p, "before_user_send", p.before_user_send, text, ctx)
+                if isinstance(out, HandlerResult):
+                    if out.action == "continue":
+                        text = out.text
+                        ctx.text = text
+                        continue
+                    if out.action == "abort":
+                        ctx.outcome = "abort"
+                        raise HandlerAbortError(out.text)
+                    # respond / reject: 短路, 跳过模型调用
+                    final_override = out.text
+                    ctx.outcome = out.action
+                    logger.info(f"[edictum] 处理器 {p.name}.before_user_send 短路 ({out.action})")
+                    break
+                if isinstance(out, str):
+                    text = out
+                    ctx.text = text
+                elif out is not None:
+                    logger.warning(
+                        f"[edictum] 处理器 {p.name}.before_user_send 返回不支持的类型 {type(out).__name__}, 已忽略"
+                    )
 
-        for p in self._enabled_handlers():
-            if p.after_model_reply is None:
-                continue
-            p.after_model_reply(result)
+            if final_override is None:
+                for p in handlers:
+                    if p.after_user_send is None:
+                        continue
+                    self._invoke_handler(p, "after_user_send", p.after_user_send, text, ctx)
 
-        return result
+                for p in handlers:
+                    if p.before_model_reply is None:
+                        continue
+                    self._invoke_handler(p, "before_model_reply", p.before_model_reply, ctx)
+
+            result: str | None = None
+            ctx.error = None
+            try:
+                if final_override is not None:
+                    result = final_override
+                elif self.stream:
+                    result = self._wf.stream_full_agent(
+                        text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
+                    )
+                else:
+                    if thinking:
+                        raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
+                    result = self._wf.full_agent(
+                        text, img_urls=img_urls, max_iterations=max_iterations,
+                    )
+            except BaseException as e:
+                ctx.error = e
+                raise
+            finally:
+                for p in handlers:
+                    if p.after_model_reply is None:
+                        continue
+                    out = self._invoke_handler(p, "after_model_reply", p.after_model_reply, result, ctx)
+                    if ctx.error is None and isinstance(out, str):
+                        result = out
+
+            return result if result is not None else ""
+        finally:
+            pending: list[SessionHandler] = []
+            with self._registry_lock:
+                self._active_runs -= 1
+                if self._active_runs == 0:
+                    pending, self._pending_close = self._pending_close, []
+            for h in pending:
+                self._close_handler(h.name, h)
+
+    def _invoke_handler(self, handler: SessionHandler, stage: str, fn: Callable[..., Any], *args: Any) -> Any:
+        """调用单个处理器回调: 异常隔离 (error_policy="abort" 抛 HandlerAbortError) + 耗时观测"""
+        t0 = time.perf_counter()
+        try:
+            return fn(*args)
+        except HandlerAbortError:
+            raise
+        except Exception as e:
+            if handler.error_policy == "abort":
+                raise HandlerAbortError(f"处理器 {handler.name}.{stage} 异常: {e}") from e
+            logger.error(f"[edictum] 处理器 {handler.name}.{stage} 异常: {e}")
+            return None
+        finally:
+            logger.debug(f"[edictum] 处理器 {handler.name}.{stage} 耗时 {time.perf_counter() - t0:.3f}s")
 
     def __call__(self, user_input: str, **kwargs: Any) -> str:
         return self.run(user_input, **kwargs)
@@ -332,59 +656,24 @@ class SimpleSession(Session):
             return []
         return self._skills_manager.list_skills()
 
-    # ---------------- 处理器管理 ----------------
+    # ---------------- 处理器管理 (注册表实现在 _HandlerRegistryMixin) ----------------
 
-    def add_handler(self, handler: SessionHandler):
-        """注册处理器 (同名校覆盖)"""
-        if not handler.name:
-            raise ValueError("处理器 name 不能为空")
-        self._handlers[handler.name] = handler
-
-    def remove_handler(self, name: str) -> bool:
-        """注销处理器"""
-        return self._handlers.pop(name, None) is not None
-
-    def enable_handler(self, name: str) -> bool:
-        """启用处理器"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.enabled = True
-        return True
-
-    def disable_handler(self, name: str) -> bool:
-        """停用处理器"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.enabled = False
-        return True
-
-    def list_handlers(self) -> list[SessionHandler]:
-        """列出处理器 (按优先级升序)"""
-        return sorted(self._handlers.values(), key=lambda p: p.priority)
-
-    def set_handler_priority(self, name: str, priority: int) -> bool:
-        """调整处理器优先级 (越小越先执行)"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.priority = priority
-        return True
-
-    def _enabled_handlers(self) -> list[SessionHandler]:
-        """返回启用中的处理器 (按优先级升序)"""
-        return sorted(
-            (p for p in self._handlers.values() if p.enabled),
-            key=lambda p: p.priority,
-        )
+    def _tool_effective(self, tool_name: str) -> bool:
+        """工具生效过滤 (执行路径合成): 所属插件缺失或启用时生效"""
+        tool = self._wf.tools_manager.tools.get(tool_name)
+        owner = tool.owner_plugin if tool is not None else None
+        if owner is None:
+            return True
+        with self._registry_lock:
+            plugin = self._plugins.get(owner)
+        return plugin is not None and plugin.enabled
 
     # ---------------- 插件管理 (目录插件包) ----------------
 
     def install_plugin(self, path: str) -> Plugin:
         """安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
 
-        同步版跳过 mcp.py (工具为 AsyncTool, 仅异步版支持), 其余能力照常注册;
+        mcp.py 同样支持: 远端工具经后台事件循环线程桥接为同步适配器注册;
         任一步失败时回滚已注册能力与 sys.path, 不留孤儿
         """
         plugin_dir = Path(path)
@@ -393,18 +682,22 @@ class SimpleSession(Session):
         skill_states: dict[str, bool] = {}
         handler_states: dict[str, bool] = {}
         command_states: dict[str, bool] = {}
+        mcp_states: dict[str, bool] = {}
+        mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         try:
             meta = load_plugin_meta(plugin_dir)
             name = str(meta.get("name") or "").strip()
             if not name:
                 raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
-            if name in self._plugins:
-                raise ValueError(f"插件 {name} 已安装")
+            with self._registry_lock:
+                if name in self._plugins:
+                    raise ValueError(f"插件 {name} 已安装")
 
             for t in collect_tools(plugin_dir, name, Tool, self):
                 tname = t.get_tool_name()
                 if tname in self._wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+                t.owner_plugin = name
                 self._wf.tools_manager.register_tool(t)
                 tool_states[tname] = True
 
@@ -417,9 +710,13 @@ class SimpleSession(Session):
                 skill_states[key] = True
 
             for h in collect_handlers(plugin_dir, name, self):
-                if h.name in self._handlers or h.name in handler_states:
-                    raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
-                self._handlers[h.name] = h
+                self._validate_handler(h)
+                _assert_sync_callbacks(h)
+                with self._registry_lock:
+                    if h.name in self._handlers or h.name in handler_states:
+                        raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+                    h.owner_plugin = name
+                    self._handlers[h.name] = h
                 handler_states[h.name] = True
 
             sync_commands, _async_commands = collect_commands(plugin_dir, name, self)
@@ -429,10 +726,21 @@ class SimpleSession(Session):
                 self.cmd_handler.register_command(cname, chandler, intro=_command_intro(chandler))
                 command_states[cname] = True
 
-            if (plugin_dir / "mcp.py").is_file():
-                logger.warning(
-                    f"[edictum] 插件 {name} 含 mcp.py, 仅异步版 (AsyncSimpleSession) 支持, 已跳过"
-                )
+            for mcp_name, client in collect_mcp_clients(plugin_dir, name).items():
+                if mcp_name in self._mcp_clients or mcp_name in mcp_states:
+                    raise ValueError(f"插件 {name} 的 MCP 连接 {mcp_name} 与已接入连接冲突")
+                try:
+                    adapters = client.sync_register_tools(self._wf.tools_manager, name_prefix=name)
+                except Exception:
+                    close = getattr(client, "sync_close", None)
+                    if close is not None:
+                        try:
+                            close()
+                        except Exception:
+                            pass
+                    raise
+                mcp_clients[mcp_name] = (client, list(adapters))
+                mcp_states[mcp_name] = True
 
             plugin = Plugin(
                 name=name,
@@ -446,9 +754,12 @@ class SimpleSession(Session):
             plugin._cleanup = collect_cleanup(plugin_dir, name, self)
             plugin.tools = tool_states
             plugin.skills = skill_states
+            plugin.mcp = mcp_states
+            plugin._mcp_clients = mcp_clients
             plugin.handlers = handler_states
             plugin.commands = command_states
-            self._plugins[name] = plugin
+            with self._registry_lock:
+                self._plugins[name] = plugin
             logger.info(f"[edictum] 插件 {name} 已安装")
             return plugin
         except Exception:
@@ -460,14 +771,27 @@ class SimpleSession(Session):
                 for key in skill_states:
                     mgr.unregister_skill(key)
             for hname in handler_states:
-                self._handlers.pop(hname, None)
+                with self._registry_lock:
+                    handler = self._take_handler_locked(hname)
+                if handler is not None:
+                    self._close_handler(hname, handler)
             for cname in command_states:
                 self.cmd_handler.unregister_command(cname)
+            for mcp_name, (client, adapters) in mcp_clients.items():
+                for adapter in adapters:
+                    self._wf.tools_manager.unregister_tool(adapter.get_tool_name())
+                close = getattr(client, "sync_close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
             raise
 
     def uninstall_plugin(self, name: str) -> bool:
         """卸载插件: 回收其全部能力 (含清理回调), 不留孤儿"""
-        plugin = self._plugins.pop(name, None)
+        with self._registry_lock:
+            plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
         _remove_plugin_sys_path(Path(plugin.path))
@@ -478,10 +802,22 @@ class SimpleSession(Session):
             for sname in plugin.skills:
                 mgr.deactivate(sname, self._wf)
                 mgr.unregister_skill(sname)
-        for hname in plugin.handlers:
-            self._handlers.pop(hname, None)
+        for hname in list(plugin.handlers):
+            with self._registry_lock:
+                handler = self._take_handler_locked(hname)
+            if handler is not None:
+                self._close_handler(hname, handler)
         for cname in plugin.commands:
             self.cmd_handler.unregister_command(cname)
+        for mcp_name, (client, adapters) in plugin._mcp_clients.items():
+            for adapter in adapters:
+                self._wf.tools_manager.unregister_tool(adapter.get_tool_name())
+            close = getattr(client, "sync_close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception as e:
+                    logger.warning(f"[edictum] 插件 {name} MCP 断开失败: {e}")
         cleanup = plugin._cleanup
         if cleanup is not None:
             try:
@@ -493,52 +829,45 @@ class SimpleSession(Session):
 
     def enable_plugin(self, name: str) -> bool:
         """启用插件 (按独立状态恢复名下能力, 独立停用的保持停用)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return False
-        if plugin.enabled:
-            return True
-        plugin.enabled = True
-        for tname, st in plugin.tools.items():
-            if st:
-                self._wf.tools_manager.enable_tool(tname)
+        with self._registry_lock:
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                return False
+            if plugin.enabled:
+                return True
+            plugin.enabled = True
+        # 工具/处理器由执行路径合成承担 (effectiveness_guard / _enabled_handlers), 无需恢复循环
         mgr = self._skills_manager
         if mgr is not None:
             for sname, st in plugin.skills.items():
                 if st:
                     mgr.activate(sname, self._wf)
-        for hname, st in plugin.handlers.items():
-            if st and hname in self._handlers:
-                self._handlers[hname].enabled = True
         for cname, st in plugin.commands.items():
             if st:
                 self.cmd_handler.enable_command(cname)
         return True
 
     def disable_plugin(self, name: str) -> bool:
-        """停用插件 (压制名下全部能力, 不改独立状态)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return False
-        if not plugin.enabled:
-            return True
-        plugin.enabled = False
-        for tname in plugin.tools:
-            self._wf.tools_manager.disable_tool(tname)
+        """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
+        with self._registry_lock:
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                return False
+            if not plugin.enabled:
+                return True
+            plugin.enabled = False
         mgr = self._skills_manager
         if mgr is not None:
             for sname in plugin.skills:
                 mgr.deactivate(sname, self._wf)
-        for hname in plugin.handlers:
-            if hname in self._handlers:
-                self._handlers[hname].enabled = False
         for cname in plugin.commands:
             self.cmd_handler.disable_command(cname)
         return True
 
     def list_plugins(self) -> list[Plugin]:
         """列出已安装插件"""
-        return list(self._plugins.values())
+        with self._registry_lock:
+            return list(self._plugins.values())
 
     def _activate_plugin_skill(self, name: str) -> bool:
         """插件技能独立启用钩子 (同步版)"""
@@ -567,7 +896,7 @@ class SimpleSession(Session):
         self.set_llm(llm)
 
 
-class AsyncSimpleSession(AsyncSession):
+class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
     """异步简易会话: 单 workflow 单主模型, 直接使用 full_agent (React 范式)
 
     - 支持 MCP 工具注入 (add_mcp / remove_mcp)
@@ -603,11 +932,12 @@ class AsyncSimpleSession(AsyncSession):
         self._init_model_params: dict[str, Any] = {}
         self._db_path = db_path
         self._wf: AsyncModelWorkflowFramework | None = None
-        self._handlers: dict[str, SessionHandler] = {}
-        self._plugins: dict[str, Plugin] = {}
+        self._init_handler_registry()
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         self._init_lock = asyncio.Lock()
+        self._run_lock = asyncio.Lock()
+        """run 串行化锁: 同一会话不支持并发 run (第二个 run 排队等待)"""
         self.user_input_provider: Callable[[str], str | Awaitable[str]] | None = None
         """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
         self.stream = stream
@@ -633,6 +963,7 @@ class AsyncSimpleSession(AsyncSession):
             await wf.initialize()
             self._track_workflow_context(wf_id, wf.ctx)
             self._wf = wf
+            wf.tools_manager.effectiveness_guard = self._tool_effective
             if self._init_model_params:
                 wf.llm.set_parameters(**self._init_model_params)
             try:
@@ -692,58 +1023,122 @@ class AsyncSimpleSession(AsyncSession):
         - img_urls: 图片 URL 列表 (多模态)
         - thinking: 是否要求模型思考
         - max_iterations: 最大工具调用迭代次数
+
+        处理器语义 (与同步版一致): 短路/改写/隔离/超时/finally, 见 SimpleSession.run
+
+        并发: 同一会话的 run 经 _run_lock 串行执行 (不支持并发 run, 第二个 run 排队等待)
         """
-        wf = self._require_wf()
-        text = user_input
-        for p in self._enabled_handlers():
-            if p.before_user_send is None:
-                continue
-            out = await self._call_plugin(p.before_user_send, text)
-            if out is not None:
-                if not isinstance(out, str):
-                    raise TypeError(
-                        f"插件 {p.name}.before_user_send 必须返回 str 或 None, 实际为 {type(out).__name__}"
-                    )
-                text = out
+        async with self._run_lock:
+            wf = self._require_wf()
+            with self._registry_lock:
+                self._active_runs += 1
+                handlers = self._enabled_handlers()
+            try:
+                ctx = HandlerContext(
+                    config=HandlerConfig(
+                        original_input=user_input, img_urls=img_urls, thinking=thinking,
+                        max_iterations=max_iterations, call_id=uuid4().hex,
+                    ),
+                    text=user_input,
+                )
+                text = user_input
+                final_override: str | None = None
+                for p in handlers:
+                    if p.before_user_send is None:
+                        continue
+                    out = await self._invoke_handler_async(p, "before_user_send", p.before_user_send, text, ctx)
+                    if isinstance(out, HandlerResult):
+                        if out.action == "continue":
+                            text = out.text
+                            ctx.text = text
+                            continue
+                        if out.action == "abort":
+                            ctx.outcome = "abort"
+                            raise HandlerAbortError(out.text)
+                        # respond / reject: 短路, 跳过模型调用
+                        final_override = out.text
+                        ctx.outcome = out.action
+                        logger.info(f"[edictum] 处理器 {p.name}.before_user_send 短路 ({out.action})")
+                        break
+                    if isinstance(out, str):
+                        text = out
+                        ctx.text = text
+                    elif out is not None:
+                        logger.warning(
+                            f"[edictum] 处理器 {p.name}.before_user_send 返回不支持的类型 {type(out).__name__}, 已忽略"
+                        )
 
-        for p in self._enabled_handlers():
-            if p.after_user_send is None:
-                continue
-            await self._call_plugin(p.after_user_send, text)
+                if final_override is None:
+                    for p in handlers:
+                        if p.after_user_send is None:
+                            continue
+                        await self._invoke_handler_async(p, "after_user_send", p.after_user_send, text, ctx)
 
-        for p in self._enabled_handlers():
-            if p.before_model_reply is None:
-                continue
-            await self._call_plugin(p.before_model_reply)
+                    for p in handlers:
+                        if p.before_model_reply is None:
+                            continue
+                        await self._invoke_handler_async(p, "before_model_reply", p.before_model_reply, ctx)
 
-        if self.stream:
-            result = await wf.stream_full_agent(
-                text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
-            )
-        else:
-            if thinking:
-                raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
-            result = await wf.full_agent(
-                text, img_urls=img_urls, max_iterations=max_iterations,
-            )
+                result: str | None = None
+                ctx.error = None
+                try:
+                    if final_override is not None:
+                        result = final_override
+                    elif self.stream:
+                        result = await wf.stream_full_agent(
+                            text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
+                        )
+                    else:
+                        if thinking:
+                            raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
+                        result = await wf.full_agent(
+                            text, img_urls=img_urls, max_iterations=max_iterations,
+                        )
+                except BaseException as e:
+                    ctx.error = e
+                    raise
+                finally:
+                    for p in handlers:
+                        if p.after_model_reply is None:
+                            continue
+                        out = await self._invoke_handler_async(p, "after_model_reply", p.after_model_reply, result, ctx)
+                        if ctx.error is None and isinstance(out, str):
+                            result = out
 
-        for p in self._enabled_handlers():
-            if p.after_model_reply is None:
-                continue
-            await self._call_plugin(p.after_model_reply, result)
+                return result if result is not None else ""
+            finally:
+                pending: list[SessionHandler] = []
+                with self._registry_lock:
+                    self._active_runs -= 1
+                    if self._active_runs == 0:
+                        pending, self._pending_close = self._pending_close, []
+                for h in pending:
+                    await asyncio.to_thread(self._close_handler, h.name, h)
 
-        return result
+    async def _invoke_handler_async(
+        self, handler: SessionHandler, stage: str, fn: Callable[..., Any], *args: Any,
+    ) -> Any:
+        """调用单个处理器回调 (异步): 同步回调投入工作线程 + wait_for 超时, 异常/超时隔离 + 耗时观测
+
+        超时 = "放弃等待"而非"终止执行": 超时后框架不再等结果, 但底层 to_thread
+        工作线程仍跑完——handler 应避免无限阻塞, 网络调用自设超时
+        """
+        t0 = time.perf_counter()
+        timeout = HANDLER_TIMEOUT if handler.timeout is None else handler.timeout
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(fn, *args), timeout=timeout)
+        except HandlerAbortError:
+            raise
+        except Exception as e:                      # 含 asyncio.TimeoutError
+            if handler.error_policy == "abort":
+                raise HandlerAbortError(f"处理器 {handler.name}.{stage} 异常: {e}") from e
+            logger.error(f"[edictum] 处理器 {handler.name}.{stage} 异常/超时: {e}")
+            return None
+        finally:
+            logger.debug(f"[edictum] 处理器 {handler.name}.{stage} 耗时 {time.perf_counter() - t0:.3f}s")
 
     async def __call__(self, user_input: str, **kwargs: Any) -> str:
         return await self.run(user_input, **kwargs)
-
-    @staticmethod
-    async def _call_plugin(fn: Callable[..., Any], *args: Any) -> Any:
-        """调用插件函数, 兼容同步与异步"""
-        result = fn(*args)
-        if inspect.isawaitable(result):
-            return await result
-        return result
 
     # ---------------- 命令管理 ----------------
 
@@ -917,52 +1312,20 @@ class AsyncSimpleSession(AsyncSession):
         """列出已接入的 MCP 连接名"""
         return list(self._mcp_clients.keys())
 
-    # ---------------- 处理器管理 ----------------
+    # ---------------- 处理器管理 (注册表实现在 _HandlerRegistryMixin) ----------------
 
-    def add_handler(self, handler: SessionHandler):
-        """注册处理器 (同名校覆盖)"""
-        if not handler.name:
-            raise ValueError("处理器 name 不能为空")
-        self._handlers[handler.name] = handler
-
-    def remove_handler(self, name: str) -> bool:
-        """注销处理器"""
-        return self._handlers.pop(name, None) is not None
-
-    def enable_handler(self, name: str) -> bool:
-        """启用处理器"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.enabled = True
-        return True
-
-    def disable_handler(self, name: str) -> bool:
-        """停用处理器"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.enabled = False
-        return True
-
-    def list_handlers(self) -> list[SessionHandler]:
-        """列出处理器 (按优先级升序)"""
-        return sorted(self._handlers.values(), key=lambda p: p.priority)
-
-    def set_handler_priority(self, name: str, priority: int) -> bool:
-        """调整处理器优先级 (越小越先执行)"""
-        handler = self._handlers.get(name)
-        if handler is None:
-            return False
-        handler.priority = priority
-        return True
-
-    def _enabled_handlers(self) -> list[SessionHandler]:
-        """返回启用中的处理器 (按优先级升序)"""
-        return sorted(
-            (p for p in self._handlers.values() if p.enabled),
-            key=lambda p: p.priority,
-        )
+    def _tool_effective(self, tool_name: str) -> bool:
+        """工具生效过滤 (执行路径合成): 所属插件缺失或启用时生效"""
+        wf = self._wf
+        if wf is None:
+            return True
+        tool = wf.tools_manager.tools.get(tool_name)
+        owner = tool.owner_plugin if tool is not None else None
+        if owner is None:
+            return True
+        with self._registry_lock:
+            plugin = self._plugins.get(owner)
+        return plugin is not None and plugin.enabled
 
     # ---------------- 插件管理 (目录插件包) ----------------
 
@@ -986,14 +1349,16 @@ class AsyncSimpleSession(AsyncSession):
             name = str(meta.get("name") or "").strip()
             if not name:
                 raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
-            if name in self._plugins:
-                raise ValueError(f"插件 {name} 已安装")
+            with self._registry_lock:
+                if name in self._plugins:
+                    raise ValueError(f"插件 {name} 已安装")
             wf = self._require_wf()
 
             for t in collect_tools(plugin_dir, name, AsyncTool, self):
                 tname = t.get_tool_name()
                 if tname in wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
+                t.owner_plugin = name
                 wf.tools_manager.register_tool(t)
                 tool_states[tname] = True
 
@@ -1006,9 +1371,13 @@ class AsyncSimpleSession(AsyncSession):
                 skill_states[key] = True
 
             for h in collect_handlers(plugin_dir, name, self):
-                if h.name in self._handlers or h.name in handler_states:
-                    raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
-                self._handlers[h.name] = h
+                self._validate_handler(h)
+                _assert_sync_callbacks(h)
+                with self._registry_lock:
+                    if h.name in self._handlers or h.name in handler_states:
+                        raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
+                    h.owner_plugin = name
+                    self._handlers[h.name] = h
                 handler_states[h.name] = True
 
             _sync_commands, async_commands = collect_commands(plugin_dir, name, self)
@@ -1028,6 +1397,8 @@ class AsyncSimpleSession(AsyncSession):
                     if close is not None:
                         await close()
                     raise
+                for adapter in adapters:
+                    adapter.owner_plugin = name
                 mcp_clients[mcp_name] = (client, list(adapters))
                 mcp_states[mcp_name] = True
 
@@ -1047,7 +1418,8 @@ class AsyncSimpleSession(AsyncSession):
             plugin._mcp_clients = mcp_clients
             plugin.handlers = handler_states
             plugin.commands = command_states
-            self._plugins[name] = plugin
+            with self._registry_lock:
+                self._plugins[name] = plugin
             logger.info(f"[edictum] 插件 {name} 已安装")
             return plugin
         except Exception:
@@ -1061,7 +1433,10 @@ class AsyncSimpleSession(AsyncSession):
                 for key in skill_states:
                     mgr.unregister_skill(key)
             for hname in handler_states:
-                self._handlers.pop(hname, None)
+                with self._registry_lock:
+                    handler = self._take_handler_locked(hname)
+                if handler is not None:
+                    await asyncio.to_thread(self._close_handler, hname, handler)
             for cname in command_states:
                 self.command_handler.unregister_command(cname)
             for mcp_name, (client, adapters) in mcp_clients.items():
@@ -1078,7 +1453,8 @@ class AsyncSimpleSession(AsyncSession):
 
     async def uninstall_plugin(self, name: str) -> bool:
         """卸载插件: 回收其全部能力 (含断开 MCP 连接), 不留孤儿"""
-        plugin = self._plugins.pop(name, None)
+        with self._registry_lock:
+            plugin = self._plugins.pop(name, None)
         if plugin is None:
             return False
         _remove_plugin_sys_path(Path(plugin.path))
@@ -1099,8 +1475,11 @@ class AsyncSimpleSession(AsyncSession):
                     await close()
                 except Exception as e:
                     logger.warning(f"[edictum] 插件 {name} 的 MCP {mcp_name} 断开失败: {e}")
-        for hname in plugin.handlers:
-            self._handlers.pop(hname, None)
+        for hname in list(plugin.handlers):
+            with self._registry_lock:
+                handler = self._take_handler_locked(hname)
+            if handler is not None:
+                await asyncio.to_thread(self._close_handler, hname, handler)
         for cname in plugin.commands:
             self.command_handler.unregister_command(cname)
         cleanup = plugin._cleanup
@@ -1114,61 +1493,47 @@ class AsyncSimpleSession(AsyncSession):
 
     async def enable_plugin(self, name: str) -> bool:
         """启用插件 (按独立状态恢复名下能力, 独立停用的保持停用)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return False
-        if plugin.enabled:
-            return True
-        plugin.enabled = True
+        with self._registry_lock:
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                return False
+            if plugin.enabled:
+                return True
+            plugin.enabled = True
         wf = self._require_wf()
-        for tname, st in plugin.tools.items():
-            if st:
-                wf.tools_manager.enable_tool(tname)
+        # 工具/处理器/MCP 由执行路径合成承担 (effectiveness_guard / _enabled_handlers), 无需恢复循环
         mgr = self._skills_manager
         if mgr is not None:
             for sname, st in plugin.skills.items():
                 if st:
                     await mgr.activate_async(sname, wf)
-        for mcp_name, st in plugin.mcp.items():
-            if st:
-                for adapter in plugin._mcp_clients.get(mcp_name, (None, []))[1]:
-                    wf.tools_manager.enable_tool(adapter.get_tool_name())
-        for hname, st in plugin.handlers.items():
-            if st and hname in self._handlers:
-                self._handlers[hname].enabled = True
         for cname, st in plugin.commands.items():
             if st:
                 self.command_handler.enable_command(cname)
         return True
 
     async def disable_plugin(self, name: str) -> bool:
-        """停用插件 (压制名下全部能力, 不改独立状态)"""
-        plugin = self._plugins.get(name)
-        if plugin is None:
-            return False
-        if not plugin.enabled:
-            return True
-        plugin.enabled = False
+        """停用插件 (压制名下全部能力, 不改独立状态; 工具/处理器由执行路径合成压制)"""
+        with self._registry_lock:
+            plugin = self._plugins.get(name)
+            if plugin is None:
+                return False
+            if not plugin.enabled:
+                return True
+            plugin.enabled = False
         wf = self._require_wf()
-        for tname in plugin.tools:
-            wf.tools_manager.disable_tool(tname)
         mgr = self._skills_manager
         if mgr is not None:
             for sname in plugin.skills:
                 await mgr.deactivate_async(sname, wf)
-        for mcp_name in plugin.mcp:
-            for adapter in plugin._mcp_clients.get(mcp_name, (None, []))[1]:
-                wf.tools_manager.disable_tool(adapter.get_tool_name())
-        for hname in plugin.handlers:
-            if hname in self._handlers:
-                self._handlers[hname].enabled = False
         for cname in plugin.commands:
             self.command_handler.disable_command(cname)
         return True
 
     def list_plugins(self) -> list[Plugin]:
         """列出已安装插件"""
-        return list(self._plugins.values())
+        with self._registry_lock:
+            return list(self._plugins.values())
 
     async def _activate_plugin_skill(self, name: str) -> bool:
         """插件技能独立启用钩子 (异步版)"""

@@ -119,7 +119,7 @@ class AsyncCodeSandboxTool(AsyncTool):
 
     async def execute(self, operation: str, code: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
         """
-        异步执行沙箱操作，返回结果字典
+        异步执行沙箱操作, 返回结果字典
         """
         try:
             # 如果提供了代码参数，尝试从中提取代码块（同步函数，直接调用）

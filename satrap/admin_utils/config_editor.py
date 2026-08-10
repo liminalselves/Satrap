@@ -131,8 +131,6 @@ def validate_platforms(platforms: list[Any] | None) -> list[dict[str, Any]]:
     """校验 platforms 列表结构"""
     if platforms is None:
         return []
-    if not isinstance(platforms, list):
-        raise ValueError("platforms 必须是列表")
     seen: set[str] = set()
     result: list[dict[str, Any]] = []
     for item in platforms:
@@ -174,8 +172,6 @@ def upsert_platform(
         raise ValueError("平台 id 不能为空")
     if not ptype:
         raise ValueError("平台 type 不能为空")
-    if not isinstance(settings, dict):
-        raise ValueError("平台 settings 必须是对象")
 
     old_id = (original_id or "").strip()
     updated = [dict(item) for item in platforms]

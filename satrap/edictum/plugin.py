@@ -5,7 +5,7 @@
     ├── meta.yaml     # name(必填) / version / author / repo / description
     ├── tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools(session) 工厂
     ├── skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md 文件夹式)
-    ├── mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (仅异步版)
+    ├── mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (同步/异步均支持)
     ├── commands.py   # 可选: 导出 commands (同步) / async_commands (异步) 字典, 或 cmd_* / cmd_*_async 约定
     ├── handlers.py   # 可选: 导出 handlers: list[SessionHandler]; 或 4 个约定函数
     └── ...           # 插件私有模块
@@ -31,13 +31,21 @@ import inspect
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TypeVar, cast
+from types import ModuleType
+from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
 
 import yaml
 
 from satrap.core.log import logger
 from satrap.core.utils.skills import Skill
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
+
+if TYPE_CHECKING:
+    from satrap.edictum import AsyncSimpleSession, SimpleSession
+    from satrap.edictum.simple_session import SessionHandler
+
+    SessionType = SimpleSession | AsyncSimpleSession
+
 
 T = TypeVar("T")
 
@@ -59,7 +67,7 @@ def load_plugin_meta(plugin_dir: Path) -> dict[str, Any]:
     return {str(k): v for k, v in cast(dict[str, Any], raw).items()}
 
 
-def _load_module(path: Path, module_name: str) -> Any | None:
+def _load_module(path: Path, module_name: str) -> ModuleType | None:
     """动态加载插件模块 (文件不存在返回 None)
 
     若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
@@ -72,6 +80,7 @@ def _load_module(path: Path, module_name: str) -> Any | None:
         existing_file = getattr(existing, "__file__", None)
         if existing_file and Path(existing_file).resolve() == path.resolve():
             return existing
+
     # 模块名不精确匹配时 (如官方插件以包全名注册), 按源文件路径扫描复用
     resolved_path = path.resolve()
     for mod in list(sys.modules.values()):
@@ -90,7 +99,7 @@ def _load_module(path: Path, module_name: str) -> Any | None:
 def collect_cleanup(
     plugin_dir: Path,
     module_name: str,
-    session: Any | None = None,
+    session: SessionType | None = None,
 ) -> Callable[..., Any] | None:
     """收集插件卸载清理回调 (可选约定): state.py / hooks.py 导出的 cleanup(session)
 
@@ -112,7 +121,7 @@ def collect_tools(
     plugin_dir: Path,
     module_name: str,
     base: type[T],
-    session: Any | None = None,
+    session: SessionType | None = None,
 ) -> list[T]:
     """收集 tools.py 中的工具实例
 
@@ -148,7 +157,7 @@ def collect_tools(
 def collect_commands(
     plugin_dir: Path,
     module_name: str,
-    session: Any | None = None,
+    session: SessionType | None = None,
 ) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """收集 commands.py 的命令映射, 返回 (同步命令, 异步命令)
 
@@ -228,9 +237,9 @@ def scan_plugin_dirs(plugins_dir: str | Path | None = None) -> list[Path]:
     return found
 
 
-def install_all_plugins(session: Any, plugins_dir: str | Path | None = None) -> list[Any]:
+def install_all_plugins(session: SimpleSession, plugins_dir: str | Path | None = None) -> list[Plugin]:
     """扫描并安装全部可用插件到同步会话 (单个失败不影响其余), 返回安装的 Plugin 列表"""
-    installed: list[Any] = []
+    installed: list[Plugin] = []
     for plugin_dir in scan_plugin_dirs(plugins_dir):
         try:
             installed.append(session.install_plugin(str(plugin_dir)))
@@ -239,9 +248,9 @@ def install_all_plugins(session: Any, plugins_dir: str | Path | None = None) -> 
     return installed
 
 
-async def install_all_plugins_async(session: Any, plugins_dir: str | Path | None = None) -> list[Any]:
+async def install_all_plugins_async(session: AsyncSimpleSession, plugins_dir: str | Path | None = None) -> list[Plugin]:
     """扫描并安装全部可用插件到异步会话 (单个失败不影响其余), 返回安装的 Plugin 列表"""
-    installed: list[Any] = []
+    installed: list[Plugin] = []
     for plugin_dir in scan_plugin_dirs(plugins_dir):
         try:
             installed.append(await session.install_plugin(str(plugin_dir)))
@@ -285,9 +294,11 @@ def collect_mcp_clients(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     return {}
 
 
-def collect_handlers(plugin_dir: Path, module_name: str, session: Any | None = None) -> list[Any]:
+def collect_handlers(plugin_dir: Path, module_name: str, session: SessionType | None = None) -> list[SessionHandler]:
     """收集 handlers.py: 优先 build_handlers(session) 工厂 (会话依赖注入);
     其次导出 handlers 列表; 否则按 4 个约定函数构建处理器"""
+    from satrap.edictum.simple_session import SessionHandler  # 运行时导入 (避免模块级循环依赖)
+
     mod = _load_module(plugin_dir / "handlers.py", f"{module_name}.handlers")
     if mod is None:
         return []
@@ -295,11 +306,10 @@ def collect_handlers(plugin_dir: Path, module_name: str, session: Any | None = N
     if callable(builder) and session is not None:
         built = builder(session)
         if isinstance(built, (list, tuple)):
-            return list(cast(list[Any], built))
+            return list(cast(list[SessionHandler], built))
     declared = getattr(mod, "handlers", None)
     if declared:
-        return list(declared)
-    from satrap.edictum.simple_session import SessionHandler
+        return list(cast(list[SessionHandler], declared))
 
     funcs: dict[str, Any] = {}
     for key in ("before_user_send", "after_user_send", "before_model_reply", "after_model_reply"):
@@ -331,7 +341,7 @@ class Plugin:
     mcp: dict[str, bool] = field(default_factory=dict[str, bool])
     handlers: dict[str, bool] = field(default_factory=dict[str, bool])
     commands: dict[str, bool] = field(default_factory=dict[str, bool])
-    _session: Any = field(default=None, repr=False, compare=False)
+    _session: SessionType | None = field(default=None, repr=False, compare=False)
     _cleanup: Callable[..., Any] | None = field(default=None, repr=False, compare=False)
     """卸载清理回调 (插件 state.py/hooks.py 的 cleanup(session) 约定)"""
     _mcp_clients: dict[str, tuple[Any, list[Any]]] = field(
@@ -342,20 +352,28 @@ class Plugin:
 
     def enable_tool(self, name: str) -> bool:
         """独立启用插件内工具 (插件停用期间只改状态, 不生效)"""
+        wf = self._session._wf if self._session is not None else None
+        if wf is None:
+            logger.warning("[插件] 插件未绑定会话或工作流未初始化, 启用工具忽略")
+            return False
         if name not in self.tools:
             return False
         self.tools[name] = True
         if self.enabled:
-            self._session._wf.tools_manager.enable_tool(name)
+            wf.tools_manager.enable_tool(name)
         return True
 
     def disable_tool(self, name: str) -> bool:
         """独立停用插件内工具"""
+        wf = self._session._wf if self._session is not None else None
+        if wf is None:
+            logger.warning("[插件] 插件未绑定会话或工作流未初始化, 停用工具忽略")
+            return False
         if name not in self.tools:
             return False
         self.tools[name] = False
         if self.enabled:
-            self._session._wf.tools_manager.disable_tool(name)
+            wf.tools_manager.disable_tool(name)
         return True
 
     def enable_skill(self, name: str) -> Any:
@@ -363,86 +381,122 @@ class Plugin:
 
         返回: 同步版为 bool; 异步版为 coroutine (await 后为 bool)
         """
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 启用技能忽略")
+            return False
         if name not in self.skills:
             return False
         self.skills[name] = True
         if self.enabled:
-            return self._session._activate_plugin_skill(name)
+            return session._activate_plugin_skill(name)
         return True
 
     def disable_skill(self, name: str) -> Any:
         """独立停用插件内技能 (异步版返回 coroutine, await 后为 bool)"""
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 停用技能忽略")
+            return False
         if name not in self.skills:
             return False
         self.skills[name] = False
         if self.enabled:
-            return self._session._deactivate_plugin_skill(name)
+            return session._deactivate_plugin_skill(name)
         return True
 
     def enable_mcp(self, name: str) -> bool:
         """独立启用插件内 MCP 连接的全部工具"""
+        wf = self._session._wf if self._session is not None else None
+        if wf is None:
+            logger.warning("[插件] 插件未绑定会话或工作流未初始化, 启用 MCP 忽略")
+            return False
         if name not in self.mcp:
             return False
         self.mcp[name] = True
         if self.enabled:
             for adapter in self._mcp_clients.get(name, (None, []))[1]:
-                self._session._wf.tools_manager.enable_tool(adapter.get_tool_name())
+                wf.tools_manager.enable_tool(adapter.get_tool_name())
         return True
 
     def disable_mcp(self, name: str) -> bool:
         """独立停用插件内 MCP 连接的全部工具"""
+        wf = self._session._wf if self._session is not None else None
+        if wf is None:
+            logger.warning("[插件] 插件未绑定会话或工作流未初始化, 停用 MCP 忽略")
+            return False
         if name not in self.mcp:
             return False
         self.mcp[name] = False
         if self.enabled:
             for adapter in self._mcp_clients.get(name, (None, []))[1]:
-                self._session._wf.tools_manager.disable_tool(adapter.get_tool_name())
+                wf.tools_manager.disable_tool(adapter.get_tool_name())
         return True
 
     def enable_handler(self, name: str) -> bool:
-        """独立启用插件内处理器"""
+        """独立启用插件内处理器 (独立位委托会话, 无条件改; 聚合开关由执行路径合成)"""
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 启用处理器忽略")
+            return False
         if name not in self.handlers:
             return False
-        self.handlers[name] = True
-        if self.enabled:
-            self._session.enable_handler(name)
-        return True
+        return session.enable_handler(name)
 
     def disable_handler(self, name: str) -> bool:
-        """独立停用插件内处理器"""
+        """独立停用插件内处理器 (独立位委托会话)"""
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 停用处理器忽略")
+            return False
         if name not in self.handlers:
             return False
-        self.handlers[name] = False
-        if self.enabled:
-            self._session.disable_handler(name)
-        return True
+        return session.disable_handler(name)
 
     def enable_command(self, name: str) -> bool:
         """独立启用插件内命令"""
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 启用命令忽略")
+            return False
         if name not in self.commands:
             return False
         self.commands[name] = True
         if self.enabled:
-            self._session.enable_command(name)
+            session.enable_command(name)
         return True
 
     def disable_command(self, name: str) -> bool:
         """独立停用插件内命令"""
+        session = self._session
+        if session is None:
+            logger.warning("[插件] 插件未绑定会话, 停用命令忽略")
+            return False
         if name not in self.commands:
             return False
         self.commands[name] = False
         if self.enabled:
-            self._session.disable_command(name)
+            session.disable_command(name)
         return True
 
     # ---------------- 状态查看 ----------------
 
-    def list_capabilities(self) -> dict[str, list[dict[str, Any]]]:
-        """列出插件内全部能力及其实效状态 (含聚合开关)"""
+    def list_capabilities(self) -> dict[str, list[dict[str, str | bool]]]:
+        """列出插件内全部能力及其实效状态 (含聚合开关)
+
+        handlers 状态读会话侧独立位合成值 (唯一真相源: handler.enabled),
+        与执行路径一致; 会话/处理器缺失时防御为 False
+        """
+        session = self._session
+        handler_effective: dict[str, bool] = {}
+        if session is not None:
+            for n in self.handlers:
+                h = session._handlers.get(n)
+                handler_effective[n] = h is not None and h.enabled
         return {
             "tools": [{"name": n, "enabled": self.enabled and s} for n, s in self.tools.items()],
             "skills": [{"name": n, "enabled": self.enabled and s} for n, s in self.skills.items()],
             "mcp": [{"name": n, "enabled": self.enabled and s} for n, s in self.mcp.items()],
-            "handlers": [{"name": n, "enabled": self.enabled and s} for n, s in self.handlers.items()],
+            "handlers": [{"name": n, "enabled": self.enabled and handler_effective.get(n, False)} for n in self.handlers],
             "commands": [{"name": n, "enabled": self.enabled and s} for n, s in self.commands.items()],
         }

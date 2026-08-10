@@ -655,10 +655,6 @@ class UserManager:
         """
         with self._lock:
             try:
-                if not isinstance(user_call, UserCall):
-                    logger.error("[UserManager] route_call 失败: user_call 必须是 UserCall 实例")
-                    return ""
-
                 if self.get_or_create_user(user_id=user_id) is None:
                     logger.warning(
                         f"[UserManager] route_call 拒绝: 用户不存在且 auto_create=False, user_id={user_id}"

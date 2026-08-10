@@ -9,6 +9,7 @@ import threading
 from typing import Any
 
 from satrap.expend.plugins.satrap_coding import tools as tools_mod
+from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
@@ -17,7 +18,11 @@ _registry: dict[str, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
 
 
-def _build_state(session: Any) -> dict[str, Any]:
+SessionType = SimpleSession | AsyncSimpleSession
+"""插件支持的会话类型"""
+
+
+def _build_state(session: SessionType) -> dict[str, Any]:
     """构建一份插件状态 (权限引擎 / 记忆库 / 目标状态 / 任务清单)"""
     scope = tools_mod.user_scope(session.session_id)
     engine = PermissionEngine(
@@ -34,7 +39,7 @@ def _build_state(session: Any) -> dict[str, Any]:
     }
 
 
-def get_plugin_state(session: Any) -> dict[str, Any]:
+def get_plugin_state(session: SessionType) -> dict[str, Any]:
     """获取会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)"""
     sid = session.session_id
     with _registry_lock:
@@ -46,7 +51,7 @@ def get_plugin_state(session: Any) -> dict[str, Any]:
     return state
 
 
-def reset_plugin_state(session: Any) -> None:
+def reset_plugin_state(session: SessionType) -> None:
     """卸载插件时重置会话状态 (下次安装重建)"""
     with _registry_lock:
         state = _registry.get(session.session_id)

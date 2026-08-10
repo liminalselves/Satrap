@@ -21,7 +21,6 @@ class FakeEmbedding:
             return [self._vec(item) for item in text]
         if isinstance(text, str):
             return [] if not text.strip() else self._vec(text)
-        return []
 
     def _vec(self, text: str):
         digest = hashlib.sha256(text.encode("utf-8")).digest()

@@ -149,7 +149,7 @@ class ModelConfigManager:
 
             try:
                 with self.storage_path.open("r", encoding="utf-8") as f:
-                    data: dict[str, Any] = json.load(f)
+                    data: dict[str, Any] | None = json.load(f)
             except Exception as e:
                 logger.error(f"[ModelConfigManager] 读取配置失败: {e}")
                 return

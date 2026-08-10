@@ -1,5 +1,5 @@
 from satrap.core.utils.context import ContextManager
-from typing import Dict, Tuple, Any, Union, List
+from typing import Dict, Tuple, Any, Union, List, Callable
 from satrap.core.type import LLMCallResponse
 import json
 
@@ -135,12 +135,17 @@ class Tool:
     result = tool(1, 2)   # 返回 3
     ```
     """
-    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None):
-        """初始化工具"""
+    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None, owner_plugin: str | None = None):
+        """初始化工具
+
+        参数:
+        - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
+        """
         cls = self.__class__
         self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)
         self.description = description if description is not None else getattr(cls, 'description', None)
         self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
+        self.owner_plugin = owner_plugin
         self.tool_available = True
         self.tool_enabled = True
 
@@ -233,12 +238,17 @@ class AsyncTool:
     asyncio.run(main())
     ```
     """
-    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None):
-        """初始化工具"""
+    def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None, owner_plugin: str | None = None):
+        """初始化工具
+
+        参数:
+        - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
+        """
         cls = self.__class__
         self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)
         self.description = description if description is not None else getattr(cls, 'description', None)
         self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
+        self.owner_plugin = owner_plugin
         self.tool_available = True
         self.tool_enabled = True
 
@@ -294,7 +304,8 @@ class ToolsManager:
     """工具管理器, 用于注册和执行工具"""
     def __init__(self):
         self.tools: Dict[str, Tool] = {}
-
+        self.effectiveness_guard: Callable[[str], bool] | None = None
+        """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
     def register_tool(self, tool: Tool):
         """注册工具
 
@@ -361,7 +372,7 @@ class ToolsManager:
         logger.info("[禁用工具] 已禁用所有工具")
         return True
 
-    def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    def execute_tool(self, tool_name: str, arguments: Dict[str, Any] | None) -> Any:
         """执行指定工具"""
         if not isinstance(tool_name, str) or not tool_name.strip():
             return _create_tool_error("", "工具名称无效", "invalid_tool_call")
@@ -377,6 +388,9 @@ class ToolsManager:
         tool = self.tools[tool_name]
         if not tool.is_enabled():
             return _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled")
+        guard = self.effectiveness_guard
+        if guard is not None and not guard(tool_name):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 当前不可用 (所属插件已禁用)", "disabled")
 
         try:
             result = tool(**arguments)
@@ -388,7 +402,7 @@ class ToolsManager:
             return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
-    def get_call_info(call_info: Dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
         """获取工具调用信息
 
         参数:
@@ -407,7 +421,7 @@ class ToolsManager:
         return tool_name, arguments
 
     @staticmethod
-    def create_call_message(call_info: Dict[str, Any]) -> Dict[str, Any]:
+    def create_call_message(call_info: Dict[str, Any] | None) -> Dict[str, Any]:
         """创建工具调用消息
 
         参数:
@@ -448,7 +462,7 @@ class ToolsManager:
         }
 
     @staticmethod
-    def validate_call_info(call_info: Dict[str, Any]) -> Dict[str, Any] | None:
+    def validate_call_info(call_info: Dict[str, Any] | None) -> Dict[str, Any] | None:
         """校验工具调用信息"""
         if not isinstance(call_info, dict):
             return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
@@ -505,7 +519,8 @@ class AsyncToolsManager:
     """异步工具管理器, 用于注册和执行异步工具"""
     def __init__(self):
         self.tools: Dict[str, AsyncTool] = {}
-
+        self.effectiveness_guard: Callable[[str], bool] | None = None
+        """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
     def register_tool(self, tool: AsyncTool):
         """注册异步工具
 
@@ -571,7 +586,7 @@ class AsyncToolsManager:
         logger.info("[禁用异步工具] 已禁用所有工具")
         return True
 
-    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
+    async def execute_tool(self, tool_name: str, arguments: Dict[str, Any] | None) -> Any:
         """
         执行指定工具 (异步方法)
         
@@ -596,6 +611,9 @@ class AsyncToolsManager:
         tool = self.tools[tool_name]
         if not tool.is_enabled():
             return _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled")
+        guard = self.effectiveness_guard
+        if guard is not None and not guard(tool_name):
+            return _create_tool_error(tool_name, f"工具 {tool_name} 当前不可用 (所属插件已禁用)", "disabled")
 
         try:   # 异步调用工具
             result = await tool(**arguments)
@@ -607,7 +625,7 @@ class AsyncToolsManager:
             return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
 
     @staticmethod
-    def get_call_info(call_info: Dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
         """获取工具调用信息
 
         参数:
@@ -626,7 +644,7 @@ class AsyncToolsManager:
         return tool_name, arguments
 
     @staticmethod
-    def create_call_message(call_info: Dict[str, Any]) -> Dict[str, Any]:
+    def create_call_message(call_info: Dict[str, Any] | None) -> Dict[str, Any]:
         """创建工具调用消息
 
         参数:
@@ -667,7 +685,7 @@ class AsyncToolsManager:
         }
 
     @staticmethod
-    def validate_call_info(call_info: Dict[str, Any]) -> Dict[str, Any] | None:
+    def validate_call_info(call_info: Dict[str, Any] | None) -> Dict[str, Any] | None:
         """校验工具调用信息"""
         if not isinstance(call_info, dict):
             return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")

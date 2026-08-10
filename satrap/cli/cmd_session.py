@@ -200,7 +200,7 @@ def cmd_session_config_set(args: argparse.Namespace):
                 current = client.get_session_class(args.name)
                 if "error" in current:
                     raise ValueError(current["error"])
-                params: dict[str, Any] = dict(current.get("params", {}))
+                params = dict(current.get("params", {}))
                 params.update(kv)
                 result = client.set_session_class_params(args.name, params)
                 if "error" in result:

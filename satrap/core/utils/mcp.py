@@ -29,10 +29,13 @@ await mcp.close()   # 断开连接并自动注销已注册工具
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import threading
+from asyncio import AbstractEventLoop
 from contextlib import AsyncExitStack
 from types import TracebackType
-from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple, cast
+from typing import Any, Awaitable, Dict, List, Literal, Optional, Protocol, Tuple, cast
 
 from satrap.core.log import logger
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
@@ -116,6 +119,11 @@ def _mcp_error(tool_name: str, message: str) -> Dict[str, Any]:
     }
 
 
+async def _consume(awaitable: Awaitable[Any]) -> Any:
+    """将任意 Awaitable 包装为协程 (run_coroutine_threadsafe 只接受 Coroutine) """
+    return await awaitable
+
+
 class MCPSessionProtocol(Protocol):
     """MCP 会话的结构化协议; 仅声明实际使用的方法, 便于测试注入假会话"""
 
@@ -180,6 +188,50 @@ class MCPToolAdapter(AsyncTool):
         return content_to_text(getattr(result, "content", None))
 
 
+class SyncMCPToolAdapter(Tool):
+    """MCP 远端工具同步适配器; 通过后台事件循环线程桥接异步 MCP 调用
+
+    - 内部持有 MCPToolAdapter (异步) 与后台事件循环, execute() 将协程提交到
+      该循环并同步等待结果, 供同步 SimpleSession (ToolsManager) 使用
+    """
+
+    def __init__(self, inner: MCPToolAdapter, loop: AbstractEventLoop, timeout: float = 300.0):
+        """
+        参数:
+        - inner: 异步 MCP 适配器 (持有 MCP 会话与远端工具定义)
+        - loop: 后台事件循环 (MCP 连接与调用均在循环线程执行)
+        - timeout: 单次调用同步等待超时秒数
+        """
+        self._inner = inner
+        self._loop = loop
+        self._timeout = timeout
+        super().__init__(
+            tool_name=inner.get_tool_name(),
+            description=inner.description,
+            params_dict=inner.params_dict,
+        )
+
+    def get_tool_defined(self) -> Dict[str, Any]:
+        """工具定义 (透传 MCP 的完整 JSON Schema)"""
+        if not self.assert_tool():
+            return {}
+        return self._inner.get_tool_defined()
+
+    def execute(self, *input: Any, **kwargs: Any) -> Any:
+        """同步执行远端 MCP 工具: 提交到后台循环并等待结果"""
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._inner.execute(*input, **kwargs), self._loop
+            )
+            return future.result(timeout=self._timeout)
+        except asyncio.TimeoutError:
+            logger.error(f"[MCP同步适配器] 工具 {self.get_tool_name()} 调用超时 ({self._timeout}s)")
+            return _mcp_error(self.get_tool_name(), f"MCP 工具调用超时 ({self._timeout}s)")
+        except Exception as e:
+            logger.error(f"[MCP同步适配器] 工具 {self.get_tool_name()} 调用失败: {e}")
+            return _mcp_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}")
+
+
 class MCPClient:
     """MCP 客户端管理器; 负责连接 MCP Server 并将远端工具注册进 AsyncToolsManager
 
@@ -230,6 +282,11 @@ class MCPClient:
         self._stack: Optional[AsyncExitStack] = None
         self._connected = False
         self._tools_manager: Optional[AsyncToolsManager] = None
+        # 同步模式 (SimpleSession) 专用: 后台事件循环线程 + 同步适配器
+        self._sync_loop: Optional[AbstractEventLoop] = None
+        self._sync_thread: Optional[threading.Thread] = None
+        self._sync_adapters: List[SyncMCPToolAdapter] = []
+        self._sync_tools_manager: Optional[ToolsManager] = None
 
     async def connect(self) -> MCPSessionProtocol:
         """连接 MCP Server 并初始化会话 (幂等, 重复调用返回同一会话)"""
@@ -328,6 +385,77 @@ class MCPClient:
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
         await self.close()
 
+    # ---------------- 同步模式 (SimpleSession) ----------------
+
+    def _ensure_sync_loop(self) -> AbstractEventLoop:
+        """懒启动后台事件循环线程 (daemon, 不阻塞进程退出)"""
+        if self._sync_loop is not None and self._sync_loop.is_running():
+            return self._sync_loop
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, name=f"mcp-sync-{self.name}", daemon=True)
+        thread.start()
+        self._sync_loop = loop
+        self._sync_thread = thread
+        return loop
+
+    def _sync_call(self, coro: Awaitable[Any], timeout: float) -> Any:
+        """将协程提交到后台循环并同步等待结果"""
+        loop = self._sync_loop
+        if loop is None or not loop.is_running():
+            raise RuntimeError(f"MCP 后台事件循环未运行 ({self.name})")
+        future = asyncio.run_coroutine_threadsafe(_consume(coro), loop)
+        return future.result(timeout=timeout)
+
+    def sync_register_tools(
+        self,
+        tools_manager: ToolsManager,
+        name_prefix: Optional[str] = None,
+    ) -> List[SyncMCPToolAdapter]:
+        """同步注册 MCP 工具 (SimpleSession 用): 后台循环连接, 远端工具以同步适配器注册
+
+        参数:
+        - tools_manager: 同步工具管理器
+        - name_prefix: 工具名前缀, 默认使用客户端 tool_prefix
+        """
+        loop = self._ensure_sync_loop()
+        session = self._sync_call(self.connect(), 30)
+        self._sync_tools_manager = tools_manager
+        prefix = self.tool_prefix if name_prefix is None else name_prefix
+        for mcp_tool in self._sync_call(self.list_tools(), 60):
+            inner = MCPToolAdapter(session, mcp_tool, name_prefix=prefix)
+            outer = SyncMCPToolAdapter(inner, loop)
+            tools_manager.register_tool(outer)
+            self._sync_adapters.append(outer)
+        logger.info(
+            f"[MCP客户端] 已同步注册 {len(self._sync_adapters)} 个远端工具: "
+            f"{[a.get_tool_name() for a in self._sync_adapters]}"
+        )
+        return list(self._sync_adapters)
+
+    def sync_close(self) -> None:
+        """同步断开: 注销同步适配器, 关闭连接, 停止后台事件循环"""
+        manager = self._sync_tools_manager
+        if manager is not None:
+            for adapter in self._sync_adapters:
+                manager.unregister_tool(adapter.get_tool_name())
+            self._sync_adapters.clear()
+        if self._stack is not None:
+            try:
+                self._sync_call(self._stack.aclose(), 30)
+            except Exception as e:
+                logger.warning(f"[MCP客户端] 同步断开连接异常: {e}")
+        self._stack = None
+        self.session = None
+        self._connected = False
+        loop, thread = self._sync_loop, self._sync_thread
+        self._sync_loop = None
+        self._sync_thread = None
+        if loop is not None and loop.is_running():
+            loop.call_soon_threadsafe(loop.stop)
+        if thread is not None:
+            thread.join(timeout=5)
+        logger.info(f"[MCP客户端] 已同步断开: {self.name}")
+
 
 class MCPServerExporter:
     """MCP Server 导出器; 将本地 ToolsManager 中的工具导出为 MCP Server
@@ -402,6 +530,7 @@ def export_tools_to_mcp(
 __all__ = [
     "MCPClient",
     "MCPToolAdapter",
+    "SyncMCPToolAdapter",
     "MCPServerExporter",
     "export_tools_to_mcp",
     "content_to_text",

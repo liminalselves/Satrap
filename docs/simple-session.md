@@ -6,12 +6,13 @@
 
 - **单 workflow / 单主模型**: 一个会话只有一个主模型, 内部直接使用 `full_agent` (React 范式: 用户消息 -> 模型调用 -> 工具循环 -> 最终回复)
 - **六类能力管理**: 命令 / 工具 / MCP / skill / 处理器 / 插件, 均提供注入、删除、启用/停用、查看接口
-- **处理器直注流程 (非 hook)**: `SessionHandler` 函数直接嵌入调用流程, 4 个处理点:
-  - `before_user_send`: 用户消息处理前, 返回 `str` 改写输入, 返回 `None` 透传 (可拦截/改写)
-  - `after_user_send`: 用户消息处理后 (通知, 收到改写后的文本)
-  - `before_model_reply`: 模型调用前 (通知)
-  - `after_model_reply`: 模型回复后 (通知, 收到最终回复文本)
-  - 多处理器按 `priority` 升序执行, 支持启停与运行时调整优先级
+- **处理器直注流程 (非 hook)**: `SessionHandler` 函数直接嵌入调用流程, 4 个处理点 (**回调全同步协议**, 统一携带 `HandlerContext`; 破坏性升级):
+  - `before_user_send(text, ctx)`: 用户消息处理前, 返回 `str` / `HandlerResult.continue_with(text)` 改写输入, 返回 `None` 透传; `respond(text)` / `reject(reason)` 短路跳过模型 (ctx.outcome 置位); `abort(reason)` 抛 `HandlerAbortError`; 返回其他类型记 warning 忽略
+  - `after_user_send(text, ctx)`: 用户消息处理后 (通知, 收到改写后的文本与上下文)
+  - `before_model_reply(ctx)`: Agent/模型调用前 (通知; 命名沿用历史, 语义为"Agent 调用前")
+  - `after_model_reply(result, ctx)`: 模型回复后 (通知, `result` 为最终文本); 返回 `str` 改写最终结果; 异常路径 `result=None` 且 `ctx.error` 有值, 返回值被忽略
+  - 多处理器按 `priority` 升序执行 (同值按注册顺序, 稳定契约), 支持启停与运行时调整优先级
+  - **命令入口 (`cmd_handler.process_message`) 不经过处理器, 仅覆盖 `run()`**; 处理器异常按 `error_policy` 处理 (默认隔离记日志继续, "abort" 抛 HandlerAbortError); 同一次 `run` 内处理器增删/启停/优先级变更为一致性快照 (下次生效)
 - **目录插件 (Plugin)**: 工具 + skill + MCP + 处理脚本的组合包 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py), 双层启停 (插件级 × 能力级)
 - **checkpoint 全套**: 继承 Session 聚合检查点 (会话上下文 + 工作流上下文)
 - **多模态 + 流式**: `run(user_input, img_urls=[...])` 多模态透传; `set_stream_mode(True)` 切换流式输出
@@ -33,28 +34,78 @@ result = session("你好")
 print(result)
 ```
 
-## 处理器示例 (优先级 + 改写)
+## 处理器示例 (优先级 + 改写 + 短路)
 
 ```python
-from satrap import SessionHandler
+from satrap import SessionHandler, HandlerContext, HandlerResult
 
-def 敏感词过滤(text: str) -> str | None:
+def 敏感词过滤(text: str, ctx: HandlerContext) -> str | None:
     return text.replace("脏话", "**")
 
-def 记录日志(text: str) -> None:
+def 权限拦截(text: str, ctx: HandlerContext) -> HandlerResult | None:
+    if "危险操作" in text:
+        return HandlerResult.reject("已拦截: 危险操作需要人工确认")
+    return None
+
+def 记录日志(text: str, ctx: HandlerContext) -> None:
     print(f"[user] {text}")
+
+def 输出改写(result: str | None, ctx: HandlerContext) -> str:
+    return f"{result} (由 handler 改写)"
 
 session.add_handler(SessionHandler(
     name="filter", priority=10, before_user_send=敏感词过滤,
 ))
 session.add_handler(SessionHandler(
+    name="guard", priority=20, before_user_send=权限拦截,
+))
+session.add_handler(SessionHandler(
     name="logger", priority=100, after_user_send=记录日志,
+))
+session.add_handler(SessionHandler(
+    name="tweak", priority=100, after_model_reply=输出改写,
 ))
 
 session.set_handler_priority("logger", 5)   # 调整优先级, 越小越先执行
 session.disable_handler("filter")            # 停用处理器
-session.remove_handler("logger")             # 删除处理器
+session.remove_handler("logger")             # 删除处理器 (触发 close)
 ```
+
+### HandlerResult 短路指令
+
+`before_user_send` 可返回 `HandlerResult` 实现第三态短路 (文本均为 `str`, 与 `run() -> str` 契约对齐):
+
+| 指令 | 行为 |
+|---|---|
+| `continue_with(text)` | 等价 `str` 改写, 继续执行后续处理器 |
+| `respond(text)` | 跳过模型直接返回 `text` (后续处理器短路; `after_model_reply` 仍执行) |
+| `reject(reason)` | 业务拒绝, `reason` 作为 `run` 的返回文本 (正常返回) |
+| `abort(reason)` | 故障终止, 抛 `HandlerAbortError(reason)` |
+
+### HandlerContext / HandlerConfig
+
+`HandlerContext` 由**冻结只读的 `HandlerConfig`** 与**运行期可变状态**组成:
+
+- `ctx.config` (冻结, handler 不可改): `original_input` / `img_urls` / `thinking` / `max_iterations` / `call_id` (每轮唯一)
+- `ctx.text`: 当前文本 (before_user_send 改写链更新; 可读, handler 改动不影响 run 主流程)
+- `ctx.error`: 模型调用异常 (after_model_reply 可见; 非 None 时返回值被忽略)
+- `ctx.outcome`: 短路语义 ("respond" / "reject" / "abort" 置位, 正常路径为 None)
+
+`SessionHandler.error_policy`: "continue" (默认) 异常隔离记日志继续 (fail-open; 权限/安全检查 handler 请显式设置 "abort"); "abort" 抛 HandlerAbortError 终止 run。
+
+### 处理器生命周期与同名冲突
+
+- `add_handler` 同名默认抛 `ValueError`; 显式 `replace=True` 覆盖, 覆盖前调用旧对象 `close()`; 旧对象属插件时新对象继承其插件归属 (插件停用仍过滤)
+- `remove_handler` / 插件卸载会调用处理器 `close()` (子类可覆盖释放资源; 契约: 同步函数、幂等、容忍超时态); **run 进行中移除的处理器延迟到 run 结束冲刷** (防 run 快照持有已 close 对象); `remove_handler` 同步清理所属插件的 handlers 名册, `list_capabilities` 不残留
+- **回调全同步协议**: 所有回调必须为同步函数 (async 回调在 add_handler 与插件安装统一抛 `TypeError`); 异步会话经 `asyncio.to_thread` 执行, 网络 IO 用同步库 (requests/sqlite/文件) 即可, 不阻塞事件循环
+- **异步超时 = "放弃等待"而非"终止执行"**: 超时后框架不再等结果, 底层工作线程仍跑完——handler 网络调用自设超时 (如 `requests.post(..., timeout=10)`); `timeout=0` 立即放弃等待, 负数拒绝
+
+### 线程安全与线程池
+
+- 注册表 (`_handlers` / `_plugins`) 由 `threading.RLock` 保护, 支持跨线程增删查
+- handler 回调经 `to_thread` 可能运行在工作线程: handler 的共享可变状态需自行保证线程安全
+- handler 阻塞会占用事件循环**全局默认 executor** 的 worker, 与项目其它 `to_thread` (checkpoint 持久化 / 工具文件 IO / 沙箱执行) 共享同一线程池——失控的无限阻塞会拖累同池操作, handler 必须避免无限阻塞
+- 同一会话不支持并发 `run` (异步版经 `asyncio.Lock` 串行化, 第二个 run 排队; 同步版单线程天然串行)
 
 ## 目录插件 (Plugin)
 
@@ -102,6 +153,8 @@ plugin.list_capabilities()        # 展示插件内每项能力的实效状态
 ```
 
 > 注意: 插件内能力的独立启停建议走插件实例接口, 会话全局接口 (`session.disable_tool`) 不维护插件状态; 插件停用期间对名下能力的操作以恢复时的独立状态为准。
+>
+> 工具与处理器采用**执行路径合成**: 插件停用后, 即使 `enable_tool` / `enable_all_tools` / `enable_handler` 更新了独立位, 执行时仍按「独立位 ∧ 插件聚合开关」过滤 (`execute_tool` 返回 disabled 错误, 处理器不执行); 工具定义列表 (`get_tools_definitions`) 按独立位展示, 与执行路径解耦。
 
 ### 安全提示
 
@@ -157,7 +210,9 @@ session.set_stream_mode(True)              # 流式 / 非流式切换
 
 | 能力 | SimpleSession (同步) | AsyncSimpleSession (异步) |
 |---|---|---|
-| 处理器回调 | 仅同步函数 | 同步 + 异步函数 |
+| 处理器回调 | 仅同步函数 (async 回调抛 `TypeError`) | 仅同步函数 (经 `to_thread` 执行, 不阻塞事件循环) |
+| 处理器超时 | 无超时保护 (由插件作者负责) | 默认 30s, `SessionHandler.timeout` 可覆盖; 超时 = 放弃等待 (线程仍跑完) |
+| 并发 run | 单线程天然串行 | 不支持并发 run (`asyncio.Lock` 串行化, 第二个 run 排队) |
 | MCP 注入 | 不支持 (工具为 AsyncTool, 插件 mcp.py 跳过) | 支持 (`add_mcp` / `remove_mcp` / 插件 mcp.py 为 async) |
 | skill 接口 | 同步 (`add_skill` 等) | async (`await add_skill` / `enable_skill` / `disable_skill` / `remove_skill`) |
 | 插件接口 | 同步 (`install_plugin` 等) | async (`await install_plugin` / `uninstall_plugin` / `enable_plugin` / `disable_plugin`) |

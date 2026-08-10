@@ -346,8 +346,11 @@ def test_memory_tools_chain(tmp_path: Any, workspace: Any):
 # ================= shell =================
 
 
-def test_shell_read_only_and_approval(tmp_path: Any):
+def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     """shell: 只读直接执行, 工作区内写免审批, 工作区外路径审批, 黑名单拒绝"""
+    # 工作区指向临时目录, 避免相对路径写盘污染项目根
+    monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", tmp_path / "workspace")
+    (tmp_path / "workspace").mkdir()
     session = _make_session(tmp_path)
     tools = _install_tools(session)
 
@@ -357,9 +360,10 @@ def test_shell_read_only_and_approval(tmp_path: Any):
     # 写命令仅在工作区内活动 (无工作区外绝对路径): 免审批直接执行
     out = tools["shell"].execute("echo written > f.txt")
     assert "需要用户批准" not in out
+    assert (tmp_path / "workspace" / "f.txt").is_file()
 
-    # 引用工作区外绝对路径: 走审批 (无输入通道时拒绝)
-    out = tools["shell"].execute("copy C:\\a\\b.txt C:\\c\\d.txt")
+    # 引用工作区外绝对路径 (UNC, 不在任何盘符下): 走审批 (无输入通道时拒绝)
+    out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
     assert "需要用户批准" in out
 
     out = tools["shell"].execute("rm -rf /")
@@ -367,7 +371,7 @@ def test_shell_read_only_and_approval(tmp_path: Any):
 
     # 工作区外路径经用户批准后走执行流程 (源不存在仅验证流程, 无副作用)
     session.user_input_provider = lambda q: "y"
-    out = tools["shell"].execute("copy C:\\a\\b.txt C:\\c\\d.txt")
+    out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
     assert "需要用户批准" not in out
     out = tools["shell"].execute("echo written", shell="cmd")
     assert "written" in out

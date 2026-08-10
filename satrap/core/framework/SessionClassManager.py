@@ -195,11 +195,6 @@ class SessionClassConfigManager:
         - model_key: params 中的哪个字段引用 ModelConfigManager 中的 LLM 名称
         """
         with self._lock:
-            if not inspect.isclass(session_class) or not issubclass(
-                session_class, (Session, AsyncSession)
-            ):
-                raise TypeError("session_class 必须继承 Session 或 AsyncSession")
-
             key = self._normalize_name(name)
             class_path = f"{session_class.__module__}.{session_class.__qualname__}"
             is_async = issubclass(session_class, AsyncSession)

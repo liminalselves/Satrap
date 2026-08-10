@@ -83,7 +83,7 @@ class SubAgent(Tool):
         """
         # 1. 安全解析 (处理模型可能传字符串或数组的情况)
         try:
-            task_list: list[str] = json.loads(task)
+            task_list: str | list[str] | int | float | bool | None = json.loads(task)
             if isinstance(task_list, str):
                 task_list = [task_list]
             elif not isinstance(task_list, list):
@@ -150,7 +150,7 @@ class AsyncSubAgent(AsyncTool):
         """
         # 1. 安全解析 (处理模型可能传字符串或数组的情况)
         try:
-            task_list: list[str] = json.loads(task)
+            task_list: str | list[str] | int | float | bool | None = json.loads(task)
             if isinstance(task_list, str):
                 task_list = [task_list]
             elif not isinstance(task_list, list):

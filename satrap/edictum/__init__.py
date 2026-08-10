@@ -7,6 +7,17 @@ Agent 框架, 支持命令/工具/MCP/skill/处理器/插件六类能力的注�
 - checkpoint 与多模态/流式能力完整。
 """
 from satrap.edictum.plugin import Plugin
-from satrap.edictum.simple_session import AsyncSimpleSession, SessionHandler, SimpleSession
+from satrap.edictum.simple_session import (
+    AsyncSimpleSession,
+    HandlerAbortError,
+    HandlerConfig,
+    HandlerContext,
+    HandlerResult,
+    SessionHandler,
+    SimpleSession,
+)
 
-__all__ = ["SimpleSession", "AsyncSimpleSession", "SessionHandler", "Plugin"]
+__all__ = [
+    "SimpleSession", "AsyncSimpleSession", "SessionHandler",
+    "HandlerConfig", "HandlerContext", "HandlerResult", "HandlerAbortError", "Plugin",
+]

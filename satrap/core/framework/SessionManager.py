@@ -83,12 +83,6 @@ class SessionRegistry:
         if not session_type_name:
             logger.error("[SessionRegistry] 注册失败：session_type_name 不能为空")
             return
-        if not inspect.isclass(session_class):
-            logger.error("[SessionRegistry] 注册失败：session_class 必须是类对象")
-            return
-        if not issubclass(session_class, (Session, AsyncSession)):
-            logger.error("[SessionRegistry] 注册失败：session_class 必须继承 Session 或 AsyncSession")
-            return
 
         with self._lock:
             self._mapping[session_type_name] = session_class
@@ -478,9 +472,6 @@ class SessionManager:
         - session_config: 会话实例初始化配置(会存库)
         - session_id: 可选, 不传则自动生成
         """
-        if not inspect.isclass(session_class) or not issubclass(session_class, (Session, AsyncSession)):
-            raise TypeError("session_class 必须继承 Session 或 AsyncSession")
-
         type_name = (session_type_name or session_class.__name__).strip() or session_class.__name__
         self.registry.register(type_name, session_class)
 
@@ -641,10 +632,6 @@ class SessionManager:
         4. 保持原有池化/淘汰流程
         """
         try:
-            if not isinstance(user_call, UserCall):
-                logger.error("[SessionManager] handle_call 失败：user_call 必须是 UserCall 实例")
-                return ""
-
             session_cfg = self._resolve_or_create_session_config(user_call)
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
@@ -681,10 +668,6 @@ class SessionManager:
         - 会话响应 (str) 或空字符串
         """
         try:
-            if not isinstance(user_call, UserCall):
-                logger.error("[SessionManager] handle_call_async 失败：user_call 必须是 UserCall 实例")
-                return ""
-
             session_cfg = self._resolve_or_create_session_config(user_call)
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id

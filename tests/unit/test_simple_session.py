@@ -13,16 +13,34 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import logging
+import threading
+import time
 from pathlib import Path
-from typing import Any, Iterator, cast
+from typing import Any, Iterator, Protocol, cast
 
 import pytest
 
-from satrap.edictum import AsyncSimpleSession, SessionHandler, SimpleSession
+from satrap.edictum import (
+    AsyncSimpleSession,
+    HandlerAbortError,
+    HandlerConfig,
+    HandlerContext,
+    HandlerResult,
+    SessionHandler,
+    SimpleSession,
+)
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.skills import SkillsManager
+
+
+class _SessionAwareTool(Protocol):
+    """插件工厂动态挂载 session_id 的工具结构"""
+
+    session_id: str
 
 
 class _EchoTool(Tool):
@@ -310,11 +328,11 @@ def test_plugins_execute_in_priority_order(tmp_path: Path):
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
 
-    def low(text: str) -> str | None:
+    def low(text: str, ctx: HandlerContext) -> str | None:
         order.append("low")
         return text + "b"
 
-    def high(text: str) -> str | None:
+    def high(text: str, ctx: HandlerContext) -> str | None:
         order.append("high")
         return text + "a"
 
@@ -331,7 +349,7 @@ def test_plugin_none_passthrough(tmp_path: Path):
     """before_user_send 返回 None 不改写"""
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: None))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t, ctx: None))
 
     session.run("原样")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
@@ -344,18 +362,18 @@ def test_plugin_after_callbacks_receive_values(tmp_path: Path):
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
 
-    def after_send(text: str) -> None:
+    def after_send(text: str, ctx: HandlerContext) -> None:
         seen["user"] = text
 
-    def before_reply() -> None:
+    def before_reply(ctx: HandlerContext) -> None:
         seen["before"] = True
 
-    def after_reply(text: str) -> None:
+    def after_reply(text: str | None, ctx: HandlerContext) -> None:
         seen["reply"] = text
 
     session.add_handler(SessionHandler(
         name="p",
-        before_user_send=lambda t: t + "!",
+        before_user_send=lambda t, ctx: t + "!",
         after_user_send=after_send,
         before_model_reply=before_reply,
         after_model_reply=after_reply,
@@ -372,7 +390,7 @@ def test_plugin_enable_disable_and_remove(tmp_path: Path):
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
 
-    def fn(text: str) -> str | None:
+    def fn(text: str, ctx: HandlerContext) -> str | None:
         calls.append("called")
         return None
 
@@ -402,10 +420,10 @@ def test_plugin_priority_adjust(tmp_path: Path):
     session = _make_session(tmp_path, llm)
 
     session.add_handler(SessionHandler(
-        name="a", priority=100, before_user_send=lambda t: order.append("a") or None,
+        name="a", priority=100, before_user_send=lambda t, ctx: order.append("a") or None,
     ))
     session.add_handler(SessionHandler(
-        name="b", priority=200, before_user_send=lambda t: order.append("b") or None,
+        name="b", priority=200, before_user_send=lambda t, ctx: order.append("b") or None,
     ))
 
     session.run("x")
@@ -418,25 +436,35 @@ def test_plugin_priority_adjust(tmp_path: Path):
     assert session.set_handler_priority("missing", 1) is False
 
 
-def test_plugin_duplicate_name_overwrites(tmp_path: Path):
-    """同名插件覆盖"""
+def test_plugin_duplicate_name_conflicts_and_replace(tmp_path: Path):
+    """同名处理器: 默认 raise; replace=True 覆盖且旧对象 close 被调"""
     calls: list[str] = []
+    closed: list[str] = []
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
 
-    def first(t: str) -> str | None:
+    def first(t: str, ctx: HandlerContext) -> str | None:
         calls.append("first")
         return None
 
-    def second(t: str) -> str | None:
+    def second(t: str, ctx: HandlerContext) -> str | None:
         calls.append("second")
         return None
 
-    session.add_handler(SessionHandler(name="p", before_user_send=first))
-    session.add_handler(SessionHandler(name="p", before_user_send=second))
+    class _ClosingHandler(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    session.add_handler(_ClosingHandler(name="p", before_user_send=first))
+    with pytest.raises(ValueError, match="已存在"):
+        session.add_handler(SessionHandler(name="p", before_user_send=second))
+    assert session.add_handler(
+        SessionHandler(name="p", before_user_send=second), replace=True,
+    ) is True
     session.run("x")
     assert calls == ["second"]
     assert len(session.list_handlers()) == 1
+    assert closed == ["p"]
 
 
 def test_plugin_empty_name_raises(tmp_path: Path):
@@ -563,20 +591,21 @@ async def test_async_mcp_lifecycle(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_async_plugin_async_callbacks(tmp_path: Path):
-    """异步插件回调 (async 函数) 生效"""
+async def test_async_plugin_sync_callbacks(tmp_path: Path):
+    """异步会话同步回调 (全同步协议) 经 to_thread 生效"""
     seen: list[str] = []
     llm = _FakeAsyncLLM()
     session = AsyncSimpleSession(
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
 
-    async def before(text: str) -> str | None:
+    def before(text: str, ctx: HandlerContext) -> str | None:
         seen.append("before")
         return text + "!"
 
-    async def after(text: str) -> None:
+    def after(text: str | None, ctx: HandlerContext) -> str | None:
         seen.append(f"after:{text}")
+        return None
 
     session.add_handler(SessionHandler(
         name="p", before_user_send=before, after_model_reply=after,
@@ -623,7 +652,7 @@ def test_sync_plugin_missing_before_user_send(tmp_path: Path):
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
     session.add_handler(SessionHandler(
-        name="p", after_user_send=lambda t: seen.append(t),
+        name="p", after_user_send=lambda t, ctx: seen.append(t),
     ))
     session.run("hi")
     assert seen == ["hi"]
@@ -696,14 +725,14 @@ async def test_async_plugin_sync_callbacks_and_continue(tmp_path: Path):
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
 
-    def after_send(text: str) -> None:
+    def after_send(text: str, ctx: HandlerContext) -> None:
         seen["user"] = text
 
-    def before_send(text: str) -> str | None:
+    def before_send(text: str, ctx: HandlerContext) -> str | None:
         seen["before"] = True
         return text + "!"
 
-    def before_reply() -> None:
+    def before_reply(ctx: HandlerContext) -> None:
         seen["before_reply"] = True
 
     session.add_handler(SessionHandler(name="a", after_user_send=after_send))
@@ -893,7 +922,7 @@ def test_plugin_empty_string_rewrite(tmp_path: Path):
     """H2 修复: before_user_send 返回空串 = 拦截/清空输入"""
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
-    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: ""))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t, ctx: ""))
     session.run("你好")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == ""
@@ -906,28 +935,30 @@ async def test_async_plugin_empty_string_rewrite(tmp_path: Path):
     session = AsyncSimpleSession(
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
-    session.add_handler(SessionHandler(name="p", before_user_send=lambda t: ""))
+    session.add_handler(SessionHandler(name="p", before_user_send=lambda t, ctx: ""))
     await session.run("hi")
     user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == ""
 
 
-def test_plugin_non_str_raises_sync(tmp_path: Path):
-    """H2 修复: 同步版非 str truthy 返回值抛错"""
-    def bad(t: str) -> bool:
+def test_plugin_non_str_return_ignored_sync(tmp_path: Path):
+    """非 str/HandlerResult 返回值被忽略 (不改写, 不中断)"""
+    def bad(t: str, ctx: HandlerContext) -> bool:
         return False
 
     llm = _FakeLLM()
     session = _make_session(tmp_path, llm)
     session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
-    with pytest.raises(AssertionError):
-        session.run("hi")
+    result = session.run("hi")
+    assert result == "回复"
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"  # False 被忽略, 未改写
 
 
 @pytest.mark.asyncio
-async def test_plugin_non_str_raises_async(tmp_path: Path):
-    """H2 修复: 异步版非 str truthy 返回值抛 TypeError"""
-    def bad(t: str) -> dict[str, int]:
+async def test_plugin_non_str_return_ignored_async(tmp_path: Path):
+    """异步版非 str 返回值被忽略"""
+    def bad(t: str, ctx: HandlerContext) -> dict[str, int]:
         return {"bad": 1}
 
     llm = _FakeAsyncLLM()
@@ -935,8 +966,10 @@ async def test_plugin_non_str_raises_async(tmp_path: Path):
         "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
     session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
-    with pytest.raises(TypeError):
-        await session.run("hi")
+    result = await session.run("hi")
+    assert result == "异步回复"
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"  # dict 被忽略, 未改写
 
 
 def test_thinking_requires_stream_mode_sync(tmp_path: Path):
@@ -1045,7 +1078,7 @@ def _write_plugin_dir(tmp_path: Path, name: str = "demo", *, with_mcp: bool = Fa
     )
     (plugin_dir / "handlers.py").write_text(
         "from satrap.edictum import SessionHandler\n\n"
-        "def before_user_send(text: str):\n"
+        "def before_user_send(text: str, ctx):\n"
         "    return text + ' [插件]'\n"
         "handlers = [SessionHandler(name='demo.handler', before_user_send=before_user_send)]\n",
         encoding="utf-8",
@@ -1185,7 +1218,7 @@ def test_plugin_tools_factory_with_session(tmp_path: Path):
     session.install_plugin(str(plugin_dir))
 
     assert "probe" in session.list_tools()
-    tool = session.tools_manager.tools["probe"]
+    tool = cast(_SessionAwareTool, session.tools_manager.tools["probe"])
     assert tool.session_id == session.session_id
 
 
@@ -1248,7 +1281,10 @@ def test_plugin_aggregate_enable_disable(tmp_path: Path):
     assert plugin.enabled is False
     session.run("hi")
     tools_def = llm.calls[-1]["tools"]
-    assert not any(t["function"]["name"] == "greet" for t in tools_def)
+    # 定义列表按独立位过滤, 工具仍可见; 执行路径合成 (effectiveness_guard) 拒绝执行
+    assert any(t["function"]["name"] == "greet" for t in tools_def)
+    err = session.tools_manager.execute_tool("greet", {"name": "x"})
+    assert err["ok"] is False and err["error_type"] == "disabled"
     user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == "hi"
 
@@ -1350,7 +1386,7 @@ def test_plugin_handlers_convention_functions(tmp_path: Path):
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "meta.yaml").write_text("name: conv\n", encoding="utf-8")
     (plugin_dir / "handlers.py").write_text(
-        "def before_user_send(text: str):\n"
+        "def before_user_send(text: str, ctx):\n"
         "    return text.upper()\n",
         encoding="utf-8",
     )
@@ -1379,10 +1415,11 @@ async def test_async_install_plugin_with_mcp(tmp_path: Path):
         "class _FakeClient:\n"
         "    def __init__(self, mark):\n"
         "        self.mark = mark\n"
+        "        self.adapters = [_T()]\n"
         "    async def register_tools(self, tm, name_prefix=None):\n"
-        "        for a in [_T()]:\n"
+        "        for a in self.adapters:\n"
         "            tm.register_tool(a)\n"
-        "        return [_T()]\n"
+        "        return list(self.adapters)\n"
         "    async def close(self):\n"
         "        open(self.mark, 'w', encoding='utf-8').write('closed')\n"
         f"clients = {{'fs': _FakeClient({str(mark)!r})}}\n",
@@ -1418,10 +1455,12 @@ async def test_async_plugin_aggregate_enable_disable(tmp_path: Path):
         "    async def execute(self) -> str:\n"
         "        return 'ok'\n"
         "class _FakeClient:\n"
+        "    def __init__(self):\n"
+        "        self.adapters = [_T()]\n"
         "    async def register_tools(self, tm, name_prefix=None):\n"
-        "        for a in [_T()]:\n"
+        "        for a in self.adapters:\n"
         "            tm.register_tool(a)\n"
-        "        return [_T()]\n"
+        "        return list(self.adapters)\n"
         "    async def close(self):\n"
         "        pass\n"
         "clients = {'fs': _FakeClient()}\n",
@@ -1436,7 +1475,9 @@ async def test_async_plugin_aggregate_enable_disable(tmp_path: Path):
     assert session.is_tool_enabled("mcp_greet") is True
 
     assert await session.disable_plugin("ademo") is True
-    assert session.is_tool_enabled("mcp_greet") is False
+    assert session.is_tool_enabled("mcp_greet") is True  # 独立位未变
+    err = await session.tools_manager.execute_tool("mcp_greet", {})
+    assert err["ok"] is False and err["error_type"] == "disabled"  # 执行路径合成
 
     assert await session.enable_plugin("ademo") is True
     assert session.is_tool_enabled("mcp_greet") is True
@@ -1646,3 +1687,831 @@ async def test_async_plugin_mcp_build_clients_not_dict(tmp_path: Path):
     plugin = await session.install_plugin(str(plugin_dir))
     assert plugin.mcp == {}
     assert session.list_tools() == []
+
+
+# ================= Handler 协议升级新增测试 =================
+
+
+def test_handler_result_continue_rewrites(tmp_path: Path):
+    """HandlerResult.continue_with 等价 str 改写, 继续链式执行后续 handler"""
+    order: list[str] = []
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def first(text: str, ctx: HandlerContext) -> HandlerResult:
+        order.append("first")
+        return HandlerResult.continue_with(text + "a")
+
+    def second(text: str, ctx: HandlerContext) -> str | None:
+        order.append("second")
+        return text + "b"
+
+    session.add_handler(SessionHandler(name="first", priority=1, before_user_send=first))
+    session.add_handler(SessionHandler(name="second", priority=2, before_user_send=second))
+    session.run("x")
+    assert order == ["first", "second"]
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "xab"
+
+
+def test_handler_result_respond_short_circuits(tmp_path: Path):
+    """respond 跳过模型直接返回; after_model_reply 仍执行 (finally)"""
+    seen: list[str] = []
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def respond(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.respond("已响应")
+
+    def after_reply(result: str | None, ctx: HandlerContext) -> None:
+        seen.append(result or "")
+
+    session.add_handler(SessionHandler(
+        name="r", before_user_send=respond, after_model_reply=after_reply,
+    ))
+    result = session.run("hi")
+    assert isinstance(result, str) and result == "已响应"
+    assert seen == ["已响应"]
+    assert llm.calls == []  # 模型未调用
+
+
+def test_handler_result_reject_returns_reason(tmp_path: Path):
+    """reject 业务拒绝, reason 作为 run 的返回文本 (正常返回, 不抛异常)"""
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def reject(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.reject("拒绝: 无权限")
+
+    session.add_handler(SessionHandler(name="p", before_user_send=reject))
+    result = session.run("hi")
+    assert isinstance(result, str) and result == "拒绝: 无权限"
+    assert llm.calls == []
+
+
+def test_handler_result_abort_raises(tmp_path: Path):
+    """abort 故障终止, 抛 HandlerAbortError"""
+    session = _make_session(tmp_path, _FakeLLM())
+
+    def abort(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.abort("系统故障")
+
+    session.add_handler(SessionHandler(name="p", before_user_send=abort))
+    with pytest.raises(HandlerAbortError, match="系统故障"):
+        session.run("hi")
+
+
+@pytest.mark.asyncio
+async def test_async_handler_result_respond_short_circuits(tmp_path: Path):
+    """异步版 respond 短路同样生效"""
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    def respond(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.respond("异步已响应")
+
+    session.add_handler(SessionHandler(name="r", before_user_send=respond))
+    assert await session.run("hi") == "异步已响应"
+    assert llm.calls == []
+
+
+def test_after_model_reply_rewrite_result(tmp_path: Path):
+    """after_model_reply 返回 str 修改最终结果"""
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def after_reply(result: str | None, ctx: HandlerContext) -> str:
+        return f"改写:{result}"
+
+    session.add_handler(SessionHandler(name="p", after_model_reply=after_reply))
+    assert session.run("hi") == "改写:回复"
+
+
+def test_after_model_reply_rewrite_ignored_on_error(tmp_path: Path):
+    """模型抛异常时 after_model_reply 返回的 str 被忽略, 异常照常 re-raise"""
+    class _BoomLLM(_FakeLLM):
+        def call(self, *args: Any, **kwargs: Any) -> LLMCallResponse:  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    def after_reply(result: str | None, ctx: HandlerContext) -> str:
+        return "不应生效"
+
+    session = _make_session(tmp_path, _BoomLLM())
+    session.add_handler(SessionHandler(name="p", after_model_reply=after_reply))
+    with pytest.raises(RuntimeError, match="boom"):
+        session.run("hi")
+
+
+def test_handler_exception_isolated(tmp_path: Path):
+    """handler 抛异常不中断 run, 后续 handler 继续执行"""
+    order: list[str] = []
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def boom(text: str, ctx: HandlerContext) -> None:
+        raise RuntimeError("handler boom")
+
+    def after(text: str, ctx: HandlerContext) -> None:
+        order.append("after")
+
+    session.add_handler(SessionHandler(name="boom", after_user_send=boom))
+    session.add_handler(SessionHandler(name="after", after_user_send=after))
+    assert session.run("hi") == "回复"
+    assert order == ["after"]
+
+
+def test_after_model_reply_runs_in_finally_on_error(tmp_path: Path):
+    """模型抛异常: after_model_reply 在 finally 被调, ctx.error 有值, result 为 None"""
+    seen: dict[str, Any] = {}
+
+    class _BoomLLM(_FakeLLM):
+        def call(self, *args: Any, **kwargs: Any) -> LLMCallResponse:  # noqa: ARG002
+            raise RuntimeError("boom")
+
+    def after_reply(result: str | None, ctx: HandlerContext) -> None:
+        seen["result"] = result
+        seen["error"] = ctx.error
+
+    session = _make_session(tmp_path, _BoomLLM())
+    session.add_handler(SessionHandler(name="p", after_model_reply=after_reply))
+    with pytest.raises(RuntimeError, match="boom"):
+        session.run("hi")
+    assert seen["result"] is None
+    assert isinstance(seen["error"], RuntimeError)
+
+
+@pytest.mark.asyncio
+async def test_async_handler_timeout_isolated(tmp_path: Path):
+    """同步 handler 阻塞超过 timeout → wait_for 放弃等待, 隔离继续 (to_thread 线程仍跑完)"""
+    seen: list[str] = []
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    def slow(text: str, ctx: HandlerContext) -> str | None:
+        time.sleep(0.5)
+        seen.append("slow-done")
+        return None
+
+    session.add_handler(SessionHandler(name="slow", timeout=0.05, before_user_send=slow))
+    assert await session.run("hi") == "异步回复"
+    assert seen == []  # 超时放弃等待, 隔离继续
+
+
+@pytest.mark.asyncio
+async def test_async_handler_close_after_timeout(tmp_path: Path):
+    """超时放弃等待后再 remove_handler 触发 close, close 不抛异常 (幂等容忍超时态)"""
+    closed: list[str] = []
+
+    def slow(text: str, ctx: HandlerContext) -> str | None:
+        time.sleep(0.5)
+        return None
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    h = _H(name="slow", timeout=0.05, before_user_send=slow)
+    session.add_handler(h)
+    await session.run("hi")  # 回调被超时取消
+    assert session.remove_handler("slow") is True
+    assert closed == ["slow"]
+    # close 幂等: 直接重复调用无害
+    h.close()
+    h.close()
+    assert closed == ["slow", "slow", "slow"]
+    assert session.remove_handler("slow") is False
+
+
+def test_handler_state_composition_with_plugin(tmp_path: Path):
+    """状态合成: 插件禁用后 enable_handler 执行层不生效; 启用恢复; list_capabilities 与执行一致"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert session.disable_plugin("demo") is True
+    assert plugin.enable_handler("demo.handler") is True  # 独立位更新
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"  # 执行路径仍过滤
+    caps = {c["name"]: c for c in plugin.list_capabilities()["handlers"]}
+    assert caps["demo.handler"]["enabled"] is False  # 合成值 False
+
+    assert session.enable_plugin("demo") is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [插件]"
+    caps = {c["name"]: c for c in plugin.list_capabilities()["handlers"]}
+    assert caps["demo.handler"]["enabled"] is True
+
+
+def test_tool_bypass_closed_when_plugin_disabled(tmp_path: Path):
+    """工具旁路: 插件禁用后 execute_tool 返回禁用; enable_tool/enable_all_tools 不生效"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    session = _make_session(tmp_path, _FakeLLM())
+    session.install_plugin(str(plugin_dir))
+
+    assert session.disable_plugin("demo") is True
+    err = session.tools_manager.execute_tool("greet", {"name": "x"})
+    assert err["ok"] is False and err["error_type"] == "disabled"
+
+    # enable_tool / enable_all_tools 只改独立位, 执行路径仍过滤
+    assert session.enable_tool("greet") is True
+    assert session.tools_manager.enable_all_tools() is True
+    err = session.tools_manager.execute_tool("greet", {"name": "x"})
+    assert err["ok"] is False and err["error_type"] == "disabled"
+
+    assert session.enable_plugin("demo") is True
+    assert session.tools_manager.execute_tool("greet", {"name": "x"}) == "hi x"
+
+
+def test_replace_inherits_owner_plugin(tmp_path: Path):
+    """replace=True 覆盖插件 handler: 新 handler 继承 owner_plugin, 插件禁用仍过滤"""
+    plugin_dir = _write_plugin_dir(tmp_path)
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+    session.install_plugin(str(plugin_dir))
+
+    def custom(text: str, ctx: HandlerContext) -> str | None:
+        return text + " [custom]"
+
+    assert session.add_handler(
+        SessionHandler(name="demo.handler", before_user_send=custom), replace=True,
+    ) is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [custom]"
+
+    assert session.disable_plugin("demo") is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi"  # 继承归属 → 插件禁用仍过滤
+
+    assert session.enable_plugin("demo") is True
+    session.run("hi")
+    user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
+    assert user_msgs[-1]["content"] == "hi [custom]"
+
+
+def test_handler_close_on_remove_idempotent(tmp_path: Path):
+    """remove_handler 触发 close; close 幂等 (重复调用无害)"""
+    closed: list[str] = []
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    session = _make_session(tmp_path)
+    h = _H(name="p")
+    session.add_handler(h)
+    assert session.remove_handler("p") is True
+    assert closed == ["p"]
+    h.close()
+    h.close()
+    assert closed == ["p", "p", "p"]  # 幂等: 重复调用不抛异常
+    assert session.remove_handler("p") is False
+
+
+def test_install_rollback_closes_handlers(tmp_path: Path):
+    """插件安装中途失败 (命令冲突) 时已注册 handler 的 close 被调"""
+    plugin_dir = tmp_path / "plugins" / "rb"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: rb\n", encoding="utf-8")
+    (plugin_dir / "handlers.py").write_text(
+        "from satrap.edictum import SessionHandler\n\n"
+        "closed = []\n"
+        "class _H(SessionHandler):\n"
+        "    def close(self):\n"
+        "        closed.append(self.name)\n"
+        "handlers = [_H(name='rb.h')]\n",
+        encoding="utf-8",
+    )
+    (plugin_dir / "commands.py").write_text(
+        "def cmd_hello():\n"
+        "    return 'x'\n",
+        encoding="utf-8",
+    )
+    session = _make_session(tmp_path)
+    session.add_command("hello", lambda: "x")
+    with pytest.raises(ValueError, match="命令 hello"):
+        session.install_plugin(str(plugin_dir))
+    assert session.list_handlers() == []  # 回滚注销
+    mod = importlib.import_module("rb.handlers")
+    assert mod.closed == ["rb.h"]  # 回滚 close 被调
+
+
+def test_sync_add_handler_rejects_async_callback(tmp_path: Path):
+    """协议级拒绝: add_handler 拒绝异步回调 (全同步协议)"""
+    async def bad(text: str, ctx: HandlerContext) -> str | None:
+        return None
+
+    session = _make_session(tmp_path)
+    with pytest.raises(TypeError, match="异步回调"):
+        session.add_handler(SessionHandler(
+            name="p", before_user_send=bad,  # pyright: ignore[reportArgumentType]
+        ))
+
+
+def test_handler_context_fields_passthrough(tmp_path: Path):
+    """HandlerContext 字段透传 (call_id 唯一, error 初始为 None); respond/reject 返回 str"""
+    seen: dict[str, Any] = {}
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def probe(text: str, ctx: HandlerContext) -> str | None:
+        seen["ctx"] = ctx
+        return None
+
+    session.add_handler(SessionHandler(name="p", before_user_send=probe))
+    session.run("你好", img_urls=["http://x/a.png"], max_iterations=5)
+    ctx = seen["ctx"]
+    assert ctx.config.original_input == "你好"
+    assert ctx.text == "你好"
+    assert ctx.config.img_urls == ["http://x/a.png"]
+    assert ctx.config.thinking is False
+    assert ctx.config.max_iterations == 5
+    assert ctx.config.call_id
+    assert ctx.error is None
+    assert ctx.outcome is None  # 正常路径无短路语义
+
+    seen.clear()
+    session.run("再来")
+    assert seen["ctx"].config.call_id != ctx.config.call_id  # 每轮 call_id 唯一
+
+
+def test_run_snapshot_semantics(tmp_path: Path):
+    """run 内快照: 中途修改 handler 状态, 当次 run 行为不变, 下次生效"""
+    calls: list[str] = []
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm)
+
+    def first(text: str, ctx: HandlerContext) -> str | None:
+        calls.append("first")
+        session.remove_handler("second")  # 中途移除
+        return None
+
+    def second(text: str, ctx: HandlerContext) -> str | None:
+        calls.append("second")
+        return None
+
+    session.add_handler(SessionHandler(name="first", priority=1, before_user_send=first))
+    session.add_handler(SessionHandler(name="second", priority=2, before_user_send=second))
+    session.run("x")
+    assert calls == ["first", "second"]  # 当次 run 快照仍执行 second
+
+    session.run("y")
+    assert calls == ["first", "second", "first"]  # 下次 run second 已移除
+
+
+# ================= 第二轮修复新增测试 (全同步协议 / to_thread / 延迟 close / 并发) =================
+
+
+def test_sync_install_rejects_async_handler_callbacks(tmp_path: Path):
+    """同步插件安装路径拒绝异步回调 (与 add_handler 校验统一), 失败后无残留"""
+    plugin_dir = tmp_path / "plugins" / "bad"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
+    (plugin_dir / "handlers.py").write_text(
+        "from satrap.edictum import SessionHandler\n\n"
+        "async def before_user_send(text: str, ctx):\n"
+        "    return text + '!'\n"
+        "handlers = [SessionHandler(name='bad.h', before_user_send=before_user_send)]\n",
+        encoding="utf-8",
+    )
+    session = _make_session(tmp_path)
+    with pytest.raises(TypeError, match="异步回调"):
+        session.install_plugin(str(plugin_dir))
+    assert session.list_handlers() == []  # 回滚无残留
+    assert session.list_plugins() == []
+
+
+@pytest.mark.asyncio
+async def test_async_install_rejects_async_handler_callbacks(tmp_path: Path):
+    """异步插件安装路径同样拒绝异步回调 (全同步协议)"""
+    plugin_dir = tmp_path / "plugins" / "bad"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
+    (plugin_dir / "handlers.py").write_text(
+        "from satrap.edictum import SessionHandler\n\n"
+        "async def before_user_send(text: str, ctx):\n"
+        "    return text + '!'\n"
+        "handlers = [SessionHandler(name='bad.h', before_user_send=before_user_send)]\n",
+        encoding="utf-8",
+    )
+    session = AsyncSimpleSession(
+        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"),
+    )
+    with pytest.raises(TypeError, match="异步回调"):
+        await session.install_plugin(str(plugin_dir))
+    assert session.list_handlers() == []
+
+
+def test_handler_error_policy_abort(tmp_path: Path):
+    """error_policy="abort": handler 异常 → run 抛 HandlerAbortError (与 HandlerResult.abort 同语义)"""
+    seen: list[str] = []
+
+    def boom(text: str, ctx: HandlerContext) -> str | None:
+        raise RuntimeError("boom")
+
+    def after(result: str | None, ctx: HandlerContext) -> str | None:
+        seen.append("after")
+        return None
+
+    session = _make_session(tmp_path)
+    session.add_handler(SessionHandler(name="p", error_policy="abort", before_user_send=boom))
+    session.add_handler(SessionHandler(name="q", after_model_reply=after))
+    with pytest.raises(HandlerAbortError):
+        session.run("x")
+    assert seen == []  # abort 在 before 阶段短路, after_model_reply 不执行 (与 HandlerResult.abort 一致)
+
+
+def test_handler_error_policy_continue_default(tmp_path: Path):
+    """error_policy 默认 continue: 异常隔离继续 (回归锚点)"""
+    seen: list[str] = []
+
+    def boom(text: str, ctx: HandlerContext) -> str | None:
+        raise RuntimeError("boom")
+
+    def next_h(text: str, ctx: HandlerContext) -> str | None:
+        seen.append("next")
+        return None
+
+    session = _make_session(tmp_path)
+    session.add_handler(SessionHandler(name="p", before_user_send=boom))
+    session.add_handler(SessionHandler(name="q", priority=2, before_user_send=next_h))
+    result = session.run("x")
+    assert result == "回复"
+    assert seen == ["next"]  # 隔离后后续 handler 继续
+
+
+def test_handler_timeout_negative_raises(tmp_path: Path):
+    """timeout 负数: add_handler 拒绝"""
+    session = _make_session(tmp_path)
+    with pytest.raises(ValueError, match="timeout"):
+        session.add_handler(SessionHandler(name="p", timeout=-1))
+
+
+def test_plugin_install_timeout_negative_raises(tmp_path: Path):
+    """timeout 负数: 插件安装路径同样拒绝"""
+    plugin_dir = tmp_path / "plugins" / "bad"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "meta.yaml").write_text("name: bad\n", encoding="utf-8")
+    (plugin_dir / "handlers.py").write_text(
+        "from satrap.edictum import SessionHandler\n\n"
+        "handlers = [SessionHandler(name='bad.h', timeout=-1)]\n",
+        encoding="utf-8",
+    )
+    session = _make_session(tmp_path)
+    with pytest.raises(ValueError, match="timeout"):
+        session.install_plugin(str(plugin_dir))
+
+
+def test_handler_result_invalid_action_raises():
+    """HandlerResult 非法 action 构造时拒绝"""
+    with pytest.raises(ValueError, match="action"):
+        HandlerResult("unknown", "text")
+
+
+def test_handler_invalid_return_value_warns(tmp_path: Path, caplog: Any):
+    """before_user_send 非法返回值 → warning 且行为不变"""
+    def bad(t: str, ctx: HandlerContext) -> bool:
+        return False
+
+    session = _make_session(tmp_path)
+    session.add_handler(SessionHandler(name="p", before_user_send=cast(Any, bad)))
+    with caplog.at_level(logging.WARNING):
+        result = session.run("hi")
+    assert result == "回复"
+    assert any("不支持的类型" in r.message for r in caplog.records)
+
+
+def test_handler_outcome_respond_and_reject(tmp_path: Path):
+    """respond/reject 置位 ctx.outcome, after_model_reply 可见"""
+    seen: list[str] = []
+
+    def respond(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.respond("直接回复")
+
+    def after(result: str | None, ctx: HandlerContext) -> str | None:
+        seen.append(str(ctx.outcome))
+        return None
+
+    session = _make_session(tmp_path)
+    session.add_handler(SessionHandler(
+        name="p", before_user_send=respond, after_model_reply=after,
+    ))
+    assert session.run("x") == "直接回复"
+    assert seen == ["respond"]
+
+    def reject(text: str, ctx: HandlerContext) -> HandlerResult:
+        return HandlerResult.reject("拒绝")
+
+    seen2: list[str] = []
+
+    def after2(result: str | None, ctx: HandlerContext) -> str | None:
+        seen2.append(str(ctx.outcome))
+        return None
+
+    session2 = _make_session(tmp_path)
+    session2.add_handler(SessionHandler(
+        name="p", before_user_send=reject, after_model_reply=after2,
+    ))
+    assert session2.run("x") == "拒绝"
+    assert seen2 == ["reject"]
+
+
+def test_handler_config_frozen(tmp_path: Path):
+    """HandlerConfig 冻结: handler 写 config 字段 → FrozenInstanceError; ctx.text 可变"""
+    frozen_seen: list[str] = []
+
+    def tamper(text: str, ctx: HandlerContext) -> str | None:
+        try:
+            ctx.config.original_input = "hacked"  # pyright: ignore[reportAttributeAccessIssue]
+        except Exception as e:  # noqa: BLE001
+            frozen_seen.append(type(e).__name__)
+        return text
+
+    session = _make_session(tmp_path)
+    session.add_handler(SessionHandler(name="p", before_user_send=tamper))
+    assert session.run("hi") == "回复"
+    assert frozen_seen == ["FrozenInstanceError"]
+
+
+def test_sync_deferred_close_during_run(tmp_path: Path):
+    """同步: run 中 remove_handler → close 延迟到 run 结束冲刷"""
+    closed: list[str] = []
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    session = _make_session(tmp_path)
+
+    def remover(text: str, ctx: HandlerContext) -> str | None:
+        assert session.remove_handler("victim") is True
+        assert closed == []  # 延迟: remove 时未立即 close
+        return None
+
+    session.add_handler(SessionHandler(name="remover", priority=1, before_user_send=remover))
+    session.add_handler(_H(name="victim", priority=2))
+    session.run("x")
+    assert closed == ["victim"]  # run 结束冲刷
+
+
+def test_nested_run_no_pending_name_error(tmp_path: Path):
+    """嵌套 run: 内层 finally 时 _active_runs 非 0, pending 须已初始化 (回归: NameError)
+
+    外层 run 的 handler 内触发另一 session 的嵌套 run, 外层 run 进行中 remove → 延迟 close;
+    外层 finally 减到 0 时冲刷, 嵌套路径不得因 pending 未定义而 NameError
+    """
+    closed: list[str] = []
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    inner = _make_session(tmp_path / "inner")
+    outer = _make_session(tmp_path / "outer")
+
+    def remover(text: str, ctx: HandlerContext) -> str | None:
+        inner.run("x")  # 嵌套 run (各自 _active_runs 独立)
+        outer.remove_handler("victim")  # 外层 run 进行中 remove → 延迟 close
+        return None
+
+    outer.add_handler(SessionHandler(name="remover", priority=1, before_user_send=remover))
+    outer.add_handler(_H(name="victim", priority=2))
+    assert outer.run("hi") == "回复"
+    assert closed == ["victim"]  # 外层 run 结束冲刷
+
+
+@pytest.mark.asyncio
+async def test_async_deferred_close_during_run(tmp_path: Path):
+    """异步: run 挂起期间 remove_handler → close 在 run 结束后执行 (to_thread close)"""
+    closed: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GateLLM(_FakeAsyncLLM):
+        async def call(self, *args: Any, **kwargs: Any) -> LLMCallResponse:  # noqa: ARG002
+            entered.set()
+            await release.wait()
+            return self.response
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+
+    session = AsyncSimpleSession(
+        "conv-a", _GateLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    session.add_handler(_H(name="victim"))
+
+    task = asyncio.create_task(session.run("hi"))
+    await entered.wait()  # run 进入模型调用
+    assert session.remove_handler("victim") is True
+    assert closed == []  # run 进行中, close 延迟
+    release.set()
+    assert await task == "异步回复"
+    assert closed == ["victim"]  # run 结束后冲刷
+
+
+@pytest.mark.asyncio
+async def test_async_handler_timeout_zero(tmp_path: Path):
+    """timeout=0: 立即放弃等待, 隔离继续"""
+    def slow(text: str, ctx: HandlerContext) -> str | None:
+        time.sleep(0.2)
+        return text
+
+    session = AsyncSimpleSession(
+        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    session.add_handler(SessionHandler(name="slow", timeout=0, before_user_send=slow))
+    assert await session.run("hi") == "异步回复"
+
+
+@pytest.mark.asyncio
+async def test_async_handler_to_thread_does_not_block_loop(tmp_path: Path):
+    """to_thread: 同步 handler 阻塞不卡事件循环 (问题 6 根治验证)"""
+    def slow(text: str, ctx: HandlerContext) -> str | None:
+        time.sleep(0.3)
+        return text
+
+    session = AsyncSimpleSession(
+        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    session.add_handler(SessionHandler(name="slow", before_user_send=slow))
+    loop_alive = asyncio.Event()
+
+    async def tick() -> None:
+        await asyncio.sleep(0.1)
+        loop_alive.set()
+
+    await asyncio.gather(session.run("hi"), tick())
+    assert loop_alive.is_set()  # 事件循环在 handler 阻塞期间仍运转
+
+
+@pytest.mark.asyncio
+async def test_async_handler_timeout_then_next_handler(tmp_path: Path):
+    """to_thread 超时: wait_for 放弃等待, 后续 handler 照常执行"""
+    def slow(text: str, ctx: HandlerContext) -> str | None:
+        time.sleep(0.5)
+        return text
+
+    def next_h(text: str, ctx: HandlerContext) -> str | None:
+        return text + "!"
+
+    llm = _FakeAsyncLLM()
+    session = AsyncSimpleSession(
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+    session.add_handler(SessionHandler(name="slow", timeout=0.05, before_user_send=slow))
+    session.add_handler(SessionHandler(name="next", priority=2, before_user_send=next_h))
+    assert await session.run("hi") == "异步回复"
+    user_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "user"]
+    assert user_msgs[0]["content"] == "hi!"  # slow 超时隔离, next 改写生效
+
+
+def test_remove_handler_syncs_plugin_roster(tmp_path: Path):
+    """remove_handler 后插件名册同步, list_capabilities 不再显示"""
+    session = _make_session(tmp_path)
+    plugin = session.install_plugin(str(_write_plugin_dir(tmp_path)))
+    assert "demo.handler" in plugin.handlers
+    assert session.remove_handler("demo.handler") is True
+    assert "demo.handler" not in plugin.handlers  # 名册同步
+    caps = {c["name"] for c in plugin.list_capabilities()["handlers"]}
+    assert "demo.handler" not in caps  # 能力表不再残留
+
+
+def test_replace_handler_syncs_plugin_roster(tmp_path: Path):
+    """replace=True 覆盖插件 handler → 名册同步"""
+    session = _make_session(tmp_path)
+    plugin = session.install_plugin(str(_write_plugin_dir(tmp_path)))
+    session.add_handler(
+        SessionHandler(name="demo.handler", before_user_send=lambda t, ctx: t),
+        replace=True,
+    )
+    assert "demo.handler" not in plugin.handlers
+    assert session.list_handlers()[0].name == "demo.handler"
+
+
+def test_registry_thread_concurrency(tmp_path: Path):
+    """注册表线程并发: add/remove/list 不抛 RuntimeError (迭代安全)"""
+    session = _make_session(tmp_path)
+    errors: list[BaseException] = []
+
+    def worker(base: int) -> None:
+        try:
+            for i in range(40):
+                name = f"h{base}_{i}"
+                session.add_handler(SessionHandler(name=name))
+                session.list_handlers()
+                session.remove_handler(name)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(b,)) for b in (1, 2, 3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+    assert session.list_handlers() == []
+
+
+@pytest.mark.asyncio
+async def test_async_run_serialized(tmp_path: Path):
+    """异步 run 串行化: 并发提交的 run 顺序执行 (run_lock 排队, 不支持并发 run)"""
+    order: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GateLLM(_FakeAsyncLLM):
+        async def call(self, *args: Any, **kwargs: Any) -> LLMCallResponse:  # noqa: ARG002
+            order.append("enter")
+            entered.set()
+            await release.wait()
+            order.append("exit")
+            return self.response
+
+    session = AsyncSimpleSession(
+        "conv-a", _GateLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    async def run_a() -> None:
+        await session.run("a")
+        order.append("a_done")
+
+    async def run_b() -> None:
+        await session.run("b")
+        order.append("b_done")
+
+    task_a = asyncio.create_task(run_a())
+    await entered.wait()  # A 进入模型调用
+    task_b = asyncio.create_task(run_b())
+    await asyncio.sleep(0)  # 让 B 开始排队
+    assert "b_done" not in order  # B 被串行化
+    release.set()
+    await asyncio.gather(task_a, task_b)
+    assert order == ["enter", "exit", "a_done", "enter", "exit", "b_done"]
+
+
+@pytest.mark.asyncio
+async def test_async_concurrent_remove_and_run(tmp_path: Path):
+    """并发 remove + run 竞态 (确定性时序): close 在 A 的 after_model_reply 后、B 执行前发生"""
+    order: list[str] = []
+    closed: list[str] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GateLLM(_FakeAsyncLLM):
+        async def call(self, *args: Any, **kwargs: Any) -> LLMCallResponse:  # noqa: ARG002
+            order.append("enter")
+            entered.set()
+            await release.wait()
+            order.append("exit")
+            return self.response
+
+    class _H(SessionHandler):
+        def close(self) -> None:
+            closed.append(self.name)
+            order.append("close")
+
+    session = AsyncSimpleSession(
+        "conv-a", _GateLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    def victim_after(result: str | None, ctx: HandlerContext) -> str | None:
+        order.append("victim_after")  # A 的 after_model_reply 执行时 victim 资源仍可用
+        return None
+
+    session.add_handler(_H(name="victim", after_model_reply=victim_after))
+
+    async def run_a() -> None:
+        await session.run("a")
+        order.append("a_done")
+
+    async def run_b() -> None:
+        await session.run("b")
+        order.append("b_done")
+
+    task_a = asyncio.create_task(run_a())
+    await entered.wait()  # A 进入模型调用 (快照含 victim)
+    assert session.remove_handler("victim") is True
+    assert closed == []  # run 进行中 → 延迟 close
+    task_b = asyncio.create_task(run_b())  # B 在 run_lock 排队
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(task_a, task_b)
+    assert closed == ["victim"]
+    assert order == [
+        "enter", "exit", "victim_after", "close", "a_done",
+        "enter", "exit", "b_done",
+    ]  # close 在 victim_after 之后 (A 用完资源), B 执行之前

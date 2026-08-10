@@ -176,7 +176,7 @@ def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     if not match:
         return {}, text
     try:
-        meta: dict[str, Any] = yaml.safe_load(match.group(1)) or {}
+        meta: object = yaml.safe_load(match.group(1)) or {}
         if not isinstance(meta, dict):
             meta = {}
         else:

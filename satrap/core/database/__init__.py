@@ -211,7 +211,7 @@ class LiteVectorDB:
             name: str, 
             documents: List[str],
             vectors: List[List[float]],
-            metadata: List[Dict[str, Any]],
+            metadata: List[Dict[str, Any]] | None,
         ):
         """添加文档到集合
 
@@ -226,7 +226,7 @@ class LiteVectorDB:
             logger.info(f"集合 {name} 在加入数据时创建")
 
         if metadata is None:   # 如果没有元数据, 默认空字典
-            metadata = [{}] * len(documents)
+            metadata = [{} for _ in range(len(documents))]
 
         self.collections[name]['documents'].extend(documents)   # 文档
         self.collections[name]['vectors'].extend(vectors)       # 向量
@@ -404,7 +404,7 @@ class DataBase:
         name: str,
         documents: List[str],
         vectors: List[List[float]],
-        metadata: List[Dict[str, Any]],
+        metadata: List[Dict[str, Any]] | None,
     ):
         """添加文档到集合
 
@@ -418,7 +418,7 @@ class DataBase:
             self.create_collection(name)
 
         if metadata is None:
-            metadata = [{}] * len(documents)
+            metadata = [{} for _ in range(len(documents))]
 
         if not (len(documents) == len(vectors) == len(metadata)):
             raise ValueError("documents、vectors、metadata 长度必须一致")

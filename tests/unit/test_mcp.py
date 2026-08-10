@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,14 +13,18 @@ import pytest
 
 from mcp.types import Tool as MCPTool
 
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.mcp import (
     MCPClient,
     MCPToolAdapter,
     MCPServerExporter,
+    SyncMCPToolAdapter,
     content_to_text,
     export_tools_to_mcp,
 )
+from satrap.edictum import SimpleSession
 
 
 def _make_mcp_tool(name: str = "read_file", description: str = "读取文件", schema: dict[str, Any] | None = None):
@@ -180,6 +187,149 @@ async def test_client_register_and_close(monkeypatch: pytest.MonkeyPatch):
     await mcp.close()
     assert "fs_read_file" not in manager.tools
     assert mcp._connected is False
+
+
+# ================= 同步模式 (SimpleSession) =================
+
+
+def _background_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
+    """启动一个后台事件循环线程 (daemon), 返回 (loop, thread)"""
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    return loop, thread
+
+
+def _stop_loop(loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
+    loop.call_soon_threadsafe(loop.stop)
+    thread.join(timeout=5)
+
+
+def test_sync_adapter_executes_via_background_loop():
+    """同步适配器: 通过后台事件循环桥接异步 MCP 调用"""
+    loop, thread = _background_loop()
+    try:
+        session = FakeSession(content=[SimpleNamespace(type="text", text="sync ok")])
+        inner = MCPToolAdapter(session, _make_mcp_tool())
+        adapter = SyncMCPToolAdapter(inner, loop)
+        assert adapter.get_tool_defined()["function"]["name"] == "read_file"
+
+        result = adapter.execute(path="/tmp/a.txt")
+        assert result == "sync ok"
+        assert session.calls == [("read_file", {"path": "/tmp/a.txt"})]
+    finally:
+        _stop_loop(loop, thread)
+
+
+def test_sync_adapter_error_returns_error_dict():
+    """同步适配器: 远端异常返回错误字典而非抛出"""
+    loop, thread = _background_loop()
+    try:
+        session = FakeSession(error=RuntimeError("boom"))
+        adapter = SyncMCPToolAdapter(MCPToolAdapter(session, _make_mcp_tool()), loop)
+        result = adapter.execute(path="x")
+        assert result["ok"] is False
+        assert "boom" in result["error"]
+    finally:
+        _stop_loop(loop, thread)
+
+
+def test_sync_adapter_timeout_returns_error_dict():
+    """同步适配器: 调用超时返回错误字典而非抛出"""
+    class SlowSession:
+        async def list_tools(self):
+            return SimpleNamespace(tools=[])
+
+        async def call_tool(self, name: str, arguments: dict[str, Any] | None = None):
+            await asyncio.sleep(30)
+
+    loop, thread = _background_loop()
+    try:
+        adapter = SyncMCPToolAdapter(MCPToolAdapter(SlowSession(), _make_mcp_tool()), loop, timeout=0.1)
+        result = adapter.execute(path="x")
+        assert result["ok"] is False
+        assert "超时" in result["error"]
+    finally:
+        _stop_loop(loop, thread)
+
+
+def test_sync_register_and_close(monkeypatch: pytest.MonkeyPatch):
+    """同步注册: 工具注册进同步 ToolsManager, 可执行, 关闭后注销"""
+    fake_session = FakeSession()
+
+    async def fake_connect(self: MCPClient):
+        self.session = fake_session
+        self._connected = True
+        return fake_session
+
+    monkeypatch.setattr(MCPClient, "connect", fake_connect)
+
+    mcp = MCPClient(command="npx", args=["-y", "some-server"], name="fs")
+    manager = ToolsManager()
+    adapters = mcp.sync_register_tools(manager)
+
+    assert len(adapters) == 1
+    assert adapters[0].get_tool_name() == "fs_read_file"
+    assert "fs_read_file" in manager.tools
+    assert manager.is_tool_enabled("fs_read_file")
+    assert manager.execute_tool("fs_read_file", {"path": "/x"}) == "ok"
+
+    mcp.sync_close()
+    assert "fs_read_file" not in manager.tools
+    assert mcp._connected is False
+
+
+def test_sync_plugin_install_mcp_register_and_uninstall(tmp_path: Path):
+    """同步 SimpleSession: 含 mcp.py 插件可安装, 工具注册, 卸载时断开连接"""
+    class _FakeLLM(LLM):
+        def __init__(self) -> None:
+            super().__init__(api_key="demo")
+
+        def call(self, messages: list[dict[str, Any]], model: str | None = None, **kwargs: Any):
+            return LLMCallResponse(type="answer", content="回复")
+
+    plugin_dir = tmp_path / "mcp-demo"
+    plugin_dir.mkdir()
+    (plugin_dir / "meta.yaml").write_text("name: mcp-demo\nversion: 0.1\n", encoding="utf-8")
+    (plugin_dir / "mcp.py").write_text(
+        """
+from satrap.core.utils.TCBuilder import Tool
+
+class _EchoTool(Tool):
+    tool_name = "remote_echo"
+    description = "远端回显"
+    params_dict = {"msg": ("string", "消息")}
+
+    def execute(self, *input, **kwargs):
+        return "remote:" + str(kwargs.get("msg", ""))
+
+class _FakeMCPClient:
+    def __init__(self):
+        self.closed = False
+
+    def sync_register_tools(self, tools_manager, name_prefix=None):
+        tool = _EchoTool()
+        tools_manager.register_tool(tool)
+        return [tool]
+
+    def sync_close(self):
+        self.closed = True
+
+clients = {"fake": _FakeMCPClient()}
+""",
+        encoding="utf-8",
+    )
+
+    session = SimpleSession("mcp-sync", _FakeLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=False)
+    plugin = session.install_plugin(str(plugin_dir))
+
+    assert plugin.mcp == {"fake": True}
+    assert "remote_echo" in session.tools_manager.tools
+    assert session.tools_manager.execute_tool("remote_echo", {"msg": "hi"}) == "remote:hi"
+
+    assert session.uninstall_plugin("mcp-demo") is True
+    assert "remote_echo" not in session.tools_manager.tools
+    assert plugin._mcp_clients["fake"][0].closed is True
 
 
 # ================= content_to_text =================

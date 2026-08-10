@@ -29,7 +29,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -78,8 +78,8 @@ AUTO_PROMPT = "继续推进当前目标。若目标已全部完成, 请以「已
 console = Console(highlight=False, soft_wrap=True)
 
 # 流式内容/思考转发: 回调在会话构造时传入, 转发到当前 TuiApp
-_content_sink: list[Any] = []
-_thinking_sink: list[Any] = []
+_content_sink: list[Callable[[str], None]] = []
+_thinking_sink: list[Callable[[str], None]] = []
 
 
 def _content_forward(delta: str) -> None:
@@ -189,6 +189,10 @@ class DemoLLM(LLM):
             )
         for ch in text:
             yield LLMCallStreamEvent(kind="content_delta", delta=ch)
+        # done 事件携带完整响应: stream_full_agent 依赖它聚合最终文本 (与 LLM.stream_call 契约一致)
+        yield LLMCallStreamEvent(
+            kind="done", response=LLMCallResponse(type="answer", content=text),
+        )
 
     def _simulate(self, messages: list[dict[str, Any]]) -> str:
         """模拟 Agent: @write/@read/@shell 触发真实工具 (含审批)

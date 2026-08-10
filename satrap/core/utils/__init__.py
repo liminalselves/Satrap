@@ -5,10 +5,10 @@ import re
 
 from satrap.core.log import logger
 
-def safe_parse_arguments(arg_str: str) -> dict[str, Any]:
+def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
     """容错解析参数字符串, 返回 dict"""
     if not isinstance(arg_str, str):
-        return arg_str if isinstance(arg_str, dict) else {}
+        return arg_str
 
     try:   # 尝试标准 JSON 解析
         return json.loads(arg_str)

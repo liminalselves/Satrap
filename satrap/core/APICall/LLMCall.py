@@ -72,7 +72,7 @@ def _extract_thinking_from_message(
 
 
 def parse_chat_response(
-    api_response: ChatCompletion | Dict[str, Any],
+    api_response: ChatCompletion | Dict[str, Any] | None,
     suppress_error: bool = True,
 ) -> str:
     """
@@ -132,7 +132,7 @@ def parse_chat_response(
         raise e
     
 def parse_call_response(
-    api_response: ChatCompletion | Dict[str, Any],
+    api_response: ChatCompletion | Dict[str, Any] | None,
     suppress_error: bool = True,
 ) -> LLMCallResponse:
     """解析 LLM API 调用响应, 判断是否包含函数调用
@@ -149,7 +149,7 @@ def parse_call_response(
         msg = "LLM 接口响应为空"
         if suppress_error:
             logger.warning(f"[响应处理] {msg}")
-            return LLMCallResponse(role="message", content="")
+            return LLMCallResponse(type="message", content="")
         raise ValueError(msg)
 
     try:
