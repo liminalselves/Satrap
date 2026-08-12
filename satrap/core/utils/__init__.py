@@ -5,6 +5,26 @@ import re
 
 from satrap.core.log import logger
 
+
+def _repair_json_value(value: str) -> str:
+    """正则一次性修复字符串值内的 JSON 瑕疵: 裸换行/制表符/引号与未转义反斜杠 (Windows 路径等)
+
+    修复模式只在 json.loads 失败后进入, 此时值内的反斜杠几乎都是模型未转义的路径
+    分隔符, 因此除已成对的 \\" 与 \\\\ 外, 其余反斜杠一律转义 (避免 C:\\new 被
+    误解码为换行、C:\\bin 被误解码为退格)
+    """
+    value = value.replace("\\\\", "\uFFFF")   # 保护已成对 \\\\
+    value = value.replace('\\"', "\uFFFE")    # 保护已成对 \\"
+
+    value = re.sub(r"\\", lambda m: "\\\\", value)   # 剩余裸反斜杠 (Windows 路径) → 转义
+    # 用 lambda 做替换, 避免 re.sub 替换模板对 \\ 的二次解释 (repl 模板中 \\ → 单个反斜杠)
+
+    value = value.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    value = value.replace("\uFFFF", "\\\\")
+    value = value.replace("\uFFFE", '\\"')
+    return re.sub(r'"', lambda m: '\\"', value)   # 剩余裸引号 → 转义
+
+
 def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
     """容错解析参数字符串, 返回 dict"""
     if not isinstance(arg_str, str):
@@ -15,23 +35,15 @@ def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    try:   # 尝试修复常见错误
-        pattern = r'("code":\s*")(.*?)("(?=\s*[,}]))'
-        def fix_code(match: re.Match[str]):
-            prefix = match.group(1)
-            code_body = match.group(2)
-            suffix = match.group(3)
-            code_body = code_body.replace('\\"', '\uFFFF')   # 临时占位符
-            code_body = code_body.replace('"', '\\"')
-            code_body = code_body.replace('\uFFFF', '\\"')
-            code_body = code_body.replace('\n', '\\n').replace('\r', '\\r')
-            return prefix + code_body + suffix
-        
-        repaired = re.sub(pattern, fix_code, arg_str, flags=re.DOTALL)
+    try:   # 尝试修复常见错误: 任意字符串字段内的裸换行/引号/反斜杠
+        pattern = r'("[^\"\s]+":\s*")(.*?)("(?=\s*[,}]))'
+        def fix_value(match: re.Match[str]) -> str:
+            return match.group(1) + _repair_json_value(match.group(2)) + match.group(3)
+
+        repaired = re.sub(pattern, fix_value, arg_str, flags=re.DOTALL)
         return json.loads(repaired)
     except Exception:
         pass
-
 
     try:   # 尝试 ast.literal_eval
 

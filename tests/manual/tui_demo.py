@@ -73,6 +73,8 @@ DEFAULT_WORKSPACE = PROJECT_ROOT / ".satrap" / "coding" / "sandbox"
 
 AUTO_MAX_ROUNDS = 8
 """yolo 自动推进轮数上限"""
+DEFAULT_MAX_TOKENS = 128 * 1024
+"""单轮输出 token 上限默认 128k (长内容工具调用如 write_file 不被截断)"""
 AUTO_PROMPT = "继续推进当前目标。若目标已全部完成, 请以「已完成」开头总结成果, 不要再调用工具。"
 
 console = Console(highlight=False, soft_wrap=True)
@@ -118,7 +120,7 @@ def _normalize_base_url(url: str) -> str:
     return url.rstrip()
 
 
-def build_real_llm(key_file: Path) -> LLM:
+def build_real_llm(key_file: Path, max_tokens: int = DEFAULT_MAX_TOKENS) -> LLM:
     """从 apikey.txt 解析第一组 (base url / model / api key) 构造真实 LLM"""
     if not key_file.is_file():
         console.print(
@@ -153,6 +155,7 @@ def build_real_llm(key_file: Path) -> LLM:
         api_key=conf["api key"],
         base_url=_normalize_base_url(conf["base url"]),
         model=conf.get("model") or "put-your-model-name-here",
+        max_tokens=max_tokens,
     )
 
 
@@ -431,6 +434,14 @@ def main() -> None:
         "--workspace", type=Path, default=DEFAULT_WORKSPACE,
         help="模型可读工作区 (默认沙箱根, 写文件免审批; 传其他目录则工作区写走审批)",
     )
+    parser.add_argument(
+        "--system-prompt", type=str, default=None,
+        help="自定义系统提示词 (如红队安全测试角色设定; 缺省无 system prompt)",
+    )
+    parser.add_argument(
+        "--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+        help=f"单轮输出 token 上限 (默认 {DEFAULT_MAX_TOKENS}, 防长内容工具调用被截断)",
+    )
     args = parser.parse_args()
 
     # 隔离模型工作区: 默认即沙箱根 (一个目录, 写文件免审批); 只读白名单指向该目录
@@ -448,11 +459,12 @@ def main() -> None:
     if args.demo:
         llm = DemoLLM()
     else:
-        llm = build_real_llm(args.key_file)
+        llm = build_real_llm(args.key_file, max_tokens=args.max_tokens)
 
     session = SimpleSession(
         SESSION_ID,
         llm,
+        system_prompt=args.system_prompt,
         db_path=str(CHAT_DB),
         enable_checkpoint=False,
         stream=True,

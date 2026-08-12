@@ -1,9 +1,11 @@
-from splintr import Tokenizer  # pyright: ignore[reportUnknownVariableType]
+from splintr import Tokenizer   # pyright: ignore[reportUnknownVariableType]
 import math
 from typing import Any
 
+
+tokenizer: Any = Tokenizer.from_pretrained("deepseek_v3")   # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
 # splintr 无类型声明, 用 Any 承载第三方对象
-tokenizer: Any = Tokenizer.from_pretrained("deepseek_v3")  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+
 
 def tokenizer_estimate(text: str) -> int:
     """使用分词器估计文本的 token 数量"""
