@@ -5,7 +5,7 @@ from typing import Any
 
 import streamlit as st
 from satrap.core.state import StateStore
-from satrap.core.type import StateScope
+from satrap.core.type import StateScope, safe_getattr_str
 from satrap.core.utils.context import ContextManager
 
 st.set_page_config(page_title="检查点管理", page_icon="", layout="wide")
@@ -15,8 +15,8 @@ def _db_path() -> str:
     """检查点/上下文库路径: 显式配置 > 会话库 > 默认"""
     config = st.session_state.config
     return str(
-        getattr(config, "session_checkpoint_db", None)
-        or getattr(config, "session_db_path", None)
+        safe_getattr_str(config, "session_checkpoint_db")
+        or safe_getattr_str(config, "session_db_path")
         or ".satrap/chat_history.db"
     )
 

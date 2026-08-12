@@ -1,6 +1,6 @@
 from satrap.core.utils.context import ContextManager
 from typing import Dict, Tuple, Any, Union, List, Callable
-from satrap.core.type import LLMCallResponse
+from satrap.core.type import LLMCallResponse, safe_getattr
 import json
 
 from satrap.core.log import logger
@@ -142,9 +142,9 @@ class Tool:
         - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
         """
         cls = self.__class__
-        self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)
-        self.description = description if description is not None else getattr(cls, 'description', None)
-        self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
+        self.tool_name = tool_name if tool_name is not None else safe_getattr(cls, 'tool_name')
+        self.description = description if description is not None else safe_getattr(cls, 'description')
+        self.params_dict = params_dict if params_dict is not None else safe_getattr(cls, 'params_dict')
         self.owner_plugin = owner_plugin
         self.tool_available = True
         self.tool_enabled = True
@@ -245,9 +245,9 @@ class AsyncTool:
         - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
         """
         cls = self.__class__
-        self.tool_name = tool_name if tool_name is not None else getattr(cls, 'tool_name', None)
-        self.description = description if description is not None else getattr(cls, 'description', None)
-        self.params_dict = params_dict if params_dict is not None else getattr(cls, 'params_dict', None)
+        self.tool_name = tool_name if tool_name is not None else safe_getattr(cls, 'tool_name')
+        self.description = description if description is not None else safe_getattr(cls, 'description')
+        self.params_dict = params_dict if params_dict is not None else safe_getattr(cls, 'params_dict')
         self.owner_plugin = owner_plugin
         self.tool_available = True
         self.tool_enabled = True

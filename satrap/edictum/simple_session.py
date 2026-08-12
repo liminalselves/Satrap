@@ -28,6 +28,7 @@ from satrap.core.framework.Base import (
     Session,
 )
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr_callable
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import (
@@ -732,7 +733,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                 try:
                     adapters = client.sync_register_tools(self._wf.tools_manager, name_prefix=name)
                 except Exception:
-                    close = getattr(client, "sync_close", None)
+                    close = safe_getattr_callable(client, "sync_close")
                     if close is not None:
                         try:
                             close()
@@ -780,7 +781,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
             for mcp_name, (client, adapters) in mcp_clients.items():
                 for adapter in adapters:
                     self._wf.tools_manager.unregister_tool(adapter.get_tool_name())
-                close = getattr(client, "sync_close", None)
+                close = safe_getattr_callable(client, "sync_close")
                 if close is not None:
                     try:
                         close()
@@ -812,7 +813,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         for mcp_name, (client, adapters) in plugin._mcp_clients.items():
             for adapter in adapters:
                 self._wf.tools_manager.unregister_tool(adapter.get_tool_name())
-            close = getattr(client, "sync_close", None)
+            close = safe_getattr_callable(client, "sync_close")
             if close is not None:
                 try:
                     close()
@@ -1264,7 +1265,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         try:
             adapters = await client.register_tools(wf.tools_manager, name_prefix=name_prefix)
         except Exception:
-            close = getattr(client, "close", None)
+            close = safe_getattr_callable(client, "close")
             if close is not None:
                 await close()
             raise
@@ -1280,7 +1281,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         wf = self._require_wf()
         for adapter in adapters:
             wf.tools_manager.unregister_tool(adapter.get_tool_name())
-        close = getattr(client, "close", None)
+        close = safe_getattr_callable(client, "close")
         if close is not None:
             try:
                 await close()
@@ -1393,7 +1394,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                 try:
                     adapters = await client.register_tools(wf.tools_manager, name_prefix=name)
                 except Exception:
-                    close = getattr(client, "close", None)
+                    close = safe_getattr_callable(client, "close")
                     if close is not None:
                         await close()
                     raise
@@ -1443,7 +1444,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                 if wf is not None:
                     for adapter in adapters:
                         wf.tools_manager.unregister_tool(adapter.get_tool_name())
-                close = getattr(client, "close", None)
+                close = safe_getattr_callable(client, "close")
                 if close is not None:
                     try:
                         await close()
@@ -1469,7 +1470,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         for mcp_name, (client, adapters) in plugin._mcp_clients.items():
             for adapter in adapters:
                 wf.tools_manager.unregister_tool(adapter.get_tool_name())
-            close = getattr(client, "close", None)
+            close = safe_getattr_callable(client, "close")
             if close is not None:
                 try:
                     await close()

@@ -8,6 +8,7 @@ from typing import Any, cast
 
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.session_discovery import discover_session_classes
@@ -16,7 +17,7 @@ from satrap.core.framework.session_discovery import discover_session_classes
 def _configured_adapter_ids(config: BackendConfig) -> set[str]:
     """返回配置中声明的平台适配器实例 ID 集合"""
     ids: set[str] = set()
-    for item in getattr(config, "platforms", []) or []:
+    for item in safe_getattr_list(config, "platforms"):
         adapter_id = str(item.get("id", "")).strip()
         if adapter_id:
             ids.add(adapter_id)
@@ -115,14 +116,14 @@ def cmd_session_disable(args: argparse.Namespace):
 
 
 def cmd_session_register(args: argparse.Namespace):
-    class_path = (getattr(args, "from_scan", None) or getattr(args, "class_path", None) or "").strip()
+    class_path = (safe_getattr_str(args, "from_scan") or safe_getattr_str(args, "class_path")).strip()
     if not class_path:
         print("注册失败: 请提供 --class-path 或 --from-scan")
         sys.exit(1)
     client = daemon_client_from_args(args)
     try:
-        ck = getattr(args, 'context_key', None) or ""
-        mk = getattr(args, 'model_key', None) or ""
+        ck = safe_getattr_str(args, 'context_key')
+        mk = safe_getattr_str(args, 'model_key')
         if client.is_alive() and not offline_requested(args):
             result = client.register_session_class(
                 args.name,
@@ -228,7 +229,7 @@ def cmd_session_config_show(args: argparse.Namespace):
 def cmd_session_scan(args: argparse.Namespace):
     """扫描 Session 类"""
     config = load_cli_config(args)
-    paths = getattr(args, "path", None) or config.session_scan_paths
+    paths = safe_getattr(args, "path") or config.session_scan_paths
     results = discover_session_classes(paths)
     if not results:
         print("未发现 Session/AsyncSession 子类")
@@ -257,11 +258,11 @@ def cmd_session_create(args: argparse.Namespace):
         session_scan_paths=config.session_scan_paths,
     )
     sm = SessionManager(db_path=config.session_db_path)
-    context_value = getattr(args, 'context_value', None) or ""
+    context_value = safe_getattr_str(args, 'context_value')
     sid = args.id or ""
 
     extra: dict[str, Any] = {}
-    adapter_id = (getattr(args, 'adapter_id', None) or "").strip()
+    adapter_id = safe_getattr_str(args, 'adapter_id').strip()
     if adapter_id:
         configured_ids = _configured_adapter_ids(config)
         if configured_ids and adapter_id not in configured_ids:
@@ -269,7 +270,7 @@ def cmd_session_create(args: argparse.Namespace):
             sys.exit(1)
         extra["adapter_id"] = adapter_id
 
-    llm_val = getattr(args, 'llm', None) or ""
+    llm_val = safe_getattr_str(args, 'llm')
     if llm_val:
         entry = scm.get_config(args.name)
         if entry:

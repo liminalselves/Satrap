@@ -191,6 +191,6 @@ def _generate_template(params_info: dict[str, inspect.Parameter]) -> dict[str, A
         if ann is inspect.Parameter.empty:
             template[name] = None
             continue
-        ann_str = ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))
+        ann_str = ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))   # 类型注解反射, 保留裸 getattr
         template[name] = type_map.get(ann_str, None)
     return template

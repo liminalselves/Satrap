@@ -5,7 +5,7 @@ from typing import Any
 import streamlit as st
 from satrap.admin_utils.state import ensure_state, trigger_backend_reload
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.type import LLMConfig, EmbeddingConfig, ReRankConfig
+from satrap.core.type import LLMConfig, EmbeddingConfig, ReRankConfig, safe_getattr_str
 
 st.set_page_config(page_title="模型配置", page_icon="", layout="wide")
 
@@ -95,7 +95,7 @@ def _edit_dialog(model_type: str, name: str):
     fields = FIELD_META[model_type]
     values: dict[str, Any] = {}
     for key, display, kind in fields:
-        current = getattr(cfg_obj, key, None) or ""
+        current = safe_getattr_str(cfg_obj, key)
         if kind == "password":
             if current:
                 st.caption(f"{display}: 已设置 (留空则不修改)")

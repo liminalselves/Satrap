@@ -11,6 +11,7 @@ from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.config_loader import ConfigLoader
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr
 
 
 def load_run_config(args: argparse.Namespace):
@@ -20,9 +21,9 @@ def load_run_config(args: argparse.Namespace):
         p = Path(args.config)
         config = ConfigLoader.from_yaml(p) if p.suffix in (".yaml", ".yml") else ConfigLoader.from_json(p)
     config = ConfigLoader.merge_env(config)
-    if getattr(args, "api_host", None):
+    if safe_getattr(args, "api_host"):
         config.api_host = args.api_host
-    if getattr(args, "api_port", None):
+    if safe_getattr(args, "api_port"):
         config.api_port = int(args.api_port)
     return config
 
@@ -54,7 +55,7 @@ async def cmd_run(args: argparse.Namespace):
         loop = asyncio.get_event_loop()
         for sig_name in ("SIGINT", "SIGTERM"):
             try:
-                loop.add_signal_handler(getattr(signal, sig_name), stop_event.set)
+                loop.add_signal_handler(getattr(signal, sig_name), stop_event.set)   # 信号名运行时决定, 保留裸 getattr
             except (NotImplementedError, AttributeError):
                 pass
 

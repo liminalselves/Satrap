@@ -14,6 +14,7 @@ from satrap.admin_utils.config_editor import (
     upsert_platform,
 )
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs, print_json
+from satrap.core.type import safe_getattr
 
 
 def _warn_if_backend_running(args: argparse.Namespace):
@@ -66,12 +67,12 @@ def cmd_platform_show(args: argparse.Namespace):
 
 def _settings_from_args(args: argparse.Namespace) -> dict[str, Any]:
     """解析平台 settings 参数"""
-    if getattr(args, "from_json", None):
+    if safe_getattr(args, "from_json"):
         data = cast(dict[str, Any], json.loads(args.from_json))
         if not isinstance(data, dict):
             raise ValueError("--from-json 必须是 JSON 对象")
         return data
-    return parse_kv_pairs(getattr(args, "set", None))
+    return parse_kv_pairs(safe_getattr(args, "set"))
 
 
 def cmd_platform_upsert(args: argparse.Namespace):

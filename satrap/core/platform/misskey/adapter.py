@@ -36,7 +36,7 @@ from satrap.core.platform.misskey.misskey_utils import (
     serialize_message_chain,
     upload_local_with_retries,
 )
-from satrap.core.type import PlatformMessage
+from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
 from satrap.core.components import Plain
 
 
@@ -368,7 +368,7 @@ class MisskeyAdapter(PlatformAdapter):
         fields = {"cw": None, "poll": None, "renote_id": None, "channel_id": None}
         for comp in message_chain:
             for attr, key in (("cw", "cw"), ("poll", "poll"), ("renote_id", "renote_id"), ("channel_id", "channel_id")):
-                value = getattr(comp, attr, None)
+                value = safe_getattr(comp, attr)
                 if value:
                     fields[key] = value
         user_id = extract_user_id_from_session_id(session_id)
@@ -398,7 +398,7 @@ class MisskeyAdapter(PlatformAdapter):
             if not self._client:
                 return None
             url_candidate, local_path = await resolve_component_url_or_path(comp)
-            preferred_name = getattr(comp, "name", None) or getattr(comp, "file", None)
+            preferred_name = safe_getattr_str(comp, "name") or safe_getattr_str(comp, "file")
             if url_candidate:
                 result = await self._client.upload_and_find_file(
                     str(url_candidate),
@@ -523,10 +523,10 @@ class MisskeyAdapter(PlatformAdapter):
         pattern = re.compile(r"[^。？！~…]+[。？！~…]+")
         async for chain in generator:
             for comp in chain:
-                if getattr(comp, "type", None) == PlatformComponentType.Plain:
-                    text_buffer += getattr(comp, "text", "")
-                elif getattr(comp, "text", None):
-                    text_buffer += str(getattr(comp, "text", ""))
+                if safe_getattr(comp, "type") == PlatformComponentType.Plain:
+                    text_buffer += safe_getattr_str(comp, "text")
+                elif safe_getattr(comp, "text"):
+                    text_buffer += str(safe_getattr_str(comp, "text"))
                 else:
                     if text_buffer.strip():
                         await self.send_text(session_id, text_buffer)

@@ -89,6 +89,10 @@ class LLMConfig:
     """LLM top_p 参数"""
     max_tokens: Optional[int] = None
     """LLM 最大 token 数量"""
+    context_window: Optional[int] = None
+    """总上下文窗口, 与 CM max_context 同源"""
+    history_ratio: Optional[float] = None
+    """历史上下文比例, 输出预算 = context_window × (1 - history_ratio)"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
 
@@ -427,4 +431,97 @@ class MutationContext:
     """变更原因说明"""
     change_set_id: str = ""
     """变更批次唯一标识"""
+
+
+# ================= 类型安全的 getattr 辅助 =================
+# 裸 getattr(obj, "attr", None) 返回 Any, pyright 无法检查
+# 这组函数通过 overload + TypeVar 让返回值携带类型信息
+
+from typing import TypeVar, overload
+
+T = TypeVar("T")
+
+
+@overload
+def safe_getattr(obj: Any, name: str) -> Any | None: ...
+
+@overload
+def safe_getattr(obj: Any, name: str, default: T) -> Any | T: ...
+
+def safe_getattr(obj: Any, name: str, default: T | None = None) -> Any | T | None:
+    """类型安全的 getattr: 返回值类型 = 属性类型 | default 类型
+
+    用于替代裸 getattr(obj, "attr", None), 让 pyright 能推断返回值类型
+
+    参数:
+    - obj: 目标对象
+    - name: 属性名
+    - default: 属性不存在时的默认值
+
+    返回:
+    - 属性值(若存在)或 default
+    """
+    return getattr(obj, name, default)
+
+
+def safe_getattr_str(obj: Any, name: str, default: str = "") -> str:
+    """类型安全的 getattr, 返回 str"""
+    val = getattr(obj, name, default)
+    return str(val) if val is not None else default
+
+
+def safe_getattr_int(obj: Any, name: str, default: int = 0) -> int:
+    """类型安全的 getattr, 返回 int"""
+    val = getattr(obj, name, default)
+    if val is None:
+        return default
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_getattr_float(obj: Any, name: str, default: float = 0.0) -> float:
+    """类型安全的 getattr, 返回 float"""
+    val = getattr(obj, name, default)
+    if val is None:
+        return default
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_getattr_bool(obj: Any, name: str, default: bool = False) -> bool:
+    """类型安全的 getattr, 返回 bool"""
+    val = getattr(obj, name, default)
+    if val is None:
+        return default
+    return bool(val)
+
+
+def safe_getattr_list(obj: Any, name: str) -> list[Any]:
+    """类型安全的 getattr, 返回 list(不存在或 None 时返回空列表)"""
+    val: Any = getattr(obj, name, None)
+    if val is None:
+        return []
+    if isinstance(val, list):
+        return cast(list[Any], val)
+    return [val]
+
+
+def safe_getattr_dict(obj: Any, name: str) -> dict[str, Any]:
+    """类型安全的 getattr, 返回 dict(不存在或 None 时返回空字典)"""
+    val: Any = getattr(obj, name, None)
+    if val is None:
+        return {}
+    if isinstance(val, dict):
+        return cast(dict[str, Any], val)
+    return {}
+
+
+def safe_getattr_callable(obj: Any, name: str) -> Callable[..., Any] | None:
+    """类型安全的 getattr, 返回可调用对象(不存在或不可调用时返回 None)"""
+    val = getattr(obj, name, None)
+    return val if callable(val) else None
 

@@ -11,6 +11,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
@@ -235,12 +236,12 @@ class BackendManager:
                 except Exception as e:
                     adapters[aid] = {
                         "status": "unknown",
-                        "started": getattr(adapter, "started", False),
+                        "started": safe_getattr_bool(adapter, "started"),
                         "started_at": None,
                         "error_count": 1,
                         "last_error": str(e),
                         "config_id": aid,
-                        "config_type": getattr(getattr(adapter, "config", None), "type", ""),
+                        "config_type": safe_getattr_str(safe_getattr(adapter, "config"), "type"),
                     }
 
         return {

@@ -37,6 +37,7 @@ from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
 import yaml
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr_callable, safe_getattr_str, safe_getattr_list, safe_getattr_dict
 from satrap.core.utils.skills import Skill
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 
@@ -77,14 +78,14 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
         return None
     existing = sys.modules.get(module_name)
     if existing is not None:
-        existing_file = getattr(existing, "__file__", None)
+        existing_file = safe_getattr_str(existing, "__file__")
         if existing_file and Path(existing_file).resolve() == path.resolve():
             return existing
 
     # 模块名不精确匹配时 (如官方插件以包全名注册), 按源文件路径扫描复用
     resolved_path = path.resolve()
     for mod in list(sys.modules.values()):
-        mod_file = getattr(mod, "__file__", None)
+        mod_file = safe_getattr_str(mod, "__file__")
         if mod_file and Path(mod_file).resolve() == resolved_path:
             return mod
     spec = importlib.util.spec_from_file_location(module_name, str(path))
@@ -109,11 +110,11 @@ def collect_cleanup(
         mod = _load_module(plugin_dir / f"{sub}.py", f"{module_name}.{sub}")
         if mod is None:
             continue
-        fn = getattr(mod, "cleanup", None)
-        if not callable(fn):
-            fn = getattr(mod, "reset_plugin_state", None)
-        if callable(fn):
-            return cast(Callable[..., Any], fn)
+        fn = safe_getattr_callable(mod, "cleanup")
+        if fn is None:
+            fn = safe_getattr_callable(mod, "reset_plugin_state")
+        if fn is not None:
+            return fn
     return None
 
 
@@ -131,8 +132,8 @@ def collect_tools(
     mod = _load_module(plugin_dir / "tools.py", f"{module_name}.tools")
     if mod is None:
         return []
-    factory = getattr(mod, "get_tools", None)
-    if callable(factory):
+    factory = safe_getattr_callable(mod, "get_tools")
+    if factory is not None:
         attempts: list[tuple[Any, ...]] = [(session,)] if session is not None else [()]
         if session is not None:
             attempts.append(())
@@ -148,7 +149,7 @@ def collect_tools(
         raise ValueError(f"插件 {module_name} 的 get_tools 工厂调用失败 (参数不匹配)")
     found: list[T] = []
     for attr_name in dir(mod):
-        obj = getattr(mod, attr_name)
+        obj = getattr(mod, attr_name)   # dir() 返回的属性名必定存在, 无需 safe_getattr
         if isinstance(obj, type) and issubclass(obj, base) and obj is not base:
             found.append(cast(T, obj()))
     return found
@@ -168,8 +169,8 @@ def collect_commands(
     mod = _load_module(plugin_dir / "commands.py", f"{module_name}.commands")
     if mod is None:
         return {}, {}
-    builder = getattr(mod, "build_commands", None)
-    if callable(builder) and session is not None:
+    builder = safe_getattr_callable(mod, "build_commands")
+    if builder is not None and session is not None:
         built: Any = builder(session)
         if isinstance(built, tuple):
             pair = cast(tuple[Any, ...], built)
@@ -177,22 +178,22 @@ def collect_commands(
                 return cast(dict[str, Callable[..., Any]], pair[0]), cast(dict[str, Callable[..., Any]], pair[1])
         if isinstance(built, dict):
             return cast(dict[str, Callable[..., Any]], built), {}
-    declared = getattr(mod, "commands", None)
-    if isinstance(declared, dict):
+    declared = safe_getattr_dict(mod, "commands")
+    if declared:
         sync_map: dict[str, Callable[..., Any]] = {}
-        for k, v in cast(dict[str, Any], declared).items():
+        for k, v in declared.items():
             if callable(v):
                 sync_map[str(k)] = cast(Callable[..., Any], v)
-        async_declared = getattr(mod, "async_commands", None)
+        async_declared = safe_getattr_dict(mod, "async_commands")
         async_map: dict[str, Callable[..., Any]] = {}
-        if isinstance(async_declared, dict):
-            for k, v in cast(dict[str, Any], async_declared).items():
+        if async_declared:
+            for k, v in async_declared.items():
                 if callable(v):
                     async_map[str(k)] = cast(Callable[..., Any], v)
         return sync_map, async_map
     sync_map, async_map = {}, {}
     for attr_name in dir(mod):
-        obj = getattr(mod, attr_name)
+        obj = getattr(mod, attr_name)   # dir() 返回的属性名必定存在, 无需 safe_getattr
         if not callable(obj) or not attr_name.startswith("cmd_"):
             continue
         if inspect.iscoroutinefunction(obj):
@@ -272,7 +273,7 @@ def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
                 found.append(Skill.from_file(str(md), default_name=entry.name))
     mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills")
     if mod is not None:
-        declared = getattr(mod, "skills", None)
+        declared = safe_getattr_list(mod, "skills")
         if declared:
             found.extend(declared)
     return found
@@ -283,11 +284,11 @@ def collect_mcp_clients(plugin_dir: Path, module_name: str) -> dict[str, Any]:
     mod = _load_module(plugin_dir / "mcp.py", f"{module_name}.mcp")
     if mod is None:
         return {}
-    clients = getattr(mod, "clients", None)
-    if isinstance(clients, dict):
-        return {str(k): v for k, v in cast(dict[str, Any], clients).items()}
-    builder = getattr(mod, "build_clients", None)
-    if callable(builder):
+    clients = safe_getattr_dict(mod, "clients")
+    if clients:
+        return {str(k): v for k, v in clients.items()}
+    builder = safe_getattr_callable(mod, "build_clients")
+    if builder is not None:
         built = builder()
         if isinstance(built, dict):
             return {str(k): v for k, v in cast(dict[str, Any], built).items()}
@@ -302,18 +303,18 @@ def collect_handlers(plugin_dir: Path, module_name: str, session: SessionType | 
     mod = _load_module(plugin_dir / "handlers.py", f"{module_name}.handlers")
     if mod is None:
         return []
-    builder = getattr(mod, "build_handlers", None)
-    if callable(builder) and session is not None:
+    builder = safe_getattr_callable(mod, "build_handlers")
+    if builder is not None and session is not None:
         built = builder(session)
         if isinstance(built, (list, tuple)):
             return list(cast(list[SessionHandler], built))
-    declared = getattr(mod, "handlers", None)
+    declared = safe_getattr_list(mod, "handlers")
     if declared:
         return list(cast(list[SessionHandler], declared))
 
     funcs: dict[str, Any] = {}
     for key in ("before_user_send", "after_user_send", "before_model_reply", "after_model_reply"):
-        fn = getattr(mod, key, None)
+        fn = safe_getattr_callable(mod, key)
         if fn is not None:
             funcs[key] = fn
     if not funcs:

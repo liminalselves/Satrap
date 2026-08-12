@@ -26,7 +26,7 @@ from .tools import (
 
 # 旧路径兼容: satrap.expend.<mod> -> satrap.expend.tools.<mod>
 for _name in ("agent", "mem0", "rag", "sandbox_tools", "search"):
-    sys.modules[f"{__name__}.{_name}"] = getattr(tools, _name)
+    sys.modules[f"{__name__}.{_name}"] = getattr(tools, _name)   # 子模块名来自固定元组, 必定存在, 保留裸 getattr
 
 __all__ = [
     "Mem0Memory",

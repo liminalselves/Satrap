@@ -3,6 +3,7 @@ from satrap.core.utils import normalize_openai_base_url
 from openai import OpenAI, AsyncOpenAI, APIError
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr
 
 def parse_embedding_response(
     api_response: Any,
@@ -27,7 +28,7 @@ def parse_embedding_response(
 
     try:
         # 提取 data 字段（对象属性或字典）
-        data = getattr(api_response, "data", None)
+        data = safe_getattr(api_response, "data")
         if data is None and hasattr(api_response, "get"):
             data = api_response.get("data")
 
@@ -40,7 +41,7 @@ def parse_embedding_response(
 
         embeddings: list[Any] = []
         for item in sorted_data:
-            embedding = getattr(item, "embedding", None)
+            embedding = safe_getattr(item, "embedding")
             if embedding is None and isinstance(item, dict):
                 embedding = cast(dict[str, Any], item).get("embedding")
             if embedding is not None:

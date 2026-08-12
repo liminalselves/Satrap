@@ -164,7 +164,8 @@ class BaseMessageComponent(BaseModel):
     def toDict(self) -> Dict[str, Any]:
         """同步转换为通用消息组件格式"""
         data = self.model_dump(exclude_none=True, exclude={"type"}, by_alias=False)
-        extras = cast(dict[str, Any], getattr(self, "__pydantic_extra__", None) or {})
+        from satrap.core.type import safe_getattr_dict   # 延迟导入, 避免 type->components->message 循环依赖
+        extras = safe_getattr_dict(self, "__pydantic_extra__")
         data.update({k: v for k, v in extras.items() if v is not None})
         if "type_" in data:
             data["type"] = data.pop("type_")

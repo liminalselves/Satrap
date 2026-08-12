@@ -11,6 +11,7 @@ from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.session_discovery import create_default_session_dir, discover_session_classes
+from satrap.core.type import safe_getattr_list
 
 st.set_page_config(page_title="会话管理", page_icon="", layout="wide")
 
@@ -43,7 +44,7 @@ def _class_name_to_config_name(class_name: str) -> str:
 
 def _scan_path_options() -> list[str]:
     """获取 Session 扫描目录选项"""
-    paths = [str(item) for item in getattr(st.session_state.config, "session_scan_paths", []) or []]
+    paths = [str(item) for item in safe_getattr_list(st.session_state.config, "session_scan_paths")]
     if not paths:
         paths = [".satrap/session"]
     return paths

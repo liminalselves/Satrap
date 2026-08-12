@@ -97,7 +97,7 @@ class SessionClassConfigManager:
             if ann is inspect.Parameter.empty:
                 template[name] = None
                 continue
-            ann_str = ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))
+            ann_str = ann if isinstance(ann, str) else getattr(ann, "__name__", str(ann))   # 类型注解反射, 保留裸 getattr
             template[name] = type_map.get(ann_str, None)
         return template
 
@@ -108,7 +108,7 @@ class SessionClassConfigManager:
         try:
             module_path, class_name = class_path.rsplit(".", 1)
             module = importlib.import_module(module_path)
-            cls = getattr(module, class_name)
+            cls = getattr(module, class_name)   # 动态类加载, 类名运行时决定, 保留裸 getattr
             if not inspect.isclass(cls) or not issubclass(cls, (Session, AsyncSession)):
                 raise ValueError(f"{class_path} 不是 Session/AsyncSession 子类")
             return cls

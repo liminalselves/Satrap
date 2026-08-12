@@ -38,6 +38,7 @@ from types import TracebackType
 from typing import Any, Awaitable, Dict, List, Literal, Optional, Protocol, Tuple, cast
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 
 from mcp import ClientSession
@@ -69,13 +70,13 @@ def content_to_text(content: Any) -> str:
     blocks = cast(list[Any], content if isinstance(content, list) else [content])
     parts: List[str] = []
     for block in blocks:
-        text = getattr(block, "text", None)
+        text = safe_getattr(block, "text")
         if text is not None:
             parts.append(str(text))
             continue
-        if getattr(block, "type", None) == "image":
-            mime = getattr(block, "mimeType", None) or "image"
-            data = getattr(block, "data", None) or ""
+        if safe_getattr(block, "type") == "image":
+            mime = safe_getattr_str(block, "mimeType") or "image"
+            data = safe_getattr_str(block, "data")
             parts.append(f"[image: {mime}, data {len(str(data))} chars]")
             continue
         parts.append(str(block))
@@ -84,9 +85,9 @@ def content_to_text(content: Any) -> str:
 
 def _input_schema_of(mcp_tool: Any) -> dict[str, Any]:
     """从 MCP 工具对象提取 input_schema, 兼容 mcp 1.x (inputSchema) 与 2.x (input_schema)"""
-    schema = getattr(mcp_tool, "input_schema", None)
+    schema = safe_getattr(mcp_tool, "input_schema")
     if schema is None:
-        schema = getattr(mcp_tool, "inputSchema", None)
+        schema = safe_getattr(mcp_tool, "inputSchema")
     if not isinstance(schema, dict):
         return {"type": "object", "properties": {}}
     schema = cast(dict[str, Any], schema)
@@ -152,13 +153,13 @@ class MCPToolAdapter(AsyncTool):
         """
         self.session = session
         self.mcp_tool = mcp_tool
-        raw_name = getattr(mcp_tool, "name", "") or ""
+        raw_name = safe_getattr_str(mcp_tool, "name")
         tool_name = f"{name_prefix}_{raw_name}" if name_prefix else raw_name
         self._schema = _input_schema_of(mcp_tool)
         params_dict = _params_from_schema(self._schema)
         super().__init__(
             tool_name=tool_name,
-            description=getattr(mcp_tool, "description", None) or "",
+            description=safe_getattr_str(mcp_tool, "description"),
             params_dict=params_dict,
         )
 
@@ -183,9 +184,9 @@ class MCPToolAdapter(AsyncTool):
             logger.error(f"[MCP适配器] 工具 {self.get_tool_name()} 调用失败: {e}")
             return _mcp_error(self.get_tool_name(), f"MCP 工具调用异常: {str(e)}")
 
-        if getattr(result, "is_error", False) or getattr(result, "isError", False):
-            return _mcp_error(self.get_tool_name(), content_to_text(getattr(result, "content", None)))
-        return content_to_text(getattr(result, "content", None))
+        if safe_getattr(result, "is_error") or safe_getattr(result, "isError"):
+            return _mcp_error(self.get_tool_name(), content_to_text(safe_getattr(result, "content")))
+        return content_to_text(safe_getattr(result, "content"))
 
 
 class SyncMCPToolAdapter(Tool):
@@ -481,7 +482,7 @@ class MCPServerExporter:
         for tool_name, tool in self.tools_manager.tools.items():
             if not (tool.assert_tool() and tool.is_enabled()):
                 continue
-            if inspect.iscoroutinefunction(getattr(tool, "execute", None)):
+            if inspect.iscoroutinefunction(safe_getattr(tool, "execute")):
                 logger.warning(f"[MCP导出] 异步工具 {tool_name} 不支持导出, 已跳过")
                 continue
             try:

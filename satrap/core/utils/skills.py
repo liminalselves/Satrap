@@ -67,6 +67,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union, cast
 import yaml
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr, safe_getattr_callable, safe_getattr_dict
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, ToolsManager, AsyncToolsManager
 
@@ -212,8 +213,8 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
         return [], []
 
     tools: List[Any] = []
-    get_tools = getattr(module, "get_tools", None)
-    if callable(get_tools):
+    get_tools = safe_getattr_callable(module, "get_tools")
+    if get_tools is not None:
         try:
             result = get_tools()
             if isinstance(result, (list, tuple)):
@@ -224,7 +225,7 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
             logger.error(f"[技能管理] get_tools() 执行失败: {e}")
     else:
         for attr in vars(module).values():
-            if not (isinstance(attr, type) and getattr(attr, "__module__", None) == module.__name__):
+            if not (isinstance(attr, type) and safe_getattr(attr, "__module__") == module.__name__):
                 continue
             if issubclass(attr, (Tool, AsyncTool)):
                 try:
@@ -233,8 +234,8 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
                     pass   # 构造函数需要参数, 应通过 get_tools() 提供
 
     mcp_clients: List[Any] = []
-    get_mcp_clients = getattr(module, "get_mcp_clients", None)
-    if callable(get_mcp_clients):
+    get_mcp_clients = safe_getattr_callable(module, "get_mcp_clients")
+    if get_mcp_clients is not None:
         try:
             result = get_mcp_clients()
             if isinstance(result, (list, tuple)):
@@ -451,7 +452,7 @@ class SkillsManager:
         self._register_bundled_tools(workflow, skill)
         enabled = self._apply_tools(workflow, skill.tool_names, enable=True)
 
-        tools_manager = getattr(workflow, "tools_manager", None)
+        tools_manager = safe_getattr(workflow, "tools_manager")
         connected: List[Any] = []
         if tools_manager is not None:
             for client in skill.mcp_clients:
@@ -515,14 +516,14 @@ class SkillsManager:
 
     def _register_bundled_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], skill: Skill) -> int:
         """注册技能自带的工具实例 (已注册的同名工具跳过), 返回新注册数"""
-        tools_manager: Union[ToolsManager, AsyncToolsManager, None] = getattr(workflow, "tools_manager", None)
+        tools_manager: Union[ToolsManager, AsyncToolsManager, None] = safe_getattr(workflow, "tools_manager")
         if tools_manager is None or not skill.tools:
             return 0
 
         registered = 0
         for tool in skill.tools:
             name = tool.get_tool_name()
-            if name not in getattr(tools_manager, "tools", {}):
+            if name not in safe_getattr_dict(tools_manager, "tools"):
                 tools_manager.register_tool(tool)   # type: ignore
                 registered += 1
 
@@ -530,12 +531,12 @@ class SkillsManager:
 
     def _apply_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], tool_names: List[str], enable: bool) -> int:
         """启用或禁用关联工具, 返回实际生效的工具数"""
-        tools_manager: Union[ToolsManager, AsyncToolsManager, None] = getattr(workflow, "tools_manager", None)
+        tools_manager: Union[ToolsManager, AsyncToolsManager, None] = safe_getattr(workflow, "tools_manager")
         if tools_manager is None or not tool_names:
             return 0
         applied = 0
         for name in tool_names:
-            if name not in getattr(tools_manager, "tools", {}):
+            if name not in safe_getattr_dict(tools_manager, "tools"):
                 logger.warning(f"[技能管理] 工具 {name} 未注册, 已跳过")
                 continue
             if enable:
@@ -564,12 +565,12 @@ class SkillsManager:
         技能指令直接改写上下文中的系统消息内容, 属于外部编辑,
         落库前需标记 dirty 以触发全量重写
         """
-        ctx = getattr(workflow, "ctx", None)
+        ctx = safe_getattr(workflow, "ctx")
         if ctx is not None:
-            mark = getattr(ctx, "_mark_dirty", None)
+            mark = safe_getattr_callable(ctx, "_mark_dirty")
             if mark is not None:
                 mark()
-        sync = getattr(workflow.ctx, "_sync", None)
+        sync = safe_getattr_callable(workflow.ctx, "_sync")
         if sync is not None:
             return sync()
         return None

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from satrap.core.pipeline.scheduler import PipelineScheduler
 
 from satrap.core.log import logger
-from satrap.core.type import Group, PlatformError, PlatformStatus
+from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
 
 
 # 统一事件回调签名:
@@ -270,9 +270,9 @@ class PlatformAdapter(ABC):
         """
         parts: list[str] = []
         for c in message:
-            t = getattr(c, 'type', None)
+            t = safe_getattr(c, 'type')
             if t is not None and hasattr(t, 'value') and t.value.lower() == 'plain':
-                parts.append(getattr(c, 'text', '') or '')
+                parts.append(safe_getattr_str(c, 'text'))
         text = "".join(parts)
         if not text:
             text = str(message)

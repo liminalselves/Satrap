@@ -12,7 +12,7 @@ from typing import Any
 
 from satrap.core.log import logger
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
-from satrap.core.type import PlatformMessage, PlatformMessageType
+from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
 
 # 模块级导入, 避免每个方法重复 lazy import; 无循环依赖风险 (__init__.py 仅在 TYPE_CHECKING 下引用 event.py)
 from satrap.core.platform import PlatformAdapter
@@ -276,16 +276,16 @@ class MessageEvent:
         for c in chain:
             t = c.type
             if t == PlatformComponentType.Plain:
-                parts.append(getattr(c, 'text', '') or '')
+                parts.append(safe_getattr_str(c, 'text'))
             elif t == PlatformComponentType.Image:
                 parts.append("[图片]")
             elif t == PlatformComponentType.Face:
-                parts.append(f"[表情:{getattr(c, 'id', '')}]")
+                parts.append(f"[表情:{safe_getattr_str(c, 'id')}]")
             elif t == PlatformComponentType.At:
-                parts.append(f"[At:{getattr(c, 'qq', '')}]")
+                parts.append(f"[At:{safe_getattr_str(c, 'qq')}]")
             elif t == PlatformComponentType.Reply:
-                msg_str = getattr(c, 'message_str', None) or ''
-                nickname = getattr(c, 'sender_nickname', None) or ''
+                msg_str = safe_getattr_str(c, 'message_str')
+                nickname = safe_getattr_str(c, 'sender_nickname')
                 if msg_str:
                     parts.append(f"[引用消息({nickname}: {msg_str})]")
                 else:
@@ -299,19 +299,19 @@ class MessageEvent:
 
     def get_message_outline(self) -> str:
         """获取消息的文本摘要 (纯文本, 图片, 引用等的简短描述)"""
-        chain = getattr(self.platform_message, 'message', None)
+        chain = safe_getattr_list(self.platform_message, 'message')
         return self._outline_chain(chain)
 
     def get_messages(self) -> list[BaseMessageComponent]:
         """获取消息组件列表"""
-        return getattr(self.platform_message, 'message', []) or []
+        return safe_getattr_list(self.platform_message, 'message')
 
     def get_message_type(self) -> str:
         """获取消息类型 (如 friend_message / group_message)"""
-        mt = getattr(self.platform_message, 'type', None)
+        mt = safe_getattr(self.platform_message, 'type')
         if isinstance(mt, PlatformMessageType):
             return mt.value
-        if mt is not None:
+        if mt:
             return str(mt)
         return self.session.message_type
 
@@ -321,30 +321,27 @@ class MessageEvent:
 
     def get_group_id(self) -> str:
         """获取群组 ID (私聊时返回空字符串)"""
-        g = getattr(self.platform_message, 'group', None)
-        if g:
-            return getattr(g, 'group_id', '')
-        return ''
+        g = safe_getattr(self.platform_message, 'group')
+        return safe_getattr_str(g, 'group_id') if g is not None else ''
 
     def get_self_id(self) -> str:
         """获取机器人自身的平台 ID"""
-        return getattr(self.platform_message, 'self_id', '')
+        return safe_getattr_str(self.platform_message, 'self_id')
 
     def get_sender_id(self) -> str:
         """获取发送者 ID"""
-        sender = getattr(self.platform_message, 'sender', None)
-        if sender:
-            uid = getattr(sender, 'user_id', None)
-            if uid is not None:
-                return str(uid)
-        return ''
+        sender = safe_getattr(self.platform_message, 'sender')
+        if sender is None:
+            return ''
+        uid = safe_getattr_str(sender, 'user_id')
+        return uid if uid else ''
 
     def get_sender_name(self) -> str:
         """获取发送者昵称"""
-        sender = getattr(self.platform_message, 'sender', None)
-        if sender:
-            return getattr(sender, 'nickname', '') or ''
-        return ''
+        sender = safe_getattr(self.platform_message, 'sender')
+        if sender is None:
+            return ''
+        return safe_getattr_str(sender, 'nickname')
 
     def is_private_chat(self) -> bool:
         """是否为私聊消息"""

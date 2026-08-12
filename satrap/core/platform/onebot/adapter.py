@@ -16,7 +16,7 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_private_session,
     message_chain_to_onebot_segments,
 )
-from satrap.core.type import PlatformMessage
+from satrap.core.type import PlatformMessage, safe_getattr_callable
 
 
 class _MissingCQHttp:
@@ -82,8 +82,8 @@ class OneBotAdapter(PlatformAdapter):
         self._running = True
 
         try:
-            run_task = getattr(self._bot, "run_task", None)
-            if callable(run_task):
+            run_task = safe_getattr_callable(self._bot, "run_task")
+            if run_task is not None:
                 result = run_task(host=self.host, port=self.port)
             else:
                 result = self._bot.run(host=self.host, port=self.port)
@@ -107,8 +107,8 @@ class OneBotAdapter(PlatformAdapter):
 
     def _register_optional_handler(self, method_name: str, handler: Any) -> None:
         """兼容不同 aiocqhttp 版本的可选事件装饰器"""
-        method = getattr(self._bot, method_name, None)
-        if not callable(method):
+        method = safe_getattr_callable(self._bot, method_name)
+        if method is None:
             return
         try:
             decorator = method()
@@ -217,8 +217,8 @@ class OneBotAdapter(PlatformAdapter):
         """终止 OneBot 适配器并释放资源"""
         self._running = False
         if self._bot:
-            close = getattr(self._bot, "close", None)
-            if callable(close):
+            close = safe_getattr_callable(self._bot, "close")
+            if close is not None:
                 result = close()
                 if inspect.isawaitable(result):
                     await result

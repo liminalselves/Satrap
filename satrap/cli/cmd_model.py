@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr, safe_getattr_callable
 
 
 TYPE_MAP = {
@@ -42,7 +42,7 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
 
 
 def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig) -> dict[str, Any]:
-    data = {f.name: getattr(config, f.name) for f in config.__dataclass_fields__.values()}
+    data = {f.name: safe_getattr(config, f.name) for f in config.__dataclass_fields__.values()}
     return data
 
 
@@ -68,7 +68,10 @@ def cmd_model_list(args: argparse.Namespace):
         info = TYPE_MAP.get(t)
         if not info:
             continue
-        configs = getattr(mgr, info[0])(mask_api_key=True)
+        list_fn = safe_getattr_callable(mgr, info[0])
+        if list_fn is None:
+            continue
+        configs = list_fn(mask_api_key=True)
         for name, entry in configs.items():
             model = entry.get("model") or entry.get("base_url", "")
             rows.append([t, name, model])
@@ -115,7 +118,11 @@ def cmd_model_show(args: argparse.Namespace):
         if offline_requested(args):
             ensure_offline_allowed(args, "读取模型配置")
         mgr = _init_mgr(args)
-        config = getattr(mgr, info[1])(name=args.name)
+        get_fn = safe_getattr_callable(mgr, info[1])
+        if get_fn is None:
+            print(f"接口不存在: {info[1]}")
+            sys.exit(1)
+        config = get_fn(name=args.name)
         data = _fmt_model_config(config)
     if not args.show_key and "api_key" in data:
         ak = data.get("api_key", "") or ""
@@ -148,9 +155,15 @@ def cmd_model_set(args: argparse.Namespace):
             mgr = _init_mgr(args)
             if args.from_json:
                 config = CLS_MAP[args.type](**params)
-                getattr(mgr, info[2])(config, name=args.name)
+                set_fn = safe_getattr_callable(mgr, info[2])
+                if set_fn is None:
+                    raise ValueError(f"接口不存在: {info[2]}")
+                set_fn(config, name=args.name)
             else:
-                getattr(mgr, info[3])(name=args.name, **params)
+                update_fn = safe_getattr_callable(mgr, info[3])
+                if update_fn is None:
+                    raise ValueError(f"接口不存在: {info[3]}")
+                update_fn(name=args.name, **params)
         print(f"已更新模型配置: {args.type}/{args.name}")
     except Exception as e:
         print(f"设置失败: {e}")
@@ -173,7 +186,10 @@ def cmd_model_remove(args: argparse.Namespace):
             if offline_requested(args):
                 ensure_offline_allowed(args, "删除模型配置")
             mgr = _init_mgr(args)
-            success = getattr(mgr, info[4])(name=args.name)
+            remove_fn = safe_getattr_callable(mgr, info[4])
+            if remove_fn is None:
+                raise ValueError(f"接口不存在: {info[4]}")
+            success = remove_fn(name=args.name)
         if success:
             print(f"已删除: {args.type}/{args.name}")
         else:

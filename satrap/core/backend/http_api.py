@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr, safe_getattr_str
 from satrap.core.utils.paths import get_data_dir, get_project_root
 
 if TYPE_CHECKING:
@@ -530,7 +530,7 @@ class BackendHTTPServer:
         # GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
         # GET /api/user/sessions?user_id=xxx
         # POST /api/user/{create|update|delete|bind|unbind}
-        user_db = getattr(getattr(backend, "config", None), "user_db_path", None) or str(get_data_dir() / "user_info.db")
+        user_db = safe_getattr_str(safe_getattr(backend, "config"), "user_db_path") or str(get_data_dir() / "user_info.db")
         if path.startswith("/api/user"):
             try:
                 if method == "GET" and path.startswith("/api/users"):

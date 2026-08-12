@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.platform.event import MessageChain
-from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
 
 
 class FileIDExtractor:
@@ -34,15 +34,15 @@ def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]
     has_at = False
 
     for component in components:
-        component_type = getattr(component, "type", None)
+        component_type = safe_getattr(component, "type")
         if component_type == PlatformComponentType.Plain or isinstance(component, Plain):
-            text = getattr(component, "text", "")
+            text = safe_getattr_str(component, "text")
             if text:
                 text_parts.append(str(text))
             continue
         if component_type == PlatformComponentType.At or isinstance(component, At):
             has_at = True
-            name = getattr(component, "name", "") or getattr(component, "qq", "")
+            name = safe_getattr_str(component, "name") or safe_getattr_str(component, "qq")
             if name:
                 text_parts.append(f"@{name}")
             continue
@@ -58,7 +58,7 @@ def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]
         if component_type == PlatformComponentType.File or isinstance(component, File):
             text_parts.append("[文件]")
             continue
-        text = getattr(component, "text", None)
+        text = safe_getattr(component, "text")
         if text:
             text = str(text)
             if "@" in text:
@@ -302,7 +302,7 @@ async def resolve_component_url_or_path(comp: Any) -> tuple[str | None, str | No
             pass
     for attr in ("url", "file", "path", "src", "source"):
         try:
-            value = getattr(comp, attr, None)
+            value = safe_getattr(comp, attr)
         except Exception:
             continue
         if not isinstance(value, str) or not value:

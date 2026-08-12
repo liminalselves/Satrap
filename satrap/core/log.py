@@ -235,7 +235,7 @@ class Logger():
         except OSError:
             pass
 
-logger = Logger(logger_name="SATRAP", output_dir=".satrap")
+logger = Logger(logger_name="SATRAP", output_dir=".satrap", file_level=logging.WARNING)
 
 if __name__ == "__main__":
     logger = Logger(

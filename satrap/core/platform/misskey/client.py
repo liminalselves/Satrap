@@ -17,6 +17,7 @@ _R = TypeVar("_R")
 import aiohttp
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr_str
 from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
 
 
@@ -233,7 +234,7 @@ def retry_async(
     def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[Any]]:
         async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> Any:
             last_exc: Exception | None = None
-            func_name = getattr(func, "__name__", "unknown")
+            func_name = safe_getattr_str(func, "__name__", "unknown")
             for attempt in range(1, max_retries + 1):
                 try:
                     return await func(*args, **kwargs)

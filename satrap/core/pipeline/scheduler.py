@@ -9,7 +9,7 @@ from satrap.core.framework.UserManager import UserManager
 from satrap.core.log import logger
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
-from satrap.core.type import UserCall
+from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 
 _T = TypeVar("_T")
@@ -103,7 +103,7 @@ class PipelineScheduler:
                     user_id=event.get_sender_id(),
                     platform=platform_id,
                     session_type=event.session_type,
-                    class_cfg_mgr=getattr(self.session_manager, 'class_cfg_mgr', None),
+                    class_cfg_mgr=safe_getattr(self.session_manager, 'class_cfg_mgr'),
                     extra_params=extra_params,
                 )
                 if resolved:
@@ -156,7 +156,7 @@ class PipelineScheduler:
     def _resolve_route_adapter(self, event: MessageEvent) -> tuple[str, dict[str, str] | None]:
         """解析事件应绑定到哪个适配器实例"""
         source_adapter_id = event.get_platform_id()
-        class_cfg_mgr = getattr(self.session_manager, 'class_cfg_mgr', None)
+        class_cfg_mgr = safe_getattr(self.session_manager, 'class_cfg_mgr')
         requested = ""
         if class_cfg_mgr is not None and event.session_type:
             try:
@@ -183,11 +183,11 @@ class PipelineScheduler:
         urls: list[str] = []
         try:
             for comp in event.get_messages():
-                ctype = getattr(comp, 'type', None)
+                ctype = safe_getattr(comp, 'type')
                 if ctype is not None:
                     ctype_str = ctype.value if hasattr(ctype, 'value') else str(ctype)
                     if ctype_str.lower() == 'image':
-                        url = getattr(comp, 'url', None) or getattr(comp, 'file', None) or ''
+                        url = safe_getattr_str(comp, 'url') or safe_getattr_str(comp, 'file')
                         if url:
                             urls.append(str(url))
         except Exception:

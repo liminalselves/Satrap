@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
-from typing import List, Dict, Union, Optional, Any, cast
+from typing import List, Dict, Union, Optional, Any, cast, TYPE_CHECKING
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
@@ -25,6 +27,9 @@ from satrap.core.type import (
     StateCheckpoint,
     StateScope,
 )
+
+if TYPE_CHECKING:
+    from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 
 
 def _messages_domain() -> SnapshotDomain:
@@ -113,7 +118,9 @@ class ContextManager:
         keep_in_memory: bool = False,
         db_path: str = ".satrap/chat_history.db",
         max_context: int = 128000,
-        context_threshold: float = 0.9,
+        history_ratio: float = 0.7,
+        context_threshold: float = 0.8,
+        truncation_floor: float = 0.4,
         exceed_process: str = "sliding",
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
@@ -129,9 +136,11 @@ class ContextManager:
             - False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
         - db_path: SQLite 数据库路径
         - max_context: 最大上下文长度, 默认 128k
-        - context_threshold: 上下文阈值, 超过阈值时删除旧消息, 默认 0.9 (即 90% 上下文长度)
-        - exceed_process: 超过阈值时的处理方式, 默认 "sliding" (滑动窗口)
-            - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在阈值以下
+        - history_ratio: 历史上下文比例, 历史预算 = max_context × history_ratio, 默认 0.7
+        - context_threshold: 上下文阈值(占历史预算比例), 触发线 = 历史预算 × context_threshold, 默认 0.8
+        - truncation_floor: 上下文截断底线(占历史预算比例), 截断目标 = 历史预算 × truncation_floor, 默认 0.4
+        - exceed_process: 超过触发线时的处理方式, 默认 "sliding" (滑动窗口)
+            - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在截断底线以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
@@ -140,26 +149,48 @@ class ContextManager:
         返回:
         - None
         """
+        if not (0 < truncation_floor < context_threshold <= 1):
+            truncation_floor = 0.4
+            logger.warning(
+                f"截断底线必须小于上下文阈值: truncation_floor({truncation_floor}) < context_threshold({context_threshold})，退回默认值"
+            )
+
+        if not (0 < history_ratio <= 1):
+            history_ratio = 0.7
+            logger.warning(f"历史上下文比例必须在 (0, 1] 区间: history_ratio={history_ratio}，退回默认值")
+
+
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
         self.auto_checkpoint = auto_checkpoint
         # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
+
         self.state_store = state_store
+
         if self.state_store is None and enable_checkpoint:
             self.state_store = StateStore(db_path=self.db_path)
         if self.state_store is not None:
             self.state_store.register_domain(_messages_domain())
-        self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
-        self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
+
+        self._messages: List[Dict[str, Any]] = []         # 内存中的消息缓存
+        self._conn_lock = threading.Lock()                # 连接创建/释放互斥 (读写路径假定单线程使用)
         self._conn: Optional[sqlite3.Connection] = None   # 复用数据库连接 (惰性创建)
-        self._conn_lock = threading.Lock()   # 连接创建/释放互斥 (读写路径假定单线程使用)
+        self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self._init_db_table()   # 初始化数据库表结构
         self.load_context()     # 加载数据
 
         self.max_context = max_context
+        self.history_ratio = history_ratio
         self.context_threshold = context_threshold
+        self.truncation_floor = truncation_floor
         self.exceed_process = exceed_process
+
+        self.history_budget = int(max_context * history_ratio)
+        self.trigger_tokens = int(self.history_budget * context_threshold)
+        self.floor_tokens = int(self.history_budget * truncation_floor)
+        self.output_budget = max_context - self.history_budget
+        # 派生值: 滞回截断的触发线/底线/输出预算
 
         logger.info(f"[上下文管理器] 初始化完成, 对话ID: {self.conversation_id}")
 
@@ -422,7 +453,9 @@ class ContextManager:
             keep_in_memory=self.keep_in_memory,
             db_path=self.db_path,
             max_context=self.max_context,
+            history_ratio=self.history_ratio,
             context_threshold=self.context_threshold,
+            truncation_floor=self.truncation_floor,
             exceed_process=self.exceed_process,
             state_store=store,
             auto_checkpoint=self.auto_checkpoint,
@@ -745,6 +778,84 @@ class ContextManager:
         """将分组后的轮次列表还原为扁平消息列表"""
         return [msg for turn in turns for msg in turn]
 
+    _SUMMARY_BLOCK_RE = re.compile(r"<对话历史摘要>.*?</对话历史摘要>", re.DOTALL)
+    _SUMMARY_PROMPT = (
+        "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
+        "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
+    )
+
+    def summarize_and_compress(self, llm: LLM, keep_recent_turns: int) -> str:
+        """将保留最近 keep_recent_turns 轮之前的所有对话总结, 删除原文, 总结置于 system prompt
+
+        多模态消息中的图片在总结前被投影为 [图片] 占位符(与 estimate_token 口径一致),
+        用于总结的 LLM 实例无需多模态能力
+
+        参数:
+        - llm: 用于总结的 LLM 实例(调 chat 得字符串)
+        - keep_recent_turns: 保留最近的对话轮数(这些轮次不总结不删除)
+
+        返回:
+        - str: 总结文本; 对话轮次不足 keep_recent_turns 时返回空字符串(无可压缩)
+        """
+        self._protect_before_edit()
+        turns = self._group_messages_by_turns(self._messages)
+        if not turns:
+            return ""
+
+        # 分离 system 轮次与对话轮次
+        system_turn: List[Dict[str, Any]] = []
+        if all(msg.get("role") == "system" for msg in turns[0]):
+            system_turn = turns.pop(0)
+
+        if len(turns) <= keep_recent_turns:
+            return ""   # 对话轮次不足, 无可压缩
+
+        to_compress = turns[:-keep_recent_turns]
+        to_keep = turns[-keep_recent_turns:]
+
+        # 多模态预处理: 图片投影为 [图片], 拼接为纯文本对话
+        lines: list[str] = []
+        for turn in to_compress:
+            for msg in turn:
+                role = msg.get("role", "unknown")
+                text = content_text_projection(msg.get("content"))
+                if text:
+                    lines.append(f"{role}: {text}")
+        dialogue_text = "\n".join(lines)
+
+        summary = llm.chat([{"role": "user", "content": f"{self._SUMMARY_PROMPT}\n\n{dialogue_text}"}])
+        if not isinstance(summary, str):
+            summary = str(summary)
+
+        # 注入 system prompt: 已有摘要区块则合并为一段, 否则追加
+        new_block = f"<对话历史摘要>\n{summary}\n</对话历史摘要>"
+        if system_turn:
+            old_content = str(system_turn[0].get("content", ""))
+            existing = self._SUMMARY_BLOCK_RE.search(old_content)
+
+            if existing:
+                merged = llm.chat([{"role": "user", "content": (
+                    f"请将以下两段对话历史摘要合并为一段连贯的摘要, 保留所有关键信息:\n\n"
+                    f"{existing.group(0)}\n\n{new_block}"
+                )}])
+
+                if not isinstance(merged, str):
+                    merged = str(merged)
+                new_content = self._SUMMARY_BLOCK_RE.sub(
+                    f"<对话历史摘要>\n{merged}\n</对话历史摘要>", old_content
+                )
+            else:
+                new_content = f"{old_content}\n\n{new_block}" if old_content else new_block
+            system_turn[0]["content"] = new_content
+        else:
+            system_turn = [{"role": "system", "content": new_block}]
+
+        self._messages = self._flatten_turns([system_turn] + to_keep)
+        self._mark_dirty()
+        self._sync()
+        logger.info(f"[上下文管理] 总结压缩完成: 压缩 {len(to_compress)} 轮, 保留 {len(to_keep)} 轮, ID: {self.conversation_id}")
+        return summary
+
     def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
@@ -808,6 +919,9 @@ class ContextManager:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
+        滞回截断: 未达触发线(trigger_tokens)不处理, 超过则截断到截断底线(floor_tokens),
+        触发线与底线之间的缓冲带内前缀稳定, 避免贴线抖动导致服务器 prefix cache 失效
+
         参数:
         - messages: 待截断的消息列表
         - method: token 估算方法, 同 estimate_token() 参数
@@ -815,13 +929,11 @@ class ContextManager:
         返回:
         - List[Dict]: 截断后的新列表
         """
-        threshold = int(self.max_context * self.context_threshold)
-
         current_tokens = self.estimate_token(messages, method=method)
-        if current_tokens <= threshold:
-            return messages.copy()   # 无需截断, 返回副本
+        if current_tokens <= self.trigger_tokens:
+            return messages.copy()   # 未达触发线, 无需截断
 
-        logger.debug(f"模型上下文超限 ({current_tokens} > {threshold})，应用 {self.exceed_process} 截断")
+        logger.debug(f"模型上下文达触发线 ({current_tokens} > {self.trigger_tokens})，应用 {self.exceed_process} 截断到 {self.floor_tokens}")
 
         turns = self._group_messages_by_turns(messages)
         system_turn = None
@@ -829,13 +941,13 @@ class ContextManager:
             system_turn = turns.pop(0)
 
         if self.exceed_process == "sliding":   # 滑动窗口截断
-            return self._apply_sliding_truncation(messages, threshold, method)
+            return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
         elif self.exceed_process == "mid_truncate":   # 中间截断: 保留头部和尾部, 删除中间轮次
 
             if len(turns) <= 4:
                 logger.debug(f"[上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
-                return self._apply_sliding_truncation(messages, threshold, method)
+                return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
             def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
                 return self.estimate_token(self._flatten_turns(
@@ -843,7 +955,7 @@ class ContextManager:
                 ), method=method)
 
             kept_turns = turns[:]   # 初始保留所有轮次  
-            while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
+            while token_of_turn_list(kept_turns) > self.floor_tokens and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
                 mid = len(kept_turns) // 2   # 找到中间索引
                 del kept_turns[mid]   # 删除
 
@@ -862,7 +974,9 @@ class AsyncContextManager:
         keep_in_memory: bool = False,
         db_path: str = ".satrap/chat_history.db",
         max_context: int = 128000,
-        context_threshold: float = 0.9,
+        history_ratio: float = 0.7,
+        context_threshold: float = 0.8,
+        truncation_floor: float = 0.4,
         exceed_process: str = "sliding",
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
@@ -880,15 +994,26 @@ class AsyncContextManager:
             False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
         - db_path: SQLite 数据库路径, 默认 ".satrap/chat_history.db"
         - max_context: 最大上下文长度, 默认 128k
-        - context_threshold: 上下文阈值, 超过阈值时删除旧消息, 默认 0.9 (即 90% 上下文长度)
-        - exceed_process: 超过阈值时的处理方式, 默认 "sliding" (滑动窗口)
-            - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在阈值以下
+        - history_ratio: 历史上下文比例, 历史预算 = max_context × history_ratio, 默认 0.7
+        - context_threshold: 上下文阈值(占历史预算比例), 触发线 = 历史预算 × context_threshold, 默认 0.8
+        - truncation_floor: 上下文截断底线(占历史预算比例), 截断目标 = 历史预算 × truncation_floor, 默认 0.4
+        - exceed_process: 超过触发线时的处理方式, 默认 "sliding" (滑动窗口)
+            - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在截断底线以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
         - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
 
         """
+        if not (0 < truncation_floor < context_threshold <= 1):
+            truncation_floor = 0.4
+            logger.warning(
+                f"截断底线必须小于上下文阈值: truncation_floor({truncation_floor}) < context_threshold({context_threshold})，退回默认值"
+            )
+        if not (0 < history_ratio <= 1):
+            history_ratio = 0.7
+            logger.warning(f"历史上下文比例必须在 (0, 1] 区间: history_ratio={history_ratio}，退回默认值")
+
         self.db_path = db_path
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
@@ -900,8 +1025,15 @@ class AsyncContextManager:
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
         self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self.max_context = max_context                     # 最大上下文长度
-        self.context_threshold = context_threshold         # 上下文阈值
-        self.exceed_process = exceed_process               # 超过阈值时的处理方式
+        self.history_ratio = history_ratio                 # 历史上下文比例
+        self.context_threshold = context_threshold         # 上下文阈值(占历史预算比例)
+        self.truncation_floor = truncation_floor           # 上下文截断底线(占历史预算比例)
+        self.exceed_process = exceed_process               # 超过触发线时的处理方式
+        # 派生值: 滞回截断的触发线/底线/输出预算
+        self.history_budget = int(max_context * history_ratio)
+        self.trigger_tokens = int(self.history_budget * context_threshold)
+        self.floor_tokens = int(self.history_budget * truncation_floor)
+        self.output_budget = max_context - self.history_budget
         logger.info(f"[异步上下文管理] 实例已创建，对话 ID: {self.conversation_id}")
 
     async def initialize(self):
@@ -1155,7 +1287,9 @@ class AsyncContextManager:
             keep_in_memory=self.keep_in_memory,
             db_path=self.db_path,
             max_context=self.max_context,
+            history_ratio=self.history_ratio,
             context_threshold=self.context_threshold,
+            truncation_floor=self.truncation_floor,
             exceed_process=self.exceed_process,
             state_store=store,
             auto_checkpoint=self.auto_checkpoint,
@@ -1484,6 +1618,82 @@ class AsyncContextManager:
         """将分组后的轮次列表还原为扁平消息列表"""
         return [msg for turn in turns for msg in turn]
 
+    _SUMMARY_BLOCK_RE = re.compile(r"<对话历史摘要>.*?</对话历史摘要>", re.DOTALL)
+    _SUMMARY_PROMPT = (
+        "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
+        "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
+    )
+
+    async def summarize_and_compress(self, llm: AsyncLLM, keep_recent_turns: int) -> str:
+        """将保留最近 keep_recent_turns 轮之前的所有对话总结, 删除原文, 总结置于 system prompt
+
+        多模态消息中的图片在总结前被投影为 [图片] 占位符(与 estimate_token 口径一致),
+        用于总结的 LLM 实例无需多模态能力
+
+        参数:
+        - llm: 用于总结的 LLM 实例(调 chat 得字符串)
+        - keep_recent_turns: 保留最近的对话轮数(这些轮次不总结不删除)
+
+        返回:
+        - str: 总结文本; 对话轮次不足 keep_recent_turns 时返回空字符串(无可压缩)
+        """
+        await self._protect_before_edit()
+        turns = self._group_messages_by_turns(self._messages)
+        if not turns:
+            return ""
+
+        # 分离 system 轮次与对话轮次
+        system_turn: List[Dict[str, Any]] = []
+        if all(msg.get("role") == "system" for msg in turns[0]):
+            system_turn = turns.pop(0)
+
+        if len(turns) <= keep_recent_turns:
+            return ""   # 对话轮次不足, 无可压缩
+
+        to_compress = turns[:-keep_recent_turns]
+        to_keep = turns[-keep_recent_turns:]
+
+        # 多模态预处理: 图片投影为 [图片], 拼接为纯文本对话
+        lines: list[str] = []
+        for turn in to_compress:
+            for msg in turn:
+                role = msg.get("role", "unknown")
+                text = content_text_projection(msg.get("content"))
+                if text:
+                    lines.append(f"{role}: {text}")
+        dialogue_text = "\n".join(lines)
+
+        summary = await llm.chat([{"role": "user", "content": f"{self._SUMMARY_PROMPT}\n\n{dialogue_text}"}])
+        if not isinstance(summary, str):
+            summary = str(summary)
+
+        # 注入 system prompt: 已有摘要区块则合并为一段, 否则追加
+        new_block = f"<对话历史摘要>\n{summary}\n</对话历史摘要>"
+        if system_turn:
+            old_content = str(system_turn[0].get("content", ""))
+            existing = self._SUMMARY_BLOCK_RE.search(old_content)
+            if existing:
+                merged = await llm.chat([{"role": "user", "content": (
+                    f"请将以下两段对话历史摘要合并为一段连贯的摘要, 保留所有关键信息:\n\n"
+                    f"{existing.group(0)}\n\n{new_block}"
+                )}])
+                if not isinstance(merged, str):
+                    merged = str(merged)
+                new_content = self._SUMMARY_BLOCK_RE.sub(
+                    f"<对话历史摘要>\n{merged}\n</对话历史摘要>", old_content
+                )
+            else:
+                new_content = f"{old_content}\n\n{new_block}" if old_content else new_block
+            system_turn[0]["content"] = new_content
+        else:
+            system_turn = [{"role": "system", "content": new_block}]
+
+        self._messages = self._flatten_turns([system_turn] + to_keep)
+        self._mark_dirty()
+        await self._sync()
+        logger.info(f"[异步上下文管理] 总结压缩完成: 压缩 {len(to_compress)} 轮, 保留 {len(to_keep)} 轮, ID: {self.conversation_id}")
+        return summary
+
     def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
@@ -1547,6 +1757,9 @@ class AsyncContextManager:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
+        滞回截断: 未达触发线(trigger_tokens)不处理, 超过则截断到截断底线(floor_tokens),
+        触发线与底线之间的缓冲带内前缀稳定, 避免贴线抖动导致服务器 prefix cache 失效
+
         参数:
         - messages: 待截断的消息列表
         - method: token 估算方法, 同 estimate_token() 参数
@@ -1554,13 +1767,11 @@ class AsyncContextManager:
         返回:
         - List[Dict]: 截断后的新列表
         """
-        threshold = int(self.max_context * self.context_threshold)
-
         current_tokens = self.estimate_token(messages, method=method)
-        if current_tokens <= threshold:
-            return messages.copy()   # 无需截断, 返回副本
+        if current_tokens <= self.trigger_tokens:
+            return messages.copy()   # 未达触发线, 无需截断
 
-        logger.debug(f"[异步上下文管理] 模型上下文超限 ({current_tokens} > {threshold})，应用 {self.exceed_process} 截断, ID: {self.conversation_id}")
+        logger.debug(f"[异步上下文管理] 模型上下文达触发线 ({current_tokens} > {self.trigger_tokens})，应用 {self.exceed_process} 截断到 {self.floor_tokens}, ID: {self.conversation_id}")
 
         turns = self._group_messages_by_turns(messages)
         system_turn = None
@@ -1568,13 +1779,13 @@ class AsyncContextManager:
             system_turn = turns.pop(0)
 
         if self.exceed_process == "sliding":   # 滑动窗口截断
-            return self._apply_sliding_truncation(messages, threshold, method)
+            return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
         elif self.exceed_process == "mid_truncate":   # 中间截断: 保留头部和尾部, 删除中间轮次
 
             if len(turns) <= 4:
                 logger.debug(f"[异步上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
-                return self._apply_sliding_truncation(messages, threshold, method)
+                return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
             def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
                 return self.estimate_token(self._flatten_turns(
@@ -1582,7 +1793,7 @@ class AsyncContextManager:
                 ), method=method)
 
             kept_turns = turns[:]   # 初始保留所有轮次  
-            while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
+            while token_of_turn_list(kept_turns) > self.floor_tokens and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
                 mid = len(kept_turns) // 2   # 找到中间索引
                 del kept_turns[mid]   # 删除
 

@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str, safe_getattr_list, safe_getattr_dict
 from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
@@ -29,39 +29,37 @@ def _extract_thinking_from_message(
     # 1. reasoning_content
     if isinstance(message, dict):
         message = cast(Dict[str, Any], message)
-    reasoning = getattr(message, "reasoning_content", None)
-    if reasoning is None and isinstance(message, dict):
-        reasoning = cast(Dict[str, Any], message).get("reasoning_content")
+    reasoning = safe_getattr_str(message, "reasoning_content")
+    if not reasoning and isinstance(message, dict):
+        reasoning = cast(Dict[str, Any], message).get("reasoning_content", "")
     if reasoning:
         return reasoning
 
     # 2. reasoning
-    reasoning = getattr(cast(Any, message), "reasoning", None)
-    if reasoning is None and isinstance(message, dict):
-        reasoning = cast(Dict[str, Any], message).get("reasoning")
+    reasoning = safe_getattr_str(message, "reasoning")
+    if not reasoning and isinstance(message, dict):
+        reasoning = cast(Dict[str, Any], message).get("reasoning", "")
     if reasoning:
         return reasoning
 
     # 3. thinking
-    thinking = getattr(cast(Any, message), "thinking", None)
-    if thinking is None and isinstance(message, dict):
-        thinking = cast(Dict[str, Any], message).get("thinking")
+    thinking = safe_getattr_str(message, "thinking")
+    if not thinking and isinstance(message, dict):
+        thinking = cast(Dict[str, Any], message).get("thinking", "")
     if thinking:
         return thinking
 
     # 4. reasoning_details (数组)
-    reasoning_details = getattr(cast(Any, message), "reasoning_details", None)
-    if reasoning_details is None and isinstance(message, dict):
-        reasoning_details = cast(Dict[str, Any], message).get("reasoning_details")
+    reasoning_details = safe_getattr_list(message, "reasoning_details")
+    if not reasoning_details and isinstance(message, dict):
+        reasoning_details = cast(Dict[str, Any], message).get("reasoning_details", [])
     if reasoning_details:
-        if isinstance(reasoning_details, list):
-            return "\n".join([str(x) for x in cast(list[Any], reasoning_details)])
-        return str(reasoning_details)
+        return "\n".join([str(x) for x in reasoning_details])
 
     # 5. 从 content 中提取 <think> 标签
-    content = getattr(cast(Any, message), "content", None)
-    if content is None and isinstance(message, dict):
-        content = cast(Dict[str, Any], message).get("content")
+    content = safe_getattr_str(message, "content")
+    if not content and isinstance(message, dict):
+        content = cast(Dict[str, Any], message).get("content", "")
     if content and isinstance(content, str):
         match = re.search(r"<think>(.*?)</think>", content, re.DOTALL)   # 匹配 <think>...</think>
         if match:
@@ -96,10 +94,10 @@ def parse_chat_response(
 
     try:
         # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
-        choices = getattr(api_response, "choices", None)
-        if choices is None and isinstance(api_response, dict):
+        choices = safe_getattr_list(api_response, "choices")
+        if not choices and isinstance(api_response, dict):
             api_response = cast(Dict[str, Any], api_response)
-            choices = api_response.get("choices")
+            choices = api_response.get("choices", [])
         # 尝试通过属性或字典键获取 choices 列表行
 
         if not choices or len(choices) == 0:
@@ -154,10 +152,10 @@ def parse_call_response(
 
     try:
         # Step.2 尝试提取 choices (兼容对象属性访问和字典访问)
-        choices = getattr(api_response, "choices", None)
-        if choices is None and isinstance(api_response, dict):
+        choices = safe_getattr_list(api_response, "choices")
+        if not choices and isinstance(api_response, dict):
             api_response = cast(Dict[str, Any], api_response)
-            choices = api_response.get("choices")
+            choices = api_response.get("choices", [])
 
         if not choices or len(choices) == 0:
             logger.warning("LLM 接口响应中 'choices' 列表为空")
@@ -165,18 +163,18 @@ def parse_call_response(
 
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
-        message = getattr(first_choice, "message", None)
-        if message is None and isinstance(first_choice, dict):
+        message = safe_getattr_dict(first_choice, "message")
+        if not message and isinstance(first_choice, dict):
             first_choice = cast(Dict[str, Any], first_choice)
-            message = first_choice.get("message")
+            message = first_choice.get("message", {})
         
-        if message is None:
+        if not message:
             return LLMCallResponse(type="message", content="")
 
-        content = getattr(message, "content", None)
-        if content is None and isinstance(message, dict):
+        content = safe_getattr_str(message, "content")
+        if not content and isinstance(message, dict):
             message = cast(Dict[str, Any], message)
-            content = message.get("content")
+            content = message.get("content", "")
         text_content = content.strip() if content else ""
         # 提取文本内容
 
@@ -184,10 +182,10 @@ def parse_call_response(
         # 提取思考内容
 
         # Step.4 检查是否存在工具调用 (tool_calls)
-        tool_calls = getattr(message, "tool_calls", None)
-        if tool_calls is None and isinstance(message, dict):
+        tool_calls = safe_getattr_list(message, "tool_calls")
+        if not tool_calls and isinstance(message, dict):
             message = cast(Dict[str, Any], message)
-            tool_calls = message.get("tool_calls")
+            tool_calls = message.get("tool_calls", [])
 
         if tool_calls and len(tool_calls) > 0:
             tool_calls_list: list[dict[str, Any]] = []
@@ -195,27 +193,25 @@ def parse_call_response(
             # 遍历所有工具调用
             for tool_call in tool_calls:
                 # 提取工具调用 id
-                call_id = getattr(tool_call, "id", None)
-                if call_id is None and isinstance(tool_call, dict):
+                call_id = safe_getattr_str(tool_call, "id")
+                if not call_id and isinstance(tool_call, dict):
                     tool_call = cast(Dict[str, Any], tool_call)
                     call_id = tool_call.get("id", "")
-                else:
-                    call_id = call_id or ""
                 
-                function_data = getattr(tool_call, "function", None)
-                if function_data is None and isinstance(tool_call, dict):
+                function_data = safe_getattr_dict(tool_call, "function")
+                if not function_data and isinstance(tool_call, dict):
                     tool_call = cast(Dict[str, Any], tool_call)
-                    function_data = tool_call.get("function")
+                    function_data = tool_call.get("function", {})
                 # 提取 function 对象 (兼容对象和字典)
 
                 if function_data:
-                    func_name = getattr(function_data, "name", "")
+                    func_name = safe_getattr_str(function_data, "name")
                     if isinstance(function_data, dict):
                         function_data = cast(Dict[str, Any], function_data)
                         func_name = function_data.get("name", "")
                         # 提取函数名
 
-                    args_str = getattr(function_data, "arguments", "{}")
+                    args_str = safe_getattr_str(function_data, "arguments", "{}")
                     if isinstance(function_data, dict):
                         function_data = cast(Dict[str, Any], function_data)
                         args_str = function_data.get("arguments", "{}")
@@ -280,7 +276,7 @@ def _stream_field(value: Any, name: str, default: Any = None) -> Any:
     """兼容对象和字典形式读取流式响应字段"""
     if isinstance(value, dict):
         return cast(dict[str, Any], value).get(name, default)
-    return getattr(value, name, default)
+    return safe_getattr_str(value, name, str(default) if default is not None else "")
 
 
 def _stream_text(value: Any) -> str:
@@ -582,7 +578,7 @@ class LLM:
             for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", None)
+                    content = safe_getattr_str(delta, "content")
                     if content:
                         yield content
 
@@ -1059,7 +1055,7 @@ class AsyncLLM:
             async for chunk in stream:
                 if chunk.choices and len(chunk.choices) > 0:
                     delta = chunk.choices[0].delta
-                    content = getattr(delta, "content", None)
+                    content = safe_getattr_str(delta, "content")
                     if content:
                         yield content
 

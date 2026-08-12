@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
 from satrap.core.log import logger
+from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.core.utils.paths import get_project_root
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
@@ -96,7 +97,7 @@ def _ask_user_sync(
     options: list[str] | None = None,
 ) -> str | None:
     """同步询问用户, 未配置输入通道返回 None"""
-    provider = getattr(session, "user_input_provider", None)
+    provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
     text = question
@@ -116,7 +117,7 @@ async def _ask_user_async(
     options: list[str] | None = None,
 ) -> str | None:
     """异步询问用户 (provider 可为同步或异步), 未配置输入通道返回 None"""
-    provider = getattr(session, "user_input_provider", None)
+    provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
     text = question
@@ -257,7 +258,7 @@ def _protection_reason_full(path: Path) -> str | None:
 
 def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:
     """获取会话沙箱根 (会话属性优先, 否则默认)"""
-    return Path(getattr(session, "coding_sandbox_root", None) or DEFAULT_SANDBOX_ROOT).resolve()
+    return Path(safe_getattr(session, "coding_sandbox_root") or DEFAULT_SANDBOX_ROOT).resolve()
 
 
 def _in_sandbox(path: Path, session: SimpleSession | AsyncSimpleSession) -> bool:
@@ -1514,7 +1515,7 @@ def get_tools(session: SimpleSession | AsyncSimpleSession) -> list[Any]:
             GrepFilesTool(),
         ]
     for tool in tools:
-        bind = getattr(tool, "_bind", None)
+        bind = safe_getattr_callable(tool, "_bind")
         if bind is not None:
             bind(session)
     return tools

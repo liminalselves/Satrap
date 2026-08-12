@@ -9,19 +9,20 @@ from typing import Any
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config_loader import ConfigLoader
+from satrap.core.type import safe_getattr, safe_getattr_bool
 
 
 def load_cli_config(args: Namespace) -> BackendConfig:
     """加载 CLI 配置并应用 API 覆盖"""
     config = ConfigLoader.autodetect()
-    config_path = getattr(args, "config", None)
+    config_path = safe_getattr(args, "config")
     if config_path:
-        path = Path(config_path)
+        path = Path(str(config_path))
         config = ConfigLoader.from_yaml(path) if path.suffix.lower() in (".yaml", ".yml") else ConfigLoader.from_json(path)
     config = ConfigLoader.merge_env(config)
-    if getattr(args, "api_host", None):
+    if safe_getattr(args, "api_host"):
         config.api_host = args.api_host
-    if getattr(args, "api_port", None):
+    if safe_getattr(args, "api_port"):
         config.api_port = int(args.api_port)
     return config
 
@@ -33,12 +34,12 @@ def daemon_client_from_args(args: Namespace, timeout: float = 2) -> DaemonClient
 
 def offline_requested(args: Namespace) -> bool:
     """是否显式请求离线模式"""
-    return bool(getattr(args, "offline", False))
+    return safe_getattr_bool(args, "offline")
 
 
 def force_offline(args: Namespace) -> bool:
     """是否允许在线时强制离线写入"""
-    return bool(getattr(args, "force_offline", False))
+    return safe_getattr_bool(args, "force_offline")
 
 
 def ensure_offline_allowed(args: Namespace, action: str = "写入本地配置") -> None:

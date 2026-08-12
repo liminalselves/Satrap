@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Type, cast
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction
+from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_data_dir
 from satrap.core.log import logger
@@ -435,6 +435,8 @@ class SessionManager:
         self._default_checkpoint_db = default_checkpoint_db
         self._async_lock = asyncio.Lock()
         self._class_cfg_mgr: SessionClassConfigManager | None = None
+        self._user_mgr: UserManager | None = None
+        self._model_cfg_mgr: ModelConfigManager | None = None
 
         try:
             # 保持兼容: 默认类型仍映射到基础 Session 类
@@ -703,7 +705,7 @@ class SessionManager:
                     return f"切换失败：无法创建会话 {new_id}"
 
                 # 更新 context_sessions 路由，使下一条消息能路由到新会话
-                user_mgr = getattr(self, '_user_mgr', None)
+                user_mgr = self._user_mgr
                 if user_mgr and new_id:
                     parts = new_id.split(":")
                     if len(parts) >= 4:
@@ -725,7 +727,7 @@ class SessionManager:
 
     def reload_model_configs(self):
         """重载所有活跃会话的 LLM 实例, 使模型配置变更即时生效"""
-        model_cfg_mgr = getattr(self, '_model_cfg_mgr', None)
+        model_cfg_mgr = self._model_cfg_mgr
         if not model_cfg_mgr:
             logger.warning("[SessionManager] reload_model_configs 跳过：无 ModelConfigManager")
             return
@@ -761,18 +763,26 @@ class SessionManager:
                 continue
 
             _LLMCls = AsyncLLM if isinstance(session, AsyncSession) else LLM
+
+            # 输出预算 = context_window × (1 - history_ratio), 未配置时退回 max_tokens
+            # safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
+            output_budget: int | None = None
+            _cw = safe_getattr(llm_cfg, "context_window")
+            _hr = safe_getattr(llm_cfg, "history_ratio")
+            if _cw and _hr:
+                output_budget = int(_cw * (1 - _hr))
             new_llm = _LLMCls(
                 api_key=llm_cfg.api_key or "",
                 base_url=llm_cfg.base_url or "",
                 model=llm_cfg.model or "",
                 temperature=llm_cfg.temperature or 0.7,
-                max_tokens=llm_cfg.max_tokens or 4096,
+                max_tokens=output_budget or llm_cfg.max_tokens or 4096,
             )
 
             session.reload_llm(new_llm)   # type: ignore[arg-type] session 为 Session|AsyncSession, 运行时由 isinstance 分支保证匹配
 
             for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
-                wf = getattr(session, attr, None)
+                wf = safe_getattr(session, attr)
                 if wf is None:
                     continue
                 if hasattr(wf, 'reset_llm'):
@@ -884,7 +894,7 @@ class SessionManager:
     @property
     def user_manager(self):
         """获取关联的 UserManager"""
-        return getattr(self, '_user_mgr', None)
+        return self._user_mgr
 
     @user_manager.setter
     def user_manager(self, mgr: UserManager | None):
@@ -894,7 +904,7 @@ class SessionManager:
     @property
     def model_config_manager(self):
         """获取关联的 ModelConfigManager"""
-        return getattr(self, '_model_cfg_mgr', None)
+        return self._model_cfg_mgr
 
     @model_config_manager.setter
     def model_config_manager(self, mgr: ModelConfigManager | None):
@@ -1055,8 +1065,9 @@ class SessionManager:
                 session_cfg = dataclasses.replace(session_cfg, session_config=merged)
 
             # 读取 model_name → 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
-            model_cfg_mgr = getattr(self, '_model_cfg_mgr', None)
+            model_cfg_mgr = self._model_cfg_mgr
             llm_instance = None
+            llm_cfg = None
             if model_cfg_mgr:
                 cfg_params = session_cfg.session_config or {}
                 # 从 class_cfg_mgr 获取 model_key，确定 session_config 中哪个字段存有模型名
@@ -1080,12 +1091,19 @@ class SessionManager:
                 llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
                 if llm_cfg and llm_cfg.api_key:
                     _LLMCls = AsyncLLM if issubclass(session_class, AsyncSession) else LLM
+                    # 输出预算 = context_window × (1 - history_ratio), 未配置时退回 max_tokens
+                    # safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
+                    output_budget: int | None = None
+                    _cw = safe_getattr(llm_cfg, "context_window")
+                    _hr = safe_getattr(llm_cfg, "history_ratio")
+                    if _cw and _hr:
+                        output_budget = int(_cw * (1 - _hr))
                     llm_instance = _LLMCls(
                         api_key=llm_cfg.api_key or "",
                         base_url=llm_cfg.base_url or "",
                         model=llm_cfg.model or "",
                         temperature=llm_cfg.temperature or 0.7,
-                        max_tokens=llm_cfg.max_tokens or 4096,
+                        max_tokens=output_budget or llm_cfg.max_tokens or 4096,
                     )
                 else:
                     logger.warning(
@@ -1099,8 +1117,20 @@ class SessionManager:
                 session_cfg = dataclasses.replace(session_cfg, session_config=modified_params)
 
             session = self._instantiate_session(session_class, session_cfg)
+            # 注入 CM 三参数(同源配置), 使滞回截断生效 (safe_getattr 兼容测试替身)
+            _ctx_window = safe_getattr(llm_cfg, "context_window") if llm_cfg else None
+            _hist_ratio = safe_getattr(llm_cfg, "history_ratio") if llm_cfg else None
+            if model_cfg_mgr and _ctx_window and _hist_ratio:
+                _ctx = safe_getattr(session, 'session_ctx')
+                if _ctx is not None:
+                    _ctx.max_context = _ctx_window
+                    _ctx.history_ratio = _hist_ratio
+                    _ctx.history_budget = int(_ctx_window * _hist_ratio)
+                    _ctx.trigger_tokens = int(_ctx.history_budget * _ctx.context_threshold)
+                    _ctx.floor_tokens = int(_ctx.history_budget * _ctx.truncation_floor)
+                    _ctx.output_budget = _ctx_window - _ctx.history_budget
             # 注入 UserManager, 使 Session 能访问当前用户的所有上下文
-            user_mgr = getattr(self, '_user_mgr', None)
+            user_mgr = self._user_mgr
             if user_mgr is not None:
                 session._user_manager = user_mgr
         except Exception as e:
@@ -1225,7 +1255,7 @@ class SessionManager:
         返回:
         - 会话已处理消息数量
         """
-        ctx: ContextManager | AsyncContextManager | None = getattr(session, "session_ctx", None)
+        ctx: ContextManager | AsyncContextManager | None = safe_getattr(session, "session_ctx")
         if ctx is None:
             return 0
         try:
@@ -1241,8 +1271,8 @@ class SessionManager:
         参数:
         - session: 会话实例 (Session 或 AsyncSession)
         """
-        clear_method = getattr(session, "clear_memory", None)
-        if not callable(clear_method):
+        clear_method = safe_getattr_callable(session, "clear_memory")
+        if clear_method is None:
             return
 
         try:
@@ -1259,8 +1289,8 @@ class SessionManager:
         参数:
         - session: 会话实例 (Session 或 AsyncSession)
         """
-        clear_method = getattr(session, "clear_memory", None)
-        if not callable(clear_method):
+        clear_method = safe_getattr_callable(session, "clear_memory")
+        if clear_method is None:
             return
 
         try:
