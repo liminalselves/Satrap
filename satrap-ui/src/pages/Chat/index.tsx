@@ -394,9 +394,10 @@ export function Chat() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, []);
 
+  // 仅在消息变化时滚动到底部 (面板开合不联动, 避免打断历史消息阅读)
   useEffect(() => {
     scrollToBottom();
-  }, [active?.messages.length, active?.messages, optionsOpen, scrollToBottom]);
+  }, [active?.messages.length, active?.messages, scrollToBottom]);
 
   // 自动调整输入框高度
   useEffect(() => {
@@ -814,151 +815,154 @@ export function Chat() {
           </Button>
         </div>
 
-        {/* 消息流 */}
-        <div className="flex-1 overflow-y-auto custom-scrollbar px-5 py-4">
-          {showEntryChoice ? (
-            <div className="flex-1 flex items-center justify-center">
-              <div className="max-w-sm w-full space-y-3">
-                <button
-                  onClick={() => {
-                    setShowEntryChoice(false);
-                    if (conversations.length > 0) setActiveId(conversations[0].id);
-                  }}
-                  className="glass-card glass-card-accent rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4 text-accent shrink-0" />
-                    <span className="text-sm font-medium text-text-primary">继续最近对话</span>
-                  </div>
-                  <p className="text-xs text-text-tertiary mt-1 truncate">
-                    {conversations[0]?.title ?? ''}
-                  </p>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowEntryChoice(false);
-                    handleNew();
-                  }}
-                  className="glass-card rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
-                >
-                  <div className="flex items-center gap-2">
-                    <Plus className="h-4 w-4 text-accent shrink-0" />
-                    <span className="text-sm font-medium text-text-primary">开始新对话</span>
-                  </div>
-                </button>
+        {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
+        <div className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
+          {/* 内容区 */}
+          <div className="flex-1 flex flex-col pb-4">
+            {showEntryChoice ? (
+              <div className="flex-1 flex items-center justify-center">
+                <div className="max-w-sm w-full space-y-3">
+                  <button
+                    onClick={() => {
+                      setShowEntryChoice(false);
+                      if (conversations.length > 0) setActiveId(conversations[0].id);
+                    }}
+                    className="glass-card glass-card-accent rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4 text-accent shrink-0" />
+                      <span className="text-sm font-medium text-text-primary">继续最近对话</span>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-1 truncate">
+                      {conversations[0]?.title ?? ''}
+                    </p>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowEntryChoice(false);
+                      handleNew();
+                    }}
+                    className="glass-card rounded-xl px-4 py-3.5 w-full text-left hover:bg-glass-active transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Plus className="h-4 w-4 text-accent shrink-0" />
+                      <span className="text-sm font-medium text-text-primary">开始新对话</span>
+                    </div>
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : !active || active.messages.length === 0 ? (
-            <EmptyWelcome onPromptClick={(text) => setInput(text)} />
-          ) : (
-            <div className="max-w-3xl mx-auto space-y-6">
-              {active.messages.map((msg, idx) => (
-                <MessageBubble
-                  key={msg.id}
-                  message={msg}
-                  isLast={idx === active.messages.length - 1}
-                  onRetry={handleRetry}
-                  onFork={handleFork}
-                />
-              ))}
-              <div ref={messagesEndRef} className={cn(optionsOpen && 'mb-17179869184')} />
-            </div>
-          )}
-        </div>
-
-        {/* 输入区(与消息区有明确分隔) */}
-        <div className="px-5 pb-4 pt-3 border-t border-glass-border/50">
-          <div className="max-w-3xl mx-auto">
-            {/* 折叠选项面板: think / model (紧凑 + 独立反光, 右对齐) */}
-            {optionsOpen && (
-              <div className="mb-2 w-fit ml-auto">
-                <OptionsPanel
-                  think={settings.think}
-                  model={settings.model}
-                  modelOptions={modelOptions}
-                  onToggleThink={(v) => updateSettings('think', v)}
-                  onModelChange={(v) => updateSettings('model', v)}
-                />
-              </div>
-            )}
-
-            {/* 附件预览条 */}
-            {pendingAttachments.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-2">
-                {pendingAttachments.map((att, i) => (
-                  <div key={i} className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs">
-                    <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
-                    <span className="text-text-primary truncate max-w-[120px]">{att.name}</span>
-                    <button onClick={() => removeAttachment(i)} className="text-text-tertiary hover:text-error shrink-0">
-                      <X className="h-3 w-3" />
-                    </button>
-                  </div>
+            ) : !active || active.messages.length === 0 ? (
+              <EmptyWelcome onPromptClick={(text) => setInput(text)} />
+            ) : (
+              <div className="max-w-3xl mx-auto space-y-6">
+                {active.messages.map((msg, idx) => (
+                  <MessageBubble
+                    key={msg.id}
+                    message={msg}
+                    isLast={idx === active.messages.length - 1}
+                    onRetry={handleRetry}
+                    onFork={handleFork}
+                  />
                 ))}
+                <div ref={messagesEndRef} />
               </div>
             )}
+          </div>
 
-            <div ref={inputCardRef} className="glass-card glass-card-accent glass-card-transparent rounded-xl p-3 flex items-end gap-2">
-              {/* 隐藏文件选择器 */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                accept="image/*,.txt,.md,.pdf"
-                onChange={handleFileSelect}
-                className="hidden"
-              />
-              <Button
-                variant="ghost"
-                size="sm"
-                title="附件"
-                className="shrink-0 mb-0.5"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={!active || active.id === '__draft__'}
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-              <textarea
-                ref={textareaRef}
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyDown}
-                placeholder={
-                  active ? '输入消息, Enter 发送, Shift+Enter 换行' : '请先新建对话'
-                }
-                disabled={!active}
-                rows={1}
-                className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
-              />
-              {/* 折叠面板开关(替换原麦克风) */}
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setOptionsOpen((v) => !v)}
-                className={cn('shrink-0 mb-0.5', optionsOpen && 'text-accent')}
-                title={optionsOpen ? '收起选项' : '展开选项'}
-              >
-                <ChevronDown className={cn('h-4 w-4 transition-transform', optionsOpen && 'rotate-180')} />
-              </Button>
-              {generating ? (
-                <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
-                  <Square className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  variant="primary"
-                  size="sm"
-                  onClick={handleSend}
-                  disabled={(!input.trim() && pendingAttachments.length === 0) || !active}
-                  className="shrink-0 mb-0.5"
-                  title="发送"
-                >
-                  <Send className="h-4 w-4" />
-                </Button>
+          {/* 输入区(sticky 固定在消息流底部, 不随滚动消失; 底部渐变让滚过的内容淡出) */}
+          <div className="sticky bottom-0 z-10 shrink-0 -mx-5 px-5 pt-3 pb-4 bg-gradient-to-t from-[var(--glass-bg)] to-transparent">
+            <div className="max-w-3xl mx-auto">
+              {/* 折叠选项面板: think / model (紧凑 + 独立反光, 右对齐) */}
+              {optionsOpen && (
+                <div className="mb-2 w-fit ml-auto">
+                  <OptionsPanel
+                    think={settings.think}
+                    model={settings.model}
+                    modelOptions={modelOptions}
+                    onToggleThink={(v) => updateSettings('think', v)}
+                    onModelChange={(v) => updateSettings('model', v)}
+                  />
+                </div>
               )}
+
+              {/* 附件预览条 */}
+              {pendingAttachments.length > 0 && (
+                <div className="flex flex-wrap gap-2 mb-2">
+                  {pendingAttachments.map((att, i) => (
+                    <div key={i} className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs">
+                      <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
+                      <span className="text-text-primary truncate max-w-[120px]">{att.name}</span>
+                      <button onClick={() => removeAttachment(i)} className="text-text-tertiary hover:text-error shrink-0">
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div ref={inputCardRef} className="glass-card glass-card-accent rounded-xl p-3 flex items-end gap-2">
+                {/* 隐藏文件选择器 */}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept="image/*,.txt,.md,.pdf"
+                  onChange={handleFileSelect}
+                  className="hidden"
+                />
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title="附件"
+                  className="shrink-0 mb-0.5"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={!active || active.id === '__draft__'}
+                >
+                  <Paperclip className="h-4 w-4" />
+                </Button>
+                <textarea
+                  ref={textareaRef}
+                  value={input}
+                  onChange={(e) => setInput(e.target.value)}
+                  onKeyDown={handleKeyDown}
+                  placeholder={
+                    active ? '输入消息, Enter 发送, Shift+Enter 换行' : '请先新建对话'
+                  }
+                  disabled={!active}
+                  rows={1}
+                  className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
+                />
+                {/* 折叠面板开关(替换原麦克风) */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setOptionsOpen((v) => !v)}
+                  className={cn('shrink-0 mb-0.5', optionsOpen && 'text-accent')}
+                  title={optionsOpen ? '收起选项' : '展开选项'}
+                >
+                  <ChevronDown className={cn('h-4 w-4 transition-transform', optionsOpen && 'rotate-180')} />
+                </Button>
+                {generating ? (
+                  <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
+                    <Square className="h-4 w-4" />
+                  </Button>
+                ) : (
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    onClick={handleSend}
+                    disabled={(!input.trim() && pendingAttachments.length === 0) || !active}
+                    className="shrink-0 mb-0.5"
+                    title="发送"
+                  >
+                    <Send className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
+              <p className="text-center text-xs text-text-tertiary mt-2">
+                内容由模型生成, 请注意甄别
+              </p>
             </div>
-            <p className="text-center text-xs text-text-tertiary mt-2">
-              内容由模型生成, 请注意甄别
-            </p>
           </div>
         </div>
       </Card>
@@ -1055,7 +1059,7 @@ function OptionsPanel({
   return (
     <div
       ref={reflectRef}
-      className="glass-card glass-card-accent glass-card-transparent rounded-xl px-3 py-2 flex items-center gap-4 animate-fade-in w-fit"
+      className="glass-card glass-card-accent rounded-xl px-3 py-2 flex items-center gap-4 animate-fade-in w-fit"
     >
       {/* think 选择 */}
       <div className="flex items-center gap-2">

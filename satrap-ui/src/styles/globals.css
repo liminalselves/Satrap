@@ -490,17 +490,6 @@
     -webkit-backdrop-filter: none;
   }
 
-  /* 完全透明的玻璃卡片 - 只保留边框和阴影, 无背景色 */
-  .glass-card-transparent {
-    background: transparent;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  .glass-card-transparent:hover {
-    background: transparent;
-  }
-
   /* 染色玻璃卡片 - 蓝色 */
   .glass-card-accent {
     background: linear-gradient(135deg, var(--glass-accent-bg) 0%, var(--glass-bg) 100%);
@@ -582,6 +571,16 @@
   /* 染色玻璃卡片 - 错误 */
   .glass-card-error {
     background: linear-gradient(135deg, var(--glass-error-bg) 0%, var(--glass-bg) 100%);
+  }
+
+  /* 完全透明的玻璃卡片 - 只保留边框和阴影, 无背景色
+     必须定义在所有染色变体之后并提升特异性, 否则会被 accent 等渐变背景覆盖 */
+  .glass-card.glass-card-transparent,
+  .glass-card.glass-card-transparent.glass-hovering,
+  .glass-card.glass-card-transparent:hover {
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
 
   /* ===== 玻璃侧栏 - 完整圆角 ===== */
