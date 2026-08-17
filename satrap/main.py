@@ -143,7 +143,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ckpt_sub = p_ckpt.add_subparsers(dest="action", help="操作")
 
     def add_db_flag(p: argparse.ArgumentParser):
-        p.add_argument("--db", default=None, help="上下文库路径, 默认 .satrap/chat_history.db")
+        p.add_argument("--db", default=None, help="上下文库路径, 默认 .satrap/satrapdata/chat_history.db")
 
     p = ckpt_sub.add_parser("create", help="为对话创建检查点")
     p.add_argument("conversation_id")
@@ -181,7 +181,7 @@ def _build_parser() -> argparse.ArgumentParser:
     user_sub = p_user.add_subparsers(dest="action", help="操作")
 
     def add_user_db_flag(p: argparse.ArgumentParser):
-        p.add_argument("--db", default=None, help="用户信息库路径, 默认 .satrap/user_info.db")
+        p.add_argument("--db", default=None, help="用户信息库路径, 默认 .satrap/satrapdata/user_info.db")
 
     p = user_sub.add_parser("list", help="列出全部用户")
     p.add_argument("--limit", type=int, default=200)

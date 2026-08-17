@@ -3,12 +3,17 @@
 插件目录结构:
     插件名/
     ├── meta.yaml     # name(必填) / version / author / repo / description
+    │                 # 及可选能力组成描述: tools/skills/handlers/commands/mcp (名字 -> 描述)
     ├── tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools(session) 工厂
     ├── skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md 文件夹式)
     ├── mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (同步/异步均支持)
     ├── commands.py   # 可选: 导出 commands (同步) / async_commands (异步) 字典, 或 cmd_* / cmd_*_async 约定
     ├── handlers.py   # 可选: 导出 handlers: list[SessionHandler]; 或 4 个约定函数
     └── ...           # 插件私有模块
+
+meta.yaml 能力声明:
+- 五类能力 (tools/skills/handlers/commands/mcp) 可声明 名字 -> 描述 字典, 供前端/文档展示
+- 声明仅作描述补充, 自动扫描 (collect_*) 仍是注册的真相源; 声明了但扫描不到仅警告, 不改变安装行为
 
 插件目录扫描:
 - 官方预设目录 satrap/expend/plugins (只读基线)
@@ -68,6 +73,28 @@ def load_plugin_meta(plugin_dir: Path) -> dict[str, Any]:
     return {str(k): v for k, v in cast(dict[str, Any], raw).items()}
 
 
+# 可声明描述的能力类别 (与 Plugin 的 5 类能力字典对齐)
+CAPABILITY_KINDS = ("tools", "skills", "handlers", "commands", "mcp")
+
+
+def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """从 meta.yaml 解析五类能力描述 (名字 -> 描述)
+
+    声明仅作描述补充 (供前端/文档展示), 自动扫描仍是注册的真相源;
+    非字典的类别键跳过并警告, 其余未识别键忽略
+    """
+    descriptions: dict[str, dict[str, str]] = {}
+    for kind in CAPABILITY_KINDS:
+        raw = meta.get(kind)
+        if raw is None:
+            continue
+        if not isinstance(raw, dict):
+            logger.warning(f"[插件] meta.yaml 的 {kind} 应为字典 (名字 -> 描述), 已跳过: {raw!r}")
+            continue
+        descriptions[kind] = {str(k): str(v) for k, v in cast(dict[Any, Any], raw).items()}
+    return descriptions
+
+
 def _load_module(path: Path, module_name: str) -> ModuleType | None:
     """动态加载插件模块 (文件不存在返回 None)
 
@@ -123,10 +150,12 @@ def collect_tools(
     module_name: str,
     base: type[T],
     session: SessionType | None = None,
+    config: dict[str, Any] | None = None,
 ) -> list[T]:
     """收集 tools.py 中的工具实例
 
-    优先 get_tools(session) 工厂 (解决会话依赖注入), 签名不匹配时降级 get_tools();
+    优先 get_tools 工厂 (解决会话/配置依赖注入), 按签名自适应降级:
+    get_tools(session, config) -> get_tools(session) -> get_tools();
     无工厂时收集模块内定义的 base 子类实例 (无参构造, 排除基类本身)
     """
     mod = _load_module(plugin_dir / "tools.py", f"{module_name}.tools")
@@ -134,9 +163,11 @@ def collect_tools(
         return []
     factory = safe_getattr_callable(mod, "get_tools")
     if factory is not None:
-        attempts: list[tuple[Any, ...]] = [(session,)] if session is not None else [()]
+        attempts: list[tuple[Any, ...]] = []
         if session is not None:
-            attempts.append(())
+            attempts.append((session, config or {}))
+            attempts.append((session,))
+        attempts.append(())
         for args in attempts:
             try:
                 result: Any = factory(*args)
@@ -342,6 +373,10 @@ class Plugin:
     mcp: dict[str, bool] = field(default_factory=dict[str, bool])
     handlers: dict[str, bool] = field(default_factory=dict[str, bool])
     commands: dict[str, bool] = field(default_factory=dict[str, bool])
+    capability_descriptions: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
+    """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
+    config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    """配置项声明 (meta.yaml config_schema): 键 -> {type/default/description/options}, 供前端渲染表单"""
     _session: SessionType | None = field(default=None, repr=False, compare=False)
     _cleanup: Callable[..., Any] | None = field(default=None, repr=False, compare=False)
     """卸载清理回调 (插件 state.py/hooks.py 的 cleanup(session) 约定)"""
@@ -483,7 +518,7 @@ class Plugin:
     # ---------------- 状态查看 ----------------
 
     def list_capabilities(self) -> dict[str, list[dict[str, str | bool]]]:
-        """列出插件内全部能力及其实效状态 (含聚合开关)
+        """列出插件内全部能力及其实效状态 (含聚合开关), 每项带 meta.yaml 声明的描述
 
         handlers 状态读会话侧独立位合成值 (唯一真相源: handler.enabled),
         与执行路径一致; 会话/处理器缺失时防御为 False
@@ -494,10 +529,22 @@ class Plugin:
             for n in self.handlers:
                 h = session._handlers.get(n)
                 handler_effective[n] = h is not None and h.enabled
+
+        def _items(kind: str, states: dict[str, bool], effective: dict[str, bool] | None = None) -> list[dict[str, str | bool]]:
+            descriptions = self.capability_descriptions.get(kind, {})
+            return [
+                {
+                    "name": n,
+                    "enabled": self.enabled and (effective.get(n, False) if effective is not None else s),
+                    "description": descriptions.get(n, ""),
+                }
+                for n, s in states.items()
+            ]
+
         return {
-            "tools": [{"name": n, "enabled": self.enabled and s} for n, s in self.tools.items()],
-            "skills": [{"name": n, "enabled": self.enabled and s} for n, s in self.skills.items()],
-            "mcp": [{"name": n, "enabled": self.enabled and s} for n, s in self.mcp.items()],
-            "handlers": [{"name": n, "enabled": self.enabled and handler_effective.get(n, False)} for n in self.handlers],
-            "commands": [{"name": n, "enabled": self.enabled and s} for n, s in self.commands.items()],
+            "tools": _items("tools", self.tools),
+            "skills": _items("skills", self.skills),
+            "mcp": _items("mcp", self.mcp),
+            "handlers": _items("handlers", self.handlers, handler_effective),
+            "commands": _items("commands", self.commands),
         }

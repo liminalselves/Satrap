@@ -164,7 +164,7 @@ def build_agent(
         context_id=conversation_id,
         tools_manager=tools,
         content_callback=content_callback,
-        return_thinking=True,
+        return_thinking="medium",
         thinking_callback=thinking_callback,
         system_prompt=(
             "你是一个简洁可靠的中文助手。"
@@ -191,7 +191,7 @@ def run_once(
             message,
             callback=True,
             max_iterations=5,
-            thinking=True,
+            thinking="medium",
         )
     return agent.full_agent(message, callback=False, max_iterations=5)
 

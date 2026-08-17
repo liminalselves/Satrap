@@ -8,7 +8,7 @@ Satrap 是一个面向 Python Agent 应用的轻量框架。它提供 OpenAI-com
 
 - **LLM 调用封装**: 同步 / 异步调用 OpenAI-compatible Chat Completions API
 - **多模态输入**: 支持文本, 远程图片 URL, data URL 和本地图片路径, 本地大图会在发送前压缩
-- **上下文管理**: 使用 SQLite 持久化对话, 支持 token 估算和上下文截断
+- **上下文管理**: 使用 SQLite 持久化对话, 支持 token 估算, 滞回截断和 LLM 总结压缩
 - **工具调用**: 定义同步 / 异步 Tool, 生成 OpenAI function calling 描述, 执行并返回结构化错误
 - **Agent workflow**: `full_agent()` 封装“用户输入 -> 模型请求工具 -> 工具执行 -> 模型最终回复”的完整流程
 - **Session 与后端**: 管理多会话, 持久化 Session 配置, 支持后端守护进程和 HTTP 管理 API

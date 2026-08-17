@@ -18,7 +18,7 @@ import threading
 import time
 import uuid
 
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.utils.paths import get_db_path
 
 from satrap.core.log import logger
 from satrap.core.state.mutation import current_mutation_context
@@ -47,7 +47,7 @@ class StateStore:
     """状态检查点存储: 检查点 CRUD、回滚与分支
 
     用法示例:
-        store = StateStore(db_path=".satrap/chat_history.db")
+        store = StateStore(db_path=get_db_path("chat_history.db"))
         store.register_domain(messages_domain)
         store.create_checkpoint(StateScope("conversation", "demo"), name="起点")
     """
@@ -59,10 +59,10 @@ class StateStore:
         """初始化存储
 
         参数:
-        - db_path: 数据库文件路径, 默认 ".satrap/state.db"
+        - db_path: 数据库文件路径, 默认 .satrap/satrapdata/state.db
         - registry: 领域注册表, 默认新建
         """
-        self.db_path = Path(db_path) if db_path else get_data_dir() / "state.db"
+        self.db_path = Path(db_path) if db_path else Path(get_db_path("state.db"))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.registry = registry or DomainRegistry()
         self._lock = threading.RLock()

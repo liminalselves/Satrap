@@ -171,7 +171,7 @@ class DemoLLM(LLM):
 
     def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -180,7 +180,7 @@ class DemoLLM(LLM):
 
     def stream_call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -368,7 +368,7 @@ class TuiApp:
         for round_no in range(1, AUTO_MAX_ROUNDS + 1):
             console.print(f"[dim]── 第 {round_no}/{AUTO_MAX_ROUNDS} 轮 ──[/dim]")
             try:
-                reply = self.session.run(AUTO_PROMPT, thinking=True)
+                reply = self.session.run(AUTO_PROMPT, thinking="medium")
             except Exception as e:
                 self.messages.append(("系统", f"执行出错: {e}"))
                 break
@@ -397,7 +397,7 @@ class TuiApp:
         self.render()
         console.print("[dim]… 思考中 (工具调用需批准时会在下方询问) …[/dim]")
         try:
-            reply = self.session.run(text, thinking=True)
+            reply = self.session.run(text, thinking="medium")
         except Exception as e:
             self.messages.append(("系统", f"执行出错: {e}"))
             console.print()
@@ -468,7 +468,7 @@ def main() -> None:
         db_path=str(CHAT_DB),
         enable_checkpoint=False,
         stream=True,
-        return_thinking=True,
+        return_thinking="medium",
         content_callback=_content_forward,
         thinking_callback=_thinking_forward,
     )

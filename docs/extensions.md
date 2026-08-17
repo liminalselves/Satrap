@@ -242,3 +242,30 @@ tools.register_tool(sub_agent_tool)
 ## MCP 与技能 (Skill)
 
 MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机制 (`Skill` / `SkillsManager` / `SkillTool`) 属于框架基础设施, 与 `ToolsManager` 同层, 位于 `satrap.core.utils` 并已在顶层导出。详细用法见 [核心 API](core-api.md#mcp-客户端) 和 [核心 API](core-api.md#技能-skill)。
+
+## 长期记忆存储 (MemoryStore)
+
+`satrap.expend.tools.memory_store.MemoryStore` 是公共的 SQLite 长期记忆存储, 供 base_take / satrap_coding 等插件共用。默认数据文件 `.satrap/satrapdata/memory.db` (纳入集中 db 路径管理)。
+
+```python
+from satrap.expend.tools import MemoryStore
+
+store = MemoryStore(scope="web_chat")
+store.add(title="偏好", content="用户喜欢简洁回答", tags=["偏好"], importance=3)
+memories = store.list_all()
+```
+
+## 插件配置机制
+
+插件经 meta.yaml 的 `config_schema` 声明可配置项, 支持两级配置:
+
+- **全局默认**: 存于 `.satrap/plugin_config/<name>.json`, 由 `PluginConfigManager` 管理
+- **会话覆盖**: `install_plugin(path, config={...})` 传入, 优先级高于全局默认
+
+合成顺序: `schema.default < 全局 json < 会话覆盖`。配置在 `collect_tools` 工厂调用时注入, 工厂签名自适应 `(session, config)` / `(session)` / `()`。
+
+支持的字段类型: `string` / `path` / `number` / `bool` / `select` (带 options)。
+
+官方插件:
+- [base_take](base-take-plugin.md): 基础能力集 (搜索 / 沙箱 / 文档解析 / 长期记忆)
+- [satrap_coding](satrap-coding-plugin.md): Coding Agent (文件读写 / shell / 子代理 / 目标与计划)

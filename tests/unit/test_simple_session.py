@@ -72,7 +72,7 @@ class _FakeLLM(LLM):
 
     def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -84,7 +84,7 @@ class _FakeLLM(LLM):
 
     def stream_call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -113,7 +113,7 @@ class _FakeAsyncLLM(AsyncLLM):
 
     async def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -125,7 +125,7 @@ class _FakeAsyncLLM(AsyncLLM):
 
     async def stream_call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -886,7 +886,7 @@ class _ToolLoopLLM(_FakeLLM):
 
     def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -973,20 +973,20 @@ async def test_plugin_non_str_return_ignored_async(tmp_path: Path):
 
 
 def test_thinking_requires_stream_mode_sync(tmp_path: Path):
-    """M3 修复: 非流式 thinking=True 抛 NotImplementedError"""
+    """M3 修复: 非流式 thinking="medium" 抛 NotImplementedError"""
     session = _make_session(tmp_path)
     with pytest.raises(NotImplementedError):
-        session.run("hi", thinking=True)
+        session.run("hi", thinking="medium")
 
 
 @pytest.mark.asyncio
 async def test_thinking_requires_stream_mode_async(tmp_path: Path):
-    """M3 修复: 异步非流式 thinking=True 抛 NotImplementedError"""
+    """M3 修复: 异步非流式 thinking="medium" 抛 NotImplementedError"""
     session = AsyncSimpleSession(
         "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
     with pytest.raises(NotImplementedError):
-        await session.run("hi", thinking=True)
+        await session.run("hi", thinking="medium")
 
 
 @pytest.mark.asyncio
@@ -1166,7 +1166,7 @@ def test_plugin_commands_install_and_execute(tmp_path: Path):
     plugin = session.install_plugin(str(plugin_dir))
 
     assert "hello" in plugin.commands
-    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": True}]
+    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": True, "description": ""}]
     assert session.list_commands()["hello"] == "打招呼命令"
     result, is_cmd = session.cmd_handler.process_message("/hello world")
     assert is_cmd and result == "hello world"
@@ -1206,7 +1206,7 @@ def test_plugin_commands_independent_and_aggregate_toggle(tmp_path: Path):
     assert session.disable_plugin("demo") is True
     assert session.is_command_enabled("hello") is False
     assert plugin.commands["hello"] is True
-    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": False}]
+    assert plugin.list_capabilities()["commands"] == [{"name": "hello", "enabled": False, "description": ""}]
     assert session.enable_plugin("demo") is True
     assert session.is_command_enabled("hello") is True
 
@@ -2036,7 +2036,7 @@ def test_handler_context_fields_passthrough(tmp_path: Path):
     assert ctx.config.original_input == "你好"
     assert ctx.text == "你好"
     assert ctx.config.img_urls == ["http://x/a.png"]
-    assert ctx.config.thinking is False
+    assert ctx.config.thinking == "off"
     assert ctx.config.max_iterations == 5
     assert ctx.config.call_id
     assert ctx.error is None

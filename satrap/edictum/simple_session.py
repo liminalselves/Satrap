@@ -30,6 +30,7 @@ from satrap.core.framework.Base import (
 from satrap.core.log import logger
 from satrap.core.type import safe_getattr_callable
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
+from satrap.core.utils.paths import get_db_path
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import (
     Plugin,
@@ -40,7 +41,9 @@ from satrap.edictum.plugin import (
     collect_skills,
     collect_tools,
     load_plugin_meta,
+    parse_capability_descriptions,
 )
+from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload
 
 # 处理器回调: 同步版仅调用同步函数; 异步版同步/异步均可 (运行期区分)
 # 新签名统一携带 HandlerContext (破坏性升级, 见 SessionHandler docstring)
@@ -102,7 +105,7 @@ class HandlerConfig:
     original_input: str
     """原始用户输入"""
     img_urls: list[str] | None
-    thinking: bool
+    thinking: str
     max_iterations: int
     call_id: str
     """每轮 run 唯一标识"""
@@ -169,6 +172,23 @@ def _remove_plugin_sys_path(plugin_dir: Path) -> None:
         pass
 
 
+def _warn_undeclared_capabilities(
+    plugin_name: str,
+    descriptions: dict[str, dict[str, str]],
+    scanned: dict[str, dict[str, bool]],
+) -> None:
+    """校验 meta.yaml 声明的能力在实际扫描结果中存在, 声明了但扫描不到仅警告 (不改变安装行为)
+
+    descriptions: parse_capability_descriptions 结果 (kind -> {名字: 描述})
+    scanned: 各类实际扫描到的能力 (kind -> {名字: 独立启用状态})
+    """
+    for kind, declared in descriptions.items():
+        found = scanned.get(kind, {})
+        for cap_name in declared:
+            if cap_name not in found:
+                logger.warning(f"[插件] 插件 {plugin_name} 声明的 {kind} 能力 {cap_name} 未在插件中发现")
+
+
 @dataclass
 class SessionHandler:
     """处理器: 4 个处理点直接注入流程, 非 hook
@@ -199,6 +219,8 @@ class SessionHandler:
     after_user_send: AfterUserSend | None = None
     before_model_reply: BeforeModelReply | None = None
     after_model_reply: AfterModelReply | None = None
+    _seq: int = 0
+    """全局注册序号, 由注册表分配, 同 priority 时按 _seq 排序"""
 
     def close(self) -> None:
         """释放 handler 持有的资源 (句柄/连接/线程/缓存任务)
@@ -215,6 +237,8 @@ class _HandlerRegistryMixin:
         """初始化注册表与插件表 (宿主 __init__ 必须调用; 忘调时合成过滤 AttributeError 快速失败)"""
         self._handlers: dict[str, SessionHandler] = {}
         self._plugins: dict[str, Plugin] = {}
+        self._handler_seq = 0
+        """全局注册序号计数器: 同 priority 时按 _seq 排序"""
         self._registry_lock = threading.RLock()
         """注册表锁: 防护跨线程并发 (同线程协程交错由 run_lock 串行化兜底)"""
         self._active_runs = 0
@@ -247,6 +271,8 @@ class _HandlerRegistryMixin:
                     self._pending_close.append(prev)
                 else:
                     old = prev
+            self._handler_seq += 1
+            handler._seq = self._handler_seq
             self._handlers[handler.name] = handler
         if old is not None:
             self._close_handler(old.name, old)
@@ -286,7 +312,7 @@ class _HandlerRegistryMixin:
     def list_handlers(self) -> list[SessionHandler]:
         """列出处理器 (按优先级升序, 同值按注册序)"""
         with self._registry_lock:
-            return sorted(self._handlers.values(), key=lambda h: h.priority)
+            return sorted(self._handlers.values(), key=lambda h: (h.priority, h._seq))
 
     def set_handler_priority(self, name: str, priority: int) -> bool:
         """调整处理器优先级 (越小越先执行)"""
@@ -307,7 +333,7 @@ class _HandlerRegistryMixin:
                 (h for h in self._handlers.values()
                  if h.enabled and (h.owner_plugin is None
                      or (self._plugins.get(h.owner_plugin) is not None and self._plugins[h.owner_plugin].enabled))),
-                key=lambda h: h.priority,
+                key=lambda h: (h.priority, h._seq),
             )
 
     def _take_handler_locked(self, name: str) -> SessionHandler | None:
@@ -362,7 +388,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         system_prompt: str | None = None,
         tools: Iterable[Tool] | None = None,
         content_callback: Callable[[str], None] | None = None,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         enable_checkpoint: bool = True,
         stream: bool = False,
         return_thinking: bool = False,
@@ -437,7 +463,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         user_input: str,
         img_urls: list[str] | None = None,
         *,
-        thinking: bool = False,
+        thinking: str = "off",
         max_iterations: int = 10,
     ) -> str:
         """执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -516,7 +542,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                         text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
                     )
                 else:
-                    if thinking:
+                    if thinking != "off":
                         raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
                     result = self._wf.full_agent(
                         text, img_urls=img_urls, max_iterations=max_iterations,
@@ -671,11 +697,13 @@ class SimpleSession(Session, _HandlerRegistryMixin):
 
     # ---------------- 插件管理 (目录插件包) ----------------
 
-    def install_plugin(self, path: str) -> Plugin:
+    def install_plugin(self, path: str, config: dict[str, Any] | None = None) -> Plugin:
         """安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
 
         mcp.py 同样支持: 远端工具经后台事件循环线程桥接为同步适配器注册;
         任一步失败时回滚已注册能力与 sys.path, 不留孤儿
+
+        config: 会话级插件配置覆盖, 与全局配置合成后注入 get_tools 工厂
         """
         plugin_dir = Path(path)
         _add_plugin_sys_path(plugin_dir)
@@ -694,7 +722,11 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                 if name in self._plugins:
                     raise ValueError(f"插件 {name} 已安装")
 
-            for t in collect_tools(plugin_dir, name, Tool, self):
+            # 合成插件配置: schema.default < 全局 json < 会话覆盖
+            config_schema = parse_config_schema(meta)
+            plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+
+            for t in collect_tools(plugin_dir, name, Tool, self, plugin_config):
                 tname = t.get_tool_name()
                 if tname in self._wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
@@ -717,6 +749,8 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                     if h.name in self._handlers or h.name in handler_states:
                         raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
                     h.owner_plugin = name
+                    self._handler_seq += 1
+                    h._seq = self._handler_seq
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
@@ -759,6 +793,16 @@ class SimpleSession(Session, _HandlerRegistryMixin):
             plugin._mcp_clients = mcp_clients
             plugin.handlers = handler_states
             plugin.commands = command_states
+            # meta.yaml 能力声明: 读入描述并校验未匹配项 (仅警告, 不改变安装行为)
+            plugin.capability_descriptions = parse_capability_descriptions(meta)
+            plugin.config_schema = schema_to_payload(config_schema)
+            _warn_undeclared_capabilities(name, plugin.capability_descriptions, {
+                "tools": tool_states,
+                "skills": skill_states,
+                "mcp": mcp_states,
+                "handlers": handler_states,
+                "commands": command_states,
+            })
             with self._registry_lock:
                 self._plugins[name] = plugin
             logger.info(f"[edictum] 插件 {name} 已安装")
@@ -913,7 +957,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         system_prompt: str | None = None,
         tools: Iterable[AsyncTool] | None = None,
         content_callback: Callable[[str], Any] | None = None,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         enable_checkpoint: bool = True,
         stream: bool = False,
         return_thinking: bool = False,
@@ -1014,7 +1058,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         user_input: str,
         img_urls: list[str] | None = None,
         *,
-        thinking: bool = False,
+        thinking: str = "off",
         max_iterations: int = 10,
     ) -> str:
         """执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -1090,7 +1134,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                             text, img_urls=img_urls, thinking=thinking, max_iterations=max_iterations,
                         )
                     else:
-                        if thinking:
+                        if thinking != "off":
                             raise NotImplementedError("thinking 参数仅在流式模式 (stream=True) 下生效")
                         result = await wf.full_agent(
                             text, img_urls=img_urls, max_iterations=max_iterations,
@@ -1330,10 +1374,12 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
 
     # ---------------- 插件管理 (目录插件包) ----------------
 
-    async def install_plugin(self, path: str) -> Plugin:
+    async def install_plugin(self, path: str, config: dict[str, Any] | None = None) -> Plugin:
         """安装目录插件 (异步版支持 mcp.py, 自动接入 MCP 客户端)
 
         任一步失败时回滚已注册能力/MCP 连接与 sys.path, 不留孤儿
+
+        config: 会话级插件配置覆盖, 与全局配置合成后注入 get_tools 工厂
         """
         if self._wf is None:
             await self.initialize()
@@ -1355,7 +1401,11 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                     raise ValueError(f"插件 {name} 已安装")
             wf = self._require_wf()
 
-            for t in collect_tools(plugin_dir, name, AsyncTool, self):
+            # 合成插件配置: schema.default < 全局 json < 会话覆盖
+            config_schema = parse_config_schema(meta)
+            plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+
+            for t in collect_tools(plugin_dir, name, AsyncTool, self, plugin_config):
                 tname = t.get_tool_name()
                 if tname in wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
@@ -1378,6 +1428,8 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                     if h.name in self._handlers or h.name in handler_states:
                         raise ValueError(f"插件 {name} 的处理器 {h.name} 与已注册处理器冲突")
                     h.owner_plugin = name
+                    self._handler_seq += 1
+                    h._seq = self._handler_seq
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
@@ -1419,6 +1471,16 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
             plugin._mcp_clients = mcp_clients
             plugin.handlers = handler_states
             plugin.commands = command_states
+            # meta.yaml 能力声明: 读入描述并校验未匹配项 (仅警告, 不改变安装行为)
+            plugin.capability_descriptions = parse_capability_descriptions(meta)
+            plugin.config_schema = schema_to_payload(config_schema)
+            _warn_undeclared_capabilities(name, plugin.capability_descriptions, {
+                "tools": tool_states,
+                "skills": skill_states,
+                "mcp": mcp_states,
+                "handlers": handler_states,
+                "commands": command_states,
+            })
             with self._registry_lock:
                 self._plugins[name] = plugin
             logger.info(f"[edictum] 插件 {name} 已安装")

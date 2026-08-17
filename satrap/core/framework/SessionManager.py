@@ -18,7 +18,7 @@ from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.utils.context import AsyncContextManager, ContextManager
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.utils.paths import get_db_path
 from satrap.core.log import logger
 from typing import TYPE_CHECKING
 
@@ -119,10 +119,10 @@ class SessionConfigStore:
         """初始化会话配置存储
         
         参数:
-        - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
+        - db_path: 数据库文件路径 (默认 .satrap/satrapdata/session_config.db)
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else (get_data_dir() / "session_config.db")
+        self.db_path = Path(db_path) if db_path else Path(get_db_path("session_config.db"))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 
@@ -422,7 +422,7 @@ class SessionManager:
         - default_session_type: 默认会话类型 (默认 "default")
         - max_size: 最大会话池大小 (默认 1000)
         - idle_timeout: 最大闲置时间 (秒, 默认 3600)
-        - db_path: 数据库文件路径 (默认当前目录下的 .satrap/session_config.db)
+        - db_path: 数据库文件路径 (默认 .satrap/satrapdata/session_config.db)
         - default_checkpoint: 实例化会话时若未显式配置 enable_checkpoint, 是否默认启用状态检查点 (默认 False)
         - default_checkpoint_db: 实例化会话时若未显式配置 db_path, 注入的上下文库路径 (默认 None, 使用会话自身默认库)
         """
@@ -1056,7 +1056,7 @@ class SessionManager:
             return None
 
         try:
-            # 合并类级配置模板到实例级配置（实例级优先）
+            # 合并类级配置模板到实例级配置 (实例级优先)
             if self._class_cfg_mgr:
                 class_params = dict(self._class_cfg_mgr.get_params(session_type))
                 current_params = dict(session_cfg.session_config or {})
@@ -1070,7 +1070,7 @@ class SessionManager:
             llm_cfg = None
             if model_cfg_mgr:
                 cfg_params = session_cfg.session_config or {}
-                # 从 class_cfg_mgr 获取 model_key，确定 session_config 中哪个字段存有模型名
+                # 从 class_cfg_mgr 获取 model_key, 确定 session_config 中哪个字段存有模型名
                 model_name_key = "model_name"
                 if self._class_cfg_mgr is not None:
                     try:

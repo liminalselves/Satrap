@@ -101,6 +101,12 @@
     /* 阴影 */
     --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.3);
     --shadow-glass-hover: 0 12px 40px rgba(0, 0, 0, 0.4);
+    /* 弹窗专用: 多层柔和阴影 (环境光 + 方向性) */
+    --shadow-modal:
+      0 0 0 1px rgba(0, 0, 0, 0.05),
+      0 2px 4px rgba(0, 0, 0, 0.08),
+      0 8px 16px rgba(0, 0, 0, 0.12),
+      0 16px 48px rgba(0, 0, 0, 0.18);
     --shadow-glow-accent: 0 0 30px var(--glass-accent-glow);
     --shadow-glow-purple: 0 0 30px var(--glass-purple-glow);
     --shadow-glow-teal: 0 0 30px var(--glass-teal-glow);
@@ -224,6 +230,12 @@
     
     --shadow-glass: 0 8px 32px rgba(0, 0, 0, 0.08);
     --shadow-glass-hover: 0 12px 40px rgba(0, 0, 0, 0.12);
+    /* 弹窗专用: 多层柔和阴影 (亮色模式) */
+    --shadow-modal:
+      0 0 0 1px rgba(0, 0, 0, 0.03),
+      0 2px 4px rgba(0, 0, 0, 0.04),
+      0 8px 16px rgba(0, 0, 0, 0.06),
+      0 16px 48px rgba(0, 0, 0, 0.10);
     
     /* 动态背景颜色 - 亮色模式 - 加强版 */
     --bg-gradient-1: rgba(150, 200, 255, 0.55);
@@ -470,6 +482,23 @@
   .glass-card.glass-nearby {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
+  }
+
+  /* 无backdrop-filter的玻璃卡片 - 用于输入区等不需要透视背后内容的场景 */
+  .glass-card-no-blur {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  /* 完全透明的玻璃卡片 - 只保留边框和阴影, 无背景色 */
+  .glass-card-transparent {
+    background: transparent;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .glass-card-transparent:hover {
+    background: transparent;
   }
 
   /* 染色玻璃卡片 - 蓝色 */
@@ -811,6 +840,29 @@
     pointer-events: none;
   }
 
+  /* 鼠标跟随反光光圈(与 glass-card 同一机制) */
+  .glass-button::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: radial-gradient(circle var(--reflect-size, 120px) at var(--mouse-x, -1000px) var(--mouse-y, -1000px), var(--reflect-color, var(--reflect-default)) 0%, transparent 100%);
+    opacity: 0;
+    transition: opacity 200ms ease;
+    pointer-events: none;
+  }
+
+  .glass-button.glass-hovering::after,
+  .glass-button:hover::after {
+    opacity: 1;
+  }
+
+  .glass-button.glass-nearby::after {
+    opacity: 0.5;
+  }
+
   .glass-button:hover {
     background: var(--glass-bg-hover);
     transform: translateY(-1px);
@@ -824,6 +876,7 @@
     background: var(--glass-accent-bg);
     border-color: var(--glass-accent-border);
     color: var(--color-accent);
+    --reflect-color: var(--reflect-accent);
   }
 
   .glass-button-primary:hover {
@@ -961,7 +1014,7 @@
     -webkit-backdrop-filter: blur(40px) saturate(180%);
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-xl);
-    box-shadow: var(--shadow-glass);
+    box-shadow: var(--shadow-modal);
     animation: slideIn 250ms cubic-bezier(0.1, 0.9, 0.2, 1);
     padding: 24px;
   }
@@ -1107,4 +1160,116 @@
   100% {
     background-position: 200% 0;
   }
+}
+
+/* ===== Markdown 渲染 (聊天消息) ===== */
+.markdown-body {
+  color: var(--color-text-primary);
+  line-height: 1.7;
+}
+.markdown-body > *:first-child { margin-top: 0; }
+.markdown-body > *:last-child { margin-bottom: 0; }
+.markdown-body p { margin: 0.5em 0; }
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 {
+  margin: 1em 0 0.5em;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+.markdown-body h1 { font-size: 1.25em; }
+.markdown-body h2 { font-size: 1.15em; }
+.markdown-body h3 { font-size: 1.05em; }
+.markdown-body h4, .markdown-body h5, .markdown-body h6 { font-size: 1em; }
+.markdown-body ul, .markdown-body ol {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+.markdown-body ul { list-style: disc; }
+.markdown-body ol { list-style: decimal; }
+.markdown-body li { margin: 0.25em 0; }
+.markdown-body li > ul, .markdown-body li > ol { margin: 0.25em 0; }
+.markdown-body a {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.markdown-body a:hover { color: var(--color-accent); }
+.markdown-body strong { font-weight: 600; color: var(--color-text-primary); }
+.markdown-body em { font-style: italic; }
+.markdown-body del { text-decoration: line-through; opacity: 0.7; }
+.markdown-body code {
+  font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+  font-size: 0.875em;
+  background: var(--color-accent-subtle);
+  border: 1px solid var(--glass-border);
+  border-radius: 4px;
+  padding: 0.15em 0.4em;
+}
+.markdown-body pre {
+  margin: 0.75em 0;
+  padding: 0.75em 1em;
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+.markdown-body pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  font-size: 0.85em;
+  line-height: 1.6;
+  display: block;
+}
+.markdown-body blockquote {
+  margin: 0.75em 0;
+  padding: 0.25em 0 0.25em 1em;
+  border-left: 3px solid var(--color-accent);
+  color: var(--color-text-secondary);
+}
+.markdown-body hr {
+  margin: 1em 0;
+  border: none;
+  border-top: 1px solid var(--glass-border);
+}
+.markdown-body table {
+  margin: 0.75em 0;
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9em;
+}
+.markdown-body th, .markdown-body td {
+  border: 1px solid var(--glass-border);
+  padding: 0.4em 0.75em;
+  text-align: left;
+}
+.markdown-body th {
+  background: var(--color-accent-subtle);
+  font-weight: 600;
+}
+.markdown-body img { max-width: 100%; border-radius: 6px; }
+.markdown-body input[type='checkbox'] { margin-right: 0.4em; }
+
+/* KaTeX 暗色适配 */
+.markdown-body .katex {
+  color: var(--color-text-primary);
+  font-size: 1.05em;
+}
+.markdown-body .katex-display {
+  margin: 1em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5em 0;
+}
+.markdown-body .katex-display > .katex {
+  white-space: nowrap;
+}
+/* KaTeX 错误提示 */
+.markdown-body .katex-error {
+  color: var(--color-error);
+  background: var(--color-error-subtle, rgba(239, 68, 68, 0.1));
+  padding: 0.1em 0.3em;
+  border-radius: 3px;
+  font-size: 0.85em;
 }

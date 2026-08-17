@@ -25,14 +25,11 @@ from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.command.session_commands import _parse_user_id
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
-from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
     PermissionEngine,
     RiskLevel,
 )
-from satrap.expend.tools import AsyncFetchPageTool, AsyncSearchTool, FetchPageTool, SearchTool
 
 WORKSPACE_ROOT = get_project_root()
 """文件工具白名单根目录 (项目根)"""
@@ -628,110 +625,6 @@ class AskUserTool(Tool):
         self._session = session
 
 
-# ================= memory (模型自驱增删改) =================
-
-
-class _MemoryToolBase(Tool):
-    """记忆工具基类: 模式检查 + store/engine 绑定"""
-
-    def __init__(self, store: MemoryStore, engine: PermissionEngine) -> None:
-        super().__init__()
-        self.store = store
-        self.engine = engine
-
-    def _plan_blocked(self) -> bool:
-        """计划模式下写记忆被拒绝"""
-        return self.engine.plan_mode
-
-
-class AddMemoryTool(_MemoryToolBase):
-    """添加一条长期记忆 (用户偏好/项目约定/关键决策)"""
-
-    tool_name = "add_memory"
-    description = "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策"
-    params_dict = {
-        "title": ("string", "简短记忆标题"),
-        "content": ("string", "记忆内容"),
-        "tags": ("array", "分类标签"),
-        "importance": ("number", "重要程度 1-5, 默认 1"),
-    }
-
-    def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
-        if self._plan_blocked():
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法添加"
-        result = self.store.add(title, content, tags, importance)
-        if result.get("ok"):
-            return f"记忆已添加: [{title}] {content}"
-        return f"添加失败: {result.get('error')}"
-
-
-class UpdateMemoryTool(_MemoryToolBase):
-    """更新一条已有记忆"""
-
-    tool_name = "update_memory"
-    description = "按记忆 ID 更新已有长期记忆 (信息变化或修正时使用)"
-    params_dict = {
-        "memory_id": ("string", "要更新的记忆 ID"),
-        "content": ("string", "更新后的内容"),
-        "title": ("string", "更新后的标题"),
-    }
-
-    def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
-        if self._plan_blocked():
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法更新"
-        fields: dict[str, Any] = {}
-        if content:
-            fields["content"] = content
-        if title:
-            fields["title"] = title
-        result = self.store.update(memory_id, **fields)
-        if result.get("ok"):
-            return f"记忆已更新: [{result['title']}] {result['content']}"
-        return f"更新失败: {result.get('error')}"
-
-
-class DeleteMemoryTool(_MemoryToolBase):
-    """删除一条记忆 (过时/矛盾时使用)"""
-
-    tool_name = "delete_memory"
-    description = "按记忆 ID 删除一条长期记忆"
-    params_dict = {
-        "memory_id": ("string", "要删除的记忆 ID"),
-    }
-
-    def execute(self, memory_id: str) -> str:
-        if self._plan_blocked():
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法删除"
-        result = self.store.delete(memory_id)
-        if result.get("ok"):
-            return f"记忆已删除: {memory_id}"
-        return f"删除失败: {result.get('error')}"
-
-
-class ListMemoriesTool(_MemoryToolBase):
-    """查看全部长期记忆"""
-
-    tool_name = "list_memories"
-    description = "列出当前全部长期记忆 (含 ID, 供 update/delete 定位)"
-    params_dict = {}
-
-    def execute(self) -> str:
-        memories = self.store.list_all()
-        if not memories:
-            return "当前没有长期记忆"
-        lines = [f"共 {len(memories)} 条记忆:"]
-        for m in memories:
-            tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
-        return "\n".join(lines)
-
-
 # ================= shell (本机 cmd/powershell + 审批) =================
 
 
@@ -919,114 +812,6 @@ class AsyncAskUserTool(AsyncTool):
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
-
-
-class AsyncAddMemoryTool(AsyncTool):
-    """添加长期记忆 (异步)"""
-
-    tool_name = "add_memory"
-    description = "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策"
-    params_dict = {
-        "title": ("string", "简短记忆标题"),
-        "content": ("string", "记忆内容"),
-        "tags": ("array", "分类标签"),
-        "importance": ("number", "重要程度 1-5, 默认 1"),
-    }
-
-    def __init__(self, store: MemoryStore, engine: PermissionEngine) -> None:
-        super().__init__()
-        self.store = store
-        self.engine = engine
-
-    async def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
-        if self.engine.plan_mode:
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法添加"
-        result = self.store.add(title, content, tags, importance)
-        if result.get("ok"):
-            return f"记忆已添加: [{title}] {content}"
-        return f"添加失败: {result.get('error')}"
-
-
-class AsyncUpdateMemoryTool(AsyncTool):
-    """更新长期记忆 (异步)"""
-
-    tool_name = "update_memory"
-    description = "按记忆 ID 更新已有长期记忆 (信息变化或修正时使用)"
-    params_dict = {
-        "memory_id": ("string", "要更新的记忆 ID"),
-        "content": ("string", "更新后的内容"),
-        "title": ("string", "更新后的标题"),
-    }
-
-    def __init__(self, store: MemoryStore, engine: PermissionEngine) -> None:
-        super().__init__()
-        self.store = store
-        self.engine = engine
-
-    async def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
-        if self.engine.plan_mode:
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法更新"
-        fields: dict[str, Any] = {}
-        if content:
-            fields["content"] = content
-        if title:
-            fields["title"] = title
-        result = self.store.update(memory_id, **fields)
-        if result.get("ok"):
-            return f"记忆已更新: [{result['title']}] {result['content']}"
-        return f"更新失败: {result.get('error')}"
-
-
-class AsyncDeleteMemoryTool(AsyncTool):
-    """删除长期记忆 (异步)"""
-
-    tool_name = "delete_memory"
-    description = "按记忆 ID 删除一条长期记忆"
-    params_dict = {
-        "memory_id": ("string", "要删除的记忆 ID"),
-    }
-
-    def __init__(self, store: MemoryStore, engine: PermissionEngine) -> None:
-        super().__init__()
-        self.store = store
-        self.engine = engine
-
-    async def execute(self, memory_id: str) -> str:
-        if self.engine.plan_mode:
-            return "拒绝: 计划模式下记忆写操作被禁用"
-        if not self.store.can_write():
-            return "记忆处于只读模式, 无法删除"
-        result = self.store.delete(memory_id)
-        if result.get("ok"):
-            return f"记忆已删除: {memory_id}"
-        return f"删除失败: {result.get('error')}"
-
-
-class AsyncListMemoriesTool(AsyncTool):
-    """查看全部长期记忆 (异步)"""
-
-    tool_name = "list_memories"
-    description = "列出当前全部长期记忆 (含 ID, 供 update/delete 定位)"
-    params_dict = {}
-
-    def __init__(self, store: MemoryStore, engine: PermissionEngine) -> None:
-        super().__init__()
-        self.store = store
-        self.engine = engine
-
-    async def execute(self) -> str:
-        memories = self.store.list_all()
-        if not memories:
-            return "当前没有长期记忆"
-        lines = [f"共 {len(memories)} 条记忆:"]
-        for m in memories:
-            tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
-        return "\n".join(lines)
 
 
 class AsyncShellTool(AsyncTool):
@@ -1461,28 +1246,48 @@ class AsyncGrepFilesTool(AsyncTool):
 
 # ================= get_tools 工厂 (会话依赖注入) =================
 
-DEFAULT_SANDBOX_ROOT = DATA_ROOT / "sandbox"
-"""默认沙箱根目录 (可被 session.coding_sandbox_root 覆盖; 工作区与文件免审批判定共用)"""
+DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
+"""默认沙箱根目录 (全局共享, 与 base_take 一致; 可被 session.coding_sandbox_root 覆盖)"""
 
 
-def get_tools(session: SimpleSession | AsyncSimpleSession) -> list[Any]:
-    """按会话形态构建全部工具 (注入 llm / 权限引擎 / 记忆库 / 会话引用)"""
+def _apply_config(config: dict[str, Any]) -> None:
+    """把合成配置应用到模块级死参 (WORKSPACE_ROOT/DATA_ROOT/SANDBOX_ROOT/超时/保护目录)
+
+    注: 这些死参是模块级常量, 被大量模块级函数 (_resolve_path 等) 直接引用;
+    在 get_tools 工厂调用时更新为配置值, 保持现有函数签名不变 (全局单例语义);
+    空配置不动任何模块变量 (保持代码默认/测试 monkeypatch)
+    """
+    if not config:
+        return
+    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS
+    if config.get("workspace_root"):
+        WORKSPACE_ROOT = Path(str(config["workspace_root"])).resolve()
+        DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
+    if config.get("data_root"):
+        DATA_ROOT = Path(str(config["data_root"])).resolve()
+    if config.get("sandbox_root"):
+        DEFAULT_SANDBOX_ROOT = Path(str(config["sandbox_root"])).resolve()
+    if config.get("protected_dirs"):
+        extra = tuple(d.strip() for d in str(config["protected_dirs"]).split(",") if d.strip())
+        _PROTECTED_DIRS = (".satrap", ".git", "node_modules") + extra
+
+
+def get_tools(session: SimpleSession | AsyncSimpleSession, config: dict[str, Any] | None = None) -> list[Any]:
+    """按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
+
+    注: search/fetch_page/memory 已移交 base_take 插件, 本插件只保留 coding 专属能力
+    """
     from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+
+    _apply_config(config or {})
 
     state = get_plugin_state(session)
     engine = cast(PermissionEngine, state["engine"])
-    store = cast(MemoryStore, state["store"])
     todos = cast(dict[str, Any], state["todos"])
 
     if isinstance(session, AsyncSimpleSession):
         tools: list[Any] = [
             AsyncAskUserTool(),
-            AsyncSearchTool(),
-            AsyncFetchPageTool(),
-            AsyncAddMemoryTool(store, engine),
-            AsyncUpdateMemoryTool(store, engine),
-            AsyncDeleteMemoryTool(store, engine),
-            AsyncListMemoriesTool(store, engine),
             AsyncShellTool(engine),
             AsyncSubAgentTool(session.llm, session.tools_manager),
             AsyncReadFileTool(),
@@ -1497,12 +1302,6 @@ def get_tools(session: SimpleSession | AsyncSimpleSession) -> list[Any]:
     else:
         tools = [
             AskUserTool(),
-            SearchTool(),
-            FetchPageTool(),
-            AddMemoryTool(store, engine),
-            UpdateMemoryTool(store, engine),
-            DeleteMemoryTool(store, engine),
-            ListMemoriesTool(store, engine),
             ShellTool(engine),
             SubAgentTool(session.llm, session.tools_manager),
             ReadFileTool(),

@@ -53,7 +53,7 @@ class WeatherWorkflow(ModelWorkflowFramework):
         response = self.llm.call(
             self.ctx.get_context(),
             tools=self.tools_manager.get_tools_definitions(),
-            thinking=True  # 启用思考，但思考内容不会存入上下文
+            thinking="medium"  # 启用思考，但思考内容不会存入上下文
         )
         if not response:
             return "模型调用失败"

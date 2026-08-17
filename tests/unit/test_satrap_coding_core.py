@@ -8,7 +8,7 @@ import pytest
 
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
+from satrap.expend.tools.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
     PermissionEngine,

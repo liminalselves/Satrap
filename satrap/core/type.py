@@ -95,6 +95,12 @@ class LLMConfig:
     """历史上下文比例, 输出预算 = context_window × (1 - history_ratio)"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
+    reasoning_body: Optional[Dict[str, Any]] = None
+    """思考请求格式, 不同 API 之间不同"""
+    thinking_field_name: Optional[str] = None
+    """思考内容的字段名称"""
+    thinking_fields: Optional[List[str]] = None
+    """该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]"""
 
 @dataclass
 class EmbeddingConfig:

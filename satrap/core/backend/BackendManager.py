@@ -11,6 +11,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.log import logger
+from satrap.core.utils.paths import get_db_path
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.pipeline.rate_limiter import RateLimiter
@@ -150,7 +151,7 @@ class BackendManager:
         return (
             self.config.session_checkpoint_db
             or self.config.session_db_path
-            or ".satrap/chat_history.db"
+            or get_db_path("chat_history.db")
         )
 
     @property

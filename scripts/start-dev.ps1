@@ -62,8 +62,8 @@ function Stop-SatrapServices {
 # Check for existing instances
 # ============================================================
 $hasExisting = $false
-$ports = @(19871, 19870, 5173)
-$portNames = @("Control Server", "Backend", "Frontend")
+$ports = @(19871, 19870, 19872, 5173)
+$portNames = @("Control Server", "Backend", "Chat Server", "Frontend")
 
 for ($i = 0; $i -lt $ports.Count; $i++) {
     if (Test-PortInUse -Port $ports[$i]) {
@@ -121,6 +121,36 @@ if ($controlRunning) {
 }
 
 # ============================================================
+# Start chat server (completely hidden)
+# ============================================================
+Write-Host "Starting chat server..." -ForegroundColor Cyan
+
+$chatArgs = "-m satrap.display.server"
+
+Start-Process -FilePath $pythonPath -ArgumentList $chatArgs -WorkingDirectory $ProjectRoot -WindowStyle Hidden
+
+# Wait for chat server to start
+Start-Sleep -Seconds 1
+
+# Verify chat server started successfully
+$chatRunning = $false
+for ($i = 0; $i -lt 10; $i++) {
+    try {
+        $response = Invoke-RestMethod -Uri "http://127.0.0.1:19872/api/chat/health" -Method Get -TimeoutSec 1
+        $chatRunning = $true
+        break
+    } catch {
+        Start-Sleep -Milliseconds 500
+    }
+}
+
+if ($chatRunning) {
+    Write-Host "Chat server started (http://127.0.0.1:19872)" -ForegroundColor Green
+} else {
+    Write-Host "Warning: Chat server may not have started properly" -ForegroundColor Yellow
+}
+
+# ============================================================
 # Start frontend (monitoring mode, auto-stop backend on close)
 # ============================================================
 Write-Host "Starting frontend dev server..." -ForegroundColor Cyan
@@ -169,6 +199,7 @@ Write-Host "  Satrap Dev Environment Started" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  Control Server:  http://127.0.0.1:19871 (hidden)" -ForegroundColor White
+Write-Host "  Chat Server:     http://127.0.0.1:19872 (hidden)" -ForegroundColor White
 Write-Host "  Frontend UI:     http://localhost:5173" -ForegroundColor White
 Write-Host ""
 Write-Host "  Use Dashboard 'Start Backend' button to start backend" -ForegroundColor Gray

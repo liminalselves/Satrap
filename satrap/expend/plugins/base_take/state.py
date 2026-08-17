@@ -1,0 +1,45 @@
+"""base_take 插件级共享状态: 记忆库按会话隔离单例
+
+memory 工具与 inject handler 通过本模块获取同一份 MemoryStore (按会话隔离),
+scope 默认 web_chat (网页聊天统一), 可被插件配置 memory_scope 覆盖
+"""
+from __future__ import annotations
+
+import threading
+from typing import Any
+
+from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.expend.tools.memory_store import DEFAULT_MEMORY_DB, MemoryStore
+
+SessionType = SimpleSession | AsyncSimpleSession
+"""插件支持的会话类型"""
+
+_registry: dict[str, dict[str, Any]] = {}
+_registry_lock = threading.Lock()
+
+
+def _build_state(session: SessionType, config: dict[str, Any]) -> dict[str, Any]:
+    """构建一份插件状态 (记忆库)"""
+    scope = str(config.get("memory_scope") or "web_chat")
+    store = MemoryStore(db_path=DEFAULT_MEMORY_DB, scope=scope)
+    return {"store": store}
+
+
+def get_plugin_state(session: SessionType, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """获取会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)"""
+    sid = session.session_id
+    with _registry_lock:
+        state = _registry.get(sid)
+        if state is None or state.get("_owner") is not session:
+            state = _build_state(session, config or {})
+            state["_owner"] = session
+            _registry[sid] = state
+    return state
+
+
+def reset_plugin_state(session: SessionType) -> None:
+    """卸载插件时重置会话状态 (下次安装重建)"""
+    with _registry_lock:
+        state = _registry.get(session.session_id)
+        if state is not None and state.get("_owner") is session:
+            _registry.pop(session.session_id, None)

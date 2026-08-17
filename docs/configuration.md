@@ -82,6 +82,28 @@ satrap model remove llm default
 
 `SessionManager` 创建 Session 时, 会从 Session 参数中的 `model_name` 读取模型配置名称, 默认使用 `default`。
 
+### LLM 配置字段
+
+`llm` 类型支持以下字段 (`satrap model set llm <name> --set key=value`):
+
+| 字段 | 说明 |
+| --- | --- |
+| `model` | 模型名称 |
+| `base_url` | API base URL |
+| `api_key` | API 密钥 |
+| `temperature` | 采样温度 |
+| `top_p` | top-p 参数 |
+| `max_tokens` | 最大输出 token (未配置 `context_window` 时生效) |
+| `context_window` | 总上下文窗口, 与 `ContextManager.max_context` 同源 |
+| `history_ratio` | 历史上下文比例, 输出预算 = `context_window × (1 - history_ratio)` |
+
+`context_window` 与 `history_ratio` 同时配置时, `SessionManager` 会:
+
+1. 将输出预算 (`context_window × (1 - history_ratio)`) 注入 LLM 实例的 `max_tokens`, 优先级高于 `max_tokens` 字段
+2. 将 `context_window` / `history_ratio` 注入 Session 的 `ContextManager`, 驱动滞回截断
+
+这样模型上下文窗口与输出上限在同一份配置中保持一致, 无需分别维护。
+
 ## Session 类配置
 
 注册一个 Session 类:

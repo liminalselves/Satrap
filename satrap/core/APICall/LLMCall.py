@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr_str, safe_getattr_list, safe_getattr_dict
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr, safe_getattr_str, safe_getattr_list, safe_getattr_dict
 from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
@@ -272,11 +272,55 @@ def _rename_thinking_field(
     return new_messages
 
 
+_THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
+    "reasoning_effort": ("none", None),        # None = 用 thinking 原值
+    "thinking.type": ("disabled", "enabled"),
+    "enable_thinking": (False, True),
+    "thinking_level": ("none", None),
+}
+
+
+def _build_thinking_extra_body(
+    thinking: str,
+    thinking_fields: Optional[List[str]] = None,
+    reasoning_body: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """根据思考强度构造 extra_body
+
+    参数:
+    - thinking: 思考强度 (off/low/medium/high)
+    - thinking_fields: 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
+    - reasoning_body: 自定义思考请求格式 (非 None 时优先使用)
+
+    返回:
+    - extra_body dict, 或 None (不传 extra_body)
+    """
+    if reasoning_body is not None:
+        return reasoning_body
+    if not thinking_fields:
+        return None
+    body: Dict[str, Any] = {}
+    for field in thinking_fields:
+        if field not in _THINKING_FIELD_MAP:
+            continue
+        off_val, on_val = _THINKING_FIELD_MAP[field]
+        value = off_val if thinking == "off" else (on_val if on_val is not None else thinking)
+        if "." in field:
+            parent, child = field.split(".", 1)
+            if not isinstance(body.get(parent), dict):
+                body[parent] = {}
+            body[parent][child] = value
+        else:
+            body[field] = value
+    return body if body else None
+
+
 def _stream_field(value: Any, name: str, default: Any = None) -> Any:
-    """兼容对象和字典形式读取流式响应字段"""
+    """兼容对象和字典形式读取流式响应字段 (保留原始类型, 供嵌套结构递归提取)"""
     if isinstance(value, dict):
         return cast(dict[str, Any], value).get(name, default)
-    return safe_getattr_str(value, name, str(default) if default is not None else "")
+    val = safe_getattr(value, name, default)
+    return default if val is None else val
 
 
 def _stream_text(value: Any) -> str:
@@ -439,8 +483,9 @@ class LLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
-        reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
+        reasoning_body: Optional[Dict[str, Any]] = None,
         thinking_field_name: Optional[str] = "reasoning_content",
+        thinking_fields: Optional[List[str]] = None,
     ):
         """
         [同步版本] LLM API 调用封装
@@ -456,8 +501,9 @@ class LLM:
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
-        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
+        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 None
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
+        - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -469,6 +515,7 @@ class LLM:
         self.return_false = return_false
         self.reasoning_body = reasoning_body
         self.thinking_field_name = thinking_field_name
+        self.thinking_fields = thinking_fields
 
         self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
@@ -476,7 +523,7 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -512,7 +559,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body=self.reasoning_body if thinking else None,
+                extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
             )   # 发起网络请求
 
             # Step.2 解析结果
@@ -533,7 +580,7 @@ class LLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -570,7 +617,7 @@ class LLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body=self.reasoning_body if thinking else None,
+                extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                 stream=True,
             ))   # 发起流式网络请求
 
@@ -680,7 +727,7 @@ class LLM:
         self,
         messages: List[Dict[str, Any]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -728,7 +775,7 @@ class LLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body=self.reasoning_body if thinking else None,
+                    extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                     tools=tools,               # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起网络请求
@@ -740,7 +787,7 @@ class LLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body=self.reasoning_body if thinking else None,
+                    extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                 )   # 发起网络请求
 
             # Step.4 解析结果
@@ -761,7 +808,7 @@ class LLM:
         self,
         messages: List[Dict[str, Any]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -812,7 +859,7 @@ class LLM:
             "temperature": use_temp,
             "top_p": use_top_p,
             "max_tokens": use_max_tokens,
-            "extra_body": self.reasoning_body if thinking else None,
+            "extra_body": _build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
             "stream": True,
         }
         if tools is not None:
@@ -872,6 +919,7 @@ class LLM:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        thinking_fields: Optional[List[str]] = None,
     ):
         """更新 LLM 实例的默认参数设置
 
@@ -879,7 +927,8 @@ class LLM:
         - model: 新的模型名称
         - temperature: 新的温度参数
         - top_p: 新的 top_p 参数
-        - max_tokens: 新的最大 token 数"""
+        - max_tokens: 新的最大 token 数
+        - thinking_fields: 新的思考字段列表"""
         if model is not None:
             self.model = model
         if temperature is not None:
@@ -888,6 +937,8 @@ class LLM:
             self.top_p = top_p
         if max_tokens is not None:
             self.max_tokens = max_tokens
+        if thinking_fields is not None:
+            self.thinking_fields = thinking_fields
 
 
 class AsyncLLM:
@@ -903,8 +954,9 @@ class AsyncLLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
-        reasoning_body: Optional[Dict[str, Any]] = {"thinking": {"type": "enabled"}},
+        reasoning_body: Optional[Dict[str, Any]] = None,
         thinking_field_name: Optional[str] = "reasoning_content",
+        thinking_fields: Optional[List[str]] = None,
     ):
         """
         [异步版本] LLM API 调用封装
@@ -920,8 +972,9 @@ class AsyncLLM:
         - suppress_error: 是否抑制 API 调用中的异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
-        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 `"thinking": {"type": "enabled"}`
+        - reasoning_body: 可选参数, 不同 API 之间的思考请求格式不同, 默认 None
         - thinking_field_name: 思考字段名称, 默认 "reasoning_content"
+        - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -933,6 +986,7 @@ class AsyncLLM:
         self.return_false = return_false
         self.reasoning_body = reasoning_body
         self.thinking_field_name = thinking_field_name
+        self.thinking_fields = thinking_fields
 
         self.client = AsyncOpenAI(
             api_key=api_key,
@@ -944,7 +998,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -981,7 +1035,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body=self.reasoning_body if thinking else None,
+                extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
             )   # 发起网络请求并等待结果
 
             # Step.3 解析并返回结果
@@ -1010,7 +1064,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -1047,7 +1101,7 @@ class AsyncLLM:
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
-                extra_body=self.reasoning_body if thinking else None,
+                extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                 stream=True,
             ))   # 发起异步流式网络请求
 
@@ -1158,7 +1212,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str | List[Dict[str, Any]]]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -1206,7 +1260,7 @@ class AsyncLLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body=self.reasoning_body if thinking else None,
+                    extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                     tools=tools,               # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起异步网络请求
@@ -1218,7 +1272,7 @@ class AsyncLLM:
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
-                    extra_body=self.reasoning_body if thinking else None,
+                    extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
                 )   # 发起异步网络请求
 
             # Step.4 解析结果
@@ -1239,7 +1293,7 @@ class AsyncLLM:
         self,
         messages: List[Dict[str, str | List[Dict[str, Any]]]],
         model: Optional[str] = None,
-        thinking: bool = False,
+        thinking: str = "off",
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
@@ -1289,7 +1343,7 @@ class AsyncLLM:
             "temperature": use_temp,
             "top_p": use_top_p,
             "max_tokens": use_max_tokens,
-            "extra_body": self.reasoning_body if thinking else None,
+            "extra_body": _build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
             "stream": True,
         }
         if tools is not None:
@@ -1351,6 +1405,7 @@ class AsyncLLM:
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
         max_tokens: Optional[int] = None,
+        thinking_fields: Optional[List[str]] = None,
     ):
         """更新 AsyncLLM 实例的默认参数设置
 
@@ -1358,7 +1413,8 @@ class AsyncLLM:
         - model: 新的模型名称
         - temperature: 新的温度参数
         - top_p: 新的 top_p 参数
-        - max_tokens: 新的最大 token 数"""
+        - max_tokens: 新的最大 token 数
+        - thinking_fields: 新的思考字段列表"""
         if model is not None:
             self.model = model
         if temperature is not None:
@@ -1367,3 +1423,5 @@ class AsyncLLM:
             self.top_p = top_p
         if max_tokens is not None:
             self.max_tokens = max_tokens
+        if thinking_fields is not None:
+            self.thinking_fields = thinking_fields

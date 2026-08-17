@@ -8,6 +8,7 @@ import { Logs } from '@/pages/Logs';
 import { Checkpoints } from '@/pages/Checkpoints';
 import { Users } from '@/pages/Users';
 import { Settings } from '@/pages/Settings';
+import { Chat } from '@/pages/Chat';
 
 function App() {
   return (
@@ -25,6 +26,9 @@ function App() {
       </div>
       
       <Routes>
+        {/* 聊天页: 完全独立整页, 不渲染管理面板布局 */}
+        <Route path="/chat" element={<Chat />} />
+
         <Route element={<AppLayout />}>
           <Route path="/" element={<Dashboard />} />
           <Route path="/models" element={<Models />} />

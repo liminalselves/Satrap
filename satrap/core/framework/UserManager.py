@@ -13,7 +13,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.log import logger
 from satrap.core.type import SessionConfig, UserCall, UserInfo
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.utils.paths import get_db_path
 
 
 @dataclass
@@ -35,10 +35,10 @@ class UserInfoStore:
         """初始化用户信息存储
 
         参数:
-        - db_path: 数据库文件路径, 默认当前目录下的 .satrap/user_info.db
+        - db_path: 数据库文件路径, 默认 .satrap/satrapdata/user_info.db
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else (get_data_dir() / "user_info.db")
+        self.db_path = Path(db_path) if db_path else Path(get_db_path("user_info.db"))
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 
@@ -311,7 +311,7 @@ class UserManager:
 
         参数:
         - session_manager: 共享的 SessionManager 实例
-        - db_path: 用户信息数据库路径, 默认 .satrap/user_info.db
+        - db_path: 用户信息数据库路径, 默认 .satrap/satrapdata/user_info.db
         - auto_create: 是否允许自动创建用户, 关闭后未知用户不落库
         """
         self.sm = session_manager

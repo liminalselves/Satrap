@@ -1,6 +1,8 @@
 # satrap_coding 插件: 简易 Coding Agent
 
-`satrap_coding` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 把 SimpleSession / AsyncSimpleSession 扩展成一个可用的 Coding Agent: 文件读写、搜索、shell、代码沙箱、长期记忆、子代理, 以及目标 / 计划两种工作模式。安装后能力自动注册进会话, 卸载时全量回收。
+`satrap_coding` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 把 SimpleSession / AsyncSimpleSession 扩展成一个可用的 Coding Agent: 文件读写、shell、子代理, 以及目标 / 计划两种工作模式。安装后能力自动注册进会话, 卸载时全量回收。
+
+> 搜索 (search/fetch_page)、长期记忆 (memory) 与代码沙箱 (code_sandbox) 已移交 `base_take` 插件; 两插件共享同一沙箱目录 (`.satrap/sandbox`)。
 
 ## 安装
 
@@ -18,10 +20,12 @@ session.install_plugin("./satrap/expend/plugins/satrap_coding")
 
 plugin = session.list_plugins()[0]
 plugin.name          # "satrap_coding"
-plugin.tools         # 16 个工具 (名称 -> 独立启用状态)
-plugin.commands      # goal / plan / memory / approve
+plugin.tools         # 11 个工具 (名称 -> 独立启用状态)
+plugin.commands      # goal / plan / approve
 plugin.skills        # goal / plan
 plugin.handlers      # satrap_coding.inject
+plugin.capability_descriptions   # meta.yaml 声明的五类能力描述 (kind -> {名字: 描述})
+plugin.list_capabilities()       # 每项能力带 name / enabled / description
 
 session.uninstall_plugin("satrap_coding")   # 全部回收
 ```
@@ -33,15 +37,13 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 | 类别 | 能力 | 说明 |
 | --- | --- | --- |
 | 文件 | read_file / write_file / edit_file / search_replace / list_dir / glob_files / grep_files | 工作区白名单内操作, 写类免审批/审批 |
-| 搜索 | search / fetch_page | 复用 expend 扩展工具 |
 | 询问 | ask_user | 获取缺失信息, 建议提供 2-3 个推荐选项, 未配置输入通道时返回占位说明 |
-| 记忆 | add_memory / update_memory / delete_memory / list_memories | 长期记忆, 自动注入模型输入, 免审批 |
 | 执行 | shell | 本机 PowerShell/cmd, 工作区内免审批, 写/高危/环境修改命令走审批 |
 | 任务 | todo_write | 会话级任务清单: add / done / list / clear |
 | 子代理 | subagent | 独立上下文, 继承主会话工具与审批策略 |
-| 命令 | /goal /plan /memory /approve | 目标、计划模式、记忆与审批策略的用户侧接口 |
+| 命令 | /goal /plan /approve | 目标、计划模式与审批策略的用户侧接口 |
 | 技能 | goal / plan | 同命令的面向 Agent 的技能指令 |
-| 处理器 | satrap_coding.inject | 用户消息进入模型前注入记忆块与目标块 |
+| 处理器 | satrap_coding.inject | 用户消息进入模型前注入目标块 |
 
 ## 审批模型
 
@@ -66,25 +68,19 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 /goal todo-done <序号>      完成子任务
 /goal done / clear          完成 / 清除目标
 /plan on / off              进入 / 退出计划模式 (写操作全部禁用)
-/memory list                查看全部长期记忆
-/memory add <标题> <内容>   添加记忆
-/memory del <ID>            删除记忆
-/memory clear               清空记忆
-/memory mode <disabled|base|full>   切换记忆模式 (base 只读)
 /approve mode <user|auto-agent|full> 切换审批策略
 /approve rules              查看持久规则
 /approve rule <操作> <风险级 0-1>    添加持久规则 (上限 1)
 ```
 
-`/goal` 设置的目标与 `/memory add` 添加的记忆, 由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标与已知约定推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file / shell 写命令 / 记忆写操作全部被拒绝, 只输出计划。
+`/goal` 设置的目标由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file / shell 写命令全部被拒绝, 只输出计划。
 
 ## 工作区与免审批语义
 
-插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除), 工作区与沙箱合一: 默认工作区即沙箱根目录 (`.satrap/coding/sandbox`, 可用 `session.coding_sandbox_root` 覆盖)。免审批范围 (仅计划模式可拦截):
+插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除), 工作区与沙箱合一: 默认沙箱根目录全局共享 (`.satrap/sandbox`, 可用 `session.coding_sandbox_root` 或插件配置 `sandbox_root` 覆盖)。免审批范围 (仅计划模式可拦截):
 
 - 文件工具写入沙箱根内路径 (write_file / edit_file), 只读工具始终免审批
 - shell 命令仅在工作区内活动 (无工作区外绝对路径, 如 `python demo.py` / 重定向写文件)
-- 记忆工具增删改 (add/update/delete_memory) 与 /memory 命令
 
 以下情况仍需要审批:
 
@@ -103,11 +99,25 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 .satrap/coding/
 ├── permissions.json     # 持久审批规则
 ├── approval_log.jsonl   # 审批记录
-├── memory.db            # 长期记忆 (按用户作用域隔离)
-├── goal.json            # 目标与子任务状态
-└── sandbox/             # 默认沙箱根目录 (与工作区合一)
+└── goal.json            # 目标与子任务状态
 ```
+
+> 长期记忆已迁移到公共 MemoryStore (`.satrap/satrapdata/memory.db`), 由 base_take 插件管理; 沙箱目录已统一为 `.satrap/sandbox` (全局共享)。
 
 ## 卸载与隔离
 
-`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置内存级状态 (计划模式 / 审批记忆 / 注入缓存), 不遗留孤儿; 记忆与目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份权限引擎 / 记忆库 / 目标状态。安装任一步失败时自动回滚已注册能力与 sys.path。
+`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置内存级状态 (计划模式 / 审批记忆 / 注入缓存), 不遗留孤儿; 目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份权限引擎 / 目标状态。安装任一步失败时自动回滚已注册能力与 sys.path。
+
+## 插件配置
+
+meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会话覆盖两级):
+
+| 配置键 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| workspace_root | path | 项目根 | 文件工具白名单根目录 |
+| data_root | path | .satrap/coding | 插件数据目录 |
+| sandbox_root | path | .satrap/sandbox | 沙箱根目录 (全局共享) |
+| shell_timeout | number | 30 | shell 命令超时 (秒) |
+| protected_dirs | string | - | 额外保护目录 (逗号分隔) |
+
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/satrap_coding.json`。

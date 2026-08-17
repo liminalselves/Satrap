@@ -5,6 +5,7 @@ from typing import Any
 import streamlit as st
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.type import safe_getattr_str
+from satrap.core.utils.paths import get_db_path
 
 st.set_page_config(page_title="用户管理", page_icon="", layout="wide")
 
@@ -12,7 +13,7 @@ st.set_page_config(page_title="用户管理", page_icon="", layout="wide")
 def _db_path() -> str:
     """用户信息库路径: 显式配置 > 默认"""
     config = st.session_state.config
-    return str(safe_getattr_str(config, "user_db_path") or ".satrap/user_info.db")
+    return str(safe_getattr_str(config, "user_db_path") or get_db_path("user_info.db"))
 
 
 def _store() -> UserInfoStore:

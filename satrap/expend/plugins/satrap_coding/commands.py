@@ -1,8 +1,10 @@
-"""satrap_coding 插件命令: /goal /plan /memory /approve (同步 + 异步)
+"""satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
 
 约定:
 - build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
 - 命令共享插件状态 (state.py), 与工具/处理器同实例: /plan 直接影响工具审批引擎
+
+注: /memory 命令已随长期记忆移交 base_take 插件
 """
 from __future__ import annotations
 
@@ -11,10 +13,8 @@ from typing import Any, Callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 
-_MEMORY_MODES = ("disabled", "base", "full")
 _APPROVE_MODES = ("user", "auto-agent", "full")
 
 
@@ -79,45 +79,6 @@ def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
     return "用法: /plan on 进入计划模式; /plan off 退出"
 
 
-def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
-    """记忆命令: list / add / del / clear / mode (写操作在计划模式下拒绝)"""
-    store = state["store"]
-    engine = state["engine"]
-    assert isinstance(store, MemoryStore) and isinstance(engine, PermissionEngine)
-    sub = args[0] if args else "list"
-    if sub in ("add", "del", "delete", "删除", "clear", "清空", "mode", "模式") and engine.plan_mode:
-        return "拒绝: 计划模式下记忆写操作被禁用"
-    if sub in ("list", "查看"):
-        memories = store.list_all()
-        if not memories:
-            return "当前没有长期记忆"
-        lines = [f"共 {len(memories)} 条记忆:"]
-        for m in memories:
-            tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id']} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
-        return "\n".join(lines)
-    if sub in ("add", "添加"):
-        rest = _parse_args(args[1:])
-        if not rest:
-            return "用法: /memory add <标题> <内容>"
-        parts = rest.split(" ", 1)
-        result = store.add(parts[0], parts[1] if len(parts) > 1 else "")
-        return f"记忆已添加: [{result['title']}] {result['content']}" if result.get("ok") else f"添加失败: {result.get('error')}"
-    if sub in ("del", "delete", "删除"):
-        if len(args) < 2:
-            return "用法: /memory del <记忆 ID>"
-        result = store.delete(args[1])
-        return f"记忆已删除: {args[1]}" if result.get("ok") else f"删除失败: {result.get('error')}"
-    if sub in ("clear", "清空"):
-        return f"已清空 {store.clear()} 条记忆" if store.can_write() else "记忆处于只读模式, 无法清空"
-    if sub in ("mode", "模式"):
-        if len(args) < 2 or args[1] not in _MEMORY_MODES:
-            return f"用法: /memory mode <{'|'.join(_MEMORY_MODES)}>"
-        store.set_mode(args[1])
-        return f"记忆模式已切换: {args[1]}"
-    return "用法: /memory list | add <标题> <内容> | del <ID> | clear | mode <disabled|base|full>"
-
-
 def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
     """审批命令: 切换策略 / 查看与添加持久规则"""
     engine = state["engine"]
@@ -161,10 +122,6 @@ def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]],
         """进入/退出计划模式 (写操作全部禁用)"""
         return _cmd_plan_impl(state, list(args))
 
-    def cmd_memory(*args: str) -> str:
-        """查看/添加/删除长期记忆"""
-        return _cmd_memory_impl(state, list(args))
-
     def cmd_approve(*args: str) -> str:
         """切换审批策略/管理持久规则"""
         return _cmd_approve_impl(state, list(args))
@@ -175,22 +132,17 @@ def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]],
     async def cmd_plan_async(*args: str) -> str:
         return _cmd_plan_impl(state, list(args))
 
-    async def cmd_memory_async(*args: str) -> str:
-        return _cmd_memory_impl(state, list(args))
-
     async def cmd_approve_async(*args: str) -> str:
         return _cmd_approve_impl(state, list(args))
 
     sync_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal,
         "plan": cmd_plan,
-        "memory": cmd_memory,
         "approve": cmd_approve,
     }
     async_map: dict[str, Callable[..., Any]] = {
         "goal": cmd_goal_async,
         "plan": cmd_plan_async,
-        "memory": cmd_memory_async,
         "approve": cmd_approve_async,
     }
     return sync_map, async_map

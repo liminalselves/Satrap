@@ -1,5 +1,53 @@
 name: satrap_coding
-version: 0.1.0
+version: 0.2.0
 author: Satrap Team
 repo: https://github.com/satrap/satrap_coding
-description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 记忆 / 子代理 / 目标与计划模式"
+description: "简易 Coding Agent 插件: 文件工具 / shell / 沙箱 / 子代理 / 目标与计划模式"
+
+# 配置项声明 (键 -> 类型/默认值/描述), 供校验/存储/前端渲染表单
+config_schema:
+  workspace_root:
+    type: path
+    default: ""
+    description: "工作区根目录 (文件工具白名单根, 留空用项目根)"
+  data_root:
+    type: path
+    default: ""
+    description: "插件数据目录 (权限/目标/日志, 留空用 workspace_root/.satrap/coding)"
+  sandbox_root:
+    type: path
+    default: ""
+    description: "沙箱根目录 (留空用 data_root/sandbox, 与 base_take 全局共享)"
+  shell_timeout:
+    type: number
+    default: 120
+    description: "shell 命令默认超时秒数"
+  protected_dirs:
+    type: string
+    default: ""
+    description: "额外保护目录 (逗号分隔, 追加到内置 .satrap/.git/node_modules)"
+
+# 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
+# 注: search/fetch_page/memory 已移交 base_take 插件
+tools:
+  ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图
+  shell: 在本机执行 shell 命令 (PowerShell/cmd), 写/高危命令需批准
+  subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
+  read_file: 读取工作区内文件内容, 支持分页
+  write_file: 写入或追加内容到工作区内文件 (需批准)
+  edit_file: 在文件中精确替换一段文本 (old -> new)
+  search_replace: 在一个文件内批量执行多对精确文本替换
+  todo_write: 管理任务清单, 用于多步任务跟踪
+  list_dir: 列出工作区内目录内容
+  glob_files: 按 glob 模式递归搜索文件
+  grep_files: 在指定目录内按正则搜索文件内容
+skills:
+  goal: "持续目标: 设置后每轮推进直至完成, 与 /goal 命令搭配"
+  plan: "计划模式: 禁用文件编辑与写操作, 只输出计划, 与 /plan 命令搭配"
+handlers:
+  satrap_coding.inject: 在用户输入前注入持续目标上下文
+commands:
+  goal: 设置/查看/完成持续目标
+  plan: 进入/退出计划模式 (写操作全部禁用)
+  approve: 切换审批策略/管理持久规则
+mcp: {}

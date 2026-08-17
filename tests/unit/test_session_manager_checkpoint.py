@@ -19,6 +19,7 @@ from satrap.core.framework.SessionManager import SessionConfig, SessionManager
 from satrap.core.framework.command import CommandHandler
 from satrap.core.state import StateStore
 from satrap.core.utils.context import ContextManager
+from satrap.core.utils.paths import get_db_path
 
 
 class _RecordingSession(Session):
@@ -32,7 +33,7 @@ class _RecordingSession(Session):
         content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None,
         *,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         **kw: Any,
@@ -61,7 +62,7 @@ class _CkptSession(Session):
         content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None,
         *,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         **kw: Any,
@@ -148,7 +149,7 @@ def test_default_db_only_when_configured(tmp_path: Path):
     entry = sm._create_entry(_make_cfg("sid-4"))
 
     assert entry is not None
-    assert _RecordingSession.received["db_path"] == ".satrap/chat_history.db"
+    assert _RecordingSession.received["db_path"] == get_db_path("chat_history.db")
 
 
 def test_injection_ignored_when_constructor_rejects(tmp_path: Path):

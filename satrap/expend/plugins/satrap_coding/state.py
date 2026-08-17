@@ -2,6 +2,8 @@
 
 关键: /plan 设置的计划模式必须作用于工具审批引擎, /goal 注入必须与命令写入的目标一致,
 因此 tools.py / commands.py / handlers.py 通过本模块获取同一份状态 (按会话隔离)。
+
+注: 长期记忆已移交 base_take 插件, 本插件不再持有 MemoryStore
 """
 from __future__ import annotations
 
@@ -11,7 +13,6 @@ from typing import Any
 from satrap.expend.plugins.satrap_coding import tools as tools_mod
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.plugins.satrap_coding.core.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 
 _registry: dict[str, dict[str, Any]] = {}
@@ -23,17 +24,14 @@ SessionType = SimpleSession | AsyncSimpleSession
 
 
 def _build_state(session: SessionType) -> dict[str, Any]:
-    """构建一份插件状态 (权限引擎 / 记忆库 / 目标状态 / 任务清单)"""
-    scope = tools_mod.user_scope(session.session_id)
+    """构建一份插件状态 (权限引擎 / 目标状态 / 任务清单)"""
     engine = PermissionEngine(
         rules_file=tools_mod.DATA_ROOT / "permissions.json",
         log_file=tools_mod.DATA_ROOT / "approval_log.jsonl",
     )
-    store = MemoryStore(db_path=tools_mod.DATA_ROOT / "memory.db", scope=scope)
     goals = GoalState(file_path=tools_mod.DATA_ROOT / "goal.json")
     return {
         "engine": engine,
-        "store": store,
         "goals": goals,
         "todos": {"items": []},
     }

@@ -1,5 +1,5 @@
 from satrap.core.utils.context import ContextManager
-from typing import Dict, Tuple, Any, Union, List, Callable
+from typing import Dict, Tuple, Any, Union, List, Callable, cast
 from satrap.core.type import LLMCallResponse, safe_getattr
 import json
 
@@ -306,6 +306,23 @@ class ToolsManager:
         self.tools: Dict[str, Tool] = {}
         self.effectiveness_guard: Callable[[str], bool] | None = None
         """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
+        self.tool_call_start: Callable[[Dict[str, Any]], None] | None = None
+        """工具调用前观察钩子: 收到 {name, arguments, call_id}; None 不启用 (回调异常隔离, 不影响执行)"""
+        self.tool_call_end: Callable[[Dict[str, Any]], None] | None = None
+        """工具调用后观察钩子: 收到 {name, arguments, call_id, success}; None 不启用 (回调异常隔离, 不影响执行)"""
+
+    @staticmethod
+    def _notify_tool_observer(
+        hook: Callable[[Dict[str, Any]], None] | None,
+        event: Dict[str, Any],
+    ) -> None:
+        """触发工具观察钩子 (异常隔离: 观察者绝不能拖垮工具执行主流程)"""
+        if hook is None:
+            return
+        try:
+            hook(event)
+        except Exception as e:
+            logger.warning(f"[执行工具] 工具观察钩子异常 (已忽略): {e}")
     def register_tool(self, tool: Tool):
         """注册工具
 
@@ -492,7 +509,12 @@ class ToolsManager:
             return tool_message, call_error
 
         tool_name, arguments = self.get_call_info(call_info)
+        call_id = str(call_info.get("id", "")) if isinstance(call_info, dict) else ""
+        base_event: Dict[str, Any] = {"name": tool_name, "arguments": arguments, "call_id": call_id}
+        self._notify_tool_observer(self.tool_call_start, dict(base_event))
         tool_result = self.execute_tool(tool_name, arguments)
+        success = not (isinstance(tool_result, dict) and cast(Dict[str, Any], tool_result).get("ok") is False)
+        self._notify_tool_observer(self.tool_call_end, {**base_event, "success": success})
         return tool_message, tool_result
 
     def unregister_tool(self, tool_name: str) -> bool:
@@ -521,6 +543,10 @@ class AsyncToolsManager:
         self.tools: Dict[str, AsyncTool] = {}
         self.effectiveness_guard: Callable[[str], bool] | None = None
         """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
+        self.tool_call_start: Callable[[Dict[str, Any]], None] | None = None
+        """工具调用前观察钩子: 收到 {name, arguments, call_id}; None 不启用 (回调异常隔离, 不影响执行)"""
+        self.tool_call_end: Callable[[Dict[str, Any]], None] | None = None
+        """工具调用后观察钩子: 收到 {name, arguments, call_id, success}; None 不启用 (回调异常隔离, 不影响执行)"""
     def register_tool(self, tool: AsyncTool):
         """注册异步工具
 
@@ -715,7 +741,12 @@ class AsyncToolsManager:
             return tool_message, call_error
 
         tool_name, arguments = self.get_call_info(call_info)
+        call_id = str(call_info.get("id", "")) if isinstance(call_info, dict) else ""
+        base_event: Dict[str, Any] = {"name": tool_name, "arguments": arguments, "call_id": call_id}
+        ToolsManager._notify_tool_observer(self.tool_call_start, dict(base_event))
         tool_result = await self.execute_tool(tool_name, arguments)
+        success = not (isinstance(tool_result, dict) and cast(Dict[str, Any], tool_result).get("ok") is False)
+        ToolsManager._notify_tool_observer(self.tool_call_end, {**base_event, "success": success})
         return tool_message, tool_result
 
     def unregister_tool(self, tool_name: str) -> bool:

@@ -109,56 +109,17 @@ session.remove_handler("logger")             # 删除处理器 (触发 close)
 
 ## 目录插件 (Plugin)
 
-插件是**可分发的能力组合包**: 一个目录即一个插件, 由 `meta.yaml` 声明身份, 可同时携带工具 / 技能 / MCP 接入 / 处理脚本。安装后其能力全部注册进会话, 并支持**双层启停** (插件级开关 × 能力独立状态, 能力生效 = 两者皆开)。
-
-### 目录结构
-
-```text
-插件名/
-├── meta.yaml     # name(必填) / version / author / repo / description
-├── tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版)
-├── skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md)
-├── mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (仅异步版)
-├── handlers.py   # 可选: 导出 handlers: list[SessionHandler]; 或 4 个约定函数
-└── ...           # 插件私有模块
-```
-
-### 安装 / 启停 / 卸载
+插件是**可分发的能力组合包**: 一个目录即一个插件, 由 `meta.yaml` 声明身份, 可同时携带工具 / 技能 / MCP 接入 / 处理脚本 / 命令。安装后其能力全部注册进会话, 并支持**双层启停** (插件级开关 × 能力独立状态, 能力生效 = 两者皆开)。
 
 ```python
-from satrap import SimpleSession
-
 plugin = session.install_plugin("./plugins/my-plugin")   # 返回 Plugin 实例
-plugin.name / plugin.version / plugin.author / plugin.repo   # meta.yaml 元信息
-
 session.disable_plugin("my-plugin")    # 聚合停用: 压制名下全部能力
 session.enable_plugin("my-plugin")     # 聚合启用: 按独立状态恢复
 session.uninstall_plugin("my-plugin")  # 卸载: 全量回收, 不留孤儿
-session.list_plugins()
+plugin.list_capabilities()              # 每项能力的实效状态 (含 meta.yaml 声明的 description)
 ```
 
-异步版 `install_plugin` / `uninstall_plugin` / `enable_plugin` / `disable_plugin` 均为 async (`await session.install_plugin(path)`), 并支持 `mcp.py` 自动接入。同步版安装含 `mcp.py` 的插件会跳过该文件并警告。
-
-### 双层启停与独立接口
-
-插件内每项能力可**独立启停**, 聚合恢复不会误开独立停用的能力。推荐通过插件实例接口操作:
-
-```python
-plugin.disable_tool("calc")      # 独立停用插件内工具
-plugin.enable_tool("calc")       # 独立启用
-plugin.disable_skill("demo")     # 同步版返回 bool; 异步版需 await
-plugin.disable_mcp("fs")         # 独立停用 MCP 连接的全部工具
-plugin.disable_handler("log")    # 独立停用处理器
-plugin.list_capabilities()        # 展示插件内每项能力的实效状态
-```
-
-> 注意: 插件内能力的独立启停建议走插件实例接口, 会话全局接口 (`session.disable_tool`) 不维护插件状态; 插件停用期间对名下能力的操作以恢复时的独立状态为准。
->
-> 工具与处理器采用**执行路径合成**: 插件停用后, 即使 `enable_tool` / `enable_all_tools` / `enable_handler` 更新了独立位, 执行时仍按「独立位 ∧ 插件聚合开关」过滤 (`execute_tool` 返回 disabled 错误, 处理器不执行); 工具定义列表 (`get_tools_definitions`) 按独立位展示, 与执行路径解耦。
-
-### 安全提示
-
-安装插件 = 执行其代码 (tools.py / skills.py / mcp.py / handlers.py 均会被 import)。meta.yaml 的 `author` / `repo` 仅用于溯源, 不提供安全保证, 请仅安装可信来源的插件。
+> 插件系统的完整说明 (目录结构 / meta.yaml 能力声明 / 能力收集约定 / 错误处理 / 同步异步差异) 见 [插件系统](plugin-system.md); 官方示例见 [satrap_coding 插件](satrap-coding-plugin.md)。
 
 ## 工具 / 命令 / skill
 

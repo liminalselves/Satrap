@@ -1,13 +1,18 @@
 import { useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Badge } from '@/components/ui/Badge';
-import { Sun, Moon } from 'lucide-react';
+import { Sun, Moon, MessageSquare } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { cn } from '@/utils/cn';
 
 export function Header() {
   const { isRunning, refreshControlStatus } = useBackendStore();
   const { theme, toggleTheme } = useTheme();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const isChat = location.pathname === '/chat';
   const headerRef = useStandaloneGlassReflect<HTMLElement>({
     reflectRange: 150,
     reflectSize: 150,
@@ -30,6 +35,15 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2">
+        {/* 对话入口 */}
+        <button
+          onClick={() => navigate('/chat')}
+          className={cn('theme-toggle', isChat && 'text-accent')}
+          title="对话"
+        >
+          <MessageSquare className={cn('h-4 w-4', isChat ? 'text-accent' : 'text-text-secondary')} />
+        </button>
+
         {/* 主题切换按钮 */}
         <button
           onClick={toggleTheme}

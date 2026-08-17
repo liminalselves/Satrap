@@ -7,6 +7,7 @@ import streamlit as st
 from satrap.core.state import StateStore
 from satrap.core.type import StateScope, safe_getattr_str
 from satrap.core.utils.context import ContextManager
+from satrap.core.utils.paths import get_db_path
 
 st.set_page_config(page_title="检查点管理", page_icon="", layout="wide")
 
@@ -17,7 +18,7 @@ def _db_path() -> str:
     return str(
         safe_getattr_str(config, "session_checkpoint_db")
         or safe_getattr_str(config, "session_db_path")
-        or ".satrap/chat_history.db"
+        or get_db_path("chat_history.db")
     )
 
 

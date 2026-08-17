@@ -1,4 +1,4 @@
-"""satrap_coding 插件工具层单元测试 (get_tools 工厂 / 文件 / ask_user / memory / shell)"""
+"""satrap_coding 插件工具层单元测试 (get_tools 工厂 / 文件 / ask_user / shell)"""
 from __future__ import annotations
 
 from typing import Any, Iterator
@@ -20,7 +20,7 @@ class _FakeAsyncLLM(AsyncLLM):
 
     async def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -30,7 +30,7 @@ class _FakeAsyncLLM(AsyncLLM):
 
     async def stream_call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -57,7 +57,7 @@ class _FakeLLM(LLM):
 
     def call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -67,7 +67,7 @@ class _FakeLLM(LLM):
 
     def stream_call(
         self, messages: list[dict[str, Any]], model: str | None = None,
-        thinking: bool = False, temperature: float | None = None,
+        thinking: str = "off", temperature: float | None = None,
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
@@ -98,12 +98,11 @@ def _install_tools(session: SimpleSession) -> dict[str, Any]:
 
 
 def test_factory_sync_tool_set(tmp_path: Any):
-    """同步会话: 17 个工具全部注册, 无重名"""
+    """同步会话: 11 个工具全部注册, 无重名 (search/memory 已移交 base_take)"""
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     expected = {
-        "ask_user", "search", "fetch_page", "add_memory", "update_memory", "delete_memory",
-        "list_memories", "shell", "subagent", "read_file", "write_file",
+        "ask_user", "shell", "subagent", "read_file", "write_file",
         "edit_file", "search_replace", "todo_write", "list_dir", "glob_files", "grep_files",
     }
     assert set(tools) == expected
@@ -119,7 +118,7 @@ async def test_factory_async_tool_set(tmp_path: Any):
     await session.initialize()
     tools = get_tools(session)
     names = [t.get_tool_name() for t in tools]
-    assert len(names) == 17 and len(set(names)) == 17
+    assert len(names) == 11 and len(set(names)) == 11
     # 工具实例为 AsyncTool
     from satrap.core.utils.TCBuilder import AsyncTool
 
@@ -320,29 +319,6 @@ def test_ask_user_tool(tmp_path: Any):
 # ================= memory 工具 =================
 
 
-def test_memory_tools_chain(tmp_path: Any, workspace: Any):
-    """记忆工具: 添加/列出/更新/删除全链路"""
-    session = _make_session(tmp_path)
-    tools = _install_tools(session)
-
-    out = tools["add_memory"].execute("偏好", "用户喜欢简洁回答", ["用户"], 3)
-    assert "记忆已添加" in out
-    out = tools["list_memories"].execute()
-    assert "用户喜欢简洁回答" in out
-    assert out.startswith("共 1 条记忆:")
-
-    memory_id = out.split("- ")[1].split(" ")[0]
-    out = tools["update_memory"].execute(memory_id, content="用户喜欢极简回答")
-    assert "记忆已更新" in out
-    out = tools["list_memories"].execute()
-    assert "极简回答" in out and "简洁回答" not in out
-
-    out = tools["delete_memory"].execute(memory_id)
-    assert "记忆已删除" in out
-    out = tools["list_memories"].execute()
-    assert "当前没有长期记忆" in out
-
-
 # ================= shell =================
 
 
@@ -461,24 +437,14 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
 
 
 @pytest.mark.asyncio
-async def test_async_ask_memory_shell(tmp_path: Any, workspace: Any):
-    """异步 ask_user / memory / shell 主路径"""
+async def test_async_ask_shell(tmp_path: Any, workspace: Any):
+    """异步 ask_user / shell 主路径"""
     session = await _make_async_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = await _async_tools(session)
 
     out = await tools["ask_user"].execute("继续?")
     assert "用户回复: y" in out
-
-    out = await tools["add_memory"].execute("约定", "异步也要测")
-    assert "记忆已添加" in out
-    out = await tools["list_memories"].execute()
-    assert "异步也要测" in out
-    memory_id = out.split("- ")[1].split(" ")[0]
-    out = await tools["update_memory"].execute(memory_id, content="更新后")
-    assert "记忆已更新" in out
-    out = await tools["delete_memory"].execute(memory_id)
-    assert "记忆已删除" in out
 
     out = await tools["shell"].execute("echo async-ok")
     assert "async-ok" in out

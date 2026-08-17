@@ -102,6 +102,7 @@ def _make_llm(cls: type[_LLM], client: object) -> _LLM:
     llm.max_tokens = 100
     llm.reasoning_body = None
     llm.thinking_field_name = "reasoning_content"
+    llm.thinking_fields = None
     llm.suppress_error = False
     llm.return_false = False
     return llm
@@ -177,8 +178,8 @@ class _AgentLLM:
             LLMCallResponse(type="message", content="结果是 5"),
         ]
 
-    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False, img_urls: list[str] | None = None):
-        assert thinking is False
+    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: str = "off", img_urls: list[str] | None = None):
+        assert thinking == "off"
         response = self.responses.pop(0)
         if response.content:
             yield LLMCallStreamEvent(kind="content_delta", delta=response.content)
@@ -229,8 +230,8 @@ def test_stream_tools_agent_keeps_only_system_context(
 
 
 class _ThinkingAgentLLM:
-    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False, img_urls: list[str] | None = None):
-        assert thinking is True
+    def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: str = "off", img_urls: list[str] | None = None):
+        assert thinking == "medium"
         yield LLMCallStreamEvent(kind="thinking_delta", delta="先检查工具")
         yield LLMCallStreamEvent(kind="content_delta", delta="已完成")
         yield LLMCallStreamEvent(
@@ -252,18 +253,18 @@ def test_stream_full_agent_separates_thinking_callback(
         llm=_ThinkingAgentLLM(),   # type: ignore[arg-type]
         context_id="stream-thinking-test",
         content_callback=content.append,
-        return_thinking=True,
+        return_thinking="medium",
         thinking_callback=thinking.append,
     )
 
-    assert agent.stream_full_agent("测试", callback=True, thinking=True) == "已完成"
+    assert agent.stream_full_agent("测试", callback=True, thinking="medium") == "已完成"
     assert thinking == ["先检查工具"]
     assert content == ["已完成"]
 
 
 class _AsyncThinkingAgentLLM:
-    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False, img_urls: list[str] | None = None):
-        assert thinking is True
+    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: str = "off", img_urls: list[str] | None = None):
+        assert thinking == "medium"
         yield LLMCallStreamEvent(kind="thinking_delta", delta="异步检查")
         yield LLMCallStreamEvent(kind="content_delta", delta="异步完成")
         yield LLMCallStreamEvent(
@@ -293,12 +294,12 @@ async def test_async_stream_full_agent_separates_thinking_callback(
         llm=_AsyncThinkingAgentLLM(),   # type: ignore[arg-type]
         context_id="async-stream-thinking-test",
         content_callback=content_callback,
-        return_thinking=True,
+        return_thinking="medium",
         thinking_callback=thinking_callback,
     )
     await agent.initialize()
 
-    assert await agent.stream_full_agent("测试", callback=True, thinking=True) == "异步完成"
+    assert await agent.stream_full_agent("测试", callback=True, thinking="medium") == "异步完成"
     assert thinking == ["异步检查"]
     assert content == ["异步完成"]
 
@@ -320,8 +321,8 @@ class _AsyncToolAgentLLM:
             LLMCallResponse(type="message", content="结果是 5"),
         ]
 
-    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: bool = False, img_urls: list[str] | None = None):
-        assert thinking is False
+    async def stream_call(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, thinking: str = "off", img_urls: list[str] | None = None):
+        assert thinking == "off"
         response = self.responses.pop(0)
         if response.content:
             yield LLMCallStreamEvent(kind="content_delta", delta=response.content)

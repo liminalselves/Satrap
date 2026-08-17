@@ -1,10 +1,12 @@
-"""satrap_coding 长期记忆存储: SQLite 结构化记忆, 模型自驱增删改
+"""长期记忆存储: SQLite 结构化记忆, 模型自驱增删改 (公共位置, 供 base_take/coding 共用)
 
 设计 (对齐 proj_astro 模式, 无 embedding 依赖):
 - 记忆 = title + content + tags + importance 的结构化文本, 全部注入 system prompt
 - 模式三档: disabled (不注入/不可用) / base (只读) / full (可增删改)
 - 注入: 全量注入 + importance 降序 + max_entries 截断, 控制 token 成本
-- 作用域: 按 user_id 隔离 (从 session_id 解析)
+- 作用域: 按 user_id 隔离 (从 session_id 解析), 网页聊天统一 web_chat
+
+数据文件默认 .satrap/satrapdata/memory.db (纳入集中 db 路径管理)
 """
 from __future__ import annotations
 
@@ -16,9 +18,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.utils.paths import get_db_path
 
-DEFAULT_MEMORY_DB = get_data_dir() / "coding" / "memory.db"
+DEFAULT_MEMORY_DB = Path(get_db_path("memory.db"))
+"""默认记忆数据库路径 (.satrap/satrapdata/memory.db)"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -47,7 +50,7 @@ class MemoryStore:
     ) -> None:
         """
         参数:
-        - db_path: 数据库路径, 默认 .satrap/coding/memory.db
+        - db_path: 数据库路径, 默认 .satrap/satrapdata/memory.db
         - mode: 记忆模式, disabled / base / full
         - max_entries: 注入上限条数 (importance 降序), 默认 30
         - scope: 默认作用域 (user_id), 为空表示不限定

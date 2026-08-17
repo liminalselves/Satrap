@@ -17,6 +17,7 @@ import re
 import threading
 
 from satrap.core.log import logger
+from satrap.core.utils.paths import get_db_path
 from types import TracebackType
 from satrap.core.state import StateStore
 from satrap.core.state.mutation import state_mutation_context
@@ -116,7 +117,7 @@ class ContextManager:
         self,
         conversation_id: Union[int, str],
         keep_in_memory: bool = False,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         max_context: int = 128000,
         history_ratio: float = 0.7,
         context_threshold: float = 0.8,
@@ -972,7 +973,7 @@ class AsyncContextManager:
         self,
         conversation_id: Union[int, str],
         keep_in_memory: bool = False,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         max_context: int = 128000,
         history_ratio: float = 0.7,
         context_threshold: float = 0.8,
@@ -992,7 +993,7 @@ class AsyncContextManager:
         - keep_in_memory:
             True: 加载数据后在内存操作，需手动调用 save_context() 写入数据库 <br>
             False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
-        - db_path: SQLite 数据库路径, 默认 ".satrap/chat_history.db"
+        - db_path: SQLite 数据库路径, 默认 .satrap/satrapdata/chat_history.db
         - max_context: 最大上下文长度, 默认 128k
         - history_ratio: 历史上下文比例, 历史预算 = max_context × history_ratio, 默认 0.7
         - context_threshold: 上下文阈值(占历史预算比例), 触发线 = 历史预算 × context_threshold, 默认 0.8
@@ -1018,10 +1019,12 @@ class AsyncContextManager:
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
         self.auto_checkpoint = auto_checkpoint
-        # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
-        self.state_store = state_store
+
+        self.state_store = state_store   # 检查点存储: 显式传入优先, 否则按开关自动创建 (与消息同库, 保证事务原子性)
+
         if self.state_store is None and enable_checkpoint:
             self.state_store = StateStore(db_path=self.db_path)
+
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
         self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self.max_context = max_context                     # 最大上下文长度
@@ -1029,6 +1032,7 @@ class AsyncContextManager:
         self.context_threshold = context_threshold         # 上下文阈值(占历史预算比例)
         self.truncation_floor = truncation_floor           # 上下文截断底线(占历史预算比例)
         self.exceed_process = exceed_process               # 超过触发线时的处理方式
+
         # 派生值: 滞回截断的触发线/底线/输出预算
         self.history_budget = int(max_context * history_ratio)
         self.trigger_tokens = int(self.history_budget * context_threshold)
@@ -1414,7 +1418,7 @@ class AsyncContextManager:
         参数:
         - message: 模型消息
         - tool_messages: 工具调用消息列表
-        - tool_results: 工具调用的返回结果列表，与 tool_messages 一一对应
+        - tool_results: 工具调用的返回结果列表, 与 tool_messages 一一对应
         """
         await self.add_bot_message(message, tool_messages)
         for tool_msg, tool_res in zip(tool_messages, tool_results):
@@ -1427,7 +1431,7 @@ class AsyncContextManager:
 
         参数:
         - message: 要添加的消息内容
-        - separator: 拼接时插入的分隔符，默认为空字符串
+        - separator: 拼接时插入的分隔符, 默认为空字符串
         """
         await self._protect_before_edit()
         # 查找第一条系统消息

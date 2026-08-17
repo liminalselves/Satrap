@@ -67,7 +67,7 @@ Satrap 的多模态处理会尝试归一化为 OpenAI client 需要的 base URL�
 
 ## 上下文为什么变短了
 
-`ContextManager.get_model_context()` 会按 `max_context * context_threshold` 计算阈值, 超过后按策略截断。
+`ContextManager.get_model_context()` 采用滞回截断: 历史预算 = `max_context × history_ratio`, 超过触发线 (历史预算 × `context_threshold`) 才截断, 截断后降至底线 (历史预算 × `truncation_floor`) 以下。滞回区间内前缀保持稳定, 避免频繁重写。
 
 可选策略:
 
@@ -80,10 +80,14 @@ Satrap 的多模态处理会尝试归一化为 OpenAI client 需要的 base URL�
 ctx = ContextManager(
     conversation_id="demo",
     max_context=128000,
-    context_threshold=0.9,
+    history_ratio=0.7,       # 历史预算比例
+    context_threshold=0.8,   # 触发线 (占历史预算)
+    truncation_floor=0.4,    # 截断底线 (占历史预算)
     exceed_process="sliding",
 )
 ```
+
+长对话还可用 `summarize_and_compress(llm, keep_recent_turns)` 将较早轮次总结为摘要注入 system prompt, 而非直接截断丢弃。
 
 ## CLI 写配置时提示后端在线
 

@@ -105,6 +105,44 @@ messages = ctx.get_context()
 model_messages = ctx.get_model_context()
 ```
 
+### 上下文预算与滞回截断
+
+`ContextManager` 将总上下文窗口 `max_context` 按比例分离为历史预算与输出预算, 并采用滞回截断策略避免频繁重写前缀 (保持服务器 prefix cache 稳定):
+
+```python
+ctx = ContextManager(
+    conversation_id="user-1",
+    max_context=128000,       # 总上下文窗口
+    history_ratio=0.7,        # 历史预算比例: 历史预算 = max_context × 0.7
+    context_threshold=0.8,    # 触发线: 历史预算 × 0.8, 超过才触发截断
+    truncation_floor=0.4,     # 截断底线: 历史预算 × 0.4, 截断后降至此线以下
+)
+```
+
+| 参数 | 默认 | 说明 |
+| --- | --- | --- |
+| `max_context` | `128000` | 总上下文窗口 token 数 |
+| `history_ratio` | `0.7` | 历史上下文比例, 输出预算 = `max_context × (1 - history_ratio)` |
+| `context_threshold` | `0.8` | 触发线 (占历史预算比例), 超过才截断 |
+| `truncation_floor` | `0.4` | 截断底线 (占历史预算比例), 截断目标 |
+| `exceed_process` | `"sliding"` | 超限处理: `sliding` 滑动窗口 / `mid_truncate` 中间截断 |
+
+滞回区间 (`truncation_floor` ~ `context_threshold`) 内前缀保持稳定, 只有超过触发线才截断到底线, 减少前缀变动频率。
+
+### 总结压缩
+
+`summarize_and_compress()` 将较早的对话轮次调用 LLM 总结为一段摘要, 删除原文并注入 system prompt, 用于长对话的上下文压缩:
+
+```python
+summary = ctx.summarize_and_compress(llm, keep_recent_turns=4)
+```
+
+- `llm`: 用于总结的 `LLM` 实例 (多模态图片会先投影为 `[图片]` 占位符, 无需多模态能力)
+- `keep_recent_turns`: 保留最近的对话轮数 (不总结不删除)
+- 返回总结文本; 已有摘要区块时会调用 LLM 合并为一段
+
+`AsyncContextManager` 提供对应的 `await ctx.summarize_and_compress(llm, keep_recent_turns)` (传入 `AsyncLLM`)。
+
 常用方法:
 
 | 方法 | 说明 |
@@ -119,6 +157,7 @@ model_messages = ctx.get_model_context()
 | `add_tool_call_flow()` | 添加一次完整工具调用流 |
 | `del_context()` | 清空非 system 消息 |
 | `estimate_token()` | 估算当前 token 数 |
+| `summarize_and_compress()` | 总结压缩较早对话轮次, 摘要注入 system prompt |
 | `export_json()` | 导出上下文 |
 
 `AsyncContextManager` 提供异步版本, 创建后先执行 `await ctx.initialize()`。
@@ -299,3 +338,27 @@ from satrap.core.APICall.ReRankCall import ReRank
 - `Unknown`
 
 平台适配器会在原始平台消息和这些组件之间转换, 上层 Session 可以尽量处理统一结构。
+
+## 类型安全工具 (safe_getattr)
+
+`satrap.core.type` 提供一组 `safe_getattr` 系列函数, 用于替代裸 `getattr(obj, "attr", None)`。裸 `getattr` 返回 `Any`, pyright 无法检查返回值; `safe_getattr` 通过类型重载让返回值携带类型信息, 适合在处理外部 API 响应, 动态模块, 多态对象时使用:
+
+```python
+from satrap.core.type import (
+    safe_getattr,           # 通用, 返回 Any | None
+    safe_getattr_str,       # 保证返回 str (默认 "")
+    safe_getattr_int,       # 保证返回 int (默认 0)
+    safe_getattr_float,     # 保证返回 float
+    safe_getattr_bool,      # 保证返回 bool
+    safe_getattr_list,      # 保证返回 list
+    safe_getattr_dict,      # 保证返回 dict
+    safe_getattr_callable,  # 仅当属性可调用才返回, 否则 None
+)
+
+text = safe_getattr_str(message, "text")            # 替代 getattr(message, "text", "")
+handler = safe_getattr_callable(mod, "build")       # 替代 getattr + callable 检查
+if handler is not None:
+    handler()
+```
+
+这些函数仅提供类型标注与默认值归一化, 不改变 `getattr` 的运行时语义。插件 / 适配器作者处理不确定结构时推荐使用, 以获得 pyright 静态检查。

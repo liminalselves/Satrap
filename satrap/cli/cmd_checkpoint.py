@@ -1,6 +1,6 @@
 """状态检查点 CLI: create / list / rollback / retry / fork / lineage / branches
 
-直接操作上下文库 (默认 .satrap/chat_history.db, 可用 --db 覆盖),
+直接操作上下文库 (默认 .satrap/satrapdata/chat_history.db, 可用 --db 覆盖),
 与运行时 Session 解耦; 会话级聚合操作请在运行时通过 Session.create_checkpoint / rollback / fork 使用
 """
 from __future__ import annotations
@@ -13,9 +13,10 @@ from typing import Iterator
 from satrap.core.state import StateStore
 from satrap.core.type import StateScope
 from satrap.core.utils.context import ContextManager
+from satrap.core.utils.paths import get_db_path
 
 
-DEFAULT_DB = ".satrap/chat_history.db"
+DEFAULT_DB = get_db_path("chat_history.db")
 """上下文库默认路径 (与 ContextManager 默认一致)"""
 
 

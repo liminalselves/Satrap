@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from satrap.core.framework.UserManager import UserManager
 
 from satrap.core.log import logger
+from satrap.core.utils.paths import get_db_path
 
 _WorkflowT = TypeVar("_WorkflowT")
 """工作流类泛型, 用于 create 工厂与 await 工具"""
@@ -32,7 +33,7 @@ class ModelWorkflowFramework:
         content_callback: Optional[Callable[[str], None]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], None]] = None,
-        *, db_path: str = ".satrap/chat_history.db",
+        *, db_path: str = get_db_path("chat_history.db"),
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -245,7 +246,7 @@ class ModelWorkflowFramework:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         callback: bool,
-        thinking: bool,
+        thinking: str,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
         """消费一次流式请求并返回完整响应
@@ -282,7 +283,7 @@ class ModelWorkflowFramework:
         user_input: str,
         callback: bool = True,
         max_iterations: int = 10,
-        thinking: bool = False,
+        thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
         """流式执行一轮 Agent 流程并返回最终模型输出
@@ -398,7 +399,7 @@ class ModelWorkflowFramework:
         user_input: str,
         callback: bool = True,
         max_iterations: int = 10,
-        thinking: bool = False,
+        thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
         """使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
@@ -441,7 +442,7 @@ class ModelWorkflowFramework:
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
     def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
-        command_handler: Optional[CommandHandler] | None = None, *, db_path: str = ".satrap/chat_history.db",
+        command_handler: Optional[CommandHandler] | None = None, *, db_path: str = get_db_path("chat_history.db"),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False):
         """会话框架, 用于管理多个模型工作流的会话
         任何依赖多模型的复杂 Agent 都应当继承自该类, 并实现 `forward` 方法
@@ -791,7 +792,7 @@ class AsyncModelWorkflowFramework:
         content_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-        *, db_path: str = ".satrap/chat_history.db",
+        *, db_path: str = get_db_path("chat_history.db"),
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -1003,7 +1004,7 @@ class AsyncModelWorkflowFramework:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         callback: bool,
-        thinking: bool,
+        thinking: str,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
         """消费一次异步流式请求并返回完整响应
@@ -1043,7 +1044,7 @@ class AsyncModelWorkflowFramework:
         user_input: str,
         callback: bool = True,
         max_iterations: int = 10,
-        thinking: bool = False,
+        thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
         """异步流式执行一轮 Agent 流程并返回最终模型输出
@@ -1160,7 +1161,7 @@ class AsyncModelWorkflowFramework:
         user_input: str,
         callback: bool = True,
         max_iterations: int = 10,
-        thinking: bool = False,
+        thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
         """使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
@@ -1216,7 +1217,7 @@ class AsyncSession:
     def __init__(self, session_id: str,
         content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,
         command_handler: Optional[AsyncCommandHandler] | None = None, *,
-        db_path: str = ".satrap/chat_history.db",
+        db_path: str = get_db_path("chat_history.db"),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False
     ):
         """
