@@ -38,11 +38,30 @@ DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
 
 
 def _resolve_doc_path(path: str, workspace_root: Path) -> Path:
-    """解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内"""
+    """解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内;
+    若工作区根下未找到, 尝试在 .satrap/uploads/ 各会话目录中按文件名搜索"""
     p = Path(path)
     abs_path = p.resolve() if p.is_absolute() else (workspace_root / p).resolve()
     if not abs_path.is_relative_to(workspace_root.resolve()):
         raise ValueError(f"路径越出工作区: {path}")
+    # 工作区根下找到则直接返回
+    if abs_path.is_file():
+        return abs_path
+    # fallback: 在 uploads 目录中按文件名搜索 (上传文件保存为 {uuid}_{filename})
+    uploads_root = workspace_root / ".satrap" / "uploads"
+    if uploads_root.is_dir():
+        target_name = p.name.lower()
+        for conv_dir in uploads_root.iterdir():
+            if not conv_dir.is_dir():
+                continue
+            for fpath in conv_dir.iterdir():
+                if not fpath.is_file():
+                    continue
+                # 匹配 uuid_filename 格式中的文件名部分
+                fname = fpath.name.lower()
+                if fname == target_name or fname.endswith(f"_{target_name}"):
+                    return fpath.resolve()
+    # 均未找到, 返回原始路径 (让调用方报文件不存在)
     return abs_path
 
 
@@ -53,14 +72,14 @@ class ReadDocumentTool(Tool):
     description = "读取文档并解析为纯文本, 支持 xlsx/docx/pdf/txt/md 等; 适合读取表格、文档、PDF 内容"
     params_dict = {
         "path": ("string", "文档路径 (绝对或相对工作区)"),
-        "max_length": ("number", "返回文本最大长度, 默认 20000, 超出截断"),
+        "max_length": ("number", "返回文本最大长度, 默认 131072, 超出截断"),
     }
 
     def __init__(self, workspace_root: Path) -> None:
         super().__init__()
         self.workspace_root = workspace_root
 
-    def execute(self, path: str, max_length: int = 20000) -> str:
+    def execute(self, path: str, max_length: int = 131072) -> str:
         from satrap.expend.plugins.base_take.core.docread import extract_text
 
         try:
@@ -84,14 +103,14 @@ class AsyncReadDocumentTool(AsyncTool):
     description = "读取文档并解析为纯文本, 支持 xlsx/docx/pdf/txt/md 等; 适合读取表格、文档、PDF 内容"
     params_dict = {
         "path": ("string", "文档路径 (绝对或相对工作区)"),
-        "max_length": ("number", "返回文本最大长度, 默认 20000, 超出截断"),
+        "max_length": ("number", "返回文本最大长度, 默认 131072, 超出截断"),
     }
 
     def __init__(self, workspace_root: Path) -> None:
         super().__init__()
         self.workspace_root = workspace_root
 
-    async def execute(self, path: str, max_length: int = 20000) -> str:
+    async def execute(self, path: str, max_length: int = 131072) -> str:
         import asyncio
 
         from satrap.expend.plugins.base_take.core.docread import extract_text

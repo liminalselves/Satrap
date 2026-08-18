@@ -104,15 +104,21 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 // 消息角色
 type MessageRole = 'user' | 'assistant';
 
+// 消息段类型 (按时间顺序排列)
+type MessageSegment =
+  | { type: 'thinking'; content: string }
+  | { type: 'tool'; tool: ToolCall }
+  | { type: 'content'; content: string };
+
 // 单条消息
 interface ChatMessage {
   id: string;
   role: MessageRole;
   content: string;
   timestamp: number;
-  // 思考流内容
+  // 思考流内容 (聚合, 兼容旧数据)
   thinking?: string;
-  // 工具调用明细
+  // 工具调用明细 (聚合, 兼容旧数据)
   toolCalls?: ToolCall[];
   // 附件列表
   attachments?: Attachment[];
@@ -120,6 +126,8 @@ interface ChatMessage {
   streaming?: boolean;
   // 对应后端 turn_index (用于 fork)
   turnIndex?: number;
+  // 分段内容 (按时间顺序, 用于流式渲染)
+  segments?: MessageSegment[];
 }
 
 // 一个会话
@@ -201,7 +209,7 @@ export function Chat() {
   });
 
   const active = useMemo(
-    () => conversations.find((c) => c.id === activeId) ?? conversations[0],
+    () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
 
@@ -229,34 +237,62 @@ export function Chat() {
     (event: ChatEvent) => {
       switch (event.type) {
         case 'thinking_delta':
-          updateStreamingMessage((m) => ({ ...m, thinking: (m.thinking ?? '') + event.delta }));
+          updateStreamingMessage((m) => {
+            const segments = [...(m.segments ?? [])];
+            const last = segments[segments.length - 1];
+            // 追加到当前 thinking 段或新建段
+            if (last?.type === 'thinking') {
+              segments[segments.length - 1] = { ...last, content: last.content + event.delta };
+            } else {
+              segments.push({ type: 'thinking', content: event.delta });
+            }
+            return { ...m, thinking: (m.thinking ?? '') + event.delta, segments };
+          });
           break;
         case 'content_delta':
-          updateStreamingMessage((m) => ({ ...m, content: m.content + event.delta }));
+          updateStreamingMessage((m) => {
+            const segments = [...(m.segments ?? [])];
+            const last = segments[segments.length - 1];
+            // 追加到当前 content 段或新建段
+            if (last?.type === 'content') {
+              segments[segments.length - 1] = { ...last, content: last.content + event.delta };
+            } else {
+              segments.push({ type: 'content', content: event.delta });
+            }
+            return { ...m, content: m.content + event.delta, segments };
+          });
           break;
         case 'tool_start':
-          updateStreamingMessage((m) => ({
-            ...m,
-            toolCalls: [
-              ...(m.toolCalls ?? []),
-              {
-                seq: (m.toolCalls ?? []).length,
-                name: event.name,
-                arguments: typeof event.arguments === 'string' ? event.arguments : JSON.stringify(event.arguments),
-                success: null,
-                call_id: event.call_id,
-                created_at: Date.now() / 1000,
-              },
-            ],
-          }));
+          updateStreamingMessage((m) => {
+            const newTool: ToolCall = {
+              seq: (m.toolCalls ?? []).length,
+              name: event.name,
+              arguments: typeof event.arguments === 'string' ? event.arguments : JSON.stringify(event.arguments),
+              success: null,
+              call_id: event.call_id,
+              created_at: Date.now() / 1000,
+            };
+            const segments = [...(m.segments ?? []), { type: 'tool' as const, tool: newTool }];
+            return {
+              ...m,
+              toolCalls: [...(m.toolCalls ?? []), newTool],
+              segments,
+            };
+          });
           break;
         case 'tool_end':
-          updateStreamingMessage((m) => ({
-            ...m,
-            toolCalls: (m.toolCalls ?? []).map((t) =>
+          updateStreamingMessage((m) => {
+            const updatedTools = (m.toolCalls ?? []).map((t) =>
               t.call_id === event.call_id ? { ...t, success: event.success } : t
-            ),
-          }));
+            );
+            // 同步更新 segments 中的 tool 状态
+            const segments = (m.segments ?? []).map((seg) =>
+              seg.type === 'tool' && seg.tool.call_id === event.call_id
+                ? { ...seg, tool: { ...seg.tool, success: event.success } }
+                : seg
+            );
+            return { ...m, toolCalls: updatedTools, segments };
+          });
           break;
         case 'turn_done':
           updateStreamingMessage((m) => ({ ...m, content: event.answer || m.content, streaming: false }));
@@ -292,6 +328,17 @@ export function Chat() {
             attachments: turn.attachments ?? undefined,
             turnIndex: turn.turn_index,
           });
+          // 构建 assistant 消息的 segments (按时间顺序: thinking -> tools -> content)
+          const segments: MessageSegment[] = [];
+          if (turn.thinking) {
+            segments.push({ type: 'thinking', content: turn.thinking });
+          }
+          for (const tool of turn.tool_calls ?? []) {
+            segments.push({ type: 'tool', tool });
+          }
+          if (turn.answer) {
+            segments.push({ type: 'content', content: turn.answer });
+          }
           messages.push({
             id: `${turn.id}-a`,
             role: 'assistant',
@@ -300,6 +347,7 @@ export function Chat() {
             toolCalls: turn.tool_calls,
             timestamp: turn.created_at * 1000,
             turnIndex: turn.turn_index,
+            segments,
           });
         }
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
@@ -407,8 +455,8 @@ export function Chat() {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
-  // 新建会话 (本地草稿, 首次发送时才调后端创建)
-  const handleNew = useCallback(() => {
+  // 创建本地草稿会话 (不切换选中, 供自动创建场景复用)
+  const createDraft = useCallback((): Conversation => {
     const draft: Conversation = {
       id: '__draft__',
       title: '新对话',
@@ -416,16 +464,21 @@ export function Chat() {
       updatedAt: Date.now(),
       loaded: true,
     };
-    // 已有草稿时直接选中, 不重复添加
     setConversations((prev) => {
       if (prev.some((c) => c.id === '__draft__')) return prev;
       return [draft, ...prev];
     });
+    return draft;
+  }, []);
+
+  // 新建会话 (本地草稿, 首次发送时才调后端创建)
+  const handleNew = useCallback(() => {
+    const draft = createDraft();
     setActiveId(draft.id);
     setShowEntryChoice(false);
     setInput('');
     textareaRef.current?.focus();
-  }, []);
+  }, [createDraft]);
 
   // 删除会话 (调后端删除 + 本地移除)
   const handleDelete = useCallback(
@@ -454,7 +507,15 @@ export function Chat() {
   // 发送消息
   const handleSend = useCallback(async () => {
     const content = input.trim();
-    if ((!content && pendingAttachments.length === 0) || !active || generating) return;
+    if ((!content && pendingAttachments.length === 0) || generating) return;
+
+    // 无选中会话时自动创建草稿
+    let targetConv = active;
+    if (!targetConv) {
+      targetConv = createDraft();
+      setActiveId(targetConv.id);
+      setShowEntryChoice(false);
+    }
 
     const atts = pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
     const userMsg: ChatMessage = {
@@ -474,8 +535,8 @@ export function Chat() {
     };
 
     // 乐观更新: 先写入用户消息 + 占位 assistant 消息
-    const isDraft = active.id === '__draft__';
-    const convId = isDraft ? '__draft__' : active.id;
+    const isDraft = targetConv.id === '__draft__';
+    const convId = isDraft ? '__draft__' : targetConv.id;
     updateConversation(convId, (c) => ({
       ...c,
       title: c.messages.length === 0 ? deriveTitle(content) : c.title,
@@ -530,12 +591,43 @@ export function Chat() {
       streamingMsgIdRef.current = null;
       setGenerating(false);
     }
-  }, [input, active, generating, settings.think, settings.model, settings.systemPrompt, pendingAttachments, updateConversation]);
+  }, [input, active, generating, settings.think, settings.model, settings.systemPrompt, pendingAttachments, updateConversation, createDraft]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
-    if (!files || !active || active.id === '__draft__') return;
+    if (!files) return;
+
+    // 无选中会话或草稿会话时, 先创建真实会话 (上传需要真实 id)
+    let targetConv = active;
+    if (!targetConv || targetConv.id === '__draft__') {
+      try {
+        const { conversation_id } = await chatApi.createConversation(
+          settings.model, settings.think, settings.systemPrompt || undefined,
+        );
+        const newConv: Conversation = {
+          id: conversation_id,
+          title: '新对话',
+          messages: [],
+          updatedAt: Date.now(),
+          loaded: true,
+        };
+        setConversations((prev) => {
+          // 替换已有草稿或追加
+          const filtered = prev.filter((c) => c.id !== '__draft__');
+          return [newConv, ...filtered];
+        });
+        setActiveId(conversation_id);
+        setShowEntryChoice(false);
+        targetConv = newConv;
+      } catch (err) {
+        console.error('[Chat] 创建会话失败:', err);
+        alert('创建会话失败, 无法上传文件');
+        e.target.value = '';
+        return;
+      }
+    }
+
     for (const file of Array.from(files)) {
       if (file.size > 10 * 1024 * 1024) {
         alert(`文件 ${file.name} 超过 10MB 限制`);
@@ -547,7 +639,7 @@ export function Chat() {
         reader.readAsDataURL(file);
       });
       try {
-        const result = await chatApi.uploadFile(active.id, file.name, base64);
+        const result = await chatApi.uploadFile(targetConv.id, file.name, base64);
         if (result.ok) {
           setPendingAttachments((prev) => [...prev, {
             name: result.file_name,
@@ -562,7 +654,7 @@ export function Chat() {
     }
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
-  }, [active]);
+  }, [active, settings.model, settings.think, settings.systemPrompt]);
 
   // 移除待发送附件
   const removeAttachment = useCallback((index: number) => {
@@ -854,7 +946,7 @@ export function Chat() {
             ) : !active || active.messages.length === 0 ? (
               <EmptyWelcome onPromptClick={(text) => setInput(text)} />
             ) : (
-              <div className="max-w-3xl mx-auto space-y-6">
+              <div className="space-y-6">
                 {active.messages.map((msg, idx) => (
                   <MessageBubble
                     key={msg.id}
@@ -916,7 +1008,6 @@ export function Chat() {
                   title="附件"
                   className="shrink-0 mb-0.5"
                   onClick={() => fileInputRef.current?.click()}
-                  disabled={!active || active.id === '__draft__'}
                 >
                   <Paperclip className="h-4 w-4" />
                 </Button>
@@ -925,10 +1016,7 @@ export function Chat() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder={
-                    active ? '输入消息, Enter 发送, Shift+Enter 换行' : '请先新建对话'
-                  }
-                  disabled={!active}
+                  placeholder="输入消息, Enter 发送, Shift+Enter 换行"
                   rows={1}
                   className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
                 />
@@ -951,7 +1039,7 @@ export function Chat() {
                     variant="primary"
                     size="sm"
                     onClick={handleSend}
-                    disabled={(!input.trim() && pendingAttachments.length === 0) || !active}
+                    disabled={!input.trim() && pendingAttachments.length === 0}
                     className="shrink-0 mb-0.5"
                     title="发送"
                   >
@@ -1819,12 +1907,12 @@ function MessageBubble({
   });
 
   return (
-    <div className={cn('flex gap-3 group', isUser && 'flex-row-reverse')}>
-      {/* 头像 */}
+    <div className="flex gap-3 group">
+      {/* 头像: 用户消息 order-2 在右, AI 消息 order-1 在左 */}
       <div
         className={cn(
           'w-8 h-8 rounded-md flex items-center justify-center shrink-0',
-          isUser ? 'bg-purple shadow-glow-purple' : 'bg-accent shadow-glow-accent'
+          isUser ? 'order-2 bg-purple shadow-glow-purple' : 'order-1 bg-accent shadow-glow-accent'
         )}
       >
         {isUser ? (
@@ -1834,31 +1922,10 @@ function MessageBubble({
         )}
       </div>
 
-      {/* 内容 */}
-      <div className={cn('flex-1 min-w-0', isUser && 'flex justify-end')}>
-        <div className="max-w-full space-y-2">
-          {/* 思考流 */}
-          {message.thinking && (
-            <ThinkingBlock thinking={message.thinking} />
-          )}
-
-          {/* 工具调用 */}
-          {message.toolCalls && message.toolCalls.length > 0 && (
-            <div className="space-y-1">
-              {message.toolCalls.map((tool) => (
-                <div
-                  key={tool.call_id || tool.seq}
-                  className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
-                >
-                  <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
-                  <span className="text-text-primary font-medium">{tool.name}</span>
-                  <ToolStatusIcon success={tool.success} />
-                </div>
-              ))}
-            </div>
-          )}
-
-          {/* 附件 */}
+      {/* 内容: 用户消息 order-1 靠右, AI 消息 order-2 靠左 */}
+      <div className={cn('flex-1 min-w-0 flex', isUser ? 'order-1 justify-end' : 'order-2 justify-start')}>
+        <div className={cn('space-y-2', isUser ? 'max-w-full' : 'w-full')}>
+          {/* 附件 (用户消息或 AI 消息都可能携带) */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2">
               {message.attachments.map((att, i) => (
@@ -1870,30 +1937,99 @@ function MessageBubble({
             </div>
           )}
 
-          {/* 正文 */}
-          <div
-            ref={reflectRef}
-            className={cn(
-              'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
-              isUser ? 'glass-card-purple whitespace-pre-wrap' : 'glass-card-accent'
-            )}
-          >
-            {isUser ? (
-              message.content
-            ) : (
-              <div className="markdown-body">
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
+          {/* AI 消息: 按 segments 时间顺序渲染; 用户消息或旧数据: 聚合渲染 */}
+          {!isUser && message.segments && message.segments.length > 0 ? (
+            <>
+              {message.segments.map((seg, idx) => {
+                switch (seg.type) {
+                  case 'thinking':
+                    return <ThinkingBlock key={`thinking-${idx}`} thinking={seg.content} />;
+                  case 'tool':
+                    return (
+                      <div
+                        key={seg.tool.call_id || `tool-${idx}`}
+                        className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
+                      >
+                        <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
+                        <span className="text-text-primary font-medium">{seg.tool.name}</span>
+                        <ToolStatusIcon success={seg.tool.success} />
+                      </div>
+                    );
+                  case 'content':
+                    return (
+                      <div
+                        key={`content-${idx}`}
+                        ref={idx === message.segments!.length - 1 ? reflectRef : undefined}
+                        className={cn(
+                          'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
+                          'glass-card-accent'
+                        )}
+                      >
+                        <div className="markdown-body">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkGfm, remarkMath]}
+                            rehypePlugins={[rehypeKatex]}
+                          >
+                            {seg.content}
+                          </ReactMarkdown>
+                        </div>
+                        {message.streaming && idx === message.segments!.length - 1 && (
+                          <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
+                        )}
+                      </div>
+                    );
+                  default:
+                    return null;
+                }
+              })}
+            </>
+          ) : (
+            <>
+              {/* 兼容旧数据或用户消息: 聚合渲染 */}
+              {message.thinking && (
+                <ThinkingBlock thinking={message.thinking} />
+              )}
+              {message.toolCalls && message.toolCalls.length > 0 && (
+                <div className="space-y-1">
+                  {message.toolCalls.map((tool) => (
+                    <div
+                      key={tool.call_id || tool.seq}
+                      className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs"
+                    >
+                      <Wrench className="h-3 w-3 text-text-tertiary shrink-0" />
+                      <span className="text-text-primary font-medium">{tool.name}</span>
+                      <ToolStatusIcon success={tool.success} />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {(message.content || message.streaming) && (
+                <div
+                  ref={reflectRef}
+                  className={cn(
+                    'glass-card inline-block max-w-full rounded-lg px-4 py-2.5 text-sm leading-relaxed break-words',
+                    isUser ? 'glass-card-purple whitespace-pre-wrap' : 'glass-card-accent'
+                  )}
                 >
-                  {message.content}
-                </ReactMarkdown>
-              </div>
-            )}
-            {message.streaming && (
-              <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
-            )}
-          </div>
+                  {isUser ? (
+                    message.content
+                  ) : (
+                    <div className="markdown-body">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm, remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
+                  {message.streaming && (
+                    <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
+                  )}
+                </div>
+              )}
+            </>
+          )}
 
           {/* 操作按钮 (hover 显示) */}
           {!message.streaming && (
