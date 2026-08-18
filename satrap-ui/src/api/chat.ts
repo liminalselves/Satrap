@@ -169,8 +169,8 @@ export const chatApi = {
     ),
 
   // Retry / Fork
-  retry: (conversation: string) =>
-    request<{ ok: boolean; error?: string }>('POST', '/api/chat/retry', { conversation }),
+  retry: (conversation: string, think?: string) =>
+    request<{ ok: boolean; error?: string }>('POST', '/api/chat/retry', { conversation, think }),
 
   fork: (conversation: string, turnIndex: number) =>
     request<{ ok: boolean; conversation_id: string; copied_turns: number; error?: string }>(

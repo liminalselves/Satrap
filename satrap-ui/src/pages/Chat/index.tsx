@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { cn } from '@/utils/cn';
+import { formatRelativeTime } from '@/utils/format';
 import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
 import {
@@ -149,18 +150,6 @@ const deriveTitle = (content: string) => {
   return text.length > 24 ? `${text.slice(0, 24)}…` : text || '新对话';
 };
 
-// 相对时间格式化
-const formatTime = (ts: number) => {
-  const diff = Date.now() - ts;
-  const minute = 60 * 1000;
-  const hour = 60 * minute;
-  const day = 24 * hour;
-  if (diff < minute) return '刚刚';
-  if (diff < hour) return `${Math.floor(diff / minute)} 分钟前`;
-  if (diff < day) return `${Math.floor(diff / hour)} 小时前`;
-  return `${Math.floor(diff / day)} 天前`;
-};
-
 export function Chat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -226,7 +215,7 @@ export function Chat() {
       updateConversation(activeId, (c) => ({
         ...c,
         messages: c.messages.map((m) => (m.id === msgId ? updater(m) : m)),
-        updatedAt: Date.now(),
+        updatedAt: Math.round(Date.now() / 1000),
       }));
     },
     [activeId, updateConversation]
@@ -392,7 +381,7 @@ export function Chat() {
           id: item.conversation_id,
           title: item.title,
           messages: [],
-          updatedAt: item.last_at * 1000,
+          updatedAt: item.last_at,
           loaded: false,
         }));
         setConversations(restored);
@@ -461,7 +450,7 @@ export function Chat() {
       id: '__draft__',
       title: '新对话',
       messages: [],
-      updatedAt: Date.now(),
+      updatedAt: Math.round(Date.now() / 1000),
       loaded: true,
     };
     setConversations((prev) => {
@@ -541,7 +530,7 @@ export function Chat() {
       ...c,
       title: c.messages.length === 0 ? deriveTitle(content) : c.title,
       messages: [...c.messages, userMsg, assistantMsg],
-      updatedAt: Date.now(),
+      updatedAt: Math.round(Date.now() / 1000),
     }));
     setInput('');
     setPendingAttachments([]);
@@ -609,7 +598,7 @@ export function Chat() {
           id: conversation_id,
           title: '新对话',
           messages: [],
-          updatedAt: Date.now(),
+          updatedAt: Math.round(Date.now() / 1000),
           loaded: true,
         };
         setConversations((prev) => {
@@ -665,7 +654,7 @@ export function Chat() {
   const handleRetry = useCallback(async () => {
     if (!active || active.id === '__draft__' || generating) return;
     try {
-      const result = await chatApi.retry(active.id);
+      const result = await chatApi.retry(active.id, settings.think);
       if (result.ok) {
         // 保留 user 消息, 替换最后的 assistant 消息为新的流式占位
         const assistantId = genId();
@@ -708,7 +697,7 @@ export function Chat() {
           id: item.conversation_id,
           title: item.title,
           messages: [],
-          updatedAt: item.last_at * 1000,
+          updatedAt: item.last_at,
           loaded: false,
         }));
         setConversations(restored);
@@ -1812,7 +1801,7 @@ function ConversationItem({
         <div className={cn('text-sm truncate', active ? 'text-text-primary font-medium' : 'text-text-secondary')}>
           {conversation.title}
         </div>
-        <div className="text-xs text-text-tertiary">{formatTime(conversation.updatedAt)}</div>
+        <div className="text-xs text-text-tertiary">{formatRelativeTime(conversation.updatedAt)}</div>
       </div>
       <button
         onClick={(e) => {
