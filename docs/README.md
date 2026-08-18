@@ -17,6 +17,7 @@
 11. [平台接入](platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
 12. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
 13. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
+14. [聊天展示层](chat-display.md): 面向前端聊天页的独立实时服务 (录制 / 会话编排 / WebSocket / HTTP API)
 
 ## 项目结构速览
 
@@ -29,12 +30,15 @@ satrap/
     framework/        # Workflow, Session, SessionManager, 配置管理
     platform/         # 平台适配器基类和内置适配器
     pipeline/         # 调度与限流
-    utils/            # 上下文, 工具, 多模态, sandbox 等工具模块
+    state/            # 状态检查点: 快照 / 变更 / 注册 / 存储
+    utils/            # 上下文, 工具, 多模态, sandbox, db 路径等工具模块
+  display/            # 聊天展示层: DisplayRecorder / ChatService / 独立 HTTP+WS 服务 / 插件注册
   cli/                # satrap 命令行实现
+  edictum/            # 简易 Agent 框架: SimpleSession / AsyncSimpleSession / SessionHandler / Plugin
   pages/              # Streamlit 管理面板页面
-  edictum/             # 简易 Agent 框架: SimpleSession / AsyncSimpleSession / SessionPlugin
-  expend/             # 可选扩展: tools/ 工具类, mcp/ (预留), command/, skills/
+  expend/             # 可选扩展: tools/ 工具类, mcp/, command/, skills/, plugins/
 tests/                # unit, integration 和 manual 测试
+satrap-ui/            # React 管理面板 + 聊天页 (前端)
 docs/                 # 项目文档
 ```
 

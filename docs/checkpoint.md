@@ -67,11 +67,11 @@ satrap checkpoint branches --conversation conv-1
 satrap checkpoint audit    --conversation conv-1
 ```
 
-默认操作 `.satrap/chat_history.db`, 可用 `--db` 覆盖。CLI 与运行时 Session 解耦, 直接读写上下文库。
+默认操作 `.satrap/satrapdata/chat_history.db`, 可用 `--db` 覆盖。CLI 与运行时 Session 解耦, 直接读写上下文库。
 
 ## HTTP API
 
-后端内置 HTTP 服务器 (127.0.0.1:19870) 暴露检查点管理端点, 库路径取 `session_checkpoint_db > session_db_path > .satrap/chat_history.db`:
+后端内置 HTTP 服务器 (127.0.0.1:19870) 暴露检查点管理端点, 库路径取 `session_checkpoint_db > session_db_path > .satrap/satrapdata/chat_history.db`:
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

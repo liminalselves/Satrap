@@ -152,7 +152,7 @@ print(answer)
 
 ## 7. 流式输出思考内容
 
-同步 Agent 可以把回答和思考分别交给两个回调。`thinking=True` 请求模型返回思考增量, `return_thinking=True` 决定 workflow 是否转发这些增量:
+同步 Agent 可以把回答和思考分别交给两个回调。`thinking` 为思考强度字符串 (`off` / `low` / `medium` / `high`), 请求模型返回思考增量, `return_thinking=True` 决定 workflow 是否转发这些增量:
 
 ```python
 def on_content(delta: str):
@@ -175,7 +175,7 @@ agent = ModelWorkflowFramework(
 answer = agent.stream_full_agent(
     "介绍一下 Satrap, 必要时调用工具",
     callback=True,
-    thinking=True,
+    thinking="medium",
 )
 print(f"\n最终答案: {answer}")
 ```

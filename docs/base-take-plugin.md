@@ -38,6 +38,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | workspace_root | path | 项目根 | read_document 白名单根目录 |
 | search_timeout | number | 10 | 搜索超时 (秒) |
 | memory_scope | string | web_chat | 记忆作用域 |
+| memory_mode | select | full | 记忆模式: disabled (不注入/不可用) / base (只读) / full (可增删改) |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/base_take.json`。
 
@@ -58,4 +59,4 @@ base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当�
 - `.pdf` — pdfplumber 逐页提取文本
 - 纯文本 — 直接读取 (utf-8)
 
-文件路径限制在 workspace_root 白名单内, 输出按 `max_length` 截断 (默认 8000 字符)。
+文件路径限制在 workspace_root 白名单内; 若工作区根下未找到, 会回退在 `.satrap/uploads/` 各会话目录中按文件名搜索 (聊天页上传的文件保存为 `{uuid}_{filename}` 形式)。输出按 `max_length` 截断 (默认 131072 字符)。

@@ -46,8 +46,11 @@ from satrap import (
 | `timeout` | 请求超时秒数, 默认 `60` |
 | `suppress_error` | 是否捕获异常并返回空结果, 默认 `True` |
 | `return_false` | 出错时是否返回 `False` |
-| `reasoning_body` | 发送 thinking/reasoning 请求时追加到 `extra_body` 的内容 |
+| `reasoning_body` | 自定义思考请求格式, 非 `None` 时优先于 `thinking_fields` 使用 (默认 `None`) |
 | `thinking_field_name` | 上下文中思考字段名称, 默认 `reasoning_content` |
+| `thinking_fields` | 该模型需要的思考请求字段列表, 如 `["reasoning_effort", "thinking.type"]` |
+
+`thinking` 参数为字符串思考强度: `off` (默认, 不请求思考) / `low` / `medium` / `high`。请求时由 `thinking_fields` 构造 `extra_body` —— `reasoning_effort` / `thinking_level` 直接把强度值传给模型, `thinking.type` / `enable_thinking` 只区分开关; 若配置了 `reasoning_body` 则直接使用其内容, 不再按强度生成。
 
 常用方法:
 
@@ -56,17 +59,17 @@ llm.chat(messages)
 llm.stream_chat(messages)
 llm.structured_output(messages, format={"name": "str", "score": "int"})
 llm.call(messages, tools=tools, img_urls=["./a.png"])
-llm.stream_call(messages, thinking=True, tools=tools)
+llm.stream_call(messages, thinking="medium", tools=tools)
 ```
 
 推荐在 Agent 场景使用 `call()`, 因为它会返回 `LLMCallResponse`, 能区分普通消息和工具调用。
 
-`stream_call()` 和 `AsyncLLM.stream_call()` 会把一次模型请求转换为统一事件流。同步版本使用 `for`, 异步版本使用 `async for`。`thinking=True` 只是请求模型返回思考增量, 最终是否有 `thinking_delta` 取决于模型和供应商是否支持该字段:
+`stream_call()` 和 `AsyncLLM.stream_call()` 会把一次模型请求转换为统一事件流。同步版本使用 `for`, 异步版本使用 `async for`。`thinking` 请求模型返回思考增量, 最终是否有 `thinking_delta` 取决于模型和供应商是否支持该字段:
 
 ```python
 messages = [{"role": "user", "content": "你好"}]
 response = None
-for event in llm.stream_call(messages, thinking=True):
+for event in llm.stream_call(messages, thinking="high"):
     if event.kind == "thinking_delta":
         print(event.delta, end="", flush=True)
     elif event.kind == "content_delta":
@@ -91,7 +94,7 @@ for event in llm.stream_call(messages, thinking=True):
 
 ## ContextManager
 
-`ContextManager` 使用 SQLite 保存对话上下文, 默认数据库为 `.satrap/chat_history.db`。
+`ContextManager` 使用 SQLite 保存对话上下文, 默认数据库为 `.satrap/satrapdata/chat_history.db` (数据库文件统一存放于 `.satrap/satrapdata/`)。
 
 ```python
 from satrap import ContextManager

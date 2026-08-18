@@ -153,7 +153,7 @@ print(answer)
 
 ## 流式 Agent 与思考输出
 
-`stream_full_agent()` 会通过 `LLM.stream_call()` 执行 Agent 流程, 工具调用期间也会持续输出回答增量。需要输出思考内容时, 同时传入 `thinking=True` 和 `return_thinking=True`:
+`stream_full_agent()` 会通过 `LLM.stream_call()` 执行 Agent 流程, 工具调用期间也会持续输出回答增量。需要输出思考内容时, 传入思考强度字符串 (`off` / `low` / `medium` / `high`) 并设置 `return_thinking=True`:
 
 ```python
 def show_content(delta: str):
@@ -176,7 +176,7 @@ agent = ModelWorkflowFramework(
 answer = agent.stream_full_agent(
     "请先思考, 必要时调用工具, 然后给出答案",
     callback=True,
-    thinking=True,
+    thinking="medium",
 )
 ```
 
@@ -188,7 +188,7 @@ answer = agent.stream_full_agent(
 answer = agent.stream_tools_agent(
     "只在本轮上下文中调用工具并回答",
     callback=True,
-    thinking=True,
+    thinking="medium",
 )
 ```
 

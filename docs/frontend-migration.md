@@ -53,6 +53,7 @@ python -m satrap.main run
 | `06_settings.py` | `Settings` | 完成 |
 | `07_checkpoint_management.py` | `Checkpoints` | 完成 |
 | `08_user_management.py` | `Users` | 完成 |
+| — (新增) | `Chat` | React 新增聊天页, 独立整页, 由聊天展示层服务 (19872) 提供, 见 [聊天展示层](chat-display.md) |
 
 ## 架构变化
 

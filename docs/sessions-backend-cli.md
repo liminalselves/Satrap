@@ -120,7 +120,7 @@ satrap restart
 
 ## 用户管理
 
-用户信息与用户-会话绑定关系存储在用户信息库 (默认 `.satrap/user_info.db`, 可通过配置项 `user_db_path` 指定)。
+用户信息与用户-会话绑定关系存储在用户信息库 (默认 `.satrap/satrapdata/user_info.db`, 可通过配置项 `user_db_path` 指定)。
 
 ### CLI 命令
 
