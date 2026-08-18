@@ -1,160 +1,66 @@
+"""后端内嵌 HTTP + WebSocket 服务器 (管理 API 与前端静态托管)
+
+基于共享基类 satrap.core.utils.minihttp.MiniHTTPServer, 只保留本服务特有逻辑:
+- /api/* 管理路由: health / config / session-classes / models / users / checkpoint / shutdown
+- /ws/logs, /ws/status WebSocket 推送
+- 静态文件 / SPA 入口 (satrap-ui/dist, 生产模式托管前端构建产物)
+"""
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import mimetypes
-import struct
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import unquote
 from typing import TYPE_CHECKING, Any
 
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr, safe_getattr_str
+from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.paths import get_data_dir, get_db_path, get_project_root
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
 
-
-# CORS 配置 - 允许前端开发服务器跨域访问
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",  # 生产环境应限制为具体域名
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400",
-}
-
 # 静态文件目录 - 前端构建产物
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "satrap-ui" / "dist"
 
-# WebSocket 魔术字符串 (RFC 6455)
-WS_MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-
-def _query_param(path: str, key: str) -> str:
-    """提取请求路径 query 参数值 (缺失或未传返回空串)"""
-    values = parse_qs(urlsplit(path).query).get(key)
-    return unquote(values[0]) if values else ""
-
-
-class BackendHTTPServer:
+class BackendHTTPServer(MiniHTTPServer):
     """内嵌 HTTP 服务器, 提供管理 API
 
-    使用 asyncio.start_server 实现, 零外部依赖.
+    基于共享基类 (asyncio.start_server, 零外部依赖).
     默认监听 127.0.0.1:19870, 仅接受本地连接.
     """
 
     def __init__(self, backend: BackendManager, host: str = "127.0.0.1", port: int = 19870):
+        super().__init__(host=host, port=port, log_errors=False)
         self.backend = backend
-        self.host = host
-        self.port = port
-        self._server: asyncio.Server | None = None
 
-    async def start(self):
-        """启动 HTTP 服务器"""
-        self._server = await asyncio.start_server(
-            self._handle_connection, self.host, self.port
-        )
-        asyncio.ensure_future(self._server.serve_forever())
+    # ---------------- 静态文件服务 ----------------
 
-    async def stop(self):
-        """停止 HTTP 服务器"""
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
-
-    async def _handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ):
-        """处理单次 HTTP 连接"""
-        try:
-            raw_request = await reader.readuntil(b"\r\n\r\n")
-            first_line = raw_request.split(b"\r\n")[0].decode()
-            parts = first_line.split(" ")
-            method = parts[0]
-            path = parts[1] if len(parts) > 1 else "/"
-
-            # 处理 CORS 预检请求
-            if method == "OPTIONS":
-                self._send_cors_preflight(writer)
-                return
-
-            # WebSocket 升级请求
-            if path.startswith("/ws/"):
-                await self._handle_websocket(reader, writer, raw_request, path)
-                return
-
-            # 静态文件服务 (非 API 路径)
-            if not path.startswith("/api/"):
-                await self._serve_static(writer, path)
-                return
-
-            # 读取请求体 (Content-Length)
-            body = b""
-            cl_idx = raw_request.lower().find(b"content-length:")
-            if cl_idx >= 0:
-                cl_end = raw_request.find(b"\r\n", cl_idx)
-                cl_line = raw_request[cl_idx:cl_end].decode()
-                cl = int(cl_line.split(":")[1].strip())
-                body = await reader.readexactly(cl)
-
-            status, data = await self._route(method, path, body)
-            self._send_json(writer, status, data)
-        except asyncio.IncompleteReadError:
-            self._send_json(writer, 400, {"error": "bad request"})
-        except Exception as e:
-            self._send_json(writer, 500, {"error": str(e)})
-        finally:
-            try:
-                writer.close()
-            except Exception:
-                pass
-
-    def _send_cors_preflight(self, writer: asyncio.StreamWriter):
-        """发送 CORS 预检响应"""
-        cors_headers = "".join(f"{k}: {v}\r\n" for k, v in CORS_HEADERS.items())
-        header = (
-            "HTTP/1.1 204 No Content\r\n"
-            f"{cors_headers}"
-            "Connection: close\r\n\r\n"
-        ).encode()
-        writer.write(header)
-
-    async def _serve_static(self, writer: asyncio.StreamWriter, path: str):
-        """服务静态文件或 SPA 入口"""
+    async def _serve_static(self, writer: asyncio.StreamWriter, path: str) -> bool:
+        """服务静态文件或 SPA 入口 (仅非 API 路径)"""
+        if path.startswith("/api/"):
+            return False
         # 移除查询参数
         path = path.split("?")[0]
-        
+
         # 默认返回 index.html (SPA 路由)
         if path == "/" or path == "":
             self._send_index_html(writer)
-            return
-        
+            return True
+
         # 尝试提供静态文件
         file_path = STATIC_DIR / path.lstrip("/")
         if file_path.exists() and file_path.is_file():
             self._send_file(writer, file_path)
-            return
-        
+            return True
+
         # 所有其他路径返回 index.html (SPA 客户端路由)
         self._send_index_html(writer)
-
-    def _send_json(self, writer: asyncio.StreamWriter, status: int, data: dict[str, Any]):
-        """发送 JSON 响应 (带 CORS 头)"""
-        resp_body = json.dumps(data, ensure_ascii=False).encode()
-        status_text = "OK" if status == 200 else "Error"
-        cors_headers = "".join(f"{k}: {v}\r\n" for k, v in CORS_HEADERS.items())
-        header = (
-            f"HTTP/1.1 {status} {status_text}\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(resp_body)}\r\n"
-            f"{cors_headers}"
-            f"Connection: close\r\n\r\n"
-        ).encode()
-        writer.write(header + resp_body)
+        return True
 
     def _send_file(self, writer: asyncio.StreamWriter, file_path: Path):
         """发送静态文件"""
@@ -181,87 +87,18 @@ class BackendHTTPServer:
         else:
             self._send_json(writer, 404, {"error": "frontend not built"})
 
-    # ==================== WebSocket 支持 ====================
+    # ---------------- WebSocket 端点分发 ----------------
 
-    async def _handle_websocket(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        raw_request: bytes,
-        path: str,
-    ):
-        """处理 WebSocket 连接升级和消息"""
-        # 解析 WebSocket 握手请求
-        headers = self._parse_headers(raw_request)
-        ws_key = headers.get("sec-websocket-key", "")
-        
-        if not ws_key:
-            self._send_json(writer, 400, {"error": "missing Sec-WebSocket-Key"})
-            return
-
-        # 计算接受键
-        accept_key = base64.b64encode(
-            hashlib.sha1((ws_key + WS_MAGIC_STRING).encode()).digest()
-        ).decode()
-
-        # 发送升级响应
-        upgrade_response = (
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept_key}\r\n"
-            "\r\n"
-        ).encode()
-        writer.write(upgrade_response)
-        await writer.drain()
-
-        # 根据路径分发到不同的处理器
+    async def _ws_dispatch(
+        self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """按路径分发到对应的 WebSocket 处理器"""
         if path == "/ws/logs":
             await self._ws_log_handler(reader, writer)
         elif path == "/ws/status":
             await self._ws_status_handler(reader, writer)
         else:
             await self._ws_close(writer, 1008, "unknown endpoint")
-
-    def _parse_headers(self, raw_request: bytes) -> dict[str, str]:
-        """解析 HTTP 请求头"""
-        headers = {}
-        lines = raw_request.decode().split("\r\n")
-        for line in lines[1:]:  # 跳过请求行
-            if ":" in line:
-                key, value = line.split(":", 1)
-                headers[key.strip().lower()] = value.strip()
-        return headers
-
-    async def _ws_send(self, writer: asyncio.StreamWriter, data: dict[str, Any]):
-        """发送 WebSocket 消息"""
-        payload = json.dumps(data, ensure_ascii=False).encode()
-        header = bytearray()
-        
-        # FIN=1, Opcode=1 (文本帧)
-        header.append(0x81)
-        
-        # 载荷长度
-        length = len(payload)
-        if length < 126:
-            header.append(length)
-        elif length < 65536:
-            header.append(126)
-            header.extend(struct.pack(">H", length))
-        else:
-            header.append(127)
-            header.extend(struct.pack(">Q", length))
-        
-        writer.write(bytes(header) + payload)
-        await writer.drain()
-
-    async def _ws_close(self, writer: asyncio.StreamWriter, code: int, reason: str):
-        """发送 WebSocket 关闭帧"""
-        payload = struct.pack(">H", code) + reason.encode()
-        header = bytearray([0x88])  # FIN=1, Opcode=8 (关闭帧)
-        header.append(len(payload))
-        writer.write(bytes(header) + payload)
-        await writer.drain()
 
     async def _ws_log_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """WebSocket 日志推送处理器"""
@@ -305,7 +142,7 @@ class BackendHTTPServer:
                         f.seek(position)
                         new_data = f.read().decode("utf-8", errors="replace")
                         position = f.tell()
-                    
+
                     for line in new_data.strip().split("\n"):
                         if line.strip():
                             await self._ws_send(writer, {
@@ -329,7 +166,7 @@ class BackendHTTPServer:
     async def _ws_status_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         """WebSocket 状态推送处理器"""
         last_status = None
-        
+
         try:
             while True:
                 # 检查客户端是否关闭连接
@@ -367,7 +204,7 @@ class BackendHTTPServer:
             get_data_dir() / "logs",
             get_project_root(),
         ]
-        
+
         for log_dir in log_dirs:
             if not log_dir.exists():
                 continue
@@ -387,6 +224,8 @@ class BackendHTTPServer:
             if level in line:
                 return level
         return "INFO"
+
+    # ---------------- API 路由 ----------------
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         """路由分发到 BackendManager 对应方法"""
@@ -534,13 +373,13 @@ class BackendHTTPServer:
         if path.startswith("/api/user"):
             try:
                 if method == "GET" and path.startswith("/api/users"):
-                    user_id = _query_param(path, "user_id")
+                    user_id = self._query_param(path, "user_id")
                     if user_id:
                         return 200, user_api.get_user(user_db, user_id)
-                    limit = int(_query_param(path, "limit") or "200")
+                    limit = int(self._query_param(path, "limit") or "200")
                     return 200, user_api.list_users(user_db, limit=limit)
                 if method == "GET" and path.startswith("/api/user/sessions"):
-                    user_id = _query_param(path, "user_id")
+                    user_id = self._query_param(path, "user_id")
                     if not user_id:
                         return 400, {"error": "缺少 user_id 参数"}
                     return 200, user_api.list_user_sessions(user_db, user_id)
@@ -585,16 +424,16 @@ class BackendHTTPServer:
         if path.startswith("/api/checkpoint"):
             try:
                 if method == "GET" and path.startswith("/api/checkpoints"):
-                    conv = _query_param(path, "conversation")
+                    conv = self._query_param(path, "conversation")
                     return 200, checkpoint_api.list_checkpoints(db, conv)
                 if method == "GET" and path.startswith("/api/checkpoint/branches"):
-                    conv = _query_param(path, "conversation")
+                    conv = self._query_param(path, "conversation")
                     return 200, checkpoint_api.list_branches(db, conv)
                 if method == "GET" and path.startswith("/api/checkpoint/lineage"):
-                    cid = _query_param(path, "checkpoint_id")
+                    cid = self._query_param(path, "checkpoint_id")
                     return 200, checkpoint_api.trace_lineage(db, cid)
                 if method == "GET" and path.startswith("/api/checkpoint/audit"):
-                    conv = _query_param(path, "conversation")
+                    conv = self._query_param(path, "conversation")
                     return 200, checkpoint_api.list_mutations(db, conv)
                 if method == "POST":
                     payload = json.loads(body or b"{}")

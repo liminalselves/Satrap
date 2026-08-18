@@ -21,7 +21,8 @@ _registry_lock = threading.Lock()
 def _build_state(session: SessionType, config: dict[str, Any]) -> dict[str, Any]:
     """构建一份插件状态 (记忆库)"""
     scope = str(config.get("memory_scope") or "web_chat")
-    store = MemoryStore(db_path=DEFAULT_MEMORY_DB, scope=scope)
+    mode = str(config.get("memory_mode") or "full")
+    store = MemoryStore(db_path=DEFAULT_MEMORY_DB, scope=scope, mode=mode)
     return {"store": store}
 
 

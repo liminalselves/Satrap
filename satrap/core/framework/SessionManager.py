@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type, cast
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
@@ -762,22 +762,7 @@ class SessionManager:
             if not llm_cfg or not llm_cfg.api_key:
                 continue
 
-            _LLMCls = AsyncLLM if isinstance(session, AsyncSession) else LLM
-
-            # 输出预算 = context_window × (1 - history_ratio), 未配置时退回 max_tokens
-            # safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
-            output_budget: int | None = None
-            _cw = safe_getattr(llm_cfg, "context_window")
-            _hr = safe_getattr(llm_cfg, "history_ratio")
-            if _cw and _hr:
-                output_budget = int(_cw * (1 - _hr))
-            new_llm = _LLMCls(
-                api_key=llm_cfg.api_key or "",
-                base_url=llm_cfg.base_url or "",
-                model=llm_cfg.model or "",
-                temperature=llm_cfg.temperature or 0.7,
-                max_tokens=output_budget or llm_cfg.max_tokens or 4096,
-            )
+            new_llm = build_llm_from_config(llm_cfg, async_=isinstance(session, AsyncSession))
 
             session.reload_llm(new_llm)   # type: ignore[arg-type] session 为 Session|AsyncSession, 运行时由 isinstance 分支保证匹配
 
@@ -1090,20 +1075,8 @@ class SessionManager:
                     model_name = "default"
                 llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
                 if llm_cfg and llm_cfg.api_key:
-                    _LLMCls = AsyncLLM if issubclass(session_class, AsyncSession) else LLM
-                    # 输出预算 = context_window × (1 - history_ratio), 未配置时退回 max_tokens
-                    # safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
-                    output_budget: int | None = None
-                    _cw = safe_getattr(llm_cfg, "context_window")
-                    _hr = safe_getattr(llm_cfg, "history_ratio")
-                    if _cw and _hr:
-                        output_budget = int(_cw * (1 - _hr))
-                    llm_instance = _LLMCls(
-                        api_key=llm_cfg.api_key or "",
-                        base_url=llm_cfg.base_url or "",
-                        model=llm_cfg.model or "",
-                        temperature=llm_cfg.temperature or 0.7,
-                        max_tokens=output_budget or llm_cfg.max_tokens or 4096,
+                    llm_instance = build_llm_from_config(
+                        llm_cfg, async_=issubclass(session_class, AsyncSession)
                     )
                 else:
                     logger.warning(

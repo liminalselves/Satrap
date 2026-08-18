@@ -1,8 +1,11 @@
-"""satrap_coding 插件工具集: 文件 / ask_user / memory / shell / subagent + 复用 search
+"""satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
+
+> 联网搜索 (search/fetch_page) 与长期记忆 (memory) 已移交 base_take 插件,
+> 本插件只保留 coding 专属能力。
 
 约定:
 - get_tools(session) 工厂: 按会话形态 (SimpleSession / AsyncSimpleSession) 返回同步/异步工具,
-  并注入会话依赖 (llm / 权限引擎 / 记忆库 / 沙箱 / 目标状态)
+  并注入会话依赖 (llm / 权限引擎 / 沙箱 / 目标状态)
 - 审批模型: 全部写类操作走 PermissionEngine (user 询问 / auto-agent 判断 / full 放行),
   plan mode 下写类操作被引擎直接拒绝
 - 沙箱语义: 沙箱内执行无需审批; 环境修改 (pip install 等) = 越界, 走审批;
@@ -23,7 +26,6 @@ from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.core.utils.paths import get_project_root
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from satrap.expend.command.session_commands import _parse_user_id
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
@@ -47,11 +49,6 @@ _APPROVAL_PROMPT = """你是一个操作审批助手。请判断以下操作是�
 操作描述: {description}
 
 回答 (allow/deny/ask):"""
-
-
-def user_scope(session_id: str) -> str:
-    """从 session_id 解析用户作用域 (user_id), 解析失败回落完整 session_id 保证隔离"""
-    return _parse_user_id(session_id) or session_id
 
 
 def _make_sync_judge(session: SimpleSession) -> Callable[[str, RiskLevel, str], str]:
@@ -220,7 +217,7 @@ def _has_outside_workspace_path(command: str) -> bool:
 
 
 def _protection_reason(path: Path) -> str | None:
-    """命中保护路径返回原因 (敏感目录/文件/沙箱目录)"""
+    """命中保护路径返回原因 (敏感目录/文件)"""
     rel = path.relative_to(WORKSPACE_ROOT) if path.is_relative_to(WORKSPACE_ROOT) else path
     parts = [p.lower() for p in rel.parts]
     for name in _PROTECTED_DIRS:
@@ -232,25 +229,9 @@ def _protection_reason(path: Path) -> str | None:
     return None
 
 
-def _register_protected_dir(path: str) -> None:
-    """注册额外保护目录 (沙箱根), 全局生效"""
-    _EXTRA_PROTECTED_DIRS.append(Path(path).resolve())
-
-
-_EXTRA_PROTECTED_DIRS: list[Path] = []
-
-
 def _protection_reason_full(path: Path) -> str | None:
-    """含沙箱等额外保护目录的完整保护检查"""
-    reason = _protection_reason(path)
-    if reason is not None:
-        return reason
-    for extra in _EXTRA_PROTECTED_DIRS:
-        if extra == WORKSPACE_ROOT:
-            continue  # 工作区即沙箱时由工作区白名单统一管辖, 不重复拦截
-        if path == extra or path.is_relative_to(extra):
-            return f"路径位于受保护目录 {extra} 下 (敏感区域)"
-    return None
+    """完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)"""
+    return _protection_reason(path)
 
 
 def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:

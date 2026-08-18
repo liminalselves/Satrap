@@ -72,12 +72,15 @@ class ConfigLoader:
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
             import yaml
-            text = yaml.safe_dump(
+            dumped = yaml.safe_dump(
                 ConfigLoader.default_config_document(),
                 allow_unicode=True,
                 sort_keys=False,
             )
+            text = dumped if isinstance(dumped, str) else ""
         except ImportError:
+            text = ""
+        if not text:
             text = json.dumps(ConfigLoader.default_config_document(), ensure_ascii=False, indent=2) + "\n"
         path.write_text(text, encoding="utf-8")
         logger.info(f"[ConfigLoader] 已创建默认配置: {path}")

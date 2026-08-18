@@ -17,9 +17,9 @@ import asyncio
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, cast
 
-from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.log import logger
 from satrap.core.type import LLMConfig
@@ -37,26 +37,8 @@ MSG_ERROR = "error"
 
 
 def build_llm(cfg: LLMConfig) -> AsyncLLM:
-    """由 LLMConfig 构造 AsyncLLM (字段映射, 缺省用 LLM 默认)"""
-    kwargs: dict[str, Any] = {"api_key": cfg.api_key or ""}
-    if cfg.base_url:
-        kwargs["base_url"] = cfg.base_url
-    if cfg.model:
-        kwargs["model"] = cfg.model
-    if cfg.temperature is not None:
-        kwargs["temperature"] = cfg.temperature
-    if cfg.top_p is not None:
-        kwargs["top_p"] = cfg.top_p
-    if cfg.max_tokens is not None:
-        kwargs["max_tokens"] = cfg.max_tokens
-    kwargs["lock_api_key"] = cfg.lock_api_key
-    if cfg.reasoning_body is not None:
-        kwargs["reasoning_body"] = cfg.reasoning_body
-    if cfg.thinking_field_name is not None:
-        kwargs["thinking_field_name"] = cfg.thinking_field_name
-    if cfg.thinking_fields is not None:
-        kwargs["thinking_fields"] = cfg.thinking_fields
-    return AsyncLLM(**kwargs)
+    """由 LLMConfig 构造 AsyncLLM (统一经 build_llm_from_config, 含输出预算)"""
+    return cast(AsyncLLM, build_llm_from_config(cfg, async_=True))
 
 
 @dataclass
@@ -67,6 +49,8 @@ class _Conversation:
     session: AsyncSimpleSession
     recorder: DisplayRecorder
     model: str
+    default_think: str = "off"
+    """会话默认思考强度 (来自 conversation_meta, send 未显式传 think 时使用)"""
     task: asyncio.Task[Any] | None = None
     """当前正在执行的 run task (None 表示空闲)"""
     subscribers: set[asyncio.Queue[dict[str, Any]]] = field(
@@ -164,6 +148,7 @@ class ChatService:
             max_tokens=config.get("max_tokens"),
             context_window=config.get("context_window"),
             history_ratio=config.get("history_ratio"),
+            lock_api_key=bool(config.get("lock_api_key")),
             reasoning_body=config.get("reasoning_body"),
             thinking_field_name=config.get("thinking_field_name"),
             thinking_fields=config.get("thinking_fields"),
@@ -177,7 +162,7 @@ class ChatService:
         if name not in existing:
             return {"ok": False, "error": f"配置不存在: {name}"}
         # 过滤合法字段
-        allowed = {"model", "base_url", "api_key", "temperature", "top_p", "max_tokens", "context_window", "history_ratio", "reasoning_body", "thinking_field_name", "thinking_fields"}
+        allowed = {"model", "base_url", "api_key", "temperature", "top_p", "max_tokens", "context_window", "history_ratio", "lock_api_key", "reasoning_body", "thinking_field_name", "thinking_fields"}
         kwargs = {k: v for k, v in config.items() if k in allowed}
         # 过滤脱敏 api_key (含 * 的值是掩码, 不是真实 key)
         if "api_key" in kwargs and isinstance(kwargs["api_key"], str) and "*" in kwargs["api_key"]:
@@ -193,8 +178,11 @@ class ChatService:
             return {"ok": False, "error": f"配置不存在: {name}"}
         return {"ok": True}
 
-    async def create_conversation(self, model: str = "default", *, system_prompt: str | None = None) -> str:
-        """创建会话, 返回 conversation_id"""
+    async def create_conversation(self, model: str = "default", *, system_prompt: str | None = None, think: str = "off") -> str:
+        """创建会话, 返回 conversation_id
+
+        - think: 会话默认思考强度, 存入 conversation_meta (send 未显式传 think 时使用)
+        """
         cfg = self._model_cfg.get_llm_config(model)
         llm = build_llm(cfg)
         conversation_id = uuid.uuid4().hex
@@ -229,6 +217,7 @@ class ChatService:
             session=session,
             recorder=recorder,
             model=model,
+            default_think=think,
         )
         self._conversations[conversation_id] = conv
 
@@ -252,7 +241,7 @@ class ChatService:
         session.tools_manager.tool_call_end = on_tool_end
 
         logger.info(f"[聊天] 会话已创建: {conversation_id} (model={model})")
-        recorder.save_meta(model)
+        recorder.save_meta(model, think)
         return conversation_id
 
     async def _install_enabled_plugins(self, session: AsyncSimpleSession) -> None:
@@ -317,6 +306,7 @@ class ChatService:
         meta = get_conversation_meta(conversation_id, db_path=self._display_db_path)
         if meta is not None:
             model = meta.get("model", "default")
+            default_think = str(meta.get("think") or "off")
         else:
             # meta 不存在 (旧会话无 meta 记录): 查 display_turns 确认会话存在, 用 default model
             from satrap.display.recorder import DisplayRecorder as _DR
@@ -328,6 +318,7 @@ class ChatService:
             if not turns:
                 return None
             model = "default"
+            default_think = "off"
             logger.info(f"[聊天] 会话 {conversation_id} 无 meta 记录, 从 display_turns 恢复 (model=default)")
         logger.info(f"[聊天] 恢复会话: {conversation_id} (model={model})")
         # 用 create_conversation 重建, 但保留原 conversation_id
@@ -359,6 +350,7 @@ class ChatService:
             session=session,
             recorder=recorder,
             model=model,
+            default_think=default_think,
         )
         self._conversations[conversation_id] = conv
 
@@ -389,12 +381,13 @@ class ChatService:
         conversation_id: str,
         text: str,
         *,
-        think: str = "off",
+        think: str | None = None,
         attachments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """发送消息: 立即返回, run 在后台 task 执行, 流式经 WS 推送
 
         同一会话不支持并发 send (上一个 run 未完成时拒绝)
+        think 为 None 时使用会话默认 (conversation_meta)
         """
         conv = self._conversations.get(conversation_id)
         if conv is None:
@@ -406,6 +399,8 @@ class ChatService:
         if not text.strip() and not attachments:
             return {"ok": False, "error": "消息不能为空"}
 
+        effective_think = think if think is not None else conv.default_think
+
         # 附件拼入文本前缀 + 图片传 img_urls
         display_text = text
         img_urls: list[str] | None = None
@@ -416,7 +411,7 @@ class ChatService:
 
         conv.recorder.start_turn(text, attachments=attachments)
         self._broadcast(conv, {"type": "turn_start", "user_input": text, "attachments": attachments})
-        conv.task = asyncio.ensure_future(self._run_turn(conv, display_text, think, img_urls=img_urls))
+        conv.task = asyncio.ensure_future(self._run_turn(conv, display_text, effective_think, img_urls=img_urls))
         return {"ok": True, "conversation_id": conversation_id}
 
     async def _run_turn(
@@ -439,8 +434,11 @@ class ChatService:
 
     # ---------------- Retry / Fork ----------------
 
-    async def retry(self, conversation_id: str) -> dict[str, Any]:
-        """重试最后一轮: 删除最后一轮记录, 用相同 input 重新发送"""
+    async def retry(self, conversation_id: str, think: str | None = None) -> dict[str, Any]:
+        """重试最后一轮: 删除最后一轮记录, 用相同 input 重新发送
+
+        think 缺省 (None) 时回落 send 的会话默认逻辑
+        """
         conv = self._conversations.get(conversation_id)
         if conv is None:
             conv = await self._resume_conversation(conversation_id)
@@ -452,17 +450,17 @@ class ChatService:
         if deleted is None:
             return {"ok": False, "error": "没有可重试的轮次"}
         # 重新发送 (不重新记录 turn, 由 send 内部 start_turn)
-        return await self.send(conversation_id, deleted["user_input"])
+        return await self.send(conversation_id, deleted["user_input"], think=think)
 
     async def fork(self, conversation_id: str, turn_index: int) -> dict[str, Any]:
-        """从指定轮次 fork 新会话 (复制该轮之前的上下文)"""
+        """从指定轮次 fork 新会话 (复制该轮之前的上下文, 继承 model 与默认 think)"""
         src = self._conversations.get(conversation_id)
         if src is None:
             src = await self._resume_conversation(conversation_id)
         if src is None:
             return {"ok": False, "error": f"会话不存在: {conversation_id}"}
-        # 新建会话 (同 model)
-        new_cid = await self.create_conversation(model=src.model)
+        # 新建会话 (同 model, 继承默认 think)
+        new_cid = await self.create_conversation(model=src.model, think=src.default_think)
         new_conv = self._conversations[new_cid]
         # 复制轮次
         copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)

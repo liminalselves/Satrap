@@ -1,5 +1,7 @@
 """聊天展示层独立 HTTP + WebSocket 服务
 
+基于共享基类 satrap.core.utils.minihttp.MiniHTTPServer, 只保留本服务特有逻辑:
+
 与平台后端 (BackendManager) 完全隔离:
 - 不初始化平台适配器 / 事件分发 / Pipeline / SessionManager / UserManager
 - 仅经 ModelConfigManager 读 .satrap/model_config.json (与平台后端同一份配置)
@@ -29,41 +31,23 @@ WebSocket:
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
-import struct
 from typing import Any
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import unquote
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.log import logger
+from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.recorder import list_conversations
 from satrap.display.service import ChatService
-
-# CORS 配置 - 允许前端开发服务器跨域访问
-CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Max-Age": "86400",
-}
-
-WS_MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19872
 
 
-def _query(path: str, key: str) -> str:
-    """提取 query 参数值 (缺失返回空串)"""
-    values = parse_qs(urlsplit(path).query).get(key)
-    return unquote(values[0]) if values else ""
-
-
-class ChatHTTPServer:
-    """聊天展示层 HTTP + WS 服务器 (零依赖 asyncio)"""
+class ChatHTTPServer(MiniHTTPServer):
+    """聊天展示层 HTTP + WS 服务器 (基于共享基类, 零依赖 asyncio)"""
 
     def __init__(
         self,
@@ -71,80 +55,54 @@ class ChatHTTPServer:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
     ) -> None:
+        super().__init__(host=host, port=port, log_errors=True)
         self.service = service
-        self.host = host
-        self.port = port
-        self._server: asyncio.Server | None = None
 
     async def start(self) -> None:
-        self._server = await asyncio.start_server(self._handle_connection, self.host, self.port)
-        asyncio.ensure_future(self._server.serve_forever())
+        await super().start()
         logger.info(f"[聊天服务] HTTP API: http://{self.host}:{self.port}")
 
-    async def stop(self) -> None:
-        if self._server:
-            self._server.close()
-            await self._server.wait_closed()
+    # ---------------- WebSocket 端点分发 ----------------
 
-    # ---------------- 连接处理 ----------------
-
-    async def _handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    async def _ws_dispatch(
+        self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
+        """按路径分发 WebSocket 端点"""
+        if path.split("?", 1)[0] == "/ws/chat":
+            await self._ws_chat_handler(reader, writer, path)
+        else:
+            await self._ws_close(writer, 1008, "unknown endpoint")
+
+    async def _ws_chat_handler(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, path: str
+    ) -> None:
+        """订阅会话广播, 把队列消息经 WS 推给客户端"""
+        conversation_id = self._query_param(path, "conversation")
+        if not conversation_id:
+            await self._ws_send(writer, {"type": "error", "message": "missing conversation"})
+            await self._ws_close(writer, 1008, "missing conversation")
+            return
+
+        queue = self.service.subscribe(conversation_id)
+        await self._ws_send(writer, {"type": "subscribed", "conversation_id": conversation_id})
         try:
-            raw_request = await reader.readuntil(b"\r\n\r\n")
-            first_line = raw_request.split(b"\r\n")[0].decode()
-            parts = first_line.split(" ")
-            method = parts[0]
-            path = parts[1] if len(parts) > 1 else "/"
-
-            if method == "OPTIONS":
-                self._send_cors_preflight(writer)
-                return
-
-            if path.startswith("/ws/"):
-                await self._handle_websocket(reader, writer, raw_request, path)
-                return
-
-            body = b""
-            cl_idx = raw_request.lower().find(b"content-length:")
-            if cl_idx >= 0:
-                cl_end = raw_request.find(b"\r\n", cl_idx)
-                cl_line = raw_request[cl_idx:cl_end].decode()
-                cl = int(cl_line.split(":")[1].strip())
-                body = await reader.readexactly(cl)
-
-            status, data = await self._route(method, path, body)
-            self._send_json(writer, status, data)
-        except asyncio.IncompleteReadError:
-            self._send_json(writer, 400, {"error": "bad request"})
+            while True:
+                if reader.at_eof():
+                    break
+                    # 等待广播消息 (带超时以便检测客户端断开)
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                    await self._ws_send(writer, msg)
+                except asyncio.TimeoutError:
+                    continue
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
-            logger.error(f"[聊天服务] 请求处理异常: {e}")
-            self._send_json(writer, 500, {"error": str(e)})
+            logger.warning(f"[聊天服务] WS 推送异常: {e}")
         finally:
-            try:
-                writer.close()
-            except Exception:
-                pass
+            self.service.unsubscribe(conversation_id, queue)
 
-    def _send_cors_preflight(self, writer: asyncio.StreamWriter) -> None:
-        cors = "".join(f"{k}: {v}\r\n" for k, v in CORS_HEADERS.items())
-        writer.write(f"HTTP/1.1 204 No Content\r\n{cors}Connection: close\r\n\r\n".encode())
-
-    def _send_json(self, writer: asyncio.StreamWriter, status: int, data: dict[str, Any]) -> None:
-        resp = json.dumps(data, ensure_ascii=False).encode()
-        status_text = "OK" if status == 200 else "Error"
-        cors = "".join(f"{k}: {v}\r\n" for k, v in CORS_HEADERS.items())
-        header = (
-            f"HTTP/1.1 {status} {status_text}\r\n"
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(resp)}\r\n"
-            f"{cors}"
-            f"Connection: close\r\n\r\n"
-        ).encode()
-        writer.write(header + resp)
-
-    # ---------------- 路由 ----------------
+    # ---------------- API 路由 ----------------
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
@@ -177,6 +135,7 @@ class ChatHTTPServer:
             payload = json.loads(body or b"{}")
             cid = await svc.create_conversation(
                 model=str(payload.get("model") or "default"),
+                think=str(payload.get("think") or "off"),
                 system_prompt=str(payload.get("system_prompt") or "") or None,
             )
             return 200, {"ok": True, "conversation_id": cid}
@@ -192,7 +151,7 @@ class ChatHTTPServer:
             return 200, await svc.delete_conversation(conv_id)
 
         if method == "GET" and clean == "/api/chat/turns":
-            conv = _query(path, "conversation")
+            conv = self._query_param(path, "conversation")
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
             return 200, {"turns": svc.list_turns(conv)}
@@ -201,10 +160,12 @@ class ChatHTTPServer:
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()
             text = str(payload.get("text") or "")
-            think = str(payload.get("think") or "off")
+            think = payload.get("think")
             attachments = payload.get("attachments")  # list[dict] | None
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
+            # think 缺省 (None) 时由 ChatService 用会话默认
+            think = str(think) if think is not None else None
             result = await svc.send(conv, text, think=think, attachments=attachments)
             return (200 if result.get("ok") else 400), result
 
@@ -229,7 +190,9 @@ class ChatHTTPServer:
             conv = str(payload.get("conversation") or "").strip()
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
-            result = await svc.retry(conv)
+            think = payload.get("think")
+            think = str(think) if think is not None else None
+            result = await svc.retry(conv, think=think)
             return (200 if result.get("ok") else 400), result
 
         if method == "POST" and clean == "/api/chat/fork":
@@ -290,7 +253,7 @@ class ChatHTTPServer:
 
         # GET /api/chat/memories?scope=xxx
         if method == "GET" and clean == "/api/chat/memories":
-            scope = _query(path, "scope") or "web_chat"
+            scope = self._query_param(path, "scope") or "web_chat"
             return 200, svc.list_memories(scope)
 
         # POST /api/chat/memories
@@ -319,102 +282,11 @@ class ChatHTTPServer:
                 scope = str(payload.get("scope") or "web_chat")
                 return 200, svc.update_memory(memory_id, scope=scope, **fields)
             if method == "DELETE":
-                scope = _query(path, "scope") or "web_chat"
+                scope = self._query_param(path, "scope") or "web_chat"
                 return 200, svc.delete_memory(memory_id, scope=scope)
             return 405, {"error": f"method not allowed: {method}"}
 
         return 404, {"error": f"unknown route: {method} {path}"}
-
-    # ---------------- WebSocket ----------------
-
-    async def _handle_websocket(
-        self,
-        reader: asyncio.StreamReader,
-        writer: asyncio.StreamWriter,
-        raw_request: bytes,
-        path: str,
-    ) -> None:
-        headers = self._parse_headers(raw_request)
-        ws_key = headers.get("sec-websocket-key", "")
-        if not ws_key:
-            self._send_json(writer, 400, {"error": "missing Sec-WebSocket-Key"})
-            return
-
-        accept_key = base64.b64encode(
-            hashlib.sha1((ws_key + WS_MAGIC_STRING).encode()).digest()
-        ).decode()
-        writer.write(
-            (
-                "HTTP/1.1 101 Switching Protocols\r\n"
-                "Upgrade: websocket\r\n"
-                "Connection: Upgrade\r\n"
-                f"Sec-WebSocket-Accept: {accept_key}\r\n\r\n"
-            ).encode()
-        )
-        await writer.drain()
-
-        if path.split("?", 1)[0] == "/ws/chat":
-            await self._ws_chat_handler(reader, writer, path)
-        else:
-            await self._ws_close(writer, 1008, "unknown endpoint")
-
-    @staticmethod
-    def _parse_headers(raw_request: bytes) -> dict[str, str]:
-        headers: dict[str, str] = {}
-        for line in raw_request.decode().split("\r\n")[1:]:
-            if ":" in line:
-                k, v = line.split(":", 1)
-                headers[k.strip().lower()] = v.strip()
-        return headers
-
-    async def _ws_send(self, writer: asyncio.StreamWriter, data: dict[str, Any]) -> None:
-        payload = json.dumps(data, ensure_ascii=False).encode()
-        header = bytearray([0x81])  # FIN=1, Opcode=1 (文本帧)
-        length = len(payload)
-        if length < 126:
-            header.append(length)
-        elif length < 65536:
-            header.append(126)
-            header.extend(struct.pack(">H", length))
-        else:
-            header.append(127)
-            header.extend(struct.pack(">Q", length))
-        writer.write(bytes(header) + payload)
-        await writer.drain()
-
-    async def _ws_close(self, writer: asyncio.StreamWriter, code: int, reason: str) -> None:
-        payload = struct.pack(">H", code) + reason.encode()
-        writer.write(bytes(bytearray([0x88, len(payload)])) + payload)
-        await writer.drain()
-
-    async def _ws_chat_handler(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, path: str
-    ) -> None:
-        """订阅会话广播, 把队列消息经 WS 推给客户端"""
-        conversation_id = _query(path, "conversation")
-        if not conversation_id:
-            await self._ws_send(writer, {"type": "error", "message": "missing conversation"})
-            await self._ws_close(writer, 1008, "missing conversation")
-            return
-
-        queue = self.service.subscribe(conversation_id)
-        await self._ws_send(writer, {"type": "subscribed", "conversation_id": conversation_id})
-        try:
-            while True:
-                if reader.at_eof():
-                    break
-                    # 等待广播消息 (带超时以便检测客户端断开)
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    await self._ws_send(writer, msg)
-                except asyncio.TimeoutError:
-                    continue
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.warning(f"[聊天服务] WS 推送异常: {e}")
-        finally:
-            self.service.unsubscribe(conversation_id, queue)
 
 
 # ---------------- 入口 ----------------

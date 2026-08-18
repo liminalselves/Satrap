@@ -53,7 +53,8 @@ def _load_yaml_any(text: str) -> Any:
 
 def _dump_yaml(data: dict[str, Any]) -> str:
     """序列化 YAML 文本"""
-    return yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    dumped = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+    return dumped if isinstance(dumped, str) else ""
 
 
 def load_config_document(path: str | Path) -> dict[str, Any]:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 # 纯文本可直接读取的扩展名
 _TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".log", ".yaml", ".yml", ".toml", ".xml", ".html", ".js", ".ts"}
@@ -14,12 +15,13 @@ _TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".log", ".yaml", ".yml", ".
 def _read_xlsx(path: Path) -> str:
     """openpyxl 读所有 sheet, 每行拼 TSV 文本"""
     from openpyxl import load_workbook
+    from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 
     wb = load_workbook(str(path), read_only=True, data_only=True)
     parts: list[str] = []
     for sheet in wb.worksheets:
         parts.append(f"# Sheet: {sheet.title}")
-        for row in sheet.iter_rows(values_only=True):
+        for row in cast(ReadOnlyWorksheet, sheet).iter_rows(values_only=True):
             cells = ["" if c is None else str(c) for c in row]
             # 跳过全空行
             if any(c.strip() for c in cells):

@@ -22,6 +22,11 @@ config_schema:
     type: string
     default: "web_chat"
     description: "记忆作用域 (网页聊天统一 web_chat, 与前端记忆管理对齐)"
+  memory_mode:
+    type: select
+    default: "full"
+    options: ["disabled", "base", "full"]
+    description: "记忆模式: disabled (不注入/不可用) / base (只读) / full (可增删改)"
 
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 tools:

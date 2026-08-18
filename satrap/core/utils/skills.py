@@ -342,7 +342,7 @@ class SkillsManager:
         if os.path.isfile(meta_path):
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
-                    meta: dict[str, Any] = yaml.safe_load(f) or {}
+                    meta: Any = yaml.safe_load(f) or {}
                 if isinstance(meta, dict):
                     skill.meta.update(cast(dict[str, Any], meta))
             except Exception as e:

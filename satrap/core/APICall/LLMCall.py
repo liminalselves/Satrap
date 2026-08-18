@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, safe_getattr, safe_getattr_str, safe_getattr_list, safe_getattr_dict
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, safe_getattr, safe_getattr_str, safe_getattr_list, safe_getattr_dict
 from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
@@ -1425,3 +1425,49 @@ class AsyncLLM:
             self.max_tokens = max_tokens
         if thinking_fields is not None:
             self.thinking_fields = thinking_fields
+
+
+def _compute_output_budget(cfg: Any) -> int | None:
+    """计算输出预算 = context_window × (1 - history_ratio) (两者都配置时生效)"""
+    cw = safe_getattr(cfg, "context_window")
+    hr = safe_getattr(cfg, "history_ratio")
+    if cw and hr:
+        return int(cw * (1 - hr))
+    return None
+
+
+def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | AsyncLLM":
+    """由 LLMConfig 统一构造 LLM / AsyncLLM (字段映射 + 输出预算)
+
+    统一映射全部字段并应用输出预算, 消除各调用方自行构造时的遗漏:
+    - 输出预算 = context_window × (1 - history_ratio), 两者都配置时优先于 max_tokens
+    - max_tokens = 输出预算 or cfg.max_tokens or 4096
+    - top_p / lock_api_key / reasoning_body / thinking_field_name / thinking_fields 全部透传
+    - 用 safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
+
+    参数:
+    - cfg: LLMConfig (或含同名字段的替身对象)
+    - async_: True 返回 AsyncLLM, False 返回 LLM
+    """
+    cls = AsyncLLM if async_ else LLM
+    kwargs: dict[str, Any] = {
+        "api_key": safe_getattr_str(cfg, "api_key"),
+        "base_url": safe_getattr_str(cfg, "base_url"),
+        "model": safe_getattr_str(cfg, "model"),
+        "lock_api_key": safe_getattr(cfg, "lock_api_key", True),
+    }
+    # 可选字段: 仅非 None 时透传, 避免覆盖 LLM 类默认值 (temperature=0 也需保留)
+    temperature = safe_getattr(cfg, "temperature")
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    budget = _compute_output_budget(cfg)
+    if budget is not None:
+        kwargs["max_tokens"] = budget
+    else:
+        max_tokens = safe_getattr(cfg, "max_tokens")
+        kwargs["max_tokens"] = max_tokens if max_tokens is not None else 4096
+    for name in ("top_p", "reasoning_body", "thinking_field_name", "thinking_fields"):
+        val = safe_getattr(cfg, name)
+        if val is not None:
+            kwargs[name] = val
+    return cls(**kwargs)

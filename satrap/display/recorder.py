@@ -168,10 +168,16 @@ class DisplayRecorder:
                 CREATE TABLE IF NOT EXISTS conversation_meta (
                     conversation_id TEXT PRIMARY KEY,
                     model TEXT NOT NULL DEFAULT 'default',
+                    think TEXT NOT NULL DEFAULT 'off',
                     created_at REAL NOT NULL
                 )
                 """
             )
+            # 兼容旧表: 无 think 列时 ALTER TABLE 添加
+            try:
+                conn.execute("SELECT think FROM conversation_meta LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE conversation_meta ADD COLUMN think TEXT NOT NULL DEFAULT 'off'")
             conn.commit()
 
     def _load_max_turn_index(self) -> int:
@@ -186,13 +192,13 @@ class DisplayRecorder:
 
     # ---------------- 会话元数据 ----------------
 
-    def save_meta(self, model: str) -> None:
-        """保存会话元数据 (model)"""
+    def save_meta(self, model: str, think: str = "off") -> None:
+        """保存会话元数据 (model / 默认思考强度 think)"""
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR REPLACE INTO conversation_meta (conversation_id, model, created_at) VALUES (?, ?, ?)",
-                (self.conversation_id, model, time.time()),
+                "INSERT OR REPLACE INTO conversation_meta (conversation_id, model, think, created_at) VALUES (?, ?, ?, ?)",
+                (self.conversation_id, model, think, time.time()),
             )
             conn.commit()
 
@@ -461,7 +467,7 @@ def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
 
 
 def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> dict[str, Any] | None:
-    """查询会话元数据 (model 等)
+    """查询会话元数据 (model / think)
 
     返回 None 表示会话不存在
     """
@@ -471,11 +477,11 @@ def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> d
     conn = sqlite3.connect(path, check_same_thread=False)
     try:
         row = conn.execute(
-            "SELECT model, created_at FROM conversation_meta WHERE conversation_id = ?",
+            "SELECT model, think, created_at FROM conversation_meta WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             return None
-        return {"model": row[0], "created_at": row[1]}
+        return {"model": row[0], "think": row[1] or "off", "created_at": row[2]}
     finally:
         conn.close()
