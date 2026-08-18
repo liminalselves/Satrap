@@ -468,7 +468,7 @@ def main() -> None:
         db_path=str(CHAT_DB),
         enable_checkpoint=False,
         stream=True,
-        return_thinking="medium",
+        return_thinking=True,
         content_callback=_content_forward,
         thinking_callback=_thinking_forward,
     )

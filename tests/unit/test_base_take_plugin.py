@@ -79,6 +79,41 @@ def test_config_schema_on_plugin(session: SimpleSession):
     assert plugin.config_schema["sandbox_root"]["type"] == "path"
     assert plugin.config_schema["search_timeout"]["default"] == 10
     assert plugin.config_schema["memory_scope"]["default"] == "web_chat"
+    assert plugin.config_schema["memory_mode"]["default"] == "full"
+    assert plugin.config_schema["memory_mode"]["options"] == ["disabled", "base", "full"]
+
+
+def test_memory_mode_config_readonly(tmp_path: Any, monkeypatch: Any):
+    """memory_mode=base: 写工具被拒绝; disabled: 注入块为空"""
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.expend.plugins.base_take import state as state_mod
+    from satrap.expend.tools import memory_store as ms_mod
+
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
+    monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
+    monkeypatch.setattr(state_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
+
+    s = SimpleSession("conv-mode", _FakeLLM(), db_path=str(tmp_path / "chat.db"))
+    s.install_plugin(str(PLUGIN_DIR), config={
+        "sandbox_root": str(tmp_path / "sandbox"),
+        "workspace_root": str(tmp_path / "workspace"),
+        "memory_mode": "base",
+    })
+
+    from satrap.expend.plugins.base_take.state import get_plugin_state
+    store = get_plugin_state(s)["store"]
+    assert store.mode == "base"
+    assert store.can_write() is False
+
+    # base 只读: 写工具返回"只读"提示
+    tm = s._wf.tools_manager
+    add = tm.tools["add_memory"]
+    assert "只读" in add.execute(title="偏好", content="x")
+
+    # disabled 模式: 不注入 (注入块为空)
+    store.set_mode("disabled")
+    assert store.to_context_block() == ""
 
 
 def test_memory_tools_lifecycle(session: SimpleSession):
@@ -134,6 +169,7 @@ def test_extract_text_xlsx(tmp_path: Path):
     from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
+    assert ws is not None
     ws.title = "数据"
     ws.append(["姓名", "年龄"])
     ws.append(["张三", 30])

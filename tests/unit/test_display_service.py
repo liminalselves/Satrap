@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,8 @@ def _write_plugin(base: Path, name: str, tools: dict[str, str] | None = None) ->
     meta: dict[str, Any] = {"name": name, "version": "0.1.0", "description": f"{name} 插件"}
     if tools:
         meta["tools"] = tools
-    (pdir / "meta.yaml").write_text(yaml.safe_dump(meta, allow_unicode=True), encoding="utf-8")
+    dumped = yaml.safe_dump(meta, allow_unicode=True)
+    (pdir / "meta.yaml").write_text(dumped if isinstance(dumped, str) else "", encoding="utf-8")
     return pdir
 
 
@@ -102,7 +104,7 @@ class _FakeAsyncLLM(AsyncLLM):
     async def call(self, messages: list[dict[str, Any]], **kw: Any) -> LLMCallResponse:
         return LLMCallResponse(type="answer", content="答复")
 
-    async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> Any:
+    async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> AsyncIterator[LLMCallStreamEvent]:
         yield LLMCallStreamEvent(kind="thinking_delta", delta="思考中")
         yield LLMCallStreamEvent(kind="content_delta", delta="答")
         yield LLMCallStreamEvent(kind="content_delta", delta="复")
@@ -150,7 +152,7 @@ def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
     async def _run() -> tuple[str, list[dict[str, Any]]]:
         cid = await svc.create_conversation(model="default")
         queue = svc.subscribe(cid)
-        result = await svc.send(cid, "你好", think=True)
+        result = await svc.send(cid, "你好", think="medium")
         assert result["ok"] is True
         # 等待后台 run 完成
         conv = svc.get_conversation(cid)
@@ -218,3 +220,81 @@ def test_service_plugin_enable_no_plugins(tmp_path: Path, monkeypatch: Any):
     result = asyncio.run(svc.set_plugin_enabled("ghost", True))
     assert result["ok"] is False
     assert "不存在" in result["error"]
+
+
+def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
+    """send 未显式传 think 时使用会话默认 (create_conversation 持久化到 meta)"""
+    recorded: list[Any] = []
+
+    class _RecLLM(_FakeAsyncLLM):
+        async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> Any:
+            recorded.append(kw.get("thinking"))
+            async for ev in super().stream_call(messages, **kw):
+                yield ev
+
+    def _fake_build_llm(cfg: Any) -> AsyncLLM:
+        return _RecLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
+    svc = ChatService(
+        _FakeModelConfig(),  # type: ignore[arg-type]
+        reg,
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+    )
+
+    async def _run() -> tuple[str, str]:
+        cid = await svc.create_conversation(model="default", think="high")
+        conv = svc.get_conversation(cid)
+        assert conv is not None and conv.default_think == "high"
+        result = await svc.send(cid, "你好")  # 不传 think -> 用会话默认 high
+        assert result["ok"] is True
+        assert conv.task is not None
+        await conv.task
+        from satrap.display.recorder import get_conversation_meta
+        meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
+        assert meta is not None and meta["think"] == "high"
+        return cid, str(recorded[0] if recorded else None)
+
+    cid, first_think = asyncio.run(_run())
+    assert first_think == "high"
+
+
+def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
+    """retry 传入 think 时按指定强度重发, 不回落默认"""
+    recorded: list[Any] = []
+
+    class _RecLLM(_FakeAsyncLLM):
+        async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> Any:
+            recorded.append(kw.get("thinking"))
+            async for ev in super().stream_call(messages, **kw):
+                yield ev
+
+    def _fake_build_llm(cfg: Any) -> AsyncLLM:
+        return _RecLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
+    svc = ChatService(
+        _FakeModelConfig(),  # type: ignore[arg-type]
+        reg,
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+    )
+
+    async def _run() -> list[Any]:
+        cid = await svc.create_conversation(model="default", think="off")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        assert await svc.send(cid, "你好", think="low") == {"ok": True, "conversation_id": cid}
+        assert conv.task is not None
+        await conv.task
+        result = await svc.retry(cid, think="high")
+        assert result["ok"] is True
+        assert conv.task is not None
+        await conv.task
+        return list(recorded)
+
+    thinks = asyncio.run(_run())
+    assert thinks == ["low", "high"]

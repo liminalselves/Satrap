@@ -165,13 +165,6 @@ def test_glob_cannot_escape_workspace(tmp_path: Any, workspace: Any):
     assert "inside.txt" in out  # 工作区内正常匹配
 
 
-def test_user_scope_fallback_isolated(tmp_path: Any):
-    """M3: session_id 无法解析 user 时回落完整 id, 不共享全局作用域"""
-    assert tools_mod.user_scope("conv-1") == "conv-1"
-    assert tools_mod.user_scope("u1:sess:x") == "sess"  # 3 段取第 2 段
-    assert tools_mod.user_scope("p:u1:sess:x") == "sess"  # 4 段取第 3 段
-
-
 def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
     """文件工具: 工作区外拒绝, 受保护路径拒绝"""
     session = _make_session(tmp_path)

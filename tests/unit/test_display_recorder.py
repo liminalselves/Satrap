@@ -238,7 +238,7 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     rec = DisplayRecorder(db, "conv-1")
     s = SimpleSession(
         "conv-1", _ToolThenAnswerLLM(), db_path=str(tmp_path / "chat.db"),
-        stream=True, return_thinking="medium",
+        stream=True, return_thinking=True,
         content_callback=rec.on_content, thinking_callback=rec.on_thinking,
         enable_checkpoint=False,
     )
@@ -260,3 +260,45 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     assert len(t["tool_calls"]) == 1
     assert t["tool_calls"][0]["name"] == "list_dir"
     assert t["tool_calls"][0]["success"] is True
+
+
+def test_recorder_meta_think_roundtrip(tmp_path: Any):
+    """conversation_meta 保存/读取 think 默认思考强度"""
+    from satrap.display.recorder import get_conversation_meta
+
+    db = str(tmp_path / "display.db")
+    rec = DisplayRecorder(db_path=db, conversation_id="c1")
+    rec.save_meta("default", think="high")
+    rec.close()
+
+    meta = get_conversation_meta("c1", db_path=db)
+    assert meta is not None
+    assert meta["model"] == "default"
+    assert meta["think"] == "high"
+
+
+def test_recorder_meta_think_legacy_compat(tmp_path: Any):
+    """旧库无 think 列时自动 ALTER 添加, 旧记录回落 off"""
+    from satrap.display.recorder import get_conversation_meta
+
+    db = str(tmp_path / "display.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE conversation_meta ("
+        "conversation_id TEXT PRIMARY KEY,"
+        " model TEXT NOT NULL DEFAULT 'default',"
+        " created_at REAL NOT NULL)"
+    )
+    conn.execute(
+        "INSERT INTO conversation_meta (conversation_id, model, created_at) VALUES ('c1', 'default', 1.0)"
+    )
+    conn.commit()
+    conn.close()
+
+    # DisplayRecorder 初始化应自动 ALTER 添加 think 列
+    rec = DisplayRecorder(db_path=db, conversation_id="c1")
+    rec.close()
+
+    meta = get_conversation_meta("c1", db_path=db)
+    assert meta is not None
+    assert meta["think"] == "off"

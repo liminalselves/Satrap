@@ -253,7 +253,7 @@ def test_stream_full_agent_separates_thinking_callback(
         llm=_ThinkingAgentLLM(),   # type: ignore[arg-type]
         context_id="stream-thinking-test",
         content_callback=content.append,
-        return_thinking="medium",
+        return_thinking=True,
         thinking_callback=thinking.append,
     )
 
@@ -294,7 +294,7 @@ async def test_async_stream_full_agent_separates_thinking_callback(
         llm=_AsyncThinkingAgentLLM(),   # type: ignore[arg-type]
         context_id="async-stream-thinking-test",
         content_callback=content_callback,
-        return_thinking="medium",
+        return_thinking=True,
         thinking_callback=thinking_callback,
     )
     await agent.initialize()

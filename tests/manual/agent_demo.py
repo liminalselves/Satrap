@@ -164,7 +164,7 @@ def build_agent(
         context_id=conversation_id,
         tools_manager=tools,
         content_callback=content_callback,
-        return_thinking="medium",
+        return_thinking=True,
         thinking_callback=thinking_callback,
         system_prompt=(
             "你是一个简洁可靠的中文助手。"
