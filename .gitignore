@@ -219,6 +219,7 @@ plans/
 .toolkit/
 .agents/
 .qoder/
+.qoderignore
 
 # Node.js
 node_modules/
