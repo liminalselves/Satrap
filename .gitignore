@@ -220,6 +220,7 @@ plans/
 .agents/
 .qoder/
 .qoderignore
+.pyrightcfg/
 
 # Node.js
 node_modules/
