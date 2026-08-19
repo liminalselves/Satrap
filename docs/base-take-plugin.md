@@ -14,6 +14,7 @@ plugin = session.list_plugins()[0]
 plugin.name          # "base_take"
 plugin.tools         # 8 个工具
 plugin.handlers      # base_take.memory_inject
+plugin.commands      # memory
 ```
 
 异步版 `AsyncSimpleSession` 同样支持 (`await session.install_plugin(path)`)。
@@ -27,6 +28,7 @@ plugin.handlers      # base_take.memory_inject
 | 文档 | read_document | 解析 xlsx / docx / pdf / 纯文本为纯文本 |
 | 记忆 | add_memory / update_memory / delete_memory / list_memories | 长期记忆增删改查 |
 | 处理器 | base_take.memory_inject | 用户消息进入模型前注入记忆块 |
+| 命令 | /memory | 记忆管理 (list / add / del / clear / mode) |
 
 ## 插件配置
 
@@ -38,7 +40,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | workspace_root | path | 项目根 | read_document 白名单根目录 |
 | search_timeout | number | 10 | 搜索超时 (秒) |
 | memory_scope | string | web_chat | 记忆作用域 |
-| memory_mode | select | full | 记忆模式: disabled (不注入/不可用) / base (只读) / full (可增删改) |
+| memory_mode | select | full | 记忆模式: disabled (不注入/不可写) / base (只读) / full (可增删改); 仅约束模型工具与注入, web 管理接口 (前端面板) 恒定可写 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/base_take.json`。
 
@@ -49,6 +51,11 @@ base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当�
 ## 长期记忆
 
 记忆存储使用公共 MemoryStore (`.satrap/satrapdata/memory.db`), 按 scope 隔离 (默认 `web_chat`)。记忆由注入处理器自动拼接到后续用户消息头部 (importance 降序, 上限 30 条), 保证模型每轮都携带已知约定。
+
+两点语义说明:
+
+- **与计划模式隔离**: 记忆是元信息, 不属于工作区写操作, satrap_coding 的 `/plan` 计划模式不会拦截记忆增删改 (有意设计)。
+- **memory_mode 的作用范围**: 只约束模型侧 (记忆工具 + 注入); `/memory` 命令与 web 记忆管理接口 (前端面板 / HTTP API) 是管理员工具, 恒定可写, 不受 memory_mode 约束。`/memory mode` 切换仅影响当前会话的内存状态, 不持久化, 会话重建后回落到插件配置值。
 
 ## 文档解析
 

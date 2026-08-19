@@ -82,6 +82,16 @@ class MemoryStore:
         """当前是否允许增删改 (full 模式)"""
         return self.mode == "full"
 
+    def write_denied_reason(self, action: str) -> str:
+        """写拒绝原因文案 (按实际模式生成)"""
+        if self.mode == "disabled":
+            return f"记忆功能已禁用 (disabled), 无法{action}"
+        return f"记忆处于只读模式 (base), 无法{action}"
+
+    def _write_denied_error(self, action: str) -> dict[str, Any]:
+        """写拒绝错误 (按实际模式生成文案)"""
+        return {"error": self.write_denied_reason(action), "ok": False}
+
     # ---------------- CRUD ----------------
 
     def add(
@@ -94,7 +104,7 @@ class MemoryStore:
     ) -> dict[str, Any]:
         """添加一条记忆, 返回记忆记录"""
         if not self.can_write():
-            return {"error": "记忆处于只读模式 (base), 无法添加", "ok": False}
+            return self._write_denied_error("添加")
         if not title.strip() or not content.strip():
             return {"error": "title 与 content 不能为空", "ok": False}
         memory_id = uuid.uuid4().hex
@@ -124,7 +134,7 @@ class MemoryStore:
     def update(self, memory_id: str, **fields: Any) -> dict[str, Any]:
         """按 ID 更新记忆 (title/content/tags/importance), 返回更新后记录"""
         if not self.can_write():
-            return {"error": "记忆处于只读模式 (base), 无法更新", "ok": False}
+            return self._write_denied_error("更新")
         updates: dict[str, Any] = {}
         for key in ("title", "content", "importance"):
             if key in fields and fields[key] is not None:
@@ -163,7 +173,7 @@ class MemoryStore:
     def delete(self, memory_id: str, scope: str | None = None) -> dict[str, Any]:
         """按 ID (或唯一前缀) 删除记忆"""
         if not self.can_write():
-            return {"error": "记忆处于只读模式 (base), 无法删除", "ok": False}
+            return self._write_denied_error("删除")
         effective = scope if scope is not None else self.scope
         with self._lock, self._connect() as conn:
             resolved = self._resolve_memory_id(conn, memory_id, effective)

@@ -47,7 +47,7 @@ class _FakeLLM(LLM):
 
 def test_parse_config_schema_full():
     """完整 config_schema 解析为 ConfigField"""
-    meta = {
+    meta: dict[str, Any] = {
         "config_schema": {
             "sandbox_root": {"type": "path", "default": "", "description": "沙箱根"},
             "search_timeout": {"type": "number", "default": 10},
@@ -65,7 +65,7 @@ def test_parse_config_schema_full():
 
 def test_parse_config_schema_shorthand_and_invalid():
     """简写形式 + 非法类型回退 string + 非字典整体跳过"""
-    meta = {"config_schema": {"plain": "默认值", "bad": {"type": "weird"}}}
+    meta: dict[str, Any] = {"config_schema": {"plain": "默认值", "bad": {"type": "weird"}}}
     schema = parse_config_schema(meta)
     assert schema["plain"].type == "string"
     assert schema["plain"].default == "默认值"

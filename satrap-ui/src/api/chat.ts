@@ -19,6 +19,13 @@ export interface Attachment {
   type: string;
 }
 
+// 消息段 (按时间顺序)
+export interface MessageSegment {
+  type: 'thinking' | 'tool' | 'content';
+  content?: string;
+  tool?: ToolCall;
+}
+
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
   id: number;
@@ -27,6 +34,7 @@ export interface ChatTurn {
   thinking: string | null;
   answer: string;
   attachments: Attachment[] | null;
+  segments: MessageSegment[] | null;
   created_at: number;
   tool_calls: ToolCall[];
 }

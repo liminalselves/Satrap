@@ -105,8 +105,8 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 // 消息角色
 type MessageRole = 'user' | 'assistant';
 
-// 消息段类型 (按时间顺序排列)
-type MessageSegment =
+// 消息段类型 (按时间顺序排列, 前端本地格式)
+type LocalMessageSegment =
   | { type: 'thinking'; content: string }
   | { type: 'tool'; tool: ToolCall }
   | { type: 'content'; content: string };
@@ -128,7 +128,7 @@ interface ChatMessage {
   // 对应后端 turn_index (用于 fork)
   turnIndex?: number;
   // 分段内容 (按时间顺序, 用于流式渲染)
-  segments?: MessageSegment[];
+  segments?: LocalMessageSegment[];
 }
 
 // 一个会话
@@ -317,16 +317,32 @@ export function Chat() {
             attachments: turn.attachments ?? undefined,
             turnIndex: turn.turn_index,
           });
-          // 构建 assistant 消息的 segments (按时间顺序: thinking -> tools -> content)
-          const segments: MessageSegment[] = [];
-          if (turn.thinking) {
-            segments.push({ type: 'thinking', content: turn.thinking });
-          }
-          for (const tool of turn.tool_calls ?? []) {
-            segments.push({ type: 'tool', tool });
-          }
-          if (turn.answer) {
-            segments.push({ type: 'content', content: turn.answer });
+          // 优先使用后端返回的 segments (含时间顺序), 否则按固定顺序构建
+          let segments: LocalMessageSegment[] | undefined;
+          if (turn.segments && turn.segments.length > 0) {
+            // 转换后端 segments 格式为前端格式
+            segments = turn.segments.map((seg) => {
+              if (seg.type === 'thinking') {
+                return { type: 'thinking' as const, content: seg.content ?? '' };
+              }
+              if (seg.type === 'tool' && seg.tool) {
+                return { type: 'tool' as const, tool: seg.tool };
+              }
+              return { type: 'content' as const, content: seg.content ?? '' };
+            });
+          } else {
+            // 兼容旧数据: 按固定顺序构建 (thinking -> tools -> content)
+            const fallback: LocalMessageSegment[] = [];
+            if (turn.thinking) {
+              fallback.push({ type: 'thinking', content: turn.thinking });
+            }
+            for (const tool of turn.tool_calls ?? []) {
+              fallback.push({ type: 'tool', tool });
+            }
+            if (turn.answer) {
+              fallback.push({ type: 'content', content: turn.answer });
+            }
+            segments = fallback;
           }
           messages.push({
             id: `${turn.id}-a`,

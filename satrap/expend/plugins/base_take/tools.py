@@ -154,7 +154,7 @@ class AddMemoryTool(_MemoryToolBase):
 
     def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法添加"
+            return self.store.write_denied_reason("添加")
         result = self.store.add(title, content, tags, importance)
         if result.get("ok"):
             return f"记忆已添加: [{title}] {content}"
@@ -174,7 +174,7 @@ class UpdateMemoryTool(_MemoryToolBase):
 
     def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法更新"
+            return self.store.write_denied_reason("更新")
         fields: dict[str, Any] = {}
         if content:
             fields["content"] = content
@@ -197,7 +197,7 @@ class DeleteMemoryTool(_MemoryToolBase):
 
     def execute(self, memory_id: str) -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法删除"
+            return self.store.write_denied_reason("删除")
         result = self.store.delete(memory_id)
         if result.get("ok"):
             return f"记忆已删除: {memory_id}"
@@ -247,7 +247,7 @@ class AsyncAddMemoryTool(_AsyncMemoryToolBase):
 
     async def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法添加"
+            return self.store.write_denied_reason("添加")
         result = self.store.add(title, content, tags, importance)
         if result.get("ok"):
             return f"记忆已添加: [{title}] {content}"
@@ -267,7 +267,7 @@ class AsyncUpdateMemoryTool(_AsyncMemoryToolBase):
 
     async def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法更新"
+            return self.store.write_denied_reason("更新")
         fields: dict[str, Any] = {}
         if content:
             fields["content"] = content
@@ -290,7 +290,7 @@ class AsyncDeleteMemoryTool(_AsyncMemoryToolBase):
 
     async def execute(self, memory_id: str) -> str:
         if not self.store.can_write():
-            return "记忆处于只读模式, 无法删除"
+            return self.store.write_denied_reason("删除")
         result = self.store.delete(memory_id)
         if result.get("ok"):
             return f"记忆已删除: {memory_id}"

@@ -1,7 +1,7 @@
 """可选扩展包入口
 
 目录结构:
-- tools/: 工具类集 (agent / mem0 / rag / sandbox_tools / search), 推荐从 tools 子包导入
+- tools/: 工具类集 (agent / mem0 / rag / sandbox_tools / search / memory_store), 推荐从 tools 子包导入
 - mcp/: MCP 生态扩展 (预留)
 - command/: 可复用的 Session 命令
 - skills/: 内置技能 (coding-agent / web-research)

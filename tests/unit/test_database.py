@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -37,11 +38,12 @@ def test_lite_vector_add_search_roundtrip(tmp_path: Path):
 def test_lite_vector_search_threshold_filters(tmp_path: Path):
     """低于阈值的文档被过滤"""
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
+    metadata: list[dict[str, Any]] = [{}] * 2
     db.add_to_collection(
         "docs",
         ["近", "远"],
         [[1.0, 0.0], [0.0, 1.0]],
-        [{}] * 2,
+        metadata,
     )
     results = db.search("docs", [1.0, 0.0], k=4, threshold=0.5)
     assert [r["document"] for r in results] == ["近"]
@@ -62,7 +64,8 @@ def test_lite_vector_stats_and_delete(tmp_path: Path):
     assert db.get_collection_stats("docs") == {"document_count": 0, "vector_dimension": 0}
     assert db.get_collection_stats("missing") == {"document_count": 0, "vector_dimension": 0}
 
-    db.add_to_collection("docs", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]], [{}] * 2)
+    metadata2: list[dict[str, Any]] = [{}] * 2
+    db.add_to_collection("docs", ["a", "b"], [[1.0, 0.0], [0.0, 1.0]], metadata2)
     stats = db.get_collection_stats("docs")
     assert stats["document_count"] == 2
     assert stats["vector_dimension"] == 2
@@ -129,8 +132,9 @@ def test_database_length_mismatch_raises(tmp_path: Path):
     """documents / vectors / metadata 长度不一致抛 ValueError"""
     db = DataBase(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
+    metadata3: list[dict[str, Any]] = [{}] * 2
     with pytest.raises(ValueError, match="长度必须一致"):
-        db.add_to_collection("docs", ["a"], [[1.0, 0.0], [0.0, 1.0]], [{}] * 2)
+        db.add_to_collection("docs", ["a"], [[1.0, 0.0], [0.0, 1.0]], metadata3)
 
 
 def test_database_dim_mismatch_raises(tmp_path: Path):

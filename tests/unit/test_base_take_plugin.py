@@ -12,6 +12,7 @@ from satrap.edictum import SimpleSession
 from satrap.expend.plugins.base_take.core.docread import extract_text
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "base_take"
+CODING_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"
 
 
 class _FakeLLM(LLM):
@@ -62,7 +63,7 @@ def session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
 
 
 def test_plugin_install_capabilities(session: SimpleSession):
-    """安装: 8 工具 + 1 处理器"""
+    """安装: 8 工具 + 1 处理器 + 1 命令"""
     plugin = session.list_plugins()[0]
     assert plugin.name == "base_take"
     assert set(plugin.tools) == {
@@ -70,6 +71,7 @@ def test_plugin_install_capabilities(session: SimpleSession):
         "add_memory", "update_memory", "delete_memory", "list_memories",
     }
     assert set(plugin.handlers) == {"base_take.memory_inject"}
+    assert set(plugin.commands) == {"memory"}
     assert len(session.list_tools()) == 8
 
 
@@ -111,9 +113,11 @@ def test_memory_mode_config_readonly(tmp_path: Any, monkeypatch: Any):
     add = tm.tools["add_memory"]
     assert "只读" in add.execute(title="偏好", content="x")
 
-    # disabled 模式: 不注入 (注入块为空)
+    # disabled 模式: 不注入 (注入块为空), 写拒绝文案按实际模式生成
     store.set_mode("disabled")
     assert store.to_context_block() == ""
+    assert "已禁用" in add.execute(title="偏好", content="x")
+    assert "disabled" in add.execute(title="偏好", content="x")
 
 
 def test_memory_tools_lifecycle(session: SimpleSession):
@@ -140,6 +144,25 @@ def test_memory_tools_lifecycle(session: SimpleSession):
     assert "没有" in list_tool.execute()
 
 
+def test_memory_command_lifecycle(session: SimpleSession):
+    """/memory 命令: 注册 -> list/add/del/mode 全流程"""
+    cmd = session.cmd_handler.commands["memory"]
+
+    assert "没有长期记忆" in cmd()
+    assert "已添加" in cmd("add", "偏好", "喜欢简洁回答")
+    listed = cmd()
+    assert "偏好" in listed and "喜欢简洁回答" in listed
+
+    mem_id = listed.split("- ")[1].split(" ")[0]
+    assert "已删除" in cmd("del", mem_id[:8])  # 支持 ID 前缀
+
+    assert "已切换: base" in cmd("mode", "base")
+    assert "只读模式" in cmd("add", "x", "y")
+    assert "只读模式" in cmd("clear")
+    assert "已切换: full" in cmd("mode", "full")
+    assert "用法" in cmd("unknown")
+
+
 def test_memory_inject_handler(session: SimpleSession):
     """记忆注入 handler: 添加记忆后注入到用户输入"""
     from satrap.expend.plugins.base_take.state import get_plugin_state
@@ -155,6 +178,36 @@ def test_memory_inject_handler(session: SimpleSession):
     assert "回复用中文" in injected
 
 
+def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any):
+    """计划模式只限制工作区写操作 (文件/shell/沙箱); 记忆是元信息, 增删改不受拦截 (有意设计)"""
+    from satrap.edictum import simple_session as ss_mod
+    from satrap.edictum.plugin_config import PluginConfigManager
+    from satrap.expend.plugins.base_take import state as state_mod
+    from satrap.expend.tools import memory_store as ms_mod
+
+    monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
+    monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
+    monkeypatch.setattr(state_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
+    (tmp_path / "workspace").mkdir()
+
+    s = SimpleSession("conv-plan", _FakeLLM(), db_path=str(tmp_path / "chat.db"))
+    s.install_plugin(str(CODING_PLUGIN_DIR), config={
+        "workspace_root": str(tmp_path / "workspace"),
+        "data_root": str(tmp_path / "coding"),
+    })
+    s.install_plugin(str(PLUGIN_DIR), config={
+        "sandbox_root": str(tmp_path / "sandbox"),
+        "workspace_root": str(tmp_path / "workspace"),
+    })
+
+    assert "已进入计划模式" in s.cmd_handler.commands["plan"]("on")
+
+    # 计划模式下记忆写不被拦截: 工具与命令均可写
+    add = s._wf.tools_manager.tools["add_memory"]
+    assert "已添加" in add.execute(title="决策", content="用 SQLite", tags=[], importance=1)
+    assert "已添加" in s.cmd_handler.commands["memory"]("add", "偏好", "中文回复")
+
+
 # ================= 文档解析 =================
 
 def test_extract_text_txt(tmp_path: Path):
@@ -167,8 +220,8 @@ def test_extract_text_txt(tmp_path: Path):
 def test_extract_text_xlsx(tmp_path: Path):
     """xlsx 解析为 TSV 文本"""
     from openpyxl import Workbook
-    wb = Workbook()
-    ws = wb.active
+    wb: Any = Workbook()  # openpyxl 无类型声明
+    ws: Any = wb.active
     assert ws is not None
     ws.title = "数据"
     ws.append(["姓名", "年龄"])
@@ -196,13 +249,43 @@ def test_extract_text_docx(tmp_path: Path):
 def test_extract_text_pdf(tmp_path: Path):
     """pdf 解析 (用 pdfplumber 生成最小 pdf 较复杂, 改用 reportlab 若可用否则跳过)"""
     pytest.importorskip("reportlab")
-    from reportlab.pdfgen import canvas
+    from reportlab.pdfgen import canvas  # type: ignore[reportMissingModuleSource] 可选依赖, 未安装时上面 importorskip 跳过
     f = tmp_path / "t.pdf"
     c = canvas.Canvas(str(f))
     c.drawString(100, 750, "Hello PDF")
     c.save()
     text = extract_text(f)
     assert "Hello PDF" in text
+
+
+def test_pdfminer_fontbbox_warning_filtered():
+    """缺 FontBBox 的良性警告被过滤, 其他 pdfminer 警告不受影响, 挂载幂等"""
+    import logging
+
+    from satrap.expend.plugins.base_take.core.docread import _mute_pdfminer_fontbbox_warning
+
+    class _Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.messages: list[str] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.messages.append(record.getMessage())
+
+    logger = logging.getLogger("pdfminer.pdffont")
+    _mute_pdfminer_fontbbox_warning()
+    _mute_pdfminer_fontbbox_warning()  # 重复调用不叠加
+    filters = [f for f in logger.filters if f.__class__.__name__ == "_FontBBoxWarningFilter"]
+    assert len(filters) == 1
+
+    capture = _Capture()
+    logger.addHandler(capture)
+    try:
+        logger.warning("Could not get FontBBox from font descriptor because %r cannot be parsed as 4 floats", None)
+        logger.warning("pdfminer 其他警告")
+        assert capture.messages == ["pdfminer 其他警告"]
+    finally:
+        logger.removeHandler(capture)
 
 
 def test_extract_text_unsupported(tmp_path: Path):

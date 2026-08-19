@@ -67,13 +67,13 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 /goal todo <子任务>         添加子任务
 /goal todo-done <序号>      完成子任务
 /goal done / clear          完成 / 清除目标
-/plan on / off              进入 / 退出计划模式 (写操作全部禁用)
+/plan on / off              进入 / 退出计划模式 (工作区写操作全部禁用)
 /approve mode <user|auto-agent|full> 切换审批策略
 /approve rules              查看持久规则
 /approve rule <操作> <风险级 0-1>    添加持久规则 (上限 1)
 ```
 
-`/goal` 设置的目标由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file / shell 写命令全部被拒绝, 只输出计划。
+`/goal` 设置的目标由注入处理器自动拼接到后续用户消息头部 (带缓存, 内容变化自动失效), 保证模型每轮都围绕目标推进。`/plan on` 与工具审批引擎共享同一状态: 进入计划模式后 write_file / edit_file / shell 写命令全部被拒绝, 只输出计划。计划模式仅限制工作区写操作 (文件 / shell / 沙箱); 长期记忆属元信息, 其增删改 (base_take 的记忆工具与 /memory 命令) 不受计划模式拦截, 属有意设计。
 
 ## 工作区与免审批语义
 
@@ -102,7 +102,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 └── goal.json            # 目标与子任务状态
 ```
 
-> 长期记忆已迁移到公共 MemoryStore (`.satrap/satrapdata/memory.db`), 由 base_take 插件管理; 沙箱目录已统一为 `.satrap/sandbox` (全局共享)。
+> 长期记忆已迁移到公共 MemoryStore (`.satrap/satrapdata/memory.db`), 由 base_take 插件管理; 沙箱目录已统一为 `.satrap/sandbox` (全局共享)。注意: 迁移仅覆盖代码, 旧数据不迁移 (迁移时项目未推生产, 无存量用户数据); 旧库 `.satrap/coding/memory.db` 如仍存在可直接删除。
 
 ## 卸载与隔离
 

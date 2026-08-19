@@ -24,6 +24,7 @@ import sys
 import tempfile
 import time
 import tracemalloc
+from typing import Any, cast
 from pathlib import Path
 from typing import Any
 
@@ -50,7 +51,8 @@ MSG_BODY = (_MSG_TEMPLATE * 4)[:100]
 
 def _rss_mb() -> float:
     """当前进程 RSS (MB)"""
-    return psutil.Process().memory_info().rss / (1024 * 1024)
+    mem = cast(Any, psutil.Process().memory_info())  # psutil 无类型声明
+    return float(mem.rss) / (1024 * 1024)
 
 
 def _db_stats(db_path: str) -> dict[str, int | float]:

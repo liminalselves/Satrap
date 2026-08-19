@@ -4,7 +4,7 @@
 
 目录结构:
 
-- `satrap.expend.tools`: 工具类集 (agent / mem0 / rag / sandbox_tools / search)
+- `satrap.expend.tools`: 工具类集 (agent / mem0 / rag / sandbox_tools / search / memory_store)
 - `satrap.expend.mcp`: MCP 生态扩展 (预留)
 - `satrap.expend.command`: 可复用的 Session 命令
 - `satrap.expend.skills`: 内置技能 (coding_agent / web_research)

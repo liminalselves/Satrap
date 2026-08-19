@@ -92,6 +92,8 @@ class DisplayRecorder:
         self._thinking_parts: list[str] = []
         self._answer_parts: list[str] = []
         self._tool_seq = 0
+        # segments: 按时间顺序记录段 (thinking/tool/content)
+        self._segments: list[dict[str, Any]] = []
 
     # ---------------- db 基础 ----------------
 
@@ -133,6 +135,7 @@ class DisplayRecorder:
                     thinking TEXT,
                     answer TEXT NOT NULL DEFAULT '',
                     attachments TEXT,
+                    segments TEXT,
                     created_at REAL NOT NULL
                 )
                 """
@@ -142,6 +145,11 @@ class DisplayRecorder:
                 conn.execute("SELECT attachments FROM display_turns LIMIT 1")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE display_turns ADD COLUMN attachments TEXT")
+            # 兼容旧表: 无 segments 列时 ALTER TABLE 添加
+            try:
+                conn.execute("SELECT segments FROM display_turns LIMIT 1")
+            except sqlite3.OperationalError:
+                conn.execute("ALTER TABLE display_turns ADD COLUMN segments TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_turn ON display_turns (conversation_id, turn_index)"
             )
@@ -212,8 +220,8 @@ class DisplayRecorder:
             conn = self._get_conn()
             att_json = json.dumps(attachments, ensure_ascii=False) if attachments else None
             cur = conn.execute(
-                "INSERT INTO display_turns (conversation_id, turn_index, user_input, thinking, answer, attachments, created_at)"
-                " VALUES (?, ?, ?, NULL, '', ?, ?)",
+                "INSERT INTO display_turns (conversation_id, turn_index, user_input, thinking, answer, attachments, segments, created_at)"
+                " VALUES (?, ?, ?, NULL, '', ?, NULL, ?)",
                 (self.conversation_id, turn_index, user_input, att_json, time.time()),
             )
             conn.commit()
@@ -221,41 +229,62 @@ class DisplayRecorder:
             self._thinking_parts = []
             self._answer_parts = []
             self._tool_seq = 0
+            self._segments = []
 
     def end_turn(self, fallback_answer: str = "") -> None:
-        """run 后调用: 回填 thinking / answer (answer 优先回调流拼接, 空则用 run 返回值兜底)"""
+        """run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)"""
         if self._turn_id is None:
             return
         thinking = "".join(self._thinking_parts) or None
         answer = "".join(self._answer_parts) or fallback_answer
+        segments_json = json.dumps(self._segments, ensure_ascii=False) if self._segments else None
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "UPDATE display_turns SET thinking = ?, answer = ? WHERE id = ?",
-                (thinking, answer, self._turn_id),
+                "UPDATE display_turns SET thinking = ?, answer = ?, segments = ? WHERE id = ?",
+                (thinking, answer, segments_json, self._turn_id),
             )
             conn.commit()
             self._turn_id = None
+            self._segments = []
 
     # ---------------- 注入 SimpleSession 的回调 ----------------
 
     def on_thinking(self, delta: str) -> None:
-        """thinking_callback: 追加思考增量到缓冲"""
+        """thinking_callback: 追加思考增量到缓冲, 并记录 segments 时间顺序"""
         if delta:
             self._thinking_parts.append(delta)
+            # 追加到当前 thinking 段或新建段
+            if self._segments and self._segments[-1].get("type") == "thinking":
+                self._segments[-1]["content"] += delta
+            else:
+                self._segments.append({"type": "thinking", "content": delta})
 
     def on_content(self, delta: str) -> None:
-        """content_callback: 追加正文增量到缓冲"""
+        """content_callback: 追加正文增量到缓冲, 并记录 segments 时间顺序"""
         if delta:
             self._answer_parts.append(delta)
+            # 追加到当前 content 段或新建段
+            if self._segments and self._segments[-1].get("type") == "content":
+                self._segments[-1]["content"] += delta
+            else:
+                self._segments.append({"type": "content", "content": delta})
 
     # ---------------- 注入 ToolsManager 的观察钩子 ----------------
 
     def on_tool_start(self, event: dict[str, Any]) -> None:
-        """tool_call_start: 插入工具调用行 (success=NULL 进行中), 前端实时显示"正在执行"
-        """
+        """tool_call_start: 插入工具调用行 (success=NULL 进行中), 前端实时显示"正在执行";
+        同时记录 segments 时间顺序"""
         if self._turn_id is None:
             return
+        tool_data = {
+            "seq": self._tool_seq,
+            "name": str(event.get("name", "")),
+            "arguments": _truncate_arguments(event.get("arguments")),
+            "success": None,
+            "call_id": str(event.get("call_id", "")),
+            "created_at": time.time(),
+        }
         with self._lock:
             conn = self._get_conn()
             conn.execute(
@@ -263,18 +292,20 @@ class DisplayRecorder:
                 " VALUES (?, ?, ?, ?, NULL, ?, ?)",
                 (
                     self._turn_id,
-                    self._tool_seq,
-                    str(event.get("name", "")),
-                    _truncate_arguments(event.get("arguments")),
-                    str(event.get("call_id", "")),
-                    time.time(),
+                    tool_data["seq"],
+                    tool_data["name"],
+                    tool_data["arguments"],
+                    tool_data["call_id"],
+                    tool_data["created_at"],
                 ),
             )
             conn.commit()
             self._tool_seq += 1
+        # 记录 tool segment
+        self._segments.append({"type": "tool", "tool": tool_data})
 
     def on_tool_end(self, event: dict[str, Any]) -> None:
-        """tool_call_end: 按 call_id 更新 success (1=完成 / 0=失败)"""
+        """tool_call_end: 按 call_id 更新 success (1=完成 / 0=失败), 并同步 segments 中的 tool 状态"""
         if self._turn_id is None:
             return
         success = 1 if event.get("success") else 0
@@ -294,15 +325,20 @@ class DisplayRecorder:
                     (success, self._turn_id, self._turn_id),
                 )
             conn.commit()
+        # 同步更新 segments 中的 tool 状态
+        for seg in self._segments:
+            if seg.get("type") == "tool" and seg.get("tool", {}).get("call_id") == call_id:
+                seg["tool"]["success"] = bool(success)
+                break
 
     # ---------------- 查询 (供前端) ----------------
 
     def list_turns(self, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
-        """列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细"""
+        """列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序"""
         conn = self._get_conn()
         with self._lock:
             sql = (
-                "SELECT id, turn_index, user_input, thinking, answer, attachments, created_at"
+                "SELECT id, turn_index, user_input, thinking, answer, attachments, segments, created_at"
                 " FROM display_turns WHERE conversation_id = ? ORDER BY turn_index ASC"
             )
             params: list[Any] = [self.conversation_id]
@@ -318,7 +354,8 @@ class DisplayRecorder:
                     "thinking": r[3],
                     "answer": r[4],
                     "attachments": json.loads(r[5]) if r[5] else None,
-                    "created_at": r[6],
+                    "segments": json.loads(r[6]) if r[6] else None,
+                    "created_at": r[7],
                     "tool_calls": self._list_tool_calls_locked(conn, r[0]),
                 }
                 for r in rows

@@ -564,6 +564,8 @@ class ChatService:
         return {"ok": True}
 
     # ---------------- 记忆管理 ----------------
+    # 注意: 管理接口是管理员工具, 恒定 full 模式 (MemoryStore 默认),
+    # 不受插件配置 memory_mode 约束; memory_mode 只管模型工具与注入
 
     def list_memories(self, scope: str = "web_chat") -> dict[str, Any]:
         """列出记忆 (按 scope)"""
@@ -579,6 +581,8 @@ class ChatService:
         store = MemoryStore(scope=scope)
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
         record = store.add(title=title, content=content, tags=tag_list, importance=importance)
+        if not record.get("ok"):
+            return {"ok": False, "error": record.get("error", "添加失败")}
         return {"ok": True, "memory": record}
 
     def update_memory(self, memory_id: str, *, scope: str = "web_chat", **fields: Any) -> dict[str, Any]:
@@ -586,10 +590,9 @@ class ChatService:
         from satrap.expend.tools.memory_store import MemoryStore
 
         store = MemoryStore(scope=scope)
-        try:
-            record = store.update(memory_id, **fields)
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        record = store.update(memory_id, **fields)
+        if not record.get("ok"):
+            return {"ok": False, "error": record.get("error", "更新失败")}
         return {"ok": True, "memory": record}
 
     def delete_memory(self, memory_id: str, *, scope: str = "web_chat") -> dict[str, Any]:
@@ -597,10 +600,9 @@ class ChatService:
         from satrap.expend.tools.memory_store import MemoryStore
 
         store = MemoryStore(scope=scope)
-        try:
-            store.delete(memory_id)
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        result = store.delete(memory_id)
+        if not result.get("ok"):
+            return {"ok": False, "error": result.get("error", "删除失败")}
         return {"ok": True}
 
     # ---------------- 删除会话 ----------------

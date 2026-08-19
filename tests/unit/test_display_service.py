@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -27,7 +27,7 @@ def _write_plugin(base: Path, name: str, tools: dict[str, str] | None = None) ->
     meta: dict[str, Any] = {"name": name, "version": "0.1.0", "description": f"{name} 插件"}
     if tools:
         meta["tools"] = tools
-    dumped = yaml.safe_dump(meta, allow_unicode=True)
+    dumped = cast(Any, yaml).safe_dump(meta, allow_unicode=True)  # pyyaml 无完整类型声明
     (pdir / "meta.yaml").write_text(dumped if isinstance(dumped, str) else "", encoding="utf-8")
     return pdir
 
@@ -298,3 +298,28 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
 
     thinks = asyncio.run(_run())
     assert thinks == ["low", "high"]
+
+
+def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):
+    """记忆管理接口: 存储层失败必须传播为 ok=False (不再无条件假成功)"""
+    from satrap.expend.tools import memory_store as ms_mod
+
+    monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
+    svc = _make_service(tmp_path, monkeypatch)
+
+    # 空标题/空内容 -> 失败传播
+    result = svc.add_memory("  ", "内容")
+    assert result["ok"] is False and result["error"]
+
+    # 正常添加
+    added = svc.add_memory("标题", "内容", tags="a, b", importance=3)
+    assert added["ok"] is True
+    memory_id = added["memory"]["memory_id"]
+
+    # 更新/删除不存在的 ID -> 失败传播
+    assert svc.update_memory("不存在的id", content="x")["ok"] is False
+    assert svc.delete_memory("不存在的id")["ok"] is False
+
+    # 正常更新/删除仍成功
+    assert svc.update_memory(memory_id, content="新内容")["ok"] is True
+    assert svc.delete_memory(memory_id)["ok"] is True

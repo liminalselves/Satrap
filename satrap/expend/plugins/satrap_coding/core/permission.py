@@ -45,6 +45,8 @@ class PermissionDecision(IntEnum):
 
 
 # plan mode 下被压制的写类操作 (集合)
+# 注: 记忆写操作有意不在此列 — 记忆是元信息, 与工作区写操作隔离,
+# 计划模式下仍允许增删改 (由 base_take 插件管理, 见 docs/satrap-coding-plugin.md)
 _WRITE_OPERATIONS = frozenset({
     "file_write",
     "file_delete",
@@ -54,7 +56,6 @@ _WRITE_OPERATIONS = frozenset({
     "sandbox_escape",
     "sandbox_import",
     "sandbox_export",
-    "memory_write",
 })
 
 DEFAULT_RULES_FILE = get_data_dir() / "coding" / "permissions.json"

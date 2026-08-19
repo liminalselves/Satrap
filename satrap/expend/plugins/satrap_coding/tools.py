@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shutil
 import subprocess
 import uuid
 from pathlib import Path
@@ -609,6 +610,19 @@ class AskUserTool(Tool):
 # ================= shell (本机 cmd/powershell + 审批) =================
 
 
+def _resolve_shell_executable(shell: str) -> str:
+    """解析 shell 可执行文件: PATH 优先, 回落系统目录绝对路径
+
+    System32 不在 PATH 的环境 (部分 Git Bash / 服务进程) 下裸文件名会 WinError 2
+    """
+    system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    if shell.lower() == "powershell":
+        found = shutil.which("powershell.exe")
+        return found or str(system_root / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+    found = shutil.which("cmd.exe")
+    return found or str(system_root / "System32" / "cmd.exe")
+
+
 class ShellTool(Tool):
     """执行本机 shell 命令 (PowerShell/cmd), 写操作走审批"""
 
@@ -650,12 +664,14 @@ class ShellTool(Tool):
         except ValueError as e:
             return f"错误: {e}"
         try:
-            executable = "powershell.exe" if shell.lower() == "powershell" else "cmd.exe"
+            use_ps = shell.lower() == "powershell"
+            executable = _resolve_shell_executable("powershell" if use_ps else "cmd")
             result = subprocess.run(
-                [executable, "-NoProfile", "-Command", command] if executable == "powershell.exe" else [executable, "/C", command],
+                [executable, "-NoProfile", "-Command", command] if use_ps else [executable, "/C", command],
                 cwd=workdir,
                 capture_output=True,
                 text=True,
+                errors="replace",
                 check=False,
                 timeout=max(1, int(timeout)),
             )
@@ -838,14 +854,15 @@ class AsyncShellTool(AsyncTool):
         except ValueError as e:
             return f"错误: {e}"
         try:
-            executable = "powershell.exe" if shell.lower() == "powershell" else "cmd.exe"
+            use_ps = shell.lower() == "powershell"
+            executable = _resolve_shell_executable("powershell" if use_ps else "cmd")
             args = (
                 [executable, "-NoProfile", "-Command", command]
-                if executable == "powershell.exe" else [executable, "/C", command]
+                if use_ps else [executable, "/C", command]
             )
             result = await asyncio.to_thread(
                 subprocess.run, args,
-                cwd=workdir, capture_output=True, text=True, check=False,
+                cwd=workdir, capture_output=True, text=True, errors="replace", check=False,
                 timeout=max(1, int(timeout)),
             )
             output = (result.stdout or "")[-20000:]

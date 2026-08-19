@@ -2,7 +2,7 @@
 
 import pytest
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, AsyncMock
 
 from satrap.core.utils.context import ContextManager, AsyncContextManager
@@ -152,7 +152,8 @@ class TestSummarizeAndCompress:
 
         # 传给 LLM 的文本中图片已投影为 [图片] (chat 接收 messages 列表)
         sent_messages = mock_llm.chat.call_args_list[0][0][0]
-        sent_text = sent_messages[0]["content"] if isinstance(sent_messages, list) else str(sent_messages)
+        # mock_llm 是 MagicMock, call_args 内容无类型, cast 收窄为 str
+        sent_text = cast(str, sent_messages[0]["content"]) if isinstance(sent_messages, list) else str(sent_messages)
         assert "[图片]" in sent_text
         assert "image_url" not in sent_text
 

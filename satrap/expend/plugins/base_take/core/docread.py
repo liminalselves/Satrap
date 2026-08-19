@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import cast
 
@@ -48,9 +49,32 @@ def _read_docx(path: Path) -> str:
     return "\n".join(parts)
 
 
+class _FontBBoxWarningFilter(logging.Filter):
+    """过滤 pdfminer 对缺 FontBBox 字体的警告: 纯文本提取不依赖 bbox, 属良性噪音"""
+
+    _MESSAGE = "Could not get FontBBox from font descriptor"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return self._MESSAGE not in msg
+
+
+def _mute_pdfminer_fontbbox_warning() -> None:
+    """给 pdfminer.pdffont 挂一次性过滤器, 仅吞掉上述良性警告 (幂等)"""
+    logger = logging.getLogger("pdfminer.pdffont")
+    if any(isinstance(f, _FontBBoxWarningFilter) for f in logger.filters):
+        return
+    logger.addFilter(_FontBBoxWarningFilter())
+
+
 def _read_pdf(path: Path) -> str:
     """pdfplumber 逐页 extract_text"""
     import pdfplumber
+
+    _mute_pdfminer_fontbbox_warning()
 
     parts: list[str] = []
     with pdfplumber.open(str(path)) as pdf:

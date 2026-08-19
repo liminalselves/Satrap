@@ -26,7 +26,7 @@ config_schema:
     type: select
     default: "full"
     options: ["disabled", "base", "full"]
-    description: "记忆模式: disabled (不注入/不可用) / base (只读) / full (可增删改)"
+    description: "记忆模式: disabled (不注入/不可写) / base (只读) / full (可增删改); 仅约束模型工具与注入, web 管理接口 (前端面板) 恒定可写"
 
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 tools:
@@ -40,3 +40,5 @@ tools:
   list_memories: 列出全部长期记忆 (含 ID)
 handlers:
   base_take.memory_inject: 在用户输入前注入长期记忆上下文
+commands:
+  memory: 管理长期记忆 (list/add/del/clear/mode)
