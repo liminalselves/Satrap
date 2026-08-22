@@ -1,13 +1,14 @@
-"""迷你 asyncio HTTP + WebSocket 服务器基类
+"""
+迷你 asyncio HTTP + WebSocket 服务器基类
 
-零外部依赖, 基于 asyncio.start_server 实现。供后端管理 API (http_api) 与
+零外部依赖, 基于 asyncio.start_server 实现. 供后端管理 API (http_api) 与
 聊天展示层 (display.server) 等服务复用; 子类只需实现三个钩子:
 
 - async _route(method, path, body) -> (status, dict): 普通 API 路由
 - async _ws_dispatch(path, reader, writer): WebSocket 端点分发 (未知端点自行关闭)
 - async _serve_static(writer, path) -> bool: 非 API 静态路径钩子, 返回 True 表示已处理
 
-共享基础设施: 请求解析, CORS 预检, JSON 响应, WebSocket 握手与帧收发。
+共享基础设施: 请求解析, CORS 预检, JSON 响应, WebSocket 握手与帧收发
 """
 from __future__ import annotations
 
@@ -19,20 +20,31 @@ import struct
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
-# CORS 配置 - 允许前端开发服务器跨域访问
+from satrap.core.log import logger
+
 DEFAULT_CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Max-Age": "86400",
 }
+# CORS 配置 - 允许前端开发服务器跨域访问
 
-# WebSocket 魔术字符串 (RFC 6455)
 WS_MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+# WebSocket 魔术字符串 (RFC 6455)
 
 
 def query_param(path: str, key: str) -> str:
-    """提取 query 参数值 (缺失返回空串)"""
+    """
+    提取 query 参数值 (缺失返回空串)
+
+    参数:
+    - path: 路径
+    - key: 密钥
+
+    返回:
+    - str: 空串)
+    """
     values = parse_qs(urlsplit(path).query).get(key)
     return unquote(values[0]) if values else ""
 
@@ -48,13 +60,22 @@ class MiniHTTPServer:
         *,
         log_errors: bool = False,
     ) -> None:
+        """
+        初始化 MiniHTTPServer
+
+        参数:
+        - host: 监听地址
+        - port: 监听端口
+        - cors_headers: CORS响应头
+        - log_errors: 日志错误
+        """
         self.host = host
         self.port = port
         self._cors = cors_headers if cors_headers is not None else DEFAULT_CORS_HEADERS
         self._log_errors = log_errors
         self._server: asyncio.Server | None = None
 
-    # ---------------- 生命周期 ----------------
+    # ---------- 生命周期 ----------
 
     async def start(self) -> None:
         """启动 HTTP 服务器"""
@@ -67,12 +88,18 @@ class MiniHTTPServer:
             self._server.close()
             await self._server.wait_closed()
 
-    # ---------------- 连接处理 ----------------
+    # ---------- 连接处理 ----------
 
     async def _handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """处理单次 HTTP 连接"""
+        """
+        处理单次 HTTP 连接
+
+        参数:
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         try:
             raw_request = await reader.readuntil(b"\r\n\r\n")
             first_line = raw_request.split(b"\r\n")[0].decode()
@@ -80,22 +107,22 @@ class MiniHTTPServer:
             method = parts[0]
             path = parts[1] if len(parts) > 1 else "/"
 
-            # CORS 预检
             if method == "OPTIONS":
                 self._send_cors_preflight(writer)
                 return
+            # CORS 预检
 
-            # WebSocket 升级请求
             if path.startswith("/ws/"):
                 await self._handle_websocket(reader, writer, raw_request, path)
                 return
+            # WebSocket 升级请求
 
-            # 静态文件 / SPA 钩子 (子类覆写, 默认不处理)
             if await self._serve_static(writer, path):
                 return
+            # 静态文件 / SPA 钩子 (子类覆写, 默认不处理)
 
-            # 读取请求体 (Content-Length)
             body = b""
+            # 读取请求体 (Content-Length)
             cl_idx = raw_request.lower().find(b"content-length:")
             if cl_idx >= 0:
                 cl_end = raw_request.find(b"\r\n", cl_idx)
@@ -109,8 +136,6 @@ class MiniHTTPServer:
             self._send_json(writer, 400, {"error": "bad request"})
         except Exception as e:
             if self._log_errors:
-                from satrap.core.log import logger
-
                 logger.error(f"[HTTP] 请求处理异常: {e}")
             self._send_json(writer, 500, {"error": str(e)})
         finally:
@@ -119,10 +144,15 @@ class MiniHTTPServer:
             except Exception:
                 pass
 
-    # ---------------- 响应 ----------------
+    # ---------- 响应 ----------
 
     def _send_cors_preflight(self, writer: asyncio.StreamWriter) -> None:
-        """发送 CORS 预检响应"""
+        """
+        发送 CORS 预检响应
+
+        参数:
+        - writer: 流写入器
+        """
         cors = "".join(f"{k}: {v}\r\n" for k, v in self._cors.items())
         header = (
             "HTTP/1.1 204 No Content\r\n"
@@ -132,7 +162,14 @@ class MiniHTTPServer:
         writer.write(header)
 
     def _send_json(self, writer: asyncio.StreamWriter, status: int, data: dict[str, Any]) -> None:
-        """发送 JSON 响应 (带 CORS 头)"""
+        """
+        发送 JSON 响应 (带 CORS 头)
+
+        参数:
+        - writer: 流写入器
+        - status: 状态码
+        - data: 输入数据
+        """
         resp = json.dumps(data, ensure_ascii=False).encode()
         status_text = "OK" if status == 200 else "Error"
         cors = "".join(f"{k}: {v}\r\n" for k, v in self._cors.items())
@@ -146,10 +183,19 @@ class MiniHTTPServer:
         writer.write(header + resp)
 
     def _query_param(self, path: str, key: str) -> str:
-        """提取 query 参数值 (缺失返回空串)"""
+        """
+        提取 query 参数值 (缺失返回空串)
+
+        参数:
+        - path: 路径
+        - key: 密钥
+
+        返回:
+        - str: 空串)
+        """
         return query_param(path, key)
 
-    # ---------------- WebSocket ----------------
+    # ---------- WebSocket 支持 ----------
 
     async def _handle_websocket(
         self,
@@ -158,7 +204,15 @@ class MiniHTTPServer:
         raw_request: bytes,
         path: str,
     ) -> None:
-        """处理 WebSocket 连接升级并按路径分发"""
+        """
+        处理 WebSocket 连接升级并按路径分发
+
+        参数:
+        - reader: 流读取器
+        - writer: 流写入器
+        - raw_request: 原始请求
+        - path: 路径
+        """
         headers = self._parse_headers(raw_request)
         ws_key = headers.get("sec-websocket-key", "")
         if not ws_key:
@@ -180,7 +234,15 @@ class MiniHTTPServer:
         await self._ws_dispatch(path, reader, writer)
 
     def _parse_headers(self, raw_request: bytes) -> dict[str, str]:
-        """解析 HTTP 请求头"""
+        """
+        解析 HTTP 请求头
+
+        参数:
+        - raw_request: 原始请求
+
+        返回:
+        - dict[str, str]: 解析 HTTP 请求头
+        """
         headers: dict[str, str] = {}
         for line in raw_request.decode().split("\r\n")[1:]:
             if ":" in line:
@@ -189,9 +251,15 @@ class MiniHTTPServer:
         return headers
 
     async def _ws_send(self, writer: asyncio.StreamWriter, data: dict[str, Any]) -> None:
-        """发送 WebSocket 文本帧"""
+        """
+        发送 WebSocket 文本帧
+
+        参数:
+        - writer: 流写入器
+        - data: 输入数据
+        """
         payload = json.dumps(data, ensure_ascii=False).encode()
-        header = bytearray([0x81])  # FIN=1, Opcode=1 (文本帧)
+        header = bytearray([0x81])   # FIN=1, Opcode=1 (文本帧)
         length = len(payload)
         if length < 126:
             header.append(length)
@@ -205,23 +273,56 @@ class MiniHTTPServer:
         await writer.drain()
 
     async def _ws_close(self, writer: asyncio.StreamWriter, code: int, reason: str) -> None:
-        """发送 WebSocket 关闭帧"""
+        """
+        发送 WebSocket 关闭帧
+
+        参数:
+        - writer: 流写入器
+        - code: 代码内容
+        - reason: 原因说明
+        """
         payload = struct.pack(">H", code) + reason.encode()
         writer.write(bytes(bytearray([0x88, len(payload)])) + payload)
         await writer.drain()
 
-    # ---------------- 钩子 (子类实现) ----------------
+    # ---------- 钩子 (子类实现) ----------
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
-        """路由分发 (子类实现)"""
+        """
+        路由分发 (子类实现)
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径
+        - body: 请求体
+
+        返回:
+        - tuple[int, dict[str, Any]]: 路由分发 (子类实现)
+        """
         raise NotImplementedError
 
     async def _ws_dispatch(
         self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """WebSocket 端点分发 (子类实现, 未知端点自行关闭)"""
+        """
+        WebSocket 端点分发 (子类实现, 未知端点自行关闭)
+
+        参数:
+        - path: 路径
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         await self._ws_close(writer, 1008, "unknown endpoint")
 
     async def _serve_static(self, writer: asyncio.StreamWriter, path: str) -> bool:
-        """静态文件 / SPA 钩子 (子类覆写), 返回 True 表示已处理"""
+        """
+        静态文件 / SPA 钩子 (子类覆写), 返回 True 表示已处理
+
+        参数:
+        - writer: 流写入器
+        - path: 路径
+
+        返回:
+        - bool:  True 表示已处理
+        """
         return False

@@ -77,7 +77,9 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 ## 工作区与免审批语义
 
-插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除), 工作区与沙箱合一: 默认沙箱根目录全局共享 (`.satrap/sandbox`, 可用 `session.coding_sandbox_root` 或插件配置 `sandbox_root` 覆盖)。免审批范围 (仅计划模式可拦截):
+插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除), 工作区与沙箱合一: 默认沙箱根目录全局共享 (`.satrap/sandbox`, 可用 `session.coding_sandbox_root` 或插件配置 `sandbox_root` 覆盖)。
+
+**工作区按会话解析 (项目功能)**: 文件/shell 工具的工作区根在**调用时**按会话解析 —— 会话鸭子属性 `session.coding_workspace_root` 优先 (项目会话由 ChatService 在建会话/改绑时注入), 属性不存在则回落全局 `workspace_root` 配置。多项目会话并存时各自操作各自的工作区, 互不干扰; 无项目会话行为与全局配置一致。免审批范围 (仅计划模式可拦截):
 
 - 文件工具写入沙箱根内路径 (write_file / edit_file), 只读工具始终免审批
 - shell 命令仅在工作区内活动 (无工作区外绝对路径, 如 `python demo.py` / 重定向写文件)

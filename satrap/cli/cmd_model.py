@@ -47,6 +47,12 @@ def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig) -> dic
 
 
 def cmd_model_list(args: argparse.Namespace):
+    """
+    处理 model_list 命令
+
+    参数:
+    - args: 命令参数
+    """
     client = daemon_client_from_args(args)
     if client.is_alive() and not offline_requested(args):
         data = client.list_models(typ=args.type) if args.type != "all" else {}
@@ -100,6 +106,12 @@ def _print_model_table(data: dict[str, Any], args: argparse.Namespace):
 
 
 def cmd_model_show(args: argparse.Namespace):
+    """
+    处理 model_show 命令
+
+    参数:
+    - args: 命令参数
+    """
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -131,6 +143,12 @@ def cmd_model_show(args: argparse.Namespace):
 
 
 def cmd_model_set(args: argparse.Namespace):
+    """
+    处理 model_set 命令
+
+    参数:
+    - args: 命令参数
+    """
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -171,6 +189,12 @@ def cmd_model_set(args: argparse.Namespace):
 
 
 def cmd_model_remove(args: argparse.Namespace):
+    """
+    处理 model_remove 命令
+
+    参数:
+    - args: 命令参数
+    """
     info = TYPE_MAP.get(args.type)
     if not info:
         print(f"未知类型: {args.type}")
@@ -201,6 +225,12 @@ def cmd_model_remove(args: argparse.Namespace):
 
 
 def dispatch(args: argparse.Namespace):
+    """
+    分派命令
+
+    参数:
+    - args: 命令参数
+    """
     action_map = {
         "list": cmd_model_list,
         "show": cmd_model_show,

@@ -1,10 +1,11 @@
-"""platform.event 消息链 / 结果构建 / 事件属性单元测试
+"""
+platform.event 消息链 / 结果构建 / 事件属性单元测试
 
 覆盖:
 - MessageSession: 序列化 / 反序列化 / 非法字符串 fallback
 - MessageChain: 构造 / 迭代 / 拼接 / 索引 / 序列化
 - MessageEventResult: 文本 / 图片 / 停止 / 继续 / 日志链式构建
-- MessageEvent: 会话标识读写、消息读取、结果控制、发送、临时文件、扩展字段
+- MessageEvent: 会话标识读写, 消息读取, 结果控制, 发送, 临时文件, 扩展字段
 """
 from __future__ import annotations
 
@@ -64,7 +65,7 @@ def _make_event(adapter: _RecorderAdapter, session_id: str = "s1") -> MessageEve
     )
 
 
-# ================= MessageSession =================
+# ================= MessageSession 测试 =================
 
 
 def test_message_session_str_roundtrip():
@@ -83,7 +84,7 @@ def test_message_session_from_str_invalid_fallback():
     assert parsed.session_id == "invalid"
 
 
-# ================= MessageChain =================
+# ================= MessageChain 测试 =================
 
 
 def test_message_chain_operations():
@@ -109,7 +110,7 @@ def test_message_chain_to_dict_list():
     assert items[0]["data"]["text"] == "你好"
 
 
-# ================= MessageEventResult =================
+# ================= MessageEventResult 测试 =================
 
 
 def test_event_result_chain_building():
@@ -139,7 +140,7 @@ def test_event_result_chain_building():
     assert result.console_log == "log-line"
 
 
-# ================= MessageEvent =================
+# ================= MessageEvent 测试 =================
 
 
 def test_event_session_identifiers():
@@ -278,7 +279,7 @@ def test_event_temporary_files():
     f1.write_bytes(b"x")
     f2.write_bytes(b"x")
     event.track_temporary_local_file(str(f1))
-    event.track_temporary_local_file(str(f1))  # 重复跟踪不生效
+    event.track_temporary_local_file(str(f1))   # 重复跟踪不生效
     event.track_temporary_local_file(str(f2))
 
     event.cleanup_temporary_local_files()
@@ -303,7 +304,12 @@ def test_event_extras():
 
 @pytest.mark.asyncio
 async def test_event_process_buffer(monkeypatch: pytest.MonkeyPatch):
-    """缓冲区分段提取: 匹配内容逐段发送, 返回剩余部分"""
+    """
+    缓冲区分段提取: 匹配内容逐段发送, 返回剩余部分
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     async def no_sleep(_: float) -> None:
         return None
 

@@ -22,7 +22,9 @@ class SubAgentModel(ModelWorkflowFramework):
         初始化子代理模型
 
         参数:
-        llm: LLM模型实例
+        - llm: LLM 模型实例
+        - context_id: 子代理上下文 ID
+        - tools_manager: 工具管理器实例
         """
         super().__init__(llm, context_id = f"sub_agent_{context_id}", tools_manager = tools_manager, system_prompt = SUB_AGENT_SYSTEM_PROMPT)
 
@@ -31,7 +33,10 @@ class SubAgentModel(ModelWorkflowFramework):
         运行子代理任务
 
         参数:
-        task: 子代理要执行的任务描述
+        - task: 子代理要执行的任务描述
+
+        返回:
+        - 运行子代理任务
         """
         return self.tools_agent(task)
     
@@ -42,7 +47,9 @@ class AsyncSubAgentModel(AsyncModelWorkflowFramework):
         初始化异步子代理模型
 
         参数:
-        llm: AsyncLLM模型实例
+        - llm: AsyncLLM 模型实例
+        - context_id: 子代理上下文 ID
+        - tools_manager: 异步工具管理器实例
         """
         super().__init__(llm, context_id = f"sub_agent_{context_id}", tools_manager = tools_manager, system_prompt = SUB_AGENT_SYSTEM_PROMPT)
 
@@ -51,7 +58,10 @@ class AsyncSubAgentModel(AsyncModelWorkflowFramework):
         运行异步子代理任务
 
         参数:
-        task: 子代理要执行的任务描述
+        - task: 子代理要执行的任务描述
+
+        返回:
+        - 运行异步子代理任务
         """
         return self.tools_agent(task)
 
@@ -62,8 +72,8 @@ class SubAgent(Tool):
         初始化子代理工具
 
         参数:
-        llm: LLM模型实例
-        tools_manager: ToolsManager模型实例
+        - llm: LLM 模型实例
+        - tools_manager: 工具管理器实例
         """
         super().__init__(
             tool_name = "sub_agent",
@@ -79,9 +89,12 @@ class SubAgent(Tool):
         执行子代理任务
 
         参数:
-        task: 子代理要执行的任务描述数组
+        - task: 子代理要执行的任务描述数组
+
+        返回:
+        - str: 执行子代理任务
         """
-        # 1. 安全解析 (处理模型可能传字符串或数组的情况)
+        # Step.1 安全解析 (处理模型可能传字符串或数组的情况)
         try:
             task_list: str | list[str] | int | float | bool | None = json.loads(task)
             if isinstance(task_list, str):
@@ -93,17 +106,17 @@ class SubAgent(Tool):
             logger.warning(f"[SubAgent] 警告：传入的task不是JSON数组，尝试当作单个任务处理")
             task_list = [task]   # 解析失败就当单个任务处理
 
-        # 2. 如果没有任务, 直接返回
+        # Step.2 如果没有任务, 直接返回
         if not task_list:
             return "未收到任何子任务"
         
-        # 3. 定义单个子任务的执行函数
+        # Step.3 定义单个子任务的执行函数
         def run_single(index: int, sub_task: str):
             sub_agent = SubAgentModel(self.llm, str(index), self.tools_manager)
             result = sub_agent.forward(sub_task)
             return index, sub_task, result   # 返回 (索引, 子任务, 结果) 以便后续按序拼接
 
-        # 4. 并行执行
+        # Step.4 并行执行
         results_dict: dict[int, str] = {}
         with ThreadPoolExecutor(max_workers=16) as executor:   # max_workers 建议根据 API 限流调整 
             futures = {
@@ -115,7 +128,7 @@ class SubAgent(Tool):
                 idx, sub_task, result = future.result()
                 results_dict[idx] = f"子代理{idx}执行任务: {sub_task}，结果: {result}\n"
 
-        # 5. 按原始顺序拼接输出
+        # Step.5 按原始顺序拼接输出
         final_results = ""
         for i in range(1, len(task_list) + 1):
             final_results += results_dict.get(i, f"子代理{i}执行失败: 未返回结果\n")
@@ -129,8 +142,8 @@ class AsyncSubAgent(AsyncTool):
         初始化异步子代理工具
 
         参数:
-        llm: AsyncLLM模型实例
-        tools_manager: AsyncToolsManager模型实例
+        - llm: AsyncLLM 模型实例
+        - tools_manager: 异步工具管理器实例
         """
         super().__init__(
             tool_name = "sub_agent",
@@ -146,9 +159,12 @@ class AsyncSubAgent(AsyncTool):
         执行异步子代理任务
 
         参数:
-        task: 子代理要执行的任务描述数组
+        - task: 子代理要执行的任务描述数组
+
+        返回:
+        - str: 执行异步子代理任务
         """
-        # 1. 安全解析 (处理模型可能传字符串或数组的情况)
+        # Step.1 安全解析 (处理模型可能传字符串或数组的情况)
         try:
             task_list: str | list[str] | int | float | bool | None = json.loads(task)
             if isinstance(task_list, str):
@@ -163,7 +179,7 @@ class AsyncSubAgent(AsyncTool):
         if not task_list:
             return "未收到任何子任务"
 
-        # 2. 定义单个子任务的执行函数
+        # Step.2 定义单个子任务的执行函数
         async def run_single(index: int, sub_task: str) -> dict[str, Any]:
             sub_agent = await AsyncSubAgentModel.create(self.llm, index, self.tools_manager)
             result = await sub_agent.forward(sub_task)
@@ -174,7 +190,7 @@ class AsyncSubAgent(AsyncTool):
             }   # 返回包含索引, 子任务和结果的字典
         
 
-        # 3. 并行执行
+        # Step.3 并行执行
         coros = [run_single(i, sub_task) for i, sub_task in enumerate(task_list, start=1)]
         # 创建所有协程任务
 

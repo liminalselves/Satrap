@@ -12,7 +12,8 @@ class _TokenBucket:
 
 
 class RateLimiter:
-    """Token Bucket 限流器
+    """
+    Token Bucket 限流器
 
     按 key (通常为 session_id) 限流, 使用 asyncio.Lock 保证并发安全
     """
@@ -31,6 +32,9 @@ class RateLimiter:
     async def check(self, key: str) -> tuple[bool, float]:
         """
         检查是否允许请求
+
+        参数:
+        - key: 密钥
 
         返回:
         - (True, 0.0): 允许请求

@@ -1,4 +1,5 @@
-"""LiteVectorDB / DataBase 向量库单元测试
+"""
+LiteVectorDB / DataBase 向量库单元测试
 
 覆盖:
 - LiteVectorDB: 集合管理 / 添加 / 搜索排序与阈值 / 统计 / 删除 / 持久化 roundtrip
@@ -14,11 +15,16 @@ import pytest
 from satrap.core.database import DataBase, LiteVectorDB
 
 
-# ================= LiteVectorDB =================
+# ================= LiteVectorDB 测试 =================
 
 
 def test_lite_vector_add_search_roundtrip(tmp_path: Path):
-    """添加文档后可搜索, 相似度排序正确"""
+    """
+    添加文档后可搜索, 相似度排序正确
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     db.add_to_collection(
@@ -36,7 +42,12 @@ def test_lite_vector_add_search_roundtrip(tmp_path: Path):
 
 
 def test_lite_vector_search_threshold_filters(tmp_path: Path):
-    """低于阈值的文档被过滤"""
+    """
+    低于阈值的文档被过滤
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
     metadata: list[dict[str, Any]] = [{}] * 2
     db.add_to_collection(
@@ -50,7 +61,12 @@ def test_lite_vector_search_threshold_filters(tmp_path: Path):
 
 
 def test_lite_vector_missing_and_empty_collection(tmp_path: Path):
-    """不存在的集合 / 空集合返回空结果"""
+    """
+    不存在的集合 / 空集合返回空结果
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
     assert db.search("missing", [1.0, 0.0]) == []
     db.create_collection("empty")
@@ -58,7 +74,12 @@ def test_lite_vector_missing_and_empty_collection(tmp_path: Path):
 
 
 def test_lite_vector_stats_and_delete(tmp_path: Path):
-    """集合统计与删除"""
+    """
+    集合统计与删除
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     assert db.get_collection_stats("docs") == {"document_count": 0, "vector_dimension": 0}
@@ -75,7 +96,12 @@ def test_lite_vector_stats_and_delete(tmp_path: Path):
 
 
 def test_lite_vector_persist_roundtrip(tmp_path: Path):
-    """数据持久化: 重建实例后从磁盘恢复"""
+    """
+    数据持久化: 重建实例后从磁盘恢复
+
+    参数:
+    - tmp_path: tmp路径
+    """
     persist = str(tmp_path / "vec")
     db = LiteVectorDB(persist_path=persist)
     db.add_to_collection(
@@ -89,18 +115,28 @@ def test_lite_vector_persist_roundtrip(tmp_path: Path):
 
 
 def test_lite_vector_add_auto_creates_collection(tmp_path: Path):
-    """未创建集合时添加数据自动创建"""
+    """
+    未创建集合时添加数据自动创建
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
-    added = db.add_to_collection("auto", ["x"], [[1.0, 0.0]], None)  # type: ignore[arg-type]
+    added = db.add_to_collection("auto", ["x"], [[1.0, 0.0]], None)   # type: ignore[arg-type]
     assert added == 1
     assert db.get_collection_names() == ["auto"]
 
 
-# ================= DataBase (faiss + SQLite) =================
+# ================= DataBase (faiss + SQLite) 测试 =================
 
 
 def test_database_add_search_roundtrip(tmp_path: Path):
-    """faiss 数据库添加与搜索"""
+    """
+    faiss 数据库添加与搜索
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = DataBase(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     db.add_to_collection(
@@ -122,14 +158,24 @@ def test_database_add_search_roundtrip(tmp_path: Path):
 
 
 def test_database_missing_and_empty(tmp_path: Path):
-    """不存在的集合返回空结果"""
+    """
+    不存在的集合返回空结果
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = DataBase(persist_path=str(tmp_path / "vec"))
     assert db.search("missing", [1.0, 0.0]) == []
     assert db.get_collection_stats("missing") == {"document_count": 0, "vector_dimension": 0}
 
 
 def test_database_length_mismatch_raises(tmp_path: Path):
-    """documents / vectors / metadata 长度不一致抛 ValueError"""
+    """
+    documents / vectors / metadata 长度不一致抛 ValueError
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = DataBase(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     metadata3: list[dict[str, Any]] = [{}] * 2
@@ -138,7 +184,12 @@ def test_database_length_mismatch_raises(tmp_path: Path):
 
 
 def test_database_dim_mismatch_raises(tmp_path: Path):
-    """向量维度不一致抛 ValueError"""
+    """
+    向量维度不一致抛 ValueError
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = DataBase(persist_path=str(tmp_path / "vec"))
     db.create_collection("docs")
     db.add_to_collection("docs", ["a"], [[1.0, 0.0]], [{}])
@@ -147,7 +198,12 @@ def test_database_dim_mismatch_raises(tmp_path: Path):
 
 
 def test_database_delete_collection(tmp_path: Path):
-    """删除集合: 数据与索引文件一并清理"""
+    """
+    删除集合: 数据与索引文件一并清理
+
+    参数:
+    - tmp_path: tmp路径
+    """
     persist = str(tmp_path / "vec")
     db = DataBase(persist_path=persist)
     db.create_collection("docs")

@@ -45,7 +45,7 @@ export function Modal({
       if (idx !== -1) modalStack.splice(idx, 1);
       if (modalStack.length === 0) {
         document.body.style.overflow = '';
-        zCounter = 50; // 全部关闭后重置, 避免无限增长
+        zCounter = 50;   // 全部关闭后重置, 避免无限增长
       }
     };
   }, [open, id]);

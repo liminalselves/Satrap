@@ -26,37 +26,93 @@ GROUP_SESSION_PREFIX = "group%"
 
 
 def private_session_id(user_id: Any) -> str:
-    """生成 OneBot 私聊会话 ID"""
+    """
+    生成 OneBot 私聊会话 ID
+
+    参数:
+    - user_id: 用户 ID
+
+    返回:
+    - str: 生成 OneBot 私聊会话 ID
+    """
     return f"{PRIVATE_SESSION_PREFIX}{user_id}"
 
 
 def group_session_id(group_id: Any) -> str:
-    """生成 OneBot 群聊会话 ID"""
+    """
+    生成 OneBot 群聊会话 ID
+
+    参数:
+    - group_id: 群组 ID
+
+    返回:
+    - str: 生成 OneBot 群聊会话 ID
+    """
     return f"{GROUP_SESSION_PREFIX}{group_id}"
 
 
 def extract_private_user_id(session_id: str) -> str:
-    """从私聊会话 ID 提取 user_id"""
+    """
+    从私聊会话 ID 提取 user_id
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - str: 从私聊会话 ID 提取 user_id
+    """
     return session_id.removeprefix(PRIVATE_SESSION_PREFIX)
 
 
 def extract_group_id(session_id: str) -> str:
-    """从群聊会话 ID 提取 group_id"""
+    """
+    从群聊会话 ID 提取 group_id
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - str: 从群聊会话 ID 提取 group_id
+    """
     return session_id.removeprefix(GROUP_SESSION_PREFIX)
 
 
 def is_private_session(session_id: str) -> bool:
-    """判断是否为 OneBot 私聊会话 ID"""
+    """
+    判断是否为 OneBot 私聊会话 ID
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 判断是否为 OneBot 私聊会话 ID
+    """
     return session_id.startswith(PRIVATE_SESSION_PREFIX) and len(session_id) > len(PRIVATE_SESSION_PREFIX)
 
 
 def is_group_session(session_id: str) -> bool:
-    """判断是否为 OneBot 群聊会话 ID"""
+    """
+    判断是否为 OneBot 群聊会话 ID
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 判断是否为 OneBot 群聊会话 ID
+    """
     return session_id.startswith(GROUP_SESSION_PREFIX) and len(session_id) > len(GROUP_SESSION_PREFIX)
 
 
 def normalize_segments(message: Any) -> list[dict[str, Any]]:
-    """将 OneBot message 字段统一为 segment 列表"""
+    """
+    将 OneBot message 字段统一为 segment 列表
+
+    参数:
+    - message: 消息内容
+
+    返回:
+    - list[dict[str, Any]]: 将 OneBot message 字段统一为 segment 列表
+    """
     if isinstance(message, list):
         return [seg for seg in cast(list[Any], message) if isinstance(seg, dict)]
     if isinstance(message, str):
@@ -65,7 +121,15 @@ def normalize_segments(message: Any) -> list[dict[str, Any]]:
 
 
 def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[BaseMessageComponent], str]:
-    """将 OneBot 消息段转换为 Satrap 消息组件和可读文本"""
+    """
+    将 OneBot 消息段转换为 Satrap 消息组件和可读文本
+
+    参数:
+    - segments: 消息段列表
+
+    返回:
+    - tuple[list[BaseMessageComponent], str]: 将 OneBot 消息段转换为 Satrap 消息组件和可读文本
+    """
     components: list[BaseMessageComponent] = []
     text_parts: list[str] = []
 
@@ -126,7 +190,15 @@ def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[
 
 
 async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[str, Any]:
-    """将 Satrap 消息组件转换为 OneBot 消息段"""
+    """
+    将 Satrap 消息组件转换为 OneBot 消息段
+
+    参数:
+    - component: 消息组件
+
+    返回:
+    - dict[str, Any]: 将 Satrap 消息组件转换为 OneBot 消息段
+    """
     if isinstance(component, Plain):
         return {"type": "text", "data": {"text": component.text}}
     if isinstance(component, At):
@@ -151,12 +223,29 @@ async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[s
 
 
 async def message_chain_to_onebot_segments(components: list[BaseMessageComponent]) -> list[dict[str, Any]]:
-    """将消息链转换为 OneBot segment 列表"""
+    """
+    将消息链转换为 OneBot segment 列表
+
+    参数:
+    - components: 消息组件列表
+
+    返回:
+    - list[dict[str, Any]]: 将消息链转换为 OneBot segment 列表
+    """
     return [await component_to_onebot_segment(comp) for comp in components]
 
 
 def create_platform_message(raw_event: dict[str, Any], self_id: str) -> PlatformMessage:
-    """从 OneBot 原始事件创建 PlatformMessage"""
+    """
+    从 OneBot 原始事件创建 PlatformMessage
+
+    参数:
+    - raw_event: raw事件
+    - self_id: 自身 ID
+
+    返回:
+    - PlatformMessage: 从 OneBot 原始事件创建 PlatformMessage
+    """
     message = PlatformMessage()
     message.raw_message = raw_event
     message.self_id = str(raw_event.get("self_id") or self_id or "")
@@ -191,7 +280,15 @@ def create_platform_message(raw_event: dict[str, Any], self_id: str) -> Platform
 
 
 def _normalize_file_source(source: str) -> str:
-    """将本地路径转换为 OneBot 可识别的 file:// 来源"""
+    """
+    将本地路径转换为 OneBot 可识别的 file:// 来源
+
+    参数:
+    - source: 来源
+
+    返回:
+    - str: 将本地路径转换为 OneBot 可识别的 file:// 来源
+    """
     if not source:
         return source
     if source.startswith(("http://", "https://", "file://", "base64://")):

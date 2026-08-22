@@ -1,4 +1,5 @@
-"""SessionManager 检查点集成 (P3-1 收尾) 单元测试
+"""
+SessionManager 检查点集成 (P3-1 收尾) 单元测试
 
 覆盖:
 - default_checkpoint / default_checkpoint_db 注入会话构造
@@ -104,7 +105,12 @@ def _make_mgr(tmp_path: Path, **kw: Any) -> SessionManager:
 
 
 def test_default_checkpoint_injected(tmp_path: Path):
-    """default_checkpoint=True 时, 未显式配置的会话收到注入的开关与库路径"""
+    """
+    default_checkpoint=True 时, 未显式配置的会话收到注入的开关与库路径
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     sm = _make_mgr(tmp_path, default_checkpoint=True, default_checkpoint_db=db)
 
@@ -117,7 +123,12 @@ def test_default_checkpoint_injected(tmp_path: Path):
 
 
 def test_explicit_config_overrides_default(tmp_path: Path):
-    """session_config 显式配置优先于 SessionManager 默认值"""
+    """
+    session_config 显式配置优先于 SessionManager 默认值
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     db_custom = str(tmp_path / "custom.db")
     sm = _make_mgr(tmp_path, default_checkpoint=True, default_checkpoint_db=db)
@@ -133,7 +144,12 @@ def test_explicit_config_overrides_default(tmp_path: Path):
 
 
 def test_default_off_keeps_behavior(tmp_path: Path):
-    """default_checkpoint=False (默认) 时行为不变: 收到 False"""
+    """
+    default_checkpoint=False (默认) 时行为不变: 收到 False
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_mgr(tmp_path)
 
     entry = sm._create_entry(_make_cfg("sid-3"))
@@ -143,7 +159,12 @@ def test_default_off_keeps_behavior(tmp_path: Path):
 
 
 def test_default_db_only_when_configured(tmp_path: Path):
-    """default_checkpoint_db=None 时 db_path 使用会话自身默认"""
+    """
+    default_checkpoint_db=None 时 db_path 使用会话自身默认
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_mgr(tmp_path, default_checkpoint=True)
 
     entry = sm._create_entry(_make_cfg("sid-4"))
@@ -153,7 +174,12 @@ def test_default_db_only_when_configured(tmp_path: Path):
 
 
 def test_injection_ignored_when_constructor_rejects(tmp_path: Path):
-    """构造器不接受 enable_checkpoint 时注入被忽略, 不抛错"""
+    """
+    构造器不接受 enable_checkpoint 时注入被忽略, 不抛错
+
+    参数:
+    - tmp_path: tmp路径
+    """
 
     class _StrictSession(Session):
         kw: dict[str, Any] = {}
@@ -187,7 +213,12 @@ def test_injection_ignored_when_constructor_rejects(tmp_path: Path):
 
 
 def test_session_config_constructor_case_injected(tmp_path: Path):
-    """case 1 (session_config 入参) 同样注入检查点默认值"""
+    """
+    case 1 (session_config 入参) 同样注入检查点默认值
+
+    参数:
+    - tmp_path: tmp路径
+    """
 
     class _ConfigSession(Session):
         def __init__(
@@ -221,7 +252,12 @@ def test_session_config_constructor_case_injected(tmp_path: Path):
 
 
 def test_end_to_end_real_session_checkpoint(tmp_path: Path):
-    """真实会话子类: 注入开启后会话级检查点端到端可用"""
+    """
+    真实会话子类: 注入开启后会话级检查点端到端可用
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     sm = SessionManager(
         db_path=str(tmp_path / "session_config.db"),

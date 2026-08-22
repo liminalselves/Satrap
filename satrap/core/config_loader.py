@@ -5,12 +5,15 @@ import os
 from pathlib import Path
 from typing import Any, Dict, cast
 
+import yaml
+
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.log import logger
 
 
 class ConfigLoader:
-    """配置加载器
+    """
+    配置加载器
 
     支持 YAML / JSON / Dict 三种来源, 以及环境变量覆盖敏感字段
     示例:
@@ -21,7 +24,15 @@ class ConfigLoader:
 
     @staticmethod
     def default_config_document(config: BackendConfig | None = None) -> dict[str, Any]:
-        """生成默认配置文档"""
+        """
+        生成默认配置文档
+
+        参数:
+        - config: 配置信息
+
+        返回:
+        - dict[str, Any]: 生成默认配置文档
+        """
         cfg = config or BackendConfig()
         return {
             "model_config_path": cfg.model_config_path,
@@ -46,7 +57,15 @@ class ConfigLoader:
 
     @staticmethod
     def candidate_paths(cwd: str | Path | None = None) -> list[Path]:
-        """返回配置文件自动检测路径, 根目录优先, .satrap 目录其次, satrap 目录兜底"""
+        """
+        返回配置文件自动检测路径, 根目录优先, .satrap 目录其次, satrap 目录兜底
+
+        参数:
+        - cwd: 当前工作目录
+
+        返回:
+        - list[Path]: 配置文件自动检测路径, 根目录优先, .satrap 目录其次, satrap 目录兜底
+        """
         root = Path(cwd) if cwd is not None else Path.cwd()
         names = ("config.yaml", "config.yml", "config.json")
         return (
@@ -57,13 +76,29 @@ class ConfigLoader:
 
     @staticmethod
     def default_config_path(cwd: str | Path | None = None) -> Path:
-        """返回无配置时应创建的默认配置路径"""
+        """
+        返回无配置时应创建的默认配置路径
+
+        参数:
+        - cwd: 当前工作目录
+
+        返回:
+        - Path: 无配置时应创建的默认配置路径
+        """
         root = Path(cwd) if cwd is not None else Path.cwd()
         return root / ".satrap" / "config.yaml"
 
     @staticmethod
     def ensure_default_config(cwd: str | Path | None = None) -> Path:
-        """确保默认配置文件存在, 不覆盖已有配置"""
+        """
+        确保默认配置文件存在, 不覆盖已有配置
+
+        参数:
+        - cwd: 当前工作目录
+
+        返回:
+        - Path: 确保默认配置文件存在, 不覆盖已有配置
+        """
         for path in ConfigLoader.candidate_paths(cwd):
             if path.exists():
                 return path
@@ -71,7 +106,6 @@ class ConfigLoader:
         path = ConfigLoader.default_config_path(cwd)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            import yaml
             dumped = yaml.safe_dump(
                 ConfigLoader.default_config_document(),
                 allow_unicode=True,
@@ -88,14 +122,21 @@ class ConfigLoader:
 
     @staticmethod
     def from_yaml(path: str | Path) -> BackendConfig:
-        """从 YAML 文件加载配置; 需要 PyYAML 库"""
+        """
+        从 YAML 文件加载配置; 需要 PyYAML 库
+
+        参数:
+        - path: 路径
+
+        返回:
+        - BackendConfig: 从 YAML 文件加载配置; 需要 PyYAML 库
+        """
         path = Path(path)
         if not path.exists():
             logger.warning(f"[ConfigLoader] YAML 文件不存在: {path}, 返回默认配置")
             return BackendConfig()
 
         try:
-            import yaml
             with path.open("r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
             if not isinstance(data, dict):
@@ -110,7 +151,15 @@ class ConfigLoader:
 
     @staticmethod
     def from_json(path: str | Path) -> BackendConfig:
-        """从 JSON 文件加载配置"""
+        """
+        从 JSON 文件加载配置
+
+        参数:
+        - path: 路径
+
+        返回:
+        - BackendConfig: 从 JSON 文件加载配置
+        """
         path = Path(path)
         if not path.exists():
             logger.warning(f"[ConfigLoader] JSON 文件不存在: {path}, 返回默认配置")
@@ -128,18 +177,33 @@ class ConfigLoader:
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> BackendConfig:
-        """从字典加载配置"""
+        """
+        从字典加载配置
+
+        参数:
+        - data: 输入数据
+
+        返回:
+        - BackendConfig: 从字典加载配置
+        """
         return BackendConfig.from_dict(data)
 
     @staticmethod
     def merge_env(config: BackendConfig) -> BackendConfig:
-        """用环境变量覆盖配置中的敏感字段
+        """
+        用环境变量覆盖配置中的敏感字段
+
+        参数:
+        - config: 配置信息
 
         支持的环境变量:
         - SATRAP_MODEL_CONFIG_PATH
         - SATRAP_SESSION_CLASS_CONFIG_PATH
         - SATRAP_DB_DIR (同时更新 session_db 和 user_db 的目录)
         - SATRAP_LLM_TIMEOUT
+
+        返回:
+        - BackendConfig: 用环境变量覆盖配置中的敏感字段
         """
         env_map = {
             "SATRAP_MODEL_CONFIG_PATH": "model_config_path",
@@ -176,7 +240,12 @@ class ConfigLoader:
 
     @staticmethod
     def autodetect() -> BackendConfig:
-        """自动检测并加载配置文件, 不存在时创建 .satrap/config.yaml"""
+        """
+        自动检测并加载配置文件, 不存在时创建 .satrap/config.yaml
+
+        返回:
+        - BackendConfig: 自动检测并加载配置文件, 不存在时创建 .satrap/config.yaml
+        """
         for path in ConfigLoader.candidate_paths():
             if path.exists():
                 loader = ConfigLoader.from_yaml if path.suffix in (".yaml", ".yml") else ConfigLoader.from_json

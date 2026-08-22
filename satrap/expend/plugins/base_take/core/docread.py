@@ -1,4 +1,5 @@
-"""文档解析: xlsx / docx / pdf / 纯文本 提取为纯文本
+"""
+文档解析: xlsx / docx / pdf / 纯文本 提取为纯文本
 
 按扩展名分发到对应解析器, 统一返回纯文本; 解析失败抛出带明确信息的异常
 依赖: openpyxl (xlsx) / python-docx (docx) / pdfplumber (pdf), 均入 requirements
@@ -9,13 +10,21 @@ import logging
 from pathlib import Path
 from typing import cast
 
-# 纯文本可直接读取的扩展名
 _TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".log", ".yaml", ".yml", ".toml", ".xml", ".html", ".js", ".ts"}
+# 纯文本可直接读取的扩展名
 
 
 def _read_xlsx(path: Path) -> str:
-    """openpyxl 读所有 sheet, 每行拼 TSV 文本"""
-    from openpyxl import load_workbook
+    """
+    openpyxl 读所有 sheet, 每行拼 TSV 文本
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: openpyxl 读所有 sheet, 每行拼 TSV 文本
+    """
+    from openpyxl import load_workbook   # 仅在读取 xlsx 时加载可选依赖
     from openpyxl.worksheet._read_only import ReadOnlyWorksheet
 
     wb = load_workbook(str(path), read_only=True, data_only=True)
@@ -32,8 +41,16 @@ def _read_xlsx(path: Path) -> str:
 
 
 def _read_docx(path: Path) -> str:
-    """python-docx 读段落 + 表格, 拼纯文本"""
-    import docx
+    """
+    python-docx 读段落 + 表格, 拼纯文本
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: python-docx 读段落 + 表格, 拼纯文本
+    """
+    import docx   # 仅在读取 docx 时加载可选依赖
 
     doc = docx.Document(str(path))
     parts: list[str] = []
@@ -55,6 +72,15 @@ class _FontBBoxWarningFilter(logging.Filter):
     _MESSAGE = "Could not get FontBBox from font descriptor"
 
     def filter(self, record: logging.LogRecord) -> bool:
+        """
+        执行 `filter` 操作
+
+        参数:
+        - record: 记录
+
+        返回:
+        - bool: 执行 `filter` 操作
+        """
         try:
             msg = record.getMessage()
         except Exception:
@@ -71,8 +97,16 @@ def _mute_pdfminer_fontbbox_warning() -> None:
 
 
 def _read_pdf(path: Path) -> str:
-    """pdfplumber 逐页 extract_text"""
-    import pdfplumber
+    """
+    pdfplumber 逐页 extract_text
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: pdfplumber 逐页 extract_text
+    """
+    import pdfplumber   # 仅在读取 pdf 时加载可选依赖
 
     _mute_pdfminer_fontbbox_warning()
 
@@ -85,10 +119,17 @@ def _read_pdf(path: Path) -> str:
 
 
 def extract_text(path: str | Path) -> str:
-    """按扩展名提取文档纯文本
+    """
+    按扩展名提取文档纯文本
+
+    参数:
+    - path: 路径
 
     支持: .xlsx / .docx / .pdf / 常见纯文本 (.txt/.md/.py 等)
     解析失败抛出 ValueError (带明确原因)
+
+    返回:
+    - str: 按扩展名提取文档纯文本
     """
     p = Path(path)
     if not p.is_file():

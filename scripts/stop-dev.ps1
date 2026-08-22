@@ -1,16 +1,16 @@
-# Satrap Stop Script
-# Stop all Satrap related services
+# Satrap 停止脚本
+# 停止全部 Satrap 相关服务
 
 $ErrorActionPreference = "SilentlyContinue"
 
-# Project root directory (script is in scripts subdirectory)
+# 项目根目录 (脚本位于 scripts 子目录)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $DataDir = Join-Path $ProjectRoot ".satrap"
 
 Write-Host "Stopping Satrap services..." -ForegroundColor Yellow
 
-# Stop via control server API
+# 通过控制服务 API 停止
 try {
     Invoke-RestMethod -Uri "http://127.0.0.1:19871/shutdown" -Method Post -TimeoutSec 2 | Out-Null
     Write-Host "  Control server received stop command" -ForegroundColor Gray
@@ -20,7 +20,7 @@ try {
 
 Start-Sleep -Milliseconds 500
 
-# Force kill Satrap related Python processes
+# 强制终止 Satrap 相关 Python 进程
 $processes = Get-CimInstance Win32_Process -Filter "Name='python.exe'" | 
     Where-Object { $_.CommandLine -match "satrap" }
 
@@ -35,7 +35,7 @@ if ($processes) {
     Write-Host "  No running Satrap processes found" -ForegroundColor Gray
 }
 
-# Stop frontend dev server (Node.js)
+# 停止前端开发服务 (Node.js)
 $nodeProcesses = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
     Where-Object { $_.CommandLine -match "satrap-ui" -or $_.CommandLine -match "vite" }
 
@@ -48,7 +48,7 @@ if ($nodeProcesses) {
     }
 }
 
-# Clean up PID files
+# 清理 PID 文件
 Remove-Item -Path (Join-Path $DataDir "control_server.pid") -Force -ErrorAction SilentlyContinue
 Remove-Item -Path (Join-Path $DataDir "backend.pid") -Force -ErrorAction SilentlyContinue
 Remove-Item -Path (Join-Path $DataDir "backend.lock") -Force -ErrorAction SilentlyContinue

@@ -1,4 +1,5 @@
-"""CLI 公共工具单元测试 (load_cli_config / coerce_value / parse_kv_pairs 等)
+"""
+CLI 公共工具单元测试 (load_cli_config / coerce_value / parse_kv_pairs 等)
 
 覆盖:
 - load_cli_config: 自动探测 / yaml 加载 / api_host & api_port 覆盖
@@ -45,23 +46,39 @@ def _passthrough(cfg: BackendConfig) -> BackendConfig:
 
 
 def _autodetect_fixture(monkeypatch: pytest.MonkeyPatch):
-    """屏蔽真实配置加载: autodetect 返回默认配置, merge_env 透传"""
+    """
+    屏蔽真实配置加载: autodetect 返回默认配置, merge_env 透传
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.setattr(common.ConfigLoader, "autodetect", staticmethod(lambda: BackendConfig()))
     monkeypatch.setattr(common.ConfigLoader, "merge_env", staticmethod(_passthrough))
 
 
-# ================= load_cli_config =================
+# ================= load_cli_config 测试 =================
 
 
 def test_load_cli_config_autodetect(monkeypatch: pytest.MonkeyPatch):
-    """无 config 参数时使用自动探测结果"""
+    """
+    无 config 参数时使用自动探测结果
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     _autodetect_fixture(monkeypatch)
     cfg = common.load_cli_config(Namespace(config=None, api_host=None, api_port=None))
     assert isinstance(cfg, BackendConfig)
 
 
 def test_load_cli_config_from_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """config 指向 yaml 文件时从文件加载"""
+    """
+    config 指向 yaml 文件时从文件加载
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    - tmp_path: tmp路径
+    """
     yaml_path = tmp_path / "cfg.yaml"
     yaml_path.write_text("api_host: 1.2.3.4\napi_port: 9999\n", encoding="utf-8")
     _autodetect_fixture(monkeypatch)
@@ -72,7 +89,13 @@ def test_load_cli_config_from_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def test_load_cli_config_from_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """config 指向 json 文件时从文件加载"""
+    """
+    config 指向 json 文件时从文件加载
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    - tmp_path: tmp路径
+    """
     json_path = tmp_path / "cfg.json"
     json_path.write_text('{"api_host": "10.0.0.1"}', encoding="utf-8")
     _autodetect_fixture(monkeypatch)
@@ -82,7 +105,12 @@ def test_load_cli_config_from_json(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
 
 
 def test_load_cli_config_api_overrides(monkeypatch: pytest.MonkeyPatch):
-    """args 中的 api_host / api_port 覆盖配置"""
+    """
+    args 中的 api_host / api_port 覆盖配置
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     _autodetect_fixture(monkeypatch)
     cfg = common.load_cli_config(
         Namespace(config=None, api_host="192.168.1.1", api_port="8080")
@@ -102,11 +130,16 @@ def test_offline_flags():
     assert common.force_offline(Namespace()) is False
 
 
-# ================= ensure_offline_allowed =================
+# ================= ensure_offline_allowed 测试 =================
 
 
 def test_ensure_offline_allowed_rejects_when_backend_alive(monkeypatch: pytest.MonkeyPatch):
-    """后端在线且未强制时拒绝并退出码 1"""
+    """
+    后端在线且未强制时拒绝并退出码 1
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.setattr(common, "daemon_client_from_args", _alive_client_factory)
     with pytest.raises(SystemExit) as exc:
         common.ensure_offline_allowed(Namespace())
@@ -114,7 +147,13 @@ def test_ensure_offline_allowed_rejects_when_backend_alive(monkeypatch: pytest.M
 
 
 def test_ensure_offline_allowed_force_warns(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
-    """后端在线但带 --force-offline 时仅警告"""
+    """
+    后端在线但带 --force-offline 时仅警告
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    - capsys: pytest 输出捕获夹具
+    """
     monkeypatch.setattr(common, "daemon_client_from_args", _alive_client_factory)
     common.ensure_offline_allowed(Namespace(force_offline=True))
     out = capsys.readouterr().out
@@ -122,12 +161,17 @@ def test_ensure_offline_allowed_force_warns(monkeypatch: pytest.MonkeyPatch, cap
 
 
 def test_ensure_offline_allowed_passes_when_backend_down(monkeypatch: pytest.MonkeyPatch):
-    """后端离线时正常放行"""
+    """
+    后端离线时正常放行
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.setattr(common, "daemon_client_from_args", _dead_client_factory)
     common.ensure_offline_allowed(Namespace())
 
 
-# ================= parse_kv_pairs / coerce_value =================
+# ================= parse_kv_pairs / coerce_value 测试 =================
 
 
 def test_parse_kv_pairs():
@@ -157,7 +201,12 @@ def test_coerce_value():
 
 
 def test_print_json(capsys: pytest.CaptureFixture[str]):
-    """print_json 输出格式化 JSON"""
+    """
+    print_json 输出格式化 JSON
+
+    参数:
+    - capsys: pytest 输出捕获夹具
+    """
     common.print_json({"a": 1, "b": "中文"})
     out = capsys.readouterr().out
     assert '"a": 1' in out

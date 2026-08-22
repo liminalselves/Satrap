@@ -16,7 +16,15 @@ CONFIG_CANDIDATES = ("config.yaml", "config.yml", "config.json")
 
 
 def find_config_path(cwd: str | Path | None = None) -> Path:
-    """查找当前配置文件, 不存在时返回 .satrap/config.yaml"""
+    """
+    查找当前配置文件, 不存在时返回 .satrap/config.yaml
+
+    参数:
+    - cwd: 当前工作目录
+
+    返回:
+    - Path: 查找当前配置文件, 不存在时返回 .satrap/config.yaml
+    """
     for path in ConfigLoader.candidate_paths(cwd):
         if path.exists():
             return path
@@ -24,19 +32,43 @@ def find_config_path(cwd: str | Path | None = None) -> Path:
 
 
 def config_exists(cwd: str | Path | None = None) -> bool:
-    """判断当前工作目录是否已有配置文件"""
+    """
+    判断当前工作目录是否已有配置文件
+
+    参数:
+    - cwd: 当前工作目录
+
+    返回:
+    - bool: 判断当前工作目录是否已有配置文件
+    """
     return any(path.exists() for path in ConfigLoader.candidate_paths(cwd))
 
 
 def create_default_config(cwd: str | Path | None = None) -> BackendConfig:
-    """创建默认配置文件并返回配置对象"""
+    """
+    创建默认配置文件并返回配置对象
+
+    参数:
+    - cwd: 当前工作目录
+
+    返回:
+    - BackendConfig: 创建默认配置文件并返回配置对象
+    """
     path = ConfigLoader.ensure_default_config(cwd)
     config = ConfigLoader.from_yaml(path) if path.suffix.lower() in (".yaml", ".yml") else ConfigLoader.from_json(path)
     return ConfigLoader.merge_env(config)
 
 
 def _load_yaml(text: str) -> dict[str, Any]:
-    """解析 YAML 文本"""
+    """
+    解析 YAML 文本
+
+    参数:
+    - text: 待处理文本
+
+    返回:
+    - dict[str, Any]: 解析 YAML 文本
+    """
     data = cast(dict[str, Any] | None, yaml.safe_load(text) if text.strip() else {})
     if data is None:
         return {}
@@ -46,19 +78,43 @@ def _load_yaml(text: str) -> dict[str, Any]:
 
 
 def _load_yaml_any(text: str) -> Any:
-    """解析任意 YAML 文本"""
+    """
+    解析任意 YAML 文本
+
+    参数:
+    - text: 待处理文本
+
+    返回:
+    - Any: 解析任意 YAML 文本
+    """
     data = yaml.safe_load(text) if text.strip() else None
     return data
 
 
 def _dump_yaml(data: dict[str, Any]) -> str:
-    """序列化 YAML 文本"""
+    """
+    序列化 YAML 文本
+
+    参数:
+    - data: 输入数据
+
+    返回:
+    - str: 序列化 YAML 文本
+    """
     dumped = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
     return dumped if isinstance(dumped, str) else ""
 
 
 def load_config_document(path: str | Path) -> dict[str, Any]:
-    """读取配置文件为 dict"""
+    """
+    读取配置文件为 dict
+
+    参数:
+    - path: 路径
+
+    返回:
+    - dict[str, Any]: 读取配置文件为 dict
+    """
     path = Path(path)
     if not path.exists():
         return {}
@@ -72,7 +128,16 @@ def load_config_document(path: str | Path) -> dict[str, Any]:
 
 
 def dump_config_document(path: str | Path, data: dict[str, Any]) -> str:
-    """按路径格式序列化配置"""
+    """
+    按路径格式序列化配置
+
+    参数:
+    - path: 路径
+    - data: 输入数据
+
+    返回:
+    - str: 按路径格式序列化配置
+    """
     path = Path(path)
     if path.suffix.lower() == ".json":
         return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
@@ -80,7 +145,15 @@ def dump_config_document(path: str | Path, data: dict[str, Any]) -> str:
 
 
 def load_raw_config(path: str | Path) -> str:
-    """读取原始配置文本"""
+    """
+    读取原始配置文本
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: 读取原始配置文本
+    """
     path = Path(path)
     if not path.exists():
         return dump_config_document(path, {})
@@ -88,7 +161,16 @@ def load_raw_config(path: str | Path) -> str:
 
 
 def parse_raw_config(path: str | Path, raw_text: str) -> dict[str, Any]:
-    """按路径格式解析原始配置文本"""
+    """
+    按路径格式解析原始配置文本
+
+    参数:
+    - path: 路径
+    - raw_text: raw文本
+
+    返回:
+    - dict[str, Any]: 按路径格式解析原始配置文本
+    """
     path = Path(path)
     if path.suffix.lower() == ".json":
         data = cast(dict[str, Any] | None, json.loads(raw_text) if raw_text.strip() else {})
@@ -99,7 +181,15 @@ def parse_raw_config(path: str | Path, raw_text: str) -> dict[str, Any]:
 
 
 def parse_platforms_text(text: str) -> list[dict[str, Any]]:
-    """解析平台配置文本, 支持 JSON 或 YAML 列表"""
+    """
+    解析平台配置文本, 支持 JSON 或 YAML 列表
+
+    参数:
+    - text: 待处理文本
+
+    返回:
+    - list[dict[str, Any]]: 解析平台配置文本, 支持 JSON 或 YAML 列表
+    """
     if not text.strip():
         return []
     try:
@@ -114,13 +204,30 @@ def parse_platforms_text(text: str) -> list[dict[str, Any]]:
 
 
 def validate_config_document(data: dict[str, Any]) -> BackendConfig:
-    """校验配置文档并返回 BackendConfig"""
+    """
+    校验配置文档并返回 BackendConfig
+
+    参数:
+    - data: 输入数据
+
+    返回:
+    - BackendConfig: 校验配置文档并返回 BackendConfig
+    """
     validate_platforms(data.get("platforms", []))
     return BackendConfig.from_dict(data)
 
 
 def save_config_document(path: str | Path, data: dict[str, Any]) -> BackendConfig:
-    """校验并保存配置文档"""
+    """
+    校验并保存配置文档
+
+    参数:
+    - path: 路径
+    - data: 输入数据
+
+    返回:
+    - BackendConfig: 校验并保存配置文档
+    """
     path = Path(path)
     config = validate_config_document(data)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,7 +236,15 @@ def save_config_document(path: str | Path, data: dict[str, Any]) -> BackendConfi
 
 
 def validate_platforms(platforms: list[Any] | None) -> list[dict[str, Any]]:
-    """校验 platforms 列表结构"""
+    """
+    校验 platforms 列表结构
+
+    参数:
+    - platforms: 平台配置列表
+
+    返回:
+    - list[dict[str, Any]]: 校验 platforms 列表结构
+    """
     if platforms is None:
         return []
     seen: set[str] = set()
@@ -166,7 +281,19 @@ def upsert_platform(
     platform_type: str,
     settings: dict[str, Any],
 ) -> list[dict[str, Any]]:
-    """新增或更新平台配置"""
+    """
+    新增或更新平台配置
+
+    参数:
+    - platforms: 平台配置列表
+    - original_id: original_id 输入值
+    - platform_id: platform_id 输入值
+    - platform_type: platform类型
+    - settings: 设置项
+
+    返回:
+    - list[dict[str, Any]]: 新增或更新平台配置
+    """
     pid = platform_id.strip()
     ptype = platform_type.strip()
     if not pid:
@@ -193,7 +320,16 @@ def upsert_platform(
 
 
 def delete_platform(platforms: list[dict[str, Any]], platform_id: str) -> list[dict[str, Any]]:
-    """删除指定平台配置"""
+    """
+    删除指定平台配置
+
+    参数:
+    - platforms: 平台配置列表
+    - platform_id: platform_id 输入值
+
+    返回:
+    - list[dict[str, Any]]: 删除指定平台配置
+    """
     pid = platform_id.strip()
     return validate_platforms([dict(item) for item in platforms if str(item.get("id", "")).strip() != pid])
 
@@ -211,8 +347,9 @@ def update_common_fields(
     rate_burst: int,
     platforms: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """更新常用配置字段
-    
+    """
+    更新常用配置字段
+
     参数:
     - data: 原始配置数据
     - api_host: API Host
@@ -224,6 +361,9 @@ def update_common_fields(
     - rate_limit: 速率限制
     - rate_burst: 速率突发
     - platforms: 平台配置列表
+
+    返回:
+    - dict[str, Any]: 更新常用配置字段
     """
     updated = dict(data)
     api = dict(updated.get("api") or {})
@@ -241,7 +381,16 @@ def update_common_fields(
 
 
 def configured_platform_types(config_data: dict[str, Any], health: dict[str, Any] | None = None) -> list[str]:
-    """汇总配置和运行态中的适配器类型"""
+    """
+    汇总配置和运行态中的适配器类型
+
+    参数:
+    - config_data: 配置数据
+    - health: health 输入值
+
+    返回:
+    - list[str]: 汇总配置和运行态中的适配器类型
+    """
     types: set[str] = set()
     for item in cast(list[Any], config_data.get("platforms", []) or []):
         typ = str(item.get("type", "")).strip()
@@ -255,7 +404,16 @@ def configured_platform_types(config_data: dict[str, Any], health: dict[str, Any
 
 
 def _platform_index(options: list[str], value: str) -> int:
-    """获取 selectbox 默认索引"""
+    """
+    获取 selectbox 默认索引
+
+    参数:
+    - options: 选项集合
+    - value: 输入值
+
+    返回:
+    - int:  selectbox 默认索引
+    """
     try:
         return options.index(value)
     except ValueError:
@@ -263,7 +421,17 @@ def _platform_index(options: list[str], value: str) -> int:
 
 
 def _platform_settings_form(platform_type: str, settings: dict[str, Any], key_prefix: str) -> dict[str, Any]:
-    """按平台类型渲染 settings 表单"""
+    """
+    按平台类型渲染 settings 表单
+
+    参数:
+    - platform_type: platform类型
+    - settings: 设置项
+    - key_prefix: 密钥prefix
+
+    返回:
+    - dict[str, Any]: 按平台类型渲染 settings 表单
+    """
     if platform_type == "onebot":
         col1, col2 = st.columns(2)
         with col1:

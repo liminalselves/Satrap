@@ -13,7 +13,12 @@ st.set_page_config(page_title="检查点管理", page_icon="", layout="wide")
 
 
 def _db_path() -> str:
-    """检查点/上下文库路径: 显式配置 > 会话库 > 默认"""
+    """
+    检查点/上下文库路径: 显式配置 > 会话库 > 默认
+
+    返回:
+    - str: 检查结果
+    """
     config = st.session_state.config
     return str(
         safe_getattr_str(config, "session_checkpoint_db")
@@ -27,7 +32,16 @@ def _fmt_time(ts: float) -> str:
 
 
 def _rows(items: list[Any], extra: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    """检查点对象 -> 展示行"""
+    """
+    检查点对象 -> 展示行
+
+    参数:
+    - items: 条目列表
+    - extra: 附加数据
+
+    返回:
+    - list[dict[str, Any]]: 检查结果
+    """
     rows: list[dict[str, Any]] = []
     for cp in items:
         row: dict[str, Any] = {
@@ -162,12 +176,12 @@ st.divider()
 
 st.subheader(f"检查点列表 ({len(checkpoints)})")
 if checkpoints:
-    st.dataframe(  # pyright: ignore[reportUnknownMemberType]
+    st.dataframe(   # pyright: ignore[reportUnknownMemberType]
         _rows(checkpoints),
         use_container_width=True,
         hide_index=True,
         column_config={"ID": st.column_config.TextColumn(width="large")},
-    )  # pyright: ignore[reportUnknownMemberType]
+    )   # pyright: ignore[reportUnknownMemberType]
 else:
     st.info("还没有检查点, 可通过上方按钮或运行时操作创建")
 
@@ -184,17 +198,17 @@ if branches:
                 "时间": _fmt_time(b.created_at),
             }
         )
-    st.dataframe(rows, use_container_width=True, hide_index=True)  # pyright: ignore[reportUnknownMemberType]
+    st.dataframe(rows, use_container_width=True, hide_index=True)   # pyright: ignore[reportUnknownMemberType]
 else:
     st.info("该对话尚未 fork 出分支")
 
 st.subheader(f"变更记录 ({len(mutations)})")
 if mutations:
-    st.dataframe(  # pyright: ignore[reportUnknownMemberType]
+    st.dataframe(   # pyright: ignore[reportUnknownMemberType]
         _rows(mutations),
         use_container_width=True,
         hide_index=True,
         column_config={"ID": st.column_config.TextColumn(width="large")},
-    )  # pyright: ignore[reportUnknownMemberType]
+    )   # pyright: ignore[reportUnknownMemberType]
 else:
     st.info("暂无变更记录")

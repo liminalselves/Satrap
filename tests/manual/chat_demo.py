@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import asyncio
 import os
 import re
@@ -10,8 +9,8 @@ from typing import Any, Awaitable, Callable, Dict
 
 import streamlit as st
 
-# 切换到项目根目录, 避免相对路径导致日志/数据库路径异常
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+# 切换到项目根目录, 避免相对路径导致日志/数据库路径异常
 os.chdir(str(PROJECT_ROOT))
 
 from satrap.core.APICall.LLMCall import AsyncLLM
@@ -28,18 +27,23 @@ SESSION_TYPE = "async_my"
 DEFAULT_SYSTEM_PROMPT = "你是一个有帮助的助手。"
 
 
-# 全局会话管理器：
-# - register_session 时分配并持久化 session_id
-# - handle_call_async 时按 session_id 读取 SessionConfig 并实例化
 manager = SessionManager(
     default_session_type=SESSION_TYPE,
     max_size=100,
     idle_timeout=1800,
 )
+# 全局会话管理器:
+# - register_session 时分配并持久化 session_id
+# - handle_call_async 时按 session_id 读取 SessionConfig 并实例化
 
 
 def build_tools_manager() -> AsyncToolsManager:
-    """构建工具管理器"""
+    """
+    构建工具管理器
+
+    返回:
+    - AsyncToolsManager: 构建工具管理器
+    """
     tools_manager = AsyncToolsManager()
     tools_manager.register_tool(AsyncCodeSandboxTool(sandbox=CodeSandbox("sandbox", sys.executable)))
     tools_manager.register_tool(AsyncSearchTool())
@@ -48,7 +52,15 @@ def build_tools_manager() -> AsyncToolsManager:
 
 
 def extract_think_from_events(events: list[str]) -> str:
-    """从回调事件中提取 <think>...</think> 内容"""
+    """
+    从回调事件中提取 <think>...</think> 内容
+
+    参数:
+    - events: 事件列表
+
+    返回:
+    - str: 从回调事件中提取 <think>...</think> 内容
+    """
     think_parts: list[str] = []
     for event in events:
         matched = re.findall(r"<think>\s*(.*?)\s*</think>", str(event), flags=re.S)
@@ -68,7 +80,20 @@ def build_session_payload(
     max_tokens: int,
     system_prompt: str,
 ) -> Dict[str, Any]:
-    """构建可持久化到 SessionConfig.session_config 的运行配置"""
+    """
+    构建可持久化到 SessionConfig.session_config 的运行配置
+
+    参数:
+    - api_key: API 密钥
+    - base_url: API 服务地址
+    - model: 模型名称
+    - temperature: 采样温度
+    - max_tokens: 最大tokens
+    - system_prompt: 系统提示词
+
+    返回:
+    - Dict[str, Any]: 构建可持久化到 SessionConfig.session_config 的运行配置
+    """
     return {
         "api_key": api_key,
         "base_url": base_url,
@@ -109,8 +134,8 @@ class AsyncMyWF(AsyncModelWorkflowFramework):
         if first_msg is False:
             return "模型调用失败，请检查 API Key / Base URL / 模型名。"
 
-        # callback=True: 会把 think/content 通过 content_callback 回传
         context, success = await self.agent_executor(first_msg, callback=True)
+        # callback=True: 会把 think/content 通过 content_callback 回传
         if not success:
             return "模型调用失败，请检查日志。"
 
@@ -118,9 +143,10 @@ class AsyncMyWF(AsyncModelWorkflowFramework):
 
 
 class AsyncMySession(AsyncSession):
-    """会话类
+    """
+    会话类
 
-    关键点：
+    关键点:
     - 构造函数接收 SessionConfig (由 SessionManager 持久化并在实例化时传入)
     - 运行配置从 session_config.session_config 中读取
     - 回调事件缓存在实例内, 可供 UI 在每轮请求后提取 think 内容
@@ -169,7 +195,12 @@ class AsyncMySession(AsyncSession):
         self._register_commands()
 
     def drain_events(self) -> list[str]:
-        """提取并清空本轮累计事件"""
+        """
+        提取并清空本轮累计事件
+
+        返回:
+        - list[str]: 提取并清空本轮累计事件
+        """
         events = list(self._events)
         self._events.clear()
         return events
@@ -202,8 +233,8 @@ class AsyncMySession(AsyncSession):
             self.system_prompt = new_prompt
             await self.wf.ctx.reset_system_prompt(new_prompt)
 
-            # 仅更新当前 session 实例内存；持久化会在下一轮 handle_user_message 前统一写库
             return "已更新当前会话的 system prompt。"
+            # 仅更新当前 session 实例内存; 持久化会在下一轮 handle_user_message 前统一写库
 
         self.command_handler.register_command("clear", clear_cmd, intro="清空当前会话上下文")
         self.command_handler.register_command("status", status_cmd, intro="查看当前会话状态")
@@ -216,13 +247,21 @@ class AsyncMySession(AsyncSession):
         return await self.wf.forward(user_input)
 
 
-# 明确绑定会话类型到自定义会话类, 避免在“已有持久化 session_id”场景下
-# 回退到 SessionManager 初始化时的默认 Session(会导致回复为空)
 manager.register_session_type(SESSION_TYPE, AsyncMySession)
+# 明确绑定会话类型到自定义会话类, 避免在"已有持久化 session_id"场景下
+# 回退到 SessionManager 初始化时的默认 Session(会导致回复为空)
 
 
 def create_backend_session(payload: Dict[str, Any]) -> str:
-    """注册一个新会话并返回持久化 session_id"""
+    """
+    注册一个新会话并返回持久化 session_id
+
+    参数:
+    - payload: 请求数据
+
+    返回:
+    - str: 持久化 session_id
+    """
     session_cfg = manager.register_session(
         session_class=AsyncMySession,
         session_type_name=SESSION_TYPE,
@@ -232,9 +271,14 @@ def create_backend_session(payload: Dict[str, Any]) -> str:
 
 
 def upsert_backend_session_config(session_id: str, payload: Dict[str, Any]):
-    """更新指定 session_id 的持久化配置
+    """
+    更新指定 session_id 的持久化配置
 
-    这样当会话实例被淘汰后，下次恢复还能按最新配置运行
+    参数:
+    - session_id: 会话 ID
+    - payload: 请求数据
+
+    这样当会话实例被淘汰后, 下次恢复还能按最新配置运行
     """
     cfg = manager.get_session_config(session_id)
     now = time.time()
@@ -264,7 +308,22 @@ async def handle_user_message(
     max_tokens: int,
     system_prompt: str,
 ) -> Dict[str, Any]:
-    """把用户输入交给 SessionManager 处理，并返回 think 与 answer"""
+    """
+    把用户输入交给 SessionManager 处理, 并返回 think 与 answer
+
+    参数:
+    - session_id: 会话 ID
+    - message: 消息内容
+    - api_key: API 密钥
+    - base_url: API 服务地址
+    - model: 模型名称
+    - temperature: 采样温度
+    - max_tokens: 最大tokens
+    - system_prompt: 系统提示词
+
+    返回:
+    - Dict[str, Any]:  think 与 answer
+    """
 
     payload = build_session_payload(
         api_key=api_key,
@@ -284,8 +343,8 @@ async def handle_user_message(
     )
     answer = await manager.handle_call_async(user_call)
 
-    # 从活跃会话实例中提取回调事件
     events: list[str] = []
+    # 从活跃会话实例中提取回调事件
     entry = manager.pool.list_entries().get(session_id)
     if entry is not None and isinstance(entry.session, AsyncMySession):
         events = entry.session.drain_events()

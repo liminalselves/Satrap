@@ -52,6 +52,7 @@ def _colorize(line: str) -> str:
 
 
 def render():
+    """渲染"""
     st.subheader("日志监控")
 
     log_file = _find_log_file()

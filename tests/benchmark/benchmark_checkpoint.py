@@ -1,4 +1,5 @@
-"""检查点存储基准测试: 多轮模拟写入 / fork / retry / rollback, 监测速度 / 内存 / 存储
+"""
+检查点存储基准测试: 多轮模拟写入 / fork / retry / rollback, 监测速度 / 内存 / 存储
 
 运行:
     python tests/benchmark/benchmark_checkpoint.py
@@ -39,24 +40,37 @@ MESSAGES_PER_ROUND = 4   # 每轮写入消息数
 STABLE_BASELINE_MSGS = 200   # 场景 A/B 消息数
 ROUND_LADDER = (50, 100, 300)   # 场景 C 轮次档位
 
-# 100 汉字消息体: 模拟真实对话长内容 (千字文片段)
 _MSG_TEMPLATE = (
     "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳"
     "云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜"
     "海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐"
 )
+# 100 汉字消息体: 模拟真实对话长内容 (千字文片段)
 MSG_BODY = (_MSG_TEMPLATE * 4)[:100]
 """每条消息 100 个汉字"""
 
 
 def _rss_mb() -> float:
-    """当前进程 RSS (MB)"""
-    mem = cast(Any, psutil.Process().memory_info())  # psutil 无类型声明
+    """
+    当前进程 RSS (MB)
+
+    返回:
+    - float: 当前进程 RSS (MB)
+    """
+    mem = cast(Any, psutil.Process().memory_info())   # psutil 无类型声明
     return float(mem.rss) / (1024 * 1024)
 
 
 def _db_stats(db_path: str) -> dict[str, int | float]:
-    """收集 DB 存储统计: 文件大小 (KB) 与三表行数"""
+    """
+    收集 DB 存储统计: 文件大小 (KB) 与三表行数
+
+    参数:
+    - db_path: 数据库路径
+
+    返回:
+    - dict[str, int | float]: 收集 DB 存储统计: 文件大小 (KB) 与三表行数
+    """
     size_kb = os.path.getsize(db_path) / 1024.0
     stats: dict[str, int | float] = {"size_kb": size_kb}
     conn = sqlite3.connect(db_path)
@@ -76,12 +90,29 @@ def _db_stats(db_path: str) -> dict[str, int | float]:
 
 
 def _fmt_ms(seconds: float) -> str:
-    """格式化毫秒"""
+    """
+    格式化毫秒
+
+    参数:
+    - seconds: 等待秒数
+
+    返回:
+    - str: 格式化毫秒
+    """
     return f"{seconds * 1000:.1f} ms"
 
 
 def _fmt_avg_ms(seconds: float, count: int) -> str:
-    """格式化平均毫秒/op"""
+    """
+    格式化平均毫秒/op
+
+    参数:
+    - seconds: 等待秒数
+    - count: 数量
+
+    返回:
+    - str: 格式化平均毫秒/op
+    """
     if count <= 0:
         return "-"
     return f"{seconds * 1000 / count:.3f} ms/op"
@@ -95,7 +126,17 @@ def _print_stats(
     db_path: str,
     heap_peak: float | None = None,
 ) -> None:
-    """打印单个场景的基准报告"""
+    """
+    打印单个场景的基准报告
+
+    参数:
+    - title: 标题
+    - elapsed: 耗时
+    - ops: 操作集合
+    - mem_before: 内存之前
+    - db_path: 数据库路径
+    - heap_peak: 堆内存峰值
+    """
     print(f"\n[{title}]")
     print(f"  总耗时        : {_fmt_ms(elapsed)}")
     for op_name, (op_sec, op_count) in ops.items():
@@ -112,11 +153,20 @@ def _print_stats(
     )
 
 
-# ── 场景 A/B: 写入基线 vs 自动 stable ──
+# ---------- 场景 A/B: 写入基线 vs 自动 stable ----------
 
 
 def _run_write_scenario(enable_checkpoint: bool, tmp_dir: str) -> dict[str, Any]:
-    """写 STABLE_BASELINE_MSGS 条 100 汉字消息, 返回 (耗时, ops, db_path)"""
+    """
+    写 STABLE_BASELINE_MSGS 条 100 汉字消息, 返回 (耗时, ops, db_path)
+
+    参数:
+    - enable_checkpoint: 是否enable检查点
+    - tmp_dir: tmp目录
+
+    返回:
+    - dict[str, Any]:  (耗时, ops, db_path)
+    """
     db_path = os.path.join(tmp_dir, f"write_{enable_checkpoint}.db")
     ctx = ContextManager("conv-w", db_path=db_path, enable_checkpoint=enable_checkpoint)
     write_sec = 0.0
@@ -134,7 +184,7 @@ def _run_write_scenario(enable_checkpoint: bool, tmp_dir: str) -> dict[str, Any]
     }
 
 
-# ── 场景 C: 会话聚合 + fork / retry / rollback ──
+# ---------- 场景 C: 会话聚合 + fork / retry / rollback ----------
 
 
 class _BenchSession(Session):
@@ -155,7 +205,16 @@ class _BenchSession(Session):
 
 
 def _run_session_scenario(tmp_dir: str, rounds: int) -> dict[str, Any]:
-    """多轮模拟: 每轮 4 条 100 汉字消息, 每 5 轮聚合检查点, 中途 fork/retry/rollback/撤销"""
+    """
+    多轮模拟: 每轮 4 条 100 汉字消息, 每 5 轮聚合检查点, 中途 fork/retry/rollback/撤销
+
+    参数:
+    - tmp_dir: tmp目录
+    - rounds: 执行轮数
+
+    返回:
+    - dict[str, Any]: 多轮模拟: 每轮 4 条 100 汉字消息, 每 5 轮聚合检查点, 中途 fork/retry/rollback/撤销
+    """
     db_path = os.path.join(tmp_dir, f"session_{rounds}.db")
     session = _BenchSession("bench-session", db_path)
     op_names = ("消息写入", "聚合检查点", "fork", "retry", "rollback", "撤销回滚")
@@ -198,12 +257,12 @@ def _run_session_scenario(tmp_dir: str, rounds: int) -> dict[str, Any]:
             _accumulate("rollback", t0, 1)
 
         if i == 20:
-            # 撤销第 16 轮的 rollback: 回滚到它留下的保护检查点
             protects = [
                 cp
                 for cp in session.list_checkpoints()
                 if cp.source == "rollback_snapshot" and cp.scope_id == session.session_id
             ]
+            # 撤销第 16 轮的 rollback: 回滚到它留下的保护检查点
             if protects:
                 t0 = time.perf_counter()
                 session.rollback(protects[-1].checkpoint_id)
@@ -221,7 +280,15 @@ def _run_session_scenario(tmp_dir: str, rounds: int) -> dict[str, Any]:
 
 
 def _run_ladder_scenario(tmp_dir: str) -> list[dict[str, Any]]:
-    """按轮次档位运行场景 C, 返回各档结果 (含内存增量与堆峰值)"""
+    """
+    按轮次档位运行场景 C, 返回各档结果 (含内存增量与堆峰值)
+
+    参数:
+    - tmp_dir: tmp目录
+
+    返回:
+    - list[dict[str, Any]]: 各档结果 (含内存增量与堆峰值)
+    """
     results: list[dict[str, Any]] = []
     for rounds in ROUND_LADDER:
         mem_before = _rss_mb()
@@ -246,7 +313,12 @@ def _run_ladder_scenario(tmp_dir: str) -> list[dict[str, Any]]:
 
 
 def _print_ladder_comparison(results: list[dict[str, Any]]) -> None:
-    """输出场景 C 多档轮次对比表"""
+    """
+    输出场景 C 多档轮次对比表
+
+    参数:
+    - results: 结果列表
+    """
     print("\n[场景 C] 轮次档位对比 (每轮 4 条 x 100 汉字)")
     header = (
         f"{'轮次':>6} | {'总耗时':>10} | {'写入 ms/op':>11} | "
@@ -279,8 +351,8 @@ def main() -> None:
 
     tmp_dir = tempfile.mkdtemp(prefix="satrap_bench_")
     try:
-        # 场景 A: 写入基线
         mem_before = _rss_mb()
+        # 场景 A: 写入基线
         tracemalloc.start()
         result_a = _run_write_scenario(False, tmp_dir)
         heap_peak = tracemalloc.get_traced_memory()[1]
@@ -294,8 +366,8 @@ def main() -> None:
             heap_peak,
         )
 
-        # 场景 B: 自动 stable
         mem_before = _rss_mb()
+        # 场景 B: 自动 stable
         tracemalloc.start()
         result_b = _run_write_scenario(True, tmp_dir)
         heap_peak = tracemalloc.get_traced_memory()[1]
@@ -309,8 +381,8 @@ def main() -> None:
             heap_peak,
         )
 
-        # 场景 A/B 对比
         stats_a = _db_stats(result_a["db_path"])
+        # 场景 A/B 对比
         stats_b = _db_stats(result_b["db_path"])
         ratio = (
             stats_b["size_kb"] / stats_a["size_kb"] if stats_a["size_kb"] > 0 else 0.0
@@ -326,8 +398,8 @@ def main() -> None:
             f"(均为指针, 快照表 {stats_b['state_snapshots']} 行)"
         )
 
-        # 场景 C: 会话聚合生命周期 (多档轮次)
         results_c = _run_ladder_scenario(tmp_dir)
+        # 场景 C: 会话聚合生命周期 (多档轮次)
         _print_ladder_comparison(results_c)
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

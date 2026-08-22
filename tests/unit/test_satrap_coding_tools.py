@@ -41,7 +41,16 @@ class _FakeAsyncLLM(AsyncLLM):
 
 @pytest.fixture
 def workspace(tmp_path: Any, monkeypatch: Any) -> Any:
-    """把工作区根与插件数据目录重定向到临时目录, 使文件工具/数据落盘隔离"""
+    """
+    把工作区根与插件数据目录重定向到临时目录, 使文件工具/数据落盘隔离
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+
+    返回:
+    - Any: 把工作区根与插件数据目录重定向到临时目录, 使文件工具/数据落盘隔离
+    """
     root = tmp_path / "workspace"
     root.mkdir()
     monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", root)
@@ -83,7 +92,15 @@ def _make_session(tmp_path: Any) -> SimpleSession:
 
 
 def _install_tools(session: SimpleSession) -> dict[str, Any]:
-    """安装全部工具并返回名称 -> 实例映射"""
+    """
+    安装全部工具并返回名称 -> 实例映射
+
+    参数:
+    - session: 会话
+
+    返回:
+    - dict[str, Any]: 名称 -> 实例映射
+    """
     tools = get_tools(session)
     names: set[str] = set()
     for tool in tools:
@@ -98,7 +115,12 @@ def _install_tools(session: SimpleSession) -> dict[str, Any]:
 
 
 def test_factory_sync_tool_set(tmp_path: Any):
-    """同步会话: 11 个工具全部注册, 无重名 (search/memory 已移交 base_take)"""
+    """
+    同步会话: 11 个工具全部注册, 无重名 (search/memory 已移交 base_take)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     expected = {
@@ -111,7 +133,12 @@ def test_factory_sync_tool_set(tmp_path: Any):
 
 @pytest.mark.asyncio
 async def test_factory_async_tool_set(tmp_path: Any):
-    """异步会话: 异步工具集注册"""
+    """
+    异步会话: 异步工具集注册
+
+    参数:
+    - tmp_path: tmp路径
+    """
     session = AsyncSimpleSession(
         "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
@@ -129,7 +156,13 @@ async def test_factory_async_tool_set(tmp_path: Any):
 
 
 def test_file_tools_read_list_glob_grep(tmp_path: Any, workspace: Any):
-    """只读文件工具: 读/列表/glob/grep"""
+    """
+    只读文件工具: 读/列表/glob/grep
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     target = workspace / "src" / "demo.py"
@@ -152,7 +185,13 @@ def test_file_tools_read_list_glob_grep(tmp_path: Any, workspace: Any):
 
 
 def test_glob_cannot_escape_workspace(tmp_path: Any, workspace: Any):
-    """L3: glob 的 ../ 模式不能枚举工作区外文件"""
+    """
+    L3: glob 的 ../ 模式不能枚举工作区外文件
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     outside = workspace.parent / "outside.txt"
@@ -160,13 +199,19 @@ def test_glob_cannot_escape_workspace(tmp_path: Any, workspace: Any):
     (workspace / "inside.txt").write_text("y", encoding="utf-8")
 
     out = tools["glob_files"].execute("../*.txt")
-    assert "outside.txt" not in out  # ../ 越界结果被过滤
+    assert "outside.txt" not in out   # ../ 越界结果被过滤
     out = tools["glob_files"].execute("*.txt")
-    assert "inside.txt" in out  # 工作区内正常匹配
+    assert "inside.txt" in out   # 工作区内正常匹配
 
 
 def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
-    """文件工具: 工作区外拒绝, 受保护路径拒绝"""
+    """
+    文件工具: 工作区外拒绝, 受保护路径拒绝
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
 
@@ -186,7 +231,13 @@ def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
 
 
 def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
-    """写文件: 无输入通道时拒绝, y 仅本次批准, all 本会话放行"""
+    """
+    写文件: 无输入通道时拒绝, y 仅本次批准, all 本会话放行
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     target = workspace / "out.txt"
@@ -195,20 +246,20 @@ def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
     assert "需要用户批准" in out
     assert not target.exists()
 
-    # y 仅批准本次: 写入成功, 但下次同类操作仍需询问
     session.user_input_provider = lambda q: "y"
+    # y 仅批准本次: 写入成功, 但下次同类操作仍需询问
     out = tools["write_file"].execute(str(target), "hello")
     assert "已写入" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    # 第二次写仍需批准, 用户拒绝则拦截
     session.user_input_provider = lambda q: "n"
+    # 第二次写仍需批准, 用户拒绝则拦截
     out = tools["write_file"].execute(str(target), "again", append=True)
     assert "拒绝了" in out or "拒绝" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    # all = 本会话全部放行, 后续写不再询问
     session.user_input_provider = lambda q: "all"
+    # all = 本会话全部放行, 后续写不再询问
     out = tools["write_file"].execute(str(target), "again", append=True)
     assert "已追加" in out
     session.user_input_provider = lambda q: "n"
@@ -218,7 +269,13 @@ def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
 
 
 def test_edit_file_tool(tmp_path: Any, workspace: Any):
-    """编辑文件: 精确替换 + 未匹配报错"""
+    """
+    编辑文件: 精确替换 + 未匹配报错
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = _install_tools(session)
@@ -234,7 +291,13 @@ def test_edit_file_tool(tmp_path: Any, workspace: Any):
 
 
 def test_search_replace_tool(tmp_path: Any, workspace: Any):
-    """批量替换: 多对 old->new, replace_all 独立控制, 全量预校验"""
+    """
+    批量替换: 多对 old->new, replace_all 独立控制, 全量预校验
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = _make_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = _install_tools(session)
@@ -248,20 +311,25 @@ def test_search_replace_tool(tmp_path: Any, workspace: Any):
     assert "已批量替换" in out and "'x' 3 处" in out
     assert target.read_text(encoding="utf-8") == "X a X B X a"
 
-    # 任一 old 不匹配: 全部不执行 (预校验)
     out = tools["search_replace"].execute(
         str(target), [{"old": "X", "new": "Y"}, {"old": "zzz", "new": "y"}],
     )
+    # 任一 old 不匹配: 全部不执行 (预校验)
     assert "未找到匹配" in out
     assert target.read_text(encoding="utf-8") == "X a X B X a"
 
-    # 格式无效的替换项
     out = tools["search_replace"].execute(str(target), [{"new": "y"}])
+    # 格式无效的替换项
     assert "格式无效" in out
 
 
 def test_todo_write_tool(tmp_path: Any):
-    """任务清单: add / list / done / clear 全链路 (会话级状态)"""
+    """
+    任务清单: add / list / done / clear 全链路 (会话级状态)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     todo = tools["todo_write"]
@@ -287,11 +355,16 @@ def test_todo_write_tool(tmp_path: Any):
     assert "任务清单为空" in out
 
 
-# ================= ask_user =================
+# ================= ask_user 测试 =================
 
 
 def test_ask_user_tool(tmp_path: Any):
-    """询问用户: 有通道返回回复, 无通道返回提示, 推荐选项编号展示"""
+    """
+    询问用户: 有通道返回回复, 无通道返回提示, 推荐选项编号展示
+
+    参数:
+    - tmp_path: tmp路径
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
 
@@ -312,11 +385,17 @@ def test_ask_user_tool(tmp_path: Any):
 # ================= memory 工具 =================
 
 
-# ================= shell =================
+# ================= shell 测试 =================
 
 
 def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
-    """shell: 只读直接执行, 工作区内写免审批, 工作区外路径审批, 黑名单拒绝"""
+    """
+    shell: 只读直接执行, 工作区内写免审批, 工作区外路径审批, 黑名单拒绝
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     # 工作区指向临时目录, 避免相对路径写盘污染项目根
     monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", tmp_path / "workspace")
     (tmp_path / "workspace").mkdir()
@@ -326,31 +405,36 @@ def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     out = tools["shell"].execute("echo hello")
     assert "hello" in out
 
-    # 写命令仅在工作区内活动 (无工作区外绝对路径): 免审批直接执行
     out = tools["shell"].execute("echo written > f.txt")
+    # 写命令仅在工作区内活动 (无工作区外绝对路径): 免审批直接执行
     assert "需要用户批准" not in out
     assert (tmp_path / "workspace" / "f.txt").is_file()
 
-    # 引用工作区外绝对路径 (UNC, 不在任何盘符下): 走审批 (无输入通道时拒绝)
     out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
+    # 引用工作区外绝对路径 (UNC, 不在任何盘符下): 走审批 (无输入通道时拒绝)
     assert "需要用户批准" in out
 
     out = tools["shell"].execute("rm -rf /")
     assert "黑名单" in out
 
-    # 工作区外路径经用户批准后走执行流程 (源不存在仅验证流程, 无副作用)
     session.user_input_provider = lambda q: "y"
+    # 工作区外路径经用户批准后走执行流程 (源不存在仅验证流程, 无副作用)
     out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
     assert "需要用户批准" not in out
     out = tools["shell"].execute("echo written", shell="cmd")
     assert "written" in out
 
 
-# ================= subagent =================
+# ================= subagent 测试 =================
 
 
 def test_subagent_tool_constructs(tmp_path: Any):
-    """子代理工具: 可构造, 独立 manager 白名单过滤"""
+    """
+    子代理工具: 可构造, 独立 manager 白名单过滤
+
+    参数:
+    - tmp_path: tmp路径
+    """
     session = _make_session(tmp_path)
     tools = _install_tools(session)
     sub = tools["subagent"]
@@ -367,7 +451,15 @@ def test_subagent_tool_constructs(tmp_path: Any):
 
 
 async def _make_async_session(tmp_path: Any) -> AsyncSimpleSession:
-    """构造异步会话并安装全部异步工具"""
+    """
+    构造异步会话并安装全部异步工具
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - AsyncSimpleSession: 构造异步会话并安装全部异步工具
+    """
     session = AsyncSimpleSession(
         "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
@@ -383,7 +475,13 @@ async def _async_tools(session: AsyncSimpleSession) -> dict[str, Any]:
 
 @pytest.mark.asyncio
 async def test_async_file_tools(tmp_path: Any, workspace: Any):
-    """异步文件工具: 读写/编辑/列表/glob/grep 主路径"""
+    """
+    异步文件工具: 读写/编辑/列表/glob/grep 主路径
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = await _make_async_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = await _async_tools(session)
@@ -410,7 +508,13 @@ async def test_async_file_tools(tmp_path: Any, workspace: Any):
 
 @pytest.mark.asyncio
 async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
-    """异步 search_replace / todo_write 主路径"""
+    """
+    异步 search_replace / todo_write 主路径
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = await _make_async_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = await _async_tools(session)
@@ -431,7 +535,13 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
 
 @pytest.mark.asyncio
 async def test_async_ask_shell(tmp_path: Any, workspace: Any):
-    """异步 ask_user / shell 主路径"""
+    """
+    异步 ask_user / shell 主路径
+
+    参数:
+    - tmp_path: tmp路径
+    - workspace: 工作区
+    """
     session = await _make_async_session(tmp_path)
     session.user_input_provider = lambda q: "y"
     tools = await _async_tools(session)

@@ -5,7 +5,12 @@ from satrap.cli.common import daemon_client_from_args
 
 
 def cmd_reload(args: argparse.Namespace):
-    """通知后端重载配置"""
+    """
+    通知后端重载配置
+
+    参数:
+    - args: 额外位置参数
+    """
     client = daemon_client_from_args(args)
     if not client.is_alive():
         print(f"错误: 后端未运行 ({client.daemon.base_url})")

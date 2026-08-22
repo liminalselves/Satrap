@@ -65,7 +65,12 @@ async def test_backend_health_uses_adapter_stats_dict():
 
 
 def test_read_log_increment_keeps_cached_lines_when_no_new_data(tmp_path: Path):
-    """没有新增日志时仍显示已有缓冲内容"""
+    """
+    没有新增日志时仍显示已有缓冲内容
+
+    参数:
+    - tmp_path: tmp路径
+    """
     log_file = tmp_path / "satrap.log"
     log_file.write_bytes("first\nsecond\n".encode("utf-8"))
 
@@ -77,7 +82,12 @@ def test_read_log_increment_keeps_cached_lines_when_no_new_data(tmp_path: Path):
 
 
 def test_read_log_increment_paused_does_not_advance_position(tmp_path: Path):
-    """暂停时不推进读取位置, 也不清空缓冲"""
+    """
+    暂停时不推进读取位置, 也不清空缓冲
+
+    参数:
+    - tmp_path: tmp路径
+    """
     log_file = tmp_path / "satrap.log"
     log_file.write_bytes("first\nsecond\n".encode("utf-8"))
 
@@ -89,7 +99,12 @@ def test_read_log_increment_paused_does_not_advance_position(tmp_path: Path):
 
 
 def test_read_log_increment_resets_after_truncate(tmp_path: Path):
-    """日志截断后应从新文件开头读取"""
+    """
+    日志截断后应从新文件开头读取
+
+    参数:
+    - tmp_path: tmp路径
+    """
     log_file = tmp_path / "satrap.log"
     log_file.write_bytes("new\n".encode("utf-8"))
 

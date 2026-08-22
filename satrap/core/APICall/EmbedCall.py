@@ -17,7 +17,7 @@ def parse_embedding_response(
     - suppress_error: 如果为 True (默认), 解析失败时返回空列表而不是抛出异常
 
     返回:
-    - 二维浮点数列表, 每个元素的顺序与输入文本顺序一致；如果出错则返回 []
+    - 二维浮点数列表, 每个元素的顺序与输入文本顺序一致; 如果出错则返回 []
     """
     if api_response is None:
         msg = "Embedding 接口响应为空"
@@ -27,8 +27,8 @@ def parse_embedding_response(
         raise ValueError(msg)
 
     try:
-        # 提取 data 字段（对象属性或字典）
         data = safe_getattr(api_response, "data")
+        # 提取 data 字段(对象属性或字典)
         if data is None and hasattr(api_response, "get"):
             data = api_response.get("data")
 
@@ -36,8 +36,8 @@ def parse_embedding_response(
             logger.warning("Embedding 响应中 'data' 为空")
             return []
 
-        # 按索引排序以保证顺序与输入一致
         sorted_data = sorted(data, key=lambda x: x.index if hasattr(x, "index") else x.get("index", 0))
+        # 按索引排序以保证顺序与输入一致
 
         embeddings: list[Any] = []
         for item in sorted_data:
@@ -120,12 +120,12 @@ class Embedding:
         - 如果出错且 return_false=True, 返回 False;
         - 如果出错且 return_false=False, 返回空列表或空二维列表
         """
-        # 1. 参数合并
+        # Step.1 参数合并
         target_model = model or self.model
         target_dimensions = dimensions if dimensions is not None else self.dimensions
         target_encoding = encoding_format or self.encoding_format
 
-        # 2. 输入标准化: 确保为列表
+        # Step.2 输入标准化: 确保为列表
         is_single = isinstance(texts, str)
         text_list = [texts] if is_single else texts
 
@@ -133,7 +133,7 @@ class Embedding:
             logger.warning("输入 texts 为空")
             return self._empty_return(is_single)
 
-        # 3. 分批处理
+        # Step.3 分批处理
         all_embeddings: List[List[float]] = []
         total_count = len(text_list)
         batch_size = self.max_batch_size
@@ -143,21 +143,21 @@ class Embedding:
             batch_num = i // batch_size + 1
             total_batches = (total_count + batch_size - 1) // batch_size
 
-            # 构造请求参数
             request_kwargs: dict[str, Any] = {
                 "model": target_model,
                 "input": batch_texts,
                 "encoding_format": target_encoding,
             }
+            # 构造请求参数
             if target_dimensions is not None:
                 request_kwargs["dimensions"] = target_dimensions
 
             try:
-                # 调用 API
                 response = self.client.embeddings.create(**request_kwargs)
+                # 调用 API
 
-                # 解析响应
                 embeddings = parse_embedding_response(response, self.suppress_error)
+                # 解析响应
 
                 if not embeddings:
                     logger.warning(f"[Embedding] 第 {batch_num}/{total_batches} 批次返回空结果")
@@ -177,34 +177,56 @@ class Embedding:
                 logger.error(f"[Embedding] 第 {batch_num}/{total_batches} 批次调用过程发生未知异常: {e}")
                 return self._empty_return(is_single)
 
-        # 4. 根据输入格式返回
+        # Step.4 根据输入格式返回
         return all_embeddings[0] if is_single else all_embeddings
 
     def _empty_return(self, is_single: bool) -> List[float] | List[List[float]] | Literal[False]:
         """
         根据 return_false 配置返回适当的空值
+
+        参数:
+        - is_single: 输入是否为单个值
+
+        返回:
+        - List[float] | List[List[float]] | Literal[False]: 根据 return_false 配置返回适当的空值
         """
         if self.return_false:
             return False
         return [] if is_single else [[]]
 
     def get_model(self) -> str:
-        """获取当前 Embed 实例使用的模型名称"""
+        """
+        获取当前 Embed 实例使用的模型名称
+
+        返回:
+        - str: 当前 Embed 实例使用的模型名称
+        """
         return self.model
 
     def get_api_key(self) -> str:
-        """获取当前 Embed 实例的 API Key"""
+        """
+        获取当前 Embed 实例的 API Key
+
+        返回:
+        - str: 当前 Embed 实例的 API Key
+        """
         return self.api_key
     
     def get_base_url(self) -> Optional[str]:
-        """获取当前 Embed 实例的 Base URL;
-        如果未设置则返回 None"""
+        """
+        获取当前 Embed 实例的 Base URL;
+        如果未设置则返回 None
+
+        返回:
+        - Optional[str]: 当前 Embed 实例的 Base URL
+        """
         return self.base_url
 
     def check_embedding(self):
         """
         检查嵌入模型是否可用
-        - return: 嵌入模型的维度; 如果检查失败则返回 None
+        返回:
+        - 嵌入模型的维度; 如果检查失败则返回 None
         """
         request_kwargs: dict[str, Any] = {
             "model": self.model,
@@ -265,7 +287,7 @@ class AsyncEmbedding:
             api_key=api_key,
             base_url=self.base_url,
             timeout=timeout,
-        )  # 初始化异步 OpenAI 客户端
+        )   # 初始化异步 OpenAI 客户端
 
     async def embed(
         self,
@@ -312,12 +334,12 @@ class AsyncEmbedding:
             batch_num = i // batch_size + 1
             total_batches = (total_count + batch_size - 1) // batch_size
 
-            # 构造请求参数
             request_kwargs: dict[str, Any] = {
                 "model": target_model,
                 "input": batch_texts,
                 "encoding_format": target_encoding,
             }
+            # 构造请求参数
             if target_dimensions is not None:
                 request_kwargs["dimensions"] = target_dimensions
 
@@ -352,28 +374,50 @@ class AsyncEmbedding:
     def _empty_return(self, is_single: bool) -> Union[List[float], List[List[float]], bool]:
         """
         根据 return_false 配置返回适当的空值
+
+        参数:
+        - is_single: 输入是否为单个值
+
+        返回:
+        - Union[List[float], List[List[float]], bool]: 根据 return_false 配置返回适当的空值
         """
         if self.return_false:
             return False
         return [] if is_single else [[]]
 
     def get_model(self) -> str:
-        """获取当前 AsyncEmbedding 实例使用的模型名称"""
+        """
+        获取当前 AsyncEmbedding 实例使用的模型名称
+
+        返回:
+        - str: 当前 AsyncEmbedding 实例使用的模型名称
+        """
         return self.model
 
     def get_api_key(self) -> str:
-        """获取当前 AsyncEmbedding 实例的 API Key"""
+        """
+        获取当前 AsyncEmbedding 实例的 API Key
+
+        返回:
+        - str: 当前 AsyncEmbedding 实例的 API Key
+        """
         return self.api_key
     
     def get_base_url(self) -> Optional[str]:
-        """获取当前 AsyncEmbedding 实例的 Base URL;
-        如果未设置则返回 None"""
+        """
+        获取当前 AsyncEmbedding 实例的 Base URL;
+        如果未设置则返回 None
+
+        返回:
+        - Optional[str]: 当前 AsyncEmbedding 实例的 Base URL
+        """
         return self.base_url
 
     async def check_embedding(self):
         """
         检查嵌入模型是否可用
-        - return: 嵌入模型的维度; 如果检查失败则返回 None
+        返回:
+        - 嵌入模型的维度; 如果检查失败则返回 None
         """
         request_kwargs: dict[str, Any] = {
             "model": self.model,

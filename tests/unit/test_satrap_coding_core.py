@@ -35,7 +35,7 @@ class TestClassifyCommand:
         assert classify_command("rm file.txt") == (RiskLevel.HIGH, False)
         assert classify_command("git push") == (RiskLevel.HIGH, False)
         assert classify_command("git reset HEAD~1") == (RiskLevel.HIGH, False)
-        assert classify_command("git clean -fd") == (RiskLevel.FORBIDDEN, False)  # clean -f 命中黑名单
+        assert classify_command("git clean -fd") == (RiskLevel.FORBIDDEN, False)   # clean -f 命中黑名单
 
     def test_forbidden_patterns(self):
         """黑名单模式: 系统根删除 / 格式化 / git 破坏性操作"""
@@ -51,7 +51,7 @@ class TestClassifyCommand:
         assert classify_command("npm i lodash") == (RiskLevel.HIGH, True)
         assert classify_command("npm install -g vite") == (RiskLevel.HIGH, True)
         assert classify_command("uv add pytest") == (RiskLevel.HIGH, True)
-        assert classify_command("pip list") == (RiskLevel.WRITE, False)  # 无子命令不越界
+        assert classify_command("pip list") == (RiskLevel.WRITE, False)   # 无子命令不越界
         assert classify_command("pip -V") == (RiskLevel.WRITE, False)
 
     def test_unknown_conservative(self):
@@ -114,24 +114,49 @@ def engine(tmp_path: Path) -> PermissionEngine:
 
 class TestPermissionEngine:
     def test_read_always_allowed(self, engine: PermissionEngine):
-        """只读操作直接放行 (无论策略)"""
+        """
+        只读操作直接放行 (无论策略)
+
+        参数:
+        - engine: 执行引擎
+        """
         assert engine.evaluate("read", RiskLevel.READ) == PermissionDecision.ALLOW
 
     def test_user_mode_asks_write(self, engine: PermissionEngine):
-        """user 策略下常规写操作返回 ASK"""
+        """
+        user 策略下常规写操作返回 ASK
+
+        参数:
+        - engine: 执行引擎
+        """
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
 
     def test_full_mode_allows(self, engine: PermissionEngine):
-        """full 策略全部放行"""
+        """
+        full 策略全部放行
+
+        参数:
+        - engine: 执行引擎
+        """
         engine.set_mode("full")
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
 
     def test_forbidden_always_denied(self, engine: PermissionEngine):
-        """黑名单级操作永远拒绝"""
+        """
+        黑名单级操作永远拒绝
+
+        参数:
+        - engine: 执行引擎
+        """
         assert engine.evaluate("shell", RiskLevel.FORBIDDEN) == PermissionDecision.DENY
 
     def test_plan_mode_blocks_writes(self, engine: PermissionEngine):
-        """计划模式: 写类操作拒绝, 只读放行"""
+        """
+        计划模式: 写类操作拒绝, 只读放行
+
+        参数:
+        - engine: 执行引擎
+        """
         engine.set_plan_mode(True)
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.DENY
         assert engine.evaluate("shell", RiskLevel.HIGH) == PermissionDecision.DENY
@@ -140,7 +165,12 @@ class TestPermissionEngine:
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
 
     def test_session_rule_after_approve(self, engine: PermissionEngine):
-        """批准一次后会话内同类操作放行"""
+        """
+        批准一次后会话内同类操作放行
+
+        参数:
+        - engine: 执行引擎
+        """
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
         engine.approve("file_write", RiskLevel.WRITE)
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
@@ -148,7 +178,13 @@ class TestPermissionEngine:
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
 
     def test_persistent_rule_lifecycle(self, engine: PermissionEngine, tmp_path: Path):
-        """持久规则: 添加生效 -> 落盘 -> 新引擎重载 -> 移除"""
+        """
+        持久规则: 添加生效 -> 落盘 -> 新引擎重载 -> 移除
+
+        参数:
+        - engine: 执行引擎
+        - tmp_path: tmp路径
+        """
         engine.add_persistent_rule("file_write", RiskLevel.WRITE)
         assert engine.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ALLOW
 
@@ -164,7 +200,12 @@ class TestPermissionEngine:
         assert reloaded.evaluate("file_write", RiskLevel.WRITE) == PermissionDecision.ASK
 
     def test_auto_agent_judge(self, engine: PermissionEngine):
-        """auto-agent 策略按 judge 判定 allow/deny/ask"""
+        """
+        auto-agent 策略按 judge 判定 allow/deny/ask
+
+        参数:
+        - engine: 执行引擎
+        """
         engine.set_mode("auto-agent")
 
         def judge_allow(operation: str, risk: RiskLevel, description: str) -> str:
@@ -184,7 +225,13 @@ class TestPermissionEngine:
 
     @pytest.mark.asyncio
     async def test_evaluate_async_with_async_judge(self, engine: PermissionEngine, tmp_path: Path):
-        """异步评估支持异步 judge"""
+        """
+        异步评估支持异步 judge
+
+        参数:
+        - engine: 执行引擎
+        - tmp_path: tmp路径
+        """
         engine = PermissionEngine(
             rules_file=tmp_path / "permissions.json",
             log_file=tmp_path / "approval_log.jsonl",
@@ -205,32 +252,58 @@ class TestPermissionEngine:
         ) == PermissionDecision.ASK
 
     def test_set_mode_invalid(self, engine: PermissionEngine):
-        """非法策略名抛 ValueError"""
+        """
+        非法策略名抛 ValueError
+
+        参数:
+        - engine: 执行引擎
+        """
         with pytest.raises(ValueError):
             engine.set_mode("root")
 
     def test_deny_logs_entry(self, engine: PermissionEngine, tmp_path: Path):
-        """拒绝操作写入审批日志"""
+        """
+        拒绝操作写入审批日志
+
+        参数:
+        - engine: 执行引擎
+        - tmp_path: tmp路径
+        """
         engine.deny("shell", RiskLevel.HIGH, "危险命令")
         log = (tmp_path / "approval_log.jsonl").read_text(encoding="utf-8")
         assert "shell" in log and "DENY" in log
 
     def test_broken_rules_file_ignored(self, tmp_path: Path):
-        """损坏的规则文件加载为空, 不崩溃"""
+        """
+        损坏的规则文件加载为空, 不崩溃
+
+        参数:
+        - tmp_path: tmp路径
+        """
         bad = tmp_path / "permissions.json"
         bad.write_text("{ not json", encoding="utf-8")
         engine = PermissionEngine(rules_file=bad, log_file=tmp_path / "log.jsonl")
         assert engine.list_persistent_rules() == {}
 
     def test_mode_persisted_and_restored(self, tmp_path: Path):
-        """审批策略随规则文件持久化, 新引擎恢复"""
+        """
+        审批策略随规则文件持久化, 新引擎恢复
+
+        参数:
+        - tmp_path: tmp路径
+        """
         rules_file = tmp_path / "permissions.json"
         PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl").set_mode("full")
         engine = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
         assert engine.mode == "full"
 
     def test_multi_engine_rule_merge(self, tmp_path: Path):
-        """M5: 多实例交错添加持久规则不丢失更新"""
+        """
+        M5: 多实例交错添加持久规则不丢失更新
+
+        参数:
+        - tmp_path: tmp路径
+        """
         rules_file = tmp_path / "permissions.json"
         a = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
         b = PermissionEngine(rules_file=rules_file, log_file=tmp_path / "log.jsonl")
@@ -255,7 +328,12 @@ def store(tmp_path: Path) -> MemoryStore:
 
 class TestMemoryStore:
     def test_crud_lifecycle(self, store: MemoryStore):
-        """add/get/update/list/delete 完整流转"""
+        """
+        add/get/update/list/delete 完整流转
+
+        参数:
+        - store: 存储实例
+        """
         added = store.add("约定", "使用 pytest", ["code"], 2)
         assert added["ok"] is True
         memory_id = str(added["memory_id"])
@@ -273,7 +351,13 @@ class TestMemoryStore:
         assert store.count() == 0
 
     def test_prefix_resolution(self, store: MemoryStore, tmp_path: Path):
-        """唯一前缀可定位, 多匹配返回错误"""
+        """
+        唯一前缀可定位, 多匹配返回错误
+
+        参数:
+        - store: 存储实例
+        - tmp_path: tmp路径
+        """
         a = str(store.add("a", "x")["memory_id"])
         b = str(store.add("b", "y")["memory_id"])
         assert store.get(a[:8])["ok"] is True
@@ -288,7 +372,12 @@ class TestMemoryStore:
         assert store.delete(shared)["ok"] is False
 
     def test_scope_isolation(self, tmp_path: Path):
-        """不同作用域记忆互相隔离"""
+        """
+        不同作用域记忆互相隔离
+
+        参数:
+        - tmp_path: tmp路径
+        """
         s1 = MemoryStore(db_path=tmp_path / "m.db", scope="u1")
         s2 = MemoryStore(db_path=tmp_path / "m.db", scope="u2")
         s1.add("秘密", "u1 的数据")
@@ -297,33 +386,48 @@ class TestMemoryStore:
         assert s2.clear() == 0
 
     def test_modes(self, store: MemoryStore):
-        """disabled/base/full 模式行为"""
+        """
+        disabled/base/full 模式行为
+
+        参数:
+        - store: 存储实例
+        """
         store.add("m", "c")
         store.set_mode("base")
         assert store.can_write() is False
         assert store.add("m2", "c2")["ok"] is False
         assert store.delete(store.list_all()[0]["id"])["ok"] is False
         assert store.clear() == 0
-        assert store.to_context_block() != ""  # base 只读仍注入
+        assert store.to_context_block() != ""   # base 只读仍注入
         store.set_mode("disabled")
         assert store.to_context_block() == ""
         with pytest.raises(ValueError):
             store.set_mode("evil")
 
     def test_context_block_ordering_and_limit(self, tmp_path: Path):
-        """注入块: importance 降序 + max_entries 截断"""
+        """
+        注入块: importance 降序 + max_entries 截断
+
+        参数:
+        - tmp_path: tmp路径
+        """
         store = MemoryStore(db_path=tmp_path / "m.db", scope="u1", max_entries=2)
         store.add("低", "low", importance=1)
         store.add("高", "high", importance=5)
         store.add("中", "mid", importance=3)
         block = store.to_context_block()
-        assert "high" in block and "mid" in block and "low" not in block  # max_entries=2 截断
+        assert "high" in block and "mid" in block and "low" not in block   # max_entries=2 截断
         assert block.index("high") < block.index("mid")
         assert block.count("<long-term-memory>") == 1
         assert store.to_context_block(scope="nobody") == ""
 
     def test_empty_content_rejected(self, store: MemoryStore):
-        """空 title/content 拒绝添加"""
+        """
+        空 title/content 拒绝添加
+
+        参数:
+        - store: 存储实例
+        """
         assert store.add("", "x")["ok"] is False
         assert store.add("x", "")["ok"] is False
 
@@ -338,7 +442,12 @@ def goals(tmp_path: Path) -> GoalState:
 
 class TestGoalState:
     def test_goal_lifecycle(self, goals: GoalState):
-        """set/get/complete/clear 完整流转"""
+        """
+        set/get/complete/clear 完整流转
+
+        参数:
+        - goals: 目标列表
+        """
         goal = goals.set_goal("s1", "写一个插件")
         assert goal["status"] == "active"
         assert goals.is_active("s1") is True
@@ -355,7 +464,12 @@ class TestGoalState:
             goals.set_goal("s1", "   ")
 
     def test_todo_lifecycle(self, goals: GoalState):
-        """子任务添加/完成/边界"""
+        """
+        子任务添加/完成/边界
+
+        参数:
+        - goals: 目标列表
+        """
         goals.set_goal("s1", "写插件")
         assert goals.add_todo("s1", "写权限引擎") is True
         assert goals.add_todo("s1", "   ") is False
@@ -366,7 +480,12 @@ class TestGoalState:
         assert goals.add_todo("s1", "完成后的子任务") is False
 
     def test_session_isolation(self, tmp_path: Path):
-        """不同会话目标互相隔离"""
+        """
+        不同会话目标互相隔离
+
+        参数:
+        - tmp_path: tmp路径
+        """
         g = GoalState(file_path=tmp_path / "g.json")
         g.set_goal("s1", "A")
         g.set_goal("s2", "B")
@@ -378,7 +497,12 @@ class TestGoalState:
         assert g.get_goal("s1") is None and g.get_goal("s2") is not None
 
     def test_context_and_status_format(self, goals: GoalState):
-        """注入块与状态文本"""
+        """
+        注入块与状态文本
+
+        参数:
+        - goals: 目标列表
+        """
         assert goals.to_context_block("s1") == ""
         goals.set_goal("s1", "目标A")
         block = goals.to_context_block("s1")
@@ -392,7 +516,12 @@ class TestGoalState:
         assert "当前没有设置目标" in goals.format_status("nobody")
 
     def test_persistence_reload(self, tmp_path: Path):
-        """状态落盘后新实例重载"""
+        """
+        状态落盘后新实例重载
+
+        参数:
+        - tmp_path: tmp路径
+        """
         file_path = tmp_path / "g.json"
         GoalState(file_path=file_path).set_goal("s1", "持久目标")
         reloaded = GoalState(file_path=file_path)
@@ -402,7 +531,12 @@ class TestGoalState:
         assert GoalState(file_path=file_path).get_goal("s1") is None
 
     def test_multi_instance_merge(self, tmp_path: Path):
-        """M5: 多实例交错设置目标不互相覆盖"""
+        """
+        M5: 多实例交错设置目标不互相覆盖
+
+        参数:
+        - tmp_path: tmp路径
+        """
         file_path = tmp_path / "g.json"
         a = GoalState(file_path=file_path)
         b = GoalState(file_path=file_path)

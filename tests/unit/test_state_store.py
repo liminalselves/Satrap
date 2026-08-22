@@ -17,9 +17,23 @@ from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 def _kv_domain() -> SnapshotDomain:
-    """KV 领域: 用于测试的简单键值数据 (含引用字段)"""
+    """
+    KV 领域: 用于测试的简单键值数据 (含引用字段)
+
+    返回:
+    - SnapshotDomain: KV 领域: 用于测试的简单键值数据 (含引用字段)
+    """
     def builder(conn: sqlite3.Connection, scope: StateScope) -> list[JsonRow]:
-        """读取作用域下的全部 KV 行"""
+        """
+        读取作用域下的全部 KV 行
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+
+        返回:
+        - list[JsonRow]: 读取作用域下的全部 KV 行
+        """
         rows = conn.execute(
             "SELECT id, key, value, ref_col FROM kv_data "
             "WHERE scope_id = ? ORDER BY id",
@@ -33,7 +47,15 @@ def _kv_domain() -> SnapshotDomain:
         rows: list[JsonRow],
         options: RestoreOptions,
     ) -> None:
-        """清空后重写 KV 行"""
+        """
+        清空后重写 KV 行
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        - rows: 数据行集合
+        - options: 选项集合
+        """
         cleaner(conn, scope)
         for row in rows:
             conn.execute(
@@ -48,11 +70,26 @@ def _kv_domain() -> SnapshotDomain:
             )
 
     def cleaner(conn: sqlite3.Connection, scope: StateScope) -> None:
-        """清空作用域下的全部 KV 行"""
+        """
+        清空作用域下的全部 KV 行
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        """
         conn.execute("DELETE FROM kv_data WHERE scope_id = ?", (scope.scope_id,))
 
     def position_provider(conn: sqlite3.Connection, scope: StateScope) -> int:
-        """提供水位: 当前作用域最大行 ID"""
+        """
+        提供水位: 当前作用域最大行 ID
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+
+        返回:
+        - int: 提供水位: 当前作用域最大行 ID
+        """
         row = conn.execute(
             "SELECT COALESCE(MAX(id), 0) AS position FROM kv_data WHERE scope_id = ?",
             (scope.scope_id,),
@@ -70,7 +107,16 @@ def _kv_domain() -> SnapshotDomain:
 
 
 def _write_kv(db_path: str, scope_id: str, key: str, value: str, ref_col: str | None = None) -> None:
-    """写入一条 KV 数据 (模拟业务侧写入)"""
+    """
+    写入一条 KV 数据 (模拟业务侧写入)
+
+    参数:
+    - db_path: 数据库路径
+    - scope_id: 作用域ID
+    - key: 密钥
+    - value: 输入值
+    - ref_col: 引用集合
+    """
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
@@ -83,7 +129,16 @@ def _write_kv(db_path: str, scope_id: str, key: str, value: str, ref_col: str | 
 
 
 def _read_kv(db_path: str, scope_id: str) -> list[dict[str, Any]]:
-    """读取作用域下的全部 KV 数据"""
+    """
+    读取作用域下的全部 KV 数据
+
+    参数:
+    - db_path: 数据库路径
+    - scope_id: 作用域ID
+
+    返回:
+    - list[dict[str, Any]]: 读取作用域下的全部 KV 数据
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     try:
@@ -98,7 +153,15 @@ def _read_kv(db_path: str, scope_id: str) -> list[dict[str, Any]]:
 
 @pytest.fixture()
 def store(tmp_path: Path) -> StateStore:
-    """构建带 KV 领域的 StateStore (与数据同库)"""
+    """
+    构建带 KV 领域的 StateStore (与数据同库)
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - StateStore: 构建带 KV 领域的 StateStore (与数据同库)
+    """
     db_path = str(tmp_path / "state.db")
     conn = sqlite3.connect(db_path)
     conn.execute(
@@ -114,7 +177,7 @@ def store(tmp_path: Path) -> StateStore:
     return s
 
 
-# ── 检查点 CRUD ──
+# ---------- 检查点 CRUD ----------
 
 class TestCheckpointCRUD:
     def test_create_and_list(self, store: StateStore):
@@ -152,7 +215,7 @@ class TestCheckpointCRUD:
         assert len(store.list_checkpoints(StateScope("test", "conv-c"))) == 0
 
 
-# ── 回滚 ──
+# ---------- 回滚 ----------
 
 class TestRollback:
     def test_rollback_restores_data(self, store: StateStore):
@@ -200,8 +263,8 @@ class TestRollback:
         with state_mutation_context(source="checkpoint_rollback", reason="测试回滚"):
             store.rollback(cp.checkpoint_id)
 
-        # 回滚后重新创建检查点, 审计字段应记录上下文来源
         cp2 = store.create_checkpoint(scope)
+        # 回滚后重新创建检查点, 审计字段应记录上下文来源
         conn = sqlite3.connect(str(store.db_path))
         try:
             row = conn.execute(
@@ -223,7 +286,7 @@ class TestRollback:
         assert row[0] == "manual"
 
 
-# ── 稳定检查点 ──
+# ---------- 稳定检查点 ----------
 
 class TestStableCheckpoint:
     def test_stable_dedup_by_position(self, store: StateStore):
@@ -237,8 +300,8 @@ class TestStableCheckpoint:
         assert stable1.checkpoint_id == stable2.checkpoint_id
         assert len(store.list_checkpoints(scope)) == 1
 
-        # 水位变化后创建新的稳定检查点
         _write_kv(str(store.db_path), "conv-1", "b", "2")
+        # 水位变化后创建新的稳定检查点
         stable3 = store.ensure_stable_checkpoint(scope)
         assert stable3 is not None
         assert stable3.checkpoint_id != stable1.checkpoint_id
@@ -248,7 +311,7 @@ class TestStableCheckpoint:
         assert store.ensure_stable_checkpoint(StateScope("test", "empty")) is None
 
 
-# ── 分支 (fork) ──
+# ---------- 分支 (fork) ----------
 
 class TestFork:
     def test_fork_creates_independent_scope(self, store: StateStore):
@@ -293,7 +356,7 @@ class TestFork:
             store.fork(cp.checkpoint_id, "conv-1:fork:dup")
 
 
-# ── 快照版本校验 ──
+# ---------- 快照版本校验 ----------
 
 class TestSnapshotValidation:
     def test_unsupported_snapshot_version_raises(self, store: StateStore):
@@ -301,8 +364,8 @@ class TestSnapshotValidation:
         _write_kv(str(store.db_path), "conv-1", "a", "1")
         cp = store.create_checkpoint(scope, materialize=True)
 
-        # 手工篡改快照版本
         conn = sqlite3.connect(str(store.db_path))
+        # 手工篡改快照版本
         try:
             conn.execute(
                 "UPDATE state_snapshots SET snapshot_json = ? WHERE snapshot_id = ?",
@@ -316,7 +379,7 @@ class TestSnapshotValidation:
             store.rollback(cp.checkpoint_id)
 
 
-# ── 变更审计上下文 ──
+# ---------- 变更审计上下文 ----------
 
 class TestMutationContext:
     def test_context_readable_inside_scope(self):
@@ -326,8 +389,8 @@ class TestMutationContext:
             assert len(ctx.change_set_id) == 32
             assert current_mutation_context() is ctx
 
-        # 退出作用域后恢复为空
         assert current_mutation_context() is None
+        # 退出作用域后恢复为空
 
     def test_create_checkpoint_records_context(self, store: StateStore):
         scope = StateScope("test", "conv-1")
@@ -347,11 +410,16 @@ class TestMutationContext:
         assert row[1] == "用户手动保存"
 
 
-# ── ContextManager 集成 ──
+# ---------- ContextManager 集成 ----------
 
 class TestContextManagerCheckpoint:
     def test_checkpoint_rollback_roundtrip(self, tmp_path: Path):
-        """写消息 -> 检查点 -> 继续写 -> 回滚还原"""
+        """
+        写消息 -> 检查点 -> 继续写 -> 回滚还原
+
+        参数:
+        - tmp_path: tmp路径
+        """
         ctx = ContextManager(
             "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
         )
@@ -370,7 +438,12 @@ class TestContextManagerCheckpoint:
         assert ctx.get_context()[1]["content"] == "你好呀"
 
     def test_fork_returns_new_context(self, tmp_path: Path):
-        """从检查点 fork 新剧情线, 父对话保持完整"""
+        """
+        从检查点 fork 新剧情线, 父对话保持完整
+
+        参数:
+        - tmp_path: tmp路径
+        """
         ctx = ContextManager(
             "demo",
             db_path=str(tmp_path / "chat_history.db"),
@@ -412,7 +485,12 @@ class TestContextManagerCheckpoint:
 
 class TestAsyncContextManagerCheckpoint:
     async def test_checkpoint_rollback_roundtrip(self, tmp_path: Path):
-        """异步版: 写消息 -> 检查点 -> 继续写 -> 回滚还原"""
+        """
+        异步版: 写消息 -> 检查点 -> 继续写 -> 回滚还原
+
+        参数:
+        - tmp_path: tmp路径
+        """
         ctx = AsyncContextManager(
             "demo", db_path=str(tmp_path / "chat_history.db"), enable_checkpoint=True
         )
@@ -432,7 +510,12 @@ class TestAsyncContextManagerCheckpoint:
         assert ctx.get_context()[1]["content"] == "你好呀"
 
     async def test_fork_returns_initialized_context(self, tmp_path: Path):
-        """异步版: fork 返回已初始化新分支, 父对话保持完整"""
+        """
+        异步版: fork 返回已初始化新分支, 父对话保持完整
+
+        参数:
+        - tmp_path: tmp路径
+        """
         ctx = AsyncContextManager(
             "demo",
             db_path=str(tmp_path / "chat_history.db"),

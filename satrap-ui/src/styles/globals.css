@@ -461,7 +461,7 @@
     pointer-events: none;
   }
 
-  /* 悬浮状态：完整反光和阴影 */
+  /* 悬浮状态: 完整反光和阴影 */
   .glass-card.glass-hovering::after,
   .glass-card:hover::after {
     opacity: 1;
@@ -474,7 +474,7 @@
     transform: translateY(-2px);
   }
 
-  /* 附近状态：淡反光和轻微阴影 */
+  /* 附近状态: 淡反光和轻微阴影 */
   .glass-card.glass-nearby::after {
     opacity: 0.5;
   }
@@ -705,7 +705,7 @@
     border-radius: inherit;
   }
 
-  /* 悬浮效果：不变色，只有反射和轻微阴影 */
+  /* 悬浮效果: 不变色, 只有反射和轻微阴影 */
   .glass-nav-item.glass-hovering,
   .glass-nav-item:hover {
     color: var(--color-text-primary);
@@ -719,7 +719,7 @@
     opacity: 1;
   }
 
-  /* 附近状态：淡反光和轻微阴影 */
+  /* 附近状态: 淡反光和轻微阴影 */
   .glass-nav-item.glass-nearby {
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
   }

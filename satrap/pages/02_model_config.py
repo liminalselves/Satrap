@@ -198,6 +198,7 @@ def _render_card(model_type: str, name: str, cfg: dict[str, Any]):
 
 
 def render():
+    """渲染"""
     ensure_state()
     st.subheader("模型配置管理")
 

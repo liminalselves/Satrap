@@ -43,7 +43,7 @@ class _FakeLLM(LLM):
         yield LLMCallStreamEvent(kind="content_delta", delta="流")
 
 
-# ---------------- schema 解析 ----------------
+# ---------- schema 解析 ----------
 
 def test_parse_config_schema_full():
     """完整 config_schema 解析为 ConfigField"""
@@ -92,10 +92,10 @@ def test_schema_to_payload():
     payload = schema_to_payload(schema)
     assert payload["root"]["type"] == "path"
     assert payload["root"]["description"] == "根目录"
-    json.dumps(payload)  # 必须可序列化
+    json.dumps(payload)   # 必须可序列化
 
 
-# ---------------- 全局读写 + 合成 ----------------
+# ---------- 全局读写 + 合成 ----------
 
 def _schema() -> dict[str, ConfigField]:
     return {
@@ -105,16 +105,26 @@ def _schema() -> dict[str, ConfigField]:
 
 
 def test_global_roundtrip(tmp_path: Path):
-    """写全局配置后读回, 未设置键用默认"""
+    """
+    写全局配置后读回, 未设置键用默认
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = PluginConfigManager(tmp_path)
     mgr.save_global("p1", _schema(), {"sandbox_root": "/custom"})
     loaded = mgr.load_global("p1", _schema())
     assert loaded["sandbox_root"] == "/custom"
-    assert loaded["timeout"] == 10  # 默认
+    assert loaded["timeout"] == 10   # 默认
 
 
 def test_global_ignores_undeclared_key(tmp_path: Path):
-    """未在 schema 声明的键被忽略"""
+    """
+    未在 schema 声明的键被忽略
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = PluginConfigManager(tmp_path)
     mgr.save_global("p1", _schema(), {"ghost": 1, "timeout": 20})
     loaded = mgr.load_global("p1", _schema())
@@ -123,7 +133,12 @@ def test_global_ignores_undeclared_key(tmp_path: Path):
 
 
 def test_resolve_session_override(tmp_path: Path):
-    """会话覆盖优先于全局"""
+    """
+    会话覆盖优先于全局
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = PluginConfigManager(tmp_path)
     mgr.save_global("p1", _schema(), {"timeout": 20})
     resolved = mgr.resolve("p1", _schema(), {"timeout": 99})
@@ -133,15 +148,28 @@ def test_resolve_session_override(tmp_path: Path):
 
 
 def test_load_global_missing_file(tmp_path: Path):
-    """无配置文件时全部默认"""
+    """
+    无配置文件时全部默认
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = PluginConfigManager(tmp_path)
     assert mgr.load_global("ghost", _schema()) == {"sandbox_root": "", "timeout": 10}
 
 
-# ---------------- install_plugin 注入 ----------------
+# ---------- install_plugin 注入 ----------
 
 def _make_plugin(tmp_path: Path) -> Path:
-    """造一个声明 config_schema + get_tools(session, config) 的插件"""
+    """
+    造一个声明 config_schema + get_tools(session, config) 的插件
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - Path: 造一个声明 config_schema + get_tools(session, config) 的插件
+    """
     plugin_dir = tmp_path / "cfg_plugin"
     plugin_dir.mkdir()
     (plugin_dir / "meta.yaml").write_text(
@@ -182,7 +210,13 @@ def _make_plugin(tmp_path: Path) -> Path:
 
 
 def test_install_plugin_injects_config(tmp_path: Path, monkeypatch: Any):
-    """install_plugin 把合成配置注入 get_tools 工厂 (默认 + 会话覆盖)"""
+    """
+    install_plugin 把合成配置注入 get_tools 工厂 (默认 + 会话覆盖)
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     plugin_dir = _make_plugin(tmp_path)
     # 全局配置目录隔离
     from satrap.edictum import simple_session as ss_mod
@@ -191,15 +225,21 @@ def test_install_plugin_injects_config(tmp_path: Path, monkeypatch: Any):
     s = SimpleSession("c1", _FakeLLM(), db_path=str(tmp_path / "chat.db"))
     s.install_plugin(str(plugin_dir), config={"timeout": 42})
 
-    # 从注册的工具实例读注入的配置 (避免依赖模块名/缓存)
     tool = s._wf.tools_manager.tools["cfg_tool"]
+    # 从注册的工具实例读注入的配置 (避免依赖模块名/缓存)
     captured = getattr(tool, "_config")
-    assert captured["timeout"] == 42  # 会话覆盖
-    assert captured["root"] == ""     # schema 默认
+    assert captured["timeout"] == 42   # 会话覆盖
+    assert captured["root"] == ""   # schema 默认
 
 
 def test_install_plugin_config_schema_on_plugin(tmp_path: Path, monkeypatch: Any):
-    """安装后 plugin.config_schema 携带序列化声明供前端渲染"""
+    """
+    安装后 plugin.config_schema 携带序列化声明供前端渲染
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     plugin_dir = _make_plugin(tmp_path)
     from satrap.edictum import simple_session as ss_mod
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))

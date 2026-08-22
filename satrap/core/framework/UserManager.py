@@ -32,7 +32,8 @@ class UserInfoStore:
     """UserInfo 的 SQLite 持久化存储"""
 
     def __init__(self, db_path: str | Path | None = None):
-        """初始化用户信息存储
+        """
+        初始化用户信息存储
 
         参数:
         - db_path: 数据库文件路径, 默认 .satrap/satrapdata/user_info.db
@@ -43,7 +44,8 @@ class UserInfoStore:
         self._init_table()
 
     def _connect(self) -> sqlite3.Connection:
-        """连接数据库
+        """
+        连接数据库
 
         返回:
         - 数据库连接对象 sqlite3.Connection
@@ -86,10 +88,14 @@ class UserInfoStore:
 
     @staticmethod
     def _row_to_userinfo(row: sqlite3.Row) -> UserInfo:
-        """将 SQLite 行转换为 UserInfo 实例
-        
+        """
+        将 SQLite 行转换为 UserInfo 实例
+
         参数:
         - row: SQLite 行数据
+
+        返回:
+        - UserInfo: 将 SQLite 行转换为 UserInfo 实例
         """
         sessions: List[str] = []
         raw_sessions = row["user_session"]
@@ -110,10 +116,14 @@ class UserInfoStore:
 
     @staticmethod
     def _userinfo_to_row(info: UserInfo) -> tuple[str, str, str, str]:
-        """将 UserInfo 实例转换为 SQLite 参数行
-        
+        """
+        将 UserInfo 实例转换为 SQLite 参数行
+
         参数:
         - info: 用户信息实例
+
+        返回:
+        - tuple[str, str, str, str]: 将 UserInfo 实例转换为 SQLite 参数行
         """
         user_id = str(info.user_id or "").strip()
         user_platform = str(info.user_platform or "").strip()
@@ -127,7 +137,8 @@ class UserInfoStore:
         )
 
     def upsert(self, info: UserInfo):
-        """插入或更新用户信息
+        """
+        插入或更新用户信息
 
         参数:
         - info: 用户信息实例
@@ -152,10 +163,14 @@ class UserInfoStore:
                 conn.commit()
 
     def get(self, user_id: str) -> Optional[UserInfo]:
-        """根据 user_id 查询用户信息
+        """
+        根据 user_id 查询用户信息
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - Optional[UserInfo]: 根据 user_id 查询用户信息
         """
         with self._lock:
             with self._connect() as conn:
@@ -168,7 +183,8 @@ class UserInfoStore:
                 return self._row_to_userinfo(row)
 
     def delete(self, user_id: str):
-        """删除用户信息
+        """
+        删除用户信息
 
         参数:
         - user_id: 用户 ID
@@ -179,10 +195,14 @@ class UserInfoStore:
                 conn.commit()
 
     def list(self, limit: int = 200) -> List[UserInfo]:
-        """列出用户信息
+        """
+        列出用户信息
 
         参数:
         - limit: 最大返回数量, 默认 200
+
+        返回:
+        - List[UserInfo]: 列出用户信息
         """
         with self._lock:
             with self._connect() as conn:
@@ -197,7 +217,8 @@ class UserInfoStore:
                 return [self._row_to_userinfo(row) for row in rows]
 
     def add_session(self, user_id: str, session_id: str):
-        """给用户追加一个 session_id, 幂等
+        """
+        给用户追加一个 session_id, 幂等
 
         参数:
         - user_id: 用户 ID
@@ -214,7 +235,8 @@ class UserInfoStore:
                 self.upsert(info)
 
     def remove_session(self, user_id: str, session_id: str):
-        """移除用户的一个 session_id
+        """
+        移除用户的一个 session_id
 
         参数:
         - user_id: 用户 ID
@@ -229,10 +251,14 @@ class UserInfoStore:
             self.upsert(info)
 
     def list_user_sessions(self, user_id: str) -> List[str]:
-        """获取用户的 session_id 列表
+        """
+        获取用户的 session_id 列表
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - List[str]: 用户的 session_id 列表
         """
         with self._lock:
             info = self.get(user_id)
@@ -240,13 +266,23 @@ class UserInfoStore:
                 return []
             return list(info.user_session or [])
 
-    # ── 上下文会话 ──
+    # ---------- 上下文会话 ----------
 
     def upsert_context_session(self, user_id: str, platform: str,
                                 session_type: str, session_id: str) -> str:
-        """创建或更新上下文会话记录
+        """
+        创建或更新上下文会话记录
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台名称
+        - session_type: 会话类型
+        - session_id: 会话 ID
 
         返回: context_key (格式: "{session_type}:{platform}:{user_id}")
+
+        返回:
+        - str: 创建或更新上下文会话记录
         """
         context_key = f"{session_type}:{platform}:{user_id}"
         now = time.time()
@@ -268,7 +304,17 @@ class UserInfoStore:
 
     def get_context_session(self, user_id: str, platform: str,
                              session_type: str) -> Optional[ContextSession]:
-        """查询上下文会话记录"""
+        """
+        查询上下文会话记录
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台名称
+        - session_type: 会话类型
+
+        返回:
+        - Optional[ContextSession]: 查询上下文会话记录
+        """
         context_key = f"{session_type}:{platform}:{user_id}"
         with self._lock:
             with self._connect() as conn:
@@ -290,7 +336,14 @@ class UserInfoStore:
 
     def delete_context_session(self, user_id: str, platform: str,
                                 session_type: str):
-        """删除上下文会话记录"""
+        """
+        删除上下文会话记录
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台名称
+        - session_type: 会话类型
+        """
         context_key = f"{session_type}:{platform}:{user_id}"
         with self._lock:
             with self._connect() as conn:
@@ -307,7 +360,8 @@ class UserManager:
         db_path: str | Path | None = None,
         auto_create: bool = True,
     ):
-        """初始化用户管理器
+        """
+        初始化用户管理器
 
         参数:
         - session_manager: 共享的 SessionManager 实例
@@ -319,14 +373,15 @@ class UserManager:
         self.auto_create = bool(auto_create)
         self._lock = threading.RLock()
 
-    # ---------------- 用户信息 ----------------
+    # ---------- 用户信息 ----------
     def get_or_create_user(
         self,
         user_id: str,
         platform: str = "",
         nickname: str = "",
     ) -> Optional[UserInfo]:
-        """查询用户; auto_create 开启时不存在则创建并持久化
+        """
+        查询用户; auto_create 开启时不存在则创建并持久化
 
         参数:
         - user_id: 用户 ID
@@ -363,7 +418,15 @@ class UserManager:
             return created
 
     def get_user(self, user_id: str) -> Optional[UserInfo]:
-        """查询用户信息"""
+        """
+        查询用户信息
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - Optional[UserInfo]: 查询用户信息
+        """
         try:
             return self.store.get(user_id)
         except Exception as e:
@@ -371,11 +434,19 @@ class UserManager:
             return None
 
     def update_user(self, user_id: str, **kwargs: Any) -> bool:
-        """更新用户基础信息
+        """
+        更新用户基础信息
+
+        参数:
+        - user_id: 用户 ID
+        - kwargs: 额外关键字参数
 
         支持字段:
         - user_platform
         - user_nickname
+
+        返回:
+        - bool: 更新用户基础信息
         """
         with self._lock:
             try:
@@ -399,10 +470,14 @@ class UserManager:
                 return False
 
     def delete_user(self, user_id: str) -> bool:
-        """删除用户信息, 不删除会话本身
+        """
+        删除用户信息, 不删除会话本身
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - bool: 删除用户信息, 不删除会话本身
         """
         with self._lock:
             try:
@@ -416,10 +491,14 @@ class UserManager:
                 return False
 
     def list_users(self, limit: int = 200) -> List[UserInfo]:
-        """列出所有用户
+        """
+        列出所有用户
 
         参数:
         - limit: 最大返回数量, 默认 200
+
+        返回:
+        - List[UserInfo]: 列出所有用户
         """
         try:
             return self.store.list(limit=limit)
@@ -427,13 +506,17 @@ class UserManager:
             logger.error(f"[UserManager] list_users 失败: 错误={e}")
             return []
 
-    # ---------------- 用户-会话关联 ----------------
+    # ---------- 用户-会话关联 ----------
     def bind_session(self, user_id: str, session_id: str) -> bool:
-        """将 session_id 绑定到用户, 幂等操作
+        """
+        将 session_id 绑定到用户, 幂等操作
 
         参数:
         - user_id: 用户 ID
         - session_id: 会话 ID
+
+        返回:
+        - bool: 将 session_id 绑定到用户, 幂等操作
         """
         with self._lock:
             try:
@@ -448,11 +531,15 @@ class UserManager:
                 return False
 
     def unbind_session(self, user_id: str, session_id: str) -> bool:
-        """从用户解绑一个 session_id
+        """
+        从用户解绑一个 session_id
 
         参数:
         - user_id: 用户 ID
         - session_id: 会话 ID
+
+        返回:
+        - bool: 从用户解绑一个 session_id
         """
         with self._lock:
             try:
@@ -467,10 +554,14 @@ class UserManager:
                 return False
 
     def get_user_session_ids(self, user_id: str) -> List[str]:
-        """获取用户绑定的 session_id 列表
+        """
+        获取用户绑定的 session_id 列表
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - List[str]: 用户绑定的 session_id 列表
         """
         try:
             return self.store.list_user_sessions(user_id)
@@ -479,10 +570,14 @@ class UserManager:
             return []
 
     def get_user_sessions(self, user_id: str) -> List[SessionConfig]:
-        """获取用户绑定的 SessionConfig 列表
+        """
+        获取用户绑定的 SessionConfig 列表
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - List[SessionConfig]: 用户绑定的 SessionConfig 列表
         """
         session_ids = self.get_user_session_ids(user_id)
         if not session_ids:
@@ -501,10 +596,14 @@ class UserManager:
         return result
 
     def unbind_orphan_sessions(self, user_id: str) -> int:
-        """清理已不存在的过期 session_id 绑定
+        """
+        清理已不存在的过期 session_id 绑定
 
         参数:
         - user_id: 用户 ID
+
+        返回:
+        - int: 清理已不存在的过期 session_id 绑定
         """
         with self._lock:
             removed = 0
@@ -520,7 +619,7 @@ class UserManager:
                 logger.error(f"[UserManager] unbind_orphan_sessions 失败: user_id={user_id}, 错误={e}")
                 return removed
 
-    # ---------------- 快捷创建 ----------------
+    # ---------- 快捷创建 ----------
     def create_user_session(
         self,
         user_id: str,
@@ -528,13 +627,17 @@ class UserManager:
         session_type_name: str | None = None,
         session_config: Optional[dict[str, Any]] = None,
     ) -> str:
-        """创建会话并绑定到用户
+        """
+        创建会话并绑定到用户
 
         参数:
         - user_id: 用户 ID
         - session_class: 会话类
         - session_type_name: 会话类型名称
         - session_config: 会话配置
+
+        返回:
+        - str: 创建会话并绑定到用户
         """
         with self._lock:
             try:
@@ -561,7 +664,7 @@ class UserManager:
                 logger.error(f"[UserManager] create_user_session 失败: user_id={user_id}, 错误={e}")
                 return ""
 
-    # ---------------- 上下文路由 ----------------
+    # ---------- 上下文路由 ----------
     def resolve_session(
         self,
         user_id: str,
@@ -570,7 +673,8 @@ class UserManager:
         class_cfg_mgr: SessionClassConfigManager | None = None,
         extra_params: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """解析用户+平台到 session_id, 不存在则自动创建
+        """
+        解析用户+平台到 session_id, 不存在则自动创建
 
         参数:
         - user_id: 用户 ID (如 Misskey 用户 ID)
@@ -580,6 +684,9 @@ class UserManager:
         - extra_params: 补充/覆盖 params
 
         返回: session_id (格式: "{session_type}:{platform}:{user_id}")
+
+        返回:
+        - str: 解析用户+平台到 session_id, 不存在则自动创建
         """
         if self.get_or_create_user(user_id=user_id, platform=platform) is None:
             logger.warning(
@@ -611,7 +718,8 @@ class UserManager:
 
     def update_context_session(self, user_id: str, platform: str,
                                 session_type: str, session_id: str):
-        """更新上下文会话路由，使该用户的后续消息路由到指定 session_id
+        """
+        更新上下文会话路由, 使该用户的后续消息路由到指定 session_id
 
         参数:
         - user_id: 用户 ID
@@ -636,7 +744,19 @@ class UserManager:
         class_cfg_mgr: SessionClassConfigManager,
         extra_params: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """获取或创建用户上下文 (resolve_session 的别名)"""
+        """
+        获取或创建用户上下文 (resolve_session 的别名)
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台名称
+        - session_type: 会话类型
+        - class_cfg_mgr: 类cfgmgr
+        - extra_params: extra参数集合
+
+        返回:
+        - str: 或创建用户上下文 (resolve_session 的别名)
+        """
         return self.resolve_session(
             user_id=user_id,
             platform=platform,
@@ -645,13 +765,17 @@ class UserManager:
             extra_params=extra_params,
         )
 
-    # ---------------- 消息路由 ----------------
+    # ---------- 消息路由 ----------
     def route_call(self, user_call: UserCall, user_id: str) -> str:
-        """按用户维度路由消息到 SessionManager
+        """
+        按用户维度路由消息到 SessionManager
 
         参数:
         - user_call: 用户调用对象
         - user_id: 用户 ID
+
+        返回:
+        - str: 按用户维度路由消息到 SessionManager
         """
         with self._lock:
             try:

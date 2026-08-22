@@ -1,8 +1,9 @@
-"""build_llm_from_config 统一 LLM 构造工厂测试
+"""
+build_llm_from_config 统一 LLM 构造工厂测试
 
 覆盖:
 - 全字段映射 (含 top_p / lock_api_key / reasoning_body / thinking_fields)
-- 输出预算 = context_window × (1 - history_ratio), 优先于 max_tokens
+- 输出预算 = context_window x (1 - history_ratio), 优先于 max_tokens
 - max_tokens 缺省回退 4096
 - sync / async 两种构造
 - 测试替身 (SimpleNamespace 缺字段) 兼容
@@ -75,7 +76,7 @@ def test_async_variant():
 def test_simple_namespace_substitute():
     """缺字段替身 (SimpleNamespace) 也能构造, 用 LLM 默认值"""
     ns = SimpleNamespace(api_key="k", base_url="http://x", model="m")
-    llm = build_llm_from_config(ns)  # type: ignore[arg-type]
+    llm = build_llm_from_config(ns)   # type: ignore[arg-type]
     assert isinstance(llm, LLM)
     assert llm.max_tokens == 4096
     assert llm.temperature == 0.7

@@ -1,4 +1,5 @@
-"""状态检查点存储
+"""
+状态检查点存储
 
 表结构:
 - state_scopes: 作用域与当前状态版本
@@ -34,17 +35,34 @@ from satrap.core.type import (
 
 
 def _json_dumps(value: object) -> str:
-    """序列化快照为 JSON 文本 (保留中文可读)"""
+    """
+    序列化快照为 JSON 文本 (保留中文可读)
+
+    参数:
+    - value: 输入值
+
+    返回:
+    - str: 序列化快照为 JSON 文本 (保留中文可读)
+    """
     return json.dumps(value, ensure_ascii=False)
 
 
 def _json_loads(text: str) -> dict[str, Any]:
-    """反序列化快照 JSON 文本"""
+    """
+    反序列化快照 JSON 文本
+
+    参数:
+    - text: 待处理文本
+
+    返回:
+    - dict[str, Any]: 反序列化快照 JSON 文本
+    """
     return json.loads(text)
 
 
 class StateStore:
-    """状态检查点存储: 检查点 CRUD、回滚与分支
+    """
+    状态检查点存储: 检查点 CRUD, 回滚与分支
 
     用法示例:
         store = StateStore(db_path=get_db_path("chat_history.db"))
@@ -56,7 +74,8 @@ class StateStore:
         db_path: str | Path | None = None,
         registry: DomainRegistry | None = None,
     ):
-        """初始化存储
+        """
+        初始化存储
 
         参数:
         - db_path: 数据库文件路径, 默认 .satrap/satrapdata/state.db
@@ -68,13 +87,18 @@ class StateStore:
         self._lock = threading.RLock()
         self._init_tables()
 
-    # ── 领域注册 ──
+    # ---------- 领域注册 ----------
 
     def register_domain(self, domain: SnapshotDomain) -> None:
-        """注册领域 (同名注册会覆盖)"""
+        """
+        注册领域 (同名注册会覆盖)
+
+        参数:
+        - domain: 数据领域
+        """
         self.registry.register(domain)
 
-    # ── 检查点管理 ──
+    # ---------- 检查点管理 ----------
 
     def create_checkpoint(
         self,
@@ -86,7 +110,8 @@ class StateStore:
         batch_id: str = "",
         materialize: bool = False,
     ) -> StateCheckpoint:
-        """为作用域创建检查点: 指针式 (默认, 零快照) 或显式物化完整快照
+        """
+        为作用域创建检查点: 指针式 (默认, 零快照) 或显式物化完整快照
 
         参数:
         - scope: 状态作用域
@@ -109,7 +134,8 @@ class StateStore:
                 )
 
     def ensure_stable_checkpoint(self, scope: StateScope) -> Optional[StateCheckpoint]:
-        """为作用域创建或刷新稳定检查点 (同水位去重, 指针式零快照)
+        """
+        为作用域创建或刷新稳定检查点 (同水位去重, 指针式零快照)
 
         参数:
         - scope: 状态作用域
@@ -140,7 +166,15 @@ class StateStore:
                 )
 
     def list_checkpoints(self, scope: StateScope) -> List[StateCheckpoint]:
-        """列出作用域下的全部检查点 (按创建时间升序)"""
+        """
+        列出作用域下的全部检查点 (按创建时间升序)
+
+        参数:
+        - scope: 作用域
+
+        返回:
+        - List[StateCheckpoint]: 列出作用域下的全部检查点 (按创建时间升序)
+        """
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -152,7 +186,15 @@ class StateStore:
         return [self._checkpoint_from_row(row) for row in rows]
 
     def get_checkpoint(self, checkpoint_id: str) -> Optional[StateCheckpoint]:
-        """按 ID 读取检查点"""
+        """
+        按 ID 读取检查点
+
+        参数:
+        - checkpoint_id: 检查点 ID
+
+        返回:
+        - Optional[StateCheckpoint]: 按 ID 读取检查点
+        """
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
@@ -162,7 +204,15 @@ class StateStore:
         return self._checkpoint_from_row(row) if row is not None else None
 
     def list_checkpoints_by_batch(self, batch_id: str) -> List[StateCheckpoint]:
-        """列出同一批次 (会话级聚合检查点) 的全部检查点"""
+        """
+        列出同一批次 (会话级聚合检查点) 的全部检查点
+
+        参数:
+        - batch_id: 批次ID
+
+        返回:
+        - List[StateCheckpoint]: 列出同一批次 (会话级聚合检查点) 的全部检查点
+        """
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -172,10 +222,11 @@ class StateStore:
                 ).fetchall()
         return [self._checkpoint_from_row(row) for row in rows]
 
-    # ── 分支树查询 ──
+    # ---------- 分支树查询 ----------
 
     def trace_lineage(self, checkpoint_id: str) -> List[StateCheckpoint]:
-        """沿 parent_checkpoint_id 回溯检查点血缘 (根在前, 含自身)
+        """
+        沿 parent_checkpoint_id 回溯检查点血缘 (根在前, 含自身)
 
         参数:
         - checkpoint_id: 起点检查点 ID
@@ -208,7 +259,15 @@ class StateStore:
         return lineage
 
     def list_child_branches(self, checkpoint_id: str) -> List[StateCheckpoint]:
-        """列出直接子分支检查点 (parent_checkpoint_id 指向给定检查点, 跨作用域)"""
+        """
+        列出直接子分支检查点 (parent_checkpoint_id 指向给定检查点, 跨作用域)
+
+        参数:
+        - checkpoint_id: 检查点 ID
+
+        返回:
+        - List[StateCheckpoint]: 列出直接子分支检查点 (parent_checkpoint_id 指向给定检查点, 跨作用域)
+        """
         with self._lock:
             with self._connect() as conn:
                 rows = conn.execute(
@@ -219,7 +278,8 @@ class StateStore:
         return [self._checkpoint_from_row(row) for row in rows]
 
     def list_branches(self, scope_prefix: str) -> List[StateCheckpoint]:
-        """列出 scope_id 以给定前缀开头且带分支标记 (":fork:") 的检查点
+        """
+        列出 scope_id 以给定前缀开头且带分支标记 (":fork:") 的检查点
 
         参数:
         - scope_prefix: 作用域 ID 前缀, 如 "conv-1:fork:" 或 "s1_main:fork:"
@@ -236,10 +296,11 @@ class StateStore:
                 ).fetchall()
         return [self._checkpoint_from_row(row) for row in rows]
 
-    # ── 变更审计 ──
+    # ---------- 变更审计 ----------
 
     def list_mutations(self, scope: StateScope) -> List[StateCheckpoint]:
-        """列出作用域下的检查点变更记录 (按创建时间倒序), 含审计字段 source / reason
+        """
+        列出作用域下的检查点变更记录 (按创建时间倒序), 含审计字段 source / reason
 
         参数:
         - scope: 状态作用域
@@ -258,7 +319,11 @@ class StateStore:
         return [self._checkpoint_from_row(row) for row in rows]
 
     def delete_checkpoint(self, checkpoint_id: str) -> bool:
-        """删除检查点及其引用的快照
+        """
+        删除检查点及其引用的快照
+
+        参数:
+        - checkpoint_id: 检查点 ID
 
         返回:
         - bool: 是否存在并删除成功
@@ -274,10 +339,11 @@ class StateStore:
                 self._delete_checkpoint_inner(conn, self._checkpoint_from_row(row))
                 return True
 
-    # ── 回滚与分支 ──
+    # ---------- 回滚与分支 ----------
 
     def rollback(self, checkpoint_id: str) -> None:
-        """把作用域回滚到检查点: 恢复快照并清理未来的检查点
+        """
+        把作用域回滚到检查点: 恢复快照并清理未来的检查点
 
         参数:
         - checkpoint_id: 目标检查点 ID
@@ -298,7 +364,8 @@ class StateStore:
         logger.info(f"[StateStore] 已回滚到检查点: {checkpoint_id}")
 
     def retry(self, checkpoint_id: str) -> None:
-        """从检查点重试: 恢复快照并回退版本, 但保留未来检查点
+        """
+        从检查点重试: 恢复快照并回退版本, 但保留未来检查点
 
         与 rollback 的区别: retry 不清除水位更高的未来检查点,
         重试后若走不同路线, 旧分支检查点仍可回滚
@@ -322,7 +389,8 @@ class StateStore:
         logger.info(f"[StateStore] 已重试到检查点: {checkpoint_id}")
 
     def rollback_batch(self, batch_id: str) -> int:
-        """在单个事务中回滚同一批次 (会话级聚合) 的全部检查点
+        """
+        在单个事务中回滚同一批次 (会话级聚合) 的全部检查点
 
         参数:
         - batch_id: 批次 ID
@@ -345,7 +413,8 @@ class StateStore:
         return len(checkpoints)
 
     def retry_batch(self, batch_id: str) -> int:
-        """在单个事务中重试同一批次 (会话级聚合) 的全部检查点, 保留未来检查点
+        """
+        在单个事务中重试同一批次 (会话级聚合) 的全部检查点, 保留未来检查点
 
         参数:
         - batch_id: 批次 ID
@@ -368,7 +437,8 @@ class StateStore:
         return len(checkpoints)
 
     def fork(self, checkpoint_id: str, new_scope_id: str) -> StateScope:
-        """从检查点 fork 一条新分支: 复制快照到新作用域并重映射引用
+        """
+        从检查点 fork 一条新分支: 复制快照到新作用域并重映射引用
 
         参数:
         - checkpoint_id: 源检查点 ID
@@ -387,8 +457,8 @@ class StateStore:
                 self._ensure_scope_empty(conn, new_scope)
                 self._set_revision(conn, new_scope, checkpoint.state_revision)
                 if checkpoint.snapshot_id:
-                    # 快照型源: 从快照恢复并重映射引用
                     snapshot = self._load_snapshot(conn, checkpoint)
+                    # 快照型源: 从快照恢复并重映射引用
                     id_map = build_id_map(self.registry, snapshot, new_scope)
                     restore_snapshot(
                         conn,
@@ -408,10 +478,10 @@ class StateStore:
                         materialize=True,
                     )
                 else:
-                    # 指针型源: 复制到水位为止的消息行 (追加式语义)
                     has_table = conn.execute(
                         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chat_history'"
                     ).fetchone()
+                    # 指针型源: 复制到水位为止的消息行 (追加式语义)
                     if has_table is not None:
                         conn.execute(
                             "INSERT INTO chat_history "
@@ -440,17 +510,27 @@ class StateStore:
         logger.info(f"[StateStore] 已从检查点 {checkpoint_id} 分支到 {new_scope_id}")
         return new_scope
 
-    # ── 内部实现 ──
+    # ---------- 内部实现 ----------
 
     def _connect(self) -> sqlite3.Connection:
-        """创建数据库连接"""
+        """
+        创建数据库连接
+
+        返回:
+        - sqlite3.Connection: 创建数据库连接
+        """
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         return conn
 
     @contextmanager
     def _transaction(self) -> Generator[sqlite3.Connection, None, None]:
-        """显式事务: 成功提交, 异常整体回滚"""
+        """
+        显式事务: 成功提交, 异常整体回滚
+
+        返回:
+        - Generator[sqlite3.Connection, None, None]: 显式事务: 成功提交, 异常整体回滚
+        """
         conn = self._connect()
         try:
             conn.execute("BEGIN")
@@ -551,7 +631,12 @@ class StateStore:
     """增量列迁移清单: 旧库缺列时逐个 ALTER TABLE 补充"""
 
     def _ensure_columns(self, conn: sqlite3.Connection) -> None:
-        """为旧库补齐缺失的增量列 (SQLite ALTER TABLE 迁移, 幂等)"""
+        """
+        为旧库补齐缺失的增量列 (SQLite ALTER TABLE 迁移, 幂等)
+
+        参数:
+        - conn: 数据库连接
+        """
         cols = {str(row["name"]) for row in conn.execute("PRAGMA table_info(state_checkpoints)")}
         for name, ddl in self._MIGRATABLE_COLUMNS.items():
             if name not in cols:
@@ -574,11 +659,23 @@ class StateStore:
         materialize: bool = False,
         source_override: str | None = None,
     ) -> StateCheckpoint:
-        """事务内创建检查点: 指针式 (零快照) 或显式物化快照 + 写入元数据 + 推进版本
+        """
+        事务内创建检查点: 指针式 (零快照) 或显式物化快照 + 写入元数据 + 推进版本
 
         参数:
+        - conn: 当前事务的数据库连接
+        - scope: 检查点所属状态作用域
+        - checkpoint_id: 检查点 ID
+        - name: 检查点名称
+        - description: 检查点说明
+        - checkpoint_kind: 检查点类型
+        - parent_checkpoint_id: 父检查点 ID, 无父检查点时为 None
+        - batch_id: 检查点批次 ID
         - materialize: True 时构建完整快照 (保护检查点/显式快照用); 默认指针式
         - source_override: 显式指定变更来源, 覆盖当前审计上下文 (如 auto / rollback_snapshot)
+
+        返回:
+        - StateCheckpoint: 事务内创建检查点: 指针式 (零快照) 或显式物化快照 + 写入元数据 + 推进版本
         """
         mutation = current_mutation_context()
         source = source_override or (mutation.source if mutation else "manual")
@@ -650,23 +747,26 @@ class StateStore:
         checkpoint: StateCheckpoint,
         keep_future: bool = False,
     ) -> None:
-        """事务内恢复单个检查点: 恢复快照或按水位截断 + 回退版本
+        """
+        事务内恢复单个检查点: 恢复快照或按水位截断 + 回退版本
 
         参数:
+        - conn: 当前事务的数据库连接
+        - checkpoint: 要恢复的检查点
         - keep_future: True=重试语义, 保留未来检查点; False=回滚语义, 清理未来检查点
         """
         scope = StateScope(
             checkpoint.namespace, checkpoint.scope_id, checkpoint.branch_id
         )
         if checkpoint.snapshot_id:
-            # 快照型: 从完整快照恢复 (旧检查点 / 保护检查点 / 显式快照)
             snapshot = self._load_snapshot(conn, checkpoint)
+            # 快照型: 从完整快照恢复 (旧检查点 / 保护检查点 / 显式快照)
             restore_snapshot(
                 conn, scope, snapshot, self.registry, RestoreOptions(preserve_ids=True)
             )
         else:
-            # 指针型: 追加式消息按水位截断恢复
             self._restore_by_position(conn, checkpoint)
+            # 指针型: 追加式消息按水位截断恢复
         self._set_revision(conn, scope, checkpoint.state_revision)
         if not keep_future:
             self._delete_future_checkpoints(conn, checkpoint)
@@ -674,7 +774,12 @@ class StateStore:
     def _restore_by_position(
         self, conn: sqlite3.Connection, checkpoint: StateCheckpoint
     ) -> None:
-        """指针式恢复: 保留消息领域水位之前的记录 (追加式语义)
+        """
+        指针式恢复: 保留消息领域水位之前的记录 (追加式语义)
+
+        参数:
+        - conn: 数据库连接
+        - checkpoint: 检查点
 
         仅适用于追加式消息存储 (chat_history 行按写入顺序稳定);
         编辑类操作会改写/删除历史行, 执行前必须先物化保护检查点
@@ -701,9 +806,19 @@ class StateStore:
         source: str,
         name: str,
     ) -> StateCheckpoint:
-        """事务内物化当前状态为保护检查点 (撤销回滚/重试的锚点)
+        """
+        事务内物化当前状态为保护检查点 (撤销回滚/重试的锚点)
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        - source: 来源
+        - name: 名称
 
         保护检查点持有完整快照, 且不会被未来删除逻辑清理
+
+        返回:
+        - StateCheckpoint: 事务内物化当前状态为保护检查点 (撤销回滚/重试的锚点)
         """
         return self._create_checkpoint(
             conn,
@@ -723,7 +838,15 @@ class StateStore:
         source: str,
         batch_id: str,
     ) -> None:
-        """事务内为批次内每个作用域物化保护检查点 (去重后逐个保护)"""
+        """
+        事务内为批次内每个作用域物化保护检查点 (去重后逐个保护)
+
+        参数:
+        - conn: 数据库连接
+        - checkpoints: 检查点列表
+        - source: 来源
+        - batch_id: 批次ID
+        """
         seen_scopes: set[str] = set()
         for checkpoint in checkpoints:
             key = f"{checkpoint.namespace}\0{checkpoint.scope_id}\0{checkpoint.branch_id}"
@@ -738,10 +861,14 @@ class StateStore:
             )
 
     def materialize_edit_protection(self, scope: StateScope) -> StateCheckpoint:
-        """编辑类操作前调用: 物化当前状态为保护检查点, 并清理该作用域失效的指针检查点
+        """
+        编辑类操作前调用: 物化当前状态为保护检查点, 并清理该作用域失效的指针检查点
 
         指针检查点依赖追加式消息的水位截断语义, 编辑改写/删除历史行后失效,
         因此物化保护后删除; 保护检查点保留, 可撤销编辑
+
+        参数:
+        - scope: 作用域
 
         返回:
         - StateCheckpoint: 编辑前状态的保护检查点
@@ -767,7 +894,16 @@ class StateStore:
     def _load_batch_locked(
         self, conn: sqlite3.Connection, batch_id: str
     ) -> List[StateCheckpoint]:
-        """事务内读取批次检查点列表, 批次不存在或作用域重复时抛出 ValueError"""
+        """
+        事务内读取批次检查点列表, 批次不存在或作用域重复时抛出 ValueError
+
+        参数:
+        - conn: 数据库连接
+        - batch_id: 批次ID
+
+        返回:
+        - List[StateCheckpoint]: 事务内读取批次检查点列表, 批次不存在或作用域重复时抛出 ValueError
+        """
         rows = conn.execute(
             "SELECT * FROM state_checkpoints WHERE batch_id = ? "
             "ORDER BY created_at, checkpoint_id",
@@ -784,7 +920,16 @@ class StateStore:
         return checkpoints
 
     def _collect_position(self, conn: sqlite3.Connection, scope: StateScope) -> int:
-        """收集所有领域水位提供者的最大值"""
+        """
+        收集所有领域水位提供者的最大值
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+
+        返回:
+        - int: 收集所有领域水位提供者的最大值
+        """
         positions: List[int] = []
         for domain in self.registry.all():
             provider = domain.position_provider
@@ -793,13 +938,31 @@ class StateStore:
         return max(positions) if positions else 0
 
     def _next_revision(self, conn: sqlite3.Connection, scope: StateScope) -> int:
-        """获取并推进作用域状态版本"""
+        """
+        获取并推进作用域状态版本
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+
+        返回:
+        - int: 并推进作用域状态版本
+        """
         revision = self._scope_revision(conn, scope) + 1
         self._set_revision(conn, scope, revision)
         return revision
 
     def _scope_revision(self, conn: sqlite3.Connection, scope: StateScope) -> int:
-        """读取作用域当前状态版本"""
+        """
+        读取作用域当前状态版本
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+
+        返回:
+        - int: 读取作用域当前状态版本
+        """
         row = conn.execute(
             "SELECT state_revision FROM state_scopes "
             "WHERE namespace = ? AND scope_id = ? AND branch_id = ?",
@@ -808,7 +971,14 @@ class StateStore:
         return int(row["state_revision"]) if row is not None else 0
 
     def _set_revision(self, conn: sqlite3.Connection, scope: StateScope, revision: int) -> None:
-        """设置作用域状态版本 (回滚回退 / 分支继承时使用)"""
+        """
+        设置作用域状态版本 (回滚回退 / 分支继承时使用)
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        - revision: 版本号
+        """
         conn.execute(
             "INSERT INTO state_scopes (namespace, scope_id, branch_id, state_revision) "
             "VALUES (?, ?, ?, ?) "
@@ -820,7 +990,16 @@ class StateStore:
     def _require_checkpoint(
         self, conn: sqlite3.Connection, checkpoint_id: str
     ) -> StateCheckpoint:
-        """读取检查点, 不存在时抛出 ValueError"""
+        """
+        读取检查点, 不存在时抛出 ValueError
+
+        参数:
+        - conn: 数据库连接
+        - checkpoint_id: 检查点 ID
+
+        返回:
+        - StateCheckpoint: 读取检查点, 不存在时抛出 ValueError
+        """
         row = conn.execute(
             "SELECT * FROM state_checkpoints WHERE checkpoint_id = ?",
             (checkpoint_id,),
@@ -832,7 +1011,16 @@ class StateStore:
     def _load_snapshot(
         self, conn: sqlite3.Connection, checkpoint: StateCheckpoint
     ) -> StateSnapshot:
-        """读取检查点引用的状态快照"""
+        """
+        读取检查点引用的状态快照
+
+        参数:
+        - conn: 数据库连接
+        - checkpoint: 检查点
+
+        返回:
+        - StateSnapshot: 读取检查点引用的状态快照
+        """
         row = conn.execute(
             "SELECT snapshot_json FROM state_snapshots WHERE snapshot_id = ?",
             (checkpoint.snapshot_id,),
@@ -844,7 +1032,17 @@ class StateStore:
     def _find_stable_checkpoint(
         self, conn: sqlite3.Connection, scope: StateScope, position: int
     ) -> Optional[StateCheckpoint]:
-        """按水位查找已有稳定检查点"""
+        """
+        按水位查找已有稳定检查点
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        - position: 当前位置
+
+        返回:
+        - Optional[StateCheckpoint]: 按水位查找已有稳定检查点
+        """
         row = conn.execute(
             "SELECT * FROM state_checkpoints "
             "WHERE namespace = ? AND scope_id = ? AND branch_id = ? "
@@ -857,7 +1055,13 @@ class StateStore:
     def _delete_checkpoint_inner(
         self, conn: sqlite3.Connection, checkpoint: StateCheckpoint
     ) -> None:
-        """事务内删除检查点及其快照"""
+        """
+        事务内删除检查点及其快照
+
+        参数:
+        - conn: 数据库连接
+        - checkpoint: 检查点
+        """
         conn.execute(
             "DELETE FROM state_checkpoints WHERE checkpoint_id = ?",
             (checkpoint.checkpoint_id,),
@@ -870,7 +1074,12 @@ class StateStore:
     def _delete_future_checkpoints(
         self, conn: sqlite3.Connection, checkpoint: StateCheckpoint
     ) -> None:
-        """删除作用域内水位更高 (或同水位但创建更晚) 的未来检查点及其快照
+        """
+        删除作用域内水位更高 (或同水位但创建更晚) 的未来检查点及其快照
+
+        参数:
+        - conn: 数据库连接
+        - checkpoint: 检查点
 
         保护检查点 (rollback_snapshot / retry_snapshot / edit_protect) 豁免,
         保证破坏性操作后仍可撤销
@@ -912,14 +1121,28 @@ class StateStore:
                 )
 
     def _ensure_scope_empty(self, conn: sqlite3.Connection, scope: StateScope) -> None:
-        """检查目标作用域是否已有数据, 防止 fork 覆盖既有内容"""
+        """
+        检查目标作用域是否已有数据, 防止 fork 覆盖既有内容
+
+        参数:
+        - conn: 数据库连接
+        - scope: 作用域
+        """
         for domain in self.registry.all():
             if domain.builder(conn, scope):
                 raise ValueError(f"目标作用域已存在数据: {scope.scope_id}")
 
     @staticmethod
     def _checkpoint_from_row(row: sqlite3.Row) -> StateCheckpoint:
-        """将 SQLite 行转换为检查点对象"""
+        """
+        将 SQLite 行转换为检查点对象
+
+        参数:
+        - row: 数据行
+
+        返回:
+        - StateCheckpoint: 将 SQLite 行转换为检查点对象
+        """
         return StateCheckpoint(
             checkpoint_id=str(row["checkpoint_id"]),
             namespace=str(row["namespace"]),

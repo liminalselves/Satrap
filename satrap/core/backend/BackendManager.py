@@ -21,24 +21,26 @@ from satrap.core.platform import (
     PlatformAdapterManager,
     PlatformAdapterRegistry,
     PlatformConfig,
+    registry as global_registry,
 )
 
 
 @dataclass
 class BackendConfig:
-    """后端统一配置
+    """
+    后端统一配置
 
     所有路径为 None 时使用对应 Manager 的默认路径
     """
 
-    # 存储路径
     model_config_path: str | None = None
+    # 存储路径
     session_class_config_path: str | None = None
     session_db_path: str | None = None
     user_db_path: str | None = None
 
-    # SessionManager
     default_session_type: str = "default"
+    # SessionManager 配置
     max_sessions: int = 1000
     idle_timeout: int = 3600
     session_checkpoint: bool = False
@@ -46,26 +48,34 @@ class BackendConfig:
     session_checkpoint_db: str | None = None
     """会话默认上下文库路径 (None 时使用会话自身默认库)"""
 
-    # Pipeline
     rate_limit: float = 1.0
+    # 调度管线配置
     rate_burst: int = 5
     llm_timeout: float = 120.0
     error_feedback: bool = True
 
-    # Session 类注册 (name -> class_path)
     session_classes: Dict[str, str] = field(default_factory=dict[str, str])
+    # Session 类注册 (name -> class_path)
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
 
-    # HTTP API
     api_host: str = "127.0.0.1"
+    # HTTP API 配置
     api_port: int = 19870
 
-    # 平台适配器配置
     platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
+    # 平台适配器配置
 
     @staticmethod
     def _as_bool(value: Any) -> bool:
-        """宽松布尔解析: 兼容 YAML 布尔与字符串形式的 true/false/1/0/yes/no"""
+        """
+        宽松布尔解析: 兼容 YAML 布尔与字符串形式的 true/false/1/0/yes/no
+
+        参数:
+        - value: 输入值
+
+        返回:
+        - bool: 宽松布尔解析: 兼容 YAML 布尔与字符串形式的 true/false/1/0/yes/no
+        """
         if isinstance(value, bool):
             return value
         if isinstance(value, str):
@@ -74,7 +84,15 @@ class BackendConfig:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackendConfig:
-        """从字典加载配置"""
+        """
+        从字典加载配置
+
+        参数:
+        - data: 输入数据
+
+        返回:
+        - BackendConfig: 从字典加载配置
+        """
         return cls(
             model_config_path=data.get("model_config_path"),
             session_class_config_path=data.get("session_class_config_path"),
@@ -98,9 +116,10 @@ class BackendConfig:
 
 
 class BackendManager:
-    """后端统一编排层
+    """
+    后端统一编排层
 
-    管理所有子组件的生命周期: 初始化 -> start -> stop.
+    管理所有子组件的生命周期: 初始化 -> start -> stop
     依赖顺序:
       ModelConfigManager
         -> SessionClassConfigManager
@@ -110,10 +129,16 @@ class BackendManager:
     """
 
     def __init__(self, config: BackendConfig | None = None):
+        """
+        初始化 BackendManager
+
+        参数:
+        - config: 配置信息
+        """
         self.config = config or BackendConfig()
 
-        # 子管理器 (按依赖顺序)
         self._model_cfg: ModelConfigManager | None = None
+        # 子管理器 (按依赖顺序)
         self._session_cls_cfg: SessionClassConfigManager | None = None
         self._session_mgr: SessionManager | None = None
         self._user_mgr: UserManager | None = None
@@ -127,27 +152,56 @@ class BackendManager:
         self._shutdown_event: asyncio.Event | None = None
         self._running = False
 
-    # ── 属性访问 ──
+    # ---------- 属性访问 ----------
 
     @property
     def model_config_manager(self) -> ModelConfigManager | None:
+        """
+        获取 模型配置manager
+
+        返回:
+        - ModelConfigManager | None: 获取 模型配置manager
+        """
         return self._model_cfg
 
     @property
     def session_class_mgr(self) -> SessionClassConfigManager | None:
+        """
+        获取 会话类mgr
+
+        返回:
+        - SessionClassConfigManager | None: 获取 会话类mgr
+        """
         return self._session_cls_cfg
 
     @property
     def session_manager(self) -> SessionManager | None:
+        """
+        获取 会话manager
+
+        返回:
+        - SessionManager | None: 获取 会话manager
+        """
         return self._session_mgr
 
     @property
     def user_manager(self) -> UserManager | None:
+        """
+        获取 用户manager
+
+        返回:
+        - UserManager | None: 获取 用户manager
+        """
         return self._user_mgr
 
     @property
     def checkpoint_db_path(self) -> str:
-        """检查点/上下文库路径 (管理 API 使用): 显式配置 > 会话库 > 默认路径"""
+        """
+        检查点/上下文库路径 (管理 API 使用): 显式配置 > 会话库 > 默认路径
+
+        返回:
+        - str: 检查结果
+        """
         return (
             self.config.session_checkpoint_db
             or self.config.session_db_path
@@ -156,14 +210,31 @@ class BackendManager:
 
     @property
     def scheduler(self) -> PipelineScheduler | None:
+        """
+        获取 scheduler
+
+        返回:
+        - PipelineScheduler | None: 获取 scheduler
+        """
         return self._scheduler
 
     @property
     def adapter_manager(self) -> PlatformAdapterManager | None:
+        """
+        获取 adapter_manager
+
+        返回:
+        - PlatformAdapterManager | None: 获取 adapter_manager
+        """
         return self._adapter_mgr
 
     def set_shutdown_event(self, event: asyncio.Event | None):
-        """设置外部关闭事件, 供 HTTP 管理接口触发"""
+        """
+        设置外部关闭事件, 供 HTTP 管理接口触发
+
+        参数:
+        - event: 事件
+        """
         self._shutdown_event = event
 
     def request_shutdown(self):
@@ -171,7 +242,7 @@ class BackendManager:
         if self._shutdown_event:
             self._shutdown_event.set()
 
-    # ── 启动 ──
+    # ---------- 启动 ----------
 
     async def start(self):
         """完整启动流程"""
@@ -228,7 +299,12 @@ class BackendManager:
         logger.info("[BackendManager] 已关闭")
 
     async def health(self) -> Dict[str, Any]:
-        """健康检查"""
+        """
+        健康检查
+
+        返回:
+        - Dict[str, Any]: 健康检查
+        """
         adapters = {}
         if self._adapter_mgr:
             for aid, adapter in self._adapter_mgr._adapters.items():
@@ -256,7 +332,7 @@ class BackendManager:
             "platform_count": len(self._adapter_mgr.list_adapters()) if self._adapter_mgr else 0,
         }
 
-    # ── 内部初始化 ──
+    # ---------- 内部初始化 ----------
 
     def _init_model_config(self):
         self._model_cfg = ModelConfigManager(
@@ -265,9 +341,7 @@ class BackendManager:
         logger.info("[BackendManager] ModelConfigManager 就绪")
 
     def _init_session_class_config(self):
-        from satrap.core.framework.SessionClassManager import SessionClassConfigManager as _SCCM
-
-        self._session_cls_cfg = _SCCM(
+        self._session_cls_cfg = SessionClassConfigManager(
             storage_path=self.config.session_class_config_path,
             session_scan_paths=self.config.session_scan_paths,
         )
@@ -330,17 +404,17 @@ class BackendManager:
         logger.info("[BackendManager] PipelineScheduler + RateLimiter + UserManager 就绪")
 
     def _init_platforms(self):
+        try:
+            import satrap.core.platform.misskey.adapter   # noqa: F401
+            # 按配置启用时导入适配器, 触发注册装饰器
+        except ImportError:
+            pass
         # 导入已有平台适配器模块, 触发 @register_platform_adapter 装饰器
         try:
-            import satrap.core.platform.misskey.adapter  # noqa: F401
+            import satrap.core.platform.onebot.adapter   # noqa: F401
+            # 按配置启用时导入适配器, 触发注册装饰器
         except ImportError:
             pass
-        try:
-            import satrap.core.platform.onebot.adapter  # noqa: F401
-        except ImportError:
-            pass
-
-        from satrap.core.platform import registry as global_registry
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
 
@@ -367,16 +441,15 @@ class BackendManager:
         if self._scheduler and self._adapter_mgr:
             self._scheduler.set_adapter_ids(set(self._adapter_mgr.list_adapters()))
 
-        # 启动适配器
         loop = asyncio.get_event_loop()
+        # 启动适配器
         if self._adapter_mgr:
             try:
                 loop.run_until_complete(self._adapter_mgr.start_all())
             except RuntimeError:
-                # 已在运行中的 loop 中, 创建 task
                 asyncio.ensure_future(self._adapter_mgr.start_all())
+                # 已在运行中的 loop 中, 创建 task
 
-        # 启动事件分发
         if self._adapter_mgr and self._scheduler:
             self._dispatcher = EventDispatcher(
                 manager=self._adapter_mgr,
@@ -385,6 +458,7 @@ class BackendManager:
             self._dispatch_task = asyncio.ensure_future(self._dispatch_loop())
             self._running = True
             logger.info("[BackendManager] EventDispatcher 已启动")
+        # 启动事件分发
 
     async def _init_http_api(self):
         """启动内嵌 HTTP API 服务器"""

@@ -18,18 +18,19 @@ class Logger():
         max_log_days: int | None=None,
         max_file_lines: int | None=None,
     ) -> None:
-        """日志类
+        """
+        日志类
 
         参数:
-        - logger_name (str): 日志名称, 用于区分不同模块
-        - std_level (logging level): 控制台输出日志级别, 默认为 INFO
-        - file_level (logging level): 文件输出日志级别, 默认为 DEBUG
-        - std_out (bool): 是否输出到控制台, 默认为 True
-        - file_out (bool): 是否输出到文件, 默认为 True
-        - output_dir (str | None): 输出目录, 为 None, 此时使用默认日志目录
-        - file_name (str | None): 日志文件名, 默认为 None, 此时使用日期记录
-        - max_log_days (int | None): 自动删除 max_log_days 天前的日志文件, 为 None 时不清理
-        - max_file_lines (int | None): 日志文件只保留最后 max_file_lines 行, 为 None 时不截断
+        - logger_name: 日志名称, 用于区分不同模块
+        - std_level: 控制台输出日志级别, 默认为 INFO
+        - file_level: 文件输出日志级别, 默认为 DEBUG
+        - std_out: 是否输出到控制台, 默认为 True
+        - file_out: 是否输出到文件, 默认为 True
+        - output_dir: 输出目录, 为 None 时使用默认日志目录
+        - file_name: 日志文件名, 默认为 None 时使用日期记录
+        - max_log_days: 自动删除 max_log_days 天前的日志文件, 为 None 时不清理
+        - max_file_lines: 日志文件只保留最后 max_file_lines 行, 为 None 时不截断
         """
         self.std_out = std_out
         self.file_out = file_out
@@ -38,7 +39,7 @@ class Logger():
         # 默认输出选项
 
         datefmt = "%Y-%m-%d %H:%M:%S"
-        # 日期格式化, 年-月-日 时:分:秒
+        # 日期格式化, 年-月-日 时: 分: 秒
 
         std_logfmt = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(log_color)s%(message)s"
         # 构建标准格式
@@ -84,7 +85,7 @@ class Logger():
 
         if file_name is not None:   # 确定日志文件名
             self.log_file = file_name
-        else:                       # 未指定文件名, 则使用日期记录
+        else:   # 未指定文件名, 则使用日期记录
             self.log_file = os.path.join(self.base_dir, f"{logger_name}-{time.strftime('%Y%m%d')}.log")
 
         fh = logging.FileHandler(filename=self.log_file, mode='a', encoding='utf-8')
@@ -105,11 +106,12 @@ class Logger():
             self._truncate_log_file()
 
     def info(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
-        """输出 INFO 日志
+        """
+        输出 INFO 日志
         参数:
-        - message (str): 日志消息
-        - std_out (bool): 是否输出到控制台
-        - save_to_file (bool): 是否保存到文件
+        - message: 日志消息
+        - std_out: 是否输出到控制台
+        - save_to_file: 是否保存到文件
         """
         if std_out is None:
             std_out = self.std_out
@@ -122,11 +124,12 @@ class Logger():
             self.file_logger.info(message)
 
     def debug(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
-        """输出 DEBUG 日志
+        """
+        输出 DEBUG 日志
         参数:
-        - message (str): 日志消息
-        - std_out (bool): 是否输出到控制台
-        - save_to_file (bool): 是否保存到文件
+        - message: 日志消息
+        - std_out: 是否输出到控制台
+        - save_to_file: 是否保存到文件
         """
         if std_out is None:
             std_out = self.std_out
@@ -139,11 +142,12 @@ class Logger():
             self.file_logger.debug(message)
 
     def warning(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
-        """输出 WARNING 日志
+        """
+        输出 WARNING 日志
         参数:
-        - message (str): 日志消息
-        - std_out (bool): 是否输出到控制台
-        - save_to_file (bool): 是否保存到文件
+        - message: 日志消息
+        - std_out: 是否输出到控制台
+        - save_to_file: 是否保存到文件
         """
         if std_out is None:
             std_out = self.std_out
@@ -156,11 +160,12 @@ class Logger():
             self.file_logger.warning(message)
 
     def error(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
-        """输出 ERROR 日志
+        """
+        输出 ERROR 日志
         参数:
-        - message (str): 日志消息
-        - std_out (bool): 是否输出到控制台
-        - save_to_file (bool): 是否保存到文件
+        - message: 日志消息
+        - std_out: 是否输出到控制台
+        - save_to_file: 是否保存到文件
         """
         if std_out is None:
             std_out = self.std_out
@@ -173,11 +178,12 @@ class Logger():
             self.file_logger.error(message)
 
     def critical(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
-        """输出 CRITICAL 日志
+        """
+        输出 CRITICAL 日志
         参数:
-        - message (str): 日志消息
-        - std_out (bool): 是否输出到控制台
-        - save_to_file (bool): 是否保存到文件
+        - message: 日志消息
+        - std_out: 是否输出到控制台
+        - save_to_file: 是否保存到文件
         """
         if std_out is None:
             std_out = self.std_out

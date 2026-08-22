@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback, createContext, useContext, ReactNode } 
 
 /**
  * 全局玻璃反射管理器
- * 跟踪鼠标位置，为所有注册的玻璃元素提供反射效果
+ * 跟踪鼠标位置, 为所有注册的玻璃元素提供反射效果
  */
 
 interface GlassElement {
@@ -19,8 +19,8 @@ interface GlassReflectContextType {
 const GlassReflectContext = createContext<GlassReflectContextType | null>(null);
 
 // 默认配置
-const DEFAULT_REFLECT_RANGE = 150; // 反光影响范围
-const DEFAULT_REFLECT_SIZE = 150;  // 反光光圈大小
+const DEFAULT_REFLECT_RANGE = 150;   // 反光影响范围
+const DEFAULT_REFLECT_SIZE = 150;   // 反光光圈大小
 
 export function GlassReflectProvider({ children }: { children: ReactNode }) {
   const elementsRef = useRef<Map<HTMLElement, GlassElement>>(new Map());
@@ -151,7 +151,7 @@ export function useGlassReflect<T extends HTMLElement>(options?: {
 }
 
 /**
- * 独立使用的玻璃反射 Hook（不需要 Provider）
+ * 独立使用的玻璃反射 Hook(不需要 Provider)
  * 适用于单个元素或小组件
  */
 export function useStandaloneGlassReflect<T extends HTMLElement>(options?: {

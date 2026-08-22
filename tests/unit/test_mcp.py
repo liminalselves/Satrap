@@ -67,7 +67,7 @@ def _make_adapter(session: FakeSession | None = None, name: str = "read_file", s
     return MCPToolAdapter(session, _make_mcp_tool(name=name, schema=schema))
 
 
-# ================= MCPToolAdapter =================
+# ================= MCPToolAdapter 测试 =================
 
 def test_adapter_tool_definition_preserves_full_schema():
     schema: dict[str, Any] = {
@@ -158,7 +158,7 @@ async def test_adapter_in_async_tools_manager():
     assert result == "{'msg': 'hi'}"
 
 
-# ================= MCPClient =================
+# ================= MCPClient 测试 =================
 
 def test_client_requires_command_or_url():
     with pytest.raises(ValueError):
@@ -193,7 +193,12 @@ async def test_client_register_and_close(monkeypatch: pytest.MonkeyPatch):
 
 
 def _background_loop() -> tuple[asyncio.AbstractEventLoop, threading.Thread]:
-    """启动一个后台事件循环线程 (daemon), 返回 (loop, thread)"""
+    """
+    启动一个后台事件循环线程 (daemon), 返回 (loop, thread)
+
+    返回:
+    - tuple[asyncio.AbstractEventLoop, threading.Thread]:  (loop, thread)
+    """
     loop = asyncio.new_event_loop()
     thread = threading.Thread(target=loop.run_forever, daemon=True)
     thread.start()
@@ -254,7 +259,12 @@ def test_sync_adapter_timeout_returns_error_dict():
 
 
 def test_sync_register_and_close(monkeypatch: pytest.MonkeyPatch):
-    """同步注册: 工具注册进同步 ToolsManager, 可执行, 关闭后注销"""
+    """
+    同步注册: 工具注册进同步 ToolsManager, 可执行, 关闭后注销
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     fake_session = FakeSession()
 
     async def fake_connect(self: MCPClient):
@@ -280,7 +290,12 @@ def test_sync_register_and_close(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_sync_plugin_install_mcp_register_and_uninstall(tmp_path: Path):
-    """同步 SimpleSession: 含 mcp.py 插件可安装, 工具注册, 卸载时断开连接"""
+    """
+    同步 SimpleSession: 含 mcp.py 插件可安装, 工具注册, 卸载时断开连接
+
+    参数:
+    - tmp_path: tmp路径
+    """
     class _FakeLLM(LLM):
         def __init__(self) -> None:
             super().__init__(api_key="demo")
@@ -332,7 +347,7 @@ clients = {"fake": _FakeMCPClient()}
     assert plugin._mcp_clients["fake"][0].closed is True
 
 
-# ================= content_to_text =================
+# ================= content_to_text 测试 =================
 
 def test_content_to_text_handles_various_blocks():
     assert content_to_text(None) == "OK"
@@ -348,7 +363,7 @@ def test_content_to_text_handles_various_blocks():
     ).startswith("[image:")
 
 
-# ================= MCPServerExporter =================
+# ================= MCPServerExporter 测试 =================
 
 def test_exporter_registers_sync_tools():
     class EchoTool(Tool):

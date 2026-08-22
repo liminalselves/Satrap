@@ -10,7 +10,12 @@ from satrap.cli.cmd_run import cmd_run
 
 
 def cmd_status(args: argparse.Namespace):
-    """显示后端状态"""
+    """
+    显示后端状态
+
+    参数:
+    - args: 额外位置参数
+    """
     client = daemon_client_from_args(args, timeout=2)
     health = client.health()
     print(f"API: {client.daemon.base_url}")
@@ -29,7 +34,12 @@ def cmd_status(args: argparse.Namespace):
 
 
 def cmd_stop(args: argparse.Namespace):
-    """停止后端"""
+    """
+    停止后端
+
+    参数:
+    - args: 额外位置参数
+    """
     client = daemon_client_from_args(args, timeout=2)
     if not client.is_alive():
         print(f"后端未运行: {client.daemon.base_url}")
@@ -49,7 +59,12 @@ def cmd_stop(args: argparse.Namespace):
 
 
 def cmd_restart(args: argparse.Namespace):
-    """重启后端"""
+    """
+    重启后端
+
+    参数:
+    - args: 额外位置参数
+    """
     client = daemon_client_from_args(args, timeout=2)
     if client.is_alive():
         result = client.shutdown()
@@ -67,6 +82,12 @@ def cmd_restart(args: argparse.Namespace):
 
 
 def dispatch(args: argparse.Namespace):
+    """
+    分派命令
+
+    参数:
+    - args: 命令参数
+    """
     if args.command == "status":
         cmd_status(args)
     elif args.command == "stop":

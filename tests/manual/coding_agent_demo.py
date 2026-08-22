@@ -25,7 +25,7 @@ class DemoConfig:
 
 
 class CodingAgentWorkflow(ModelWorkflowFramework):
-    """基于 Satrap 框架的简单编码代理工作流，使用父类的 agent_executor 处理工具调用"""
+    """基于 Satrap 框架的简单编码代理工作流, 使用父类的 agent_executor 处理工具调用"""
 
     def __init__(
         self,
@@ -56,12 +56,12 @@ class CodingAgentWorkflow(ModelWorkflowFramework):
                 self.content_callback(error_msg)
             return error_msg
 
-        # 使用父类的 agent_executor 继续处理可能的工具调用
         context, _ = self.agent_executor(
             initial_response,
             callback=True,
             max_iterations=self.max_tool_rounds
         )
+        # 使用父类的 agent_executor 继续处理可能的工具调用
 
         return "未找到助手响应。"
 
@@ -107,13 +107,18 @@ def build_workflow(cfg: DemoConfig, content_callback: Optional[Callable[[str], N
 
 
 def run_once(cfg: DemoConfig, message: str) -> str:
-    wf = build_workflow(cfg)  # 单次运行不需要回调
+    wf = build_workflow(cfg)   # 单次运行不需要回调
     return wf(message)   # type: ignore  # 忽略返回值类型检查错误
 
 
 def run_repl(cfg: DemoConfig):
-    # 定义实时回调：逐块打印模型输出（不换行，实现流式效果）
     def on_content(content: str):
+        """
+        逐块打印模型输出且不换行, 实现流式显示
+
+        参数:
+        - content: 内容
+        """
         print(content, flush=True)
 
     wf = build_workflow(cfg, content_callback=on_content)
@@ -127,9 +132,9 @@ def run_repl(cfg: DemoConfig):
             print("再见。")
             break
 
-        # 工作流内部会通过回调实时输出内容，此处不再重复打印
         wf(user_input)
-        # 输出换行，使下一轮提示符出现在新行
+        # 工作流内部会通过回调实时输出内容, 此处不再重复打印
+        # 输出换行, 使下一轮提示符出现在新行
         print()
 
 
@@ -200,4 +205,4 @@ if __name__ == "__main__":
     else:
         run_repl(config)
 
-# 帮我写一个投骰子程序,支持4/6/8/12/20/100面骰,并做好测试
+        # 帮我写一个投骰子程序, 支持4/6/8/12/20/100面骰, 并做好测试

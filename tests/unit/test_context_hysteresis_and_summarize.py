@@ -21,10 +21,10 @@ class TestHysteresisParams:
         assert cm.history_ratio == 0.7
         assert cm.context_threshold == 0.8
         assert cm.truncation_floor == 0.4
-        assert cm.history_budget == int(128000 * 0.7)  # 89600
-        assert cm.trigger_tokens == int(89600 * 0.8)   # 71680
-        assert cm.floor_tokens == int(89600 * 0.4)     # 35840
-        assert cm.output_budget == 128000 - 89600       # 38400
+        assert cm.history_budget == int(128000 * 0.7)   # 历史预算为 89600
+        assert cm.trigger_tokens == int(89600 * 0.8)   # 触发阈值为 71680
+        assert cm.floor_tokens == int(89600 * 0.4)   # 截断底线为 35840
+        assert cm.output_budget == 128000 - 89600   # 输出预算为 38400
 
     def test_custom_derived_values(self, tmp_path: Path):
         cm = ContextManager(
@@ -73,15 +73,20 @@ class TestHysteresisTruncation:
     """滞回截断行为"""
 
     def test_no_truncation_below_trigger(self, cm: ContextManager):
-        # 填充少量消息, 远低于触发线
         for i in range(5):
             cm.add_user_message(f"消息 {i}")
             cm.add_bot_message(f"回复 {i}")
+        # 填充少量消息, 远低于触发线
         result = cm.get_model_context()
-        assert len(result) == 10  # 5 user + 5 assistant
+        assert len(result) == 10   # 共 5 条 user 消息和 5 条 assistant 消息
 
     def test_truncation_stops_at_floor_not_trigger(self, tmp_path: Path):
-        """截断后 token 数应 ≤ floor_tokens 而非 ≤ trigger_tokens"""
+        """
+        截断后 token 数应 <= floor_tokens 而非 <= trigger_tokens
+
+        参数:
+        - tmp_path: tmp路径
+        """
         cm = ContextManager(
             "test_trunc",
             db_path=str(tmp_path / "test.db"),
@@ -90,18 +95,18 @@ class TestHysteresisTruncation:
             context_threshold=0.8,
             truncation_floor=0.4,
         )
-        # trigger = 560, floor = 280
+        # 触发阈值为 560, 截断底线为 280
         assert cm.trigger_tokens == 560
         assert cm.floor_tokens == 280
 
-        # 填充大量消息使总 token 超触发线
         for i in range(50):
             cm.add_user_message(f"用户消息 {i} " + "x" * 50)
             cm.add_bot_message(f"助手回复 {i} " + "y" * 50)
+        # 填充大量消息使总 token 超触发线
 
         result = cm.get_model_context()
         result_tokens = cm.estimate_token(result)
-        # 截断后应 ≤ floor (280), 而非 ≤ trigger (560)
+        # 截断后应 <= floor (280), 而非 <= trigger (560)
         assert result_tokens <= cm.floor_tokens
 
 
@@ -112,10 +117,10 @@ class TestSummarizeAndCompress:
         cm = ContextManager("test_sum", db_path=str(tmp_path / "test.db"))
         cm.reset_system_prompt("你是一个助手")
 
-        # 构造 5 轮对话
         for i in range(5):
             cm.add_user_message(f"问题 {i}")
             cm.add_bot_message(f"回答 {i}")
+        # 构造 5 轮对话
 
         mock_llm = MagicMock()
         mock_llm.chat.return_value = "用户问了5个问题, 分别是问题0到问题4"
@@ -139,8 +144,8 @@ class TestSummarizeAndCompress:
         cm = ContextManager("test_mm", db_path=str(tmp_path / "test.db"))
         cm.reset_system_prompt("助手")
 
-        # 构造含多模态的消息
         cm.add_user_message("看这张图", img_urls=["http://example.com/img.jpg"])
+        # 构造含多模态的消息
         cm.add_bot_message("我看到图片了")
         cm.add_user_message("什么问题")
         cm.add_bot_message("回答")
@@ -150,8 +155,8 @@ class TestSummarizeAndCompress:
 
         cm.summarize_and_compress(mock_llm, keep_recent_turns=1)
 
-        # 传给 LLM 的文本中图片已投影为 [图片] (chat 接收 messages 列表)
         sent_messages = mock_llm.chat.call_args_list[0][0][0]
+        # 传给 LLM 的文本中图片已投影为 [图片] (chat 接收 messages 列表)
         # mock_llm 是 MagicMock, call_args 内容无类型, cast 收窄为 str
         sent_text = cast(str, sent_messages[0]["content"]) if isinstance(sent_messages, list) else str(sent_messages)
         assert "[图片]" in sent_text
@@ -171,8 +176,8 @@ class TestSummarizeAndCompress:
 
         cm.summarize_and_compress(mock_llm, keep_recent_turns=2)
 
-        # 第二次调用是合并
         assert mock_llm.chat.call_count == 2
+        # 第二次调用是合并
         system_content = str([m for m in cm.get_context() if m.get("role") == "system"][0].get("content", ""))
         assert "合并摘要" in system_content
         # 只有一段摘要区块

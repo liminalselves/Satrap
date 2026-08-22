@@ -43,7 +43,16 @@ class _FakeLLM(LLM):
 
 @pytest.fixture
 def session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
-    """隔离插件数据目录的会话 + 安装 satrap_coding 插件 (经 config 指定工作区/数据目录)"""
+    """
+    隔离插件数据目录的会话 + 安装 satrap_coding 插件 (经 config 指定工作区/数据目录)
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+
+    返回:
+    - SimpleSession: 隔离插件数据目录的会话 + 安装 satrap_coding 插件 (经 config 指定工作区/数据目录)
+    """
     from satrap.edictum import simple_session as ss_mod
     from satrap.edictum.plugin_config import PluginConfigManager
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
@@ -59,14 +68,28 @@ def session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
 
 
 def _user_text(s: SimpleSession, index: int = -1) -> str:
-    """取第 index 次模型调用的最后一条用户消息"""
+    """
+    取第 index 次模型调用的最后一条用户消息
+
+    参数:
+    - s: 输入值
+    - index: 索引
+
+    返回:
+    - str: 取第 index 次模型调用的最后一条用户消息
+    """
     calls = cast(list[dict[str, Any]], getattr(s.llm, "calls"))
     messages = calls[index]["messages"]
     return str([m for m in messages if m.get("role") == "user"][-1]["content"])
 
 
 def test_plugin_install_full_capabilities(session: SimpleSession):
-    """安装: 11 工具 + 3 命令 + 2 技能 + 1 处理器 (search/memory 已移交 base_take)"""
+    """
+    安装: 11 工具 + 3 命令 + 2 技能 + 1 处理器 (search/memory 已移交 base_take)
+
+    参数:
+    - session: 会话
+    """
     plugin = session.list_plugins()[0]
     assert plugin.name == "satrap_coding"
     assert len(plugin.tools) == 11
@@ -80,7 +103,12 @@ def test_plugin_install_full_capabilities(session: SimpleSession):
 
 
 def test_goal_command_lifecycle_and_injection(session: SimpleSession):
-    """/goal: 设置 -> 注入模型输入 -> status -> done 后不再注入"""
+    """
+    /goal: 设置 -> 注入模型输入 -> status -> done 后不再注入
+
+    参数:
+    - session: 会话
+    """
     result, is_cmd = session.cmd_handler.process_message("/goal 实现一个编码助手")
     assert is_cmd and "目标已设置" in str(result)
 
@@ -101,7 +129,12 @@ def test_goal_command_lifecycle_and_injection(session: SimpleSession):
 
 
 def test_goal_todo(session: SimpleSession):
-    """/goal todo: 子任务增删"""
+    """
+    /goal todo: 子任务增删
+
+    参数:
+    - session: 会话
+    """
     session.cmd_handler.process_message("/goal 写插件")
     result, _ = session.cmd_handler.process_message("/goal todo 写权限引擎")
     assert "子任务已添加" in str(result)
@@ -112,12 +145,17 @@ def test_goal_todo(session: SimpleSession):
 
 
 def test_plan_mode_blocks_writes(session: SimpleSession):
-    """/plan: 进入后全部写类能力被拒 (文件/shell), 退出恢复"""
+    """
+    /plan: 进入后全部写类能力被拒 (文件/shell), 退出恢复
+
+    参数:
+    - session: 会话
+    """
     write_tool = session.tools_manager.tools["write_file"]
     target = tools_mod.WORKSPACE_ROOT / "x.txt"
 
     session.user_input_provider = lambda q: "y"
-    session.run("占位")  # 触发一次完整流程
+    session.run("占位")   # 触发一次完整流程
     # 直接写可通过 (用户批准)
     assert "已写入" in write_tool.execute(str(target), "hi")
 
@@ -127,8 +165,8 @@ def test_plan_mode_blocks_writes(session: SimpleSession):
     assert "拒绝" in out or "计划模式" in out
     assert target.read_text(encoding="utf-8") == "hi"
 
-    # 工作区内 shell 写命令在计划模式下同样被拒
     shell_tool = session.tools_manager.tools["shell"]
+    # 工作区内 shell 写命令在计划模式下同样被拒
     out = shell_tool.execute("echo x > f2.txt")
     assert "计划模式" in out
 
@@ -138,27 +176,37 @@ def test_plan_mode_blocks_writes(session: SimpleSession):
 
 
 def test_uninstall_resets_plugin_state(session: SimpleSession):
-    """M2: 卸载清理插件状态, 重装后 plan_mode 不残留"""
+    """
+    M2: 卸载清理插件状态, 重装后 plan_mode 不残留
+
+    参数:
+    - session: 会话
+    """
     session.cmd_handler.process_message("/plan on")
 
     assert session.uninstall_plugin("satrap_coding") is True
     session.install_plugin(str(PLUGIN_DIR))
 
-    # 重装后计划模式已重置: 写文件需要批准 (不再是 plan 拒绝, 而是正常审批流)
     write_tool = session.tools_manager.tools["write_file"]
+    # 重装后计划模式已重置: 写文件需要批准 (不再是 plan 拒绝, 而是正常审批流)
     target = tools_mod.WORKSPACE_ROOT / "y.txt"
     out = write_tool.execute(str(target), "hi")
-    assert "需要用户批准" in out  # user 策略无通道 = 需要批准, 而非计划模式拒绝
+    assert "需要用户批准" in out   # user 策略无通道 = 需要批准, 而非计划模式拒绝
     assert "拒绝: 计划模式" not in out
 
 
 def test_approve_command(session: SimpleSession):
-    """/approve: 策略切换与持久规则"""
+    """
+    /approve: 策略切换与持久规则
+
+    参数:
+    - session: 会话
+    """
     write_tool = session.tools_manager.tools["write_file"]
     target = tools_mod.WORKSPACE_ROOT / "x.txt"
 
-    # user 模式无输入通道: 拒绝
     out = write_tool.execute(str(target), "hi")
+    # user 模式无输入通道: 拒绝
     assert "需要用户批准" in out
 
     result, _ = session.cmd_handler.process_message("/approve mode full")
@@ -172,7 +220,12 @@ def test_approve_command(session: SimpleSession):
 
 
 def test_goal_injection(session: SimpleSession):
-    """目标注入: 设置目标后下一轮自动带上, 清除后不再注入"""
+    """
+    目标注入: 设置目标后下一轮自动带上, 清除后不再注入
+
+    参数:
+    - session: 会话
+    """
     session.cmd_handler.process_message("/goal 重构插件系统")
     session.run("第一轮")
     text = _user_text(session)
@@ -186,7 +239,12 @@ def test_goal_injection(session: SimpleSession):
 
 
 def test_uninstall_plugin_cleanup(session: SimpleSession):
-    """卸载: 工具/命令/处理器全部回收"""
+    """
+    卸载: 工具/命令/处理器全部回收
+
+    参数:
+    - session: 会话
+    """
     assert session.uninstall_plugin("satrap_coding") is True
     assert session.list_tools() == []
     assert "goal" not in session.list_commands()
@@ -196,11 +254,16 @@ def test_uninstall_plugin_cleanup(session: SimpleSession):
     assert session.list_plugins() == []
 
 
-# ---------------- meta.yaml 能力声明 ----------------
+# ---------- meta.yaml 能力声明 ----------
 
 
 def test_capability_descriptions_loaded(session: SimpleSession):
-    """meta.yaml 能力声明读入 plugin.capability_descriptions (五类)"""
+    """
+    meta.yaml 能力声明读入 plugin.capability_descriptions (五类)
+
+    参数:
+    - session: 会话
+    """
     plugin = session.list_plugins()[0]
     desc = plugin.capability_descriptions
     assert desc["tools"]["read_file"]
@@ -213,7 +276,12 @@ def test_capability_descriptions_loaded(session: SimpleSession):
 
 
 def test_list_capabilities_with_description(session: SimpleSession):
-    """list_capabilities 每项带 name / enabled / description"""
+    """
+    list_capabilities 每项带 name / enabled / description
+
+    参数:
+    - session: 会话
+    """
     plugin = session.list_plugins()[0]
     caps = plugin.list_capabilities()
     for kind in ("tools", "skills", "handlers", "commands"):
@@ -234,7 +302,7 @@ def test_parse_capability_descriptions_unit():
         "tools": {"a": "描述a", "b": 2},
         "skills": {"s": "技能s"},
         "handlers": "not-a-dict",   # 非 dict -> 跳过
-        "unknown": {"x": "y"},       # 未识别键 -> 忽略
+        "unknown": {"x": "y"},   # 未识别键 -> 忽略
     }
     desc = parse_capability_descriptions(meta)
     assert desc["tools"] == {"a": "描述a", "b": "2"}   # 值统一 str()
@@ -244,7 +312,14 @@ def test_parse_capability_descriptions_unit():
 
 
 def test_undeclared_capability_warns_only(tmp_path: Any, monkeypatch: Any, caplog: Any):
-    """声明了但扫描不到的能力仅警告, 不改变安装行为"""
+    """
+    声明了但扫描不到的能力仅警告, 不改变安装行为
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    - caplog: pytest 日志捕获夹具
+    """
     import logging
     from satrap.edictum.simple_session import _warn_undeclared_capabilities
 

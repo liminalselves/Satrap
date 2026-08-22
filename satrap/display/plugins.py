@@ -1,8 +1,9 @@
-"""聊天插件注册表: 扫描插件目录 + 独立 json 记录启用状态
+"""
+聊天插件注册表: 扫描插件目录 + 独立 json 记录启用状态
 
 与平台后端隔离:
 - 扫描 satrap/expend/plugins (官方) + .satrap/plugins (用户) 拿插件清单,
-  但默认不安装 —— 清单来自 meta.yaml 的能力声明 (parse_capability_descriptions)
+  但默认不安装 -- 清单来自 meta.yaml 的能力声明 (parse_capability_descriptions)
 - 启用状态独立记录于 .satrap/chat_plugins.json (不碰 session_class_config.json),
   前端勾选后由 ChatService 对活动会话执行 install_plugin / uninstall_plugin
 
@@ -14,7 +15,7 @@
   }
 }
 - enabled: 插件聚合开关 (默认 false = 扫描到但不装)
-- capabilities: 能力独立启用状态 (默认 true), 能力生效 = 插件启用 ∧ 独立启用
+- capabilities: 能力独立启用状态 (默认 true), 能力生效 = 插件启用 AND 独立启用
 """
 from __future__ import annotations
 
@@ -33,7 +34,6 @@ from satrap.edictum.plugin import (
     parse_capability_descriptions,
 )
 
-# 能力类别中文名 (供前端展示)
 CAPABILITY_LABELS = {
     "tools": "工具",
     "skills": "技能",
@@ -41,27 +41,40 @@ CAPABILITY_LABELS = {
     "handlers": "处理器",
     "commands": "命令",
 }
+# 能力类别中文名 (供前端展示)
 
 
 def _default_state_path() -> Path:
-    """插件启用状态 json 默认路径 (.satrap/chat_plugins.json)"""
+    """
+    插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+
+    返回:
+    - Path: 插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+    """
     return get_data_dir() / "chat_plugins.json"
 
 
 class ChatPluginRegistry:
-    """聊天插件注册表: 扫描清单 + 启用状态管理
+    """
+    聊天插件注册表: 扫描清单 + 启用状态管理
 
     线程安全: json 读写与内存状态由锁保护
     """
 
     def __init__(self, state_path: str | Path | None = None) -> None:
+        """
+        初始化 ChatPluginRegistry
+
+        参数:
+        - state_path: 状态路径
+        """
         self._lock = threading.RLock()
         self.state_path = Path(state_path) if state_path else _default_state_path()
-        # name -> {"enabled": bool, "capabilities": {kind: {cap: bool}}}
+        # 插件名 -> {"enabled": bool, "capabilities": {kind: {cap: bool}}}
         self._states: dict[str, dict[str, Any]] = {}
         self._load()
 
-    # ---------------- 状态持久化 ----------------
+    # ---------- 状态持久化 ----------
 
     def _load(self) -> None:
         """读 json 启用状态 (不存在则空)"""
@@ -84,7 +97,15 @@ class ChatPluginRegistry:
 
     @staticmethod
     def _normalize_caps(raw: Any) -> dict[str, dict[str, bool]]:
-        """规范化能力状态为 {kind: {cap: bool}} (仅保留合法类别)"""
+        """
+        规范化能力状态为 {kind: {cap: bool}} (仅保留合法类别)
+
+        参数:
+        - raw: 原始数据
+
+        返回:
+        - dict[str, dict[str, bool]]: 规范化能力状态为 {kind: {cap: bool}} (仅保留合法类别)
+        """
         caps: dict[str, dict[str, bool]] = {k: {} for k in CAPABILITY_KINDS}
         if not isinstance(raw, dict):
             return caps
@@ -105,12 +126,16 @@ class ChatPluginRegistry:
         except OSError as e:
             logger.error(f"[聊天插件] 写入启用状态失败: {e}")
 
-    # ---------------- 扫描 ----------------
+    # ---------- 扫描 ----------
 
     def scan(self) -> list[dict[str, Any]]:
-        """扫描插件目录, 返回清单 (合并启用状态)
+        """
+        扫描插件目录, 返回清单 (合并启用状态)
 
         官方目录优先 (同名冲突时覆盖用户目录); 能力清单来自 meta.yaml 声明
+
+        返回:
+        - list[dict[str, Any]]: 清单 (合并启用状态)
         """
         found: dict[str, Path] = {}
         for base in (USER_PLUGINS_DIR, PLUGINS_PRESET_DIR):
@@ -122,7 +147,7 @@ class ChatPluginRegistry:
                         meta = load_plugin_meta(child)
                         name = str(meta.get("name") or "").strip()
                         if name:
-                            found[name] = child  # 后写覆盖: 官方目录后扫, 优先级高
+                            found[name] = child   # 后写覆盖: 官方目录后扫, 优先级高
                     except ValueError as e:
                         logger.warning(f"[聊天插件] 跳过无效插件 {child}: {e}")
 
@@ -154,29 +179,62 @@ class ChatPluginRegistry:
         return result
 
     def get_plugin_dir(self, name: str) -> Path | None:
-        """取插件目录 (官方优先), 供 install_plugin 使用"""
+        """
+        取插件目录 (官方优先), 供 install_plugin 使用
+
+        参数:
+        - name: 名称
+
+        返回:
+        - Path | None: 取插件目录 (官方优先), 供 install_plugin 使用
+        """
         for base in (PLUGINS_PRESET_DIR, USER_PLUGINS_DIR):
             pdir = base / name
             if pdir.is_dir() and (pdir / "meta.yaml").is_file():
                 return pdir
         return None
 
-    # ---------------- 启用状态 ----------------
+    # ---------- 启用状态 ----------
 
     def is_enabled(self, name: str) -> bool:
-        """插件是否启用"""
+        """
+        插件是否启用
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 插件是否启用
+        """
         with self._lock:
             return bool(self._states.get(name, {}).get("enabled", False))
 
     def set_enabled(self, name: str, enabled: bool) -> None:
-        """设置插件聚合开关并持久化"""
+        """
+        设置插件聚合开关并持久化
+
+        参数:
+        - name: 名称
+        - enabled: 是否启用
+        """
         with self._lock:
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             st["enabled"] = bool(enabled)
             self._save()
 
     def set_capability(self, name: str, kind: str, cap: str, enabled: bool) -> bool:
-        """设置能力独立启用状态并持久化; 类别非法返回 False"""
+        """
+        设置能力独立启用状态并持久化; 类别非法返回 False
+
+        参数:
+        - name: 名称
+        - kind: 类型
+        - cap: 能力名称
+        - enabled: 是否启用
+
+        返回:
+        - bool:  False
+        """
         if kind not in CAPABILITY_KINDS:
             return False
         with self._lock:
@@ -188,7 +246,17 @@ class ChatPluginRegistry:
         return True
 
     def capability_enabled(self, name: str, kind: str, cap: str) -> bool:
-        """能力独立启用状态 (默认 True)"""
+        """
+        能力独立启用状态 (默认 True)
+
+        参数:
+        - name: 名称
+        - kind: 类型
+        - cap: 能力名称
+
+        返回:
+        - bool: 能力独立启用状态 (默认 True)
+        """
         with self._lock:
             caps = self._states.get(name, {}).get("capabilities", {})
             return bool(caps.get(kind, {}).get(cap, True))

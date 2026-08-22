@@ -16,7 +16,8 @@ _T = TypeVar("_T")
 
 
 class PipelineScheduler:
-    """消息管线调度器
+    """
+    消息管线调度器
 
     接收 MessageEvent, 依次执行:
     Stage 0: preprocessor 链
@@ -51,27 +52,37 @@ class PipelineScheduler:
         self.adapter_ids: set[str] = set()
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], bool]):
-        """添加预处理器, 在 stage 1a 前依次调用; 返回 False 则丢弃事件"""
+        """
+        添加预处理器, 在 stage 1a 前依次调用; 返回 False 则丢弃事件
+
+        参数:
+        - fn: 待调用函数
+        """
         self.preprocessors.append(fn)
 
     def set_adapter_ids(self, adapter_ids: set[str]):
-        """设置当前后端已注册的平台适配器实例 ID"""
+        """
+        设置当前后端已注册的平台适配器实例 ID
+
+        参数:
+        - adapter_ids: 适配器ids
+        """
         self.adapter_ids = set(adapter_ids)
 
     async def execute(self, event: MessageEvent) -> None:
-        """执行完整管线
+        """
+        执行完整管线
 
         参数:
         - event: 消息事件
         """
         try:
-            # ── Stage 0: preprocessor 链 ──
             for processor in self.preprocessors:
                 if not await self._await_if_needed(processor(event)):
                     logger.debug(f"[PipelineScheduler] preprocessor 丢弃事件: {event.session_id}")
                     return
+            # ---------- Stage 0: preprocessor 链 ----------
 
-            # ── Stage 1a: 限流 ──
             if self.rate_limiter:
                 allowed, wait = await self.rate_limiter.check(event.session_id)
                 if not allowed:
@@ -82,21 +93,22 @@ class PipelineScheduler:
                     if self.error_feedback:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     return
+            # ---------- Stage 1a: 限流 ----------
 
-            # ── Stage 1b: 唤醒词/ @检查 ──
             if not event.is_private_chat() and not event.is_wake_up() and not event.is_at_or_wake_command:
                 return
+            # ---------- Stage 1b: 唤醒词/ @检查 ----------
 
-            # ── Stage 1c: 权限检查 ──
             if not await self._check_permission(event):
                 return
+            # ---------- Stage 1c: 权限检查 ----------
 
             message = event.get_message_str()
             if not message:
                 return
 
-            # ── Stage 1d: 通过 UserManager 解析 session_id ──
             session_id = event.session_id
+            # ---------- Stage 1d: 通过 UserManager 解析 session_id ----------
             if self.user_manager and event.session_type:
                 platform_id, extra_params = self._resolve_route_adapter(event)
                 resolved = self.user_manager.resolve_session(
@@ -109,13 +121,13 @@ class PipelineScheduler:
                 if resolved:
                     session_id = resolved
 
-            # ── Stage 2: LLM 请求 via Session (带超时保护) ──
             user_call = UserCall(
                 session_id=session_id,
                 session_type=event.session_type,
                 message=message,
                 img_urls=self._extract_img_urls(event),
             )
+            # ---------- Stage 2: LLM 请求 via Session (带超时保护) ----------
             try:
                 response = await asyncio.wait_for(
                     self.session_manager.handle_call_async(user_call),
@@ -127,11 +139,11 @@ class PipelineScheduler:
                     await self._send_feedback(event, "请求超时, 请稍后重试")
                 return
 
-            # ── 后处理: 兜底发送回复 ──
-            # 如果 Session 内部已通过 content_callback 发送过消息
-            # event.has_send_operation() 返回 True, 避免重复发送
             if response and not event.has_send_operation():
                 await event.send(MessageChain.from_text(response))
+            # ---------- 后处理: 兜底发送回复 ----------
+            # 如果 Session 内部已通过 content_callback 发送过消息
+            # event.has_send_operation() 返回 True, 避免重复发送
 
         except Exception as e:
             logger.error(f"[PipelineScheduler] 管线执行错误: {e}")
@@ -140,21 +152,43 @@ class PipelineScheduler:
         finally:
             event.cleanup_temporary_local_files()
 
-    # ── 可覆写钩子 ──
+    # ---------- 可覆写钩子 ----------
 
     async def _check_permission(self, event: MessageEvent) -> bool:
-        """权限检查, 默认通过; 子类可覆写"""
+        """
+        权限检查, 默认通过; 子类可覆写
+
+        参数:
+        - event: 事件
+
+        返回:
+        - bool: 权限检查, 默认通过; 子类可覆写
+        """
         return True
 
     async def _send_feedback(self, event: MessageEvent, text: str):
-        """发送反馈消息给用户"""
+        """
+        发送反馈消息给用户
+
+        参数:
+        - event: 事件
+        - text: 待处理文本
+        """
         try:
             await event.send(MessageChain.from_text(text))
         except Exception as e:
             logger.warning(f"[PipelineScheduler] 发送反馈消息失败: {e}")
 
     def _resolve_route_adapter(self, event: MessageEvent) -> tuple[str, dict[str, str] | None]:
-        """解析事件应绑定到哪个适配器实例"""
+        """
+        解析事件应绑定到哪个适配器实例
+
+        参数:
+        - event: 事件
+
+        返回:
+        - tuple[str, dict[str, str] | None]: 解析事件应绑定到哪个适配器实例
+        """
         source_adapter_id = event.get_platform_id()
         class_cfg_mgr = safe_getattr(self.session_manager, 'class_cfg_mgr')
         requested = ""
@@ -179,7 +213,15 @@ class PipelineScheduler:
 
     @staticmethod
     def _extract_img_urls(event: MessageEvent) -> list[str]:
-        """从 event 中提取图片 URL 列表"""
+        """
+        从 event 中提取图片 URL 列表
+
+        参数:
+        - event: 事件
+
+        返回:
+        - list[str]: 从 event 中提取图片 URL 列表
+        """
         urls: list[str] = []
         try:
             for comp in event.get_messages():

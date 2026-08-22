@@ -12,7 +12,12 @@ from satrap.core.backend.BackendManager import BackendConfig
 
 
 def test_daemon_info_from_config_uses_config_values(monkeypatch: pytest.MonkeyPatch):
-    """Daemon 地址默认来自 BackendConfig"""
+    """
+    Daemon 地址默认来自 BackendConfig
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.delenv("SATRAP_API_HOST", raising=False)
     monkeypatch.delenv("SATRAP_API_PORT", raising=False)
 
@@ -25,7 +30,12 @@ def test_daemon_info_from_config_uses_config_values(monkeypatch: pytest.MonkeyPa
 
 
 def test_daemon_info_from_config_allows_env_override(monkeypatch: pytest.MonkeyPatch):
-    """环境变量优先覆盖配置中的 API 地址"""
+    """
+    环境变量优先覆盖配置中的 API 地址
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.setenv("SATRAP_API_HOST", "127.0.0.3")
     monkeypatch.setenv("SATRAP_API_PORT", "19872")
 
@@ -36,7 +46,13 @@ def test_daemon_info_from_config_allows_env_override(monkeypatch: pytest.MonkeyP
 
 
 def test_load_run_config_allows_cli_api_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """run 命令的 --api-host/--api-port 应覆盖配置文件"""
+    """
+    run 命令的 --api-host/--api-port 应覆盖配置文件
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.chdir(tmp_path)
     config_path = tmp_path / "config.json"
     config_path.write_text(
@@ -56,7 +72,12 @@ def test_load_run_config_allows_cli_api_override(tmp_path: Path, monkeypatch: py
 
 
 def test_backend_instance_lock_is_exclusive(tmp_path: Path):
-    """同一个锁文件同时只能被一个后端实例持有"""
+    """
+    同一个锁文件同时只能被一个后端实例持有
+
+    参数:
+    - tmp_path: tmp路径
+    """
     lock_path = tmp_path / "backend.lock"
     first = BackendInstanceLock(lock_path)
     second = BackendInstanceLock(lock_path)

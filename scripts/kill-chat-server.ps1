@@ -1,5 +1,5 @@
-# Kill stale Satrap chat server processes (satrap.display.server)
-# Called by start-ui.bat before starting a new chat server
+# 终止残留的 Satrap 聊天服务进程 (satrap.display.server)
+# 由 start-ui.bat 在启动新聊天服务前调用
 
 $processes = Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
     Where-Object { $_.CommandLine -match 'satrap\.display' }
@@ -11,7 +11,7 @@ if ($processes) {
             Write-Host "  Killed old chat server PID: $($proc.ProcessId)" -ForegroundColor Yellow
         } catch {}
     }
-    # Wait for port release
+    # 等待端口释放
     Start-Sleep -Milliseconds 500
 } else {
     Write-Host "  No stale chat server found" -ForegroundColor Gray

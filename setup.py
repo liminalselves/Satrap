@@ -9,7 +9,12 @@ ROOT = Path(__file__).parent
 
 
 def read_readme() -> str:
-    """读取项目说明"""
+    """
+    读取项目说明
+
+    返回:
+    - str: 读取项目说明
+    """
     readme = ROOT / "README.md"
     if not readme.exists():
         return ""

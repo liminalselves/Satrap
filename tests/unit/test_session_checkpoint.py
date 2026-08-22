@@ -1,4 +1,5 @@
-"""Session 级聚合检查点 (P1) 单元测试
+"""
+Session 级聚合检查点 (P1) 单元测试
 
 覆盖:
 - workflow_id_assign 重复 wf_id 自动追加序号 + 警告
@@ -18,7 +19,8 @@ from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 class _SimpleSession(Session):
-    """最小会话子类: 一个工作流上下文, 使用真实 ContextManager 模拟
+    """
+    最小会话子类: 一个工作流上下文, 使用真实 ContextManager 模拟
 
     子类测试聚焦手动/聚合检查点语义, 上下文统一关闭自动 stable 检查点以免干扰断言
     """
@@ -50,7 +52,7 @@ class _AsyncSimpleSession(AsyncSession):
         await self.wf_ctx.initialize()
 
 
-# ── workflow_id_assign 防呆 ──
+# ---------- workflow_id_assign 防呆 ----------
 
 
 def test_workflow_id_assign_deduplicates_with_warning(tmp_path: Path, caplog: pytest.LogCaptureFixture):
@@ -68,11 +70,16 @@ def test_workflow_id_assign_deduplicates_with_warning(tmp_path: Path, caplog: py
     assert "工作流 ID 重复" in caplog.text
 
 
-# ── 同步 Session 聚合检查点 ──
+# ---------- 同步 Session 聚合检查点 ----------
 
 
 def test_session_checkpoint_rollback_roundtrip(tmp_path: Path):
-    """写消息 -> 会话级检查点 -> 继续写 -> 回滚还原全部上下文"""
+    """
+    写消息 -> 会话级检查点 -> 继续写 -> 回滚还原全部上下文
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.session_ctx.add_user_message("会话消息")
@@ -91,7 +98,12 @@ def test_session_checkpoint_rollback_roundtrip(tmp_path: Path):
 
 
 def test_session_rollback_accepts_checkpoint_id(tmp_path: Path):
-    """rollback 也接受批次内单个检查点 ID"""
+    """
+    rollback 也接受批次内单个检查点 ID
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.wf_ctx.add_user_message("第一条")
@@ -107,7 +119,12 @@ def test_session_rollback_accepts_checkpoint_id(tmp_path: Path):
 
 
 def test_session_list_checkpoints_deduplicates_by_batch(tmp_path: Path):
-    """list_checkpoints 按批次去重, 每次聚合只出现一个代表检查点"""
+    """
+    list_checkpoints 按批次去重, 每次聚合只出现一个代表检查点
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.create_checkpoint(name="第一批")
@@ -120,7 +137,12 @@ def test_session_list_checkpoints_deduplicates_by_batch(tmp_path: Path):
 
 
 def test_session_fork_returns_all_contexts(tmp_path: Path):
-    """fork 返回会话共享 + 全部工作流的新上下文, 数据独立"""
+    """
+    fork 返回会话共享 + 全部工作流的新上下文, 数据独立
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.session_ctx.add_user_message("会话起点")
@@ -140,7 +162,12 @@ def test_session_fork_returns_all_contexts(tmp_path: Path):
 
 
 def test_session_checkpoint_requires_enabled_store(tmp_path: Path):
-    """未启用检查点时聚合操作抛出 ValueError"""
+    """
+    未启用检查点时聚合操作抛出 ValueError
+
+    参数:
+    - tmp_path: tmp路径
+    """
     class _PlainSession(Session):
         def __init__(self, session_id: str):
             super().__init__(session_id)
@@ -158,7 +185,12 @@ def test_session_checkpoint_requires_enabled_store(tmp_path: Path):
 
 
 def test_track_workflow_context_rejects_mismatched_db(tmp_path: Path):
-    """工作流上下文与状态库不同库时明确报错, 防止静默不一致"""
+    """
+    工作流上下文与状态库不同库时明确报错, 防止静默不一致
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
 
@@ -166,11 +198,16 @@ def test_track_workflow_context_rejects_mismatched_db(tmp_path: Path):
         session._track_workflow_context("other", ContextManager("s1_other", db_path=str(tmp_path / "other.db")))
 
 
-# ── StateStore 批次能力 ──
+# ---------- StateStore 批次能力 ----------
 
 
 def test_state_store_batch_rollback(tmp_path: Path):
-    """同批次检查点共享 batch_id, 可一次性回滚"""
+    """
+    同批次检查点共享 batch_id, 可一次性回滚
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from satrap.core.type import StateScope
 
     store = StateStore(db_path=str(tmp_path / "state.db"))
@@ -186,8 +223,8 @@ def test_state_store_batch_rollback(tmp_path: Path):
     assert {cp.scope_id for cp in batch} == {"conv-a", "conv-b"}
     assert all(cp.batch_id == batch_id for cp in batch)
 
-    # 无关检查点不受批量回滚影响 (回滚后批次检查点保留, 与单检查点 rollback 语义一致)
     store.create_checkpoint(StateScope("test", "conv-c"))
+    # 无关检查点不受批量回滚影响 (回滚后批次检查点保留, 与单检查点 rollback 语义一致)
     count = store.rollback_batch(batch_id)
     assert count == 2
     assert len(store.list_checkpoints_by_batch(batch_id)) == 2
@@ -199,7 +236,12 @@ def test_state_store_batch_rollback(tmp_path: Path):
 
 
 def test_state_store_batch_rejects_empty(tmp_path: Path):
-    """空批次 ID 应被拒绝 (单检查点请用 rollback)"""
+    """
+    空批次 ID 应被拒绝 (单检查点请用 rollback)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     store = StateStore(db_path=str(tmp_path / "state.db"))
     with pytest.raises(ValueError, match="batch_id 不能为空"):
         store.rollback_batch("")
@@ -208,15 +250,28 @@ def test_state_store_batch_rejects_empty(tmp_path: Path):
 
 
 def _user_checkpoints(checkpoints: list[Any]) -> list[Any]:
-    """过滤系统保护检查点, 仅保留用户可见检查点"""
+    """
+    过滤系统保护检查点, 仅保留用户可见检查点
+
+    参数:
+    - checkpoints: 检查点列表
+
+    返回:
+    - list[Any]: 过滤系统保护检查点, 仅保留用户可见检查点
+    """
     return [cp for cp in checkpoints if cp.source not in ("rollback_snapshot", "retry_snapshot", "edit_protect")]
 
 
-# ── retry (保留未来检查点) ──
+# ---------- retry (保留未来检查点) ----------
 
 
 def test_session_retry_keeps_future_checkpoints(tmp_path: Path):
-    """retry 恢复数据但保留未来检查点, 与 rollback 语义区分"""
+    """
+    retry 恢复数据但保留未来检查点, 与 rollback 语义区分
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.wf_ctx.add_user_message("第一条")
@@ -226,14 +281,14 @@ def test_session_retry_keeps_future_checkpoints(tmp_path: Path):
     cp2 = session.create_checkpoint(name="中期")
     session.wf_ctx.add_user_message("第三条")
 
-    # rollback 到起点会删除中期检查点 (保护检查点保留, 可撤销)
     session.rollback(cp1)
+    # rollback 到起点会删除中期检查点 (保护检查点保留, 可撤销)
     assert session.wf_ctx.get_context() == [{"role": "user", "content": "第一条"}]
     assert len(_user_checkpoints(session.list_checkpoints())) == 1
     assert any(cp.source == "rollback_snapshot" for cp in session.list_checkpoints())
 
-    # retry 到起点后, 未来检查点保留
     session.wf_ctx.add_user_message("第二条")
+    # retry 到起点后, 未来检查点保留
     cp2b = session.create_checkpoint(name="中期2")
     session.wf_ctx.add_user_message("第三条")
     session.retry(cp2b)
@@ -243,12 +298,12 @@ def test_session_retry_keeps_future_checkpoints(tmp_path: Path):
     ]
     assert len(_user_checkpoints(session.list_checkpoints())) == 2   # 起点 + 中期2 都保留
 
-    # 可回滚到保护检查点撤销 retry (恢复 retry 前的最新状态)
     protects = [
         cp
         for cp in session.list_checkpoints()
         if cp.source == "retry_snapshot" and cp.scope_id == "s1_main"
     ]
+    # 可回滚到保护检查点撤销 retry (恢复 retry 前的最新状态)
     assert protects
     session.rollback(protects[0].checkpoint_id)
     assert session.wf_ctx.get_context() == [
@@ -259,7 +314,12 @@ def test_session_retry_keeps_future_checkpoints(tmp_path: Path):
 
 
 def test_context_retry_keeps_future_checkpoints(tmp_path: Path):
-    """ContextManager.retry 恢复数据且未来检查点仍在"""
+    """
+    ContextManager.retry 恢复数据且未来检查点仍在
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager(
         "conv-r", db_path=db, enable_checkpoint=True, auto_checkpoint=False
@@ -278,19 +338,24 @@ def test_context_retry_keeps_future_checkpoints(tmp_path: Path):
     assert any(cp.source == "retry_snapshot" for cp in ctx.list_checkpoints())
 
 
-# ── 分支树查询 ──
+# ---------- 分支树查询 ----------
 
 
 def test_state_store_lineage_and_branches(tmp_path: Path):
-    """fork 血缘: trace_lineage 回溯父链, list_child_branches 找到子分支"""
+    """
+    fork 血缘: trace_lineage 回溯父链, list_child_branches 找到子分支
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from satrap.core.type import StateScope
 
     store = StateStore(db_path=str(tmp_path / "state.db"))
     scope = StateScope("conversation", "conv-1")
     root = store.create_checkpoint(scope, name="根")
 
-    # fork 出两条分支
     store.fork(root.checkpoint_id, "conv-1:fork:alt1")
+    # fork 出两条分支
     store.fork(root.checkpoint_id, "conv-1:fork:alt2")
 
     children = store.list_child_branches(root.checkpoint_id)
@@ -298,18 +363,23 @@ def test_state_store_lineage_and_branches(tmp_path: Path):
     assert {cp.scope_id for cp in children} == {"conv-1:fork:alt1", "conv-1:fork:alt2"}
     assert all(cp.parent_checkpoint_id == root.checkpoint_id for cp in children)
 
-    # 从子分支回溯血缘: 根在前
     lineage = store.trace_lineage(children[0].checkpoint_id)
+    # 从子分支回溯血缘: 根在前
     assert [cp.checkpoint_id for cp in lineage] == [root.checkpoint_id, children[0].checkpoint_id]
 
-    # 前缀查询分支
     branches = store.list_branches("conv-1:fork:")
+    # 前缀查询分支
     assert len(branches) == 2
     assert store.list_branches("conv-1:fork:") == branches
 
 
 def test_session_list_branches_aggregates_workflows(tmp_path: Path):
-    """Session.list_branches 聚合会话共享 + 工作流的分支"""
+    """
+    Session.list_branches 聚合会话共享 + 工作流的分支
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.session_ctx.add_user_message("会话起点")
@@ -325,17 +395,27 @@ def test_session_list_branches_aggregates_workflows(tmp_path: Path):
 
 
 def test_trace_lineage_missing_raises(tmp_path: Path):
-    """不存在的检查点回溯血缘时抛出 ValueError"""
+    """
+    不存在的检查点回溯血缘时抛出 ValueError
+
+    参数:
+    - tmp_path: tmp路径
+    """
     store = StateStore(db_path=str(tmp_path / "state.db"))
     with pytest.raises(ValueError, match="检查点不存在"):
         store.trace_lineage("missing-cp")
 
 
-# ── stable 自动检查点 (消息写入后自动保存) ──
+# ---------- stable 自动检查点 (消息写入后自动保存) ----------
 
 
 def test_auto_checkpoint_creates_stable_on_write(tmp_path: Path):
-    """启用检查点后, 消息写入自动产生 stable 检查点"""
+    """
+    启用检查点后, 消息写入自动产生 stable 检查点
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-auto", db_path=db, enable_checkpoint=True)
     assert ctx.auto_checkpoint is True
@@ -351,7 +431,12 @@ def test_auto_checkpoint_creates_stable_on_write(tmp_path: Path):
 
 
 def test_auto_checkpoint_disabled_skips_stable(tmp_path: Path):
-    """auto_checkpoint=False 时消息写入不产生 stable 检查点"""
+    """
+    auto_checkpoint=False 时消息写入不产生 stable 检查点
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager(
         "conv-manual", db_path=db, enable_checkpoint=True, auto_checkpoint=False
@@ -362,7 +447,12 @@ def test_auto_checkpoint_disabled_skips_stable(tmp_path: Path):
 
 
 def test_auto_checkpoint_rollback_restores_stable_state(tmp_path: Path):
-    """stable 自动保存后, rollback 能回到消息中间水位"""
+    """
+    stable 自动保存后, rollback 能回到消息中间水位
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-stable", db_path=db, enable_checkpoint=True)
 
@@ -379,7 +469,12 @@ def test_auto_checkpoint_rollback_restores_stable_state(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_async_auto_checkpoint_creates_stable(tmp_path: Path):
-    """异步上下文消息写入自动产生 stable 检查点"""
+    """
+    异步上下文消息写入自动产生 stable 检查点
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = AsyncContextManager("conv-async-auto", db_path=db, enable_checkpoint=True)
     await ctx.initialize()
@@ -390,11 +485,16 @@ async def test_async_auto_checkpoint_creates_stable(tmp_path: Path):
     assert len([cp for cp in checkpoints if cp.checkpoint_kind == "stable"]) == 1
 
 
-# ── 变更审计 (ledger) ──
+# ---------- 变更审计 (ledger) ----------
 
 
 def test_list_mutations_records_source_and_reason(tmp_path: Path):
-    """list_mutations 按时间倒序返回检查点, 含 source / reason 审计字段"""
+    """
+    list_mutations 按时间倒序返回检查点, 含 source / reason 审计字段
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.wf_ctx.add_user_message("第一条")
@@ -403,15 +503,15 @@ def test_list_mutations_records_source_and_reason(tmp_path: Path):
     session.fork("alt")
     mutations = session.list_mutations()
 
-    # 会话聚合检查点带 source (会话共享 + 工作流各一条, 同一批次)
     agg = [m for m in mutations if m.checkpoint_kind == "manual" and m.batch_id]
+    # 会话聚合检查点带 source (会话共享 + 工作流各一条, 同一批次)
     assert len(agg) == 2
     assert len({m.batch_id for m in agg}) == 1
     assert all(m.source == "session_checkpoint" for m in agg)
     assert all("创建会话检查点" in m.reason for m in agg)
 
-    # fork 出的分支检查点在新作用域, 经 store 直查可见 fork 来源
     from satrap.core.type import StateScope
+    # fork 出的分支检查点在新作用域, 经 store 直查可见 fork 来源
 
     store = StateStore(db_path=db)
     fork_mutations = store.list_mutations(
@@ -420,12 +520,17 @@ def test_list_mutations_records_source_and_reason(tmp_path: Path):
     assert len(fork_mutations) == 1
     assert fork_mutations[0].source == "checkpoint_fork"
 
-    # 倒序: 最后创建的 fork 在前
     assert mutations[0].created_at >= mutations[-1].created_at
+    # 倒序: 最后创建的 fork 在前
 
 
 def test_store_list_mutations_filters_by_scope(tmp_path: Path):
-    """StateStore.list_mutations 仅返回指定作用域的变更记录"""
+    """
+    StateStore.list_mutations 仅返回指定作用域的变更记录
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from satrap.core.type import StateScope
 
     store = StateStore(db_path=str(tmp_path / "state.db"))
@@ -440,7 +545,12 @@ def test_store_list_mutations_filters_by_scope(tmp_path: Path):
 
 
 def test_session_list_mutations_aggregates_all_contexts(tmp_path: Path):
-    """Session.list_mutations 聚合会话共享 + 工作流的变更记录"""
+    """
+    Session.list_mutations 聚合会话共享 + 工作流的变更记录
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _SimpleSession("s1", db)
     session.session_ctx.add_user_message("会话消息")
@@ -453,7 +563,7 @@ def test_session_list_mutations_aggregates_all_contexts(tmp_path: Path):
     assert {m.scope_id for m in mutations if m.batch_id} == {"s1", "s1_main"}
 
 
-# ── 异步 Session 聚合检查点 ──
+# ---------- 异步 Session 聚合检查点 ----------
 
 
 @pytest.mark.asyncio

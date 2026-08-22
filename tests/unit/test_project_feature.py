@@ -1,0 +1,651 @@
+"""
+'项目'功能测试: projects 数据层 + 记忆分层 + 服务绑定 + 工作区按会话解析
+
+语义契约:
+- 项目 = 登记的工作区文件夹 (任意绝对路径), 其下会话共享该工作区
+- 删除项目仅解绑会话 (归入"最近"), 不动会话数据与磁盘文件
+- 无项目会话完全保持现状 (全局工作区回落, 记忆仅全局层)
+- 记忆两层: 全局 (web_chat) + 项目 (project:<id>), 项目会话可见集合 = 两层
+"""
+from __future__ import annotations
+
+import asyncio
+import sqlite3
+from collections.abc import AsyncIterator
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.display import service as service_mod
+from satrap.display.plugins import ChatPluginRegistry
+from satrap.display.recorder import (
+    DisplayRecorder,
+    create_project,
+    delete_project,
+    get_conversation_meta,
+    get_project,
+    list_conversations,
+    list_projects,
+    set_conversation_project,
+)
+from satrap.display.service import ChatService
+from satrap.expend.plugins.base_take.tools import AddMemoryTool
+from satrap.expend.tools.memory_store import MemoryStore
+
+
+# ================= 数据层: projects CRUD =================
+
+
+def test_project_crud_roundtrip(tmp_path: Path):
+    """
+    创建/列出/查询/删除项目; 删除仅解绑会话 (project_id 置 NULL)
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    proj = create_project("演示", str(tmp_path), db_path=db)
+    assert proj["name"] == "演示" and proj["root_path"] == str(tmp_path)
+
+    listed = list_projects(db_path=db)
+    assert [p["project_id"] for p in listed] == [proj["project_id"]]
+    fetched = get_project(proj["project_id"], db_path=db)
+    assert fetched is not None and fetched["name"] == "演示"
+
+    rec = DisplayRecorder(db, "conv-p")
+    # 绑定一个会话后删除项目 -> 会话解绑但 meta 保留
+    rec.save_meta("default", project_id=proj["project_id"])
+    assert delete_project(proj["project_id"], db_path=db) is True
+    meta = get_conversation_meta("conv-p", db_path=db)
+    assert meta is not None and meta["project_id"] is None
+    assert get_project(proj["project_id"], db_path=db) is None
+    assert delete_project(proj["project_id"], db_path=db) is False
+
+
+def test_conversation_meta_project_id_legacy_patch(tmp_path: Path):
+    """
+    旧库无 project_id 列时幂等 ALTER 补丁 (沿用既有迁移模式)
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE conversation_meta (conversation_id TEXT PRIMARY KEY, model TEXT, think TEXT, created_at REAL)"
+    )
+    conn.execute("INSERT INTO conversation_meta VALUES ('conv-old', 'default', 'off', 1.0)")
+    conn.commit()
+    conn.close()
+
+    convs = list_conversations(db)
+    # 触发补丁 (list_conversations 内部调 _ensure_project_schema_locked)
+    assert [c["conversation_id"] for c in convs] == ["conv-old"]
+    assert convs[0]["project_id"] is None
+
+
+def test_list_conversations_with_project_and_empty(tmp_path: Path):
+    """
+    会话列表带项目归属; 新建未发言的空会话也在列表中 (meta created_at 兜底排序)
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    proj = create_project("项目A", str(tmp_path), db_path=db)
+
+    rec = DisplayRecorder(db, "conv-talk")
+    # 有轮次的会话 (绑定项目)
+    rec.save_meta("default", project_id=proj["project_id"])
+    rec.start_turn("第一条消息")
+    rec.end_turn("答复")
+    # 空会话 (只建 meta 未发言, 无项目)
+    rec2 = DisplayRecorder(db, "conv-empty")
+    rec2.save_meta("default")
+
+    convs = {c["conversation_id"]: c for c in list_conversations(db)}
+    assert convs["conv-talk"]["project_id"] == proj["project_id"]
+    assert convs["conv-talk"]["title"] == "第一条消息"
+    assert convs["conv-talk"]["turn_count"] == 1
+    assert "conv-empty" in convs
+    assert convs["conv-empty"]["turn_count"] == 0
+    assert convs["conv-empty"]["project_id"] is None
+    assert convs["conv-empty"]["title"] == "新对话"
+
+
+def test_set_conversation_project_rebind(tmp_path: Path):
+    """
+    会话改绑项目 / 移出项目 (None); 会话不存在返回 False
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    proj = create_project("项目B", str(tmp_path), db_path=db)
+    rec = DisplayRecorder(db, "conv-m")
+    rec.save_meta("default")
+
+    assert set_conversation_project("conv-m", proj["project_id"], db_path=db) is True
+    meta_bound = get_conversation_meta("conv-m", db_path=db)
+    assert meta_bound is not None and meta_bound["project_id"] == proj["project_id"]
+    assert set_conversation_project("conv-m", None, db_path=db) is True
+    meta_unbound = get_conversation_meta("conv-m", db_path=db)
+    assert meta_unbound is not None and meta_unbound["project_id"] is None
+    assert set_conversation_project("conv-ghost", proj["project_id"], db_path=db) is False
+
+
+def test_save_meta_upsert_preserves_project(tmp_path: Path):
+    """
+    save_meta 冲突更新 (模型/think 变更) 不清空已有 project_id
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    proj = create_project("项目C", str(tmp_path), db_path=db)
+    rec = DisplayRecorder(db, "conv-u")
+    rec.save_meta("default", project_id=proj["project_id"])
+    # 再次 save_meta 不带 project_id (如运行时刷新), 项目归属应保留
+    rec.save_meta("fast", "high")
+    meta = get_conversation_meta("conv-u", db_path=db)
+    assert meta is not None
+    assert meta["model"] == "fast" and meta["think"] == "high"
+    assert meta["project_id"] == proj["project_id"]
+
+
+# ================= 记忆分层 =================
+
+
+def _layered_store(tmp_path: Path) -> MemoryStore:
+    """
+    构造项目会话形态的双层 store (契约: scopes[0]=全局层, scope=写入默认层)
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - MemoryStore: 构造项目会话形态的双层 store (契约: scopes[0]=全局层, scope=写入默认层)
+    """
+    store = MemoryStore(db_path=tmp_path / "memory.db", scope="web_chat")
+    store.scopes = ["web_chat", "project:p1"]
+    store.scope = "project:p1"
+    return store
+
+
+def test_memory_layered_injection(tmp_path: Path):
+    """
+    双层注入: 项目层/全局层分节渲染, 项目层优先占配额
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    store = _layered_store(tmp_path)
+    store.add("全局约定", "g1", importance=1, scope="web_chat")
+    store.add("项目约定", "p1", importance=1)   # 默认写入项目层
+
+    block = store.to_context_block()
+    assert "[项目记忆]" in block and "[全局记忆]" in block
+    # 项目层排在全局层之前 (配额优先)
+    assert block.index("项目约定") < block.index("全局约定")
+
+    store.max_entries = 1
+    # 配额: max_entries=1 时只有项目层入选
+    block = store.to_context_block()
+    assert "项目约定" in block and "全局约定" not in block
+
+
+def test_memory_layered_visibility_isolation(tmp_path: Path):
+    """
+    可见集合隔离: 跨项目记忆不可见/不可删/不计数; 写入默认落项目层
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    store = _layered_store(tmp_path)
+    store.add("项目记忆", "p1")
+    store.add("全局记忆", "g1", scope="web_chat")
+    # 另一项目的记忆 (不在可见集合)
+    other = MemoryStore(db_path=tmp_path / "memory.db", scope="project:p2")
+    other.add("他项目记忆", "p2")
+
+    titles = {m["title"] for m in store.list_all()}
+    assert titles == {"项目记忆", "全局记忆"}
+    assert store.count() == 2
+
+    other_id = other.list_all("project:p2")[0]["id"]
+    # 跨项目删除被拒 (可见集合外)
+    assert store.delete(other_id)["ok"] is False
+    # 可见集合内可删
+    own_id = [m for m in store.list_all() if m["title"] == "项目记忆"][0]["id"]
+    assert store.delete(own_id)["ok"] is True
+    assert {m["title"] for m in store.list_all()} == {"全局记忆"}
+
+
+def test_memory_single_scope_backward_compat(tmp_path: Path):
+    """
+    单层兼容: 默认 scope='' 不限定 (全量可见); 显式 scope 参数行为不变
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    store = MemoryStore(db_path=tmp_path / "memory.db")
+    store.add("无作用域", "x")
+    store.add("全局", "g", scope="web_chat")
+    # scope='' = 不限定, 全量可见 (旧行为)
+    assert store.count() == 2
+    assert "全局约定" not in store.to_context_block()   # 无分层标签
+    assert "[项目记忆]" not in store.to_context_block()
+    # 显式 scope 过滤不变
+    assert [m["title"] for m in store.list_all("web_chat")] == ["全局"]
+    # 空串显式传参同样不限定
+    assert store.count("") == 2
+
+
+def test_add_memory_tool_level_routing(tmp_path: Path):
+    """
+    add_memory level 路由: 默认/ project 写项目层, global 写全局层, 非法值报错
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    store = _layered_store(tmp_path)
+    tool = AddMemoryTool(store)
+
+    assert "项目层" in tool.execute(title="t1", content="c1")
+    assert "全局层" in tool.execute(title="t2", content="c2", level="global")
+    assert "未知记忆层级" in tool.execute(title="t3", content="c3", level="mars")
+
+    by_title = {m["title"]: m["scope"] for m in store.list_all()}
+    assert by_title["t1"] == "project:p1"
+    assert by_title["t2"] == "web_chat"
+
+
+def test_add_memory_tool_no_project_single_layer(tmp_path: Path):
+    """
+    无项目会话: level 两层同为全局, 行为与分层前一致
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    store = MemoryStore(db_path=tmp_path / "memory.db", scope="web_chat")
+    tool = AddMemoryTool(store)
+    assert "全局层" in tool.execute(title="t", content="c")
+    assert "全局层" in tool.execute(title="t2", content="c2", level="project")
+    assert {m["scope"] for m in store.list_all()} == {"web_chat"}
+
+
+# ================= 服务层: 项目绑定 =================
+
+
+class _FakeAsyncLLM(AsyncLLM):
+    """流式返回固定内容的 fake LLM"""
+
+    def __init__(self) -> None:
+        pass
+
+    async def call(self, messages: list[dict[str, Any]], **kw: Any) -> LLMCallResponse:
+        return LLMCallResponse(type="answer", content="答复")
+
+    async def stream_call(self, messages: list[dict[str, Any]], **kw: Any) -> AsyncIterator[LLMCallStreamEvent]:
+        yield LLMCallStreamEvent(kind="content_delta", delta="答复")
+        yield LLMCallStreamEvent(kind="done", response=LLMCallResponse(type="answer", content="答复"))
+
+    def set_parameters(self, **kwargs: Any) -> None:
+        pass
+
+
+class _FakeModelConfig:
+    """最小 ModelConfigManager 替身"""
+
+    def list_llm_configs(self, mask_api_key: bool = False) -> dict[str, Any]:
+        return {"default": {}}
+
+    def get_llm_config(self, name: str = "default") -> Any:
+        from satrap.core.type import LLMConfig
+        return LLMConfig(name=name, model="m", api_key="k", base_url="http://x")
+
+
+def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
+    """
+    构造 ChatService, build_llm 替换为 fake
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+
+    返回:
+    - ChatService: 构造 ChatService, build_llm 替换为 fake
+    """
+    def _fake_build_llm(cfg: Any) -> AsyncLLM:
+        return _FakeAsyncLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
+    return ChatService(
+        _FakeModelConfig(),   # type: ignore[arg-type]
+        reg,
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+    )
+
+
+def test_service_project_crud_validation(tmp_path: Path, monkeypatch: Any):
+    """
+    项目创建校验 (空名/路径不存在/非目录) + 删除解绑
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    assert svc.create_project("", str(tmp_path))["ok"] is False
+    assert svc.create_project("x", str(tmp_path / "ghost"))["ok"] is False
+    fpath = tmp_path / "file.txt"
+    fpath.write_text("x", encoding="utf-8")
+    assert svc.create_project("x", str(fpath))["ok"] is False
+
+    result = svc.create_project("工作区", str(tmp_path))
+    assert result["ok"] is True
+    pid = result["project"]["project_id"]
+    assert [p["project_id"] for p in svc.list_projects()] == [pid]
+    assert svc.delete_project(pid)["ok"] is True
+    assert svc.list_projects() == []
+    assert svc.delete_project(pid)["ok"] is False
+
+
+def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: Any):
+    """
+    项目会话: 工作区/沙箱鸭子属性绑定 + meta 持久化; 无效项目抛 ValueError
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    ws = tmp_path / "proj_ws"
+    ws.mkdir()
+    pid = svc.create_project("绑定", str(ws))["project"]["project_id"]
+
+    async def _run() -> tuple[str, str]:
+        cid = await svc.create_conversation(model="default", project_id=pid)
+        plain = await svc.create_conversation(model="default")
+        return cid, plain
+
+    cid, plain = asyncio.run(_run())
+
+    conv = svc.get_conversation(cid)
+    assert conv is not None and conv.project_id == pid
+    session = conv.session
+    assert getattr(session, "coding_workspace_root") == str(ws.resolve())
+    assert getattr(session, "coding_sandbox_root") == str(ws.resolve() / ".satrap" / "sandbox")
+
+    plain_conv = svc.get_conversation(plain)
+    # 无项目会话无鸭子属性 (回落全局)
+    assert plain_conv is not None
+    assert not hasattr(plain_conv.session, "coding_workspace_root")
+
+    meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
+    # meta 持久化项目归属
+    assert meta is not None and meta["project_id"] == pid
+
+    async def _bad() -> None:
+        """验证创建会话时拒绝无效项目"""
+        try:
+            await svc.create_conversation(model="default", project_id="ghost")
+            raise AssertionError("应抛 ValueError")
+        except ValueError:
+            pass
+
+    asyncio.run(_bad())
+
+
+def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: Any):
+    """
+    会话改绑: 绑定 -> 换绑 -> 移出, 活动会话鸭子属性同步刷新
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    ws_a = tmp_path / "ws_a"
+    ws_b = tmp_path / "ws_b"
+    ws_a.mkdir()
+    ws_b.mkdir()
+    pid_a = svc.create_project("A", str(ws_a))["project"]["project_id"]
+    pid_b = svc.create_project("B", str(ws_b))["project"]["project_id"]
+
+    cid = asyncio.run(svc.create_conversation(model="default"))
+
+    assert svc.set_conversation_project(cid, pid_a)["ok"] is True
+    # 绑定 A
+    conv = svc.get_conversation(cid)
+    assert conv is not None and conv.project_id == pid_a
+    assert getattr(conv.session, "coding_workspace_root") == str(ws_a.resolve())
+
+    assert svc.set_conversation_project(cid, pid_b)["ok"] is True
+    # 换绑 B
+    assert getattr(conv.session, "coding_workspace_root") == str(ws_b.resolve())
+
+    assert svc.set_conversation_project(cid, None)["ok"] is True
+    # 移出项目 -> 鸭子属性移除 (回落全局)
+    assert conv.project_id is None
+    assert not hasattr(conv.session, "coding_workspace_root")
+
+    meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
+    # 持久化同步
+    assert meta is not None and meta["project_id"] is None
+
+    assert svc.set_conversation_project("ghost", pid_a)["ok"] is False
+    # 错误路径: 会话/项目不存在
+    assert svc.set_conversation_project(cid, "ghost")["ok"] is False
+
+
+def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any):
+    """
+    删除项目: 活动会话解绑 (鸭子属性移除), 会话本身保留
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    ws = tmp_path / "ws_del"
+    ws.mkdir()
+    pid = svc.create_project("待删", str(ws))["project"]["project_id"]
+    cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
+
+    conv = svc.get_conversation(cid)
+    assert conv is not None and hasattr(conv.session, "coding_workspace_root")
+
+    assert svc.delete_project(pid)["ok"] is True
+    assert conv.project_id is None
+    assert not hasattr(conv.session, "coding_workspace_root")
+    # 会话数据保留
+    assert get_conversation_meta(cid, db_path=str(svc._display_db_path)) is not None
+
+
+def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch: Any):
+    """
+    会话恢复 (内存未命中): 从 meta 读项目归属并重新绑定工作区
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    ws = tmp_path / "ws_resume"
+    ws.mkdir()
+    pid = svc.create_project("恢复", str(ws))["project"]["project_id"]
+    cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
+
+    svc._conversations.clear()
+    # 模拟重启: 清掉内存态
+
+    resumed = asyncio.run(svc._resume_conversation(cid))
+    assert resumed is not None and resumed.project_id == pid
+    assert getattr(resumed.session, "coding_workspace_root") == str(ws.resolve())
+
+
+def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
+    """
+    上传落盘: 项目会话写入 <项目根>/.satrap/uploads/, 无项目会话保持现有位置
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    ws = tmp_path / "ws_upload"
+    ws.mkdir()
+    pid = svc.create_project("上传", str(ws))["project"]["project_id"]
+
+    async def _run() -> tuple[str, str]:
+        return (
+            await svc.create_conversation(model="default", project_id=pid),
+            await svc.create_conversation(model="default"),
+        )
+
+    proj_cid, plain_cid = asyncio.run(_run())
+
+    monkeypatch.chdir(tmp_path)
+    # 无项目会话: 相对 cwd 的 .satrap/uploads/ (chdir 隔离验证)
+    result = svc.save_upload(plain_cid, "a.txt", b"hello")
+    assert result["ok"] is True
+    assert (tmp_path / ".satrap" / "uploads" / plain_cid).is_dir()
+
+    result = svc.save_upload(proj_cid, "b.txt", b"world")
+    # 项目会话: 落在项目工作区内
+    assert result["ok"] is True
+    upload_dir = ws.resolve() / ".satrap" / "uploads" / proj_cid
+    assert upload_dir.is_dir()
+    files = list(upload_dir.iterdir())
+    assert len(files) == 1 and files[0].name.endswith("_b.txt")
+
+
+# ================= 目录浏览 (新建项目选择工作区) =================
+
+
+def test_browse_directories_lists_dirs_only(tmp_path: Path):
+    """
+    只列子目录不列文件, 按名排序 (忽略大小写), parent 指向父目录
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    (tmp_path / "beta").mkdir()
+    (tmp_path / "Alpha").mkdir()
+    (tmp_path / "beta" / "sub").mkdir()
+    (tmp_path / "file.txt").write_text("x", encoding="utf-8")
+
+    result = ChatService.browse_directories(str(tmp_path))
+    assert result["ok"] is True
+    assert result["path"] == str(tmp_path.resolve())
+    assert [d["name"] for d in result["dirs"]] == ["Alpha", "beta"]
+    assert result["parent"] == str(tmp_path.resolve().parent)
+
+
+def test_browse_directories_invalid_path(tmp_path: Path):
+    """
+    路径不存在/不是目录 -> ok=False
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    ghost = ChatService.browse_directories(str(tmp_path / "ghost"))
+    assert ghost["ok"] is False and "不存在" in ghost["error"]
+    fpath = tmp_path / "f.txt"
+    fpath.write_text("x", encoding="utf-8")
+    not_dir = ChatService.browse_directories(str(fpath))
+    assert not_dir["ok"] is False
+
+
+def test_browse_directories_root_and_empty(tmp_path: Path):
+    """
+    空 path 返回根视图 (Windows 盘符 / POSIX 主目录); 根层级 parent 语义正确
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    import os
+
+    empty = ChatService.browse_directories("")
+    assert empty["ok"] is True
+    if os.name == "nt":
+        assert empty["path"] == "" and empty["parent"] is None
+        # Windows: 盘符视图, 无上一级
+        assert all(d["path"].endswith(":\\") for d in empty["dirs"])
+        assert len(empty["dirs"]) > 0
+        # 盘符根的上一级 = 盘符视图 (空串)
+        drive_root = ChatService.browse_directories(empty["dirs"][0]["path"])
+        assert drive_root["ok"] is True and drive_root["parent"] == ""
+    else:
+        assert empty["path"] == str(Path.home())
+        # POSIX: 落到用户主目录; 文件系统根无上一级
+        root = ChatService.browse_directories("/")
+        assert root["ok"] is True and root["parent"] is None
+
+
+# ================= satrap_coding: 工作区按会话解析 =================
+
+
+def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
+    """
+    两个会话不同工作区根并行互不干扰; 无鸭子属性会话回落全局
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    import satrap.expend.plugins.satrap_coding.tools as tools_mod
+    from satrap.edictum import SimpleSession
+    from satrap.expend.plugins.satrap_coding.tools import get_tools
+
+    global_ws = tmp_path / "global_ws"
+    ws_a = tmp_path / "ws_a"
+    ws_b = tmp_path / "ws_b"
+    for d in (global_ws, ws_a, ws_b):
+        d.mkdir()
+    (global_ws / "g.txt").write_text("global", encoding="utf-8")
+    (ws_a / "a.txt").write_text("aaa", encoding="utf-8")
+    (ws_b / "b.txt").write_text("bbb", encoding="utf-8")
+    monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", global_ws)
+    monkeypatch.setattr(tools_mod, "DATA_ROOT", tmp_path / "coding")
+
+    class _StubLLM:
+        def call(self, *a: Any, **kw: Any) -> Any:
+            raise NotImplementedError
+
+        def stream_call(self, *a: Any, **kw: Any) -> Any:
+            raise NotImplementedError
+
+        def set_parameters(self, **kwargs: Any) -> None:
+            pass
+
+    def _session(sid: str, ws: Path | None) -> SimpleSession:
+        s = SimpleSession(sid, _StubLLM(), db_path=str(tmp_path / f"{sid}.db"), enable_checkpoint=False)   # type: ignore[arg-type]
+        if ws is not None:
+            setattr(s, "coding_workspace_root", str(ws))
+            # 鸭子属性: 与 ChatService._apply_project 同款注入方式
+        return s
+
+    def _read_tool(s: SimpleSession) -> Any:
+        tools = get_tools(s)
+        return next(t for t in tools if t.get_tool_name() == "read_file")
+
+    sess_a = _session("sess-a", ws_a)
+    sess_b = _session("sess-b", ws_b)
+    sess_g = _session("sess-g", None)
+
+    assert "aaa" in _read_tool(sess_a).execute(path="a.txt")
+    # 同一份全局配置下, 三个会话各自解析到自己的工作区
+    assert "bbb" in _read_tool(sess_b).execute(path="b.txt")
+    assert "global" in _read_tool(sess_g).execute(path="g.txt")
+
+    assert "错误" in _read_tool(sess_a).execute(path="b.txt")
+    # 互不干扰: A 看不到 B 的文件 (B 的文件不在 A 的工作区内)
+    # 无项目会话行为与全局一致 (相对路径基于全局工作区)
+    assert "错误" in _read_tool(sess_g).execute(path="a.txt")

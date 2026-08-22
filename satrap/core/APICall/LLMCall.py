@@ -17,7 +17,11 @@ def _extract_thinking_from_message(
 ) -> Optional[str]:
     """
     从消息对象中提取思考内容, 支持多种供应商格式
-    
+
+    参数:
+    - message: 消息内容
+    - full_response: full响应
+
     支持的格式 (按优先级):
     - reasoning_content (DeepSeek, Qwen, GLM, Kimi, Fireworks, IBM)
     - reasoning (OpenRouter, Together, Perplexity, Groq parsed)
@@ -25,8 +29,11 @@ def _extract_thinking_from_message(
     - reasoning_details (MiniMax)
     - <think> 标签包裹的内容 (Groq raw, Together 某些模型)
     - 未来可扩展
+
+    返回:
+    - Optional[str]: 从消息对象中提取思考内容, 支持多种供应商格式
     """
-    # 1. reasoning_content
+    # Step.1 提取 reasoning_content 字段
     if isinstance(message, dict):
         message = cast(Dict[str, Any], message)
     reasoning = safe_getattr_str(message, "reasoning_content")
@@ -35,28 +42,28 @@ def _extract_thinking_from_message(
     if reasoning:
         return reasoning
 
-    # 2. reasoning
+    # Step.2 提取 reasoning 字段
     reasoning = safe_getattr_str(message, "reasoning")
     if not reasoning and isinstance(message, dict):
         reasoning = cast(Dict[str, Any], message).get("reasoning", "")
     if reasoning:
         return reasoning
 
-    # 3. thinking
+    # Step.3 提取 thinking 字段
     thinking = safe_getattr_str(message, "thinking")
     if not thinking and isinstance(message, dict):
         thinking = cast(Dict[str, Any], message).get("thinking", "")
     if thinking:
         return thinking
 
-    # 4. reasoning_details (数组)
+    # Step.4 reasoning_details (数组)
     reasoning_details = safe_getattr_list(message, "reasoning_details")
     if not reasoning_details and isinstance(message, dict):
         reasoning_details = cast(Dict[str, Any], message).get("reasoning_details", [])
     if reasoning_details:
         return "\n".join([str(x) for x in reasoning_details])
 
-    # 5. 从 content 中提取 <think> 标签
+    # Step.5 从 content 中提取 <think> 标签
     content = safe_getattr_str(message, "content")
     if not content and isinstance(message, dict):
         content = cast(Dict[str, Any], message).get("content", "")
@@ -65,7 +72,7 @@ def _extract_thinking_from_message(
         if match:
             return match.group(1).strip()
 
-    # 6. 退回兼容
+    # Step.6 退回兼容
     return None
 
 
@@ -107,7 +114,6 @@ def parse_chat_response(
         # Step.3 提取第一条回复的消息内容
         first_choice = choices[0]
 
-        # 处理 Pydantic 对象或字典格式
         if hasattr(first_choice, "message"):
             content = first_choice.message.content
         elif isinstance(first_choice, dict):
@@ -115,6 +121,7 @@ def parse_chat_response(
             content = first_choice.get("message", {}).get("content")
         else:
             content = ""
+        # 处理 Pydantic 对象或字典格式
         # 根据返回的数据类型提取 content 字段
 
         if content is None:
@@ -133,7 +140,8 @@ def parse_call_response(
     api_response: ChatCompletion | Dict[str, Any] | None,
     suppress_error: bool = True,
 ) -> LLMCallResponse:
-    """解析 LLM API 调用响应, 判断是否包含函数调用
+    """
+    解析 LLM API 调用响应, 判断是否包含函数调用
 
     参数:
     - api_response: API 返回的 ChatCompletion 对象或字典
@@ -190,10 +198,9 @@ def parse_call_response(
         if tool_calls and len(tool_calls) > 0:
             tool_calls_list: list[dict[str, Any]] = []
             
-            # 遍历所有工具调用
             for tool_call in tool_calls:
-                # 提取工具调用 id
                 call_id = safe_getattr_str(tool_call, "id")
+                # 提取工具调用 id
                 if not call_id and isinstance(tool_call, dict):
                     tool_call = cast(Dict[str, Any], tool_call)
                     call_id = tool_call.get("id", "")
@@ -231,6 +238,7 @@ def parse_call_response(
 
                     call_info: dict[str, Any] = {"name": func_name, "id": call_id, "arguments": args_dict}
                     tool_calls_list.append(call_info)
+            # 遍历所有工具调用
                     # 封装单个工具调用信息并添加到列表
 
             if tool_calls_list:
@@ -258,9 +266,12 @@ def _rename_thinking_field(
     参数:
     - messages: 输入的消息列表
     - target_field: 目标字段名称, 用于替换 'reasoning_content'
+
+    返回:
+    - List[Dict[str, Any]]: 将消息中的 'reasoning_content' 字段重命名为 target_field
     """
     if target_field == "reasoning_content" or target_field is None:
-        return messages  # 无需重命名, 直接返回原列表
+        return messages   # 无需重命名, 直接返回原列表
     
     new_messages: list[dict[str, Any]] = []
     for msg in messages:
@@ -273,7 +284,7 @@ def _rename_thinking_field(
 
 
 _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
-    "reasoning_effort": ("none", None),        # None = 用 thinking 原值
+    "reasoning_effort": ("none", None),   # None = 用 thinking 原值
     "thinking.type": ("disabled", "enabled"),
     "enable_thinking": (False, True),
     "thinking_level": ("none", None),
@@ -285,7 +296,8 @@ def _build_thinking_extra_body(
     thinking_fields: Optional[List[str]] = None,
     reasoning_body: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """根据思考强度构造 extra_body
+    """
+    根据思考强度构造 extra_body
 
     参数:
     - thinking: 思考强度 (off/low/medium/high)
@@ -316,7 +328,17 @@ def _build_thinking_extra_body(
 
 
 def _stream_field(value: Any, name: str, default: Any = None) -> Any:
-    """兼容对象和字典形式读取流式响应字段 (保留原始类型, 供嵌套结构递归提取)"""
+    """
+    兼容对象和字典形式读取流式响应字段 (保留原始类型, 供嵌套结构递归提取)
+
+    参数:
+    - value: 输入值
+    - name: 名称
+    - default: 默认值
+
+    返回:
+    - Any: 兼容对象和字典形式读取流式响应字段 (保留原始类型, 供嵌套结构递归提取)
+    """
     if isinstance(value, dict):
         return cast(dict[str, Any], value).get(name, default)
     val = safe_getattr(value, name, default)
@@ -324,7 +346,15 @@ def _stream_field(value: Any, name: str, default: Any = None) -> Any:
 
 
 def _stream_text(value: Any) -> str:
-    """提取流式字段中的文本内容"""
+    """
+    提取流式字段中的文本内容
+
+    参数:
+    - value: 输入值
+
+    返回:
+    - str: 提取流式字段中的文本内容
+    """
     if isinstance(value, str):
         return value
     if isinstance(value, list):
@@ -338,7 +368,16 @@ def _stream_text(value: Any) -> str:
 
 
 def _stream_first_text(value: Any, names: tuple[str, ...]) -> str:
-    """按优先级读取第一个非空文本字段"""
+    """
+    按优先级读取第一个非空文本字段
+
+    参数:
+    - value: 输入值
+    - names: names 输入值
+
+    返回:
+    - str: 按优先级读取第一个非空文本字段
+    """
     for name in names:
         text = _stream_text(_stream_field(value, name, None))
         if text:
@@ -349,7 +388,8 @@ def _stream_first_text(value: Any, names: tuple[str, ...]) -> str:
 class _StreamCallAccumulator:
     """聚合 Chat Completions 流式响应并生成最终调用结果"""
     def __init__(self):
-        self.content_parts: list[str] = []     # 最终答案内容
+        """初始化 _StreamCallAccumulator"""
+        self.content_parts: list[str] = []   # 最终答案内容
         self.reasoning_parts: list[str] = []   # 思考内容
         self.tool_calls: dict[int, dict[str, str]] = {}   # tools call 信息
         self.finish_reason: str | None = None   # 完成原因
@@ -357,9 +397,12 @@ class _StreamCallAccumulator:
     def consume(self, chunk: Any) -> list[LLMCallStreamEvent]:
         """
         接收一个来自 API 的原始响应块, 更新累加器状态, 并返回本次 chunk 产生的事件列表
-        
+
         参数:
         - chunk: 来自 API 的原始响应块 (对象或字典)
+
+        返回:
+        - list[LLMCallStreamEvent]: 接收一个来自 API 的原始响应块, 更新累加器状态, 并返回本次 chunk 产生的事件列表
         """
         events: list[LLMCallStreamEvent] = []
         choices: list[Any] = _stream_field(chunk, "choices", []) or []
@@ -436,13 +479,21 @@ class _StreamCallAccumulator:
                                 "id": id_delta,
                                 "name": name_delta,
                                 "arguments": arguments_delta,
-                            },  # 工具调用增量
+                            },   # 工具调用增量
                         )
                     )
         return events
 
     def response(self, suppress_error: bool = True) -> LLMCallResponse:
-        """将聚合结果转换为与非流式 call 一致的响应结构"""
+        """
+        将聚合结果转换为与非流式 call 一致的响应结构
+
+        参数:
+        - suppress_error: 是否抑制异常
+
+        返回:
+        - LLMCallResponse: 将聚合结果转换为与非流式 call 一致的响应结构
+        """
         tool_calls: list[dict[str, Any]] = []
         for index in sorted(self.tool_calls):
             tool_call = self.tool_calls[index]
@@ -735,7 +786,8 @@ class LLM:
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
     ) -> LLMCallResponse | Literal[False]:
-        """同步调用 LLM 并返回响应
+        """
+        同步调用 LLM 并返回响应
 
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
@@ -776,7 +828,7 @@ class LLM:
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
                     extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
-                    tools=tools,               # type: ignore
+                    tools=tools,   # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起网络请求
 
@@ -816,8 +868,9 @@ class LLM:
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
     ) -> Iterator[LLMCallStreamEvent]:
-        """同步流式调用 LLM 并返回结构化增量事件
-        
+        """
+        同步流式调用 LLM 并返回结构化增量事件
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
@@ -901,16 +954,31 @@ class LLM:
             yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
 
     def get_model(self) -> str:
-        """获取当前 LLM 实例使用的模型名称"""
+        """
+        获取当前 LLM 实例使用的模型名称
+
+        返回:
+        - str: 当前 LLM 实例使用的模型名称
+        """
         return self.model
 
     def get_api_key(self) -> str:
-        """获取当前 LLM 实例的 API Key"""
+        """
+        获取当前 LLM 实例的 API Key
+
+        返回:
+        - str: 当前 LLM 实例的 API Key
+        """
         return self.api_key
 
     def get_base_url(self) -> Optional[str]:
-        """获取当前 LLM 实例的 Base URL;
-        如果未设置则返回 None"""
+        """
+        获取当前 LLM 实例的 Base URL;
+        如果未设置则返回 None
+
+        返回:
+        - Optional[str]: 当前 LLM 实例的 Base URL
+        """
         return self.base_url
     
     def set_parameters(
@@ -921,14 +989,16 @@ class LLM:
         max_tokens: Optional[int] = None,
         thinking_fields: Optional[List[str]] = None,
     ):
-        """更新 LLM 实例的默认参数设置
+        """
+        更新 LLM 实例的默认参数设置
 
         参数:
         - model: 新的模型名称
         - temperature: 新的温度参数
         - top_p: 新的 top_p 参数
         - max_tokens: 新的最大 token 数
-        - thinking_fields: 新的思考字段列表"""
+        - thinking_fields: 新的思考字段列表
+        """
         if model is not None:
             self.model = model
         if temperature is not None:
@@ -1220,8 +1290,9 @@ class AsyncLLM:
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
     ) -> LLMCallResponse | Literal[False]:
-        """异步调用 LLM 并返回响应
-        
+        """
+        异步调用 LLM 并返回响应
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
@@ -1261,7 +1332,7 @@ class AsyncLLM:
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
                     extra_body=_build_thinking_extra_body(thinking, self.thinking_fields, self.reasoning_body),
-                    tools=tools,               # type: ignore
+                    tools=tools,   # type: ignore
                     tool_choice=tool_choice,   # type: ignore
                 )   # 发起异步网络请求
 
@@ -1301,8 +1372,9 @@ class AsyncLLM:
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
     ) -> AsyncIterator[LLMCallStreamEvent]:
-        """异步流式调用 LLM 并返回结构化增量事件
-        
+        """
+        异步流式调用 LLM 并返回结构化增量事件
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - model: 可选参数, 用于覆盖默认模型
@@ -1387,16 +1459,31 @@ class AsyncLLM:
             yield LLMCallStreamEvent(kind="done", response=response, finish_reason="error")
 
     def get_model(self) -> str:
-        """获取当前 AsyncLLM 实例使用的模型名称"""
+        """
+        获取当前 AsyncLLM 实例使用的模型名称
+
+        返回:
+        - str: 当前 AsyncLLM 实例使用的模型名称
+        """
         return self.model
 
     def get_api_key(self) -> str:
-        """获取当前 AsyncLLM 实例的 API Key"""
+        """
+        获取当前 AsyncLLM 实例的 API Key
+
+        返回:
+        - str: 当前 AsyncLLM 实例的 API Key
+        """
         return self.api_key
     
     def get_base_url(self) -> Optional[str]:
-        """获取当前 AsyncLLM 实例的 Base URL;
-        如果未设置则返回 None"""
+        """
+        获取当前 AsyncLLM 实例的 Base URL;
+        如果未设置则返回 None
+
+        返回:
+        - Optional[str]: 当前 AsyncLLM 实例的 Base URL
+        """
         return self.base_url
     
     def set_parameters(
@@ -1407,14 +1494,16 @@ class AsyncLLM:
         max_tokens: Optional[int] = None,
         thinking_fields: Optional[List[str]] = None,
     ):
-        """更新 AsyncLLM 实例的默认参数设置
+        """
+        更新 AsyncLLM 实例的默认参数设置
 
         参数:
         - model: 新的模型名称
         - temperature: 新的温度参数
         - top_p: 新的 top_p 参数
         - max_tokens: 新的最大 token 数
-        - thinking_fields: 新的思考字段列表"""
+        - thinking_fields: 新的思考字段列表
+        """
         if model is not None:
             self.model = model
         if temperature is not None:
@@ -1428,7 +1517,15 @@ class AsyncLLM:
 
 
 def _compute_output_budget(cfg: Any) -> int | None:
-    """计算输出预算 = context_window × (1 - history_ratio) (两者都配置时生效)"""
+    """
+    计算输出预算 = context_window x (1 - history_ratio) (两者都配置时生效)
+
+    参数:
+    - cfg: 配置对象
+
+    返回:
+    - int | None: 计算输出预算 = context_window x (1 - history_ratio) (两者都配置时生效)
+    """
     cw = safe_getattr(cfg, "context_window")
     hr = safe_getattr(cfg, "history_ratio")
     if cw and hr:
@@ -1437,10 +1534,11 @@ def _compute_output_budget(cfg: Any) -> int | None:
 
 
 def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | AsyncLLM":
-    """由 LLMConfig 统一构造 LLM / AsyncLLM (字段映射 + 输出预算)
+    """
+    由 LLMConfig 统一构造 LLM / AsyncLLM (字段映射 + 输出预算)
 
     统一映射全部字段并应用输出预算, 消除各调用方自行构造时的遗漏:
-    - 输出预算 = context_window × (1 - history_ratio), 两者都配置时优先于 max_tokens
+    - 输出预算 = context_window x (1 - history_ratio), 两者都配置时优先于 max_tokens
     - max_tokens = 输出预算 or cfg.max_tokens or 4096
     - top_p / lock_api_key / reasoning_body / thinking_field_name / thinking_fields 全部透传
     - 用 safe_getattr 兼容测试替身 (SimpleNamespace 可能缺字段)
@@ -1448,6 +1546,9 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
     参数:
     - cfg: LLMConfig (或含同名字段的替身对象)
     - async_: True 返回 AsyncLLM, False 返回 LLM
+
+    返回:
+    - 'LLM | AsyncLLM': 由 LLMConfig 统一构造 LLM / AsyncLLM (字段映射 + 输出预算)
     """
     cls = AsyncLLM if async_ else LLM
     kwargs: dict[str, Any] = {

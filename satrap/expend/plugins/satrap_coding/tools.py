@@ -1,7 +1,8 @@
-"""satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
+"""
+satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
 
 > 联网搜索 (search/fetch_page) 与长期记忆 (memory) 已移交 base_take 插件,
-> 本插件只保留 coding 专属能力。
+> 本插件只保留 coding 专属能力
 
 约定:
 - get_tools(session) 工厂: 按会话形态 (SimpleSession / AsyncSimpleSession) 返回同步/异步工具,
@@ -22,6 +23,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
+from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
 from satrap.core.log import logger
 from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.core.utils.paths import get_project_root
@@ -33,6 +35,7 @@ from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionEngine,
     RiskLevel,
 )
+from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 
 WORKSPACE_ROOT = get_project_root()
 """文件工具白名单根目录 (项目根)"""
@@ -53,7 +56,15 @@ _APPROVAL_PROMPT = """你是一个操作审批助手。请判断以下操作是�
 
 
 def _make_sync_judge(session: SimpleSession) -> Callable[[str, RiskLevel, str], str]:
-    """构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)"""
+    """
+    构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)
+
+    参数:
+    - session: 会话
+
+    返回:
+    - Callable[[str, RiskLevel, str], str]: 构造同步 auto-agent 审批判断 (调用会话主模型, 只读判断不执行)
+    """
 
     def judge(operation: str, risk: RiskLevel, description: str) -> str:
         try:
@@ -70,7 +81,15 @@ def _make_sync_judge(session: SimpleSession) -> Callable[[str, RiskLevel, str], 
 
 
 def _make_async_judge(session: AsyncSimpleSession) -> Callable[[str, RiskLevel, str], Awaitable[str]]:
-    """构造异步 auto-agent 审批判断"""
+    """
+    构造异步 auto-agent 审批判断
+
+    参数:
+    - session: 会话
+
+    返回:
+    - Callable[[str, RiskLevel, str], Awaitable[str]]: 构造异步 auto-agent 审批判断
+    """
 
     async def judge(operation: str, risk: RiskLevel, description: str) -> str:
         try:
@@ -91,7 +110,17 @@ def _ask_user_sync(
     question: str,
     options: list[str] | None = None,
 ) -> str | None:
-    """同步询问用户, 未配置输入通道返回 None"""
+    """
+    同步询问用户, 未配置输入通道返回 None
+
+    参数:
+    - session: 会话
+    - question: 问题内容
+    - options: 选项集合
+
+    返回:
+    - str | None:  None
+    """
     provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
@@ -111,7 +140,17 @@ async def _ask_user_async(
     question: str,
     options: list[str] | None = None,
 ) -> str | None:
-    """异步询问用户 (provider 可为同步或异步), 未配置输入通道返回 None"""
+    """
+    异步询问用户 (provider 可为同步或异步), 未配置输入通道返回 None
+
+    参数:
+    - session: 会话
+    - question: 问题内容
+    - options: 选项集合
+
+    返回:
+    - str | None:  None
+    """
     provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
@@ -136,7 +175,19 @@ def _approve_sync(
     risk: RiskLevel,
     description: str,
 ) -> tuple[bool, str]:
-    """同步审批入口: 返回 (是否放行, 结果消息)"""
+    """
+    同步审批入口: 返回 (是否放行, 结果消息)
+
+    参数:
+    - session: 会话
+    - engine: 执行引擎
+    - operation: 操作信息
+    - risk: 风险级别
+    - description: 说明文本
+
+    返回:
+    - tuple[bool, str]:  (是否放行, 结果消息)
+    """
     decision = engine.evaluate(operation, risk, description, judge=_make_sync_judge(session))
     if decision == PermissionDecision.ALLOW:
         return True, ""
@@ -162,7 +213,19 @@ async def _approve_async(
     risk: RiskLevel,
     description: str,
 ) -> tuple[bool, str]:
-    """异步审批入口: 返回 (是否放行, 结果消息)"""
+    """
+    异步审批入口: 返回 (是否放行, 结果消息)
+
+    参数:
+    - session: 会话
+    - engine: 执行引擎
+    - operation: 操作信息
+    - risk: 风险级别
+    - description: 说明文本
+
+    返回:
+    - tuple[bool, str]:  (是否放行, 结果消息)
+    """
     decision = await engine.evaluate_async(operation, risk, description, judge=_make_async_judge(session))
     if decision == PermissionDecision.ALLOW:
         return True, ""
@@ -187,39 +250,98 @@ _PROTECTED_DIRS = (".satrap", ".git", "node_modules")
 _PROTECTED_FILES = (".env", ".env.local")
 
 
-def _resolve_path(path: str) -> Path:
-    """解析路径并校验在工作区内 (相对路径以工作区为基准), 越界抛 ValueError"""
+def _workspace_root(session: Any) -> Path:
+    """
+    按会话解析工作区根: 会话鸭子属性 coding_workspace_root 优先, 否则全局 WORKSPACE_ROOT
+
+    参数:
+    - session: 会话
+
+    项目功能: 项目会话由 ChatService 在建会话/改绑时赋值 session.coding_workspace_root;
+    无项目会话该属性不存在, 回落全局 -- 行为与引入项目前一致
+
+    返回:
+    - Path: 按会话解析工作区根: 会话鸭子属性 coding_workspace_root 优先, 否则全局 WORKSPACE_ROOT
+    """
+    if session is None:
+        return WORKSPACE_ROOT
+    return Path(safe_getattr(session, "coding_workspace_root") or WORKSPACE_ROOT).resolve()
+
+
+def _tool_root(tool: Any) -> Path:
+    """
+    取工具所属会话的工作区根 (未绑会话时回落全局)
+
+    参数:
+    - tool: 工具
+
+    返回:
+    - Path: 取工具所属会话的工作区根 (未绑会话时回落全局)
+    """
+    return _workspace_root(getattr(tool, "_session", None))
+
+
+def _resolve_path(path: str, root: Path | None = None) -> Path:
+    """
+    解析路径并校验在工作区内 (相对路径以工作区为基准), 越界抛 ValueError
+
+    参数:
+    - path: 路径
+    - root: 根目录
+
+    返回:
+    - Path: 解析路径并校验在工作区内 (相对路径以工作区为基准), 越界抛 ValueError
+    """
+    root = root or WORKSPACE_ROOT
     raw = Path(path)
-    candidate = raw if raw.is_absolute() else WORKSPACE_ROOT / raw
+    candidate = raw if raw.is_absolute() else root / raw
     resolved = candidate.resolve()
-    if resolved != WORKSPACE_ROOT and not resolved.is_relative_to(WORKSPACE_ROOT):
+    if resolved != root and not resolved.is_relative_to(root):
         raise ValueError(f"路径越出工作区: {resolved}")
     return resolved
 
 
-# 参数里可被简单识别的绝对路径 (Windows 盘符或 UNC)
 _OUTSIDE_PATH_RE = re.compile(r"(?:^|\s)([a-zA-Z]:\\|\\\\[^\\]+\\|/[a-zA-Z]/)")
+# 参数里可被简单识别的绝对路径 (Windows 盘符或 UNC)
 
 
-def _has_outside_workspace_path(command: str) -> bool:
-    """命令是否引用工作区外的绝对路径 (盘符/UNC 近似检测)
+def _has_outside_workspace_path(command: str, root: Path | None = None) -> bool:
+    """
+    命令是否引用工作区外的绝对路径 (盘符/UNC 近似检测)
+
+    参数:
+    - command: 命令内容
+    - root: 根目录
 
     无绝对路径或绝对路径都在工作区内 (含同盘符近似) 视为工作区内活动
+
+    返回:
+    - bool: 命令是否引用工作区外的绝对路径 (盘符/UNC 近似检测)
     """
-    root = str(WORKSPACE_ROOT).replace("\\", "/").lower()
+    root_str = str(root or WORKSPACE_ROOT).replace("\\", "/").lower()
     for m in _OUTSIDE_PATH_RE.findall(command):
         candidate = m.replace("\\", "/").lower()
         if candidate.endswith("/"):
             candidate = candidate[:-1]
-        if not candidate or root.startswith(candidate):
-            continue  # 工作区根本身或其父级盘符前缀
+        if not candidate or root_str.startswith(candidate):
+            continue   # 工作区根本身或其父级盘符前缀
         return True
     return False
 
 
-def _protection_reason(path: Path) -> str | None:
-    """命中保护路径返回原因 (敏感目录/文件)"""
-    rel = path.relative_to(WORKSPACE_ROOT) if path.is_relative_to(WORKSPACE_ROOT) else path
+def _protection_reason(path: Path, root: Path | None = None) -> str | None:
+    """
+    命中保护路径返回原因 (敏感目录/文件)
+
+    参数:
+    - path: 路径
+    - root: 根目录
+
+    返回:
+    - str | None: 原因 (敏感目录/文件)
+    """
+    root = root or WORKSPACE_ROOT
+    rel = path.relative_to(root) if path.is_relative_to(root) else path
     parts = [p.lower() for p in rel.parts]
     for name in _PROTECTED_DIRS:
         if name in parts:
@@ -230,18 +352,44 @@ def _protection_reason(path: Path) -> str | None:
     return None
 
 
-def _protection_reason_full(path: Path) -> str | None:
-    """完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)"""
-    return _protection_reason(path)
+def _protection_reason_full(path: Path, root: Path | None = None) -> str | None:
+    """
+    完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)
+
+    参数:
+    - path: 路径
+    - root: 根目录
+
+    返回:
+    - str | None: 完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)
+    """
+    return _protection_reason(path, root)
 
 
 def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:
-    """获取会话沙箱根 (会话属性优先, 否则默认)"""
+    """
+    获取会话沙箱根 (会话属性优先, 否则默认)
+
+    参数:
+    - session: 会话
+
+    返回:
+    - Path: 会话沙箱根 (会话属性优先, 否则默认)
+    """
     return Path(safe_getattr(session, "coding_sandbox_root") or DEFAULT_SANDBOX_ROOT).resolve()
 
 
 def _in_sandbox(path: Path, session: SimpleSession | AsyncSimpleSession) -> bool:
-    """目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)"""
+    """
+    目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)
+
+    参数:
+    - path: 路径
+    - session: 会话
+
+    返回:
+    - bool: 目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)
+    """
     root = _session_sandbox_root(session)
     return path == root or path.is_relative_to(root)
 
@@ -249,7 +397,18 @@ def _in_sandbox(path: Path, session: SimpleSession | AsyncSimpleSession) -> bool
 def _approve_file_write(
     session: SimpleSession, engine: PermissionEngine, path: Path, action: str,
 ) -> tuple[bool, str]:
-    """文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批"""
+    """
+    文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批
+
+    参数:
+    - session: 会话
+    - engine: 执行引擎
+    - path: 路径
+    - action: 操作类型
+
+    返回:
+    - tuple[bool, str]: 文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批
+    """
     if _in_sandbox(path, session):
         return True, ""
     return _approve_sync(session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}")
@@ -258,7 +417,18 @@ def _approve_file_write(
 async def _approve_file_write_async(
     session: AsyncSimpleSession, engine: PermissionEngine, path: Path, action: str,
 ) -> tuple[bool, str]:
-    """异步文件写审批: 沙箱内免审批, 其余按策略审批"""
+    """
+    异步文件写审批: 沙箱内免审批, 其余按策略审批
+
+    参数:
+    - session: 会话
+    - engine: 执行引擎
+    - path: 路径
+    - action: 操作类型
+
+    返回:
+    - tuple[bool, str]: 异步文件写审批: 沙箱内免审批, 其余按策略审批
+    """
     if _in_sandbox(path, session):
         return True, ""
     return await _approve_async(session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}")
@@ -276,14 +446,28 @@ class ReadFileTool(Tool):
     }
 
     def __init__(self) -> None:
+        """初始化 ReadFileTool"""
         super().__init__()
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
 
     def execute(self, path: str, offset: int = 0, limit: int = 200) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - offset: 偏移量
+        - limit: 数量上限
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
@@ -310,15 +494,32 @@ class WriteFileTool(Tool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 WriteFileTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
 
     def execute(self, path: str, content: str, append: bool = False) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - content: 内容
+        - append: 是否追加
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
         allowed, message = _approve_file_write(self._session, self.engine, abs_path, "写入文件")
@@ -333,8 +534,13 @@ class WriteFileTool(Tool):
         except OSError as e:
             return f"错误: 写入失败: {e}"
 
-    # 会话注入 (工厂在注册前设置)
     def _bind(self, session: SimpleSession) -> None:
+        """
+        在工具注册前注入所属会话
+
+        参数:
+        - session: 会话
+        """
         self._session = session
 
 
@@ -351,15 +557,33 @@ class EditFileTool(Tool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 EditFileTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
 
     def execute(self, path: str, old: str, new: str, replace_all: bool = False) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - old: 原值
+        - new: 新值
+        - replace_all: 是否全部替换
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -404,15 +628,31 @@ class SearchReplaceTool(Tool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 SearchReplaceTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
 
     def execute(self, path: str, replacements: list[dict[str, Any]]) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - replacements: 替换项列表
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -461,10 +701,27 @@ class TodoWriteTool(Tool):
     }
 
     def __init__(self, todos: dict[str, Any]) -> None:
+        """
+        初始化 TodoWriteTool
+
+        参数:
+        - todos: 待办事项列表
+        """
         super().__init__()
         self.todos = todos
 
     def execute(self, operation: str, item: str = "", index: int = 0) -> str:
+        """
+        执行
+
+        参数:
+        - operation: 操作信息
+        - item: 条目
+        - index: 索引
+
+        返回:
+        - str: 执行
+        """
         op = (operation or "").strip().lower()
         items = self.todos["items"]
         if op == "add":
@@ -501,8 +758,18 @@ class ListDirTool(Tool):
     }
 
     def execute(self, path: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+
+        返回:
+        - str: 执行
+        """
         try:
-            base = _resolve_path(path) if path else WORKSPACE_ROOT
+            root = _tool_root(self)
+            base = _resolve_path(path, root) if path else root
         except ValueError as e:
             return f"错误: {e}"
         if not base.is_dir():
@@ -515,6 +782,8 @@ class ListDirTool(Tool):
         if len(entries) > 200:
             lines.append(f"  ... 共 {len(entries)} 项")
         return "\n".join(lines)
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
 
 
 class GlobFilesTool(Tool):
@@ -527,15 +796,27 @@ class GlobFilesTool(Tool):
     }
 
     def execute(self, pattern: str) -> str:
+        """
+        执行
+
+        参数:
+        - pattern: 匹配模式
+
+        返回:
+        - str: 执行
+        """
+        root = _tool_root(self)
         matches = [
-            str(p.relative_to(WORKSPACE_ROOT)).replace(os.sep, "/")
-            for p in WORKSPACE_ROOT.glob(pattern)
-            if p.is_file() and p.resolve().is_relative_to(WORKSPACE_ROOT) and _protection_reason_full(p) is None
+            str(p.relative_to(root)).replace(os.sep, "/")
+            for p in root.glob(pattern)
+            if p.is_file() and p.resolve().is_relative_to(root) and _protection_reason_full(p, root) is None
         ]
         matches.sort()
         if not matches:
             return "未找到匹配文件"
         return "\n".join(matches[:100]) + (f"\n... 共 {len(matches)} 个" if len(matches) > 100 else "")
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
 
 
 class GrepFilesTool(Tool):
@@ -550,8 +831,20 @@ class GrepFilesTool(Tool):
     }
 
     def execute(self, pattern: str, path: str = "", glob: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - pattern: 匹配模式
+        - path: 路径
+        - glob: 文件匹配模式
+
+        返回:
+        - str: 执行
+        """
         try:
-            base = _resolve_path(path) if path else WORKSPACE_ROOT
+            root = _tool_root(self)
+            base = _resolve_path(path, root) if path else root
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -560,7 +853,7 @@ class GrepFilesTool(Tool):
             return f"错误: 正则无效: {e}"
         hits: list[str] = []
         for p in base.rglob(glob or "*"):
-            if not p.is_file() or _protection_reason_full(p) is not None:
+            if not p.is_file() or _protection_reason_full(p, root) is not None:
                 continue
             try:
                 text = p.read_text(encoding="utf-8", errors="ignore")
@@ -568,7 +861,7 @@ class GrepFilesTool(Tool):
                 continue
             for lineno, line in enumerate(text.splitlines(), start=1):
                 if regex.search(line):
-                    hits.append(f"{p.relative_to(WORKSPACE_ROOT)}:{lineno}: {line[:200]}")
+                    hits.append(f"{p.relative_to(root)}:{lineno}: {line[:200]}")
                     if len(hits) >= 100:
                         break
             if len(hits) >= 100:
@@ -576,9 +869,11 @@ class GrepFilesTool(Tool):
         if not hits:
             return "未找到匹配内容"
         return "\n".join(hits) + ("\n... 结果截断" if len(hits) >= 100 else "")
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
 
 
-# ================= ask_user =================
+# ================= ask_user 工具 =================
 
 
 class AskUserTool(Tool):
@@ -595,9 +890,20 @@ class AskUserTool(Tool):
     }
 
     def __init__(self) -> None:
+        """初始化 AskUserTool"""
         super().__init__()
 
     def execute(self, question: str, options: list[str] | None = None) -> str:
+        """
+        执行
+
+        参数:
+        - question: 问题内容
+        - options: 选项集合
+
+        返回:
+        - str: 执行
+        """
         answer = _ask_user_sync(self._session, question, options)
         if answer is None:
             return "需要用户回复: " + question + " (未配置 user_input_provider, 请回复后继续)"
@@ -611,9 +917,16 @@ class AskUserTool(Tool):
 
 
 def _resolve_shell_executable(shell: str) -> str:
-    """解析 shell 可执行文件: PATH 优先, 回落系统目录绝对路径
+    """
+    解析 shell 可执行文件: PATH 优先, 回落系统目录绝对路径
+
+    参数:
+    - shell: Shell 类型
 
     System32 不在 PATH 的环境 (部分 Git Bash / 服务进程) 下裸文件名会 WinError 2
+
+    返回:
+    - str: 解析 shell 可执行文件: PATH 优先, 回落系统目录绝对路径
     """
     system_root = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     if shell.lower() == "powershell":
@@ -636,10 +949,28 @@ class ShellTool(Tool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 ShellTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
 
     def execute(self, command: str, cwd: str = "", timeout: int = 120, shell: str = "powershell") -> str:
+        """
+        执行
+
+        参数:
+        - command: 命令内容
+        - cwd: 当前工作目录
+        - timeout: 超时时间
+        - shell: Shell 类型
+
+        返回:
+        - str: 执行
+        """
         risk, escape = classify_command(command)
         if escape:
             allowed, message = _approve_sync(
@@ -651,7 +982,7 @@ class ShellTool(Tool):
         elif risk == RiskLevel.FORBIDDEN:
             return f"命令被拒绝 (黑名单): {command}"
         elif risk > RiskLevel.READ:
-            if _has_outside_workspace_path(command):
+            if _has_outside_workspace_path(command, _tool_root(self)):
                 allowed, message = _approve_sync(
                     self._session, self.engine, "shell", risk, f"执行命令: {command}",
                 )
@@ -660,7 +991,8 @@ class ShellTool(Tool):
             elif self.engine.plan_mode:
                 return "拒绝: 计划模式下写类命令被禁用"
         try:
-            workdir = str(_resolve_path(cwd)) if cwd else str(WORKSPACE_ROOT)
+            root = _tool_root(self)
+            workdir = str(_resolve_path(cwd, root)) if cwd else str(root)
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -696,8 +1028,15 @@ class _CodingSubAgent:
     """独立上下文的子代理 (自定义 system prompt / 工具白名单 / 迭代上限)"""
 
     def __init__(self, llm: Any, tools_manager: Any, system_prompt: str, tools: list[str] | None = None):
-        from satrap.core.framework.Base import ModelWorkflowFramework
+        """
+        初始化 _CodingSubAgent
 
+        参数:
+        - llm: 模型实例
+        - tools_manager: 工具管理器实例
+        - system_prompt: 系统prompt
+        - tools: 工具集合
+        """
         sub_manager = tools_manager
         if tools is not None:
             sub_manager = type(tools_manager)()
@@ -711,8 +1050,16 @@ class _CodingSubAgent:
         self.context_id = f"coding_sub_{uuid.uuid4().hex[:8]}"
 
     def forward(self, task: str, max_turns: int = 20) -> str:
-        from satrap.core.framework.Base import ModelWorkflowFramework
+        """
+        执行 `forward` 操作
 
+        参数:
+        - task: 任务描述
+        - max_turns: 最大轮数
+
+        返回:
+        - str: 执行 `forward` 操作
+        """
         sub = ModelWorkflowFramework(
             self.llm,
             context_id=self.context_id,
@@ -726,8 +1073,15 @@ class _AsyncCodingSubAgent:
     """异步独立上下文的子代理"""
 
     def __init__(self, llm: Any, tools_manager: Any, system_prompt: str, tools: list[str] | None = None):
-        from satrap.core.framework.Base import AsyncModelWorkflowFramework
+        """
+        初始化 _AsyncCodingSubAgent
 
+        参数:
+        - llm: 模型实例
+        - tools_manager: 工具管理器实例
+        - system_prompt: 系统prompt
+        - tools: 工具集合
+        """
         sub_manager = tools_manager
         if tools is not None:
             sub_manager = type(tools_manager)()
@@ -741,8 +1095,16 @@ class _AsyncCodingSubAgent:
         self.context_id = f"coding_sub_{uuid.uuid4().hex[:8]}"
 
     async def forward(self, task: str, max_turns: int = 20) -> str:
-        from satrap.core.framework.Base import AsyncModelWorkflowFramework
+        """
+        执行 `forward` 操作
 
+        参数:
+        - task: 任务描述
+        - max_turns: 最大轮数
+
+        返回:
+        - str: 执行 `forward` 操作
+        """
         sub = AsyncModelWorkflowFramework(
             self.llm,
             context_id=self.context_id,
@@ -769,11 +1131,30 @@ class SubAgentTool(Tool):
     }
 
     def __init__(self, llm: Any, tools_manager: Any) -> None:
+        """
+        初始化 SubAgentTool
+
+        参数:
+        - llm: 模型实例
+        - tools_manager: 工具管理器实例
+        """
         super().__init__()
         self.llm = llm
         self.tools_manager = tools_manager
 
     def execute(self, task: str, tools: list[str] | None = None, system_prompt: str = "", max_turns: int = 20) -> str:
+        """
+        执行
+
+        参数:
+        - task: 任务描述
+        - tools: 工具集合
+        - system_prompt: 系统prompt
+        - max_turns: 最大轮数
+
+        返回:
+        - str: 执行
+        """
         agent = _CodingSubAgent(
             self.llm, self.tools_manager, system_prompt or _SUBAGENT_PROMPT, tools,
         )
@@ -797,10 +1178,21 @@ class AsyncAskUserTool(AsyncTool):
     }
 
     def __init__(self) -> None:
+        """初始化 AsyncAskUserTool"""
         super().__init__()
         self._session: AsyncSimpleSession | None = None
 
     async def execute(self, question: str, options: list[str] | None = None) -> str:
+        """
+        执行
+
+        参数:
+        - question: 问题内容
+        - options: 选项集合
+
+        返回:
+        - str: 执行
+        """
         assert self._session is not None, "ask_user 未绑定会话"
         answer = await _ask_user_async(self._session, question, options)
         if answer is None:
@@ -824,11 +1216,29 @@ class AsyncShellTool(AsyncTool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 AsyncShellTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
         self._session: AsyncSimpleSession | None = None
 
     async def execute(self, command: str, cwd: str = "", timeout: int = 120, shell: str = "powershell") -> str:
+        """
+        执行
+
+        参数:
+        - command: 命令内容
+        - cwd: 当前工作目录
+        - timeout: 超时时间
+        - shell: Shell 类型
+
+        返回:
+        - str: 执行
+        """
         assert self._session is not None, "shell 未绑定会话"
         risk, escape = classify_command(command)
         if escape:
@@ -841,7 +1251,7 @@ class AsyncShellTool(AsyncTool):
         elif risk == RiskLevel.FORBIDDEN:
             return f"命令被拒绝 (黑名单): {command}"
         elif risk > RiskLevel.READ:
-            if _has_outside_workspace_path(command):
+            if _has_outside_workspace_path(command, _tool_root(self)):
                 allowed, message = await _approve_async(
                     self._session, self.engine, "shell", risk, f"执行命令: {command}",
                 )
@@ -850,7 +1260,8 @@ class AsyncShellTool(AsyncTool):
             elif self.engine.plan_mode:
                 return "拒绝: 计划模式下写类命令被禁用"
         try:
-            workdir = str(_resolve_path(cwd)) if cwd else str(WORKSPACE_ROOT)
+            root = _tool_root(self)
+            workdir = str(_resolve_path(cwd, root)) if cwd else str(root)
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -892,11 +1303,30 @@ class AsyncSubAgentTool(AsyncTool):
     }
 
     def __init__(self, llm: Any, tools_manager: Any) -> None:
+        """
+        初始化 AsyncSubAgentTool
+
+        参数:
+        - llm: 模型实例
+        - tools_manager: 工具管理器实例
+        """
         super().__init__()
         self.llm = llm
         self.tools_manager = tools_manager
 
     async def execute(self, task: str, tools: list[str] | None = None, system_prompt: str = "", max_turns: int = 20) -> str:
+        """
+        执行
+
+        参数:
+        - task: 任务描述
+        - tools: 工具集合
+        - system_prompt: 系统prompt
+        - max_turns: 最大轮数
+
+        返回:
+        - str: 执行
+        """
         agent = _AsyncCodingSubAgent(
             self.llm, self.tools_manager, system_prompt or _SUBAGENT_PROMPT, tools,
         )
@@ -918,11 +1348,22 @@ class AsyncReadFileTool(AsyncTool):
     }
 
     async def execute(self, path: str, offset: int = 0, limit: int = 200) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - offset: 偏移量
+        - limit: 数量上限
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
@@ -937,6 +1378,8 @@ class AsyncReadFileTool(AsyncTool):
         end = min(len(lines), start + max(1, int(limit)))
         body = "\n".join(lines[start:end])
         return f"{abs_path} 行 {start}-{end}/{len(lines)}:\n{body}"
+    def _bind(self, session: AsyncSimpleSession) -> None:
+        self._session = session
 
 
 class AsyncWriteFileTool(AsyncTool):
@@ -951,17 +1394,34 @@ class AsyncWriteFileTool(AsyncTool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 AsyncWriteFileTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
         self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, content: str, append: bool = False) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - content: 内容
+        - append: 是否追加
+
+        返回:
+        - str: 执行
+        """
         assert self._session is not None, "write_file 未绑定会话"
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
         allowed, message = await _approve_file_write_async(
@@ -999,17 +1459,35 @@ class AsyncEditFileTool(AsyncTool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 AsyncEditFileTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
         self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, old: str, new: str, replace_all: bool = False) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - old: 原值
+        - new: 新值
+        - replace_all: 是否全部替换
+
+        返回:
+        - str: 执行
+        """
         assert self._session is not None, "edit_file 未绑定会话"
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -1057,17 +1535,33 @@ class AsyncSearchReplaceTool(AsyncTool):
     }
 
     def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 AsyncSearchReplaceTool
+
+        参数:
+        - engine: 执行引擎
+        """
         super().__init__()
         self.engine = engine
         self._session: AsyncSimpleSession | None = None
 
     async def execute(self, path: str, replacements: list[dict[str, Any]]) -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+        - replacements: 替换项列表
+
+        返回:
+        - str: 执行
+        """
         assert self._session is not None, "search_replace 未绑定会话"
         try:
-            abs_path = _resolve_path(path)
+            abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path)
+        reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -1122,10 +1616,27 @@ class AsyncTodoWriteTool(AsyncTool):
     }
 
     def __init__(self, todos: dict[str, Any]) -> None:
+        """
+        初始化 AsyncTodoWriteTool
+
+        参数:
+        - todos: 待办事项列表
+        """
         super().__init__()
         self.todos = todos
 
     async def execute(self, operation: str, item: str = "", index: int = 0) -> str:
+        """
+        执行
+
+        参数:
+        - operation: 操作信息
+        - item: 条目
+        - index: 索引
+
+        返回:
+        - str: 执行
+        """
         op = (operation or "").strip().lower()
         items = self.todos["items"]
         if op == "add":
@@ -1162,8 +1673,18 @@ class AsyncListDirTool(AsyncTool):
     }
 
     async def execute(self, path: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - path: 路径
+
+        返回:
+        - str: 执行
+        """
         try:
-            base = _resolve_path(path) if path else WORKSPACE_ROOT
+            root = _tool_root(self)
+            base = _resolve_path(path, root) if path else root
         except ValueError as e:
             return f"错误: {e}"
         if not base.is_dir():
@@ -1176,6 +1697,8 @@ class AsyncListDirTool(AsyncTool):
         if len(entries) > 200:
             lines.append(f"  ... 共 {len(entries)} 项")
         return "\n".join(lines)
+    def _bind(self, session: AsyncSimpleSession) -> None:
+        self._session = session
 
 
 class AsyncGlobFilesTool(AsyncTool):
@@ -1188,15 +1711,27 @@ class AsyncGlobFilesTool(AsyncTool):
     }
 
     async def execute(self, pattern: str) -> str:
+        """
+        执行
+
+        参数:
+        - pattern: 匹配模式
+
+        返回:
+        - str: 执行
+        """
+        root = _tool_root(self)
         matches = [
-            str(p.relative_to(WORKSPACE_ROOT)).replace(os.sep, "/")
-            for p in await asyncio.to_thread(lambda: list(WORKSPACE_ROOT.glob(pattern)))
-            if p.is_file() and p.resolve().is_relative_to(WORKSPACE_ROOT) and _protection_reason_full(p) is None
+            str(p.relative_to(root)).replace(os.sep, "/")
+            for p in await asyncio.to_thread(lambda: list(root.glob(pattern)))
+            if p.is_file() and p.resolve().is_relative_to(root) and _protection_reason_full(p, root) is None
         ]
         matches.sort()
         if not matches:
             return "未找到匹配文件"
         return "\n".join(matches[:100]) + (f"\n... 共 {len(matches)} 个" if len(matches) > 100 else "")
+    def _bind(self, session: AsyncSimpleSession) -> None:
+        self._session = session
 
 
 class AsyncGrepFilesTool(AsyncTool):
@@ -1211,8 +1746,20 @@ class AsyncGrepFilesTool(AsyncTool):
     }
 
     async def execute(self, pattern: str, path: str = "", glob: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - pattern: 匹配模式
+        - path: 路径
+        - glob: 文件匹配模式
+
+        返回:
+        - str: 执行
+        """
         try:
-            base = _resolve_path(path) if path else WORKSPACE_ROOT
+            root = _tool_root(self)
+            base = _resolve_path(path, root) if path else root
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -1223,7 +1770,7 @@ class AsyncGrepFilesTool(AsyncTool):
         def _scan() -> list[str]:
             hits: list[str] = []
             for p in base.rglob(glob or "*"):
-                if not p.is_file() or _protection_reason_full(p) is not None:
+                if not p.is_file() or _protection_reason_full(p, root) is not None:
                     continue
                 try:
                     text = p.read_text(encoding="utf-8", errors="ignore")
@@ -1231,7 +1778,7 @@ class AsyncGrepFilesTool(AsyncTool):
                     continue
                 for lineno, line in enumerate(text.splitlines(), start=1):
                     if regex.search(line):
-                        hits.append(f"{p.relative_to(WORKSPACE_ROOT)}:{lineno}: {line[:200]}")
+                        hits.append(f"{p.relative_to(root)}:{lineno}: {line[:200]}")
                         if len(hits) >= 100:
                             return hits
             return hits
@@ -1240,6 +1787,8 @@ class AsyncGrepFilesTool(AsyncTool):
         if not hits:
             return "未找到匹配内容"
         return "\n".join(hits) + ("\n... 结果截断" if len(hits) >= 100 else "")
+    def _bind(self, session: AsyncSimpleSession) -> None:
+        self._session = session
 
 
 # ================= get_tools 工厂 (会话依赖注入) =================
@@ -1249,10 +1798,16 @@ DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
 
 
 def _apply_config(config: dict[str, Any]) -> None:
-    """把合成配置应用到模块级死参 (WORKSPACE_ROOT/DATA_ROOT/SANDBOX_ROOT/超时/保护目录)
+    """
+    把合成配置应用到模块级死参 (WORKSPACE_ROOT/DATA_ROOT/SANDBOX_ROOT/超时/保护目录)
 
-    注: 这些死参是模块级常量, 被大量模块级函数 (_resolve_path 等) 直接引用;
-    在 get_tools 工厂调用时更新为配置值, 保持现有函数签名不变 (全局单例语义);
+    参数:
+    - config: 配置信息
+
+    注: 这些死参是模块级常量, 作为**全局兜底**被路径辅助函数 (_resolve_path 等) 引用;
+    在 get_tools 工厂调用时更新为配置值 (全局单例语义);
+    项目会话的独立工作区不经此处 -- 由会话鸭子属性 coding_workspace_root 按会话覆盖
+    (_workspace_root/_tool_root 优先读会话属性, 回落此处全局值);
     空配置不动任何模块变量 (保持代码默认/测试 monkeypatch)
     """
     if not config:
@@ -1271,15 +1826,21 @@ def _apply_config(config: dict[str, Any]) -> None:
 
 
 def get_tools(session: SimpleSession | AsyncSimpleSession, config: dict[str, Any] | None = None) -> list[Any]:
-    """按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
+    """
+    按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
+
+    参数:
+    - session: 会话
+    - config: 配置信息
 
     注: search/fetch_page/memory 已移交 base_take 插件, 本插件只保留 coding 专属能力
-    """
-    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 
+    返回:
+    - list[Any]: 按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
+    """
     _apply_config(config or {})
 
-    state = get_plugin_state(session)
+    state = get_plugin_state(session, DATA_ROOT)
     engine = cast(PermissionEngine, state["engine"])
     todos = cast(dict[str, Any], state["todos"])
 

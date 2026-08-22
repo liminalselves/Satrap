@@ -1,4 +1,5 @@
-"""expend 目录结构测试
+"""
+expend 目录结构测试
 
 验证:
 - tools 子包可导入 (agent / mem0 / rag / sandbox_tools / search)
@@ -11,7 +12,7 @@ import importlib
 
 def test_tools_subpackage_imports():
     """tools 子包各模块可导入且有核心符号"""
-    from satrap.expend.tools import (  # noqa: F401
+    from satrap.expend.tools import (   # noqa: F401
         AsyncCodeSandboxTool,
         AsyncFetchPageTool,
         AsyncSearchTool,
@@ -21,7 +22,7 @@ def test_tools_subpackage_imports():
         Mem0Memory,
         SearchTool,
     )
-    from satrap.expend.tools.agent import (  # noqa: F401
+    from satrap.expend.tools.agent import (   # noqa: F401
         AsyncSubAgent,
         SubAgent,
     )
@@ -31,7 +32,7 @@ def test_tools_subpackage_imports():
 
 def test_top_level_reexports():
     """顶层 from satrap.expend import X 保持可用"""
-    from satrap.expend import (  # noqa: F401
+    from satrap.expend import (   # noqa: F401
         AsyncCodeSandboxTool,
         AsyncFetchPageTool,
         AsyncSearchTool,

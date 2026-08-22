@@ -6,8 +6,8 @@ import { CHAT_API_URL } from '@/utils/constants';
 export interface ToolCall {
   seq: number;
   name: string;
-  arguments: string;          // JSON 字符串 (每值截断前 20 字符)
-  success: boolean | null;    // null=进行中 / true=完成 / false=失败
+  arguments: string;   // JSON 字符串 (每值截断前 20 字符)
+  success: boolean | null;   // null=进行中 / true=完成 / false=失败
   call_id: string;
   created_at: number;
 }
@@ -45,6 +45,21 @@ export interface ConversationItem {
   turn_count: number;
   last_at: number;
   title: string;
+  project_id?: string | null;   // 所属项目 (无项目会话为 null/缺省)
+}
+
+// 项目 (绑定的工作区文件夹)
+export interface ProjectItem {
+  project_id: string;
+  name: string;
+  root_path: string;
+  created_at: number;
+}
+
+// 目录浏览项 (子目录; Windows 根视图为盘符)
+export interface DirEntry {
+  name: string;
+  path: string;
 }
 
 // 模型配置项
@@ -120,7 +135,7 @@ export type ChatEvent =
   | { type: 'turn_done'; answer: string }
   | { type: 'error'; error?: string; message?: string };
 
-// ==================== HTTP ====================
+// ==================== HTTP 请求 ====================
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const resp = await fetch(`${CHAT_API_URL}${path}`, {
@@ -140,10 +155,36 @@ export const chatApi = {
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),
 
-  createConversation: (model: string = 'default', think = 'off', systemPrompt?: string) =>
+  createConversation: (model: string = 'default', think = 'off', systemPrompt?: string, projectId?: string) =>
     request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations', {
-      model, think, ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+      model, think,
+      ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+      ...(projectId ? { project_id: projectId } : {}),
     }),
+
+  // 会话改绑项目 (null = 移出项目)
+  setConversationProject: (conversationId: string, projectId: string | null) =>
+    request<{ ok: boolean; error?: string }>(
+      'POST', `/api/chat/conversations/${encodeURIComponent(conversationId)}/project`,
+      { project_id: projectId },
+    ),
+
+  // 项目管理
+  listProjects: () => request<{ projects: ProjectItem[] }>('GET', '/api/projects'),
+
+  createProject: (name: string, rootPath: string) =>
+    request<{ ok: boolean; project?: ProjectItem; error?: string }>(
+      'POST', '/api/projects', { name, root_path: rootPath },
+    ),
+
+  deleteProject: (projectId: string) =>
+    request<{ ok: boolean; error?: string }>('DELETE', `/api/projects/${encodeURIComponent(projectId)}`),
+
+  // 浏览服务器目录 (新建项目选择工作区; path 为空 = 根视图/盘符视图)
+  browseDirs: (path = '') =>
+    request<{ ok: boolean; path: string; parent: string | null; dirs: DirEntry[] }>(
+      'GET', `/api/fs/browse?path=${encodeURIComponent(path)}`,
+    ),
 
   listConversations: () => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations'),
 

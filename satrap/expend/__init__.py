@@ -1,4 +1,5 @@
-"""可选扩展包入口
+"""
+可选扩展包入口
 
 目录结构:
 - tools/: 工具类集 (agent / mem0 / rag / sandbox_tools / search / memory_store), 推荐从 tools 子包导入
@@ -7,7 +8,7 @@
 - skills/: 内置技能 (coding-agent / web-research)
 
 顶层 `from satrap.expend import X` 导出保持可用, 旧模块路径
-`satrap.expend.<mod>` 亦通过别名兼容 (见下文)。
+`satrap.expend.<mod>` 亦通过别名兼容 (见下文)
 """
 import sys
 
@@ -24,9 +25,9 @@ from .tools import (
     SearchTool,
 )
 
-# 旧路径兼容: satrap.expend.<mod> -> satrap.expend.tools.<mod>
 for _name in ("agent", "mem0", "rag", "sandbox_tools", "search"):
     sys.modules[f"{__name__}.{_name}"] = getattr(tools, _name)   # 子模块名来自固定元组, 必定存在, 保留裸 getattr
+# 旧路径兼容: satrap.expend.<mod> -> satrap.expend.tools.<mod>
 
 __all__ = [
     "Mem0Memory",

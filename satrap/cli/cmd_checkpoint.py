@@ -1,4 +1,5 @@
-"""状态检查点 CLI: create / list / rollback / retry / fork / lineage / branches
+"""
+状态检查点 CLI: create / list / rollback / retry / fork / lineage / branches
 
 直接操作上下文库 (默认 .satrap/satrapdata/chat_history.db, 可用 --db 覆盖),
 与运行时 Session 解耦; 会话级聚合操作请在运行时通过 Session.create_checkpoint / rollback / fork 使用
@@ -21,12 +22,29 @@ DEFAULT_DB = get_db_path("chat_history.db")
 
 
 def _db_path(args: argparse.Namespace) -> str:
-    """上下文库路径: --db 优先, 否则默认路径"""
+    """
+    上下文库路径: --db 优先, 否则默认路径
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - str: 上下文库路径: --db 优先, 否则默认路径
+    """
     return args.db or DEFAULT_DB
 
 
 def _ctx(args: argparse.Namespace, conversation_id: str) -> ContextManager:
-    """按上下文库路径构造对话上下文 (自动启用检查点)"""
+    """
+    按上下文库路径构造对话上下文 (自动启用检查点)
+
+    参数:
+    - args: 额外位置参数
+    - conversation_id: 会话 ID
+
+    返回:
+    - ContextManager: 按上下文库路径构造对话上下文 (自动启用检查点)
+    """
     return ContextManager(
         conversation_id,
         db_path=_db_path(args),
@@ -36,7 +54,16 @@ def _ctx(args: argparse.Namespace, conversation_id: str) -> ContextManager:
 
 @contextmanager
 def _open_ctx(args: argparse.Namespace, conversation_id: str) -> Iterator[ContextManager]:
-    """构造对话上下文, 用毕自动释放复用连接"""
+    """
+    构造对话上下文, 用毕自动释放复用连接
+
+    参数:
+    - args: 额外位置参数
+    - conversation_id: 会话 ID
+
+    返回:
+    - Iterator[ContextManager]: 构造对话上下文, 用毕自动释放复用连接
+    """
     ctx = _ctx(args, conversation_id)
     try:
         yield ctx
@@ -45,12 +72,25 @@ def _open_ctx(args: argparse.Namespace, conversation_id: str) -> Iterator[Contex
 
 
 def _store(args: argparse.Namespace) -> StateStore:
-    """按上下文库路径构造状态存储"""
+    """
+    按上下文库路径构造状态存储
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - StateStore: 按上下文库路径构造状态存储
+    """
     return StateStore(db_path=_db_path(args))
 
 
 def cmd_checkpoint_create(args: argparse.Namespace):
-    """为对话创建检查点"""
+    """
+    为对话创建检查点
+
+    参数:
+    - args: 额外位置参数
+    """
     with _open_ctx(args, args.conversation_id) as ctx:
         cp = ctx.create_checkpoint(name=args.name, description=args.description)
     label = cp.batch_id or cp.checkpoint_id
@@ -58,7 +98,12 @@ def cmd_checkpoint_create(args: argparse.Namespace):
 
 
 def cmd_checkpoint_list(args: argparse.Namespace):
-    """列出对话的全部检查点"""
+    """
+    列出对话的全部检查点
+
+    参数:
+    - args: 额外位置参数
+    """
     with _open_ctx(args, args.conversation_id) as ctx:
         checkpoints = ctx.list_checkpoints()
     if not checkpoints:
@@ -73,21 +118,36 @@ def cmd_checkpoint_list(args: argparse.Namespace):
 
 
 def cmd_checkpoint_rollback(args: argparse.Namespace):
-    """回滚对话到指定检查点"""
+    """
+    回滚对话到指定检查点
+
+    参数:
+    - args: 额外位置参数
+    """
     with _open_ctx(args, args.conversation_id) as ctx:
         ctx.rollback(args.checkpoint_id)
     print(f"已回滚到检查点: {args.checkpoint_id}")
 
 
 def cmd_checkpoint_retry(args: argparse.Namespace):
-    """从指定检查点重试 (保留未来检查点)"""
+    """
+    从指定检查点重试 (保留未来检查点)
+
+    参数:
+    - args: 额外位置参数
+    """
     with _open_ctx(args, args.conversation_id) as ctx:
         ctx.retry(args.checkpoint_id)
     print(f"已重试到检查点: {args.checkpoint_id} (未来检查点已保留)")
 
 
 def cmd_checkpoint_fork(args: argparse.Namespace):
-    """从检查点 fork 一条新对话线"""
+    """
+    从检查点 fork 一条新对话线
+
+    参数:
+    - args: 额外位置参数
+    """
     with _open_ctx(args, args.conversation_id) as ctx:
         new_ctx = ctx.fork(args.branch_name, checkpoint_id=args.checkpoint)
     try:
@@ -97,7 +157,12 @@ def cmd_checkpoint_fork(args: argparse.Namespace):
 
 
 def cmd_checkpoint_lineage(args: argparse.Namespace):
-    """查看检查点血缘链 (根在前)"""
+    """
+    查看检查点血缘链 (根在前)
+
+    参数:
+    - args: 额外位置参数
+    """
     store = _store(args)
     lineage = store.trace_lineage(args.checkpoint_id)
     print("血缘链 (根在前):")
@@ -109,7 +174,12 @@ def cmd_checkpoint_lineage(args: argparse.Namespace):
 
 
 def cmd_checkpoint_branches(args: argparse.Namespace):
-    """列出对话 fork 出的全部分支"""
+    """
+    列出对话 fork 出的全部分支
+
+    参数:
+    - args: 额外位置参数
+    """
     store = _store(args)
     branches = store.list_branches(f"{args.conversation_id}:fork:")
     if not branches:
@@ -123,7 +193,12 @@ def cmd_checkpoint_branches(args: argparse.Namespace):
 
 
 def cmd_checkpoint_audit(args: argparse.Namespace):
-    """查看对话的检查点变更记录 (含 source / reason)"""
+    """
+    查看对话的检查点变更记录 (含 source / reason)
+
+    参数:
+    - args: 额外位置参数
+    """
     store = _store(args)
     mutations = store.list_mutations(StateScope("conversation", args.conversation_id))
     if not mutations:
@@ -138,7 +213,12 @@ def cmd_checkpoint_audit(args: argparse.Namespace):
 
 
 def dispatch(args: argparse.Namespace):
-    """checkpoint 子命令分发 (统一异常兜底, 避免裸 traceback 退出)"""
+    """
+    checkpoint 子命令分发 (统一异常兜底, 避免裸 traceback 退出)
+
+    参数:
+    - args: 额外位置参数
+    """
     action_map = {
         "create": cmd_checkpoint_create,
         "list": cmd_checkpoint_list,
@@ -156,8 +236,8 @@ def dispatch(args: argparse.Namespace):
     try:
         handler(args)
     except ValueError as e:
-        # 业务错误 (检查点不存在 / 批次冲突 / 目标作用域已有数据)
         print(f"错误: {e}")
+        # 业务错误 (检查点不存在 / 批次冲突 / 目标作用域已有数据)
         sys.exit(1)
     except Exception as e:
         print(f"意外错误: {e}")

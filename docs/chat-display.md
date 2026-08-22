@@ -36,7 +36,8 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 | --- | --- |
 | `display_turns` | 一轮一条: `conversation_id` / `turn_index` / `user_input` / `thinking` / `answer` / `attachments` / `created_at`; `start_turn` 即插入 (answer 先空), `end_turn` 回填 |
 | `display_tool_calls` | 一轮内每次工具调用一条: `turn_id` / `seq` / `name` / `arguments` / `success` / `call_id`; `success` 三态 (`NULL` 进行中 / `1` 完成 / `0` 失败), 执行前插入、执行后按 `call_id` 更新 |
-| `conversation_meta` | 会话元数据: `model` / `think` (会话默认思考强度) / `created_at` |
+| `conversation_meta` | 会话元数据: `model` / `think` (会话默认思考强度) / `project_id` (所属项目, 可空) / `created_at` |
+| `projects` | 项目登记: `project_id` / `name` / `root_path` (工作区文件夹绝对路径) / `created_at` |
 
 工具参数落库前截断为前 20 字符 (`arguments` 仅记录模型填入参数, 不记录结果), 长 shell 命令执行中前端可实时显示"进行中"。
 
@@ -50,8 +51,9 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 | POST | `/models` | 新增 LLM 配置 |
 | PUT | `/models/{name}` | 更新 LLM 配置 |
 | DELETE | `/models/{name}` | 删除 LLM 配置 |
-| POST | `/conversations` | 新建会话 `{model, think?, system_prompt?}` → `{conversation_id}`; `think` 存入 `conversation_meta` 作为会话默认思考强度 |
-| GET | `/conversations` | 会话列表 (display.db, 按最近活跃倒序) |
+| POST | `/conversations` | 新建会话 `{model, think?, system_prompt?, project_id?}` → `{conversation_id}`; `think` 存入 `conversation_meta` 作为会话默认思考强度; `project_id` 绑定项目工作区 |
+| GET | `/conversations` | 会话列表 (display.db, 按最近活跃倒序, 含 `project_id` 归属; 新建未发言的空会话也在列表中) |
+| POST | `/conversations/{id}/project` | 会话改绑项目 `{project_id}` (`null` = 移出项目归入"最近"); 仅影响之后的工具调用 |
 | DELETE | `/conversations/{id}` | 删除会话 (内存 + db) |
 | GET | `/turns?conversation=xxx` | 对话轮次 (含工具调用明细) |
 | POST | `/send` | 发送 `{conversation, text, think?, attachments?}`, 立即返回, WS 推流; `think` 缺省时用会话默认 |
@@ -64,10 +66,19 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 | POST | `/plugins/{name}/capability` | 能力独立启停 `{kind, cap, enabled}` |
 | GET | `/plugins/{name}/config` | 插件配置 (schema + 当前全局值) |
 | PUT | `/plugins/{name}/config` | 保存插件全局配置 `{config}` |
-| GET | `/memories?scope=xxx` | 列出记忆 (默认 scope `web_chat`) |
+| GET | `/memories?scope=xxx` | 列出记忆 (默认 scope `web_chat`; 项目层 scope 为 `project:<project_id>`) |
 | POST | `/memories` | 添加记忆 `{title, content, tags, importance, scope}` |
 | PUT | `/memories/{id}` | 更新记忆 |
 | DELETE | `/memories/{id}?scope=xxx` | 删除记忆 |
+
+项目管理路由 (前缀 `/api`, 非 `/api/chat`):
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/projects` | 项目列表 |
+| POST | `/api/projects` | 新建项目 `{name, root_path}` (校验路径存在且是目录) |
+| DELETE | `/api/projects/{id}` | 删除项目 (仅解绑其下会话, 不动会话数据与磁盘文件) |
+| GET | `/api/fs/browse?path=xxx` | 目录浏览 (前端新建项目选择工作区): 只列子目录, `path` 为空时 Windows 返回盘符视图 / POSIX 落到主目录; 根层级 `parent` 为 `null` (Windows 盘符根为 `''` 回盘符视图)。只读, 不读文件内容 |
 
 ## WebSocket (`/ws/chat?conversation=xxx`)
 
@@ -91,7 +102,19 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 - **retry**: 删除最后一轮记录, 用相同输入重新发送。可传入 `think` 指定本轮思考强度, 缺省用会话默认。
 - **fork**: 复制指定轮次之前的上下文到新会话 (同一 model), 返回新 `conversation_id`。
 - **cancel**: 取消后台 task, 本轮 answer 置空并广播 `turn_done`。
-- **会话恢复**: 重启后首次访问会话时, 经 `conversation_meta` / `display_turns` 懒加载重建运行时状态, 模型、默认 think 与插件按原样恢复。
+- **会话恢复**: 重启后首次访问会话时, 经 `conversation_meta` / `display_turns` 懒加载重建运行时状态, 模型、默认 think、项目绑定与插件按原样恢复。
+
+## 项目 (工作区文件夹绑定)
+
+**项目** = 登记的工作区文件夹 (任意绝对路径, 创建时校验存在且是目录) + 名称。项目下所有会话共享该工作区, 可见范围 = 项目工作区 + 本会话上传附件。语义要点:
+
+- **无项目会话完全保持现状**: 全局工作区 (Satrap 根), 共享沙箱, 记忆仅全局层。
+- **工作区按会话解析**: 建会话/改绑时 `ChatService` 给会话注入鸭子属性 `coding_workspace_root` / `coding_sandbox_root`; satrap_coding 与 base_take 的工具在调用时经 `safe_getattr` 读取, 属性不存在则回落全局配置 —— 多项目并存互不踩踏, 无项目会话行为逐字节不变。
+- **上传附件项目化**: 项目会话的上传写入 `<项目根>/.satrap/uploads/{conversation_id}/`, `read_document` 的回退搜索限定在当前工作区内 —— 项目内跨会话可见, 跨项目不可见。
+- **删除项目仅解绑**: 其下会话 `project_id` 置空归入"最近", 活动会话鸭子属性即时移除, 磁盘文件不动。
+- **会话允许改绑** (`POST /conversations/{id}/project`): 仅影响之后的工具调用, 历史消息不变; 活动会话的工作区鸭子属性与记忆分层即时刷新。
+- **审批规则/权限数据保持全局**共享, 一期只隔离工作区可见范围。
+- **前端目录选择**: 新建项目对话框的路径输入旁提供"浏览"按钮, 经 `/api/fs/browse` 在网页内浏览服务器目录 (无需手敲绝对路径), 选择后自动回填路径与项目名。
 
 ## 插件管理
 
@@ -114,7 +137,8 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 
 - 模型配置与平台后端共用同一份 `.satrap/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
 - 记忆管理走公共 `MemoryStore` (`.satrap/satrapdata/memory.db`), 默认 scope `web_chat`, 见 [扩展模块](extensions.md#长期记忆存储-memorystore)。
+- **记忆分层**: 项目会话的可见集合 = 全局层 (`web_chat`) + 项目层 (`project:<project_id>`), 注入时两层合并渲染 (项目层优先占 30 条配额), 模型 `add_memory` 默认写项目层 (`level='global'` 写全局层); 无项目会话仅全局层, 行为不变。REST 接口经 `scope` 参数访问指定层。
 
 ## 前端聊天页
 
-前端聊天页位于 `satrap-ui/src/pages/Chat/`, 为独立整页 (不渲染管理面板布局), 通过 `satrap-ui/src/api/chat.ts` 访问上述 API。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见 [前端迁移指南](frontend-migration.md) 与 `satrap-ui/DEVELOPMENT.md`。
+前端聊天页位于 `satrap-ui/src/pages/Chat/`, 为独立整页 (不渲染管理面板布局), 通过 `satrap-ui/src/api/chat.ts` 访问上述 API。侧边栏分两段: **项目区** (可折叠分组, 项目行内可直接新建对话/删除项目) 与 **最近区** (无项目会话平铺); 会话 hover 提供移入/移出项目入口; 记忆面板按层分组 (全局 / 各项目), 添加时可选层级。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见 [前端迁移指南](frontend-migration.md) 与 `satrap-ui/DEVELOPMENT.md`。

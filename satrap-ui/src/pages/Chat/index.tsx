@@ -20,9 +20,11 @@ import {
   type CapabilityKind,
   type ChatEvent,
   type ChatPlugin,
+  type DirEntry,
   type MemoryRecord,
   type ModelConfigItem,
   type PluginConfigResponse,
+  type ProjectItem,
   type ToolCall,
 } from '@/api/chat';
 import {
@@ -38,9 +40,11 @@ import {
   Settings2,
   Paperclip,
   ArrowLeft,
+  ArrowUp,
   Sun,
   Moon,
   ChevronDown,
+  ChevronRight,
   Brain,
   Puzzle,
   Wrench,
@@ -52,14 +56,19 @@ import {
   X,
   FileText,
   Pencil,
+  Folder,
+  FolderOpen,
+  FolderPlus,
+  FolderInput,
+  HardDrive,
 } from 'lucide-react';
 
 // 聊天设置
 interface ChatSettings {
-  model: string;         // 模型配置名
-  think: string;         // 思考强度 (off/low/medium/high)
+  model: string;   // 模型配置名
+  think: string;   // 思考强度 (off/low/medium/high)
   temperature: number;   // 采样温度
-  systemPrompt: string;  // 系统提示词
+  systemPrompt: string;   // 系统提示词
 }
 
 const DEFAULT_SETTINGS: ChatSettings = {
@@ -133,12 +142,14 @@ interface ChatMessage {
 
 // 一个会话
 interface Conversation {
-  id: string;            // 后端 conversation_id
+  id: string;   // 后端 conversation_id
   title: string;
   messages: ChatMessage[];
   updatedAt: number;
   // 是否已从后端加载历史
   loaded?: boolean;
+  // 所属项目 id (无项目会话为 null/缺省, 归入"最近")
+  projectId?: string | null;
 }
 
 // 生成唯一 id (本地消息用)
@@ -172,6 +183,14 @@ export function Chat() {
   const [configPlugin, setConfigPlugin] = useState<string | null>(null);
   // 记忆面板开关
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // 项目列表 (绑定的工作区文件夹)
+  const [projects, setProjects] = useState<ProjectItem[]>([]);
+  // 项目组折叠状态 (project_id -> 是否折叠)
+  const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
+  // 新建项目对话框
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false);
+  // 正在改绑项目的会话 id (null = 关闭对话框)
+  const [movingConvId, setMovingConvId] = useState<string | null>(null);
   // 入口选择: 有历史会话时展示 "继续最近/开始新对话"
   const [showEntryChoice, setShowEntryChoice] = useState(false);
   // 待发送附件
@@ -383,12 +402,19 @@ export function Chat() {
         await chatApi.health();
         if (cancelled) return;
         setBackendOk(true);
-        const [{ models: modelList }, { plugins: pluginList }, { conversations: convList }, { models: detail }] =
-          await Promise.all([chatApi.listModels(), chatApi.listPlugins(), chatApi.listConversations(), chatApi.listModelsDetail()]);
+        const [{ models: modelList }, { plugins: pluginList }, { conversations: convList }, { models: detail }, { projects: projectList }] =
+          await Promise.all([
+            chatApi.listModels(),
+            chatApi.listPlugins(),
+            chatApi.listConversations(),
+            chatApi.listModelsDetail(),
+            chatApi.listProjects(),
+          ]);
         if (cancelled) return;
         setModels(modelList);
         setPlugins(pluginList);
         setModelsDetail(detail);
+        setProjects(projectList);
         if (modelList.length > 0) {
           setSettings((prev) => (modelList.includes(prev.model) ? prev : { ...prev, model: modelList[0] }));
         }
@@ -399,6 +425,7 @@ export function Chat() {
           messages: [],
           updatedAt: item.last_at,
           loaded: false,
+          projectId: item.project_id ?? null,
         }));
         setConversations(restored);
         if (restored.length > 0) {
@@ -434,13 +461,32 @@ export function Chat() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   }, []);
 
-  // 过滤会话列表
-  const filtered = useMemo(() => {
+  // 过滤 + 分组会话列表 (项目分组 + 最近区; 颜色按全局排序位置稳定分配)
+  const grouped = useMemo(() => {
     const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
-    if (!search.trim()) return sorted;
     const kw = search.trim().toLowerCase();
-    return sorted.filter((c) => c.title.toLowerCase().includes(kw));
-  }, [conversations, search]);
+    const matched = kw ? sorted.filter((c) => c.title.toLowerCase().includes(kw)) : sorted;
+    const colorIndex = new Map<string, number>();
+    matched.forEach((c, i) => colorIndex.set(c.id, i));
+    const knownProject = new Set(projects.map((p) => p.project_id));
+    const byProject = new Map<string, Conversation[]>();
+    const recent: Conversation[] = [];
+    for (const c of matched) {
+      // 项目已删除但会话未解绑的兜底: 归入最近
+      if (c.projectId && knownProject.has(c.projectId)) {
+        const list = byProject.get(c.projectId) ?? [];
+        list.push(c);
+        byProject.set(c.projectId, list);
+      } else {
+        recent.push(c);
+      }
+    }
+    // 搜索时只展示有匹配的分组; 非搜索时展示全部项目 (含空项目, 便于新建)
+    const groups = projects
+      .map((p) => ({ project: p, conversations: byProject.get(p.project_id) ?? [] }))
+      .filter((g) => g.conversations.length > 0 || !kw);
+    return { groups, recent, colorIndex, total: matched.length };
+  }, [conversations, search, projects]);
 
   // 滚动到底部
   const scrollToBottom = useCallback(() => {
@@ -460,25 +506,28 @@ export function Chat() {
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [input]);
 
-  // 创建本地草稿会话 (不切换选中, 供自动创建场景复用)
-  const createDraft = useCallback((): Conversation => {
+  // 创建本地草稿会话 (不切换选中, 供自动创建场景复用); projectId = 在项目下新建
+  const createDraft = useCallback((projectId?: string): Conversation => {
     const draft: Conversation = {
       id: '__draft__',
       title: '新对话',
       messages: [],
       updatedAt: Math.round(Date.now() / 1000),
       loaded: true,
+      projectId: projectId ?? null,
     };
     setConversations((prev) => {
-      if (prev.some((c) => c.id === '__draft__')) return prev;
-      return [draft, ...prev];
+      const existing = prev.find((c) => c.id === '__draft__');
+      // 已有同项目空草稿则复用, 否则替换 (避免旧草稿的项目归属串味)
+      if (existing && (existing.projectId ?? null) === (projectId ?? null)) return prev;
+      return [draft, ...prev.filter((c) => c.id !== '__draft__')];
     });
     return draft;
   }, []);
 
-  // 新建会话 (本地草稿, 首次发送时才调后端创建)
-  const handleNew = useCallback(() => {
-    const draft = createDraft();
+  // 新建会话 (本地草稿, 首次发送时才调后端创建); projectId = 在项目下新建
+  const handleNew = useCallback((projectId?: string) => {
+    const draft = createDraft(projectId);
     setActiveId(draft.id);
     setShowEntryChoice(false);
     setInput('');
@@ -508,6 +557,41 @@ export function Chat() {
     },
     [activeId, conversations]
   );
+
+  // 新建项目 (绑定工作区文件夹, 后端校验路径存在且是目录)
+  const handleCreateProject = useCallback(async (name: string, rootPath: string) => {
+    const result = await chatApi.createProject(name, rootPath);
+    if (!result.ok || !result.project) {
+      throw new Error(result.error || '创建项目失败');
+    }
+    setProjects((prev) => [...prev, result.project as ProjectItem]);
+  }, []);
+
+  // 删除项目 (仅解绑会话归入"最近", 磁盘文件不动)
+  const handleDeleteProject = useCallback((projectId: string) => {
+    const project = projects.find((p) => p.project_id === projectId);
+    if (!window.confirm(`确定删除项目 "${project?.name ?? projectId}" 吗？\n其下会话将移入"最近", 磁盘文件不受影响。`)) return;
+    chatApi.deleteProject(projectId).catch((err) => {
+      console.error('[Chat] 删除项目失败:', err);
+      alert(`删除项目失败: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    setProjects((prev) => prev.filter((p) => p.project_id !== projectId));
+    setConversations((prev) => prev.map((c) => (c.projectId === projectId ? { ...c, projectId: null } : c)));
+  }, [projects]);
+
+  // 会话改绑项目 (null = 移出项目归入"最近"; 仅影响之后的工具调用)
+  const handleMoveConversation = useCallback(async (projectId: string | null) => {
+    const cid = movingConvId;
+    if (!cid) return;
+    setMovingConvId(null);
+    try {
+      await chatApi.setConversationProject(cid, projectId);
+      updateConversation(cid, (c) => ({ ...c, projectId }));
+    } catch (err) {
+      console.error('[Chat] 会话改绑项目失败:', err);
+      alert(`移动会话失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [movingConvId, updateConversation]);
 
   // 发送消息
   const handleSend = useCallback(async () => {
@@ -559,6 +643,7 @@ export function Chat() {
       try {
         const { conversation_id } = await chatApi.createConversation(
           settings.model, settings.think, settings.systemPrompt || undefined,
+          targetConv.projectId ?? undefined,
         );
         realConvId = conversation_id;
         // 替换草稿 id 为真实 id (消息已写入, 一并迁移)
@@ -609,6 +694,7 @@ export function Chat() {
       try {
         const { conversation_id } = await chatApi.createConversation(
           settings.model, settings.think, settings.systemPrompt || undefined,
+          targetConv?.projectId ?? undefined,
         );
         const newConv: Conversation = {
           id: conversation_id,
@@ -616,6 +702,7 @@ export function Chat() {
           messages: [],
           updatedAt: Math.round(Date.now() / 1000),
           loaded: true,
+          projectId: targetConv?.projectId ?? null,
         };
         setConversations((prev) => {
           // 替换已有草稿或追加
@@ -859,10 +946,15 @@ export function Chat() {
       {/* 会话列表侧栏 */}
       <Card className="w-72 shrink-0 flex flex-col p-0 overflow-hidden">
         <div className="p-3 border-b border-glass-border space-y-2">
-          <Button variant="primary" className="w-full" onClick={handleNew}>
-            <Plus className="h-4 w-4 mr-2" />
-            新建对话
-          </Button>
+          <div className="flex gap-2">
+            <Button variant="primary" className="flex-1" onClick={() => handleNew()}>
+              <Plus className="h-4 w-4 mr-2" />
+              新建对话
+            </Button>
+            <Button variant="ghost" title="新建项目 (绑定工作区文件夹)" onClick={() => setProjectDialogOpen(true)}>
+              <FolderPlus className="h-4 w-4" />
+            </Button>
+          </div>
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-text-tertiary" />
             <input
@@ -875,24 +967,65 @@ export function Chat() {
         </div>
 
         <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-1">
-          {filtered.length === 0 ? (
+          {grouped.total === 0 && grouped.groups.length === 0 ? (
             <div className="text-center text-text-tertiary text-sm py-8">
-              {conversations.length === 0 ? '暂无对话, 点击上方新建' : '无匹配对话'}
+              {conversations.length === 0 && projects.length === 0 ? '暂无对话, 点击上方新建' : '无匹配对话'}
             </div>
           ) : (
-            filtered.map((conv, index) => (
-              <ConversationItem
-                key={conv.id}
-                conversation={conv}
-                color={CONVERSATION_COLORS[index % CONVERSATION_COLORS.length]}
-                active={conv.id === active?.id}
-                onSelect={() => {
-                  setActiveId(conv.id);
-                  setShowEntryChoice(false);
-                }}
-                onDelete={() => handleDelete(conv.id)}
-              />
-            ))
+            <>
+              {/* 项目区: 可折叠分组, 组内渲染该项目会话 */}
+              {grouped.groups.length > 0 && (
+                <div className="space-y-1">
+                  <div className="px-2 pt-1 pb-0.5 text-xs text-text-tertiary">项目</div>
+                  {grouped.groups.map((g) => (
+                    <ProjectGroup
+                      key={g.project.project_id}
+                      project={g.project}
+                      conversations={g.conversations}
+                      collapsed={!!collapsedProjects[g.project.project_id]}
+                      activeId={active?.id ?? ''}
+                      colorIndex={grouped.colorIndex}
+                      onToggle={() =>
+                        setCollapsedProjects((prev) => ({
+                          ...prev,
+                          [g.project.project_id]: !prev[g.project.project_id],
+                        }))
+                      }
+                      onNewConversation={() => handleNew(g.project.project_id)}
+                      onDeleteProject={() => handleDeleteProject(g.project.project_id)}
+                      onSelect={(id) => {
+                        setActiveId(id);
+                        setShowEntryChoice(false);
+                      }}
+                      onDelete={handleDelete}
+                      onMove={(id) => setMovingConvId(id)}
+                    />
+                  ))}
+                </div>
+              )}
+              {/* 最近区: 无项目会话 (平铺, 保持原有形态) */}
+              {grouped.recent.length > 0 && (
+                <div className="space-y-1">
+                  {grouped.groups.length > 0 && (
+                    <div className="px-2 pt-2 pb-0.5 text-xs text-text-tertiary">最近</div>
+                  )}
+                  {grouped.recent.map((conv) => (
+                    <ConversationItem
+                      key={conv.id}
+                      conversation={conv}
+                      color={CONVERSATION_COLORS[(grouped.colorIndex.get(conv.id) ?? 0) % CONVERSATION_COLORS.length]}
+                      active={conv.id === active?.id}
+                      onSelect={() => {
+                        setActiveId(conv.id);
+                        setShowEntryChoice(false);
+                      }}
+                      onDelete={() => handleDelete(conv.id)}
+                      onMove={conv.id === '__draft__' ? undefined : () => setMovingConvId(conv.id)}
+                    />
+                  ))}
+                </div>
+              )}
+            </>
           )}
         </div>
       </Card>
@@ -1104,8 +1237,239 @@ export function Chat() {
       <MemoryPanel
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
+        projects={projects}
       />
+
+      {/* 新建项目对话框 */}
+      <ProjectDialog
+        open={projectDialogOpen}
+        onClose={() => setProjectDialogOpen(false)}
+        onCreate={handleCreateProject}
+      />
+
+      {/* 会话改绑项目对话框 */}
+      <Modal
+        open={movingConvId !== null}
+        onClose={() => setMovingConvId(null)}
+        title="移动会话到项目"
+        size="sm"
+      >
+        <div className="space-y-2">
+          <p className="text-xs text-text-tertiary">仅影响之后的工具调用可见范围, 历史消息不变</p>
+          <button
+            onClick={() => void handleMoveConversation(null)}
+            className="glass-card w-full rounded-lg px-3 py-2.5 text-left hover:bg-glass-active transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <MessageSquare className="h-4 w-4 text-text-tertiary shrink-0" />
+              <span className="text-sm text-text-primary">最近 (无项目)</span>
+            </div>
+          </button>
+          {projects.map((p) => (
+            <button
+              key={p.project_id}
+              onClick={() => void handleMoveConversation(p.project_id)}
+              className="glass-card w-full rounded-lg px-3 py-2.5 text-left hover:bg-glass-active transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Folder className="h-4 w-4 text-accent shrink-0" />
+                <span className="text-sm text-text-primary truncate">{p.name}</span>
+              </div>
+              <p className="text-xs text-text-tertiary mt-0.5 truncate">{p.root_path}</p>
+            </button>
+          ))}
+          {projects.length === 0 && (
+            <p className="text-xs text-text-tertiary">暂无项目, 可先在侧边栏新建</p>
+          )}
+        </div>
+      </Modal>
     </div>
+  );
+}
+
+// 新建项目对话框 (名称 + 工作区路径, 后端校验路径存在且是目录; 支持浏览选择目录)
+function ProjectDialog({
+  open,
+  onClose,
+  onCreate,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onCreate: (name: string, rootPath: string) => Promise<void>;
+}) {
+  const [name, setName] = useState('');
+  const [rootPath, setRootPath] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
+  // 目录选择器开关
+  const [pickerOpen, setPickerOpen] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      setName('');
+      setRootPath('');
+      setError('');
+    }
+  }, [open]);
+
+  // 浏览选择回填: 名称为空时顺手用目录名填入
+  const handlePick = (p: string) => {
+    setRootPath(p);
+    if (!name.trim()) {
+      const base = p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
+      if (base) setName(base);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!name.trim() || !rootPath.trim()) return;
+    setSaving(true);
+    setError('');
+    try {
+      await onCreate(name.trim(), rootPath.trim());
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} title="新建项目" size="sm">
+      <div className="space-y-3">
+        <p className="text-xs text-text-tertiary">
+          项目绑定一个工作区文件夹, 项目下的对话可读写该文件夹, 并拥有独立的项目记忆层
+        </p>
+        {error && <p className="text-sm text-error">{error}</p>}
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="项目名称"
+          className="glass-input w-full text-sm"
+        />
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={rootPath}
+            onChange={(e) => setRootPath(e.target.value)}
+            placeholder="工作区文件夹绝对路径, 如 F:\work\my-project"
+            className="glass-input flex-1 text-sm"
+          />
+          <Button variant="ghost" title="浏览服务器目录" onClick={() => setPickerOpen(true)}>
+            <FolderOpen className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button
+            variant="primary"
+            onClick={() => void handleSubmit()}
+            disabled={saving || !name.trim() || !rootPath.trim()}
+          >
+            {saving ? '创建中...' : '创建'}
+          </Button>
+        </div>
+      </div>
+      <DirectoryPicker
+        open={pickerOpen}
+        initialPath={rootPath}
+        onClose={() => setPickerOpen(false)}
+        onSelect={handlePick}
+      />
+    </Modal>
+  );
+}
+
+// 目录选择对话框 (浏览服务器文件系统, 只列目录; Windows 空路径为盘符视图)
+function DirectoryPicker({
+  open,
+  initialPath,
+  onClose,
+  onSelect,
+}: {
+  open: boolean;
+  initialPath: string;    // 打开时的初始定位 ('' = 根视图)
+  onClose: () => void;
+  onSelect: (path: string) => void;
+}) {
+  const [current, setCurrent] = useState('');
+  const [parent, setParent] = useState<string | null>(null);
+  const [dirs, setDirs] = useState<DirEntry[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const load = useCallback(async (path: string) => {
+    setLoading(true);
+    setError('');
+    try {
+      const resp = await chatApi.browseDirs(path);
+      setCurrent(resp.path);
+      setParent(resp.parent);
+      setDirs(resp.dirs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (open) void load(initialPath.trim());
+  }, [open, initialPath, load]);
+
+  // 根视图 (盘符页) 无具体路径可选
+  const canSelect = current !== '';
+
+  return (
+    <Modal open={open} onClose={onClose} title="选择工作区目录" size="md">
+      <div className="space-y-3">
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            title="上一级"
+            disabled={parent === null || loading}
+            onClick={() => parent !== null && void load(parent)}
+          >
+            <ArrowUp className="h-4 w-4" />
+          </Button>
+          <div className="flex-1 min-w-0 text-sm text-text-secondary truncate" title={current}>
+            {current || '选择磁盘'}
+          </div>
+        </div>
+        {error && <p className="text-sm text-error">{error}</p>}
+        <div className="max-h-72 overflow-y-auto custom-scrollbar space-y-1">
+          {loading ? (
+            <p className="text-sm text-text-tertiary px-1 py-2">加载中...</p>
+          ) : dirs.length === 0 ? (
+            <p className="text-sm text-text-tertiary px-1 py-2">无子目录</p>
+          ) : (
+            dirs.map((d) => (
+              <button
+                key={d.path}
+                onClick={() => void load(d.path)}
+                className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-glass-active transition-colors text-left"
+              >
+                {current === '' ? (
+                  <HardDrive className="h-4 w-4 text-accent shrink-0" />
+                ) : (
+                  <Folder className="h-4 w-4 text-accent shrink-0" />
+                )}
+                <span className="text-sm text-text-primary truncate">{d.name}</span>
+              </button>
+            ))
+          )}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={onClose}>取消</Button>
+          <Button variant="primary" disabled={!canSelect} onClick={() => { onSelect(current); onClose(); }}>
+            选择此目录
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -1589,9 +1953,12 @@ function PluginConfigModal({
 function MemoryPanel({
   open,
   onClose,
+  projects,
 }: {
   open: boolean;
   onClose: () => void;
+  // 项目列表 (记忆分层: 全局层 + 每个项目一层)
+  projects: ProjectItem[];
 }) {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1601,20 +1968,33 @@ function MemoryPanel({
   const [newContent, setNewContent] = useState('');
   const [newTags, setNewTags] = useState('');
   const [newImportance, setNewImportance] = useState(1);
+  const [newScope, setNewScope] = useState('web_chat');
   const [adding, setAdding] = useState(false);
+
+  // scope -> 层级显示名 (全局 / 项目名)
+  const layerLabel = useCallback(
+    (scope: string) => {
+      if (scope === 'web_chat') return '全局';
+      const pid = scope.startsWith('project:') ? scope.slice('project:'.length) : scope;
+      return projects.find((p) => p.project_id === pid)?.name ?? scope;
+    },
+    [projects]
+  );
 
   const loadMemories = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const resp = await chatApi.listMemories();
-      setMemories(resp.memories);
+      // 全局层 + 各项目层合并拉取 (scope 在记录上自带, 供分组/删除路由)
+      const scopes = ['web_chat', ...projects.map((p) => `project:${p.project_id}`)];
+      const results = await Promise.all(scopes.map((s) => chatApi.listMemories(s)));
+      setMemories(results.flatMap((r) => r.memories));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [projects]);
 
   useEffect(() => {
     if (open) loadMemories();
@@ -1625,7 +2005,7 @@ function MemoryPanel({
     setAdding(true);
     setError('');
     try {
-      await chatApi.addMemory(newTitle.trim(), newContent.trim(), newTags.trim(), newImportance);
+      await chatApi.addMemory(newTitle.trim(), newContent.trim(), newTags.trim(), newImportance, newScope);
       setNewTitle('');
       setNewContent('');
       setNewTags('');
@@ -1638,14 +2018,31 @@ function MemoryPanel({
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (m: MemoryRecord) => {
     try {
-      await chatApi.deleteMemory(id);
-      setMemories((prev) => prev.filter((m) => m.id !== id));
+      await chatApi.deleteMemory(m.id, m.scope);
+      setMemories((prev) => prev.filter((x) => x.id !== m.id));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
+
+  // 按层分组 (全局在前, 项目层按项目顺序; 未知 scope 归尾)
+  const layeredGroups = useMemo(() => {
+    const order = ['web_chat', ...projects.map((p) => `project:${p.project_id}`)];
+    const byScope = new Map<string, MemoryRecord[]>();
+    for (const m of memories) {
+      const list = byScope.get(m.scope) ?? [];
+      list.push(m);
+      byScope.set(m.scope, list);
+    }
+    const keys = [...byScope.keys()].sort((a, b) => {
+      const ia = order.indexOf(a);
+      const ib = order.indexOf(b);
+      return (ia === -1 ? order.length : ia) - (ib === -1 ? order.length : ib);
+    });
+    return keys.map((scope) => ({ scope, memories: byScope.get(scope) ?? [] }));
+  }, [memories, projects]);
 
   return (
     <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg">
@@ -1682,6 +2079,14 @@ function MemoryPanel({
               onChange={(e) => setNewImportance(Number(e.target.value))}
               options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `权重 ${n}` }))}
             />
+            <Select
+              value={newScope}
+              onChange={(e) => setNewScope(e.target.value)}
+              options={[
+                { value: 'web_chat', label: '层级: 全局' },
+                ...projects.map((p) => ({ value: `project:${p.project_id}`, label: `层级: ${p.name}` })),
+              ]}
+            />
           </div>
           <div className="flex justify-end">
             <Button variant="primary" onClick={handleAdd} disabled={adding || !newTitle.trim() || !newContent.trim()}>
@@ -1690,40 +2095,52 @@ function MemoryPanel({
           </div>
         </div>
 
-        {/* 记忆列表 */}
+        {/* 记忆列表 (按层分组: 全局 / 各项目) */}
         {loading ? (
           <p className="text-sm text-text-tertiary">加载中...</p>
         ) : memories.length === 0 ? (
           <p className="text-sm text-text-tertiary">暂无记忆</p>
         ) : (
-          <div className="space-y-2 max-h-80 overflow-y-auto">
-            {memories.map((m) => (
-              <div key={m.id} className="glass-card rounded-lg px-3 py-2.5">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-text-primary">{m.title}</span>
-                      <span className="text-xs text-text-tertiary">权重 {m.importance}</span>
-                    </div>
-                    <p className="text-xs text-text-secondary mt-1 line-clamp-3">{m.content}</p>
-                    {m.tags.length > 0 && (
-                      <div className="flex gap-1 mt-1.5">
-                        {m.tags.map((t) => (
-                          <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-glass-active text-text-tertiary">
-                            {t}
-                          </span>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <button
-                    onClick={() => handleDelete(m.id)}
-                    className="text-text-tertiary hover:text-error shrink-0 mt-0.5"
-                    title="删除记忆"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
+          <div className="space-y-3 max-h-80 overflow-y-auto">
+            {layeredGroups.map((g) => (
+              <div key={g.scope} className="space-y-2">
+                <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
+                  {g.scope === 'web_chat' ? (
+                    <Brain className="h-3.5 w-3.5" />
+                  ) : (
+                    <Folder className="h-3.5 w-3.5" />
+                  )}
+                  <span>{layerLabel(g.scope)}层 · {g.memories.length} 条</span>
                 </div>
+                {g.memories.map((m) => (
+                  <div key={m.id} className="glass-card rounded-lg px-3 py-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">{m.title}</span>
+                          <span className="text-xs text-text-tertiary">权重 {m.importance}</span>
+                        </div>
+                        <p className="text-xs text-text-secondary mt-1 line-clamp-3">{m.content}</p>
+                        {m.tags.length > 0 && (
+                          <div className="flex gap-1 mt-1.5">
+                            {m.tags.map((t) => (
+                              <span key={t} className="text-xs px-1.5 py-0.5 rounded bg-glass-active text-text-tertiary">
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => handleDelete(m)}
+                        className="text-text-tertiary hover:text-error shrink-0 mt-0.5"
+                        title="删除记忆"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
             ))}
           </div>
@@ -1790,12 +2207,15 @@ function ConversationItem({
   active,
   onSelect,
   onDelete,
+  onMove,
 }: {
   conversation: Conversation;
   color: GlassColor;
   active: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  // 移入/移出项目 (草稿会话无此入口)
+  onMove?: () => void;
 }) {
   const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
     reflectRange: 80,
@@ -1819,6 +2239,18 @@ function ConversationItem({
         </div>
         <div className="text-xs text-text-tertiary">{formatRelativeTime(conversation.updatedAt)}</div>
       </div>
+      {onMove && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onMove();
+          }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-accent shrink-0"
+          title="移入/移出项目"
+        >
+          <FolderInput className="h-3.5 w-3.5" />
+        </button>
+      )}
       <button
         onClick={(e) => {
           e.stopPropagation();
@@ -1829,6 +2261,91 @@ function ConversationItem({
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>
+    </div>
+  );
+}
+
+// 项目组 (侧边栏可折叠分组: 项目头 + 组内会话)
+function ProjectGroup({
+  project,
+  conversations,
+  collapsed,
+  activeId,
+  colorIndex,
+  onToggle,
+  onNewConversation,
+  onDeleteProject,
+  onSelect,
+  onDelete,
+  onMove,
+}: {
+  project: ProjectItem;
+  conversations: Conversation[];
+  collapsed: boolean;
+  activeId: string;
+  colorIndex: Map<string, number>;
+  onToggle: () => void;
+  onNewConversation: () => void;
+  onDeleteProject: () => void;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onMove: (id: string) => void;
+}) {
+  return (
+    <div>
+      <div
+        onClick={onToggle}
+        className="group flex items-center gap-1.5 px-2 py-1.5 rounded-md cursor-pointer hover:bg-glass-active transition-colors"
+      >
+        {collapsed ? (
+          <ChevronRight className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
+        ) : (
+          <ChevronDown className="h-3.5 w-3.5 text-text-tertiary shrink-0" />
+        )}
+        <Folder className="h-4 w-4 text-accent shrink-0" />
+        <span className="flex-1 min-w-0 text-sm font-medium text-text-primary truncate" title={project.root_path}>
+          {project.name}
+        </span>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onNewConversation();
+          }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-accent shrink-0"
+          title="在此项目下新建对话"
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDeleteProject();
+          }}
+          className="opacity-0 group-hover:opacity-100 transition-opacity text-text-tertiary hover:text-error shrink-0"
+          title="删除项目 (仅解绑会话, 磁盘文件不动)"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+      {!collapsed && (
+        <div className="ml-4 mt-1 space-y-1">
+          {conversations.length === 0 ? (
+            <div className="px-2 py-1 text-xs text-text-tertiary">暂无对话</div>
+          ) : (
+            conversations.map((conv) => (
+              <ConversationItem
+                key={conv.id}
+                conversation={conv}
+                color={CONVERSATION_COLORS[(colorIndex.get(conv.id) ?? 0) % CONVERSATION_COLORS.length]}
+                active={conv.id === activeId}
+                onSelect={() => onSelect(conv.id)}
+                onDelete={() => onDelete(conv.id)}
+                onMove={conv.id === '__draft__' ? undefined : () => onMove(conv.id)}
+              />
+            ))
+          )}
+        </div>
+      )}
     </div>
   );
 }

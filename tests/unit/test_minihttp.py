@@ -1,4 +1,5 @@
-"""迷你 HTTP/WS 服务器基类 (minihttp) 测试
+"""
+迷你 HTTP/WS 服务器基类 (minihttp) 测试
 
 覆盖 MiniHTTPServer 共享基础设施:
 - 真实端口: JSON 响应 / CORS 预检 / query 参数解析 / 未知路由 404
@@ -39,7 +40,15 @@ class _EchoServer(MiniHTTPServer):
 
 
 async def _start_server(server: MiniHTTPServer) -> int:
-    """启动服务器并返回实际监听端口 (port=0 系统分配)"""
+    """
+    启动服务器并返回实际监听端口 (port=0 系统分配)
+
+    参数:
+    - server: 服务器
+
+    返回:
+    - int: 实际监听端口 (port=0 系统分配)
+    """
     await server.start()
     assert server._server is not None
     sockets = server._server.sockets
@@ -48,7 +57,16 @@ async def _start_server(server: MiniHTTPServer) -> int:
 
 
 async def _raw_request(port: int, request: bytes) -> bytes:
-    """建立 TCP 连接发送原始 HTTP 请求, 返回完整响应字节"""
+    """
+    建立 TCP 连接发送原始 HTTP 请求, 返回完整响应字节
+
+    参数:
+    - port: 端口
+    - request: 请求对象
+
+    返回:
+    - bytes: 完整响应字节
+    """
     reader, writer = await asyncio.open_connection("127.0.0.1", port)
     writer.write(request)
     await writer.drain()
@@ -62,7 +80,16 @@ async def _raw_request(port: int, request: bytes) -> bytes:
 
 
 async def _json_get(port: int, path: str) -> tuple[int, dict[str, Any]]:
-    """发送 GET 请求并解析 JSON 响应"""
+    """
+    发送 GET 请求并解析 JSON 响应
+
+    参数:
+    - port: 端口
+    - path: 路径
+
+    返回:
+    - tuple[int, dict[str, Any]]: 发送 GET 请求并解析 JSON 响应
+    """
     request = f"GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n".encode()
     resp = await _raw_request(port, request)
     head, _, body = resp.partition(b"\r\n\r\n")
@@ -80,7 +107,12 @@ async def echo_server() -> Any:
 
 @pytest.mark.asyncio
 async def test_json_get_and_query_param(echo_server: int):
-    """GET 返回 JSON, query 参数经 _query_param 解析"""
+    """
+    GET 返回 JSON, query 参数经 _query_param 解析
+
+    参数:
+    - echo_server: echo服务器
+    """
     port = echo_server
     status, data = await _json_get(port, "/api/echo?x=hello%20world")
     assert status == 200
@@ -90,7 +122,12 @@ async def test_json_get_and_query_param(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_unknown_route_404(echo_server: int):
-    """未知路由返回 404 JSON"""
+    """
+    未知路由返回 404 JSON
+
+    参数:
+    - echo_server: echo服务器
+    """
     port = echo_server
     status, data = await _json_get(port, "/api/nope")
     assert status == 404
@@ -99,7 +136,12 @@ async def test_unknown_route_404(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_cors_preflight(echo_server: int):
-    """OPTIONS 预检返回 204 + CORS 头"""
+    """
+    OPTIONS 预检返回 204 + CORS 头
+
+    参数:
+    - echo_server: echo服务器
+    """
     port = echo_server
     request = b"OPTIONS /api/echo HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://localhost:5173\r\n\r\n"
     resp = await _raw_request(port, request)
@@ -110,7 +152,12 @@ async def test_cors_preflight(echo_server: int):
 
 @pytest.mark.asyncio
 async def test_websocket_handshake_and_frame(echo_server: int):
-    """WS 握手返回 101, 随后收到文本帧与关闭帧"""
+    """
+    WS 握手返回 101, 随后收到文本帧与关闭帧
+
+    参数:
+    - echo_server: echo服务器
+    """
     port = echo_server
     request = (
         b"GET /ws/test HTTP/1.1\r\n"
@@ -125,8 +172,8 @@ async def test_websocket_handshake_and_frame(echo_server: int):
     head, rest = resp[:idx], resp[idx + 4:]
     assert b"101 Switching Protocols" in head
 
-    # 第一帧: 文本帧 (0x81)
     assert rest[0] == 0x81
+    # 第一帧: 文本帧 (0x81)
     length = rest[1]
     payload = json.loads(rest[2:2 + length])
     assert payload["type"] == "subscribed"
@@ -134,7 +181,15 @@ async def test_websocket_handshake_and_frame(echo_server: int):
 
 
 def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
-    """构造 ChatHTTPServer (fake 模型配置, 不启动端口)"""
+    """
+    构造 ChatHTTPServer (fake 模型配置, 不启动端口)
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - ChatHTTPServer: 构造 ChatHTTPServer (fake 模型配置, 不启动端口)
+    """
     from satrap.core.type import LLMConfig
 
     class _FakeModelConfig:
@@ -146,7 +201,7 @@ def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
 
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     svc = ChatService(
-        _FakeModelConfig(),  # type: ignore[arg-type]
+        _FakeModelConfig(),   # type: ignore[arg-type]
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -156,7 +211,12 @@ def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
 
 @pytest.mark.asyncio
 async def test_chat_server_health_route(tmp_path: Path):
-    """聊天服务器 HTTP 层: /api/chat/health"""
+    """
+    聊天服务器 HTTP 层: /api/chat/health
+
+    参数:
+    - tmp_path: tmp路径
+    """
     server = _make_chat_server(tmp_path)
     status, data = await server._route("GET", "/api/chat/health", b"")
     assert status == 200

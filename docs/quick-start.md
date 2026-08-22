@@ -8,18 +8,6 @@
 pip install -e .
 ```
 
-需要管理面板时安装:
-
-```bash
-pip install -e .[admin]
-```
-
-需要向量检索能力时安装:
-
-```bash
-pip install -e .[vector]
-```
-
 ## 2. 文本调用
 
 ```python

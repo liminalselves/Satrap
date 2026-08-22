@@ -23,9 +23,16 @@ class WeatherTool(Tool):
     
     def execute(self, city: str, unit: str = "celsius") -> Dict[str, Any]:
         """
-        执行天气查询（模拟实现）
-        
-        实际应用中，这里应该调用真实的天气 API
+        执行天气查询(模拟实现)
+
+        参数:
+        - city: 城市
+        - unit: 单位
+
+        实际应用中, 这里应该调用真实的天气 API
+
+        返回:
+        - Dict[str, Any]: 执行天气查询(模拟实现)
         """
         # 模拟天气数据
         weather_data: Dict[str, Dict[str, Any]] = {
@@ -63,10 +70,18 @@ class CalculatorTool(Tool):
         )
     
     def execute(self, expression: str) -> Dict[str, Any]:
-        """执行数学计算"""
+        """
+        执行数学计算
+
+        参数:
+        - expression: 表达式
+
+        返回:
+        - Dict[str, Any]: 执行数学计算
+        """
         try:
-            # 注意：实际应用中应使用更安全的表达式解析方式
             result = eval(expression)
+            # 注意: 实际应用中应使用更安全的表达式解析方式
             return {
                 "expression": expression,
                 "result": result

@@ -1,4 +1,5 @@
-"""base_take 插件命令: /memory (同步 + 异步)
+"""
+base_take 插件命令: /memory (同步 + 异步)
 
 约定:
 - build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
@@ -10,13 +11,23 @@ from typing import Any, Callable
 
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
+from satrap.expend.plugins.base_take.state import get_plugin_state
 from satrap.expend.tools.memory_store import MemoryStore
 
 _MEMORY_MODES = ("disabled", "base", "full")
 
 
 def _parse_args(args: list[str], default: str = "") -> str:
-    """命令参数列表 -> 单字符串 (保留空格)"""
+    """
+    命令参数列表 -> 单字符串 (保留空格)
+
+    参数:
+    - args: 额外位置参数
+    - default: 默认值
+
+    返回:
+    - str: 命令参数列表 -> 单字符串 (保留空格)
+    """
     if not args:
         return default
     return " ".join(str(a) for a in args).strip()
@@ -27,7 +38,16 @@ SessionType = SimpleSession | AsyncSimpleSession
 
 
 def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
-    """记忆命令: list / add / del / clear / mode"""
+    """
+    记忆命令: list / add / del / clear / mode
+
+    参数:
+    - state: 状态
+    - args: 额外位置参数
+
+    返回:
+    - str: 记忆命令: list / add / del / clear / mode
+    """
     store = state["store"]
     assert isinstance(store, MemoryStore)
     sub = args[0] if args else "list"
@@ -35,10 +55,15 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
         memories = store.list_all()
         if not memories:
             return "当前没有长期记忆"
+        global_scope = store.scopes[0] if store.scopes else store.scope
+        layered = len([s for s in store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id']} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            layer = ""
+            if layered:
+                layer = " (全局层)" if m["scope"] == global_scope else " (项目层)"
+            lines.append(f"- {m['id']}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
     if sub in ("add", "添加"):
         rest = _parse_args(args[1:])
@@ -65,13 +90,27 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
 
 
 def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
-    """构建插件命令: 返回 (同步命令, 异步命令) 映射"""
-    from satrap.expend.plugins.base_take.state import get_plugin_state
+    """
+    构建插件命令: 返回 (同步命令, 异步命令) 映射
 
+    参数:
+    - session: 会话
+
+    返回:
+    - tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:  (同步命令, 异步命令) 映射
+    """
     state = get_plugin_state(session)
 
     def cmd_memory(*args: str) -> str:
-        """管理长期记忆 (list/add/del/clear/mode)"""
+        """
+        管理长期记忆 (list/add/del/clear/mode)
+
+        参数:
+        - args: 额外位置参数
+
+        返回:
+        - str: 管理长期记忆 (list/add/del/clear/mode)
+        """
         return _cmd_memory_impl(state, list(args))
 
     async def cmd_memory_async(*args: str) -> str:

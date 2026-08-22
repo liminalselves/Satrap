@@ -12,12 +12,12 @@ import asyncio
 from pathlib import Path
 
 from typing import TYPE_CHECKING
+from satrap.core.log import logger
+from satrap.core.utils.paths import get_db_path
+
 if TYPE_CHECKING:
     from satrap.core.framework.SessionManager import SessionManager
     from satrap.core.framework.UserManager import UserManager
-
-from satrap.core.log import logger
-from satrap.core.utils.paths import get_db_path
 
 _WorkflowT = TypeVar("_WorkflowT")
 """工作流类泛型, 用于 create 工厂与 await 工具"""
@@ -54,6 +54,7 @@ class ModelWorkflowFramework:
         - content_callback: 内容回调函数, 用于在复杂模型调用过程中抛出模型回复内容; 如果只取最终回复, 则可以设置为 None
         - return_thinking: 是否返回模型思考内容; 如果为 True, 则会在模型回复内容前抛出思考内容
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
+        - db_path: 上下文数据库路径
 
         使用示例
         ``` python
@@ -74,7 +75,7 @@ class ModelWorkflowFramework:
 
         # 2. 初始化并调用工作流
         workflow = MyWorkflow(llm, "conversation_id", tools_manager, "You are a helper")
-        result = workflow("北京今天天气怎么样？")
+        result = workflow("北京今天天气怎么样? ")
         print(result)
 
         # 或者集成进 `Session` 类中, 以实现复杂多模型 Agent 与会话管理
@@ -94,19 +95,26 @@ class ModelWorkflowFramework:
         self.content_callback = content_callback
 
     def _content_callback(self, content: str):
-        """调用回调返回模型回复内容"""
+        """
+        调用回调返回模型回复内容
+
+        参数:
+        - content: 内容
+        """
         if self.content_callback and content:
             self.content_callback(content)
 
     def agent_executor(self, model_response: LLMCallResponse,
         callback: bool = False, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> tuple[list[dict[str, str | list[Any]]], bool]:
-        """智能体执行器, 用于执行智能体调用流程
+        """
+        智能体执行器, 用于执行智能体调用流程
 
         参数:
         - model_response: 模型调用响应
         - callback: 是否回调回复, 默认关闭
         - max_iterations: 最大迭代次数
+        - img_urls: 随请求发送的图片 URL 列表
 
         返回:
         - list[dict[str, str | list[Any]]]: 上下文消息列表
@@ -196,7 +204,15 @@ class ModelWorkflowFramework:
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:
-        """获取最终回复"""
+        """
+        获取最终回复
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - str: 最终回复
+        """
         if isinstance(messages, bool):
             return "模型调用失败, 请查看日志以获得更多信息"
         else:
@@ -204,7 +220,15 @@ class ModelWorkflowFramework:
 
     @staticmethod
     def get_bot_message(messages: list[dict[str, str | list[Any]]]) -> str:
-        """获取最后一条 assistant 回复"""
+        """
+        获取最后一条 assistant 回复
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - str: 最后一条 assistant 回复
+        """
         for message in reversed(messages):
             if message["role"] == "assistant":
                 return str(message["content"])
@@ -212,17 +236,41 @@ class ModelWorkflowFramework:
 
     @staticmethod
     def _get_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """提取系统消息副本"""
+        """
+        提取系统消息副本
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - list[dict[str, Any]]: 提取系统消息副本
+        """
         return [copy.deepcopy(message) for message in messages if message.get("role") == "system"]
 
     def _restore_context_keep_system(self, system_messages: list[dict[str, Any]]):
-        """恢复上下文为系统消息"""
+        """
+        恢复上下文为系统消息
+
+        参数:
+        - system_messages: system消息列表
+        """
         self.ctx._messages = copy.deepcopy(system_messages)
         self.ctx._sync()
 
     def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> str:
-        """完整执行一轮 Agent 流程, 返回最终模型输出"""
+        """
+        完整执行一轮 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 回调函数
+        - max_iterations: 最大迭代次数
+        - img_urls: 图片 URL 列表
+
+        返回:
+        - str: 完整执行一轮 Agent 流程, 返回最终模型输出
+        """
         self.ctx.add_user_message(user_input)
 
         response = self.llm.call(
@@ -249,13 +297,18 @@ class ModelWorkflowFramework:
         thinking: str,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
-        """消费一次流式请求并返回完整响应
-        
+        """
+        消费一次流式请求并返回完整响应
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
         - thinking: 是否要求模型进行思考, 默认为 False
+        - img_urls: 随请求发送的图片 URL 列表
+
+        返回:
+        - LLMCallResponse | bool: 消费一次流式请求并返回完整响应
         """
         response: Any = None
         for event in self.llm.stream_call(messages, tools=tools, thinking=thinking, img_urls=img_urls):
@@ -286,13 +339,15 @@ class ModelWorkflowFramework:
         thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
-        """流式执行一轮 Agent 流程并返回最终模型输出
-        
+        """
+        流式执行一轮 Agent 流程并返回最终模型输出
+
         参数:
         - user_input: 用户输入
         - callback: 是否回调回复, 默认关闭
         - max_iterations: 最大迭代次数, 默认 10
         - thinking: 是否要求模型进行思考, 默认为 False
+        - img_urls: 随请求发送的图片 URL 列表
 
         返回:
         - 最终模型输出
@@ -369,7 +424,18 @@ class ModelWorkflowFramework:
 
     def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> str:
-        """使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出"""
+        """
+        使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 回调函数
+        - max_iterations: 最大迭代次数
+        - img_urls: 图片 URL 列表
+
+        返回:
+        - str: 使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出
+        """
         system_messages = self._get_system_messages(self.ctx.get_context())
         self._restore_context_keep_system(system_messages)
 
@@ -402,13 +468,15 @@ class ModelWorkflowFramework:
         thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
-        """使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
+        """
+        使用临时上下文流式执行一轮 Agent 流程, 返回最终模型输出
 
         参数:
         - user_input: 用户输入
         - callback: 是否回调回复, 默认开启
         - max_iterations: 最大迭代次数, 默认 10
         - thinking: 是否要求模型进行思考, 默认为 False
+        - img_urls: 随请求发送的图片 URL 列表
 
         返回:
         - 最终模型输出
@@ -428,11 +496,25 @@ class ModelWorkflowFramework:
             self._restore_context_keep_system(system_messages)
 
     def reset_llm(self, llm: LLM):
-        """重置会话模型"""
+        """
+        重置会话模型
+
+        参数:
+        - llm: 模型实例
+        """
         self.llm = llm
 
     def forward(self, *input: Any, **kwargs: Any) -> Any:
-        """执行工作流; 调用模型并返回结果"""
+        """
+        执行工作流; 调用模型并返回结果
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行工作流; 调用模型并返回结果
+        """
         return None
 
     def __call__(self, *input: Any, **kwargs: Any):
@@ -444,7 +526,8 @@ class Session:
     def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None, *, db_path: str = get_db_path("chat_history.db"),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False):
-        """会话框架, 用于管理多个模型工作流的会话
+        """
+        会话框架, 用于管理多个模型工作流的会话
         任何依赖多模型的复杂 Agent 都应当继承自该类, 并实现 `forward` 方法
 
         并在初始化时进行 `super().__init__(session_id, content_callback, command_handler)`
@@ -487,13 +570,26 @@ class Session:
         self._user_manager: UserManager | None = None
 
     def _content_callback(self, content: str):
-        """调用回调返回模型回复内容"""
+        """
+        调用回调返回模型回复内容
+
+        参数:
+        - content: 内容
+        """
         if self.content_callback and content:
             self.content_callback(content)
 
     @staticmethod
     def _parse_user_id(session_id: str) -> str:
-        """从 session_id 中提取 user_id, 兼容新旧格式"""
+        """
+        从 session_id 中提取 user_id, 兼容新旧格式
+
+        参数:
+        - session_id: 会话 ID
+
+        返回:
+        - str: 从 session_id 中提取 user_id, 兼容新旧格式
+        """
         parts = session_id.split(":")
         if len(parts) >= 4:
             return parts[2]
@@ -503,7 +599,12 @@ class Session:
 
     @property
     def user_contexts(self) -> list[str]:
-        """获取当前用户的所有上下文 session_id 列表"""
+        """
+        获取当前用户的所有上下文 session_id 列表
+
+        返回:
+        - list[str]: 当前用户的所有上下文 session_id 列表
+        """
         if not self._user_manager:
             return []
         user_id = self._parse_user_id(self.session_id)
@@ -512,20 +613,47 @@ class Session:
         return self._user_manager.get_user_session_ids(user_id)
 
     def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
-        """上下文切换后调用, 子类可重写以刷新工作流"""
+        """
+        上下文切换后调用, 子类可重写以刷新工作流
+
+        参数:
+        - old_session_id: old会话ID
+        - new_session_id: new会话ID
+
+        返回:
+        - None: 上下文切换后调用, 子类可重写以刷新工作流
+        """
         return None
 
     def reload_llm(self, llm: LLM):
-        """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
+        """
+        重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用
+
+        参数:
+        - llm: 模型实例
+        """
 
     def run(self, *input: Any, **kwargs: Any) -> Any:
-        """执行会话; 调用模型并返回结果"""
+        """
+        执行会话; 调用模型并返回结果
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行会话; 调用模型并返回结果
+        """
         return None
     
     def workflow_id_assign(self, wf_id: str) -> str:
-        """为会话分配工作流 ID
+        """
+        为会话分配工作流 ID
 
         重复的 wf_id 自动追加序号 (如 main -> main_2) 并记录警告, 避免工作流上下文互相污染
+
+        参数:
+        - wf_id: 工作流 ID
 
         返回:
         - 工作流 ID (str) (session_id + "_" + wf_id)
@@ -541,19 +669,30 @@ class Session:
         return workflow_id
 
     def _require_session_store(self) -> StateStore:
-        """获取会话级状态存储, 未启用时抛出 ValueError"""
+        """
+        获取会话级状态存储, 未启用时抛出 ValueError
+
+        返回:
+        - StateStore: 会话级状态存储, 未启用时抛出 ValueError
+        """
         if self._state_store is None:
             raise ValueError("未启用会话级状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
         return self._state_store
 
     def _all_contexts(self) -> dict[str, ContextManager]:
-        """返回 {上下文名: ContextManager}, 含会话共享上下文与全部工作流上下文"""
+        """
+        返回 {上下文名: ContextManager}, 含会话共享上下文与全部工作流上下文
+
+        返回:
+        - dict[str, ContextManager]:  {上下文名: ContextManager}, 含会话共享上下文与全部工作流上下文
+        """
         contexts: dict[str, ContextManager] = {"session": self.session_ctx}
         contexts.update(self._workflow_contexts)
         return contexts
 
     def _track_workflow_context(self, wf_id: str, ctx: ContextManager) -> None:
-        """注册工作流上下文, 使其纳入会话级检查点聚合
+        """
+        注册工作流上下文, 使其纳入会话级检查点聚合
 
         参数:
         - wf_id: 工作流 ID (workflow_id_assign 的返回值)
@@ -572,7 +711,8 @@ class Session:
                 self._state_store.register_domain(_messages_domain())
 
     def create_checkpoint(self, name: str = "", description: str = "") -> str:
-        """为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
+        """
+        为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
 
         参数:
         - name: 检查点显示名称
@@ -594,8 +734,8 @@ class Session:
                         batch_id=batch_id,
                     )
         except Exception:
-            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
             store = self._require_session_store()
+            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
             for ctx in self._all_contexts().values():
                 for cp in store.list_checkpoints(ctx._scope()):
                     if cp.batch_id == batch_id:
@@ -604,7 +744,8 @@ class Session:
         return batch_id
 
     def list_checkpoints(self) -> list[StateCheckpoint]:
-        """列出会话的全部聚合检查点 (按批次去重, 时间升序)
+        """
+        列出会话的全部聚合检查点 (按批次去重, 时间升序)
 
         返回:
         - list[StateCheckpoint]: 检查点列表, 每个批次一个代表检查点
@@ -620,7 +761,8 @@ class Session:
         return list(seen.values())
 
     def rollback(self, checkpoint_id: str) -> None:
-        """回滚会话到指定检查点批次并重载全部上下文
+        """
+        回滚会话到指定检查点批次并重载全部上下文
 
         参数:
         - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
@@ -638,7 +780,8 @@ class Session:
             ctx.load_context()
 
     def retry(self, checkpoint_id: str) -> None:
-        """从指定检查点批次重试并重载全部上下文 (保留未来检查点)
+        """
+        从指定检查点批次重试并重载全部上下文 (保留未来检查点)
 
         参数:
         - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
@@ -656,7 +799,8 @@ class Session:
             ctx.load_context()
 
     def list_branches(self) -> list[StateCheckpoint]:
-        """列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
+        """
+        列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
 
         返回:
         - list[StateCheckpoint]: 分支检查点列表 (按时间升序)
@@ -668,7 +812,8 @@ class Session:
         return branches
 
     def list_mutations(self) -> list[StateCheckpoint]:
-        """列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
+        """
+        列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
 
         返回:
         - list[StateCheckpoint]: 变更记录列表 (按创建时间倒序)
@@ -681,9 +826,17 @@ class Session:
         return mutations
 
     def _resolve_batch_id(self, store: StateStore, checkpoint_id: str) -> tuple[bool, str]:
-        """把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+        """
+        把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+
+        参数:
+        - store: 存储实例
+        - checkpoint_id: 检查点 ID
 
         单检查点 (无批次) 时返回 (False, 检查点 ID)
+
+        返回:
+        - tuple[bool, str]: 把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
         """
         cp = store.get_checkpoint(checkpoint_id)
         if cp is not None:
@@ -697,7 +850,8 @@ class Session:
         branch_name: str,
         checkpoint_id: str | None = None,
     ) -> dict[str, ContextManager]:
-        """从指定检查点 (默认最近一个) fork 会话下全部上下文
+        """
+        从指定检查点 (默认最近一个) fork 会话下全部上下文
 
         参数:
         - branch_name: 分支名称, 新上下文 ID 形如 "{原ID}:fork:{分支名}"
@@ -753,18 +907,26 @@ class Session:
             logger.error(f"[会话管理器] 清除会话上下文错误: {e}")  
 
     def cmd_process(self, msg: str) -> tuple[Any, bool]:
-        """处理命令字符串
-        
+        """
+        处理命令字符串
+
         参数:
         - msg: 输入消息
-        
+
         返回:
         - (Any, bool): 命令执行结果和是否为命令消息的元组
         """
         return self.command_handler.process_message(msg)              
 
     def register_command(self, name: str, handler: Callable[..., Any], intro: str = "None"):
-        """注册命令处理函数"""
+        """
+        注册命令处理函数
+
+        参数:
+        - name: 名称
+        - handler: 处理器
+        - intro: 简介文本
+        """
         self.command_handler.register_command(name, handler, intro)
 
     def __call__(self, *input: Any, **kwargs: Any):
@@ -818,6 +980,7 @@ class AsyncModelWorkflowFramework:
         - content_callback: 内容回调函数; 用于在复杂调用流程中回传模型内容
         - return_thinking: 是否回传模型思考内容
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
+        - db_path: 上下文数据库路径
         """
         self.llm = llm
         self.ctx = AsyncContextManager(context_id, db_path=db_path)
@@ -841,13 +1004,27 @@ class AsyncModelWorkflowFramework:
 
     @classmethod
     async def create(cls: type[_WorkflowT], *args: Any, **kwargs: Any) -> _WorkflowT:
-        """创建并初始化实例"""
+        """
+        创建并初始化实例
+
+        参数:
+        - args: 额外位置参数
+        - kwargs: 额外关键字参数
+
+        返回:
+        - _WorkflowT: 创建并初始化实例
+        """
         instance = cls(*args, **kwargs)
         await cast(AsyncModelWorkflowFramework, instance).initialize()
         return instance
 
     async def _content_callback(self, content: str):
-        """调用回调返回模型回复内容"""
+        """
+        调用回调返回模型回复内容
+
+        参数:
+        - content: 内容
+        """
         if self.content_callback and content:
             await self.content_callback(content)
 
@@ -860,12 +1037,14 @@ class AsyncModelWorkflowFramework:
     async def agent_executor(self, model_response: LLMCallResponse,
         callback: bool = False, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> tuple[list[dict[str, str | list[Any]]], bool]:
-        """异步智能体执行器, 用于执行智能体调用流程
-        
+        """
+        异步智能体执行器, 用于执行智能体调用流程
+
         参数:
         - model_response: 模型调用响应
         - callback: 是否回调回复, 默认关闭
         - max_iterations: 最大迭代次数
+        - img_urls: 随请求发送的图片 URL 列表
 
         返回:
         - list[dict[str, str | list[Any]]]: 上下文消息列表
@@ -955,14 +1134,30 @@ class AsyncModelWorkflowFramework:
 
     @staticmethod
     def final_response(messages: LLMCallResponse | bool) -> str:
-        """获取最终回复"""
+        """
+        获取最终回复
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - str: 最终回复
+        """
         if isinstance(messages, bool):
             return "模型调用失败, 请查看日志以获得更多信息"
         return messages.content
     
     @staticmethod
     def get_bot_message(messages: list[dict[str, str | list[Any]]]) -> str:
-        """获取最后一条 assistant 回复"""
+        """
+        获取最后一条 assistant 回复
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - str: 最后一条 assistant 回复
+        """
         for message in reversed(messages):
             if message["role"] == "assistant":
                 return str(message["content"])
@@ -970,17 +1165,41 @@ class AsyncModelWorkflowFramework:
 
     @staticmethod
     def _get_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """提取系统消息副本"""
+        """
+        提取系统消息副本
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - list[dict[str, Any]]: 提取系统消息副本
+        """
         return [copy.deepcopy(message) for message in messages if message.get("role") == "system"]
 
     async def _restore_context_keep_system(self, system_messages: list[dict[str, Any]]):
-        """恢复上下文为系统消息"""
+        """
+        恢复上下文为系统消息
+
+        参数:
+        - system_messages: system消息列表
+        """
         self.ctx._messages = copy.deepcopy(system_messages)
         await self.ctx._sync()
 
     async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> str:
-        """完整执行一轮异步 Agent 流程, 返回最终模型输出"""
+        """
+        完整执行一轮异步 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 回调函数
+        - max_iterations: 最大迭代次数
+        - img_urls: 图片 URL 列表
+
+        返回:
+        - str: 完整执行一轮异步 Agent 流程, 返回最终模型输出
+        """
         await self.ctx.add_user_message(user_input)
 
         response = await self.llm.call(
@@ -1007,14 +1226,16 @@ class AsyncModelWorkflowFramework:
         thinking: str,
         img_urls: list[str] | None = None,
     ) -> LLMCallResponse | bool:
-        """消费一次异步流式请求并返回完整响应
-        
+        """
+        消费一次异步流式请求并返回完整响应
+
         参数:
         - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
         - thinking: 是否要求模型进行思考, 默认为 False
-        
+        - img_urls: 随请求发送的图片 URL 列表
+
         返回:
         - LLMCallResponse | bool: 模型调用响应, 或 False 表示失败
         """
@@ -1047,14 +1268,16 @@ class AsyncModelWorkflowFramework:
         thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
-        """异步流式执行一轮 Agent 流程并返回最终模型输出
-        
+        """
+        异步流式执行一轮 Agent 流程并返回最终模型输出
+
         参数:
         - user_input: 用户输入
         - callback: 是否回调回复, 默认关闭
         - max_iterations: 最大迭代次数, 默认 10
         - thinking: 是否要求模型进行思考, 默认为 False
-        
+        - img_urls: 随请求发送的图片 URL 列表
+
         返回:
         - 最终模型输出
         """
@@ -1131,7 +1354,18 @@ class AsyncModelWorkflowFramework:
 
     async def tools_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None) -> str:
-        """使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出"""
+        """
+        使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
+
+        参数:
+        - user_input: 用户输入
+        - callback: 回调函数
+        - max_iterations: 最大迭代次数
+        - img_urls: 图片 URL 列表
+
+        返回:
+        - str: 使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
+        """
         system_messages = self._get_system_messages(self.ctx.get_context())
         await self._restore_context_keep_system(system_messages)
 
@@ -1164,13 +1398,15 @@ class AsyncModelWorkflowFramework:
         thinking: str = "off",
         img_urls: list[str] | None = None,
     ) -> str:
-        """使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
+        """
+        使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
 
         参数:
         - user_input: 用户输入
         - callback: 是否回调回复, 默认开启
         - max_iterations: 最大迭代次数, 默认 10
         - thinking: 是否要求模型进行思考, 默认为 False
+        - img_urls: 随请求发送的图片 URL 列表
 
         返回:
         - 最终模型输出
@@ -1190,11 +1426,25 @@ class AsyncModelWorkflowFramework:
             await self._restore_context_keep_system(system_messages)
 
     def reset_llm(self, llm: AsyncLLM):
-        """重置会话模型"""
+        """
+        重置会话模型
+
+        参数:
+        - llm: 模型实例
+        """
         self.llm = llm
 
     async def forward(self, *input: Any, **kwargs: Any) -> Any:
-        """执行工作流"""
+        """
+        执行工作流
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行工作流
+        """
         return None
 
     async def __call__(self, *input: Any, **kwargs: Any):
@@ -1292,13 +1542,23 @@ class AsyncSession:
         pass
 
     async def _content_callback(self, content: str):
-        """调用回调返回模型回复内容"""
+        """
+        调用回调返回模型回复内容
+
+        参数:
+        - content: 内容
+        """
         if self.content_callback and content:
             await self.content_callback(content)
 
     @property
     def user_contexts(self) -> list[str]:
-        """获取当前用户的所有上下文 session_id 列表"""
+        """
+        获取当前用户的所有上下文 session_id 列表
+
+        返回:
+        - list[str]: 当前用户的所有上下文 session_id 列表
+        """
         if not self._user_manager:
             return []
         user_id = Session._parse_user_id(self.session_id)
@@ -1307,20 +1567,47 @@ class AsyncSession:
         return self._user_manager.get_user_session_ids(user_id)
 
     async def on_session_switched(self, old_session_id: str, new_session_id: str) -> None:
-        """上下文切换后调用, 子类可重写以刷新工作流"""
+        """
+        上下文切换后调用, 子类可重写以刷新工作流
+
+        参数:
+        - old_session_id: old会话ID
+        - new_session_id: new会话ID
+
+        返回:
+        - None: 上下文切换后调用, 子类可重写以刷新工作流
+        """
         return None
 
     def reload_llm(self, llm: AsyncLLM):
-        """重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用"""
+        """
+        重载 LLM 实例, 子类可重写以更新工作流内的 LLM 引用
+
+        参数:
+        - llm: 模型实例
+        """
 
     async def run(self, *input: Any, **kwargs: Any) -> Any:
-        """执行会话"""
+        """
+        执行会话
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行会话
+        """
         return None
 
     def workflow_id_assign(self, wf_id: str) -> str:
-        """为会话分配工作流 ID
+        """
+        为会话分配工作流 ID
 
         重复的 wf_id 自动追加序号 (如 main -> main_2) 并记录警告, 避免工作流上下文互相污染
+
+        参数:
+        - wf_id: 工作流 ID
 
         返回:
         - 工作流 ID (str) (session_id + "_" + wf_id)
@@ -1336,19 +1623,30 @@ class AsyncSession:
         return workflow_id
 
     def _require_session_store(self) -> StateStore:
-        """获取会话级状态存储, 未启用时抛出 ValueError"""
+        """
+        获取会话级状态存储, 未启用时抛出 ValueError
+
+        返回:
+        - StateStore: 会话级状态存储, 未启用时抛出 ValueError
+        """
         if self._state_store is None:
             raise ValueError("未启用会话级状态检查点, 请传入 state_store 或设置 enable_checkpoint=True")
         return self._state_store
 
     def _all_contexts(self) -> dict[str, AsyncContextManager]:
-        """返回 {上下文名: AsyncContextManager}, 含会话共享上下文与全部工作流上下文"""
+        """
+        返回 {上下文名: AsyncContextManager}, 含会话共享上下文与全部工作流上下文
+
+        返回:
+        - dict[str, AsyncContextManager]:  {上下文名: AsyncContextManager}, 含会话共享上下文与全部工作流上下文
+        """
         contexts: dict[str, AsyncContextManager] = {"session": self.session_ctx}
         contexts.update(self._workflow_contexts)
         return contexts
 
     def _track_workflow_context(self, wf_id: str, ctx: AsyncContextManager) -> None:
-        """注册工作流上下文, 使其纳入会话级检查点聚合
+        """
+        注册工作流上下文, 使其纳入会话级检查点聚合
 
         参数:
         - wf_id: 工作流 ID (workflow_id_assign 的返回值)
@@ -1367,7 +1665,8 @@ class AsyncSession:
                 self._state_store.register_domain(_messages_domain())
 
     async def create_checkpoint(self, name: str = "", description: str = "") -> str:
-        """为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
+        """
+        为会话创建聚合检查点 (会话共享上下文 + 全部工作流上下文), 返回批次 ID
 
         参数:
         - name: 检查点显示名称
@@ -1389,8 +1688,8 @@ class AsyncSession:
                         batch_id=batch_id,
                     )
         except Exception:
-            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
             store = self._require_session_store()
+            # 补偿: 删除已创建的残批检查点, 避免部分作用域回滚的不一致状态
             for ctx in self._all_contexts().values():
                 for cp in await asyncio.to_thread(store.list_checkpoints, ctx._scope()):
                     if cp.batch_id == batch_id:
@@ -1399,7 +1698,8 @@ class AsyncSession:
         return batch_id
 
     async def list_checkpoints(self) -> list[StateCheckpoint]:
-        """列出会话的全部聚合检查点 (按批次去重, 时间升序)
+        """
+        列出会话的全部聚合检查点 (按批次去重, 时间升序)
 
         返回:
         - list[StateCheckpoint]: 检查点列表, 每个批次一个代表检查点
@@ -1415,7 +1715,8 @@ class AsyncSession:
         return list(seen.values())
 
     async def rollback(self, checkpoint_id: str) -> None:
-        """回滚会话到指定检查点批次并重载全部上下文
+        """
+        回滚会话到指定检查点批次并重载全部上下文
 
         参数:
         - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
@@ -1433,7 +1734,8 @@ class AsyncSession:
             await ctx.load_context()
 
     async def retry(self, checkpoint_id: str) -> None:
-        """从指定检查点批次重试并重载全部上下文 (保留未来检查点)
+        """
+        从指定检查点批次重试并重载全部上下文 (保留未来检查点)
 
         参数:
         - checkpoint_id: 批次 ID 或批次内任一检查点的 ID
@@ -1451,7 +1753,8 @@ class AsyncSession:
             await ctx.load_context()
 
     async def list_branches(self) -> list[StateCheckpoint]:
-        """列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
+        """
+        列出从本会话 fork 出的全部分支起点检查点 (会话共享 + 各工作流)
 
         返回:
         - list[StateCheckpoint]: 分支检查点列表 (按时间升序)
@@ -1463,7 +1766,8 @@ class AsyncSession:
         return branches
 
     async def list_mutations(self) -> list[StateCheckpoint]:
-        """列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
+        """
+        列出会话全部上下文的检查点变更记录 (最新在前), 含审计字段 source / reason
 
         返回:
         - list[StateCheckpoint]: 变更记录列表 (按创建时间倒序)
@@ -1476,9 +1780,17 @@ class AsyncSession:
         return mutations
 
     def _resolve_batch_id(self, store: StateStore, checkpoint_id: str) -> tuple[bool, str]:
-        """把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+        """
+        把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
+
+        参数:
+        - store: 存储实例
+        - checkpoint_id: 检查点 ID
 
         单检查点 (无批次) 时返回 (False, 检查点 ID)
+
+        返回:
+        - tuple[bool, str]: 把检查点 ID 或批次 ID 解析为 (是否批次, 目标 ID) (用于 rollback / fork)
         """
         cp = store.get_checkpoint(checkpoint_id)
         if cp is not None:
@@ -1492,7 +1804,8 @@ class AsyncSession:
         branch_name: str,
         checkpoint_id: str | None = None,
     ) -> dict[str, AsyncContextManager]:
-        """从指定检查点 (默认最近一个) fork 会话下全部上下文
+        """
+        从指定检查点 (默认最近一个) fork 会话下全部上下文
 
         参数:
         - branch_name: 分支名称, 新上下文 ID 形如 "{原ID}:fork:{分支名}"
@@ -1544,18 +1857,26 @@ class AsyncSession:
             logger.error(f"[会话管理器] 清除会话上下文错误: {e}")
 
     async def cmd_process(self, msg: str) -> tuple[Any, bool]:
-        """处理命令字符串
-        
+        """
+        处理命令字符串
+
         参数:
         - msg: 输入消息
-        
+
         返回:
         - (Any, bool): 命令执行结果和是否为命令消息的元组
         """
         return await self.command_handler.process_message(msg)
 
     def register_command(self, name: str, handler: Callable[..., Any], intro: str = "None"):
-        """注册命令处理函数"""
+        """
+        注册命令处理函数
+
+        参数:
+        - name: 名称
+        - handler: 处理器
+        - intro: 简介文本
+        """
         self.command_handler.register_command(name, handler, intro)
 
     async def __call__(self, *input: Any, **kwargs: Any):

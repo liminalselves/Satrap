@@ -1,4 +1,5 @@
-"""checkpoint CLI 分发兜底测试
+"""
+checkpoint CLI 分发兜底测试
 
 覆盖:
 - 业务错误 (检查点不存在) 以退出码 1 结束且不抛裸 traceback
@@ -25,7 +26,15 @@ def _args(db: str, **overrides: Any) -> Namespace:
 
 
 def _seed_conv(db: str) -> str:
-    """准备带一个检查点的对话, 返回检查点 ID"""
+    """
+    准备带一个检查点的对话, 返回检查点 ID
+
+    参数:
+    - db: 数据库实例
+
+    返回:
+    - str: 检查点 ID
+    """
     ctx = ContextManager("conv-cli", db_path=db, enable_checkpoint=True)
     try:
         ctx.add_user_message("一")
@@ -35,7 +44,13 @@ def _seed_conv(db: str) -> str:
 
 
 def test_dispatch_business_error_exits_1(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """业务错误 (检查点不存在) 以退出码 1 结束, 输出友好信息"""
+    """
+    业务错误 (检查点不存在) 以退出码 1 结束, 输出友好信息
+
+    参数:
+    - tmp_path: tmp路径
+    - capsys: pytest 输出捕获夹具
+    """
     db = str(tmp_path / "chat_history.db")
     _seed_conv(db)
 
@@ -47,7 +62,13 @@ def test_dispatch_business_error_exits_1(tmp_path: Path, capsys: pytest.CaptureF
 
 
 def test_dispatch_unknown_action_exits_2(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """未知操作以退出码 2 结束"""
+    """
+    未知操作以退出码 2 结束
+
+    参数:
+    - tmp_path: tmp路径
+    - capsys: pytest 输出捕获夹具
+    """
     args = _args(str(tmp_path / "x.db"), action="nope")
     with pytest.raises(SystemExit) as ei:
         dispatch(args)
@@ -56,7 +77,13 @@ def test_dispatch_unknown_action_exits_2(tmp_path: Path, capsys: pytest.CaptureF
 
 
 def test_dispatch_success_paths(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    """create / list / lineage 成功路径不抛异常"""
+    """
+    create / list / lineage 成功路径不抛异常
+
+    参数:
+    - tmp_path: tmp路径
+    - capsys: pytest 输出捕获夹具
+    """
     db = str(tmp_path / "chat_history.db")
     cp_id = _seed_conv(db)
 

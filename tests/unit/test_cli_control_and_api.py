@@ -61,7 +61,12 @@ def test_global_flags_survive_subparser_defaults():
 
 
 def test_daemon_client_new_routes_call_expected_paths(monkeypatch: pytest.MonkeyPatch):
-    """DaemonClient 新增方法应请求对应 HTTP 路由"""
+    """
+    DaemonClient 新增方法应请求对应 HTTP 路由
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     calls: list[tuple[str, str, dict[str, Any] | None]] = []
 
     def fake_request(method: str, path: str, body: dict[str, Any] | None = None):
@@ -88,7 +93,12 @@ def test_daemon_client_new_routes_call_expected_paths(monkeypatch: pytest.Monkey
 
 @pytest.mark.asyncio
 async def test_http_session_class_write_routes(tmp_path: Path):
-    """后端 HTTP API 应支持 session class 注册和删除"""
+    """
+    后端 HTTP API 应支持 session class 注册和删除
+
+    参数:
+    - tmp_path: tmp路径
+    """
     backend = BackendManager()
     backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
     server = BackendHTTPServer(backend)
@@ -107,7 +117,12 @@ async def test_http_session_class_write_routes(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_http_model_write_routes(tmp_path: Path):
-    """后端 HTTP API 应支持模型配置写接口"""
+    """
+    后端 HTTP API 应支持模型配置写接口
+
+    参数:
+    - tmp_path: tmp路径
+    """
     backend = BackendManager()
     backend._model_cfg = ModelConfigManager(storage_path=tmp_path / "models.json")
     server = BackendHTTPServer(backend)

@@ -18,14 +18,24 @@ from satrap.core.type import safe_getattr
 
 
 def _warn_if_backend_running(args: argparse.Namespace):
-    """平台配置变更需要重启后端后生效"""
+    """
+    平台配置变更需要重启后端后生效
+
+    参数:
+    - args: 额外位置参数
+    """
     client = daemon_client_from_args(args)
     if client.is_alive():
         print("提示: 后端正在运行, 平台配置变更需要重启后端后生效.")
 
 
 def cmd_platform_list(args: argparse.Namespace):
-    """列出平台适配器和配置中的平台"""
+    """
+    列出平台适配器和配置中的平台
+
+    参数:
+    - args: 额外位置参数
+    """
     config_data = load_config_document(find_config_path())
     configured = cast(list[Any], config_data.get("platforms", []) or [])
     client = daemon_client_from_args(args)
@@ -55,7 +65,12 @@ def cmd_platform_list(args: argparse.Namespace):
 
 
 def cmd_platform_show(args: argparse.Namespace):
-    """查看平台配置"""
+    """
+    查看平台配置
+
+    参数:
+    - args: 额外位置参数
+    """
     platforms = cast(list[Any], load_config_document(find_config_path()).get("platforms", []) or [])
     for item in platforms:
         if str(item.get("id", "")) == args.id:
@@ -66,7 +81,15 @@ def cmd_platform_show(args: argparse.Namespace):
 
 
 def _settings_from_args(args: argparse.Namespace) -> dict[str, Any]:
-    """解析平台 settings 参数"""
+    """
+    解析平台 settings 参数
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - dict[str, Any]: 解析平台 settings 参数
+    """
     if safe_getattr(args, "from_json"):
         data = cast(dict[str, Any], json.loads(args.from_json))
         if not isinstance(data, dict):
@@ -76,7 +99,12 @@ def _settings_from_args(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_platform_upsert(args: argparse.Namespace):
-    """新增或更新平台配置"""
+    """
+    新增或更新平台配置
+
+    参数:
+    - args: 额外位置参数
+    """
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
@@ -98,7 +126,12 @@ def cmd_platform_upsert(args: argparse.Namespace):
 
 
 def cmd_platform_remove(args: argparse.Namespace):
-    """删除平台配置"""
+    """
+    删除平台配置
+
+    参数:
+    - args: 额外位置参数
+    """
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
@@ -126,6 +159,12 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
 
 
 def dispatch(args: argparse.Namespace):
+    """
+    分派命令
+
+    参数:
+    - args: 命令参数
+    """
     if args.action == "list":
         cmd_platform_list(args)
     elif args.action == "show":

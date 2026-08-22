@@ -1,4 +1,5 @@
-"""技能扫描目录体系测试: 官方预设 + 用户目录
+"""
+技能扫描目录体系测试: 官方预设 + 用户目录
 
 覆盖:
 - 默认用户技能目录 (.satrap/skills) 与官方预设合并扫描
@@ -52,13 +53,13 @@ def test_default_user_dir_and_preset_merge():
     names = {s.name for s in loaded}
     assert "web-research" in names   # 官方预设技能
 
-    # 官方技能解析出 satrap-skill-id
     for s in loaded:
         if s.source is not None and s.source.startswith(SKILLS_PRESET_DIR):
             assert s.skill_id == s.name
+    # 官方技能解析出 satrap-skill-id
 
-    # 官方技能以 id 为 key 可寻
     assert mgr.get_skill("web-research") is not None
+    # 官方技能以 id 为 key 可寻
 
 
 def test_preset_meta_skill_id_from_disk():
@@ -72,7 +73,12 @@ def test_preset_meta_skill_id_from_disk():
 
 
 def test_same_name_no_id_official_wins(tmp_path: Path):
-    """用户同名技能 (无 meta id) 不覆盖官方"""
+    """
+    用户同名技能 (无 meta id) 不覆盖官方
+
+    参数:
+    - tmp_path: tmp路径
+    """
     _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD)
     mgr = SkillsManager(skills_dir=str(tmp_path))   # include_preset 默认 True
     mgr.scan()
@@ -84,7 +90,12 @@ def test_same_name_no_id_official_wins(tmp_path: Path):
 
 
 def test_same_name_different_id_coexist(tmp_path: Path):
-    """同名技能携带不同 satrap-skill-id 时共存, 各按 id 可寻"""
+    """
+    同名技能携带不同 satrap-skill-id 时共存, 各按 id 可寻
+
+    参数:
+    - tmp_path: tmp路径
+    """
     meta = "author: user\nsatrap-skill-id: my-web-research\n"
     _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path))
@@ -98,13 +109,18 @@ def test_same_name_different_id_coexist(tmp_path: Path):
     assert mine is not None and mine.skill_id == "my-web-research"
     assert "用户指令正文" in mine.instructions
 
-    # 按 name 查找返回官方 (官方优先)
     by_name = mgr.get_skill("web-research")
+    # 按 name 查找返回官方 (官方优先)
     assert by_name is not None and by_name.skill_id == "web-research"
 
 
 def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
-    """同名不同 id 技能在同一 workflow 顺序激活, 标记互不相同且停用不误伤"""
+    """
+    同名不同 id 技能在同一 workflow 顺序激活, 标记互不相同且停用不误伤
+
+    参数:
+    - tmp_path: tmp路径
+    """
     meta = "author: user\nsatrap-skill-id: user-web\n"
     _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path))
@@ -125,7 +141,12 @@ def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
 
 
 def test_include_preset_false_scans_user_only(tmp_path: Path):
-    """include_preset=False 时仅扫用户目录"""
+    """
+    include_preset=False 时仅扫用户目录
+
+    参数:
+    - tmp_path: tmp路径
+    """
     _write_folder_skill(
         tmp_path, "my-skill", USER_SAME_NAME_MD,
         meta="satrap-skill-id: my-skill\n",
@@ -136,7 +157,12 @@ def test_include_preset_false_scans_user_only(tmp_path: Path):
 
 
 def test_scan_explicit_dir_scans_only_that_dir(tmp_path: Path):
-    """scan(显式目录) 只扫指定目录 (不合并官方)"""
+    """
+    scan(显式目录) 只扫指定目录 (不合并官方)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = SkillsManager(skills_dir=str(tmp_path / "empty"), include_preset=False)
     mgr.scan()
     assert mgr.list_skills() == []
@@ -147,7 +173,15 @@ def test_scan_explicit_dir_scans_only_that_dir(tmp_path: Path):
 
 
 def _make_workflow(tmp_path: Path):
-    """最小 workflow stub: ctx + tools_manager"""
+    """
+    最小 workflow stub: ctx + tools_manager
+
+    参数:
+    - tmp_path: tmp路径
+
+    返回:
+    - 最小 workflow stub: ctx + tools_manager
+    """
     ctx = ContextManager(
         "skill-id-test", db_path=str(tmp_path / "id.db"), keep_in_memory=True
     )
@@ -156,7 +190,12 @@ def _make_workflow(tmp_path: Path):
 
 
 def test_activate_by_skill_id(tmp_path: Path):
-    """通过 satrap-skill-id 激活与停用"""
+    """
+    通过 satrap-skill-id 激活与停用
+
+    参数:
+    - tmp_path: tmp路径
+    """
     meta = "author: user\nsatrap-skill-id: my-web-research\n"
     _write_folder_skill(tmp_path, "web-research", USER_SAME_NAME_MD, meta)
     mgr = SkillsManager(skills_dir=str(tmp_path), include_preset=False)

@@ -1,4 +1,5 @@
-"""真实 LLM Function Call 集成测试
+"""
+真实 LLM Function Call 集成测试
 
 需要设置 TEST_LLM_API_KEY (可选 TEST_LLM_BASE_URL / TEST_LLM_MODEL) 后运行:
 pytest tests/integration/test_function_calling.py --run-integration

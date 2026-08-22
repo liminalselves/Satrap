@@ -255,6 +255,8 @@ store.add(title="偏好", content="用户喜欢简洁回答", tags=["偏好"], i
 memories = store.list_all()
 ```
 
+**多 scope 可见集合 (记忆分层)**: `store.scopes` 为读操作 (list/get/delete/clear/count/注入) 的可见 scope 集合, `store.scope` 为默认写入层。契约: `scopes[0]` 为全局层, 其余为项目层; 集合含空串 `''` 表示不限定 (旧行为)。`to_context_block()` 在多 scope 时分层渲染 (`[项目记忆]` / `[全局记忆]` 分节, 项目层优先占 `max_entries` 配额), 单 scope 时保持原有平铺渲染。项目会话由 ChatService 在建会话/改绑时完成分层绑定, 见 [聊天展示层](chat-display.md#项目-工作区文件夹绑定)。
+
 ## 插件配置机制
 
 插件经 meta.yaml 的 `config_schema` 声明可配置项, 支持两级配置:

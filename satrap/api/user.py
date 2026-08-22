@@ -1,8 +1,9 @@
-"""用户管理 HTTP API handlers
+"""
+用户管理 HTTP API handlers
 
 与 checkpoint API 同模式: 直接构造 UserInfoStore 操作用户库,
 与运行时 Session 解耦; 会话级绑定关系通过 user_session 字段维护,
-运行时注入请使用 UserManager (resolve_session / route_call)。
+运行时注入请使用 UserManager (resolve_session / route_call)
 """
 from __future__ import annotations
 
@@ -13,7 +14,15 @@ from satrap.core.type import UserInfo
 
 
 def _user_to_dict(info: UserInfo) -> dict[str, Any]:
-    """UserInfo -> JSON 可序列化 dict"""
+    """
+    UserInfo -> JSON 可序列化 dict
+
+    参数:
+    - info: 信息对象
+
+    返回:
+    - dict[str, Any]: UserInfo -> JSON 可序列化 dict
+    """
     return {
         "user_id": info.user_id,
         "user_platform": info.user_platform,
@@ -23,14 +32,32 @@ def _user_to_dict(info: UserInfo) -> dict[str, Any]:
 
 
 def list_users(db_path: str, limit: int = 200) -> dict[str, Any]:
-    """列出全部用户 (按 user_id 升序)"""
+    """
+    列出全部用户 (按 user_id 升序)
+
+    参数:
+    - db_path: 数据库路径
+    - limit: 数量上限
+
+    返回:
+    - dict[str, Any]: 列出全部用户 (按 user_id 升序)
+    """
     store = UserInfoStore(db_path=db_path)
     users = store.list(limit=limit)
     return {"users": [_user_to_dict(u) for u in users], "count": len(users)}
 
 
 def get_user(db_path: str, user_id: str) -> dict[str, Any]:
-    """查询单个用户详情"""
+    """
+    查询单个用户详情
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+
+    返回:
+    - dict[str, Any]: 查询单个用户详情
+    """
     store = UserInfoStore(db_path=db_path)
     info = store.get(user_id)
     if info is None:
@@ -44,7 +71,18 @@ def create_user(
     platform: str = "",
     nickname: str = "",
 ) -> dict[str, Any]:
-    """创建用户 (已存在则更新平台/昵称, 幂等)"""
+    """
+    创建用户 (已存在则更新平台/昵称, 幂等)
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+    - platform: 平台名称
+    - nickname: 用户昵称
+
+    返回:
+    - dict[str, Any]: 创建用户 (已存在则更新平台/昵称, 幂等)
+    """
     user_id = str(user_id or "").strip()
     if not user_id:
         return {"ok": False, "error": "user_id 不能为空"}
@@ -77,7 +115,18 @@ def update_user(
     nickname: str | None = None,
     platform: str | None = None,
 ) -> dict[str, Any]:
-    """更新用户昵称/平台"""
+    """
+    更新用户昵称/平台
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+    - nickname: 用户昵称
+    - platform: 平台名称
+
+    返回:
+    - dict[str, Any]: 更新用户昵称/平台
+    """
     store = UserInfoStore(db_path=db_path)
     info = store.get(user_id)
     if info is None:
@@ -95,7 +144,16 @@ def update_user(
 
 
 def delete_user(db_path: str, user_id: str) -> dict[str, Any]:
-    """删除用户信息 (不删除绑定的会话本身)"""
+    """
+    删除用户信息 (不删除绑定的会话本身)
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+
+    返回:
+    - dict[str, Any]: 删除用户信息 (不删除绑定的会话本身)
+    """
     store = UserInfoStore(db_path=db_path)
     info = store.get(user_id)
     if info is None:
@@ -105,7 +163,17 @@ def delete_user(db_path: str, user_id: str) -> dict[str, Any]:
 
 
 def bind_session(db_path: str, user_id: str, session_id: str) -> dict[str, Any]:
-    """给用户绑定一个 session_id (幂等)"""
+    """
+    给用户绑定一个 session_id (幂等)
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+    - session_id: 会话 ID
+
+    返回:
+    - dict[str, Any]: 给用户绑定一个 session_id (幂等)
+    """
     store = UserInfoStore(db_path=db_path)
     if store.get(user_id) is None:
         return {"ok": False, "error": f"user_id 不存在: {user_id}"}
@@ -114,7 +182,17 @@ def bind_session(db_path: str, user_id: str, session_id: str) -> dict[str, Any]:
 
 
 def unbind_session(db_path: str, user_id: str, session_id: str) -> dict[str, Any]:
-    """从用户解绑一个 session_id"""
+    """
+    从用户解绑一个 session_id
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+    - session_id: 会话 ID
+
+    返回:
+    - dict[str, Any]: 从用户解绑一个 session_id
+    """
     store = UserInfoStore(db_path=db_path)
     if store.get(user_id) is None:
         return {"ok": False, "error": f"user_id 不存在: {user_id}"}
@@ -123,7 +201,16 @@ def unbind_session(db_path: str, user_id: str, session_id: str) -> dict[str, Any
 
 
 def list_user_sessions(db_path: str, user_id: str) -> dict[str, Any]:
-    """获取用户绑定的 session_id 列表"""
+    """
+    获取用户绑定的 session_id 列表
+
+    参数:
+    - db_path: 数据库路径
+    - user_id: 用户 ID
+
+    返回:
+    - dict[str, Any]: 用户绑定的 session_id 列表
+    """
     store = UserInfoStore(db_path=db_path)
     session_ids = store.list_user_sessions(user_id)
     return {"user_id": user_id, "session_ids": session_ids, "count": len(session_ids)}

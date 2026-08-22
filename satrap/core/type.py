@@ -1,5 +1,5 @@
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
-from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, cast
+from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
@@ -19,14 +19,24 @@ class LLMCallResponse:
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
 
     def __iter__(self) -> Iterator[Any]:
-        """支持解包操作"""
+        """
+        支持解包操作
+
+        返回:
+        - Iterator[Any]: 支持解包操作
+        """
         yield self.type
         yield self.content
         yield self.thinking
         yield self.tool_calls or field(default_factory=list)
         
     def __len__(self) -> int:
-        """返回可解包的元素数量"""
+        """
+        返回可解包的元素数量
+
+        返回:
+        - int: 可解包的元素数量
+        """
         return 4
 
 
@@ -92,7 +102,7 @@ class LLMConfig:
     context_window: Optional[int] = None
     """总上下文窗口, 与 CM max_context 同源"""
     history_ratio: Optional[float] = None
-    """历史上下文比例, 输出预算 = context_window × (1 - history_ratio)"""
+    """历史上下文比例, 输出预算 = context_window x (1 - history_ratio)"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
     reasoning_body: Optional[Dict[str, Any]] = None
@@ -168,9 +178,9 @@ class UserInfo:
 
 
 class PlatformMessageType(Enum):
-    GROUP_MESSAGE = "GroupMessage"     # 群组形式的消息
+    GROUP_MESSAGE = "GroupMessage"   # 群组形式的消息
     FRIEND_MESSAGE = "FriendMessage"   # 私聊, 好友等单聊消息
-    OTHER_MESSAGE = "OtherMessage"     # 其他类型的消息, 如系统消息等
+    OTHER_MESSAGE = "OtherMessage"   # 其他类型的消息, 如系统消息等
 
 @dataclass
 class MessageMember:
@@ -235,6 +245,7 @@ class PlatformMessage:
     """消息时间戳"""
 
     def __init__(self) -> None:
+        """初始化 PlatformMessage"""
         self.timestamp = int(time.time())
         self.group = None
 
@@ -243,8 +254,12 @@ class PlatformMessage:
 
     @property
     def group_id(self) -> str:
-        """向后兼容的 group_id 属性
+        """
+        向后兼容的 group_id 属性
         群组id, 如果为私聊, 则为空
+
+        返回:
+        - str: 向后兼容的 group_id 属性
         """
         if self.group:
             return self.group.group_id
@@ -252,7 +267,12 @@ class PlatformMessage:
 
     @group_id.setter
     def group_id(self, value: Optional[str]) -> None:
-        """设置 group_id"""
+        """
+        设置 group_id
+
+        参数:
+        - value: 输入值
+        """
         if value:
             if self.group:
                 self.group.group_id = value
@@ -283,7 +303,8 @@ class PlatformError:
 class CommandAction:
     """命令执行后的动作指示"""
     action: str
-    """动作类型, 可选值:
+    """
+    动作类型, 可选值:
         - "switch_session": 切换会话
         - "new_session": 创建新会话
         - "none": 无动作, 仅返回信息
@@ -327,7 +348,8 @@ class StateSnapshot:
 
     @classmethod
     def from_dict(cls, value: Dict[str, object]) -> "StateSnapshot":
-        """从持久化字典读取快照, 校验版本与结构
+        """
+        从持久化字典读取快照, 校验版本与结构
 
         参数:
         - value: 持久化字典 (to_dict 的输出)
@@ -359,7 +381,12 @@ class StateSnapshot:
         return cls(version=CURRENT_SNAPSHOT_VERSION, scope={**scope}, domains=domains)
 
     def to_dict(self) -> Dict[str, object]:
-        """转换为稳定的持久化字典"""
+        """
+        转换为稳定的持久化字典
+
+        返回:
+        - Dict[str, object]: 转换为稳定的持久化字典
+        """
         return {
             "snapshot_version": self.version,
             "scope": dict(self.scope),
@@ -415,7 +442,7 @@ class RestoreOptions:
 class SnapshotDomain:
     """领域注册声明: 框架与领域数据的唯一契约"""
     name: str
-    """领域名称, 如 "messages" / "session_config" """
+    """领域名称, 如 \"messages\" / \"session_config\""""
     builder: Callable[[sqlite3.Connection, StateScope], List[JsonRow]]
     """读取领域数据, 返回行字典列表"""
     restorer: Callable[[sqlite3.Connection, StateScope, List[JsonRow], RestoreOptions], None]
@@ -432,18 +459,12 @@ class SnapshotDomain:
 class MutationContext:
     """一次原子状态变更的审计上下文"""
     source: str = "manual"
-    """变更来源, 如 "checkpoint_rollback" / "checkpoint_fork" """
+    """变更来源, 如 \"checkpoint_rollback\" / \"checkpoint_fork\""""
     reason: str = ""
     """变更原因说明"""
     change_set_id: str = ""
     """变更批次唯一标识"""
 
-
-# ================= 类型安全的 getattr 辅助 =================
-# 裸 getattr(obj, "attr", None) 返回 Any, pyright 无法检查
-# 这组函数通过 overload + TypeVar 让返回值携带类型信息
-
-from typing import TypeVar, overload
 
 T = TypeVar("T")
 
@@ -455,7 +476,8 @@ def safe_getattr(obj: Any, name: str) -> Any | None: ...
 def safe_getattr(obj: Any, name: str, default: T) -> Any | T: ...
 
 def safe_getattr(obj: Any, name: str, default: T | None = None) -> Any | T | None:
-    """类型安全的 getattr: 返回值类型 = 属性类型 | default 类型
+    """
+    类型安全的 getattr: 返回值类型 = 属性类型 | default 类型
 
     用于替代裸 getattr(obj, "attr", None), 让 pyright 能推断返回值类型
 
@@ -471,13 +493,33 @@ def safe_getattr(obj: Any, name: str, default: T | None = None) -> Any | T | Non
 
 
 def safe_getattr_str(obj: Any, name: str, default: str = "") -> str:
-    """类型安全的 getattr, 返回 str"""
+    """
+    类型安全的 getattr, 返回 str
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+    - default: 默认值
+
+    返回:
+    - str:  str
+    """
     val = getattr(obj, name, default)
     return str(val) if val is not None else default
 
 
 def safe_getattr_int(obj: Any, name: str, default: int = 0) -> int:
-    """类型安全的 getattr, 返回 int"""
+    """
+    类型安全的 getattr, 返回 int
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+    - default: 默认值
+
+    返回:
+    - int:  int
+    """
     val = getattr(obj, name, default)
     if val is None:
         return default
@@ -488,7 +530,17 @@ def safe_getattr_int(obj: Any, name: str, default: int = 0) -> int:
 
 
 def safe_getattr_float(obj: Any, name: str, default: float = 0.0) -> float:
-    """类型安全的 getattr, 返回 float"""
+    """
+    类型安全的 getattr, 返回 float
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+    - default: 默认值
+
+    返回:
+    - float:  float
+    """
     val = getattr(obj, name, default)
     if val is None:
         return default
@@ -499,7 +551,17 @@ def safe_getattr_float(obj: Any, name: str, default: float = 0.0) -> float:
 
 
 def safe_getattr_bool(obj: Any, name: str, default: bool = False) -> bool:
-    """类型安全的 getattr, 返回 bool"""
+    """
+    类型安全的 getattr, 返回 bool
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+    - default: 默认值
+
+    返回:
+    - bool:  bool
+    """
     val = getattr(obj, name, default)
     if val is None:
         return default
@@ -507,7 +569,16 @@ def safe_getattr_bool(obj: Any, name: str, default: bool = False) -> bool:
 
 
 def safe_getattr_list(obj: Any, name: str) -> list[Any]:
-    """类型安全的 getattr, 返回 list(不存在或 None 时返回空列表)"""
+    """
+    类型安全的 getattr, 返回 list(不存在或 None 时返回空列表)
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+
+    返回:
+    - list[Any]:  list(不存在或 None 时返回空列表)
+    """
     val: Any = getattr(obj, name, None)
     if val is None:
         return []
@@ -517,7 +588,16 @@ def safe_getattr_list(obj: Any, name: str) -> list[Any]:
 
 
 def safe_getattr_dict(obj: Any, name: str) -> dict[str, Any]:
-    """类型安全的 getattr, 返回 dict(不存在或 None 时返回空字典)"""
+    """
+    类型安全的 getattr, 返回 dict(不存在或 None 时返回空字典)
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+
+    返回:
+    - dict[str, Any]:  dict(不存在或 None 时返回空字典)
+    """
     val: Any = getattr(obj, name, None)
     if val is None:
         return {}
@@ -527,7 +607,16 @@ def safe_getattr_dict(obj: Any, name: str) -> dict[str, Any]:
 
 
 def safe_getattr_callable(obj: Any, name: str) -> Callable[..., Any] | None:
-    """类型安全的 getattr, 返回可调用对象(不存在或不可调用时返回 None)"""
+    """
+    类型安全的 getattr, 返回可调用对象(不存在或不可调用时返回 None)
+
+    参数:
+    - obj: 目标对象
+    - name: 名称
+
+    返回:
+    - Callable[..., Any] | None: 可调用对象(不存在或不可调用时返回 None)
+    """
     val = getattr(obj, name, None)
     return val if callable(val) else None
 

@@ -1,18 +1,18 @@
-# -*- coding: utf-8 -*-
-"""satrap_coding 插件 TUI Demo: 终端交互展示插件全部能力
+"""
+satrap_coding 插件 TUI Demo: 终端交互展示插件全部能力
 
 运行:
     python tests/manual/tui_demo.py                # 真实模型 (自动读取 .toolkit/apikey.txt)
-    python tests/manual/tui_demo.py --demo         # 离线模式 (无 API key, 模拟工具调用)
-    python tests/manual/tui_demo.py --key-file 路径  # 指定模型配置文件
-    python tests/manual/tui_demo.py --workspace 路径  # 指定模型可读工作区 (默认沙箱根)
+    python tests/manual/tui_demo.py -- demo         # 离线模式 (无 API key, 模拟工具调用)
+    python tests/manual/tui_demo.py -- key-file 路径  # 指定模型配置文件
+    python tests/manual/tui_demo.py -- workspace 路径  # 指定模型可读工作区 (默认沙箱根)
 
 默认工作区 = 沙箱根 (.satrap/coding/sandbox/): 一个目录, 写文件免审批 (沙箱=免审批区);
-传 --workspace 其他目录可恢复工作区/沙箱分离, 工作区写走审批。
+传 -- workspace 其他目录可恢复工作区/沙箱分离, 工作区写走审批
 
-注: 插件 sandbox 工具已移除 (与 shell/文件工具重复), 执行统一走 shell, 文件读写走文件工具。
+注: 插件 sandbox 工具已移除 (与 shell/文件工具重复), 执行统一走 shell, 文件读写走文件工具
 
-界面: 顶部状态面板 (审批策略/计划模式/记忆/目标) + 消息区 + 底部输入。
+界面: 顶部状态面板 (审批策略/计划模式/记忆/目标) + 消息区 + 底部输入
 
 输入:
 - 普通文本: 走 Agent 流程 (模型 + 工具调用)
@@ -38,7 +38,12 @@ os.chdir(str(PROJECT_ROOT))
 
 
 def _reconfigure_utf8(stream: Any) -> None:
-    """stdin/stdout 切到 UTF-8 (typeshed 未标注 reconfigure, 用 Any 兼容)"""
+    """
+    stdin/stdout 切到 UTF-8 (typeshed 未标注 reconfigure, 用 Any 兼容)
+
+    参数:
+    - stream: 是否使用流式调用
+    """
     try:
         stream.reconfigure(encoding="utf-8", errors="replace")
     except (AttributeError, OSError, ValueError):
@@ -47,8 +52,8 @@ def _reconfigure_utf8(stream: Any) -> None:
 
 _reconfigure_utf8(sys.stdout)
 if not sys.stdin.isatty():
-    # 管道/CI 场景: stdin 统一按 UTF-8 读取 (tty 下由 prompt_toolkit 自行处理)
     _reconfigure_utf8(sys.stdin)
+    # 管道/CI 场景: stdin 统一按 UTF-8 读取 (tty 下由 prompt_toolkit 自行处理)
 
 from rich.console import Console, Group
 from rich.markup import escape
@@ -69,7 +74,7 @@ KEY_FILE = PROJECT_ROOT / ".toolkit" / "apikey.txt"
 SESSION_ID = "tui-demo"
 CHAT_DB = PROJECT_ROOT / ".satrap" / "tui_demo" / "chat.db"
 DEFAULT_WORKSPACE = PROJECT_ROOT / ".satrap" / "coding" / "sandbox"
-# 默认工作区 = 沙箱根: 与插件 DEFAULT_SANDBOX_ROOT 一致, 一个目录双重身份 (可被 --workspace 覆盖)
+# 默认工作区 = 沙箱根: 与插件 DEFAULT_SANDBOX_ROOT 一致, 一个目录双重身份 (可被 -- workspace 覆盖)
 
 AUTO_MAX_ROUNDS = 8
 """yolo 自动推进轮数上限"""
@@ -79,8 +84,8 @@ AUTO_PROMPT = "继续推进当前目标。若目标已全部完成, 请以「已
 
 console = Console(highlight=False, soft_wrap=True)
 
-# 流式内容/思考转发: 回调在会话构造时传入, 转发到当前 TuiApp
 _content_sink: list[Callable[[str], None]] = []
+# 流式内容/思考转发: 回调在会话构造时传入, 转发到当前 TuiApp
 _thinking_sink: list[Callable[[str], None]] = []
 
 
@@ -94,8 +99,8 @@ def _thinking_forward(delta: str) -> None:
         _thinking_sink[0](delta)
 
 
-# 非 tty (管道/CI) 时退化用内置 input, prompt_toolkit 需要真实终端
 _input: PromptSession[str] | None
+# 非 tty (管道/CI) 时退化用内置 input, prompt_toolkit 需要真实终端
 if sys.stdin.isatty():
     _input = PromptSession(history=InMemoryHistory())
 else:
@@ -103,7 +108,15 @@ else:
 
 
 def _ask(prompt: str) -> str:
-    """统一输入入口 (tty 用 prompt_toolkit, 否则内置 input)"""
+    """
+    统一输入入口 (tty 用 prompt_toolkit, 否则内置 input)
+
+    参数:
+    - prompt: 提示词
+
+    返回:
+    - str: 统一输入入口 (tty 用 prompt_toolkit, 否则内置 input)
+    """
     if _input is not None:
         return str(_input.prompt(prompt))
     return input(prompt)
@@ -113,7 +126,15 @@ def _ask(prompt: str) -> str:
 
 
 def _normalize_base_url(url: str) -> str:
-    """apikey.txt 中的地址可能含完整端点, 去掉 /chat/completions 尾缀"""
+    """
+    apikey.txt 中的地址可能含完整端点, 去掉 /chat/completions 尾缀
+
+    参数:
+    - url: URL
+
+    返回:
+    - str: apikey.txt 中的地址可能含完整端点, 去掉 /chat/completions 尾缀
+    """
     for suffix in ("/chat/completions", "/chat/completions/"):
         if url.rstrip().endswith(suffix):
             return url.rstrip()[: -len(suffix)]
@@ -121,7 +142,16 @@ def _normalize_base_url(url: str) -> str:
 
 
 def build_real_llm(key_file: Path, max_tokens: int = DEFAULT_MAX_TOKENS) -> LLM:
-    """从 apikey.txt 解析第一组 (base url / model / api key) 构造真实 LLM"""
+    """
+    从 apikey.txt 解析第一组 (base url / model / api key) 构造真实 LLM
+
+    参数:
+    - key_file: 密钥文件
+    - max_tokens: 最大tokens
+
+    返回:
+    - LLM: 从 apikey.txt 解析第一组 (base url / model / api key) 构造真实 LLM
+    """
     if not key_file.is_file():
         console.print(
             f"[yellow]未找到 {key_file}, 请使用 --demo 离线模式或 --key-file 指定配置文件[/yellow]"
@@ -198,9 +228,16 @@ class DemoLLM(LLM):
         )
 
     def _simulate(self, messages: list[dict[str, Any]]) -> str:
-        """模拟 Agent: @write/@read/@shell 触发真实工具 (含审批)
+        """
+        模拟 Agent: @write/@read/@shell 触发真实工具 (含审批)
+
+        参数:
+        - messages: 消息列表
 
         用户消息可能被注入器加记忆/目标头, 用正则提取 @ 指令
+
+        返回:
+        - str: 模拟 Agent: @write/@read/@shell 触发真实工具 (含审批)
         """
         session = self.session
         assert session is not None, "DemoLLM 未绑定会话"
@@ -247,7 +284,7 @@ class TuiApp:
         _content_sink.append(self._on_content)
         _thinking_sink.append(self._on_thinking)
 
-    # ---------------- 状态读取 ----------------
+    # ---------- 状态读取 ----------
 
     def _state(self) -> dict[str, Any]:
         return get_plugin_state(self.session)
@@ -277,7 +314,7 @@ class TuiApp:
         )
         return table
 
-    # ---------------- 渲染 ----------------
+    # ---------- 渲染 ----------
 
     def render(self) -> None:
         console.clear()
@@ -292,7 +329,12 @@ class TuiApp:
         console.print(self._messages_panel())
 
     def _messages_panel(self) -> Panel:
-        """消息区: 文本按字面渲染 (Text 不解析 markup, 防 [x] 片段被误吞)"""
+        """
+        消息区: 文本按字面渲染 (Text 不解析 markup, 防 [x] 片段被误吞)
+
+        返回:
+        - Panel: 消息区: 文本按字面渲染 (Text 不解析 markup, 防 [x] 片段被误吞)
+        """
         style_map = {"用户": "cyan", "助手": "green", "命令": "yellow", "系统": "magenta"}
         lines: list[Text] = []
         for role, text in self.messages:
@@ -303,13 +345,20 @@ class TuiApp:
             lines.append(Text("还没有消息, 输入一句话开始, 或试试 /goal 设置目标", style="dim"))
         return Panel(Group(*lines), title="对话", border_style="green")
 
-    # ---------------- 交互 ----------------
+    # ---------- 交互 ----------
 
     def ask_user(self, question: str) -> str:
-        """询问入口: 区分模型询问 (ask_user 工具) 与审批询问
+        """
+        询问入口: 区分模型询问 (ask_user 工具) 与审批询问
+
+        参数:
+        - question: 问题内容
 
         ask_user 工具带推荐选项 (格式: 可选: 1. A  2. B): 提示输入序号或文本, 序号映射为选项;
         审批询问 (是否允许执行等): 提示 y/n/all
+
+        返回:
+        - str: 询问入口: 区分模型询问 (ask_user 工具) 与审批询问
         """
         if "可选: " in question:
             console.print(
@@ -328,21 +377,32 @@ class TuiApp:
         return _ask("y 仅本次 / n 拒绝 / all 会话放行 > ").strip()
 
     def _on_content(self, delta: str) -> None:
-        """流式内容回调 (Text 字面渲染, 防模型输出含 [x] 触发 markup 解析)"""
+        """
+        流式内容回调 (Text 字面渲染, 防模型输出含 [x] 触发 markup 解析)
+
+        参数:
+        - delta: 增量内容
+        """
         if self._thinking_active:
-            console.print()  # 思考结束, 换行进入正文
+            console.print()   # 思考结束, 换行进入正文
             self._thinking_active = False
         console.print(Text(delta), end="", soft_wrap=True)
 
     def _on_thinking(self, delta: str) -> None:
-        """流式思考回调 (斜体灰显)"""
+        """
+        流式思考回调 (斜体灰显)
+
+        参数:
+        - delta: 增量内容
+        """
         if not self._thinking_active:
             console.print(Text("💭 "), style="dim italic", end="")
             self._thinking_active = True
         console.print(Text(delta), style="dim italic", end="", soft_wrap=True)
 
     def _new_session(self) -> None:
-        """/new: 清空上下文历史, 开始新会话 (记忆/目标/审批规则等持久数据保留)
+        """
+        /new: 清空上下文历史, 开始新会话 (记忆/目标/审批规则等持久数据保留)
 
         ContextManager 无公开清空 API, 利用增量保存机制: _saved_count 置 -1
         触发全量重写 (先 DELETE 再 INSERT), 空消息列表落库即清空历史
@@ -359,10 +419,11 @@ class TuiApp:
         self.messages.append(("系统", "已开始新会话 (上下文历史已清空, 记忆/目标/审批规则保留)"))
 
     def _auto_progress(self) -> None:
-        """yolo 模式: 目标设置后自动连续推进, 直到模型报告完成或达轮数上限
+        """
+        yolo 模式: 目标设置后自动连续推进, 直到模型报告完成或达轮数上限
 
         每轮驱动消息带目标块 (注入器拼接), 模型自主调用工具推进;
-        回复以「已完成」开头即停止, 工具审批照常询问 (可干预)
+        回复以'已完成'开头即停止, 工具审批照常询问 (可干预)
         """
         console.print(f"[dim]… 目标自动推进 (yolo) 已启动, 完成或达 {AUTO_MAX_ROUNDS} 轮上限自动停止 …[/dim]")
         for round_no in range(1, AUTO_MAX_ROUNDS + 1):
@@ -444,8 +505,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # 隔离模型工作区: 默认即沙箱根 (一个目录, 写文件免审批); 只读白名单指向该目录
     workspace = args.workspace.resolve()
+    # 隔离模型工作区: 默认即沙箱根 (一个目录, 写文件免审批); 只读白名单指向该目录
     workspace.mkdir(parents=True, exist_ok=True)
     if not any(workspace.iterdir()):
         (workspace / "README.md").write_text(

@@ -22,7 +22,12 @@ ensure_state()
 
 
 def _backend_status() -> tuple[bool, str]:
-    """返回后端运行状态和当前 API 地址"""
+    """
+    返回后端运行状态和当前 API 地址
+
+    返回:
+    - tuple[bool, str]: 后端运行状态和当前 API 地址
+    """
     daemon = DaemonInfo.from_config(st.session_state.config)
     client = DaemonClient(daemon=daemon, timeout=2)
     health = client.health()
@@ -71,4 +76,4 @@ def render():
 
 render()
 
-# streamlit run satrap/admin.py
+# 启动命令: streamlit run satrap/admin.py

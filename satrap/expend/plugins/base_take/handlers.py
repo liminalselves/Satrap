@@ -1,4 +1,5 @@
-"""base_take 处理器: 长期记忆注入模型输入 (从 coding 插件迁入, 仅记忆部分)
+"""
+base_take 处理器: 长期记忆注入模型输入 (从 coding 插件迁入, 仅记忆部分)
 
 注入点: before_user_send (用户消息进入模型前), 把记忆块拼接到消息头部;
 版本号缓存避免每轮重复读库, 内容变化 (写操作后) 自动失效
@@ -7,7 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from satrap.edictum import AsyncSimpleSession, SessionHandler, SimpleSession
+from satrap.edictum import AsyncSimpleSession, HandlerContext, SessionHandler, SimpleSession
+from satrap.expend.plugins.base_take.state import get_plugin_state
 from satrap.expend.tools.memory_store import MemoryStore
 
 _HEADER = "【长期记忆】\n"
@@ -20,12 +22,26 @@ class _MemoryInjector:
     """记忆注入器 (带缓存失效)"""
 
     def __init__(self, store: MemoryStore) -> None:
+        """
+        初始化 _MemoryInjector
+
+        参数:
+        - store: 存储实例
+        """
         self.store = store
         self._cache: tuple[str, str] = ("", "")
         """缓存: (记忆块, 拼接结果)"""
 
     def inject(self, text: str) -> str:
-        """返回注入后的文本 (无内容时透传)"""
+        """
+        返回注入后的文本 (无内容时透传)
+
+        参数:
+        - text: 待处理文本
+
+        返回:
+        - str: 注入后的文本 (无内容时透传)
+        """
         memory_block = self.store.to_context_block()
         if not memory_block:
             return text
@@ -39,10 +55,15 @@ class _MemoryInjector:
 
 
 def build_handlers(session: SessionType) -> list[SessionHandler]:
-    """构建处理器: 注入记忆到模型输入"""
-    from satrap.edictum import HandlerContext
-    from satrap.expend.plugins.base_take.state import get_plugin_state
+    """
+    构建处理器: 注入记忆到模型输入
 
+    参数:
+    - session: 会话
+
+    返回:
+    - list[SessionHandler]: 构建处理器: 注入记忆到模型输入
+    """
     state = get_plugin_state(session)
     store = state["store"]
     assert isinstance(store, MemoryStore)

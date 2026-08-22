@@ -58,7 +58,8 @@ class MisskeyAdapter(PlatformAdapter):
         event_handler: EventHandler | None = None,
         event_queue: asyncio.Queue[Any] | None = None,
     ) -> None:
-        """初始化 MisskeyAdapter 实例
+        """
+        初始化 MisskeyAdapter 实例
 
         参数:
         - config: 平台配置
@@ -94,7 +95,12 @@ class MisskeyAdapter(PlatformAdapter):
         self._user_cache: dict[str, dict[str, Any]] = {}
 
     def meta(self) -> PlatformMetadata:
-        """返回平台元信息"""
+        """
+        返回平台元信息
+
+        返回:
+        - PlatformMetadata: 平台元信息
+        """
         return PlatformMetadata(
             name=f"Misskey({self._instance_url})",
             id=self.config.id,
@@ -134,7 +140,8 @@ class MisskeyAdapter(PlatformAdapter):
         await self._start_websocket_connection()
 
     def _register_event_handlers(self, streaming: StreamingClient) -> None:
-        """注册 streaming 事件处理器
+        """
+        注册 streaming 事件处理器
 
         参数:
         - streaming: Misskey streaming 客户端
@@ -177,8 +184,9 @@ class MisskeyAdapter(PlatformAdapter):
                 backoff_delay = min(backoff_delay * 1.5, max_backoff)
 
     async def _handle_notification(self, data: dict[str, Any]) -> None:
-        """处理 mention/reply/quote 通知
-        
+        """
+        处理 mention/reply/quote 通知
+
         参数:
         - data: 通知数据
         """
@@ -195,8 +203,9 @@ class MisskeyAdapter(PlatformAdapter):
             logger.error(f"[MisskeyAdapter] 处理通知失败: {e}")
 
     async def _handle_chat_message(self, data: dict[str, Any]) -> None:
-        """处理 Misskey chat 私聊和房间消息
-        
+        """
+        处理 Misskey chat 私聊和房间消息
+
         参数:
         - data: 聊天消息数据
         """
@@ -215,18 +224,23 @@ class MisskeyAdapter(PlatformAdapter):
             logger.error(f"[MisskeyAdapter] 处理聊天消息失败: {e}")
 
     async def _debug_handler(self, data: dict[str, Any]) -> None:
-        """记录未处理 streaming 事件
-        
+        """
+        记录未处理 streaming 事件
+
         参数:
         - data: 事件数据
         """
         logger.debug(f"[MisskeyAdapter] 未处理事件: {data.get('type', 'unknown')}")
 
     def _is_bot_mentioned(self, note: dict[str, Any]) -> bool:
-        """判断 note 是否提及当前 bot
-        
+        """
+        判断 note 是否提及当前 bot
+
         参数:
         - note: Misskey note 数据
+
+        返回:
+        - bool: 判断 note 是否提及当前 bot
         """
         text = note.get("text", "") or ""
         mentions = [str(item) for item in note.get("mentions", [])]
@@ -242,8 +256,9 @@ class MisskeyAdapter(PlatformAdapter):
         return False
 
     def _commit_platform_message(self, message: PlatformMessage) -> None:
-        """将 PlatformMessage 封装为 MessageEvent 并提交
-        
+        """
+        将 PlatformMessage 封装为 MessageEvent 并提交
+
         参数:
         - message: 要提交的 PlatformMessage
         """
@@ -263,12 +278,13 @@ class MisskeyAdapter(PlatformAdapter):
         poll: dict[str, Any],
         message_parts: list[str],
     ) -> None:
-        """处理 Misskey 投票数据
-        
+        """
+        处理 Misskey 投票数据
+
         参数:
         - message: 要添加投票组件的 PlatformMessage
         - poll: Misskey 投票数据
-        - message_parts: 消息组件列表，用于存储格式化后的投票文本
+        - message_parts: 消息组件列表, 用于存储格式化后的投票文本
         """
         raw = message.raw_message
         if isinstance(raw, dict):
@@ -284,10 +300,14 @@ class MisskeyAdapter(PlatformAdapter):
             message_parts.append(poll_text)
 
     async def convert_message(self, raw_data: dict[str, Any]) -> PlatformMessage:
-        """将 Misskey note 转换为 Satrap PlatformMessage
-        
+        """
+        将 Misskey note 转换为 Satrap PlatformMessage
+
         参数:
         - raw_data: Misskey note 数据
+
+        返回:
+        - PlatformMessage: 将 Misskey note 转换为 Satrap PlatformMessage
         """
         sender_info = extract_sender_info(raw_data, is_chat=False)
         message = create_base_message(raw_data, sender_info, self.bot_self_id, is_chat=False)
@@ -308,10 +328,14 @@ class MisskeyAdapter(PlatformAdapter):
         return message
 
     async def convert_chat_message(self, raw_data: dict[str, Any]) -> PlatformMessage:
-        """将 Misskey 私聊消息转换为 Satrap PlatformMessage
-        
+        """
+        将 Misskey 私聊消息转换为 Satrap PlatformMessage
+
         参数:
         - raw_data: Misskey 私聊消息数据
+
+        返回:
+        - PlatformMessage: 将 Misskey 私聊消息转换为 Satrap PlatformMessage
         """
         sender_info = extract_sender_info(raw_data, is_chat=True)
         message = create_base_message(raw_data, sender_info, self.bot_self_id, is_chat=True)
@@ -327,10 +351,14 @@ class MisskeyAdapter(PlatformAdapter):
         return message
 
     async def convert_room_message(self, raw_data: dict[str, Any]) -> PlatformMessage:
-        """将 Misskey 房间消息转换为 Satrap PlatformMessage
-        
+        """
+        将 Misskey 房间消息转换为 Satrap PlatformMessage
+
         参数:
         - raw_data: Misskey 房间消息数据
+
+        返回:
+        - PlatformMessage: 将 Misskey 房间消息转换为 Satrap PlatformMessage
         """
         sender_info = extract_sender_info(raw_data, is_chat=True)
         room_id = str(raw_data.get("toRoomId", ""))
@@ -359,11 +387,15 @@ class MisskeyAdapter(PlatformAdapter):
         return message
 
     def _extract_additional_fields(self, session_id: str, message_chain: MessageChain) -> dict[str, Any]:
-        """提取发送 note 时的额外字段
-        
+        """
+        提取发送 note 时的额外字段
+
         参数:
         - session_id: 会话 ID
         - message_chain: 要提取额外字段的 MessageChain
+
+        返回:
+        - dict[str, Any]: 提取发送 note 时的额外字段
         """
         fields = {"cw": None, "poll": None, "renote_id": None, "channel_id": None}
         for comp in message_chain:
@@ -378,21 +410,29 @@ class MisskeyAdapter(PlatformAdapter):
         return fields
 
     def _has_file_component(self, comp: Any) -> bool:
-        """判断组件是否可能携带文件
-        
+        """
+        判断组件是否可能携带文件
+
         参数:
         - comp: 要检查的组件
+
+        返回:
+        - bool: 判断组件是否可能携带文件
         """
         return isinstance(comp, (Image, Record, Video, File)) or any(
             hasattr(comp, attr) for attr in ("convert_to_file_path", "get_file", "file", "url", "path", "src", "source")
         )
 
     async def _upload_component(self, comp: Any, sem: asyncio.Semaphore) -> str | None:
-        """上传单个文件组件并返回 fileId
-        
+        """
+        上传单个文件组件并返回 fileId
+
         参数:
         - comp: 要上传的组件
         - sem: 用于并发控制的 Semaphore
+
+        返回:
+        - str | None: 上传单个文件组件并返回 fileId
         """
         async with sem:
             if not self._client:
@@ -419,10 +459,14 @@ class MisskeyAdapter(PlatformAdapter):
             return None
 
     async def _collect_file_ids(self, message_chain: MessageChain) -> list[str]:
-        """上传消息链中的文件组件并收集 fileId
-        
+        """
+        上传消息链中的文件组件并收集 fileId
+
         参数:
         - message_chain: 要上传文件组件的 MessageChain
+
+        返回:
+        - list[str]: 上传消息链中的文件组件并收集 fileId
         """
         if not self.enable_file_upload:
             return []
@@ -436,20 +480,28 @@ class MisskeyAdapter(PlatformAdapter):
         return [file_id for file_id in results if file_id]
 
     async def send_text(self, session_id: str, text: str) -> Any:
-        """发送纯文本消息
-        
+        """
+        发送纯文本消息
+
         参数:
         - session_id: 会话 ID
         - text: 要发送的纯文本消息
+
+        返回:
+        - Any: 发送纯文本消息
         """
         return await self.send_message(session_id, MessageChain.from_text(text))
 
     async def send_message(self, session_id: str, message: MessageChain) -> Any:
-        """按 session_id 发送完整消息链
-        
+        """
+        按 session_id 发送完整消息链
+
         参数:
         - session_id: 会话 ID
         - message: 要发送的消息链
+
+        返回:
+        - Any: 按 session_id 发送完整消息链
         """
         if not self._client:
             logger.error("[MisskeyAdapter] 客户端未初始化, 无法发送消息")
@@ -504,12 +556,16 @@ class MisskeyAdapter(PlatformAdapter):
         generator: AsyncGenerator[MessageChain, None],
         use_fallback: bool = False,
     ) -> Any:
-        """Misskey 流式发送降级为分段或合并发送
-        
+        """
+        Misskey 流式发送降级为分段或合并发送
+
         参数:
         - session_id: 会话 ID
         - generator: 生成消息链的异步迭代器
         - use_fallback: 是否使用分段发送 (默认 False)
+
+        返回:
+        - Any: Misskey 流式发送降级为分段或合并发送
         """
         if not use_fallback:
             buffer: list[Any] = []
@@ -553,5 +609,10 @@ class MisskeyAdapter(PlatformAdapter):
         await super().terminate()
 
     def get_client(self) -> Any:
-        """返回底层 Misskey API 客户端"""
+        """
+        返回底层 Misskey API 客户端
+
+        返回:
+        - Any: 底层 Misskey API 客户端
+        """
         return self._client

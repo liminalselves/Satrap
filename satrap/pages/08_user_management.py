@@ -4,14 +4,19 @@ from typing import Any
 
 import streamlit as st
 from satrap.core.framework.UserManager import UserInfoStore
-from satrap.core.type import safe_getattr_str
+from satrap.core.type import UserInfo, safe_getattr_str
 from satrap.core.utils.paths import get_db_path
 
 st.set_page_config(page_title="用户管理", page_icon="", layout="wide")
 
 
 def _db_path() -> str:
-    """用户信息库路径: 显式配置 > 默认"""
+    """
+    用户信息库路径: 显式配置 > 默认
+
+    返回:
+    - str: 用户信息库路径: 显式配置 > 默认
+    """
     config = st.session_state.config
     return str(safe_getattr_str(config, "user_db_path") or get_db_path("user_info.db"))
 
@@ -80,9 +85,17 @@ def _delete_dialog(user_id: str):
 
 
 def _mk_user(user_id: str, platform: str, nickname: str):
-    """构造 UserInfo (避免直接 import type 的样板)"""
-    from satrap.core.type import UserInfo
+    """
+    构造 UserInfo (避免直接 import type 的样板)
 
+    参数:
+    - user_id: 用户 ID
+    - platform: 平台名称
+    - nickname: 用户昵称
+
+    返回:
+    - 构造 UserInfo (避免直接 import type 的样板)
+    """
     return UserInfo(
         user_id=user_id,
         user_platform=platform.strip(),
@@ -119,7 +132,7 @@ for u in users:
             "会话数": len(u.user_session or []),
         }
     )
-st.dataframe(rows, use_container_width=True, hide_index=True)  # pyright: ignore[reportUnknownMemberType]
+st.dataframe(rows, use_container_width=True, hide_index=True)   # pyright: ignore[reportUnknownMemberType]
 
 st.divider()
 st.subheader("用户详情")

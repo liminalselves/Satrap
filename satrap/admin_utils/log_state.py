@@ -10,11 +10,23 @@ def read_log_increment(
     max_lines: int,
     paused: bool,
 ) -> tuple[int, list[str], list[str]]:
-    """读取新增日志并返回当前位置, 缓冲行和展示行"""
+    """
+    读取新增日志并返回当前位置, 缓冲行和展示行
+
+    参数:
+    - log_file: log文件
+    - position: 当前位置
+    - cached_lines: cached_lines 输入值
+    - max_lines: 最大lines
+    - paused: paused 输入值
+
+    返回:
+    - tuple[int, list[str], list[str]]: 读取新增日志并返回当前位置, 缓冲行和展示行
+    """
     file_size = log_file.stat().st_size
     if file_size < position:
-        # 日志被截断或轮转时, 从新文件开头重新读取.
         position = 0
+        # 日志被截断或轮转时, 从新文件开头重新读取
         cached_lines = []
 
     if paused:

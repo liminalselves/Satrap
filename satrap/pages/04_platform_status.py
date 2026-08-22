@@ -126,6 +126,7 @@ def _delete_platform_dialog(platform_id: str):
 
 
 def render():
+    """渲染"""
     ensure_state()
     st.subheader("平台适配器状态")
 

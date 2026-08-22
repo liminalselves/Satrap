@@ -1,4 +1,5 @@
-"""可选扩展工具集
+"""
+可选扩展工具集
 
 集中存放可直接注册进 Agent / Session 的工具类:
 - agent: sub-agent 编排 (SubAgent / AsyncSubAgent)

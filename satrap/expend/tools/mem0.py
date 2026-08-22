@@ -12,9 +12,9 @@ from satrap.core.database import DataBase
 from satrap.core.log import logger
 
 
-# ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 # Prompt 模板
-# ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 
 _EXTRACT_PROMPT = """\
 你是一个专业的记忆提取助手，请从以下对话中提取出值得长期记忆的关键事实。
@@ -71,9 +71,9 @@ _SUMMARY_PROMPT = """\
 摘要："""
 
 
-# ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 # Mem0 主类
-# ──────────────────────────────────────────────────────────────
+# ------------------------------------------------------------
 
 class Mem0Memory:
     """基于 DataBase(faiss + sqlite) 的长期记忆系统"""
@@ -87,7 +87,8 @@ class Mem0Memory:
         similarity_threshold: float = 0.5,
         recent_messages_window: int = 10,
     ):
-        """初始化记忆系统
+        """
+        初始化记忆系统
 
         参数:
         - llm: LLM 调用实例, 用于提取, 决策, 摘要
@@ -104,15 +105,15 @@ class Mem0Memory:
         self.threshold = similarity_threshold
         self.window = recent_messages_window
 
-        # 运行时内存: 会话摘要与近期历史
         self._summaries: Dict[str, str] = {}
+        # 运行时内存: 会话摘要与近期历史
         self._histories: Dict[str, List[Dict[str, str]]] = {}
 
         logger.info(f"[Mem0] 初始化完成, persist_path={persist_path}")
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------
     # 公开 API
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------
 
     async def add(
         self,
@@ -120,24 +121,34 @@ class Mem0Memory:
         assistant_message: str,
         user_id: str = "default",
     ) -> List[str]:
-        """处理一轮对话, 提取候选记忆并执行更新"""
+        """
+        处理一轮对话, 提取候选记忆并执行更新
+
+        参数:
+        - user_message: 用户消息
+        - assistant_message: assistant消息
+        - user_id: 用户 ID
+
+        返回:
+        - List[str]: 处理一轮对话, 提取候选记忆并执行更新
+        """
         collection = self._col(user_id)
         await asyncio.to_thread(self.vector_db.create_collection, collection)
         self._push_history(user_id, user_message, assistant_message)
 
-        # 1) 提取候选记忆
         candidates = await self._extract(user_id, user_message, assistant_message)
+        # 1) 提取候选记忆
         logger.info(f"[Mem0] user={user_id}, 提取候选数={len(candidates)}")
 
-        # 2) 对每条候选执行 ADD, UPDATE, DELETE, NOOP
         affected_ids: List[str] = []
+        # 2) 对每条候选执行 ADD, UPDATE, DELETE, NOOP
         for fact in candidates:
             memory_id = await self._update(user_id, fact)
             if memory_id:
                 affected_ids.append(memory_id)
 
-        # 3) 异步刷新会话摘要
         asyncio.create_task(self._refresh_summary(user_id))
+        # 3) 异步刷新会话摘要
         return affected_ids
 
     async def search(
@@ -146,7 +157,17 @@ class Mem0Memory:
         user_id: str = "default",
         k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """按语义检索用户记忆"""
+        """
+        按语义检索用户记忆
+
+        参数:
+        - query: 查询内容
+        - user_id: 用户 ID
+        - k: 输入值
+
+        返回:
+        - List[Dict[str, Any]]: 按语义检索用户记忆
+        """
         k = k or self.top_k
         collection = self._col(user_id)
 
@@ -169,27 +190,68 @@ class Mem0Memory:
         ]
 
     async def get_all(self, user_id: str = "default") -> List[Dict[str, Any]]:
-        """获取用户全部记忆"""
+        """
+        获取用户全部记忆
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - List[Dict[str, Any]]: 用户全部记忆
+        """
         collection = self._col(user_id)
         return await asyncio.to_thread(self._get_all_sync, collection)
 
     async def delete(self, memory_id: str, user_id: str = "default") -> bool:
-        """按 memory_id 删除一条记忆"""
+        """
+        按 memory_id 删除一条记忆
+
+        参数:
+        - memory_id: 记忆 ID
+        - user_id: 用户 ID
+
+        返回:
+        - bool: 按 memory_id 删除一条记忆
+        """
         return await asyncio.to_thread(self._delete_by_id, user_id, memory_id)
 
     async def clear(self, user_id: str = "default") -> bool:
-        """清空用户全部记忆"""
+        """
+        清空用户全部记忆
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - bool: 清空用户全部记忆
+        """
         collection = self._col(user_id)
         self._summaries.pop(user_id, None)
         self._histories.pop(user_id, None)
         return await asyncio.to_thread(self.vector_db.delete_collection, collection)
 
     async def get_summary(self, user_id: str = "default") -> str:
-        """获取用户当前摘要"""
+        """
+        获取用户当前摘要
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - str: 用户当前摘要
+        """
         return self._summaries.get(user_id, "")
 
     def get_stats(self, user_id: str = "default") -> Dict[str, Any]:
-        """获取用户记忆统计信息"""
+        """
+        获取用户记忆统计信息
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - Dict[str, Any]: 用户记忆统计信息
+        """
         collection = self._col(user_id)
         stats = self.vector_db.get_collection_stats(collection)
         return {
@@ -199,15 +261,30 @@ class Mem0Memory:
             "history_turns": len(self._histories.get(user_id, [])) // 2,
         }
 
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------
     # 内部方法
-    # ──────────────────────────────────────────────────────────────
+    # ------------------------------------------------------------
     def _col(self, user_id: str) -> str:
-        """按用户生成集合名"""
+        """
+        按用户生成集合名
+
+        参数:
+        - user_id: 用户 ID
+
+        返回:
+        - str: 按用户生成集合名
+        """
         return f"mem0_{user_id}"
 
     def _push_history(self, user_id: str, user_msg: str, asst_msg: str):
-        """追加历史并维持滑动窗口"""
+        """
+        追加历史并维持滑动窗口
+
+        参数:
+        - user_id: 用户 ID
+        - user_msg: 用户msg
+        - asst_msg: asst_msg 输入值
+        """
         history = self._histories.setdefault(user_id, [])
         history.append({"role": "user", "content": user_msg})
         history.append({"role": "assistant", "content": asst_msg})
@@ -220,7 +297,17 @@ class Mem0Memory:
         user_message: str,
         assistant_message: str,
     ) -> List[str]:
-        """提取阶段: 从最新对话中提取候选记忆"""
+        """
+        提取阶段: 从最新对话中提取候选记忆
+
+        参数:
+        - user_id: 用户 ID
+        - user_message: 用户消息
+        - assistant_message: assistant消息
+
+        返回:
+        - List[str]: 提取阶段: 从最新对话中提取候选记忆
+        """
         summary = self._summaries.get(user_id, "(no summary)")
         history = self._histories.get(user_id, [])
         recent_pairs = history[:-2] if len(history) >= 2 else []
@@ -252,17 +339,25 @@ class Mem0Memory:
             return []
 
     async def _update(self, user_id: str, fact: str) -> Optional[str]:
-        """更新阶段: 对单条候选记忆执行操作并落库"""
+        """
+        更新阶段: 对单条候选记忆执行操作并落库
+
+        参数:
+        - user_id: 用户 ID
+        - fact: fact 输入值
+
+        返回:
+        - Optional[str]: 更新阶段: 对单条候选记忆执行操作并落库
+        """
         collection = self._col(user_id)
         now = datetime.now().isoformat()
 
-        # 1) 向量化候选事实
         fact_vec = await self.embedding.embed(fact)
+        # 1) 向量化候选事实
         if not fact_vec:
             logger.warning(f"[Mem0] 候选向量化失败, 跳过: {fact[:50]}")
             return None
 
-        # 2) 检索相似记忆
         similar = await asyncio.to_thread(
             self.vector_db.search,
             collection,
@@ -270,14 +365,15 @@ class Mem0Memory:
             self.top_k,
             self.threshold,
         )
+        # 2) 检索相似记忆
 
         existing_str = "\n".join(
             f'- [id={r["metadata"].get("id", "?")}] {r["document"]} (score {r["score"]:.2f})'
             for r in similar
         ) or "(no similar memories)"
 
-        # 3) LLM 决策
         prompt = _UPDATE_PROMPT.format(new_fact=fact, existing_memories=existing_str)
+        # 3) LLM 决策
         response = await self.llm.structured_output(
             messages=[{"role": "user", "content": prompt}],
             format={"action": "string"},
@@ -292,7 +388,6 @@ class Mem0Memory:
             logger.warning(f"[Mem0] 更新阶段 JSON 解析失败: {str(response)[:100]}")
             return None
 
-        # 4) 执行动作
         if action == "ADD":
             new_id = str(uuid.uuid4())
             meta = {
@@ -310,6 +405,7 @@ class Mem0Memory:
             )
             logger.info(f"[Mem0] ADD | {fact[:50]}")
             return new_id
+        # 4) 执行动作
 
         if action == "UPDATE":
             memory_id = data.get("memory_id")
@@ -360,7 +456,19 @@ class Mem0Memory:
         user_id: str,
         now: str,
     ) -> str:
-        """内部兜底: 直接新增一条记忆"""
+        """
+        内部兜底: 直接新增一条记忆
+
+        参数:
+        - collection: 集合名称
+        - content: 内容
+        - vec: vec 输入值
+        - user_id: 用户 ID
+        - now: now 输入值
+
+        返回:
+        - str: 内部兜底: 直接新增一条记忆
+        """
         new_id = str(uuid.uuid4())
         meta = {
             "id": new_id,
@@ -378,7 +486,16 @@ class Mem0Memory:
         return new_id
 
     def _delete_by_id(self, user_id: str, memory_id: str) -> bool:
-        """按 metadata.id 删除文档并同步删除 faiss 索引 id"""
+        """
+        按 metadata.id 删除文档并同步删除 faiss 索引 id
+
+        参数:
+        - user_id: 用户 ID
+        - memory_id: 记忆 ID
+
+        返回:
+        - bool: 按 metadata.id 删除文档并同步删除 faiss 索引 id
+        """
         collection = self._col(user_id)
         with self.vector_db._connect() as conn:
             rows = conn.execute(
@@ -414,7 +531,15 @@ class Mem0Memory:
         return True
 
     def _get_all_sync(self, collection: str) -> List[Dict[str, Any]]:
-        """从 SQLite 同步读取集合内全部记忆"""
+        """
+        从 SQLite 同步读取集合内全部记忆
+
+        参数:
+        - collection: 集合名称
+
+        返回:
+        - List[Dict[str, Any]]: 从 SQLite 同步读取集合内全部记忆
+        """
         with self.vector_db._connect() as conn:
             rows = conn.execute(
                 "SELECT document, metadata FROM documents WHERE collection_name=? ORDER BY id ASC",
@@ -431,7 +556,12 @@ class Mem0Memory:
         return memories
 
     async def _refresh_summary(self, user_id: str):
-        """后台任务: 根据近期会话刷新摘要"""
+        """
+        后台任务: 根据近期会话刷新摘要
+
+        参数:
+        - user_id: 用户 ID
+        """
         history = self._histories.get(user_id, [])
         if not history:
             return

@@ -1,4 +1,5 @@
-"""后端内嵌 HTTP + WebSocket 服务器 (管理 API 与前端静态托管)
+"""
+后端内嵌 HTTP + WebSocket 服务器 (管理 API 与前端静态托管)
 
 基于共享基类 satrap.core.utils.minihttp.MiniHTTPServer, 只保留本服务特有逻辑:
 - /api/* 管理路由: health / config / session-classes / models / users / checkpoint / shutdown
@@ -23,47 +24,71 @@ from satrap.core.utils.paths import get_data_dir, get_db_path, get_project_root
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
 
-# 静态文件目录 - 前端构建产物
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "satrap-ui" / "dist"
+# 静态文件目录 - 前端构建产物
 
 
 class BackendHTTPServer(MiniHTTPServer):
-    """内嵌 HTTP 服务器, 提供管理 API
+    """
+    内嵌 HTTP 服务器, 提供管理 API
 
-    基于共享基类 (asyncio.start_server, 零外部依赖).
-    默认监听 127.0.0.1:19870, 仅接受本地连接.
+    基于共享基类 (asyncio.start_server, 零外部依赖)
+    默认监听 127.0.0.1:19870, 仅接受本地连接
     """
 
     def __init__(self, backend: BackendManager, host: str = "127.0.0.1", port: int = 19870):
+        """
+        初始化 BackendHTTPServer
+
+        参数:
+        - backend: 后端实例
+        - host: 监听地址
+        - port: 监听端口
+        """
         super().__init__(host=host, port=port, log_errors=False)
         self.backend = backend
 
-    # ---------------- 静态文件服务 ----------------
+    # ---------- 静态文件服务 ----------
 
     async def _serve_static(self, writer: asyncio.StreamWriter, path: str) -> bool:
-        """服务静态文件或 SPA 入口 (仅非 API 路径)"""
+        """
+        服务静态文件或 SPA 入口 (仅非 API 路径)
+
+        参数:
+        - writer: 流写入器
+        - path: 路径
+
+        返回:
+        - bool: 服务静态文件或 SPA 入口 (仅非 API 路径)
+        """
         if path.startswith("/api/"):
             return False
         # 移除查询参数
         path = path.split("?")[0]
 
-        # 默认返回 index.html (SPA 路由)
         if path == "/" or path == "":
             self._send_index_html(writer)
             return True
+        # 默认返回 index.html (SPA 路由)
 
-        # 尝试提供静态文件
         file_path = STATIC_DIR / path.lstrip("/")
+        # 尝试提供静态文件
         if file_path.exists() and file_path.is_file():
             self._send_file(writer, file_path)
             return True
 
-        # 所有其他路径返回 index.html (SPA 客户端路由)
         self._send_index_html(writer)
+        # 所有其他路径返回 index.html (SPA 客户端路由)
         return True
 
     def _send_file(self, writer: asyncio.StreamWriter, file_path: Path):
-        """发送静态文件"""
+        """
+        发送静态文件
+
+        参数:
+        - writer: 流写入器
+        - file_path: 文件路径
+        """
         try:
             content = file_path.read_bytes()
             mime_type, _ = mimetypes.guess_type(str(file_path))
@@ -80,19 +105,31 @@ class BackendHTTPServer(MiniHTTPServer):
             self._send_json(writer, 404, {"error": "file not found"})
 
     def _send_index_html(self, writer: asyncio.StreamWriter):
-        """发送前端入口 HTML (用于 SPA 路由)"""
+        """
+        发送前端入口 HTML (用于 SPA 路由)
+
+        参数:
+        - writer: 流写入器
+        """
         index_path = STATIC_DIR / "index.html"
         if index_path.exists():
             self._send_file(writer, index_path)
         else:
             self._send_json(writer, 404, {"error": "frontend not built"})
 
-    # ---------------- WebSocket 端点分发 ----------------
+    # ---------- WebSocket 端点分发 ----------
 
     async def _ws_dispatch(
         self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """按路径分发到对应的 WebSocket 处理器"""
+        """
+        按路径分发到对应的 WebSocket 处理器
+
+        参数:
+        - path: 路径
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         if path == "/ws/logs":
             await self._ws_log_handler(reader, writer)
         elif path == "/ws/status":
@@ -101,17 +138,22 @@ class BackendHTTPServer(MiniHTTPServer):
             await self._ws_close(writer, 1008, "unknown endpoint")
 
     async def _ws_log_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """WebSocket 日志推送处理器"""
+        """
+        WebSocket 日志推送处理器
+
+        参数:
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         log_file = self._find_log_file()
         if not log_file:
             await self._ws_send(writer, {"type": "error", "message": "log file not found"})
             await self._ws_close(writer, 1008, "log file not found")
             return
 
-        # 发送历史日志 (最后 100 行)
         try:
             with log_file.open("rb") as f:
-                f.seek(0, 2)  # 移到文件末尾
+                f.seek(0, 2)   # 移到文件末尾
                 file_size = f.tell()
                 # 读取最后 10KB 或整个文件
                 read_size = min(10 * 1024, file_size)
@@ -126,17 +168,18 @@ class BackendHTTPServer(MiniHTTPServer):
                         })
         except Exception as e:
             await self._ws_send(writer, {"type": "error", "message": str(e)})
+        # 发送历史日志 (最后 100 行)
 
-        # 监控新日志
         position = log_file.stat().st_size
+        # 监控新日志
         try:
             while True:
-                # 检查客户端是否关闭连接
                 if reader.at_eof():
                     break
+                # 检查客户端是否关闭连接
 
-                # 检查文件是否有新内容
                 current_size = log_file.stat().st_size
+                # 检查文件是否有新内容
                 if current_size > position:
                     with log_file.open("rb") as f:
                         f.seek(position)
@@ -150,10 +193,10 @@ class BackendHTTPServer(MiniHTTPServer):
                                 "data": {"content": line, "level": self._parse_log_level(line)}
                             })
                 elif current_size < position:
-                    # 文件被截断，重新从头开始
                     position = 0
+                    # 文件被截断, 重新从头开始
 
-                await asyncio.sleep(0.5)  # 500ms 轮询间隔
+                await asyncio.sleep(0.5)   # 500ms 轮询间隔
 
         except asyncio.CancelledError:
             pass
@@ -164,31 +207,37 @@ class BackendHTTPServer(MiniHTTPServer):
                 pass
 
     async def _ws_status_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
-        """WebSocket 状态推送处理器"""
+        """
+        WebSocket 状态推送处理器
+
+        参数:
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         last_status = None
 
         try:
             while True:
-                # 检查客户端是否关闭连接
                 if reader.at_eof():
                     break
+                # 检查客户端是否关闭连接
 
-                # 获取当前状态
                 health = await self.backend.health()
+                # 获取当前状态
                 current_status = {
                     "running": health.get("running", False),
                     "adapters": health.get("adapters", {}),
                 }
 
-                # 状态变化时推送
                 if current_status != last_status:
                     await self._ws_send(writer, {
                         "type": "status",
                         "data": current_status
                     })
                     last_status = current_status
+                # 状态变化时推送
 
-                await asyncio.sleep(2)  # 2秒轮询间隔
+                await asyncio.sleep(2)   # 2秒轮询间隔
 
         except asyncio.CancelledError:
             pass
@@ -199,7 +248,12 @@ class BackendHTTPServer(MiniHTTPServer):
                 pass
 
     def _find_log_file(self) -> Path | None:
-        """查找日志文件"""
+        """
+        查找日志文件
+
+        返回:
+        - Path | None: 查找日志文件
+        """
         log_dirs = [
             get_data_dir() / "logs",
             get_project_root(),
@@ -208,7 +262,7 @@ class BackendHTTPServer(MiniHTTPServer):
         for log_dir in log_dirs:
             if not log_dir.exists():
                 continue
-            # 按修改时间排序，取最新的 .log 文件
+            # 按修改时间排序, 取最新的 .log 文件
             log_files = sorted(
                 log_dir.glob("*.log"),
                 key=lambda p: p.stat().st_mtime,
@@ -219,40 +273,57 @@ class BackendHTTPServer(MiniHTTPServer):
         return None
 
     def _parse_log_level(self, line: str) -> str:
-        """从日志行解析级别"""
+        """
+        从日志行解析级别
+
+        参数:
+        - line: 文本行
+
+        返回:
+        - str: 从日志行解析级别
+        """
         for level in ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"):
             if level in line:
                 return level
         return "INFO"
 
-    # ---------------- API 路由 ----------------
+    # ---------- API 路由 ----------
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
-        """路由分发到 BackendManager 对应方法"""
+        """
+        路由分发到 BackendManager 对应方法
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径
+        - body: 请求体
+
+        返回:
+        - tuple[int, dict[str, Any]]: 路由分发到 BackendManager 对应方法
+        """
         backend = self.backend
 
-        # GET /api/health
         if method == "GET" and path == "/api/health":
             return 200, await backend.health()
+        # 接口: GET /api/health
 
-        # POST /api/config/reload
         if method == "POST" and path == "/api/config/reload":
             await backend.reload_config()
             return 200, {"ok": True}
+        # 接口: POST /api/config/reload
 
-        # POST /api/shutdown
         if method == "POST" and path == "/api/shutdown":
             asyncio.get_event_loop().call_soon(backend.request_shutdown)
             return 200, {"ok": True}
+        # 接口: POST /api/shutdown
 
-        # GET /api/config/session-classes
         if method == "GET" and path == "/api/config/session-classes":
             mgr = backend.session_class_mgr
             if mgr:
                 return 200, mgr.list_configs()
             return 200, {}
+        # 接口: GET /api/config/session-classes
 
-        # POST /api/config/session-classes
         if method == "POST" and path == "/api/config/session-classes" and backend.session_class_mgr:
             try:
                 payload = json.loads(body or b"{}")
@@ -266,21 +337,22 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 200, {"ok": True}
             except Exception as e:
                 return 400, {"error": str(e)}
+        # 接口: POST /api/config/session-classes
 
-        # POST /api/config/session-classes/{name}/enable
         if method == "POST" and path.endswith("/enable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
             name = unquote(path.split("/")[5])
             backend.session_class_mgr.enable(name)
             return 200, {"ok": True}
+        # 接口: POST /api/config/session-classes/{name}/enable
 
-        # POST /api/config/session-classes/{name}/disable
         if method == "POST" and path.endswith("/disable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
             name = unquote(path.split("/")[5])
             backend.session_class_mgr.disable(name)
             return 200, {"ok": True}
+        # 接口: POST /api/config/session-classes/{name}/disable
 
-        # GET /api/config/session-classes/{name}
         path_prefix = "/api/config/session-classes/"
+        # 接口: GET /api/config/session-classes/{name}
         if method == "GET" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
             cfg = backend.session_class_mgr.get_config(name)
@@ -288,22 +360,21 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 404, {"error": "not found"}
             return 200, cfg
 
-        # PUT /api/config/session-classes/{name}
         if method == "PUT" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
             payload = json.loads(body)
             if "params" in payload:
                 backend.session_class_mgr.set_config(name, payload["params"])
             return 200, {"ok": True}
+        # 接口: PUT /api/config/session-classes/{name}
 
-        # DELETE /api/config/session-classes/{name}
         if method == "DELETE" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
             if backend.session_class_mgr.remove_config(name):
                 return 200, {"ok": True}
             return 404, {"error": "not found"}
+        # 接口: DELETE /api/config/session-classes/{name}
 
-        # GET /api/config/models?type=llm
         if method == "GET" and path.startswith("/api/config/models") and backend.model_config_manager:
             typ = "llm"
             qs = path.split("?", 1)[1] if "?" in path else ""
@@ -320,9 +391,10 @@ class BackendHTTPServer(MiniHTTPServer):
             elif typ == "rerank":
                 return 200, mgr.list_rerank_configs(mask_api_key=True)
             return 200, {}
+        # 接口: GET /api/config/models?type=llm
 
-        # POST/PATCH/DELETE /api/config/models/{type}/{name}
         model_prefix = "/api/config/models/"
+        # 接口: POST/PATCH/DELETE /api/config/models/{type}/{name}
         if path.startswith(model_prefix) and backend.model_config_manager:
             parts = path[len(model_prefix):].split("/", 1)
             if len(parts) != 2:
@@ -366,10 +438,10 @@ class BackendHTTPServer(MiniHTTPServer):
             except Exception as e:
                 return 400, {"error": str(e)}
 
-        # GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
-        # GET /api/user/sessions?user_id=xxx
-        # POST /api/user/{create|update|delete|bind|unbind}
         user_db = safe_getattr_str(safe_getattr(backend, "config"), "user_db_path") or get_db_path("user_info.db")
+        # 接口: GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
+        # 接口: GET /api/user/sessions?user_id=xxx
+        # 接口: POST /api/user/{create|update|delete|bind|unbind}
         if path.startswith("/api/user"):
             try:
                 if method == "GET" and path.startswith("/api/users"):
@@ -415,12 +487,12 @@ class BackendHTTPServer(MiniHTTPServer):
             except (ValueError, KeyError, IndexError) as e:
                 return 400, {"error": str(e)}
 
-        # GET /api/checkpoints?conversation=xxx
-        # GET /api/checkpoint/branches?conversation=xxx
-        # GET /api/checkpoint/lineage?checkpoint_id=xxx
-        # GET /api/checkpoint/audit?conversation=xxx
-        # POST /api/checkpoint/{create|rollback|retry|fork}
         db = backend.checkpoint_db_path
+        # 接口: GET /api/checkpoints?conversation=xxx
+        # 接口: GET /api/checkpoint/branches?conversation=xxx
+        # 接口: GET /api/checkpoint/lineage?checkpoint_id=xxx
+        # 接口: GET /api/checkpoint/audit?conversation=xxx
+        # 接口: POST /api/checkpoint/{create|rollback|retry|fork}
         if path.startswith("/api/checkpoint"):
             try:
                 if method == "GET" and path.startswith("/api/checkpoints"):

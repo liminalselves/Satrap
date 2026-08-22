@@ -27,12 +27,25 @@ class DiscoveredSessionClass:
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        """转换为前端可消费的字典"""
+        """
+        转换为前端可消费的字典
+
+        返回:
+        - dict[str, Any]: 转换为前端可消费的字典
+        """
         return asdict(self)
 
 
 def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> list[Path]:
-    """归一化扫描目录, 保留顺序并去重"""
+    """
+    归一化扫描目录, 保留顺序并去重
+
+    参数:
+    - paths: 路径列表
+
+    返回:
+    - list[Path]: 归一化扫描目录, 保留顺序并去重
+    """
     raw_paths = list(paths or [DEFAULT_SESSION_SCAN_PATH])
     result: list[Path] = []
     seen: set[str] = set()
@@ -53,7 +66,15 @@ def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> li
 
 
 def ensure_session_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> list[Path]:
-    """将扫描目录的导入根加入 sys.path"""
+    """
+    将扫描目录的导入根加入 sys.path
+
+    参数:
+    - paths: 路径列表
+
+    返回:
+    - list[Path]: 将扫描目录的导入根加入 sys.path
+    """
     normalized = normalize_scan_paths(paths)
     for path in normalized:
         import_root = _import_root_for_scan_path(path)
@@ -64,7 +85,15 @@ def ensure_session_scan_paths(paths: list[str] | tuple[str, ...] | None = None) 
 
 
 def create_default_session_dir(paths: list[str] | tuple[str, ...] | None = None) -> Path:
-    """创建默认 Session 扫描目录"""
+    """
+    创建默认 Session 扫描目录
+
+    参数:
+    - paths: 路径列表
+
+    返回:
+    - Path: 创建默认 Session 扫描目录
+    """
     target = normalize_scan_paths(paths)[0]
     target.mkdir(parents=True, exist_ok=True)
     init_file = target / "__init__.py"
@@ -74,7 +103,15 @@ def create_default_session_dir(paths: list[str] | tuple[str, ...] | None = None)
 
 
 def discover_session_classes(paths: list[str] | tuple[str, ...] | None = None) -> list[DiscoveredSessionClass]:
-    """扫描目录下的 Session/AsyncSession 子类"""
+    """
+    扫描目录下的 Session/AsyncSession 子类
+
+    参数:
+    - paths: 路径列表
+
+    返回:
+    - list[DiscoveredSessionClass]: 扫描目录下的 Session/AsyncSession 子类
+    """
     scan_paths = ensure_session_scan_paths(paths)
     discovered: list[DiscoveredSessionClass] = []
     for scan_path in scan_paths:
@@ -111,20 +148,36 @@ def discover_session_classes(paths: list[str] | tuple[str, ...] | None = None) -
                         class_name=cls.__name__,
                         class_path=f"{cls.__module__}.{cls.__qualname__}",
                         is_async=issubclass(cls, AsyncSession),
-                        init_params=_generate_template(_detect_params(cls)),  # type: ignore[arg-type] _is_declared_session_class 已保证为 Session/AsyncSession 子类
+                        init_params=_generate_template(_detect_params(cls)),   # type: ignore[arg-type] _is_declared_session_class 已保证为 Session/AsyncSession 子类
                     )
                 )
     return discovered
 
 
 def _should_skip_file(path: Path) -> bool:
-    """判断是否跳过扫描文件"""
+    """
+    判断是否跳过扫描文件
+
+    参数:
+    - path: 路径
+
+    返回:
+    - bool: 判断是否跳过扫描文件
+    """
     name = path.name
     return name.startswith("_") or name.startswith(".") or path.parent.name == "__pycache__"
 
 
 def _import_root_for_scan_path(scan_path: Path) -> Path:
-    """推导应加入 sys.path 的导入根"""
+    """
+    推导应加入 sys.path 的导入根
+
+    参数:
+    - scan_path: scan路径
+
+    返回:
+    - Path: 推导应加入 sys.path 的导入根
+    """
     cwd = Path.cwd().resolve()
     try:
         rel = scan_path.relative_to(cwd)
@@ -136,7 +189,16 @@ def _import_root_for_scan_path(scan_path: Path) -> Path:
 
 
 def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
-    """根据扫描目录和文件路径生成稳定模块名"""
+    """
+    根据扫描目录和文件路径生成稳定模块名
+
+    参数:
+    - scan_path: scan路径
+    - file_path: 文件路径
+
+    返回:
+    - str: 根据扫描目录和文件路径生成稳定模块名
+    """
     cwd = Path.cwd().resolve()
     file_resolved = file_path.resolve()
     try:
@@ -150,7 +212,15 @@ def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
 
 
 def _is_declared_session_class(module_name: str, cls: Type[Any]) -> bool:
-    """判断类是否为当前模块声明的 Session 子类"""
+    """
+    判断类是否为当前模块声明的 Session 子类
+
+    参数:
+    - module_name: module名称
+
+    返回:
+    - bool: 判断类是否为当前模块声明的 Session 子类
+    """
     if cls in (Session, AsyncSession):
         return False
     if cls.__module__ != module_name:
@@ -159,7 +229,15 @@ def _is_declared_session_class(module_name: str, cls: Type[Any]) -> bool:
 
 
 def _detect_params(session_class: Type[Session] | Type[AsyncSession]) -> dict[str, inspect.Parameter]:
-    """反射 __init__ 签名, 提取自定义参数"""
+    """
+    反射 __init__ 签名, 提取自定义参数
+
+    参数:
+    - session_class: 会话类
+
+    返回:
+    - dict[str, inspect.Parameter]: 反射 __init__ 签名, 提取自定义参数
+    """
     exclude = {"self", "session_id", "content_callback", "command_handler", "session_config", "llm"}
     try:
         sig = inspect.signature(session_class.__init__)
@@ -176,7 +254,15 @@ def _detect_params(session_class: Type[Session] | Type[AsyncSession]) -> dict[st
 
 
 def _generate_template(params_info: dict[str, inspect.Parameter]) -> dict[str, Any]:
-    """根据类型注解生成占位值模板"""
+    """
+    根据类型注解生成占位值模板
+
+    参数:
+    - params_info: 参数集合info
+
+    返回:
+    - dict[str, Any]: 根据类型注解生成占位值模板
+    """
     type_map: dict[str, Any] = {
         "str": "",
         "int": 0,

@@ -1,11 +1,12 @@
-"""展示层旁路记录: 独立 db 存储用户侧对话显示数据 (供前端聊天页消费)
+"""
+展示层旁路记录: 独立 db 存储用户侧对话显示数据 (供前端聊天页消费)
 
 定位: 面向前端的展示数据层, 与 satrap 后端核心 (core 会话/工作流, edictum 简易会话)
-解耦 —— 本体只负责把对话显示数据落库, 经 api 层暴露给前端
+解耦 -- 本体只负责把对话显示数据落库, 经 api 层暴露给前端
 
 设计动机:
 - ContextManager 的 chat_history 是"模型视角"上下文: 不存 thinking (写入前清除),
-  且总结压缩会删除原始轮次 —— 不适合作为前端聊天显示的数据源
+且总结压缩会删除原始轮次 -- 不适合作为前端聊天显示的数据源
 - DisplayRecorder 在 SimpleSession 外部旁路: 复用 content_callback / thinking_callback
   与 ToolsManager 的 tool_call_start/tool_call_end 可选钩子, 把每轮对话的
   用户输入 / thinking / 最终输出 / 工具调用状态 写入独立 db, 完全不改动会话内部
@@ -15,7 +16,7 @@
   (answer 先空, end_turn 回填), 使工具调用可实时关联 turn_id
 - display_tool_calls: 一轮内每次工具调用一条, success 三态
   (NULL=进行中 / 1=完成 / 0=失败), 执行前插入 (进行中), 执行后按 call_id 更新
-  —— 长 shell 命令执行中前端可实时显示"进行中", 避免用户以为卡死
+-- 长 shell 命令执行中前端可实时显示"进行中", 避免用户以为卡死
 
 线程安全: 回调可能经 to_thread 在工作线程执行 (异步会话), 写入用独立连接 + 锁保护
 """
@@ -25,18 +26,28 @@ import json
 import sqlite3
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, cast
 
 from satrap.core.log import logger
 from satrap.core.utils.paths import get_db_path
 
-# 工具参数单值截断长度 (只记录模型填入参数的前 N 字符)
 _ARG_VALUE_LIMIT = 20
+# 工具参数单值截断长度 (只记录模型填入参数的前 N 字符)
 
 
 def _truncate_arguments(arguments: Any, limit: int = _ARG_VALUE_LIMIT) -> str:
-    """把工具参数序列化为 JSON, 每个值截断到前 limit 字符 (只记录模型填入参数, 不记录结果)"""
+    """
+    把工具参数序列化为 JSON, 每个值截断到前 limit 字符 (只记录模型填入参数, 不记录结果)
+
+    参数:
+    - arguments: 调用参数
+    - limit: 数量上限
+
+    返回:
+    - str: 把工具参数序列化为 JSON, 每个值截断到前 limit 字符 (只记录模型填入参数, 不记录结果)
+    """
     if not isinstance(arguments, dict):
         return "{}"
     truncated: dict[str, str] = {}
@@ -50,8 +61,53 @@ def _truncate_arguments(arguments: Any, limit: int = _ARG_VALUE_LIMIT) -> str:
         return "{}"
 
 
+def _has_table(conn: sqlite3.Connection, name: str) -> bool:
+    """
+    表是否存在 (项目功能: 表可能尚未创建, 如只登记过项目的库)
+
+    参数:
+    - conn: 数据库连接
+    - name: 名称
+
+    返回:
+    - bool: 表是否存在 (项目功能: 表可能尚未创建, 如只登记过项目的库)
+    """
+    return (
+        conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)).fetchone()
+        is not None
+    )
+
+
+def _ensure_project_schema_locked(conn: sqlite3.Connection) -> None:
+    """
+    项目功能 schema: projects 表 + conversation_meta.project_id 列 (幂等, 调用方持锁)
+
+    参数:
+    - conn: 数据库连接
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            root_path TEXT NOT NULL,
+            created_at REAL NOT NULL
+        )
+        """
+    )
+    # 兼容旧表: 无 project_id 列时 ALTER TABLE 添加;
+    # conversation_meta 可能尚未创建 (项目先于任何会话登记), 此时跳过, 待建表后由同一补丁补列
+    if not _has_table(conn, "conversation_meta"):
+        return
+    try:
+        conn.execute("SELECT project_id FROM conversation_meta LIMIT 1")
+    except sqlite3.OperationalError:
+        conn.execute("ALTER TABLE conversation_meta ADD COLUMN project_id TEXT")
+
+
 class DisplayRecorder:
-    """展示层旁路记录器: 把一轮对话的输入/思考/输出/工具调用写入独立 db
+    """
+    展示层旁路记录器: 把一轮对话的输入/思考/输出/工具调用写入独立 db
 
     用法 (外层组合, 零侵入会话):
     ```python
@@ -72,7 +128,8 @@ class DisplayRecorder:
     """
 
     def __init__(self, db_path: str | None = None, conversation_id: str = "") -> None:
-        """初始化记录器
+        """
+        初始化记录器
 
         参数:
         - db_path: 展示层独立 db 路径, 默认 .satrap/satrapdata/display.db
@@ -95,10 +152,15 @@ class DisplayRecorder:
         # segments: 按时间顺序记录段 (thinking/tool/content)
         self._segments: list[dict[str, Any]] = []
 
-    # ---------------- db 基础 ----------------
+    # ---------- db 基础 ----------
 
     def _get_conn(self) -> sqlite3.Connection:
-        """获取复用连接 (check_same_thread=False, 由 _lock 保证串行)"""
+        """
+        获取复用连接 (check_same_thread=False, 由 _lock 保证串行)
+
+        返回:
+        - sqlite3.Connection: 复用连接 (check_same_thread=False, 由 _lock 保证串行)
+        """
         with self._lock:
             if self._conn is None:
                 Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
@@ -186,10 +248,16 @@ class DisplayRecorder:
                 conn.execute("SELECT think FROM conversation_meta LIMIT 1")
             except sqlite3.OperationalError:
                 conn.execute("ALTER TABLE conversation_meta ADD COLUMN think TEXT NOT NULL DEFAULT 'off'")
+            _ensure_project_schema_locked(conn)
             conn.commit()
 
     def _load_max_turn_index(self) -> int:
-        """查当前会话最大 turn_index (无记录返回 -1, 使起始为 0)"""
+        """
+        查当前会话最大 turn_index (无记录返回 -1, 使起始为 0)
+
+        返回:
+        - int:  -1, 使起始为 0)
+        """
         conn = self._get_conn()
         with self._lock:
             row = conn.execute(
@@ -198,22 +266,38 @@ class DisplayRecorder:
             ).fetchone()
         return int(row[0]) if row and row[0] is not None else -1
 
-    # ---------------- 会话元数据 ----------------
+    # ---------- 会话元数据 ----------
 
-    def save_meta(self, model: str, think: str = "off") -> None:
-        """保存会话元数据 (model / 默认思考强度 think)"""
+    def save_meta(self, model: str, think: str = "off", project_id: str | None = None) -> None:
+        """
+        保存会话元数据 (model / 默认思考强度 think / 所属项目 project_id)
+
+        参数:
+        - model: 模型名称
+        - think: 思考模式
+        - project_id: 项目 ID
+
+        重复保存时只更新 model/think, project_id 保持既有绑定不变 (改绑走 set_conversation_project)
+        """
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "INSERT OR REPLACE INTO conversation_meta (conversation_id, model, think, created_at) VALUES (?, ?, ?, ?)",
-                (self.conversation_id, model, think, time.time()),
+                "INSERT INTO conversation_meta (conversation_id, model, think, project_id, created_at) VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(conversation_id) DO UPDATE SET model=excluded.model, think=excluded.think",
+                (self.conversation_id, model, think, project_id, time.time()),
             )
             conn.commit()
 
-    # ---------------- 生命周期 ----------------
+    # ---------- 生命周期 ----------
 
     def start_turn(self, user_input: str, attachments: list[dict[str, Any]] | None = None) -> None:
-        """run 前调用: 插入 turn 行 (answer 先空), 使工具调用可实时关联 turn_id"""
+        """
+        run 前调用: 插入 turn 行 (answer 先空), 使工具调用可实时关联 turn_id
+
+        参数:
+        - user_input: 用户输入
+        - attachments: 附件列表
+        """
         with self._lock:
             turn_index = self._next_turn_index
             self._next_turn_index += 1
@@ -232,7 +316,12 @@ class DisplayRecorder:
             self._segments = []
 
     def end_turn(self, fallback_answer: str = "") -> None:
-        """run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)"""
+        """
+        run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)
+
+        参数:
+        - fallback_answer: 回退回答
+        """
         if self._turn_id is None:
             return
         thinking = "".join(self._thinking_parts) or None
@@ -248,10 +337,15 @@ class DisplayRecorder:
             self._turn_id = None
             self._segments = []
 
-    # ---------------- 注入 SimpleSession 的回调 ----------------
+    # ---------- 注入 SimpleSession 的回调 ----------
 
     def on_thinking(self, delta: str) -> None:
-        """thinking_callback: 追加思考增量到缓冲, 并记录 segments 时间顺序"""
+        """
+        thinking_callback: 追加思考增量到缓冲, 并记录 segments 时间顺序
+
+        参数:
+        - delta: 增量内容
+        """
         if delta:
             self._thinking_parts.append(delta)
             # 追加到当前 thinking 段或新建段
@@ -261,7 +355,12 @@ class DisplayRecorder:
                 self._segments.append({"type": "thinking", "content": delta})
 
     def on_content(self, delta: str) -> None:
-        """content_callback: 追加正文增量到缓冲, 并记录 segments 时间顺序"""
+        """
+        content_callback: 追加正文增量到缓冲, 并记录 segments 时间顺序
+
+        参数:
+        - delta: 增量内容
+        """
         if delta:
             self._answer_parts.append(delta)
             # 追加到当前 content 段或新建段
@@ -270,11 +369,16 @@ class DisplayRecorder:
             else:
                 self._segments.append({"type": "content", "content": delta})
 
-    # ---------------- 注入 ToolsManager 的观察钩子 ----------------
+    # ---------- 注入 ToolsManager 的观察钩子 ----------
 
     def on_tool_start(self, event: dict[str, Any]) -> None:
-        """tool_call_start: 插入工具调用行 (success=NULL 进行中), 前端实时显示"正在执行";
-        同时记录 segments 时间顺序"""
+        """
+        tool_call_start: 插入工具调用行 (success=NULL 进行中), 前端实时显示"正在执行";
+        同时记录 segments 时间顺序
+
+        参数:
+        - event: 事件
+        """
         if self._turn_id is None:
             return
         tool_data = {
@@ -305,7 +409,12 @@ class DisplayRecorder:
         self._segments.append({"type": "tool", "tool": tool_data})
 
     def on_tool_end(self, event: dict[str, Any]) -> None:
-        """tool_call_end: 按 call_id 更新 success (1=完成 / 0=失败), 并同步 segments 中的 tool 状态"""
+        """
+        tool_call_end: 按 call_id 更新 success (1=完成 / 0=失败), 并同步 segments 中的 tool 状态
+
+        参数:
+        - event: 事件
+        """
         if self._turn_id is None:
             return
         success = 1 if event.get("success") else 0
@@ -318,12 +427,12 @@ class DisplayRecorder:
                     (success, self._turn_id, call_id),
                 )
             else:
-                # 无 call_id 兜底: 更新本轮最近一条进行中的记录
                 conn.execute(
                     "UPDATE display_tool_calls SET success = ? WHERE turn_id = ? AND success IS NULL"
                     " AND id = (SELECT MAX(id) FROM display_tool_calls WHERE turn_id = ? AND success IS NULL)",
                     (success, self._turn_id, self._turn_id),
                 )
+                # 无 call_id 兜底: 更新本轮最近一条进行中的记录
             conn.commit()
         # 同步更新 segments 中的 tool 状态
         for seg in self._segments:
@@ -331,10 +440,19 @@ class DisplayRecorder:
                 seg["tool"]["success"] = bool(success)
                 break
 
-    # ---------------- 查询 (供前端) ----------------
+    # ---------- 查询 (供前端) ----------
 
     def list_turns(self, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
-        """列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序"""
+        """
+        列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序
+
+        参数:
+        - limit: 数量上限
+        - offset: 偏移量
+
+        返回:
+        - list[dict[str, Any]]: 列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序
+        """
         conn = self._get_conn()
         with self._lock:
             sql = (
@@ -364,7 +482,16 @@ class DisplayRecorder:
 
     @staticmethod
     def _list_tool_calls_locked(conn: sqlite3.Connection, turn_id: int) -> list[dict[str, Any]]:
-        """列出某轮的工具调用 (按 seq 升序); 调用方需已持有 _lock"""
+        """
+        列出某轮的工具调用 (按 seq 升序); 调用方需已持有 _lock
+
+        参数:
+        - conn: 数据库连接
+        - turn_id: 轮次ID
+
+        返回:
+        - list[dict[str, Any]]: 列出某轮的工具调用 (按 seq 升序); 调用方需已持有 _lock
+        """
         rows = conn.execute(
             "SELECT seq, name, arguments, success, call_id, created_at"
             " FROM display_tool_calls WHERE turn_id = ? ORDER BY seq ASC",
@@ -383,10 +510,15 @@ class DisplayRecorder:
             for r in rows
         ]
 
-    # ---------------- 删除 / 复制 (供 retry / fork) ----------------
+    # ---------- 删除 / 复制 (供 retry / fork) ----------
 
     def delete_last_turn(self) -> dict[str, Any] | None:
-        """删除最大 turn_index 的记录及其工具调用, 返回被删记录 (无记录返回 None)"""
+        """
+        删除最大 turn_index 的记录及其工具调用, 返回被删记录 (无记录返回 None)
+
+        返回:
+        - dict[str, Any] | None: 被删记录 (无记录返回 None)
+        """
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
@@ -417,7 +549,16 @@ class DisplayRecorder:
             conn.commit()
 
     def copy_turns_to(self, target: DisplayRecorder, up_to_index: int) -> int:
-        """把 turn_index < up_to_index 的轮次复制到 target recorder, 返回复制条数"""
+        """
+        把 turn_index < up_to_index 的轮次复制到 target recorder, 返回复制条数
+
+        参数:
+        - target: 目标
+        - up_to_index: upto索引
+
+        返回:
+        - int: 复制条数
+        """
         with self._lock:
             conn = self._get_conn()
             rows = conn.execute(
@@ -463,39 +604,85 @@ class DisplayRecorder:
 
 
 def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
-    """列出全部会话 (跨 conversation), 供前端会话列表
+    """
+    列出全部会话 (跨 conversation), 供前端会话列表
 
     模块级函数: 不绑定某个 conversation 实例, 直接开独立连接查询
 
     参数:
     - db_path: 展示层 db 路径, 默认 .satrap/satrapdata/display.db
 
-    返回按最近活跃倒序: 每会话取首条用户输入作标题 + 轮次计数 + 最近时间
+    返回按最近活跃倒序: 每会话取首条用户输入作标题 + 轮次计数 + 最近时间 + 项目归属;
+    以 conversation_meta 为基表, 新建未发言的空会话也在列表中
+
+    返回:
+    - list[dict[str, Any]]: 列出全部会话 (跨 conversation), 供前端会话列表
     """
     path = db_path or get_db_path("display.db")
     if not Path(path).exists():
         return []
     conn = sqlite3.connect(path, check_same_thread=False)
     try:
-        rows = conn.execute(
-            """
-            SELECT conversation_id,
-                   COUNT(*) AS turn_count,
-                   MAX(created_at) AS last_at,
-                   (SELECT user_input FROM display_turns t2
-                     WHERE t2.conversation_id = t.conversation_id
-                     ORDER BY turn_index ASC LIMIT 1) AS first_input
-            FROM display_turns t
-            GROUP BY conversation_id
-            ORDER BY last_at DESC
-            """
-        ).fetchall()
+        _ensure_project_schema_locked(conn)
+        conn.commit()
+        # 两表可能尚未创建 (如只建过项目的库), 按存在性降级查询
+        tables = {
+            str(r[0])
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        has_turns = "display_turns" in tables
+        has_meta = "conversation_meta" in tables
+        if not has_turns and not has_meta:
+            return []
+        if has_turns and has_meta:
+            rows = conn.execute(
+                """
+                SELECT conversation_id, turn_count, last_at, first_input, project_id, meta_created FROM (
+                    SELECT t.conversation_id AS conversation_id,
+                           COUNT(*) AS turn_count,
+                           MAX(t.created_at) AS last_at,
+                           (SELECT user_input FROM display_turns t2
+                             WHERE t2.conversation_id = t.conversation_id
+                             ORDER BY turn_index ASC LIMIT 1) AS first_input,
+                           m.project_id AS project_id,
+                           m.created_at AS meta_created
+                    FROM display_turns t
+                    LEFT JOIN conversation_meta m ON m.conversation_id = t.conversation_id
+                    GROUP BY t.conversation_id
+                    UNION
+                    SELECT m.conversation_id, 0, NULL, NULL, m.project_id, m.created_at
+                    FROM conversation_meta m
+                    WHERE m.conversation_id NOT IN (SELECT conversation_id FROM display_turns)
+                )
+                ORDER BY COALESCE(last_at, meta_created) DESC
+                """
+            ).fetchall()
+        elif has_meta:
+            rows = conn.execute(
+                "SELECT conversation_id, 0, NULL, NULL, project_id, created_at FROM conversation_meta"
+                " ORDER BY created_at DESC"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT conversation_id, COUNT(*) AS turn_count, MAX(created_at) AS last_at,
+                       (SELECT user_input FROM display_turns t2
+                         WHERE t2.conversation_id = t.conversation_id
+                         ORDER BY turn_index ASC LIMIT 1) AS first_input,
+                       NULL AS project_id, MAX(created_at) AS meta_created
+                FROM display_turns
+                GROUP BY conversation_id
+                ORDER BY last_at DESC
+                """
+            ).fetchall()
         return [
             {
                 "conversation_id": r[0],
                 "turn_count": r[1],
-                "last_at": r[2],
+                # 空会话无轮次时间, 用 meta 创建时间兜底
+                "last_at": r[2] if r[2] is not None else r[5],
                 "title": (r[3] or "新对话"),
+                "project_id": r[4],
             }
             for r in rows
         ]
@@ -503,22 +690,186 @@ def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
         conn.close()
 
 
-def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> dict[str, Any] | None:
-    """查询会话元数据 (model / think)
+# ---------- 项目 (工作区文件夹绑定) ----------
 
-    返回 None 表示会话不存在
+
+def create_project(name: str, root_path: str, db_path: str | None = None) -> dict[str, Any]:
+    """
+    创建项目 (绑定工作区文件夹), 返回项目记录
+
+    参数:
+    - name: 名称
+    - root_path: 根目录路径
+    - db_path: 数据库路径
+
+    返回:
+    - dict[str, Any]: 项目记录
+    """
+    path = db_path or get_db_path("display.db")
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        _ensure_project_schema_locked(conn)
+        project_id = uuid.uuid4().hex
+        record = {
+            "project_id": project_id,
+            "name": name.strip(),
+            "root_path": root_path,
+            "created_at": time.time(),
+        }
+        conn.execute(
+            "INSERT INTO projects (project_id, name, root_path, created_at) VALUES (?, ?, ?, ?)",
+            (project_id, record["name"], root_path, record["created_at"]),
+        )
+        conn.commit()
+        return record
+    finally:
+        conn.close()
+
+
+def list_projects(db_path: str | None = None) -> list[dict[str, Any]]:
+    """
+    列出全部项目 (按创建时间正序)
+
+    参数:
+    - db_path: 数据库路径
+
+    返回:
+    - list[dict[str, Any]]: 列出全部项目 (按创建时间正序)
+    """
+    path = db_path or get_db_path("display.db")
+    if not Path(path).exists():
+        return []
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        _ensure_project_schema_locked(conn)
+        conn.commit()
+        rows = conn.execute(
+            "SELECT project_id, name, root_path, created_at FROM projects ORDER BY created_at ASC"
+        ).fetchall()
+        return [
+            {"project_id": r[0], "name": r[1], "root_path": r[2], "created_at": r[3]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_project(project_id: str, db_path: str | None = None) -> dict[str, Any] | None:
+    """
+    按 ID 查项目, 不存在返回 None
+
+    参数:
+    - project_id: 项目 ID
+    - db_path: 数据库路径
+
+    返回:
+    - dict[str, Any] | None:  None
     """
     path = db_path or get_db_path("display.db")
     if not Path(path).exists():
         return None
     conn = sqlite3.connect(path, check_same_thread=False)
     try:
+        _ensure_project_schema_locked(conn)
+        conn.commit()
         row = conn.execute(
-            "SELECT model, think, created_at FROM conversation_meta WHERE conversation_id = ?",
+            "SELECT project_id, name, root_path, created_at FROM projects WHERE project_id = ?",
+            (project_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {"project_id": row[0], "name": row[1], "root_path": row[2], "created_at": row[3]}
+    finally:
+        conn.close()
+
+
+def delete_project(project_id: str, db_path: str | None = None) -> bool:
+    """
+    删除项目: 仅解绑其下会话 (project_id 置 NULL), 不动会话数据与磁盘文件
+
+    参数:
+    - project_id: 项目 ID
+    - db_path: 数据库路径
+
+    返回:
+    - bool: 删除项目: 仅解绑其下会话 (project_id 置 NULL), 不动会话数据与磁盘文件
+    """
+    path = db_path or get_db_path("display.db")
+    if not Path(path).exists():
+        return False
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        _ensure_project_schema_locked(conn)
+        if _has_table(conn, "conversation_meta"):
+            conn.execute(
+                "UPDATE conversation_meta SET project_id = NULL WHERE project_id = ?",
+                (project_id,),
+            )
+        cursor = conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_conversation_project(conversation_id: str, project_id: str | None, db_path: str | None = None) -> bool:
+    """
+    改绑会话所属项目 (None 表示移出项目), 会话不存在返回 False
+
+    参数:
+    - conversation_id: 会话 ID
+    - project_id: 项目 ID
+    - db_path: 数据库路径
+
+    返回:
+    - bool:  False
+    """
+    path = db_path or get_db_path("display.db")
+    if not Path(path).exists():
+        return False
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        _ensure_project_schema_locked(conn)
+        if not _has_table(conn, "conversation_meta"):
+            return False
+        cursor = conn.execute(
+            "UPDATE conversation_meta SET project_id = ? WHERE conversation_id = ?",
+            (project_id, conversation_id),
+        )
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> dict[str, Any] | None:
+    """
+    查询会话元数据 (model / think / project_id)
+
+    参数:
+    - conversation_id: 会话 ID
+    - db_path: 数据库路径
+
+    返回 None 表示会话不存在
+
+    返回:
+    - dict[str, Any] | None: 查询会话元数据 (model / think / project_id)
+    """
+    path = db_path or get_db_path("display.db")
+    if not Path(path).exists():
+        return None
+    conn = sqlite3.connect(path, check_same_thread=False)
+    try:
+        _ensure_project_schema_locked(conn)
+        conn.commit()
+        if not _has_table(conn, "conversation_meta"):
+            return None
+        row = conn.execute(
+            "SELECT model, think, created_at, project_id FROM conversation_meta WHERE conversation_id = ?",
             (conversation_id,),
         ).fetchone()
         if row is None:
             return None
-        return {"model": row[0], "think": row[1] or "off", "created_at": row[2]}
+        return {"model": row[0], "think": row[1] or "off", "created_at": row[2], "project_id": row[3]}
     finally:
         conn.close()

@@ -6,19 +6,19 @@ import os
 import random
 import tempfile
 import uuid
-import websockets
 from collections.abc import Awaitable, Callable
-from typing import Any, NoReturn, ParamSpec, TypeVar, cast
 from types import TracebackType
+from typing import Any, NoReturn, ParamSpec, TypeVar, cast
+
+import aiohttp
+import websockets
+
+from satrap.core.log import logger
+from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
+from satrap.core.type import safe_getattr_str
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
-
-import aiohttp
-
-from satrap.core.log import logger
-from satrap.core.type import safe_getattr_str
-from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
 
 
 API_MAX_RETRIES = 5
@@ -52,8 +52,9 @@ class StreamingClient:
     """Misskey WebSocket 流式客户端"""
 
     def __init__(self, instance_url: str, access_token: str) -> None:
-        """初始化 StreamingClient
-        
+        """
+        初始化 StreamingClient
+
         参数:
         - instance_url: Misskey 实例 URL, 包含协议和端口
         - access_token: 访问令牌, 用于认证 WebSocket 连接
@@ -68,7 +69,12 @@ class StreamingClient:
         self._running = False
 
     async def connect(self) -> bool:
-        """连接 Misskey streaming 端点"""
+        """
+        连接 Misskey streaming 端点
+
+        返回:
+        - bool: 连接 Misskey streaming 端点
+        """
         try:
             ws_url = self.instance_url.replace("https://", "wss://").replace("http://", "ws://")
             ws_url += f"/streaming?i={self.access_token}"
@@ -102,11 +108,15 @@ class StreamingClient:
         channel_type: str,
         params: dict[str, Any] | None = None,
     ) -> str:
-        """订阅 Misskey streaming 频道
-        
+        """
+        订阅 Misskey streaming 频道
+
         参数:
         - channel_type: 频道类型, 可选值: "chat", "room", "note"
         - params: 频道参数, 可选
+
+        返回:
+        - str: 订阅 Misskey streaming 频道
         """
         self.desired_channels[channel_type] = params
         if not self.is_connected or not self.websocket:
@@ -126,8 +136,9 @@ class StreamingClient:
         return channel_id
 
     async def unsubscribe_channel(self, channel_id: str) -> None:
-        """取消订阅 Misskey streaming 频道
-        
+        """
+        取消订阅 Misskey streaming 频道
+
         参数:
         - channel_id: 要取消订阅的频道 ID
         """
@@ -143,8 +154,9 @@ class StreamingClient:
         event_type: str,
         handler: Callable[[dict[str, Any]], Awaitable[None]],
     ) -> None:
-        """注册 streaming 消息处理函数
-        
+        """
+        注册 streaming 消息处理函数
+
         参数:
         - event_type: 事件类型, 可选值: "chat", "room", "note"
         - handler: 处理函数, 接收一个字典参数, 返回一个可等待对象
@@ -176,8 +188,9 @@ class StreamingClient:
                 pass
 
     async def _handle_message(self, data: dict[str, Any]) -> None:
-        """分发一条 streaming 消息
-        
+        """
+        分发一条 streaming 消息
+
         参数:
         - data: 包含消息类型和体的字典
         """
@@ -222,13 +235,17 @@ def retry_async(
     backoff_base: float = 1.0,
     max_backoff: float = 30.0,
 ):
-    """异步重试装饰器
-    
+    """
+    异步重试装饰器
+
     参数:
     - max_retries: 最大重试次数, 默认 5
     - retryable_exceptions: 可重试的异常类型, 默认 APIConnectionError 和 APIRateLimitError
     - backoff_base: 基础退避时间, 默认 1.0 秒
     - max_backoff: 最大退避时间, 默认 30.0 秒
+
+    返回:
+    - 异步重试装饰器
     """
 
     def decorator(func: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[Any]]:
@@ -277,8 +294,9 @@ class MisskeyAPI:
         chunk_size: int = 64 * 1024,
         max_download_bytes: int | None = None,
     ) -> None:
-        """初始化 Misskey API 客户端
-        
+        """
+        初始化 Misskey API 客户端
+
         参数:
         - instance_url: Misskey 实例 URL, 以斜杠结尾
         - access_token: 访问令牌, 用于认证
@@ -300,13 +318,28 @@ class MisskeyAPI:
         return self
 
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: TracebackType | None):
-        """异步上下文管理器退出时调用"""
+        """
+        异步上下文管理器退出时调用
+
+        参数:
+        - exc_type: exc类型
+        - exc_val: 异常值
+        - exc_tb: 异常回溯
+
+        返回:
+        - 异步上下文管理器退出时调用
+        """
         await self.close()
         return False
 
     @property
     def session(self) -> aiohttp.ClientSession:
-        """获取或创建 aiohttp 会话"""
+        """
+        获取或创建 aiohttp 会话
+
+        返回:
+        - aiohttp.ClientSession: 或创建 aiohttp 会话
+        """
         if self._session is None or self._session.closed:
             headers = {"Authorization": f"Bearer {self.access_token}"}
             self._session = aiohttp.ClientSession(headers=headers)
@@ -323,14 +356,20 @@ class MisskeyAPI:
         logger.debug("[Misskey API] 客户端已关闭")
 
     def get_streaming_client(self) -> StreamingClient:
-        """获取 streaming 客户端"""
+        """
+        获取 streaming 客户端
+
+        返回:
+        - StreamingClient:  streaming 客户端
+        """
         if not self.streaming:
             self.streaming = StreamingClient(self.instance_url, self.access_token)
         return self.streaming
 
     def _handle_response_status(self, status: int, endpoint: str) -> NoReturn:
-        """处理 Misskey API HTTP 状态码
-        
+        """
+        处理 Misskey API HTTP 状态码
+
         参数:
         - status: HTTP 状态码
         - endpoint: API 路径
@@ -344,7 +383,16 @@ class MisskeyAPI:
         raise APIError(f"HTTP {status} for {endpoint}")
 
     async def _process_response(self, response: aiohttp.ClientResponse, endpoint: str) -> Any:
-        """处理 API 响应"""
+        """
+        处理 API 响应
+
+        参数:
+        - response: 响应
+        - endpoint: 接口端点
+
+        返回:
+        - Any: 处理 API 响应
+        """
         if response.status == HTTP_OK:
             try:
                 return await response.json()
@@ -359,11 +407,15 @@ class MisskeyAPI:
 
     @retry_async()
     async def _make_request(self, endpoint: str, data: dict[str, Any] | None = None) -> Any:
-        """向 Misskey API 发起 POST 请求
-        
+        """
+        向 Misskey API 发起 POST 请求
+
         参数:
         - endpoint: API 路径
         - data: 请求体, 可选
+
+        返回:
+        - Any: 向 Misskey API 发起 POST 请求
         """
         url = f"{self.instance_url}/api/{endpoint}"
         payload = {"i": self.access_token}
@@ -389,8 +441,9 @@ class MisskeyAPI:
         channel_id: str | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        """创建 Misskey note
-        
+        """
+        创建 Misskey note
+
         参数:
         - text: note 内容, 可选
         - visibility: 可见性, 默认 "public"
@@ -403,6 +456,9 @@ class MisskeyAPI:
         - renote_id: 转发 note ID, 可选
         - channel_id: 通道 ID, 可选
         - extra: 其他参数, 可选
+
+        返回:
+        - dict[str, Any]: 创建 Misskey note
         """
         payload: dict[str, Any] = {"visibility": visibility, "localOnly": local_only}
         if text is not None:
@@ -425,15 +481,24 @@ class MisskeyAPI:
         return await self._make_request("notes/create", payload)
 
     async def get_current_user(self) -> dict[str, Any]:
-        """获取当前账号信息"""
+        """
+        获取当前账号信息
+
+        返回:
+        - dict[str, Any]: 当前账号信息
+        """
         return await self._make_request("i", {})
 
     async def send_message(self, user_id_or_payload: Any, text: str | None = None) -> dict[str, Any]:
-        """发送 Misskey 私聊消息
-        
+        """
+        发送 Misskey 私聊消息
+
         参数:
         - user_id_or_payload: 目标用户 ID 或消息 payload
         - text: 消息内容, 可选
+
+        返回:
+        - dict[str, Any]: 发送 Misskey 私聊消息
         """
         if isinstance(user_id_or_payload, dict):
             payload = cast(dict[str, Any], user_id_or_payload)
@@ -442,11 +507,15 @@ class MisskeyAPI:
         return await self._make_request("chat/messages/create-to-user", payload)
 
     async def send_room_message(self, room_id_or_payload: Any, text: str | None = None) -> dict[str, Any]:
-        """发送 Misskey 房间消息
-        
+        """
+        发送 Misskey 房间消息
+
         参数:
         - room_id_or_payload: 目标房间 ID 或消息 payload
         - text: 消息内容, 可选
+
+        返回:
+        - dict[str, Any]: 发送 Misskey 房间消息
         """
         if isinstance(room_id_or_payload, dict):
             payload = cast(dict[str, Any], room_id_or_payload)
@@ -455,11 +524,15 @@ class MisskeyAPI:
         return await self._make_request("chat/messages/create-to-room", payload)
 
     async def get_mentions(self, limit: int = 10, since_id: str | None = None) -> list[dict[str, Any]]:
-        """获取提及通知
-        
+        """
+        获取提及通知
+
         参数:
         - limit: 最大返回数量, 默认 10
         - since_id: 从指定 ID 开始返回, 可选
+
+        返回:
+        - list[dict[str, Any]]: 提及通知
         """
         payload: dict[str, Any] = {"limit": limit, "includeTypes": ["mention", "reply", "quote"]}
         if since_id:
@@ -477,12 +550,16 @@ class MisskeyAPI:
         name: str | None = None,
         folder_id: str | None = None,
     ) -> dict[str, Any]:
-        """上传本地文件到 Misskey Drive
-        
+        """
+        上传本地文件到 Misskey Drive
+
         参数:
         - file_path: 本地文件路径
         - name: 文件名, 可选
         - folder_id: 目标文件夹 ID, 可选
+
+        返回:
+        - dict[str, Any]: 上传本地文件到 Misskey Drive
         """
         if not file_path:
             raise APIError("No file path provided for upload")
@@ -506,7 +583,15 @@ class MisskeyAPI:
         return {"id": file_id, "raw": result}
 
     async def find_files_by_hash(self, md5_hash: str) -> list[dict[str, Any]]:
-        """按 MD5 查询 Drive 文件"""
+        """
+        按 MD5 查询 Drive 文件
+
+        参数:
+        - md5_hash: md5哈希值
+
+        返回:
+        - list[dict[str, Any]]: 按 MD5 查询 Drive 文件
+        """
         result = await self._make_request("drive/files/find-by-hash", {"md5": md5_hash})
         return cast(list[dict[str, Any]], result) if isinstance(result, list) else []
 
@@ -515,11 +600,15 @@ class MisskeyAPI:
         name: str,
         folder_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """按文件名查询 Drive 文件
-        
+        """
+        按文件名查询 Drive 文件
+
         参数:
         - name: 文件名
         - folder_id: 目标文件夹 ID, 可选
+
+        返回:
+        - list[dict[str, Any]]: 按文件名查询 Drive 文件
         """
         payload: dict[str, Any] = {"name": name}
         if folder_id:
@@ -533,12 +622,16 @@ class MisskeyAPI:
         folder_id: str | None = None,
         type: str | None = None,
     ) -> list[dict[str, Any]]:
-        """列出 Drive 文件
-        
+        """
+        列出 Drive 文件
+
         参数:
         - limit: 最大返回数量, 默认 10
         - folder_id: 目标文件夹 ID, 可选
         - type: 文件类型, 可选
+
+        返回:
+        - list[dict[str, Any]]: 列出 Drive 文件
         """
         payload: dict[str, Any] = {"limit": limit}
         if folder_id is not None:
@@ -549,11 +642,15 @@ class MisskeyAPI:
         return cast(list[dict[str, Any]], result) if isinstance(result, list) else []
 
     async def _download_bytes(self, url: str, ssl_verify: bool = True) -> bytes:
-        """下载远程文件字节
-        
+        """
+        下载远程文件字节
+
         参数:
         - url: 远程文件 URL
         - ssl_verify: 是否验证 SSL 证书, 默认 True
+
+        返回:
+        - bytes: 下载远程文件字节
         """
         timeout = aiohttp.ClientTimeout(total=self.download_timeout)
         connector = None if ssl_verify else aiohttp.TCPConnector(ssl=False)
@@ -578,12 +675,18 @@ class MisskeyAPI:
         *_: Any,
         **__: Any,
     ) -> dict[str, Any] | None:
-        """下载远程 URL 后上传到 Misskey Drive
-        
+        """
+        下载远程 URL 后上传到 Misskey Drive
+
         参数:
         - url: 远程文件 URL
         - name: 上传后的文件名, 可选
         - folder_id: 上传到指定文件夹 ID, 可选
+        - _: 为兼容调用方保留的位置参数
+        - __: 为兼容调用方保留的关键字参数
+
+        返回:
+        - dict[str, Any] | None: 下载远程 URL 后上传到 Misskey Drive
         """
         try:
             try:
@@ -617,8 +720,9 @@ class MisskeyAPI:
         local_files: list[str] | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """统一发送文本和媒体消息
-        
+        """
+        统一发送文本和媒体消息
+
         参数:
         - message_type: 消息类型, 可选值: "chat", "room", "note"
         - target_id: 目标用户 ID 或房间 ID
@@ -626,6 +730,9 @@ class MisskeyAPI:
         - media_urls: 媒体 URL 列表, 可选
         - local_files: 本地文件路径列表, 可选
         - kwargs: 其他参数, 可选
+
+        返回:
+        - dict[str, Any]: 统一发送文本和媒体消息
         """
         file_ids: list[str] = []
         for url in media_urls or []:
@@ -646,14 +753,18 @@ class MisskeyAPI:
         file_ids: list[str],
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """按目标类型分发消息
-        
+        """
+        按目标类型分发消息
+
         参数:
         - message_type: 消息类型, 可选值: "chat", "room", "note"
         - target_id: 目标用户 ID 或房间 ID
         - text: 文本内容, 可选
         - file_ids: 文件 ID 列表, 可选
         - kwargs: 其他参数, 可选
+
+        返回:
+        - dict[str, Any]: 按目标类型分发消息
         """
         if message_type == "chat":
             payload: dict[str, Any] = {"toUserId": target_id}

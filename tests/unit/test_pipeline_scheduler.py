@@ -1,9 +1,10 @@
-"""PipelineScheduler / RateLimiter 单元测试
+"""
+PipelineScheduler / RateLimiter 单元测试
 
 覆盖:
 - RateLimiter: token bucket 放行 / 限流 / 独立 key / 时间 refill
-- PipelineScheduler: preprocessor 拦截、限流反馈、唤醒检查、权限检查、
-  空消息丢弃、UserManager 路由、成功回复、超时反馈、异常兜底、临时文件清理
+- PipelineScheduler: preprocessor 拦截, 限流反馈, 唤醒检查, 权限检查,
+  空消息丢弃, UserManager 路由, 成功回复, 超时反馈, 异常兜底, 临时文件清理
 """
 from __future__ import annotations
 
@@ -106,7 +107,7 @@ def _message_event(
     )
 
 
-# ================= RateLimiter =================
+# ================= RateLimiter 测试 =================
 
 
 @pytest.mark.asyncio
@@ -134,7 +135,12 @@ async def test_rate_limiter_keys_are_independent():
 
 @pytest.mark.asyncio
 async def test_rate_limiter_refills_after_time(monkeypatch: pytest.MonkeyPatch):
-    """时间流逝后 token 按 rate 恢复"""
+    """
+    时间流逝后 token 按 rate 恢复
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     rl = RateLimiter(rate=10.0, burst=5)
     now = time.monotonic()
     current = {"value": now}
@@ -146,28 +152,28 @@ async def test_rate_limiter_refills_after_time(monkeypatch: pytest.MonkeyPatch):
         "satrap.core.pipeline.rate_limiter.time.monotonic", fake_monotonic
     )
 
-    # 消耗 1 token (桶 5 → 4)
     assert (await rl.check("k"))[0] is True
-    # 0.2s 后 refill 2 token → 4 + 2 = 6 → 上限 5, 放行 (5 → 4)
+    # Step.1 消耗 1 token (桶 5 -> 4)
+    # Step.2 0.2s 后 refill 2 token -> 4 + 2 = 6 -> 上限 5, 放行 (5 -> 4)
     current["value"] = now + 0.2
     assert (await rl.check("k"))[0] is True
-    # 连续消耗: 4 → 3 → 2 → 1 → 0, 均放行 (共 6 次)
+    # 连续消耗: 4 -> 3 -> 2 -> 1 -> 0, 均放行 (共 6 次)
     for _ in range(4):
         assert (await rl.check("k"))[0] is True
-    # 桶已空且时间未变 → 限流
+    # 桶已空且时间未变 -> 限流
     allowed, wait = await rl.check("k")
     assert allowed is False
     assert wait > 0.0
 
 
-# ================= PipelineScheduler =================
+# ================= PipelineScheduler 测试 =================
 
 
 @pytest.mark.asyncio
 async def test_preprocessor_drop_event():
     """preprocessor 返回 False 丢弃事件"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.add_preprocessor(lambda e: False)
 
     adapter = _RecorderAdapter()
@@ -179,12 +185,12 @@ async def test_preprocessor_drop_event():
 async def test_preprocessor_async_and_full_success_path():
     """异步 preprocessor 通过后, 全链路: 回复通过 event.send 发出"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     async def ok(event: MessageEvent) -> bool:
         return True
 
-    sched.add_preprocessor(ok)  # type: ignore[arg-type]
+    sched.add_preprocessor(ok)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -201,7 +207,7 @@ async def test_rate_limited_sends_feedback():
     """限流时发送频率反馈 (error_feedback=True)"""
     rl = RateLimiter(rate=1.0, burst=0)
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm, rate_limiter=rl, error_feedback=True)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm, rate_limiter=rl, error_feedback=True)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -214,7 +220,7 @@ async def test_rate_limited_sends_feedback():
 async def test_group_message_without_wake_dropped():
     """群消息无唤醒词/艾特时丢弃"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(
@@ -227,7 +233,7 @@ async def test_group_message_without_wake_dropped():
 async def test_group_message_with_wake_passes():
     """群消息带唤醒标记时放行"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     event = _message_event(adapter, msg_type=PlatformMessageType.GROUP_MESSAGE)
@@ -239,7 +245,7 @@ async def test_group_message_with_wake_passes():
 @pytest.mark.asyncio
 async def test_permission_denied_drops():
     """权限检查拒绝时丢弃事件"""
-    sched = _DenyScheduler(_FakeSessionManager())  # type: ignore[arg-type]
+    sched = _DenyScheduler(_FakeSessionManager())   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -250,7 +256,7 @@ async def test_permission_denied_drops():
 async def test_empty_message_dropped():
     """空消息丢弃"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter, message_str=""))
@@ -261,7 +267,7 @@ async def test_empty_message_dropped():
 async def test_llm_timeout_sends_feedback():
     """LLM 调用超时发送超时反馈"""
     sm = _FakeSessionManager(response="", delay=5)
-    sched = PipelineScheduler(sm, llm_timeout=0.05, error_feedback=True)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm, llm_timeout=0.05, error_feedback=True)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -272,7 +278,7 @@ async def test_llm_timeout_sends_feedback():
 @pytest.mark.asyncio
 async def test_execute_error_sends_feedback():
     """管线异常时发送兜底反馈"""
-    sched = PipelineScheduler(_BoomSessionManager(), error_feedback=True)  # type: ignore[arg-type]
+    sched = PipelineScheduler(_BoomSessionManager(), error_feedback=True)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -282,9 +288,14 @@ async def test_execute_error_sends_feedback():
 
 @pytest.mark.asyncio
 async def test_temporary_files_cleaned(tmp_path: Path):
-    """事件结束后跟踪的临时文件被清理"""
+    """
+    事件结束后跟踪的临时文件被清理
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     adapter = _RecorderAdapter()
     event = _message_event(adapter)
@@ -300,7 +311,7 @@ async def test_temporary_files_cleaned(tmp_path: Path):
 async def test_execute_resolves_session_via_user_manager():
     """配置 UserManager 时通过 resolve_session 解析目标会话"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
 
     class _FakeUserManager:
         def __init__(self):
@@ -312,7 +323,7 @@ async def test_execute_resolves_session_via_user_manager():
             return f"{platform}:{user_id}:sid"
 
     fake_um = _FakeUserManager()
-    sched.user_manager = fake_um  # type: ignore[assignment]
+    sched.user_manager = fake_um   # type: ignore[assignment]
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -323,7 +334,7 @@ async def test_execute_resolves_session_via_user_manager():
 def test_resolve_route_adapter_no_requested_uses_source():
     """未配置 adapter_id 时回退到事件来源适配器"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
@@ -335,7 +346,7 @@ def test_resolve_route_adapter_no_requested_uses_source():
 def test_resolve_route_adapter_requested_missing_falls_back():
     """配置的 adapter_id 不存在时回退到事件来源"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("ghost"))
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
@@ -347,7 +358,7 @@ def test_resolve_route_adapter_requested_missing_falls_back():
 def test_resolve_route_adapter_requested_exists():
     """配置的 adapter_id 存在时路由到目标适配器"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("rec1"))
-    sched = PipelineScheduler(sm)  # type: ignore[arg-type]
+    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1", "rec2"})
 
     adapter = _RecorderAdapter()

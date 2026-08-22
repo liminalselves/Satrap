@@ -107,7 +107,7 @@ def test_parse_front_matter_no_match():
     assert body == "hello\nworld"
 
 
-# ================= SkillsManager =================
+# ================= SkillsManager 测试 =================
 
 def test_scan_loads_all_skill_files(tmp_path: Path):
     _write_skill(tmp_path, filename="a.md")
@@ -312,7 +312,7 @@ async def test_activate_async_with_async_context(tmp_path: Path):
     assert tools_manager.is_tool_enabled("code_sandbox") is False
 
 
-# ================= SkillTool =================
+# ================= SkillTool 测试 =================
 
 async def test_skill_tool_returns_instructions(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)

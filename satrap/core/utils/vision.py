@@ -19,27 +19,67 @@ DEFAULT_TARGET_BYTES = 4 * 1024 * 1024
 
 
 def is_data_image_url(value: str) -> bool:
-    """判断字符串是否为图片 data URL"""
+    """
+    判断字符串是否为图片 data URL
+
+    参数:
+    - value: 输入值
+
+    返回:
+    - bool: 判断字符串是否为图片 data URL
+    """
     return value.startswith("data:image/") and ";base64," in value
 
 
 def is_remote_url(value: str) -> bool:
-    """判断字符串是否为远程 URL"""
+    """
+    判断字符串是否为远程 URL
+
+    参数:
+    - value: 输入值
+
+    返回:
+    - bool: 判断字符串是否为远程 URL
+    """
     return value.startswith(("http://", "https://"))
 
 
 def is_image_content_part(part: Any) -> bool:
-    """判断 content 片段是否为图片片段"""
-    return bool(isinstance(part, dict) and part.get("type") == "image_url")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    """
+    判断 content 片段是否为图片片段
+
+    参数:
+    - part: part 输入值
+
+    返回:
+    - bool: 判断 content 片段是否为图片片段
+    """
+    return bool(isinstance(part, dict) and part.get("type") == "image_url")   # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
 def is_text_content_part(part: Any) -> bool:
-    """判断 content 片段是否为文本片段"""
-    return bool(isinstance(part, dict) and part.get("type") == "text")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    """
+    判断 content 片段是否为文本片段
+
+    参数:
+    - part: part 输入值
+
+    返回:
+    - bool: 判断 content 片段是否为文本片段
+    """
+    return bool(isinstance(part, dict) and part.get("type") == "text")   # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
 
 
 def content_text_projection(content: ChatContent | None) -> str:
-    """将多模态 content 转为可读文本摘要"""
+    """
+    将多模态 content 转为可读文本摘要
+
+    参数:
+    - content: 内容
+
+    返回:
+    - str: 将多模态 content 转为可读文本摘要
+    """
     if content is None:
         return ""
     if isinstance(content, str):
@@ -57,14 +97,30 @@ def content_text_projection(content: ChatContent | None) -> str:
 
 
 def estimate_content_image_count(content: ChatContent | None) -> int:
-    """统计 content 中的图片数量"""
+    """
+    统计 content 中的图片数量
+
+    参数:
+    - content: 内容
+
+    返回:
+    - int: 统计 content 中的图片数量
+    """
     if not isinstance(content, list):
         return 0
     return sum(1 for part in content if is_image_content_part(part))
 
 
 def _guess_mime_type(path: str) -> str:
-    """根据路径推断图片 MIME 类型"""
+    """
+    根据路径推断图片 MIME 类型
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: 根据路径推断图片 MIME 类型
+    """
     mime_type, _ = mimetypes.guess_type(path)
     if mime_type and mime_type.startswith("image/"):
         return mime_type
@@ -83,7 +139,16 @@ def _guess_mime_type(path: str) -> str:
 
 
 def _image_bytes_to_data_url(image_bytes: bytes, mime_type: str) -> str:
-    """将图片字节编码为 data URL"""
+    """
+    将图片字节编码为 data URL
+
+    参数:
+    - image_bytes: 图片字节数据
+    - mime_type: mime类型
+
+    返回:
+    - str: 将图片字节编码为 data URL
+    """
     encoded = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:{mime_type};base64,{encoded}"
 
@@ -93,7 +158,17 @@ def encode_local_image_to_data_url(
     max_side: int = DEFAULT_MAX_IMAGE_SIDE,
     target_bytes: int = DEFAULT_TARGET_BYTES,
 ) -> str:
-    """将本地图片编码为可发送给视觉模型的 data URL"""
+    """
+    将本地图片编码为可发送给视觉模型的 data URL
+
+    参数:
+    - image_path: image路径
+    - max_side: 最大side
+    - target_bytes: 目标bytes
+
+    返回:
+    - str: 将本地图片编码为可发送给视觉模型的 data URL
+    """
     if not os.path.exists(image_path):
         raise FileNotFoundError(f"图片文件不存在: {image_path}")
 
@@ -104,7 +179,7 @@ def encode_local_image_to_data_url(
             return _image_bytes_to_data_url(f.read(), mime_type)
 
     try:
-        from PIL import Image
+        from PIL import Image   # 仅在读取图片尺寸时加载可选图像依赖
     except ImportError as exc:
         raise RuntimeError("处理大图需要安装 pillow") from exc
 
@@ -127,7 +202,16 @@ def build_image_content_parts(
     img_urls: list[str] | None,
     strict: bool = False,
 ) -> list[dict[str, Any]]:
-    """构建 OpenAI 兼容图片 content 片段"""
+    """
+    构建 OpenAI 兼容图片 content 片段
+
+    参数:
+    - img_urls: 图片 URL 列表
+    - strict: 是否使用严格模式
+
+    返回:
+    - list[dict[str, Any]]: 构建 OpenAI 兼容图片 content 片段
+    """
     if not img_urls:
         return []
 
@@ -151,7 +235,17 @@ def build_multimodal_content(
     img_urls: list[str] | None = None,
     strict: bool = False,
 ) -> ChatContent:
-    """构建文本和图片混合 content"""
+    """
+    构建文本和图片混合 content
+
+    参数:
+    - text: 待处理文本
+    - img_urls: 图片 URL 列表
+    - strict: 是否使用严格模式
+
+    返回:
+    - ChatContent: 构建文本和图片混合 content
+    """
     image_parts = build_image_content_parts(img_urls, strict=strict)
     if not image_parts:
         return text
@@ -166,7 +260,17 @@ def normalize_chat_messages(
     img_urls: list[str] | None = None,
     strict: bool = False,
 ) -> list[ChatMessage]:
-    """归一化消息列表并把图片追加到最后一条 user 消息"""
+    """
+    归一化消息列表并把图片追加到最后一条 user 消息
+
+    参数:
+    - messages: 消息列表
+    - img_urls: 图片 URL 列表
+    - strict: 是否使用严格模式
+
+    返回:
+    - list[ChatMessage]: 归一化消息列表并把图片追加到最后一条 user 消息
+    """
     normalized = [dict(message) for message in messages]
     if not img_urls:
         return normalized

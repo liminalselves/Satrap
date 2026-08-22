@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import streamlit as st
+from satrap.core.config_loader import ConfigLoader
 from satrap.admin_utils.backend_control import (
     daemon_client,
     daemon_info,
@@ -36,7 +37,14 @@ st.set_page_config(page_title="系统设置", page_icon="", layout="wide")
 
 
 def _save_config_and_maybe_restart(path: Path, data: dict[str, Any], backend_running: bool):
-    """保存配置, 并在后端运行时重启"""
+    """
+    保存配置, 并在后端运行时重启
+
+    参数:
+    - path: 路径
+    - data: 输入数据
+    - backend_running: 后端是否运行
+    """
     try:
         old_config = st.session_state.config
         new_config = save_config_document(path, data)
@@ -60,7 +68,14 @@ def _save_config_and_maybe_restart(path: Path, data: dict[str, Any], backend_run
 
 
 def _render_platform_editor(config_data: dict[str, Any], config_path: Path, backend_running: bool):
-    """渲染平台快捷新增/修改表单"""
+    """
+    渲染平台快捷新增/修改表单
+
+    参数:
+    - config_data: 配置数据
+    - config_path: 配置路径
+    - backend_running: 后端是否运行
+    """
     platforms = list(cast(list[Any], config_data.get("platforms", []) or []))
     platform_ids = [str(item.get("id", "")).strip() for item in platforms if str(item.get("id", "")).strip()]
     selected = st.selectbox("选择已有平台", ["新增平台配置"] + platform_ids, key="platform_editor_selected")
@@ -119,6 +134,7 @@ def _render_platform_editor(config_data: dict[str, Any], config_path: Path, back
 
 
 def render():
+    """渲染"""
     ensure_state()
     st.subheader("系统设置")
 
@@ -185,7 +201,6 @@ def render():
             st.rerun()
 
         if reload_frontend_clicked:
-            from satrap.core.config_loader import ConfigLoader
             new_config = ConfigLoader.autodetect()
             reset_state_managers(new_config)
             st.success("配置已重新加载")

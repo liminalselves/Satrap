@@ -15,7 +15,15 @@ from satrap.core.type import safe_getattr
 
 
 def load_run_config(args: argparse.Namespace):
-    """加载 run 命令配置并应用命令行覆盖"""
+    """
+    加载 run 命令配置并应用命令行覆盖
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - 加载 run 命令配置并应用命令行覆盖
+    """
     config = ConfigLoader.autodetect()
     if args.config:
         p = Path(args.config)
@@ -29,7 +37,12 @@ def load_run_config(args: argparse.Namespace):
 
 
 async def cmd_run(args: argparse.Namespace):
-    """启动后端服务"""
+    """
+    启动后端服务
+
+    参数:
+    - args: 额外位置参数
+    """
     config = load_run_config(args)
 
     daemon = DaemonInfo.from_config(config)

@@ -24,7 +24,7 @@ def parse_rerank_result(
     - 包含 'text', 'score', 'index' 的字典列表; 如果出错或无结果, 返回空列表
     """
 
-    # 0. 基础类型检查 (防止 api_response 本身是 None)
+    # Step.1 基础类型检查 (防止 api_response 本身是 None)
     if not api_response or not isinstance(api_response, dict):
         msg = "重排接口响应为空或不是字典格式"
         if suppress_error:
@@ -33,7 +33,7 @@ def parse_rerank_result(
 
         raise ValueError(msg)
 
-    # 1. 状态码检查
+    # Step.2 状态码检查
     status_code = api_response.get("status_code")
     if status_code is not None and status_code != 200:
         error_msg = api_response.get("message", "Unknown Error")
@@ -44,7 +44,7 @@ def parse_rerank_result(
         else:
             raise ValueError(log_msg)
 
-    # 2. 获取 output
+    # Step.3 获取 output
     results: list[Any] | None = None
     if "results" in api_response and isinstance(api_response["results"], list):
         results = cast(list[Any], api_response["results"])
@@ -58,7 +58,7 @@ def parse_rerank_result(
         logger.warning("重排接口响应中未找到有效的 'results' 列表")
         return []
 
-    # 3. 提取核心数据
+    # Step.4 提取核心数据
     parsed_data: list[dict[str, Any]] = []
     for item in cast(list[Any], results):
         try:
@@ -84,7 +84,7 @@ def parse_rerank_result(
             logger.warning(f"重排接口结果中跳过格式错误项: {e}")
             continue
 
-    # 4. 确保按分数降序排序
+    # Step.5 确保按分数降序排序
     parsed_data.sort(key=lambda x: x["score"], reverse=True)
     return parsed_data
 
@@ -99,7 +99,8 @@ class ReRank:
         lock_api_key: bool = True,
         timeout: int = 60,
     ):
-        """[同步版本] ReRank API 封装
+        """
+        [同步版本] ReRank API 封装
 
         参数:
         - api_key: OpenAI API 密钥
@@ -125,8 +126,9 @@ class ReRank:
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        """调用 ReRank API 并解析结果
-        
+        """
+        调用 ReRank API 并解析结果
+
         参数:
         - query: 查询文本
         - documents: 文档列表
@@ -190,23 +192,48 @@ class ReRank:
         return parsed_results
 
     def get_api_key(self) -> str:
-        """获取当前 ReRank 实例的 API Key"""
+        """
+        获取当前 ReRank 实例的 API Key
+
+        返回:
+        - str: 当前 ReRank 实例的 API Key
+        """
         return self.api_key if not self.lock_api_key else "api key locked"
 
     def get_base_url(self) -> str:
-        """获取当前 ReRank 实例的 Base URL"""
+        """
+        获取当前 ReRank 实例的 Base URL
+
+        返回:
+        - str: 当前 ReRank 实例的 Base URL
+        """
         return self.base_url
 
     def get_model(self) -> str:
-        """获取当前 ReRank 实例使用的模型名称"""
+        """
+        获取当前 ReRank 实例使用的模型名称
+
+        返回:
+        - str: 当前 ReRank 实例使用的模型名称
+        """
         return self.model
 
     def get_top_k(self) -> int:
-        """获取当前 ReRank 实例的 top_k 参数"""
+        """
+        获取当前 ReRank 实例的 top_k 参数
+
+        返回:
+        - int: 当前 ReRank 实例的 top_k 参数
+        """
         return self.top_k
 
     def get_min_score(self) -> float:
-        """获取当前 ReRank 实例的 min_score 参数"""
+        """
+        获取当前 ReRank 实例的 min_score 参数
+
+        返回:
+        - float: 当前 ReRank 实例的 min_score 参数
+        """
         return self.min_score
 
     def set_parameters(
@@ -215,7 +242,8 @@ class ReRank:
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
     ):
-        """更新 ReRank 实例的默认参数设置
+        """
+        更新 ReRank 实例的默认参数设置
 
         参数:
         - model: 新的模型名称
@@ -242,7 +270,8 @@ class AsyncReRank:
         lock_api_key: bool = True,
         timeout: int = 60,
     ):
-        """[异步版本] ReRank API 封装
+        """
+        [异步版本] ReRank API 封装
 
         参数:
         - api_key: OpenAI API 密钥
@@ -268,8 +297,9 @@ class AsyncReRank:
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        """异步调用 ReRank API 并解析结果
-        
+        """
+        异步调用 ReRank API 并解析结果
+
         参数:
         - query: 查询文本
         - documents: 文档列表
@@ -333,23 +363,48 @@ class AsyncReRank:
         return parsed_results
 
     def get_api_key(self) -> str:
-        """获取当前 AsyncReRank 实例的 API Key"""
+        """
+        获取当前 AsyncReRank 实例的 API Key
+
+        返回:
+        - str: 当前 AsyncReRank 实例的 API Key
+        """
         return self.api_key if not self.lock_api_key else "api key locked"
 
     def get_base_url(self) -> str:
-        """获取当前 AsyncReRank 实例的 Base URL"""
+        """
+        获取当前 AsyncReRank 实例的 Base URL
+
+        返回:
+        - str: 当前 AsyncReRank 实例的 Base URL
+        """
         return self.base_url
 
     def get_model(self) -> str:
-        """获取当前 AsyncReRank 实例使用的模型名称"""
+        """
+        获取当前 AsyncReRank 实例使用的模型名称
+
+        返回:
+        - str: 当前 AsyncReRank 实例使用的模型名称
+        """
         return self.model
 
     def get_top_k(self) -> int:
-        """获取当前 AsyncReRank 实例的 top_k 参数"""
+        """
+        获取当前 AsyncReRank 实例的 top_k 参数
+
+        返回:
+        - int: 当前 AsyncReRank 实例的 top_k 参数
+        """
         return self.top_k
 
     def get_min_score(self) -> float:
-        """获取当前 AsyncReRank 实例的 min_score 参数"""
+        """
+        获取当前 AsyncReRank 实例的 min_score 参数
+
+        返回:
+        - float: 当前 AsyncReRank 实例的 min_score 参数
+        """
         return self.min_score
 
     def set_parameters(
@@ -358,7 +413,8 @@ class AsyncReRank:
         top_k: Optional[int] = None,
         min_score: Optional[float] = None,
     ):
-        """更新 AsyncReRank 实例的默认参数设置
+        """
+        更新 AsyncReRank 实例的默认参数设置
 
         参数:
         - model: 新的模型名称

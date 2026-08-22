@@ -12,7 +12,15 @@ class FileIDExtractor:
 
     @staticmethod
     def extract_file_id(result: Any) -> str | None:
-        """从多种响应结构中提取文件 ID"""
+        """
+        从多种响应结构中提取文件 ID
+
+        参数:
+        - result: 结果
+
+        返回:
+        - str | None: 从多种响应结构中提取文件 ID
+        """
         if not isinstance(result, dict):
             return None
         result = cast(dict[str, Any], result)
@@ -28,7 +36,15 @@ class FileIDExtractor:
 
 
 def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]:
-    """将 Satrap 消息链序列化为 Misskey 文本"""
+    """
+    将 Satrap 消息链序列化为 Misskey 文本
+
+    参数:
+    - chain: 消息链
+
+    返回:
+    - tuple[str, bool]: 将 Satrap 消息链序列化为 Misskey 文本
+    """
     components = chain.components if isinstance(chain, MessageChain) else chain
     text_parts: list[str] = []
     has_at = False
@@ -69,37 +85,95 @@ def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]
 
 
 def is_valid_chat_session_id(session_id: str | Any) -> bool:
-    """检查是否为 chat%<user_id> 会话"""
+    """
+    检查是否为 chat%<user_id> 会话
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 检查结果
+    """
     return isinstance(session_id, str) and session_id.startswith("chat%") and len(session_id.split("%", 1)[1]) > 0
 
 
 def is_valid_room_session_id(session_id: str | Any) -> bool:
-    """检查是否为 room%<room_id> 会话"""
+    """
+    检查是否为 room%<room_id> 会话
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 检查结果
+    """
     return isinstance(session_id, str) and session_id.startswith("room%") and len(session_id.split("%", 1)[1]) > 0
 
 
 def is_valid_note_session_id(session_id: str | Any) -> bool:
-    """检查是否为 note%<user_id> 会话"""
+    """
+    检查是否为 note%<user_id> 会话
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 检查结果
+    """
     return isinstance(session_id, str) and session_id.startswith("note%") and len(session_id.split("%", 1)[1]) > 0
 
 
 def is_valid_user_session_id(session_id: str | Any) -> bool:
-    """检查是否为用户会话"""
+    """
+    检查是否为用户会话
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - bool: 检查结果
+    """
     return is_valid_chat_session_id(session_id) or is_valid_note_session_id(session_id)
 
 
 def extract_user_id_from_session_id(session_id: str) -> str:
-    """从 session_id 中提取用户 ID"""
+    """
+    从 session_id 中提取用户 ID
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - str: 从 session_id 中提取用户 ID
+    """
     return session_id.split("%", 1)[1] if "%" in session_id else session_id
 
 
 def extract_room_id_from_session_id(session_id: str) -> str:
-    """从 session_id 中提取房间 ID"""
+    """
+    从 session_id 中提取房间 ID
+
+    参数:
+    - session_id: 会话 ID
+
+    返回:
+    - str: 从 session_id 中提取房间 ID
+    """
     return session_id.split("%", 1)[1] if "%" in session_id else session_id
 
 
 def add_at_mention_if_needed(text: str, user_info: dict[str, Any] | None, has_at: bool = False) -> str:
-    """必要时为 note 回复补充 @username"""
+    """
+    必要时为 note 回复补充 @username
+
+    参数:
+    - text: 待处理文本
+    - user_info: 用户info
+    - has_at: 是否hasat
+
+    返回:
+    - str: 必要时为 note 回复补充 @username
+    """
     if has_at or not user_info:
         return text
     username = user_info.get("username")
@@ -118,7 +192,19 @@ def resolve_message_visibility(
     raw_message: dict[str, Any] | None = None,
     default_visibility: str = "public",
 ) -> tuple[str, list[str] | None]:
-    """解析 Misskey note 可见性"""
+    """
+    解析 Misskey note 可见性
+
+    参数:
+    - user_id: 用户 ID
+    - user_cache: 用户cache
+    - self_id: 自身 ID
+    - raw_message: raw消息
+    - default_visibility: 默认visibility
+
+    返回:
+    - tuple[str, list[str] | None]: 解析 Misskey note 可见性
+    """
     visibility = default_visibility
     visible_user_ids: list[str] | None = None
     source = raw_message or {}
@@ -138,7 +224,15 @@ def resolve_message_visibility(
 
 
 def format_poll(poll: dict[str, Any]) -> str:
-    """格式化 Misskey 投票内容"""
+    """
+    格式化 Misskey 投票内容
+
+    参数:
+    - poll: 投票数据
+
+    返回:
+    - str: 格式化 Misskey 投票内容
+    """
     if not poll:
         return ""
     choices = cast(list[Any], poll.get("choices") or [])
@@ -156,7 +250,16 @@ def format_poll(poll: dict[str, Any]) -> str:
 
 
 def extract_sender_info(raw_data: dict[str, Any], is_chat: bool = False) -> dict[str, Any]:
-    """提取 Misskey 发送者信息"""
+    """
+    提取 Misskey 发送者信息
+
+    参数:
+    - raw_data: raw数据
+    - is_chat: 是否ischat
+
+    返回:
+    - dict[str, Any]: 提取 Misskey 发送者信息
+    """
     if is_chat:
         sender = cast(dict[str, Any], raw_data.get("fromUser") or {})
         sender_id = str(sender.get("id") or raw_data.get("fromUserId") or "")
@@ -179,7 +282,19 @@ def create_base_message(
     is_chat: bool = False,
     room_id: str | None = None,
 ) -> PlatformMessage:
-    """创建 Satrap 平台消息对象"""
+    """
+    创建 Satrap 平台消息对象
+
+    参数:
+    - raw_data: raw数据
+    - sender_info: 发送者信息
+    - bot_self_id: 机器人自身 ID
+    - is_chat: 是否ischat
+    - room_id: 房间ID
+
+    返回:
+    - PlatformMessage: 创建 Satrap 平台消息对象
+    """
     message = PlatformMessage()
     sender_id = sender_info["sender_id"]
     if room_id:
@@ -207,7 +322,18 @@ def process_at_mention(
     bot_username: str,
     bot_self_id: str,
 ) -> tuple[list[str], str]:
-    """处理文本中的 bot @ 提及"""
+    """
+    处理文本中的 bot @ 提及
+
+    参数:
+    - message: 消息内容
+    - raw_text: raw文本
+    - bot_username: bot用户名
+    - bot_self_id: 机器人自身 ID
+
+    返回:
+    - tuple[list[str], str]: 处理文本中的 bot @ 提及
+    """
     if not raw_text:
         return [], ""
     if bot_username and raw_text.startswith(f"@{bot_username}"):
@@ -223,7 +349,15 @@ def process_at_mention(
 
 
 def create_file_component(file_info: dict[str, Any]) -> tuple[Any, str]:
-    """创建 Satrap 文件类消息组件"""
+    """
+    创建 Satrap 文件类消息组件
+
+    参数:
+    - file_info: 文件info
+
+    返回:
+    - tuple[Any, str]: 创建 Satrap 文件类消息组件
+    """
     file_url = file_info.get("url") or ""
     file_name = file_info.get("name") or "未知文件"
     file_type = file_info.get("type") or ""
@@ -237,7 +371,17 @@ def create_file_component(file_info: dict[str, Any]) -> tuple[Any, str]:
 
 
 def process_files(message: PlatformMessage, files: list[Any], include_text_parts: bool = True) -> list[str]:
-    """处理 Misskey 文件列表"""
+    """
+    处理 Misskey 文件列表
+
+    参数:
+    - message: 消息内容
+    - files: 文件列表
+    - include_text_parts: 是否include文本parts
+
+    返回:
+    - list[str]: 处理 Misskey 文件列表
+    """
     parts: list[str] = []
     for item in files:
         if not isinstance(item, dict):
@@ -258,7 +402,16 @@ def cache_user_info(
     *,
     is_chat: bool = False,
 ) -> None:
-    """缓存用户上下文, 供回复时恢复可见性和 replyId"""
+    """
+    缓存用户上下文, 供回复时恢复可见性和 replyId
+
+    参数:
+    - user_cache: 用户cache
+    - sender_info: 发送者信息
+    - raw_data: raw数据
+    - bot_self_id: 机器人自身 ID
+    - is_chat: 是否ischat
+    """
     sender_id = sender_info["sender_id"]
     if not sender_id:
         return
@@ -280,7 +433,14 @@ def cache_user_info(
 
 
 def cache_room_info(user_cache: dict[str, Any], raw_data: dict[str, Any], bot_self_id: str) -> None:
-    """缓存房间上下文"""
+    """
+    缓存房间上下文
+
+    参数:
+    - user_cache: 用户cache
+    - raw_data: raw数据
+    - bot_self_id: 机器人自身 ID
+    """
     room_id = raw_data.get("toRoomId")
     room_data = cast(dict[str, Any], raw_data.get("toRoom") or {})
     if room_id:
@@ -292,7 +452,15 @@ def cache_room_info(user_cache: dict[str, Any], raw_data: dict[str, Any], bot_se
 
 
 async def resolve_component_url_or_path(comp: Any) -> tuple[str | None, str | None]:
-    """从消息组件中解析远程 URL 或本地路径"""
+    """
+    从消息组件中解析远程 URL 或本地路径
+
+    参数:
+    - comp: comp 输入值
+
+    返回:
+    - tuple[str | None, str | None]: 从消息组件中解析远程 URL 或本地路径
+    """
     if hasattr(comp, "get_file"):
         try:
             value = await comp.get_file(True)
@@ -328,7 +496,18 @@ async def upload_local_with_retries(
     preferred_name: str | None,
     folder_id: str | None,
 ) -> str | None:
-    """上传本地文件并提取 file id"""
+    """
+    上传本地文件并提取 file id
+
+    参数:
+    - api: api 输入值
+    - local_path: local路径
+    - preferred_name: preferred名称
+    - folder_id: 文件夹 ID
+
+    返回:
+    - str | None: 上传本地文件并提取 file id
+    """
     try:
         result = await api.upload_file(local_path, preferred_name, folder_id)
         if isinstance(result, dict):

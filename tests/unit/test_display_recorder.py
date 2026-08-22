@@ -28,7 +28,7 @@ class _EchoTool(Tool):
         return f"echo:{x}"
 
 
-# ---------------- 参数截断 ----------------
+# ---------- 参数截断 ----------
 
 
 def test_truncate_arguments_limits_each_value():
@@ -45,7 +45,7 @@ def test_truncate_arguments_non_dict_returns_empty():
     assert _truncate_arguments("str") == "{}"
 
 
-# ---------------- ToolsManager 观察钩子 ----------------
+# ---------- ToolsManager 观察钩子 ----------
 
 
 def test_tool_observer_default_none_no_behavior_change():
@@ -115,11 +115,16 @@ async def test_async_tool_observer_fired():
     assert events == ["start", "end:True"]
 
 
-# ---------------- DisplayRecorder 落库 ----------------
+# ---------- DisplayRecorder 落库 ----------
 
 
 def test_recorder_turn_and_tool_calls(tmp_path: Any):
-    """start_turn 提前插行 -> 工具状态实时 -> end_turn 回填 thinking/answer"""
+    """
+    start_turn 提前插行 -> 工具状态实时 -> end_turn 回填 thinking/answer
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "display.db")
     rec = DisplayRecorder(db, "conv-1")
 
@@ -148,7 +153,12 @@ def test_recorder_turn_and_tool_calls(tmp_path: Any):
 
 
 def test_recorder_answer_fallback(tmp_path: Any):
-    """回调流为空时 answer 用 end_turn 的 fallback 兜底"""
+    """
+    回调流为空时 answer 用 end_turn 的 fallback 兜底
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "display.db")
     rec = DisplayRecorder(db, "conv-1")
     rec.start_turn("hi")
@@ -157,7 +167,12 @@ def test_recorder_answer_fallback(tmp_path: Any):
 
 
 def test_recorder_turn_index_continues_across_restart(tmp_path: Any):
-    """turn_index 跨重启连续 (启动查 max+1)"""
+    """
+    turn_index 跨重启连续 (启动查 max+1)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "display.db")
     rec1 = DisplayRecorder(db, "conv-1")
     rec1.start_turn("一")
@@ -172,7 +187,12 @@ def test_recorder_turn_index_continues_across_restart(tmp_path: Any):
 
 
 def test_recorder_tool_failure_recorded(tmp_path: Any):
-    """工具失败记录 success=False"""
+    """
+    工具失败记录 success=False
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "display.db")
     rec = DisplayRecorder(db, "conv-1")
     rec.start_turn("x")
@@ -183,7 +203,12 @@ def test_recorder_tool_failure_recorded(tmp_path: Any):
 
 
 def test_recorder_isolated_from_conversations(tmp_path: Any):
-    """不同 conversation_id 数据隔离"""
+    """
+    不同 conversation_id 数据隔离
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "display.db")
     ra = DisplayRecorder(db, "conv-a")
     rb = DisplayRecorder(db, "conv-b")
@@ -195,7 +220,7 @@ def test_recorder_isolated_from_conversations(tmp_path: Any):
     assert len(rb.list_turns()) == 1 and rb.list_turns()[0]["user_input"] == "b1"
 
 
-# ---------------- 端到端: SimpleSession + 插件 ----------------
+# ---------- 端到端: SimpleSession + 插件 ----------
 
 
 class _ToolThenAnswerLLM(LLM):
@@ -227,7 +252,13 @@ class _ToolThenAnswerLLM(LLM):
 
 
 def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
-    """真实 SimpleSession + satrap_coding 插件 + recorder 全链路"""
+    """
+    真实 SimpleSession + satrap_coding 插件 + recorder 全链路
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     import satrap.expend.plugins.satrap_coding.tools as tools_mod
 
     monkeypatch.setattr(tools_mod, "DATA_ROOT", tmp_path / "coding")
@@ -263,7 +294,12 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
 
 
 def test_recorder_meta_think_roundtrip(tmp_path: Any):
-    """conversation_meta 保存/读取 think 默认思考强度"""
+    """
+    conversation_meta 保存/读取 think 默认思考强度
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from satrap.display.recorder import get_conversation_meta
 
     db = str(tmp_path / "display.db")
@@ -278,7 +314,12 @@ def test_recorder_meta_think_roundtrip(tmp_path: Any):
 
 
 def test_recorder_meta_think_legacy_compat(tmp_path: Any):
-    """旧库无 think 列时自动 ALTER 添加, 旧记录回落 off"""
+    """
+    旧库无 think 列时自动 ALTER 添加, 旧记录回落 off
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from satrap.display.recorder import get_conversation_meta
 
     db = str(tmp_path / "display.db")
@@ -295,8 +336,8 @@ def test_recorder_meta_think_legacy_compat(tmp_path: Any):
     conn.commit()
     conn.close()
 
-    # DisplayRecorder 初始化应自动 ALTER 添加 think 列
     rec = DisplayRecorder(db_path=db, conversation_id="c1")
+    # DisplayRecorder 初始化应自动 ALTER 添加 think 列
     rec.close()
 
     meta = get_conversation_meta("c1", db_path=db)

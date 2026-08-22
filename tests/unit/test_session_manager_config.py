@@ -1,4 +1,5 @@
-"""SessionManager / SessionClassConfigManager 配置管理单元测试
+"""
+SessionManager / SessionClassConfigManager 配置管理单元测试
 
 覆盖:
 - SessionClassConfigManager: register / list / list_types / get_class / get_params / delete
@@ -36,10 +37,15 @@ def _make_sm(tmp_path: Path) -> SessionManager:
     )
 
 
-# ================= SessionClassConfigManager =================
+# ================= SessionClassConfigManager 测试 =================
 
 def test_class_config_register_list_and_types(tmp_path: Path):
-    """类级配置: 注册后可列出, 类型名/参数正确"""
+    """
+    类级配置: 注册后可列出, 类型名/参数正确
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
     mgr.register("dummy", _EchoSession)
     names = list(mgr.list_configs().keys())
@@ -50,7 +56,12 @@ def test_class_config_register_list_and_types(tmp_path: Path):
 
 
 def test_class_config_persists_to_storage_file(tmp_path: Path):
-    """类级配置写入 storage_path JSON 文件, 重建可恢复"""
+    """
+    类级配置写入 storage_path JSON 文件, 重建可恢复
+
+    参数:
+    - tmp_path: tmp路径
+    """
     storage = tmp_path / "classes.json"
     mgr = SessionClassConfigManager(storage_path=storage)
     mgr.register("dummy", _EchoSession)
@@ -61,7 +72,12 @@ def test_class_config_persists_to_storage_file(tmp_path: Path):
 
 
 def test_class_config_delete(tmp_path: Path):
-    """类级配置 remove_config 后不再列出"""
+    """
+    类级配置 remove_config 后不再列出
+
+    参数:
+    - tmp_path: tmp路径
+    """
     mgr = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
     mgr.register("dummy", _EchoSession)
     assert mgr.remove_config("dummy") is True
@@ -71,7 +87,12 @@ def test_class_config_delete(tmp_path: Path):
 # ================= SessionManager 配置 =================
 
 def test_register_session_persists_config(tmp_path: Path):
-    """register_session 生成 SessionConfig 并落库"""
+    """
+    register_session 生成 SessionConfig 并落库
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     cfg = sm.register_session(
         session_class=_EchoSession,
@@ -86,13 +107,23 @@ def test_register_session_persists_config(tmp_path: Path):
 
 
 def test_get_session_config_missing_returns_none(tmp_path: Path):
-    """不存在的会话 ID 返回 None"""
+    """
+    不存在的会话 ID 返回 None
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     assert sm.get_session_config("nope") is None
 
 
 def test_list_session_configs_ordered_by_last_used(tmp_path: Path):
-    """list_session_configs 按最后使用时间倒序, 支持 limit"""
+    """
+    list_session_configs 按最后使用时间倒序, 支持 limit
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     sm.register_session(_EchoSession, "echo", session_id="s-old")
     old_cfg = sm.get_session_config("s-old")
@@ -105,7 +136,12 @@ def test_list_session_configs_ordered_by_last_used(tmp_path: Path):
 
 
 def test_update_session_config_existing_and_missing(tmp_path: Path):
-    """update_session_config: 存在时更新并返回, 不存在返回 None"""
+    """
+    update_session_config: 存在时更新并返回, 不存在返回 None
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     sm.register_session(_EchoSession, "echo", session_config={"a": 1}, session_id="s-1")
     updated = sm.update_session_config("s-1", session_config={"a": 2})
@@ -115,7 +151,12 @@ def test_update_session_config_existing_and_missing(tmp_path: Path):
 
 
 def test_register_session_from_class_config(tmp_path: Path):
-    """从类级配置派生实例配置 (extra_params 覆盖)"""
+    """
+    从类级配置派生实例配置 (extra_params 覆盖)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     mgr = SessionClassConfigManager(storage_path=tmp_path / "classes.json")
     mgr.register("dummy", _EchoSession)
@@ -129,7 +170,12 @@ def test_register_session_from_class_config(tmp_path: Path):
 
 
 def test_list_registered_session_types(tmp_path: Path):
-    """list_registered_session_types 返回注册的类型名"""
+    """
+    list_registered_session_types 返回注册的类型名
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     sm.register_session_type("extra", _EchoSession)
     types = sm.list_registered_session_types()
@@ -137,17 +183,28 @@ def test_list_registered_session_types(tmp_path: Path):
     assert "extra" in types
 
 
-# ================= remove_session =================
+# ================= remove_session 测试 =================
 
 def _register_active_session(sm: SessionManager, session_id: str) -> None:
-    """注册一个会话并放入活跃池"""
+    """
+    注册一个会话并放入活跃池
+
+    参数:
+    - sm: sm 输入值
+    - session_id: 会话 ID
+    """
     cfg = sm.register_session(_EchoSession, "echo", session_id=session_id)
     session = _EchoSession(session_id)
     sm.pool.put(session_id, session, session_type=cfg.session_type_name or "echo")
 
 
 def test_remove_session_keeps_config_by_default(tmp_path: Path):
-    """remove_session 默认仅移除内存活跃实例, 保留 SQL 配置"""
+    """
+    remove_session 默认仅移除内存活跃实例, 保留 SQL 配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     assert len(sm.list_sessions()) == 1
@@ -157,7 +214,12 @@ def test_remove_session_keeps_config_by_default(tmp_path: Path):
 
 
 def test_remove_session_with_config_deletes_both(tmp_path: Path):
-    """remove_session(remove_config=True) 同时删除内存实例与 SQL 配置"""
+    """
+    remove_session(remove_config=True) 同时删除内存实例与 SQL 配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     sm.remove_session("s-1", remove_config=True)
@@ -165,7 +227,12 @@ def test_remove_session_with_config_deletes_both(tmp_path: Path):
 
 
 def test_remove_session_missing_id_no_error(tmp_path: Path):
-    """移除不存在的会话不报错"""
+    """
+    移除不存在的会话不报错
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     sm.remove_session("missing")
     sm.remove_session("missing", remove_config=True)
@@ -173,23 +240,39 @@ def test_remove_session_missing_id_no_error(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_remove_session_async(tmp_path: Path):
-    """异步移除会话, 行为与同步一致"""
+    """
+    异步移除会话, 行为与同步一致
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     await sm.remove_session_async("s-1", remove_config=True)
     assert sm.get_session_config("s-1") is None
 
 
-# ================= reload_model_configs =================
+# ================= reload_model_configs 测试 =================
 
 def test_reload_model_configs_skips_without_manager(tmp_path: Path):
-    """无 ModelConfigManager 时跳过, 不报错"""
+    """
+    无 ModelConfigManager 时跳过, 不报错
+
+    参数:
+    - tmp_path: tmp路径
+    """
     sm = _make_sm(tmp_path)
     sm.reload_model_configs()
 
 
 def test_reload_model_configs_refreshes_active_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """有 manager 时刷新活跃会话的 LLM 实例"""
+    """
+    有 manager 时刷新活跃会话的 LLM 实例
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
 

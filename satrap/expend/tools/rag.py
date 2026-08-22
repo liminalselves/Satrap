@@ -63,8 +63,9 @@ class LiteVectorRAG:
         k: int | None = None,
         threshold: float | None = None
     ) -> list[str] | None:
-        """简单查询
-        
+        """
+        简单查询
+
         参数:
         - query: 查询字符串
         - k: 返回文档数量
@@ -113,14 +114,18 @@ class LiteVectorRAG:
         batch_size: int | None = None,
         collection_name: str | None = None,
     ) -> bool:
-        """添加文档
-        
+        """
+        添加文档
+
         参数:
         - documents: 文档列表
         - chunk_size: 文本分块大小
         - chunk_overlap: 文本分块重叠大小
         - batch_size: 批量处理大小
         - collection_name: 集合名称
+
+        返回:
+        - bool: 添加文档
         """
         if chunk_size is None:
             chunk_size = self.chunk_size
@@ -173,7 +178,12 @@ class LiteVectorRAG:
             return False
 
     async def get_collection_names(self) -> list[str]:
-        """获取所有集合名称"""
+        """
+        获取所有集合名称
+
+        返回:
+        - list[str]: 所有集合名称
+        """
         try:
             collections = await asyncio.to_thread(
                 self.vector_db.get_collection_names
@@ -185,7 +195,12 @@ class LiteVectorRAG:
             return []
 
     async def get_vectorstore_overview(self) -> dict[str, Any]:
-        """获取向量库概览"""
+        """
+        获取向量库概览
+
+        返回:
+        - dict[str, Any]: 向量库概览
+        """
         try:
             collections = await self.get_collection_names()
 
@@ -270,14 +285,14 @@ class LiteVectorRAG:
     ) -> bool:
         """
         从文本文件读取内容并添加到向量库
-        
+
         参数:
         - file_path: 文本文件路径
-        - collection_name: 目标集合名称，如果为 None 则使用默认集合
+        - collection_name: 目标集合名称, 如果为 None 则使用默认集合
         - chunk_size: 分块大小
         - chunk_overlap: 分块重叠大小
         - batch_size: 批量处理大小
-        
+
         返回:
         - bool: 是否成功添加
         """
@@ -304,7 +319,7 @@ class LiteVectorRAG:
 
             if not content.strip():
                 logger.warning(f"文件内容为空: {file_path}")
-                return True  # 空文件不算错误
+                return True   # 空文件不算错误
 
             logger.info(f"成功读取文件，内容长度: {len(content)} 字符")
 
@@ -371,7 +386,7 @@ class LiteVectorRAG:
         ) -> tuple[list[str], list[float]]:
             """
             执行快速 RAG 流程
-            
+
             参数:
             - collection_name: 集合名称
             - add_documents: 要添加的文档列表
@@ -381,7 +396,7 @@ class LiteVectorRAG:
             - chunk_overlap: 分块重叠大小
             - K: 检索文档数量
             - threshold: 相似度阈值
-            
+
             返回:
             - list[str]: 搜索到的文档列表
             - list[float]: 相似度列表
@@ -401,7 +416,6 @@ class LiteVectorRAG:
                 threshold = self.threshold
 
             try:
-                # step 1: 如果提供了文档, 先添加文档
                 if add_documents is not None and len(add_documents) > 0:
                     logger.info(f"开始添加 {len(add_documents)} 个文档到集合 '{collection_name}'")
 
@@ -434,9 +448,10 @@ class LiteVectorRAG:
                         logger.debug(f"快速流程 - 添加批次 {i//batch_size + 1}: {len(batch)} 个文档块")
                     
                     logger.info(f"快速流程 - 成功添加 {len(splits)} 个文档块")
+                # step 1: 如果提供了文档, 先添加文档
                 
-                # step 2: 如果提供了查询, 执行搜索
                 documents_list: list[str] = []
+                # step 2: 如果提供了查询, 执行搜索
                 scores_list: list[float] = []
 
                 if query is not None and query.strip():
@@ -482,6 +497,21 @@ class DataBaseRAG(LiteVectorRAG):
         threshold: float = 0.5,
         batch_size: int = 32,
     ):
+        """
+        初始化 DataBaseRAG
+
+        参数:
+        - base_url: 基础URL
+        - api_key: API密钥
+        - embed_model: embed模型
+        - persist_directory: 持久化目录
+        - default_vectorstore_name: 默认向量存储名称
+        - k_default: k默认
+        - chunk_size: 分块大小
+        - chunk_overlap: 分块重叠
+        - threshold: 阈值
+        - batch_size: 批次大小
+        """
         super().__init__(
             base_url=base_url,
             api_key=api_key,

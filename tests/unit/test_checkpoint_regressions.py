@@ -1,4 +1,5 @@
-"""P1-P3 审查缺陷修复回归测试
+"""
+P1-P3 审查缺陷修复回归测试
 
 覆盖:
 - H1: 旧库缺 source/reason 列自动迁移, 读取不崩溃
@@ -37,11 +38,16 @@ class _MiniSession(Session):
         self._track_workflow_context("main", self.wf_ctx)
 
 
-# ── H1: 旧库迁移 ──
+# ---------- H1: 旧库迁移 ----------
 
 
 def test_old_db_migration_adds_missing_columns(tmp_path: Path):
-    """P3-2 之前的旧库 (无 source/reason 列) 初始化后自动迁移, 读取不崩溃"""
+    """
+    P3-2 之前的旧库 (无 source/reason 列) 初始化后自动迁移, 读取不崩溃
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "old.db")
     conn = sqlite3.connect(db)
     conn.execute(
@@ -81,11 +87,16 @@ def test_old_db_migration_adds_missing_columns(tmp_path: Path):
     assert cp.name == "迁移后"
 
 
-# ── H2: Session.fork 非批次检查点回退 ──
+# ---------- H2: Session.fork 非批次检查点回退 ----------
 
 
 def test_session_fork_non_batch_checkpoint_not_silent(tmp_path: Path):
-    """非批次检查点 fork 不再静默空: 有检查点的上下文正常分支"""
+    """
+    非批次检查点 fork 不再静默空: 有检查点的上下文正常分支
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     session = _MiniSession("s9", db)
     session.session_ctx.add_user_message("消息")
@@ -97,15 +108,20 @@ def test_session_fork_non_batch_checkpoint_not_silent(tmp_path: Path):
     assert "session" in forked
     assert forked["session"].conversation_id == "s9:fork:alt"
     assert forked["session"].get_context() == [{"role": "user", "content": "消息"}]
-    # 工作流无检查点 → 跳过并警告
+    # 工作流无检查点 -> 跳过并警告
     assert "main" not in forked
 
 
-# ── M1: 指针式检查点 ──
+# ---------- M1: 指针式检查点 ----------
 
 
 def test_pointer_checkpoint_stores_no_snapshot(tmp_path: Path):
-    """stable 检查点为纯指针 (快照表零增长), 写入 20 次不膨胀快照"""
+    """
+    stable 检查点为纯指针 (快照表零增长), 写入 20 次不膨胀快照
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-p", db_path=db, enable_checkpoint=True)
     for i in range(10):
@@ -125,7 +141,12 @@ def test_pointer_checkpoint_stores_no_snapshot(tmp_path: Path):
 
 
 def test_pointer_rollback_truncates_messages(tmp_path: Path):
-    """指针检查点回滚 = 截断到水位, 消息内容准确恢复"""
+    """
+    指针检查点回滚 = 截断到水位, 消息内容准确恢复
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-p2", db_path=db, enable_checkpoint=True, auto_checkpoint=False)
     ctx.add_user_message("一")
@@ -145,7 +166,12 @@ def test_pointer_rollback_truncates_messages(tmp_path: Path):
 
 
 def test_edit_protects_state_and_cleans_pointer_checkpoints(tmp_path: Path):
-    """编辑操作前物化保护 + 清理失效指针检查点, 回滚保护可撤销编辑"""
+    """
+    编辑操作前物化保护 + 清理失效指针检查点, 回滚保护可撤销编辑
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-e", db_path=db, enable_checkpoint=True, auto_checkpoint=False)
     ctx.add_user_message("一")
@@ -160,17 +186,22 @@ def test_edit_protects_state_and_cleans_pointer_checkpoints(tmp_path: Path):
     assert cps[0].snapshot_id != ""
     assert ctx.get_context() == []
 
-    # 回滚到编辑前保护检查点 = 撤销编辑
     ctx.rollback(cps[0].checkpoint_id)
+    # 回滚到编辑前保护检查点 = 撤销编辑
     assert len(ctx.get_context()) == 2
 
 
 def test_pointer_checkpoint_after_edit_still_works(tmp_path: Path):
-    """编辑后的新指针检查点基于新消息序列, 截断恢复准确"""
+    """
+    编辑后的新指针检查点基于新消息序列, 截断恢复准确
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-e2", db_path=db, enable_checkpoint=True, auto_checkpoint=False)
     ctx.add_user_message("旧一")
-    ctx.del_context()   # 编辑 → 保护 + 清空
+    ctx.del_context()   # 编辑 -> 保护 + 清空
 
     ctx.add_user_message("新一")
     cp = ctx.create_checkpoint(name="新起点")
@@ -180,11 +211,16 @@ def test_pointer_checkpoint_after_edit_still_works(tmp_path: Path):
     assert ctx.get_context() == [{"role": "user", "content": "新一"}]
 
 
-# ── M2: list_branches 通配符转义 ──
+# ---------- M2: list_branches 通配符转义 ----------
 
 
 def test_list_branches_escapes_wildcards(tmp_path: Path):
-    """含下划线的会话前缀不再误匹配其他会话的分支"""
+    """
+    含下划线的会话前缀不再误匹配其他会话的分支
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "state.db")
     store = StateStore(db_path=db)
     store.create_checkpoint(StateScope("conversation", "conv_a:fork:x1"))
@@ -194,11 +230,17 @@ def test_list_branches_escapes_wildcards(tmp_path: Path):
     assert [cp.scope_id for cp in branches] == ["conv_a:fork:x1"]
 
 
-# ── M3: 聚合检查点失败补偿 ──
+# ---------- M3: 聚合检查点失败补偿 ----------
 
 
 def test_session_create_checkpoint_compensates_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """中途失败时补偿删除残批, 不留部分作用域的不一致批次"""
+    """
+    中途失败时补偿删除残批, 不留部分作用域的不一致批次
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     db = str(tmp_path / "chat_history.db")
     session = _MiniSession("s10", db)
     session.session_ctx.add_user_message("会话")
@@ -214,11 +256,16 @@ def test_session_create_checkpoint_compensates_on_failure(tmp_path: Path, monkey
     assert session.list_checkpoints() == []
 
 
-# ── M4: auto_checkpoint 钩子补齐 + fork 透传 ──
+# ---------- M4: auto_checkpoint 钩子补齐 + fork 透传 ----------
 
 
 def test_auto_checkpoint_on_turn_messages(tmp_path: Path):
-    """add_turn_messages 写入也触发自动检查点"""
+    """
+    add_turn_messages 写入也触发自动检查点
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-t", db_path=db, enable_checkpoint=True)
     ctx.add_turn_messages([{"role": "user", "content": "批量"}])
@@ -228,7 +275,12 @@ def test_auto_checkpoint_on_turn_messages(tmp_path: Path):
 
 
 def test_fork_inherits_auto_checkpoint_flag(tmp_path: Path):
-    """fork 出的新上下文继承 auto_checkpoint 开关"""
+    """
+    fork 出的新上下文继承 auto_checkpoint 开关
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-f", db_path=db, enable_checkpoint=True, auto_checkpoint=False)
     ctx.add_user_message("x")
@@ -238,11 +290,16 @@ def test_fork_inherits_auto_checkpoint_flag(tmp_path: Path):
     assert forked.auto_checkpoint is False
 
 
-# ── L1: 批次作用域重复拒绝 ──
+# ---------- L1: 批次作用域重复拒绝 ----------
 
 
 def test_rollback_batch_rejects_duplicate_scope(tmp_path: Path):
-    """同批次同作用域多个检查点时明确拒绝, 不再半途崩溃"""
+    """
+    同批次同作用域多个检查点时明确拒绝, 不再半途崩溃
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "chat_history.db")
     ctx = ContextManager("conv-b", db_path=db, enable_checkpoint=True, auto_checkpoint=False)
     ctx.add_user_message("一")
@@ -255,11 +312,16 @@ def test_rollback_batch_rejects_duplicate_scope(tmp_path: Path):
         ctx.state_store.rollback_batch("dup")
 
 
-# ── L4: clear_memory 使用会话库 ──
+# ---------- L4: clear_memory 使用会话库 ----------
 
 
 def test_clear_memory_uses_session_db(tmp_path: Path):
-    """clear_memory 清空自定义库中的工作流消息, 不落默认库"""
+    """
+    clear_memory 清空自定义库中的工作流消息, 不落默认库
+
+    参数:
+    - tmp_path: tmp路径
+    """
     db = str(tmp_path / "custom.db")
     session = _MiniSession("s-clear", db)
     session.wf_ctx.add_user_message("x")
@@ -277,7 +339,7 @@ def test_clear_memory_uses_session_db(tmp_path: Path):
     assert rows[0] == 0
 
 
-# ── L6: BackendConfig 字符串布尔解析 ──
+# ---------- L6: BackendConfig 字符串布尔解析 ----------
 
 
 def test_backend_config_bool_string_parsing():

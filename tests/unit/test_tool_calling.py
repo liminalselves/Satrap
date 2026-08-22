@@ -94,28 +94,28 @@ def test_safe_parse_arguments_standard_json():
 
 
 def test_safe_parse_arguments_unescaped_newline_in_value():
-    """值内裸换行 (模型常见输出, 如多行 markdown) → 修复"""
+    """值内裸换行 (模型常见输出, 如多行 markdown) -> 修复"""
     raw = '{"path": "log.md", "content": "第一行\n第二行```markdown\n代码块```"}'
     parsed = safe_parse_arguments(raw)
     assert parsed == {"path": "log.md", "content": "第一行\n第二行```markdown\n代码块```"}
 
 
 def test_safe_parse_arguments_unescaped_backslash_path():
-    """Windows 路径未转义反斜杠 (如 F 盘 work 目录) → 修复"""
+    """Windows 路径未转义反斜杠 (如 F 盘 work 目录) -> 修复"""
     raw = '{"path": "F:\\work\\Satrap\\a.txt", "content": "x"}'
     parsed = safe_parse_arguments(raw)
     assert parsed == {"path": "F:\\work\\Satrap\\a.txt", "content": "x"}
 
 
 def test_safe_parse_arguments_backslash_escape_like_dir_names():
-    """路径段首字母是转义符字母 (C:\\new、C:\\bin) → 按字面路径修复, 不误解码为控制字符"""
+    """路径段首字母是转义符字母 (C:\new, C:\bin) -> 按字面路径修复, 不误解码为控制字符"""
     raw = '{"path": "C:\\new\\bin\\x", "content": "y"}'
     parsed = safe_parse_arguments(raw)
     assert parsed == {"path": "C:\\new\\bin\\x", "content": "y"}
 
 
 def test_safe_parse_arguments_unescaped_quote_in_value():
-    """值内裸引号 (如他说"好的") → 修复; 边界: 内容以裸引号结尾时尾引号可能丢失 (信息歧义)"""
+    """值内裸引号 (如他说"好的") -> 修复; 边界: 内容以裸引号结尾时尾引号可能丢失 (信息歧义)"""
     raw = '{"content": "他说"好的"然后走了", "path": "a.md"}'
     parsed = safe_parse_arguments(raw)
     assert parsed == {"content": "他说\"好的\"然后走了", "path": "a.md"}
@@ -135,7 +135,7 @@ def test_safe_parse_arguments_bool_and_number_values_untouched():
 
 
 def test_safe_parse_arguments_unparseable_returns_empty():
-    """完全无法解析 → 空字典 (不抛异常)"""
+    """完全无法解析 -> 空字典 (不抛异常)"""
     assert safe_parse_arguments("这不是 JSON") == {}
 
 

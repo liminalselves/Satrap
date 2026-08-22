@@ -15,7 +15,15 @@ from satrap.core.framework.session_discovery import discover_session_classes
 
 
 def _configured_adapter_ids(config: BackendConfig) -> set[str]:
-    """返回配置中声明的平台适配器实例 ID 集合"""
+    """
+    返回配置中声明的平台适配器实例 ID 集合
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - set[str]: 配置中声明的平台适配器实例 ID 集合
+    """
     ids: set[str] = set()
     for item in safe_getattr_list(config, "platforms"):
         adapter_id = str(item.get("id", "")).strip()
@@ -25,7 +33,15 @@ def _configured_adapter_ids(config: BackendConfig) -> set[str]:
 
 
 def _init_mgr(args: argparse.Namespace) -> SessionClassConfigManager:
-    """离线模式: 直接初始化 SessionClassConfigManager"""
+    """
+    离线模式: 直接初始化 SessionClassConfigManager
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - SessionClassConfigManager: 离线模式: 直接初始化 SessionClassConfigManager
+    """
     config = load_cli_config(args)
     return SessionClassConfigManager(
         storage_path=config.session_class_config_path,
@@ -34,7 +50,15 @@ def _init_mgr(args: argparse.Namespace) -> SessionClassConfigManager:
 
 
 def _client_or_fallback(args: argparse.Namespace):
-    """尝试 HTTP 连接, 失败时返回 (None, offline_mgr)"""
+    """
+    尝试 HTTP 连接, 失败时返回 (None, offline_mgr)
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - 尝试 HTTP 连接, 失败时返回 (None, offline_mgr)
+    """
     client = daemon_client_from_args(args)
     if client.is_alive() and not offline_requested(args):
         return client, None
@@ -61,6 +85,12 @@ def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
 
 
 def cmd_session_list(args: argparse.Namespace):
+    """
+    处理 session_list 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
     if client:
         data = client.list_session_classes()
@@ -86,6 +116,12 @@ def cmd_session_list(args: argparse.Namespace):
 
 
 def cmd_session_enable(args: argparse.Namespace):
+    """
+    处理 session_enable 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
     try:
         if client:
@@ -101,6 +137,12 @@ def cmd_session_enable(args: argparse.Namespace):
 
 
 def cmd_session_disable(args: argparse.Namespace):
+    """
+    处理 session_disable 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
     try:
         if client:
@@ -116,6 +158,12 @@ def cmd_session_disable(args: argparse.Namespace):
 
 
 def cmd_session_register(args: argparse.Namespace):
+    """
+    处理 session_register 命令
+
+    参数:
+    - args: 命令参数
+    """
     class_path = (safe_getattr_str(args, "from_scan") or safe_getattr_str(args, "class_path")).strip()
     if not class_path:
         print("注册失败: 请提供 --class-path 或 --from-scan")
@@ -158,6 +206,12 @@ def cmd_session_register(args: argparse.Namespace):
 
 
 def cmd_session_unregister(args: argparse.Namespace):
+    """
+    处理 session_unregister 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
     if client:
         result = client.unregister_session_class(args.name)
@@ -174,6 +228,12 @@ def cmd_session_unregister(args: argparse.Namespace):
 
 
 def cmd_session_config_set(args: argparse.Namespace):
+    """
+    处理 session_config_set 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
     try:
         if args.from_json:
@@ -186,7 +246,7 @@ def cmd_session_config_set(args: argparse.Namespace):
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.set_config(args.name, params)  # type: ignore
+                mgr.set_config(args.name, params)   # type: ignore
         else:
             kv: dict[str, str] = {}
             for group in args.set:
@@ -207,7 +267,7 @@ def cmd_session_config_set(args: argparse.Namespace):
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.update_config(args.name, **kv)  # type: ignore
+                mgr.update_config(args.name, **kv)   # type: ignore
         print(f"已更新配置: {args.name}")
     except ValueError as e:
         print(f"配置失败: {e}")
@@ -215,8 +275,14 @@ def cmd_session_config_set(args: argparse.Namespace):
 
 
 def cmd_session_config_show(args: argparse.Namespace):
+    """
+    处理 session_config_show 命令
+
+    参数:
+    - args: 命令参数
+    """
     client, mgr = _client_or_fallback(args)
-    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)  # type: ignore
+    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)   # type: ignore
     if isinstance(cfg, dict) and "error" in cfg:
         print(f"查询失败: {cfg['error']}")
         sys.exit(1)
@@ -227,7 +293,12 @@ def cmd_session_config_show(args: argparse.Namespace):
 
 
 def cmd_session_scan(args: argparse.Namespace):
-    """扫描 Session 类"""
+    """
+    扫描 Session 类
+
+    参数:
+    - args: 额外位置参数
+    """
     config = load_cli_config(args)
     paths = safe_getattr(args, "path") or config.session_scan_paths
     results = discover_session_classes(paths)
@@ -249,6 +320,12 @@ def cmd_session_scan(args: argparse.Namespace):
 
 
 def cmd_session_create(args: argparse.Namespace):
+    """
+    处理 session_create 命令
+
+    参数:
+    - args: 命令参数
+    """
     config = load_cli_config(args)
     client = daemon_client_from_args(args)
     if client.is_alive():
@@ -301,6 +378,12 @@ def cmd_session_create(args: argparse.Namespace):
 
 
 def dispatch(args: argparse.Namespace):
+    """
+    分派命令
+
+    参数:
+    - args: 命令参数
+    """
     action_map = {
         "list": cmd_session_list,
         "enable": cmd_session_enable,

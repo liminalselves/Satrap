@@ -1,7 +1,8 @@
-"""实测 deepseek-v4-flash 的 thinking off/on 效果
+"""
+实测 deepseek-v4-flash 的 thinking off/on 效果
 
-API 配置从 .toolkit/apikey.txt 读取 (该目录已 gitignore, 不硬编码密钥)。
-格式: 每块为若干 `key: value` 行, 空行分隔; 取 base url 含 deepseek.com 的块。
+API 配置从 .toolkit/apikey.txt 读取 (该目录已 gitignore, 不硬编码密钥)
+格式: 每块为若干 `key: value` 行, 空行分隔; 取 base url 含 deepseek.com 的块
 """
 import asyncio
 import sys
@@ -21,7 +22,12 @@ MODEL = "deepseek-v4-flash"
 
 
 def _load_deepseek_config() -> dict[str, str]:
-    """从 .toolkit/apikey.txt 解析 deepseek 配置块 (api key / base url / model)"""
+    """
+    从 .toolkit/apikey.txt 解析 deepseek 配置块 (api key / base url / model)
+
+    返回:
+    - dict[str, str]: 从 .toolkit/apikey.txt 解析 deepseek 配置块 (api key / base url / model)
+    """
     if not TOOLKIT_PATH.exists():
         return {}
     text = TOOLKIT_PATH.read_text(encoding="utf-8")
@@ -38,7 +44,12 @@ def _load_deepseek_config() -> dict[str, str]:
 
 
 def _build_llm() -> AsyncLLM:
-    """构造真实 DeepSeek LLM; 配置缺失时明确报错退出"""
+    """
+    构造真实 DeepSeek LLM; 配置缺失时明确报错退出
+
+    返回:
+    - AsyncLLM: 构造真实 DeepSeek LLM; 配置缺失时明确报错退出
+    """
     cfg = _load_deepseek_config()
     api_key = cfg.get("api key", "")
     if not api_key:

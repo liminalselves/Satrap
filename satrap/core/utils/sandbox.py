@@ -25,6 +25,12 @@ class CodeSandbox:
     def _safe_join(self, *paths: str) -> str:
         """
         安全地将路径连接到沙箱根目录, 防止路径遍历攻击
+
+        参数:
+        - paths: 路径列表
+
+        返回:
+        - str: 安全地将路径连接到沙箱根目录, 防止路径遍历攻击
         """
         abs_path = os.path.abspath(os.path.join(self.sandbox_path, *paths))
         real_sandbox = os.path.realpath(self.sandbox_path)
@@ -120,8 +126,9 @@ class CodeSandbox:
             f.write(code)
 
     def delete_file(self, path: str) -> None:
-        """删除沙箱内的指定文件
-        
+        """
+        删除沙箱内的指定文件
+
         参数:
         - path: 相对于沙箱根目录的文件路径
         """
@@ -184,7 +191,16 @@ class CodeSandbox:
         return file_list
 
     def read_file(self, path: str, encoding: str = "utf-8") -> Dict[str, Any]:
-        """读取并返回沙箱内文件内容"""
+        """
+        读取并返回沙箱内文件内容
+
+        参数:
+        - path: 路径
+        - encoding: 编码
+
+        返回:
+        - Dict[str, Any]: 沙箱内文件内容
+        """
         try:
             abs_path = self._safe_join(path)
         except ValueError as e:

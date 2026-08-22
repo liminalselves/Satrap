@@ -15,7 +15,8 @@ from satrap.core.utils.paths import get_data_dir
 
 
 class SessionClassConfigManager:
-    """会话类配置管理器
+    """
+    会话类配置管理器
 
     管理 Session/AsyncSession 子类的类级配置(模型, 工具, 命令等),
     与 SessionConfigStore(实例级上下文)互补
@@ -34,6 +35,14 @@ class SessionClassConfigManager:
         auto_create: bool = True,
         session_scan_paths: list[str] | None = None
     ):
+        """
+        初始化 SessionClassConfigManager
+
+        参数:
+        - storage_path: 存储路径
+        - auto_create: auto创建
+        - session_scan_paths: 会话scanpaths
+        """
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self.session_scan_paths = list(session_scan_paths or [".satrap/session"])
@@ -48,7 +57,12 @@ class SessionClassConfigManager:
 
     @staticmethod
     def _default_storage_path() -> Path:
-        """获取默认会话类配置存储路径"""
+        """
+        获取默认会话类配置存储路径
+
+        返回:
+        - Path: 默认会话类配置存储路径
+        """
         env_path = os.getenv("SATRAP_SESSION_CLASS_CONFIG_PATH")
         if env_path:
             return Path(env_path)
@@ -56,16 +70,32 @@ class SessionClassConfigManager:
 
     @staticmethod
     def _normalize_name(name: str | None) -> str:
-        """归一化配置名称"""
+        """
+        归一化配置名称
+
+        参数:
+        - name: 名称
+
+        返回:
+        - str: 归一化配置名称
+        """
         return (name or SessionClassConfigManager.DEFAULT_NAME).strip() \
             or SessionClassConfigManager.DEFAULT_NAME
 
-    # -------- 参数反射 --------
+    # ---------- 参数反射 ----------
     @staticmethod
     def _detect_params(
         session_class: Type[Session] | Type[AsyncSession],
     ) -> Dict[str, inspect.Parameter]:
-        """反射 __init__ 签名, 提取自定义参数(排除已知自动注入参数)"""
+        """
+        反射 __init__ 签名, 提取自定义参数(排除已知自动注入参数)
+
+        参数:
+        - session_class: 会话类
+
+        返回:
+        - Dict[str, inspect.Parameter]: 反射 __init__ 签名, 提取自定义参数(排除已知自动注入参数)
+        """
         exclude = {"self", "session_id", "content_callback", "command_handler", "session_config", "llm"}
         try:
             sig = inspect.signature(session_class.__init__)
@@ -82,7 +112,15 @@ class SessionClassConfigManager:
 
     @staticmethod
     def _generate_template(params_info: Dict[str, inspect.Parameter]) -> Dict[str, Any]:
-        """根据类型注解生成占位值模板"""
+        """
+        根据类型注解生成占位值模板
+
+        参数:
+        - params_info: 参数集合info
+
+        返回:
+        - Dict[str, Any]: 根据类型注解生成占位值模板
+        """
         type_map: Dict[str, Any] = {
             "str": "",
             "int": 0,
@@ -101,10 +139,18 @@ class SessionClassConfigManager:
             template[name] = type_map.get(ann_str, None)
         return template
 
-    # -------- class 导入 --------
+    # ---------- class 导入 ----------
     @staticmethod
     def _load_class(class_path: str) -> Type[Session] | Type[AsyncSession]:
-        """动态导入 class"""
+        """
+        动态导入 class
+
+        参数:
+        - class_path: 类路径
+
+        返回:
+        - Type[Session] | Type[AsyncSession]: 动态导入 class
+        """
         try:
             module_path, class_name = class_path.rsplit(".", 1)
             module = importlib.import_module(module_path)
@@ -115,9 +161,14 @@ class SessionClassConfigManager:
         except (ImportError, AttributeError, ValueError) as e:
             raise ValueError(f"导入 class 失败: {class_path}, 错误: {e}") from e
 
-    # -------- 序列化 --------
+    # ---------- 序列化 ----------
     def _to_payload_locked(self) -> Dict[str, Dict[str, Any]]:
-        """序列化配置为 JSON 安全结构"""
+        """
+        序列化配置为 JSON 安全结构
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 序列化配置为 JSON 安全结构
+        """
         output: Dict[str, Dict[str, Any]] = {}
         for name, entry in self._configs.items():
             output[name] = {
@@ -137,7 +188,7 @@ class SessionClassConfigManager:
         with self.storage_path.open("w", encoding="utf-8") as f:
             json.dump(self._to_payload_locked(), f, ensure_ascii=False, indent=2)
 
-    # -------- 持久化 --------
+    # ---------- 持久化 ----------
     def reload(self):
         """从文件重载配置"""
         with self._lock:
@@ -176,7 +227,7 @@ class SessionClassConfigManager:
         with self._lock:
             self._save_locked()
 
-    # -------- 注册 --------
+    # ---------- 注册 ----------
     def register(
         self,
         name: str,
@@ -185,7 +236,8 @@ class SessionClassConfigManager:
         context_key: str = "",
         model_key: str = "",
     ):
-        """注册会话类, 自动发现 __init__ 自定义参数并生成占位模板
+        """
+        注册会话类, 自动发现 __init__ 自定义参数并生成占位模板
 
         参数:
         - name: 会话类配置名称
@@ -223,7 +275,16 @@ class SessionClassConfigManager:
         context_key: str = "",
         model_key: str = "",
     ):
-        """通过 class_path 注册会话类"""
+        """
+        通过 class_path 注册会话类
+
+        参数:
+        - name: 名称
+        - class_path: 类路径
+        - description: 说明文本
+        - context_key: 上下文密钥
+        - model_key: 模型密钥
+        """
         ensure_session_scan_paths(self.session_scan_paths)
         session_class = self._load_class(class_path)
         self.register(
@@ -234,9 +295,17 @@ class SessionClassConfigManager:
             model_key=model_key,
         )
 
-    # -------- 查询 --------
+    # ---------- 查询 ----------
     def get_config(self, name: str) -> Optional[Dict[str, Any]]:
-        """获取完整配置条目"""
+        """
+        获取完整配置条目
+
+        参数:
+        - name: 名称
+
+        返回:
+        - Optional[Dict[str, Any]]: 完整配置条目
+        """
         with self._lock:
             key = self._normalize_name(name)
             entry = self._configs.get(key)
@@ -253,7 +322,15 @@ class SessionClassConfigManager:
             }
 
     def get_params(self, name: str) -> Dict[str, Any]:
-        """获取参数字典(即 SessionConfig.session_config 待填充内容)"""
+        """
+        获取参数字典(即 SessionConfig.session_config 待填充内容)
+
+        参数:
+        - name: 名称
+
+        返回:
+        - Dict[str, Any]: 参数字典(即 SessionConfig.session_config 待填充内容)
+        """
         with self._lock:
             key = self._normalize_name(name)
             entry = self._configs.get(key)
@@ -262,7 +339,15 @@ class SessionClassConfigManager:
             return dict(entry.get("params", {}))
 
     def get_class(self, name: str) -> Type[Session] | Type[AsyncSession]:
-        """获取注册的 class 对象(惰性导入并缓存)"""
+        """
+        获取注册的 class 对象(惰性导入并缓存)
+
+        参数:
+        - name: 名称
+
+        返回:
+        - Type[Session] | Type[AsyncSession]: 注册的 class 对象(惰性导入并缓存)
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key in self._class_cache:
@@ -275,19 +360,37 @@ class SessionClassConfigManager:
             return cls
 
     def list_configs(self) -> Dict[str, Dict[str, Any]]:
-        """列出所有已注册配置"""
+        """
+        列出所有已注册配置
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 列出所有已注册配置
+        """
         with self._lock:
             return {k: dict(v) for k, v in self._configs.items()}
 
     def has_config(self, name: str) -> bool:
-        """检查配置是否存在"""
+        """
+        检查配置是否存在
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 检查结果
+        """
         with self._lock:
             key = self._normalize_name(name)
             return key in self._configs
 
-    # -------- 启用/停用 --------
+    # ---------- 启用/停用 ----------
     def enable(self, name: str):
-        """启用会话类配置"""
+        """
+        启用会话类配置
+
+        参数:
+        - name: 名称
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -296,7 +399,12 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def disable(self, name: str):
-        """停用会话类配置"""
+        """
+        停用会话类配置
+
+        参数:
+        - name: 名称
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -305,7 +413,15 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def is_enabled(self, name: str) -> bool:
-        """检查会话类配置是否启用(不存在时返回 False)"""
+        """
+        检查会话类配置是否启用(不存在时返回 False)
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 检查结果
+        """
         with self._lock:
             key = self._normalize_name(name)
             entry = self._configs.get(key)
@@ -314,7 +430,15 @@ class SessionClassConfigManager:
             return bool(entry.get("enabled", True))
 
     def get_context_key(self, name: str) -> str:
-        """获取上下文区分键字段名"""
+        """
+        获取上下文区分键字段名
+
+        参数:
+        - name: 名称
+
+        返回:
+        - str: 上下文区分键字段名
+        """
         with self._lock:
             key = self._normalize_name(name)
             entry = self._configs.get(key)
@@ -323,7 +447,13 @@ class SessionClassConfigManager:
             return str(entry.get("context_key", ""))
 
     def set_context_key(self, name: str, context_key: str):
-        """设置上下文区分键字段名"""
+        """
+        设置上下文区分键字段名
+
+        参数:
+        - name: 名称
+        - context_key: 上下文密钥
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -332,7 +462,15 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def get_model_key(self, name: str) -> str:
-        """获取模型引用键字段名"""
+        """
+        获取模型引用键字段名
+
+        参数:
+        - name: 名称
+
+        返回:
+        - str: 模型引用键字段名
+        """
         with self._lock:
             key = self._normalize_name(name)
             entry = self._configs.get(key)
@@ -341,7 +479,13 @@ class SessionClassConfigManager:
             return str(entry.get("model_key", ""))
 
     def set_model_key(self, name: str, model_key: str):
-        """设置模型引用键字段名"""
+        """
+        设置模型引用键字段名
+
+        参数:
+        - name: 名称
+        - model_key: 模型密钥
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -350,7 +494,15 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def get_class_template(self, name: str) -> Dict[str, Any]:
-        """获取自动发现的参数模板(占位值)"""
+        """
+        获取自动发现的参数模板(占位值)
+
+        参数:
+        - name: 名称
+
+        返回:
+        - Dict[str, Any]: 自动发现的参数模板(占位值)
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -359,9 +511,15 @@ class SessionClassConfigManager:
             params_info = self._detect_params(cls)
             return self._generate_template(params_info)
 
-    # -------- 写操作 --------
+    # ---------- 写操作 ----------
     def set_config(self, name: str, params: Dict[str, Any]):
-        """替换 params 并落盘"""
+        """
+        替换 params 并落盘
+
+        参数:
+        - name: 名称
+        - params: 参数集合
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -370,7 +528,13 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def update_config(self, name: str, **kwargs: Any):
-        """部分更新 params"""
+        """
+        部分更新 params
+
+        参数:
+        - name: 名称
+        - kwargs: 额外关键字参数
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -379,7 +543,15 @@ class SessionClassConfigManager:
             self._save_locked()
 
     def remove_config(self, name: str) -> bool:
-        """移除配置及 class 缓存"""
+        """
+        移除配置及 class 缓存
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 移除配置及 class 缓存
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._configs:
@@ -390,7 +562,12 @@ class SessionClassConfigManager:
             return True
 
     def reset(self, target: str = "all"):
-        """重置所有配置"""
+        """
+        重置所有配置
+
+        参数:
+        - target: 目标
+        """
         with self._lock:
             self._configs = {}
             self._class_cache = {}

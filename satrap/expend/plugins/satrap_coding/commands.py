@@ -1,4 +1,5 @@
-"""satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
+"""
+satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
 
 约定:
 - build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
@@ -14,12 +15,22 @@ from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 
 _APPROVE_MODES = ("user", "auto-agent", "full")
 
 
 def _parse_args(args: list[str], default: str = "") -> str:
-    """命令参数列表 -> 单字符串 (保留空格)"""
+    """
+    命令参数列表 -> 单字符串 (保留空格)
+
+    参数:
+    - args: 额外位置参数
+    - default: 默认值
+
+    返回:
+    - str: 命令参数列表 -> 单字符串 (保留空格)
+    """
     if not args:
         return default
     return " ".join(str(a) for a in args).strip()
@@ -30,7 +41,17 @@ SessionType = SimpleSession | AsyncSimpleSession
 
 
 def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str]) -> str:
-    """目标命令: 设置 / status / done / clear / todo / todo-done"""
+    """
+    目标命令: 设置 / status / done / clear / todo / todo-done
+
+    参数:
+    - state: 状态
+    - session: 会话
+    - args: 额外位置参数
+
+    返回:
+    - str: 目标命令: 设置 / status / done / clear / todo / todo-done
+    """
     goals = state["goals"]
     assert isinstance(goals, GoalState)
     sid = session.session_id
@@ -64,7 +85,16 @@ def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str])
 
 
 def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
-    """计划模式: 写类工具全部拒绝, 只输出计划"""
+    """
+    计划模式: 写类工具全部拒绝, 只输出计划
+
+    参数:
+    - state: 状态
+    - args: 额外位置参数
+
+    返回:
+    - str: 计划模式: 写类工具全部拒绝, 只输出计划
+    """
     engine = state["engine"]
     assert isinstance(engine, PermissionEngine)
     sub = args[0] if args else "on"
@@ -80,7 +110,16 @@ def _cmd_plan_impl(state: dict[str, Any], args: list[str]) -> str:
 
 
 def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
-    """审批命令: 切换策略 / 查看与添加持久规则"""
+    """
+    审批命令: 切换策略 / 查看与添加持久规则
+
+    参数:
+    - state: 状态
+    - args: 额外位置参数
+
+    返回:
+    - str: 审批命令: 切换策略 / 查看与添加持久规则
+    """
     engine = state["engine"]
     assert isinstance(engine, PermissionEngine)
     sub = args[0] if args else "mode"
@@ -109,21 +148,51 @@ def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
 
 
 def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
-    """构建插件命令: 返回 (同步命令, 异步命令) 映射"""
-    from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+    """
+    构建插件命令: 返回 (同步命令, 异步命令) 映射
 
+    参数:
+    - session: 会话
+
+    返回:
+    - tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:  (同步命令, 异步命令) 映射
+    """
     state = get_plugin_state(session)
 
     def cmd_goal(*args: str) -> str:
-        """设置/查看/完成持续目标"""
+        """
+        设置/查看/完成持续目标
+
+        参数:
+        - args: 额外位置参数
+
+        返回:
+        - str: 设置/查看/完成持续目标
+        """
         return _cmd_goal_impl(state, session, list(args))
 
     def cmd_plan(*args: str) -> str:
-        """进入/退出计划模式 (写操作全部禁用)"""
+        """
+        进入/退出计划模式 (写操作全部禁用)
+
+        参数:
+        - args: 额外位置参数
+
+        返回:
+        - str: 进入/退出计划模式 (写操作全部禁用)
+        """
         return _cmd_plan_impl(state, list(args))
 
     def cmd_approve(*args: str) -> str:
-        """切换审批策略/管理持久规则"""
+        """
+        切换审批策略/管理持久规则
+
+        参数:
+        - args: 额外位置参数
+
+        返回:
+        - str: 切换审批策略/管理持久规则
+        """
         return _cmd_approve_impl(state, list(args))
 
     async def cmd_goal_async(*args: str) -> str:

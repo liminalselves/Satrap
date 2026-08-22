@@ -42,14 +42,23 @@ class _FakeLLM(LLM):
 
 @pytest.fixture
 def session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
-    """隔离数据目录的会话 + 安装 base_take 插件"""
+    """
+    隔离数据目录的会话 + 安装 base_take 插件
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+
+    返回:
+    - SimpleSession: 隔离数据目录的会话 + 安装 base_take 插件
+    """
     from satrap.edictum import simple_session as ss_mod
     from satrap.edictum.plugin_config import PluginConfigManager
     from satrap.expend.plugins.base_take import state as state_mod
     from satrap.expend.tools import memory_store as ms_mod
 
-    # 隔离: 插件配置目录 + 记忆 db + 沙箱根
     monkeypatch.setattr(ss_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "cfg"))
+    # 隔离: 插件配置目录 + 记忆 db + 沙箱根
     monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
     monkeypatch.setattr(state_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
 
@@ -63,7 +72,12 @@ def session(tmp_path: Any, monkeypatch: Any) -> SimpleSession:
 
 
 def test_plugin_install_capabilities(session: SimpleSession):
-    """安装: 8 工具 + 1 处理器 + 1 命令"""
+    """
+    安装: 8 工具 + 1 处理器 + 1 命令
+
+    参数:
+    - session: 会话
+    """
     plugin = session.list_plugins()[0]
     assert plugin.name == "base_take"
     assert set(plugin.tools) == {
@@ -76,7 +90,12 @@ def test_plugin_install_capabilities(session: SimpleSession):
 
 
 def test_config_schema_on_plugin(session: SimpleSession):
-    """config_schema 随插件返回 (供前端渲染表单)"""
+    """
+    config_schema 随插件返回 (供前端渲染表单)
+
+    参数:
+    - session: 会话
+    """
     plugin = session.list_plugins()[0]
     assert plugin.config_schema["sandbox_root"]["type"] == "path"
     assert plugin.config_schema["search_timeout"]["default"] == 10
@@ -86,7 +105,13 @@ def test_config_schema_on_plugin(session: SimpleSession):
 
 
 def test_memory_mode_config_readonly(tmp_path: Any, monkeypatch: Any):
-    """memory_mode=base: 写工具被拒绝; disabled: 注入块为空"""
+    """
+    memory_mode=base: 写工具被拒绝; disabled: 注入块为空
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     from satrap.edictum import simple_session as ss_mod
     from satrap.edictum.plugin_config import PluginConfigManager
     from satrap.expend.plugins.base_take import state as state_mod
@@ -108,20 +133,25 @@ def test_memory_mode_config_readonly(tmp_path: Any, monkeypatch: Any):
     assert store.mode == "base"
     assert store.can_write() is False
 
-    # base 只读: 写工具返回"只读"提示
     tm = s._wf.tools_manager
+    # base 只读: 写工具返回"只读"提示
     add = tm.tools["add_memory"]
     assert "只读" in add.execute(title="偏好", content="x")
 
-    # disabled 模式: 不注入 (注入块为空), 写拒绝文案按实际模式生成
     store.set_mode("disabled")
+    # disabled 模式: 不注入 (注入块为空), 写拒绝文案按实际模式生成
     assert store.to_context_block() == ""
     assert "已禁用" in add.execute(title="偏好", content="x")
     assert "disabled" in add.execute(title="偏好", content="x")
 
 
 def test_memory_tools_lifecycle(session: SimpleSession):
-    """memory 工具: 添加 -> 列表 -> 更新 -> 删除"""
+    """
+    memory 工具: 添加 -> 列表 -> 更新 -> 删除
+
+    参数:
+    - session: 会话
+    """
     tm = session._wf.tools_manager
     add = tm.tools["add_memory"]
     result = add.execute(title="偏好", content="喜欢简洁回答", tags=["style"], importance=3)
@@ -131,8 +161,8 @@ def test_memory_tools_lifecycle(session: SimpleSession):
     listed = list_tool.execute()
     assert "偏好" in listed and "喜欢简洁回答" in listed
 
-    # 取记忆 ID 前缀
     from satrap.expend.plugins.base_take.state import get_plugin_state
+    # 取记忆 ID 前缀
     store = get_plugin_state(session)["store"]
     mem_id = store.list_all()[0]["id"]
 
@@ -145,7 +175,12 @@ def test_memory_tools_lifecycle(session: SimpleSession):
 
 
 def test_memory_command_lifecycle(session: SimpleSession):
-    """/memory 命令: 注册 -> list/add/del/mode 全流程"""
+    """
+    /memory 命令: 注册 -> list/add/del/mode 全流程
+
+    参数:
+    - session: 会话
+    """
     cmd = session.cmd_handler.commands["memory"]
 
     assert "没有长期记忆" in cmd()
@@ -154,7 +189,7 @@ def test_memory_command_lifecycle(session: SimpleSession):
     assert "偏好" in listed and "喜欢简洁回答" in listed
 
     mem_id = listed.split("- ")[1].split(" ")[0]
-    assert "已删除" in cmd("del", mem_id[:8])  # 支持 ID 前缀
+    assert "已删除" in cmd("del", mem_id[:8])   # 支持 ID 前缀
 
     assert "已切换: base" in cmd("mode", "base")
     assert "只读模式" in cmd("add", "x", "y")
@@ -164,14 +199,19 @@ def test_memory_command_lifecycle(session: SimpleSession):
 
 
 def test_memory_inject_handler(session: SimpleSession):
-    """记忆注入 handler: 添加记忆后注入到用户输入"""
+    """
+    记忆注入 handler: 添加记忆后注入到用户输入
+
+    参数:
+    - session: 会话
+    """
     from satrap.expend.plugins.base_take.state import get_plugin_state
     state = get_plugin_state(session)
     store = state["store"]
     store.add("项目约定", "回复用中文", importance=5)
 
-    # 直接用注入器 (handler 已把它挂在 state 上)
     injector = state["_injector"]
+    # 直接用注入器 (handler 已把它挂在 state 上)
     injected = injector.inject("你好")
     assert "长期记忆" in injected
     assert "项目约定" in injected
@@ -179,7 +219,13 @@ def test_memory_inject_handler(session: SimpleSession):
 
 
 def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any):
-    """计划模式只限制工作区写操作 (文件/shell/沙箱); 记忆是元信息, 增删改不受拦截 (有意设计)"""
+    """
+    计划模式只限制工作区写操作 (文件/shell/沙箱); 记忆是元信息, 增删改不受拦截 (有意设计)
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     from satrap.edictum import simple_session as ss_mod
     from satrap.edictum.plugin_config import PluginConfigManager
     from satrap.expend.plugins.base_take import state as state_mod
@@ -202,8 +248,8 @@ def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any)
 
     assert "已进入计划模式" in s.cmd_handler.commands["plan"]("on")
 
-    # 计划模式下记忆写不被拦截: 工具与命令均可写
     add = s._wf.tools_manager.tools["add_memory"]
+    # 计划模式下记忆写不被拦截: 工具与命令均可写
     assert "已添加" in add.execute(title="决策", content="用 SQLite", tags=[], importance=1)
     assert "已添加" in s.cmd_handler.commands["memory"]("add", "偏好", "中文回复")
 
@@ -211,16 +257,26 @@ def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any)
 # ================= 文档解析 =================
 
 def test_extract_text_txt(tmp_path: Path):
-    """纯文本直接读取"""
+    """
+    纯文本直接读取
+
+    参数:
+    - tmp_path: tmp路径
+    """
     f = tmp_path / "a.txt"
     f.write_text("你好世界", encoding="utf-8")
     assert extract_text(f) == "你好世界"
 
 
 def test_extract_text_xlsx(tmp_path: Path):
-    """xlsx 解析为 TSV 文本"""
+    """
+    xlsx 解析为 TSV 文本
+
+    参数:
+    - tmp_path: tmp路径
+    """
     from openpyxl import Workbook
-    wb: Any = Workbook()  # openpyxl 无类型声明
+    wb: Any = Workbook()   # openpyxl 无类型声明
     ws: Any = wb.active
     assert ws is not None
     ws.title = "数据"
@@ -235,7 +291,12 @@ def test_extract_text_xlsx(tmp_path: Path):
 
 
 def test_extract_text_docx(tmp_path: Path):
-    """docx 解析段落为纯文本"""
+    """
+    docx 解析段落为纯文本
+
+    参数:
+    - tmp_path: tmp路径
+    """
     import docx
     doc = docx.Document()
     doc.add_paragraph("第一段内容")
@@ -247,9 +308,14 @@ def test_extract_text_docx(tmp_path: Path):
 
 
 def test_extract_text_pdf(tmp_path: Path):
-    """pdf 解析 (用 pdfplumber 生成最小 pdf 较复杂, 改用 reportlab 若可用否则跳过)"""
+    """
+    pdf 解析 (用 pdfplumber 生成最小 pdf 较复杂, 改用 reportlab 若可用否则跳过)
+
+    参数:
+    - tmp_path: tmp路径
+    """
     pytest.importorskip("reportlab")
-    from reportlab.pdfgen import canvas  # type: ignore[reportMissingModuleSource] 可选依赖, 未安装时上面 importorskip 跳过
+    from reportlab.pdfgen import canvas   # type: ignore[reportMissingModuleSource] 可选依赖, 未安装时上面 importorskip 跳过
     f = tmp_path / "t.pdf"
     c = canvas.Canvas(str(f))
     c.drawString(100, 750, "Hello PDF")
@@ -274,7 +340,7 @@ def test_pdfminer_fontbbox_warning_filtered():
 
     logger = logging.getLogger("pdfminer.pdffont")
     _mute_pdfminer_fontbbox_warning()
-    _mute_pdfminer_fontbbox_warning()  # 重复调用不叠加
+    _mute_pdfminer_fontbbox_warning()   # 重复调用不叠加
     filters = [f for f in logger.filters if f.__class__.__name__ == "_FontBBoxWarningFilter"]
     assert len(filters) == 1
 
@@ -289,7 +355,12 @@ def test_pdfminer_fontbbox_warning_filtered():
 
 
 def test_extract_text_unsupported(tmp_path: Path):
-    """不支持的类型返回明确错误"""
+    """
+    不支持的类型返回明确错误
+
+    参数:
+    - tmp_path: tmp路径
+    """
     f = tmp_path / "t.bin"
     f.write_bytes(b"\x00\x01")
     with pytest.raises(ValueError, match="不支持"):
@@ -297,13 +368,24 @@ def test_extract_text_unsupported(tmp_path: Path):
 
 
 def test_extract_text_missing(tmp_path: Path):
-    """文件不存在返回明确错误"""
+    """
+    文件不存在返回明确错误
+
+    参数:
+    - tmp_path: tmp路径
+    """
     with pytest.raises(ValueError, match="不存在"):
         extract_text(tmp_path / "ghost.txt")
 
 
 def test_read_document_tool(session: SimpleSession, tmp_path: Path):
-    """read_document 工具: 工作区内解析 + 越界拒绝"""
+    """
+    read_document 工具: 工作区内解析 + 越界拒绝
+
+    参数:
+    - session: 会话
+    - tmp_path: tmp路径
+    """
     workspace = tmp_path / "workspace"
     (workspace / "note.txt").write_text("工作区笔记", encoding="utf-8")
     tool = session._wf.tools_manager.tools["read_document"]

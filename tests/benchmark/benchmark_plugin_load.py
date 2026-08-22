@@ -1,4 +1,5 @@
-"""插件加载基准测试: 串行 vs 并行插件安装耗时对比
+"""
+插件加载基准测试: 串行 vs 并行插件安装耗时对比
 
 运行:
     python tests/benchmark/benchmark_plugin_load.py
@@ -47,7 +48,16 @@ class {class_name}(AsyncTool):
 
 
 def _create_mock_plugins(base_dir: Path, count: int) -> list[Path]:
-    """在临时目录创建 N 个 mock 插件"""
+    """
+    在临时目录创建 N 个 mock 插件
+
+    参数:
+    - base_dir: 基础目录
+    - count: 数量
+
+    返回:
+    - list[Path]: 在临时目录创建 N 个 mock 插件
+    """
     dirs: list[Path] = []
     for i in range(count):
         name = f"bench_plugin_{i}"
@@ -70,7 +80,16 @@ def _make_session() -> AsyncSimpleSession:
 
 
 async def _install_sequential(session: AsyncSimpleSession, plugin_dirs: list[Path]) -> float:
-    """串行安装, 返回总耗时 (秒)"""
+    """
+    串行安装, 返回总耗时 (秒)
+
+    参数:
+    - session: 会话
+    - plugin_dirs: 插件dirs
+
+    返回:
+    - float: 总耗时 (秒)
+    """
     start = time.perf_counter()
     for pdir in plugin_dirs:
         await session.install_plugin(str(pdir))
@@ -78,7 +97,16 @@ async def _install_sequential(session: AsyncSimpleSession, plugin_dirs: list[Pat
 
 
 async def _install_parallel(session: AsyncSimpleSession, plugin_dirs: list[Path]) -> float:
-    """并行安装, 返回总耗时 (秒)"""
+    """
+    并行安装, 返回总耗时 (秒)
+
+    参数:
+    - session: 会话
+    - plugin_dirs: 插件dirs
+
+    返回:
+    - float: 总耗时 (秒)
+    """
     async def _install_one(pdir: Path) -> None:
         await session.install_plugin(str(pdir))
 
@@ -93,13 +121,13 @@ async def main() -> None:
         plugin_dirs = _create_mock_plugins(tmp, PLUGIN_COUNT)
         print(f"插件数量: {PLUGIN_COUNT}")
 
-        # 串行
         session1 = _make_session()
+        # 串行
         seq_time = await _install_sequential(session1, plugin_dirs)
         print(f"串行安装总耗时: {seq_time:.3f}s")
 
-        # 并行
         session2 = _make_session()
+        # 并行
         par_time = await _install_parallel(session2, plugin_dirs)
         print(f"并行安装总耗时: {par_time:.3f}s")
 

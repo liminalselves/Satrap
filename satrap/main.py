@@ -5,10 +5,20 @@ import asyncio
 import sys
 from pathlib import Path
 
-# 确保项目根目录在 sys.path 中
 _proj_root = str(Path(__file__).resolve().parent.parent)
+# 确保项目根目录在 sys.path 中
 if _proj_root not in sys.path:
     sys.path.insert(0, _proj_root)
+
+from satrap.cli.cmd_checkpoint import dispatch as dispatch_checkpoint
+from satrap.cli.cmd_config import dispatch as dispatch_config
+from satrap.cli.cmd_control import dispatch as dispatch_control
+from satrap.cli.cmd_model import dispatch as dispatch_model
+from satrap.cli.cmd_platform import dispatch as dispatch_platform
+from satrap.cli.cmd_reload import cmd_reload
+from satrap.cli.cmd_run import cmd_run
+from satrap.cli.cmd_session import dispatch as dispatch_session
+from satrap.cli.cmd_user import dispatch as dispatch_user
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -32,12 +42,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     subparsers = parser.add_subparsers(dest="command", help="子命令")
 
-    # satrap run
     p = subparsers.add_parser("run", help="启动后端服务")
+    # satrap run 命令
     add_config_flag(p)
     p.add_argument("--log-level", default="INFO")
 
-    # satrap reload / status / stop / restart
     for name, help_text in (
         ("reload", "重载后端配置"),
         ("status", "查看后端状态"),
@@ -47,9 +56,10 @@ def _build_parser() -> argparse.ArgumentParser:
         p = subparsers.add_parser(name, help=help_text)
         add_config_flag(p)
         add_api_flags(p)
+    # 后端控制命令: satrap reload / status / stop / restart
 
-    # satrap config
     p_cfg = subparsers.add_parser("config", help="配置文件管理")
+    # satrap config 命令
     cfg_sub = p_cfg.add_subparsers(dest="action", help="操作")
     p = cfg_sub.add_parser("init", help="创建默认配置文件")
     add_mode_flags(p)
@@ -60,8 +70,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--set", action="append", nargs="+", required=True, help="设置参数: key=value, 支持 api.host")
     add_mode_flags(p)
 
-    # satrap session
     p_sess = subparsers.add_parser("session", help="Session 类管理")
+    # satrap session 命令
     sess_sub = p_sess.add_subparsers(dest="action", help="操作")
 
     p = sess_sub.add_parser("list", help="列出所有 session 类")
@@ -98,8 +108,8 @@ def _build_parser() -> argparse.ArgumentParser:
     add_config_flag(p)
     add_mode_flags(p)
 
-    # satrap model
     p_mod = subparsers.add_parser("model", help="模型配置管理")
+    # satrap model 命令
     mod_sub = p_mod.add_subparsers(dest="action", help="操作")
     p = mod_sub.add_parser("list", help="列出模型配置")
     p.add_argument("type", nargs="?", default="all", choices=["llm", "embedding", "rerank", "all"])
@@ -119,8 +129,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("name", nargs="?", default="default"); add_config_flag(p)
     add_mode_flags(p)
 
-    # satrap platform
     p_plat = subparsers.add_parser("platform", help="平台适配器管理")
+    # satrap platform 命令
     plat_sub = p_plat.add_subparsers(dest="action", help="操作")
     p = plat_sub.add_parser("list", help="列出平台适配器")
     add_config_flag(p)
@@ -138,8 +148,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("id"); add_config_flag(p)
     add_mode_flags(p)
 
-    # satrap checkpoint
     p_ckpt = subparsers.add_parser("checkpoint", help="状态检查点管理")
+    # satrap checkpoint 命令
     ckpt_sub = p_ckpt.add_subparsers(dest="action", help="操作")
 
     def add_db_flag(p: argparse.ArgumentParser):
@@ -176,8 +186,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("conversation_id")
     add_db_flag(p)
 
-    # satrap user
     p_user = subparsers.add_parser("user", help="用户管理")
+    # satrap user 命令
     user_sub = p_user.add_subparsers(dest="action", help="操作")
 
     def add_user_db_flag(p: argparse.ArgumentParser):
@@ -218,6 +228,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main():
+    """运行 Satrap 命令行入口"""
     parser = _build_parser()
     args = parser.parse_args()
     if not args.command:
@@ -225,31 +236,22 @@ def main():
         sys.exit(1)
 
     if args.command == "run":
-        from satrap.cli.cmd_run import cmd_run
         asyncio.run(cmd_run(args))
     elif args.command == "reload":
-        from satrap.cli.cmd_reload import cmd_reload
         cmd_reload(args)
     elif args.command in ("status", "stop", "restart"):
-        from satrap.cli.cmd_control import dispatch as dispatch_control
         dispatch_control(args)
     elif args.command == "config":
-        from satrap.cli.cmd_config import dispatch as dispatch_config
         dispatch_config(args)
     elif args.command == "session":
-        from satrap.cli.cmd_session import dispatch as dispatch_session
         dispatch_session(args)
     elif args.command == "model":
-        from satrap.cli.cmd_model import dispatch as dispatch_model
         dispatch_model(args)
     elif args.command == "platform":
-        from satrap.cli.cmd_platform import dispatch as dispatch_platform
         dispatch_platform(args)
     elif args.command == "checkpoint":
-        from satrap.cli.cmd_checkpoint import dispatch as dispatch_checkpoint
         dispatch_checkpoint(args)
     elif args.command == "user":
-        from satrap.cli.cmd_user import dispatch as dispatch_user
         dispatch_user(args)
     else:
         print(f"未知命令: {args.command}")

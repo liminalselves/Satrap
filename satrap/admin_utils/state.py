@@ -1,9 +1,9 @@
+"""各页面共享的 session_state 初始化, 不含 st.set_page_config"""
 from __future__ import annotations
 
-"""各页面共享的 session_state 初始化, 不含 st.set_page_config"""
-
-from pathlib import Path
 import sys
+import urllib.request
+from pathlib import Path
 
 _root = str(Path(__file__).resolve().parent.parent)
 if _root not in sys.path:
@@ -18,11 +18,10 @@ from satrap.core.type import safe_getattr_str, safe_getattr_int
 
 
 def trigger_backend_reload():
-    """触发后端热加载配置（fire-and-forget）"""
+    """触发后端热加载配置(fire-and-forget)"""
     config = st.session_state.config
     host = safe_getattr_str(config, 'api_host', '127.0.0.1')
     port = safe_getattr_int(config, 'api_port', 19870)
-    import urllib.request
     try:
         urllib.request.urlopen(f"http://{host}:{port}/api/config/reload", data=b"", timeout=5)
     except Exception:
@@ -30,7 +29,12 @@ def trigger_backend_reload():
 
 
 def reset_state_managers(config: BackendConfig):
-    """用新配置重建前端共享管理器"""
+    """
+    用新配置重建前端共享管理器
+
+    参数:
+    - config: 配置信息
+    """
     st.session_state.config = config
     st.session_state.scm = SessionClassConfigManager(
         storage_path=st.session_state.config.session_class_config_path,

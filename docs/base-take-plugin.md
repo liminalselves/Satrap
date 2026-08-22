@@ -52,6 +52,8 @@ base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当�
 
 记忆存储使用公共 MemoryStore (`.satrap/satrapdata/memory.db`), 按 scope 隔离 (默认 `web_chat`)。记忆由注入处理器自动拼接到后续用户消息头部 (importance 降序, 上限 30 条), 保证模型每轮都携带已知约定。
 
+**记忆分层 (项目功能)**: 项目会话的记忆分两层 —— 全局层 (`web_chat`, 所有会话可见) 与项目层 (`project:<project_id>`, 仅本项目会话可见)。注入时两层合并渲染 (`[项目记忆]` / `[全局记忆]` 分节, 项目层优先占 30 条配额); `add_memory` 默认写项目层, 可传 `level='global'` 写全局层; `list_memories` / `/memory list` 分层标注。无项目会话仅全局层, 行为与分层前一致。
+
 两点语义说明:
 
 - **与计划模式隔离**: 记忆是元信息, 不属于工作区写操作, satrap_coding 的 `/plan` 计划模式不会拦截记忆增删改 (有意设计)。
@@ -66,4 +68,4 @@ base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当�
 - `.pdf` — pdfplumber 逐页提取文本
 - 纯文本 — 直接读取 (utf-8)
 
-文件路径限制在 workspace_root 白名单内; 若工作区根下未找到, 会回退在 `.satrap/uploads/` 各会话目录中按文件名搜索 (聊天页上传的文件保存为 `{uuid}_{filename}` 形式)。输出按 `max_length` 截断 (默认 131072 字符)。
+文件路径限制在 workspace_root 白名单内 (项目会话为项目工作区, 调用时按会话解析); 若工作区根下未找到, 会回退在**当前工作区**的 `.satrap/uploads/` 各会话目录中按文件名搜索 (聊天页上传的文件保存为 `{uuid}_{filename}` 形式) —— 即项目内跨会话可见, 跨项目不可见。输出按 `max_length` 截断 (默认 131072 字符)。

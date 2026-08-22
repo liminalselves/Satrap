@@ -13,7 +13,8 @@ from satrap.core.log import logger
 class LiteVectorDB:
     """轻量级向量数据库"""
     def __init__(self, persist_path: str = ".satrap/lite_vector"):
-        """初始化 LiteVectorDB
+        """
+        初始化 LiteVectorDB
 
         参数:
         - persist_path: 数据持久化路径, 默认 ".satrap/lite_vector"
@@ -31,7 +32,7 @@ class LiteVectorDB:
     def _precompute_norms(self):
         """预计算所有集合的向量"""
         _vector: dict[str, Any] = {}   # 向量
-        _norm: dict[str, Any] = {}     # 归一化向量模长
+        _norm: dict[str, Any] = {}   # 归一化向量模长
         self._key_cache.clear()   # 清空缓存
         for name, collection in self.collections.items():
             vectors = collection['vectors']
@@ -45,9 +46,14 @@ class LiteVectorDB:
                 logger.info(f"预计算集合 {name} 的向量模长, 共 {len(vectors)} 个向量")
 
     def _update_norms(self, name: str):
-        """更新集合的向量模长"""
-        _vector: dict[str, Any] = {}    # 向量
-        _norm: dict[str, Any] = {}      # 归一化向量模长
+        """
+        更新集合的向量模长
+
+        参数:
+        - name: 名称
+        """
+        _vector: dict[str, Any] = {}   # 向量
+        _norm: dict[str, Any] = {}   # 归一化向量模长
         collection = self.collections[name]
         vectors = collection['vectors']
         if vectors is not None and len(vectors) > 0:
@@ -59,13 +65,13 @@ class LiteVectorDB:
     def _load_from_disk(self):
         """从磁盘加载数据"""
         index_file = os.path.join(self.persist_path, "index.msgpack")
-        if os.path.exists(index_file):  # 使用 msgpack 格式
+        if os.path.exists(index_file):   # 使用 msgpack 格式
             try:
                 with open(index_file, 'rb') as f:
-                    data: Any = msgpack.unpack(f, raw=False)  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
+                    data: Any = msgpack.unpack(f, raw=False)   # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
                     self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore
                 logger.info(f"从磁盘加载 {len(self.collections)} 个集合")
-                self._precompute_norms()  # 预计算向量模长
+                self._precompute_norms()   # 预计算向量模长
 
             except Exception as e:
                 logger.warning(f"从磁盘加载失败: {e}")
@@ -81,7 +87,7 @@ class LiteVectorDB:
         try:
             with open(index_file_msgpack, 'wb') as f:
                 data = self._to_memory_format(self.collections)
-                msgpack.pack(data, f)  # pyright: ignore[reportUnknownMemberType]
+                msgpack.pack(data, f)   # pyright: ignore[reportUnknownMemberType]
 
         except Exception as e:
             logger.error(f"保存数据失败: {e}")
@@ -93,7 +99,8 @@ class LiteVectorDB:
             k: int,
             threshold: float
         ) -> List[Dict[str, Any]]:
-        """使用 numpy 进行向量搜索
+        """
+        使用 numpy 进行向量搜索
 
         参数:
         - name: 集合名称
@@ -105,13 +112,13 @@ class LiteVectorDB:
         - results: 包含文档, 相似度分数和元数据的列表
         """
         query_np = np.array(query_vector, dtype=np.float16)   # 转换为 numpy
-        query_norm = query_np / np.linalg.norm(query_np)      # 归一化查询向量
+        query_norm = query_np / np.linalg.norm(query_np)   # 归一化查询向量
 
-        vectors_norm = self._key_cache[name]              # 使用缓存的归一化向量
+        vectors_norm = self._key_cache[name]   # 使用缓存的归一化向量
         similarities = np.dot(vectors_norm, query_norm)   # 计算余弦相似度
 
         if k < len(similarities):   # 如果 k 小于向量数量, 使用部分排序
-            indices = np.argpartition(similarities, -k)[-k:]                    # 获取最大的 k 个索引
+            indices = np.argpartition(similarities, -k)[-k:]   # 获取最大的 k 个索引
             sorted_indices = indices[np.argsort(similarities[indices])[::-1]]   # 对这些索引排序
 
         else:   # 否则使用完全排序
@@ -132,23 +139,39 @@ class LiteVectorDB:
         return results
 
     def _to_memory_format(self, data: dict[str, Any]) -> dict[str, Any]:
-        """将整个数据库转换为可序列化的内存格式"""
+        """
+        将整个数据库转换为可序列化的内存格式
+
+        参数:
+        - data: 输入数据
+
+        返回:
+        - dict[str, Any]: 将整个数据库转换为可序列化的内存格式
+        """
         memory_collections: dict[str, Any] = {}
 
         for name, collection in data.items():
-            # 使用 JSON 序列化/反序列化来强制转换所有数据
             collection_json = json.dumps({
                 'documents': collection['documents'],
                 'vectors': collection.get('vectors', []),
                 'metadata': collection.get('metadata', [])
             }, default=str)   # 使用 default=str 处理无法序列化的类型
+            # 使用 JSON 序列化/反序列化来强制转换所有数据
 
             memory_collections[name] = json.loads(collection_json)
 
         return memory_collections
 
     def _to_tensor_format(self, data: dict[str, Any]) -> dict[str, Any]:
-        """将加载的数据库数据转换为带张量的格式"""
+        """
+        将加载的数据库数据转换为带张量的格式
+
+        参数:
+        - data: 输入数据
+
+        返回:
+        - dict[str, Any]: 将加载的数据库数据转换为带张量的格式
+        """
         tensor_db: dict[str, Any] = {}
         for name, collection in data.items():
             vectors_data = collection.get('vectors', [])
@@ -156,10 +179,9 @@ class LiteVectorDB:
             
             for vec in vectors_data:
                 if isinstance(vec, str):
-                    # 处理字符串格式的向量数据
                     try:
-                        # 移除方括号和多余的空格, 然后分割
                         vec_str = vec.strip('[]')
+                        # 移除方括号和多余的空格, 然后分割
                         # 使用正则表达式分割, 处理多个空格的情况
                         vec_values = re.split(r'\s+', vec_str.strip())
                         vec_array = np.array([float(v) for v in vec_values if v], dtype=np.float16)
@@ -167,12 +189,13 @@ class LiteVectorDB:
                     except (ValueError, AttributeError) as e:
                         logger.warning(f"无法解析向量数据: {vec[:50]}..., 错误: {e}")
                         continue
+                    # 处理字符串格式的向量数据
                 elif isinstance(vec, (list, tuple)):
-                    # 处理列表格式的向量数据
                     processed_vectors.append(np.array(vec, dtype=np.float16))
+                    # 处理列表格式的向量数据
                 elif isinstance(vec, np.ndarray):
-                    # 处理已经是numpy数组的数据
                     processed_vectors.append(vec.astype(np.float16))
+                    # 处理已经是numpy数组的数据
                 else:
                     logger.warning(f"未知的向量数据格式: {type(vec)}")
                     continue
@@ -191,7 +214,15 @@ class LiteVectorDB:
         return tensor_db
 
     def create_collection(self, name: str):
-        """创建集合"""
+        """
+        创建集合
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 创建集合
+        """
         if name not in self.collections:
             self.collections[name] = {
                 'documents': [],
@@ -213,13 +244,17 @@ class LiteVectorDB:
             vectors: List[List[float]],
             metadata: List[Dict[str, Any]] | None,
         ):
-        """添加文档到集合
+        """
+        添加文档到集合
 
         参数:
         - name: 集合名称
         - documents: 文档列表
         - vectors: 向量列表
         - metadata: 元数据列表
+
+        返回:
+        - 添加文档到集合
         """
         if name not in self.collections:   # 集合不存在时创建
             self.create_collection(name)
@@ -229,13 +264,13 @@ class LiteVectorDB:
             metadata = [{} for _ in range(len(documents))]
 
         self.collections[name]['documents'].extend(documents)   # 文档
-        self.collections[name]['vectors'].extend(vectors)       # 向量
-        self.collections[name]['metadata'].extend(metadata)     # 元数据
+        self.collections[name]['vectors'].extend(vectors)   # 向量
+        self.collections[name]['metadata'].extend(metadata)   # 元数据
 
         self._update_norms(name)   # 更新集合的向量模长
         self._save_to_disk()
         logger.info(f"向集合 {name} 添加 {len(documents)} 个文档")
-        return len(documents)  # 返回添加的文档数量
+        return len(documents)   # 返回添加的文档数量
 
     def search(
         self,
@@ -244,8 +279,9 @@ class LiteVectorDB:
         k: int = 4,
         threshold: float = 0.5
     ) -> List[Dict[str, Any]]:
-        """搜索相似文档
-        
+        """
+        搜索相似文档
+
         参数:
         - name: 集合名称
         - query_vector: 查询向量
@@ -255,21 +291,34 @@ class LiteVectorDB:
         返回:
         - results: 包含文档, 相似度分数和元数据的列表
         """
-        if name not in self.collections:  # 检查集合是否存在
+        if name not in self.collections:   # 检查集合是否存在
             return cast(List[Dict[str, Any]], [])
         
         collection = self.collections[name]
-        if not collection['vectors']:  # 检查是否有向量
+        if not collection['vectors']:   # 检查是否有向量
             return cast(List[Dict[str, Any]], [])
         
         return self._search_with_numpy(name, query_vector, k, threshold)
 
     def get_collection_names(self):
-        """获取所有集合名称"""
+        """
+        获取所有集合名称
+
+        返回:
+        - 所有集合名称
+        """
         return list(self.collections.keys())
 
     def delete_collection(self, name: str):
-        """删除集合"""
+        """
+        删除集合
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 删除集合
+        """
         if name in self.collections:
             del self.collections[name]   # 删除集合
             del self._key_cache[name]   # 删除缓存的归一化向量
@@ -282,7 +331,15 @@ class LiteVectorDB:
         return True
 
     def get_collection_stats(self, name: str):
-        """获取集合统计"""
+        """
+        获取集合统计
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 集合统计
+        """
         if name in self.collections:
             return {
                 'document_count': len(self.collections[name]['documents']),
@@ -294,7 +351,8 @@ class DataBase:
     """使用 faiss + SQLite 的向量数据库"""
 
     def __init__(self, persist_path: str = ".satrap/vector"):
-        """初始化 DataBase
+        """
+        初始化 DataBase
 
         参数:
         - persist_path: 数据持久化路径, 默认 ".satrap/vector"
@@ -312,7 +370,12 @@ class DataBase:
         self._load_from_disk()
 
     def _connect(self):
-        """创建 SQLite 连接"""
+        """
+        创建 SQLite 连接
+
+        返回:
+        - 创建 SQLite 连接
+        """
         conn = sqlite3.connect(self.sqlite_path)
         conn.row_factory = sqlite3.Row
         return conn
@@ -342,21 +405,41 @@ class DataBase:
             conn.commit()
 
     def _index_path(self, name: str) -> str:
-        """获取集合索引文件路径"""
+        """
+        获取集合索引文件路径
+
+        参数:
+        - name: 名称
+
+        返回:
+        - str: 集合索引文件路径
+        """
         safe_name = name.replace("/", "_").replace("\\", "_").replace(":", "_")
         return os.path.join(self.persist_path, f"{safe_name}.faiss")
 
     def _create_index(self, dim: int):
-        """创建 faiss 索引
+        """
+        创建 faiss 索引
+
+        参数:
+        - dim: 维度
 
         说明:
         - 使用 IndexFlatIP + IndexIDMap2
         - 写入前做 L2 归一化, 以支持余弦相似度检索
+
+        返回:
+        - 创建 faiss 索引
         """
         return self.faiss.IndexIDMap2(self.faiss.IndexFlatIP(dim))
 
     def _save_index(self, name: str):
-        """保存单个集合索引到磁盘"""
+        """
+        保存单个集合索引到磁盘
+
+        参数:
+        - name: 名称
+        """
         index = self.indices.get(name)
         if index is None:
             return
@@ -383,7 +466,15 @@ class DataBase:
                 self.indices[name] = self._create_index(dim) if dim > 0 else None
 
     def create_collection(self, name: str):
-        """创建集合"""
+        """
+        创建集合
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 创建集合
+        """
         if name not in self.collection_dims:
             with self._connect() as conn:
                 conn.execute(
@@ -406,13 +497,17 @@ class DataBase:
         vectors: List[List[float]],
         metadata: List[Dict[str, Any]] | None,
     ):
-        """添加文档到集合
+        """
+        添加文档到集合
 
         参数:
         - name: 集合名称
         - documents: 文档列表
         - vectors: 向量列表
         - metadata: 元数据列表
+
+        返回:
+        - 添加文档到集合
         """
         if name not in self.collection_dims:
             self.create_collection(name)
@@ -464,7 +559,8 @@ class DataBase:
         k: int = 4,
         threshold: float = 0.5
     ) -> List[Dict[str, Any]]:
-        """搜索相似文档
+        """
+        搜索相似文档
 
         参数:
         - name: 集合名称
@@ -473,7 +569,7 @@ class DataBase:
         - threshold: 相似度阈值
 
         返回:
-        - results: 包含 document、score 和 metadata 的列表
+        - results: 包含 document, score 和 metadata 的列表
         """
         if name not in self.collection_dims:
             return cast(List[Dict[str, Any]], [])
@@ -519,11 +615,24 @@ class DataBase:
         return results
 
     def get_collection_names(self):
-        """获取所有集合名称"""
+        """
+        获取所有集合名称
+
+        返回:
+        - 所有集合名称
+        """
         return list(self.collection_dims.keys())
 
     def delete_collection(self, name: str):
-        """删除集合"""
+        """
+        删除集合
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 删除集合
+        """
         with self._connect() as conn:
             conn.execute("DELETE FROM documents WHERE collection_name=?", (name,))
             conn.execute("DELETE FROM collections WHERE name=?", (name,))
@@ -543,7 +652,15 @@ class DataBase:
         return True
 
     def get_collection_stats(self, name: str):
-        """获取集合统计"""
+        """
+        获取集合统计
+
+        参数:
+        - name: 名称
+
+        返回:
+        - 集合统计
+        """
         if name not in self.collection_dims:
             return {"document_count": 0, "vector_dimension": 0}
 

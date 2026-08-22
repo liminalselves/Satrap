@@ -6,16 +6,19 @@ from satrap.core.type import SnapshotDomain
 
 
 class DomainRegistry:
-    """领域注册表
+    """
+    领域注册表
 
     注册顺序即恢复顺序: 清理与恢复按注册顺序执行,
     跨领域存在外键引用时, 被引用领域必须先注册
     """
     def __init__(self) -> None:
+        """初始化 DomainRegistry"""
         self._domains: Dict[str, SnapshotDomain] = {}
 
     def register(self, domain: SnapshotDomain) -> None:
-        """注册领域, 同名注册会覆盖 (幂等)
+        """
+        注册领域, 同名注册会覆盖 (幂等)
 
         参数:
         - domain: 领域注册声明
@@ -27,7 +30,8 @@ class DomainRegistry:
         self._domains[domain.name] = domain
 
     def get(self, name: str) -> SnapshotDomain:
-        """按名称获取领域
+        """
+        按名称获取领域
 
         参数:
         - name: 领域名称
@@ -44,9 +48,19 @@ class DomainRegistry:
         return domain
 
     def names(self) -> List[str]:
-        """返回已注册领域名列表 (按注册顺序)"""
+        """
+        返回已注册领域名列表 (按注册顺序)
+
+        返回:
+        - List[str]: 已注册领域名列表 (按注册顺序)
+        """
         return list(self._domains.keys())
 
     def all(self) -> List[SnapshotDomain]:
-        """返回全部领域 (按注册顺序)"""
+        """
+        返回全部领域 (按注册顺序)
+
+        返回:
+        - List[SnapshotDomain]: 全部领域 (按注册顺序)
+        """
         return list(self._domains.values())

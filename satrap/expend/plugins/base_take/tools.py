@@ -1,4 +1,5 @@
-"""base_take 插件工具集: search / fetch_page / code_sandbox / read_document / memory
+"""
+base_take 插件工具集: search / fetch_page / code_sandbox / read_document / memory
 
 约定:
 - get_tools(session, config) 工厂: 按会话形态返回同步/异步工具, 配置经合成后注入
@@ -9,14 +10,18 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
+from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.core.utils.paths import get_project_root
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.expend.plugins.base_take.core.docread import extract_text
+from satrap.expend.plugins.base_take.state import get_plugin_state
 from satrap.expend.tools import (
     AsyncCodeSandboxTool,
     AsyncFetchPageTool,
@@ -34,12 +39,23 @@ DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
 """默认沙箱根目录 (全局唯一, 与 coding 插件共享)"""
 
 
-# ================= read_document =================
+# ================= read_document 工具 =================
 
 
 def _resolve_doc_path(path: str, workspace_root: Path) -> Path:
-    """解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内;
-    若工作区根下未找到, 尝试在 .satrap/uploads/ 各会话目录中按文件名搜索"""
+    """
+    解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内;
+    若工作区根下未找到, 尝试在 **本工作区** 的 .satrap/uploads/ 各会话目录中按文件名搜索
+
+    参数:
+    - path: 路径
+    - workspace_root: workspace根目录
+
+    项目语义: 项目内跨会话可见 (uploads 在项目工作区下共享), 跨项目不可见
+
+    返回:
+    - Path: 解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内
+    """
     p = Path(path)
     abs_path = p.resolve() if p.is_absolute() else (workspace_root / p).resolve()
     if not abs_path.is_relative_to(workspace_root.resolve()):
@@ -65,6 +81,22 @@ def _resolve_doc_path(path: str, workspace_root: Path) -> Path:
     return abs_path
 
 
+def _doc_workspace_root(tool: Any) -> Path:
+    """
+    文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
+
+    参数:
+    - tool: 工具
+
+    返回:
+    - Path: 文档工具的工作区根 (调用时解析): 会话鸭子属性优先 (项目会话), 否则安装期基线
+    """
+    override = safe_getattr(getattr(tool, "_session", None), "coding_workspace_root")
+    if override:
+        return Path(str(override)).resolve()
+    return cast(Path, tool._base_root)
+
+
 class ReadDocumentTool(Tool):
     """读取文档 (xlsx/docx/pdf/txt/md 等) 并解析为纯文本"""
 
@@ -76,14 +108,29 @@ class ReadDocumentTool(Tool):
     }
 
     def __init__(self, workspace_root: Path) -> None:
+        """
+        初始化 ReadDocumentTool
+
+        参数:
+        - workspace_root: 工作区根目录
+        """
         super().__init__()
-        self.workspace_root = workspace_root
+        self._base_root = workspace_root
+        """安装期基线工作区根 (cfg/全局); 项目会话经会话鸭子属性在调用时覆盖"""
 
     def execute(self, path: str, max_length: int = 131072) -> str:
-        from satrap.expend.plugins.base_take.core.docread import extract_text
+        """
+        执行
 
+        参数:
+        - path: 路径
+        - max_length: 最大长度
+
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_doc_path(path, self.workspace_root)
+            abs_path = _resolve_doc_path(path, _doc_workspace_root(self))
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -94,6 +141,9 @@ class ReadDocumentTool(Tool):
         if len(text) > limit:
             return text[:limit] + f"\n... (已截断, 共 {len(text)} 字符)"
         return text or "(文档为空)"
+
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
 
 
 class AsyncReadDocumentTool(AsyncTool):
@@ -107,16 +157,29 @@ class AsyncReadDocumentTool(AsyncTool):
     }
 
     def __init__(self, workspace_root: Path) -> None:
+        """
+        初始化 AsyncReadDocumentTool
+
+        参数:
+        - workspace_root: 工作区根目录
+        """
         super().__init__()
-        self.workspace_root = workspace_root
+        self._base_root = workspace_root
+        """安装期基线工作区根 (cfg/全局); 项目会话经会话鸭子属性在调用时覆盖"""
 
     async def execute(self, path: str, max_length: int = 131072) -> str:
-        import asyncio
+        """
+        执行
 
-        from satrap.expend.plugins.base_take.core.docread import extract_text
+        参数:
+        - path: 路径
+        - max_length: 最大长度
 
+        返回:
+        - str: 执行
+        """
         try:
-            abs_path = _resolve_doc_path(path, self.workspace_root)
+            abs_path = _resolve_doc_path(path, _doc_workspace_root(self))
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -128,6 +191,9 @@ class AsyncReadDocumentTool(AsyncTool):
             return text[:limit] + f"\n... (已截断, 共 {len(text)} 字符)"
         return text or "(文档为空)"
 
+    def _bind(self, session: AsyncSimpleSession) -> None:
+        self._session = session
+
 
 # ================= memory (模型自驱增删改) =================
 
@@ -136,28 +202,95 @@ class _MemoryToolBase(Tool):
     """记忆工具基类: store 绑定"""
 
     def __init__(self, store: MemoryStore) -> None:
+        """
+        初始化 _MemoryToolBase
+
+        参数:
+        - store: 存储实例
+        """
         super().__init__()
         self.store = store
+
+
+def _global_scope(store: MemoryStore) -> str:
+    """
+    全局层 scope (可见集合首元素, 契约见 display.service 分层绑定)
+
+    参数:
+    - store: 存储实例
+
+    返回:
+    - str: 全局层 scope (可见集合首元素, 契约见 display.service 分层绑定)
+    """
+    return store.scopes[0] if store.scopes else store.scope
+
+
+def _resolve_level_scope(store: MemoryStore, level: str) -> str | None:
+    """
+    add_memory 层级路由: ''/project = 写入默认层 (项目会话为项目层); global = 全局层;
+    非法值返回 None (调用方据此报错); 无项目会话两层同为全局, 行为不变
+
+    参数:
+    - store: 存储实例
+    - level: 级别
+
+    返回:
+    - str | None: add_memory 层级路由: ''/project = 写入默认层 (项目会话为项目层); global = 全局层
+    """
+    if level == "global":
+        return _global_scope(store)
+    if level in ("", "project"):
+        return store.scope
+    return None
 
 
 class AddMemoryTool(_MemoryToolBase):
     """添加一条长期记忆 (用户偏好/项目约定/关键决策)"""
 
     tool_name = "add_memory"
-    description = "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策"
+    description = (
+        "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策。"
+        "记忆分层: 项目会话默认写入项目层 (仅本项目会话可见), "
+        "level='global' 写入全局层 (所有会话可见)"
+    )
     params_dict = {
         "title": ("string", "简短记忆标题"),
         "content": ("string", "记忆内容"),
         "tags": ("array", "分类标签"),
         "importance": ("number", "重要程度 1-5, 默认 1"),
+        "level": ("string", "记忆层级: project (默认, 仅当前项目可见) 或 global (全局共享)"),
     }
 
-    def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
+    def execute(
+        self,
+        title: str,
+        content: str,
+        tags: list[str] | None = None,
+        importance: int = 1,
+        level: str = "",
+    ) -> str:
+        """
+        执行
+
+        参数:
+        - title: 标题
+        - content: 内容
+        - tags: 标签集合
+        - importance: 重要度
+        - level: level 输入值
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("添加")
-        result = self.store.add(title, content, tags, importance)
+        scope = _resolve_level_scope(self.store, level)
+        if scope is None:
+            return f"未知记忆层级: {level}, 可选 project / global"
+        result = self.store.add(title, content, tags, importance, scope=scope)
         if result.get("ok"):
-            return f"记忆已添加: [{title}] {content}"
+            layer = "全局" if scope == _global_scope(self.store) else "项目"
+            return f"记忆已添加 ({layer}层): [{title}] {content}"
         return f"添加失败: {result.get('error')}"
 
 
@@ -173,6 +306,17 @@ class UpdateMemoryTool(_MemoryToolBase):
     }
 
     def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - memory_id: 记忆id
+        - content: 内容
+        - title: 标题
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("更新")
         fields: dict[str, Any] = {}
@@ -196,6 +340,15 @@ class DeleteMemoryTool(_MemoryToolBase):
     }
 
     def execute(self, memory_id: str) -> str:
+        """
+        执行
+
+        参数:
+        - memory_id: 记忆id
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("删除")
         result = self.store.delete(memory_id)
@@ -212,13 +365,25 @@ class ListMemoriesTool(_MemoryToolBase):
     params_dict: dict[str, Any] = {}
 
     def execute(self) -> str:
+        """
+        执行
+
+        返回:
+        - str: 执行
+        """
         memories = self.store.list_all()
         if not memories:
             return "当前没有长期记忆"
+        global_scope = _global_scope(self.store)
+        layered = len([s for s in self.store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            layer = ""
+            if layered:
+                layer = "全局" if m["scope"] == global_scope else "项目"
+                layer = f" ({layer}层)"
+            lines.append(f"- {m['id'][:8]}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
 
 
@@ -229,6 +394,12 @@ class _AsyncMemoryToolBase(AsyncTool):
     """异步记忆工具基类"""
 
     def __init__(self, store: MemoryStore) -> None:
+        """
+        初始化 _AsyncMemoryToolBase
+
+        参数:
+        - store: 存储实例
+        """
         super().__init__()
         self.store = store
 
@@ -237,20 +408,49 @@ class AsyncAddMemoryTool(_AsyncMemoryToolBase):
     """添加长期记忆 (异步)"""
 
     tool_name = "add_memory"
-    description = "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策"
+    description = (
+        "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策。"
+        "记忆分层: 项目会话默认写入项目层 (仅本项目会话可见), "
+        "level='global' 写入全局层 (所有会话可见)"
+    )
     params_dict = {
         "title": ("string", "简短记忆标题"),
         "content": ("string", "记忆内容"),
         "tags": ("array", "分类标签"),
         "importance": ("number", "重要程度 1-5, 默认 1"),
+        "level": ("string", "记忆层级: project (默认, 仅当前项目可见) 或 global (全局共享)"),
     }
 
-    async def execute(self, title: str, content: str, tags: list[str] | None = None, importance: int = 1) -> str:
+    async def execute(
+        self,
+        title: str,
+        content: str,
+        tags: list[str] | None = None,
+        importance: int = 1,
+        level: str = "",
+    ) -> str:
+        """
+        执行
+
+        参数:
+        - title: 标题
+        - content: 内容
+        - tags: 标签集合
+        - importance: 重要度
+        - level: level 输入值
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("添加")
-        result = self.store.add(title, content, tags, importance)
+        scope = _resolve_level_scope(self.store, level)
+        if scope is None:
+            return f"未知记忆层级: {level}, 可选 project / global"
+        result = self.store.add(title, content, tags, importance, scope=scope)
         if result.get("ok"):
-            return f"记忆已添加: [{title}] {content}"
+            layer = "全局" if scope == _global_scope(self.store) else "项目"
+            return f"记忆已添加 ({layer}层): [{title}] {content}"
         return f"添加失败: {result.get('error')}"
 
 
@@ -266,6 +466,17 @@ class AsyncUpdateMemoryTool(_AsyncMemoryToolBase):
     }
 
     async def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
+        """
+        执行
+
+        参数:
+        - memory_id: 记忆id
+        - content: 内容
+        - title: 标题
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("更新")
         fields: dict[str, Any] = {}
@@ -289,6 +500,15 @@ class AsyncDeleteMemoryTool(_AsyncMemoryToolBase):
     }
 
     async def execute(self, memory_id: str) -> str:
+        """
+        执行
+
+        参数:
+        - memory_id: 记忆id
+
+        返回:
+        - str: 执行
+        """
         if not self.store.can_write():
             return self.store.write_denied_reason("删除")
         result = self.store.delete(memory_id)
@@ -305,13 +525,25 @@ class AsyncListMemoriesTool(_AsyncMemoryToolBase):
     params_dict: dict[str, Any] = {}
 
     async def execute(self) -> str:
+        """
+        执行
+
+        返回:
+        - str: 执行
+        """
         memories = self.store.list_all()
         if not memories:
             return "当前没有长期记忆"
+        global_scope = _global_scope(self.store)
+        layered = len([s for s in self.store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            layer = ""
+            if layered:
+                layer = "全局" if m["scope"] == global_scope else "项目"
+                layer = f" ({layer}层)"
+            lines.append(f"- {m['id'][:8]}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
 
 
@@ -319,13 +551,23 @@ class AsyncListMemoriesTool(_AsyncMemoryToolBase):
 
 
 def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> list[Any]:
-    """按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root/memory)"""
-    from satrap.expend.plugins.base_take.state import get_plugin_state
+    """
+    按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root/memory)
 
+    参数:
+    - session: 会话
+    - config: 配置信息
+
+    返回:
+    - list[Any]: 按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root/memory)
+    """
     cfg = config or {}
     timeout = int(cfg.get("search_timeout") or 10)
-    sandbox_root = Path(str(cfg.get("sandbox_root") or DEFAULT_SANDBOX_ROOT))
-    workspace_root = Path(str(cfg.get("workspace_root") or get_project_root()))
+    # 项目会话: 会话鸭子属性 (ChatService 建会话时赋值) 优先于插件配置
+    ws_override = safe_getattr(session, "coding_workspace_root")
+    sb_override = safe_getattr(session, "coding_sandbox_root")
+    sandbox_root = Path(str(sb_override or cfg.get("sandbox_root") or DEFAULT_SANDBOX_ROOT))
+    workspace_root = Path(str(ws_override or cfg.get("workspace_root") or get_project_root()))
 
     state = get_plugin_state(session, cfg)
     store = state["store"]
@@ -334,7 +576,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
     sandbox = CodeSandbox(str(sandbox_root), sys.executable)
 
     if isinstance(session, AsyncSimpleSession):
-        return [
+        tools: list[Any] = [
             AsyncSearchTool(timeout=timeout),
             AsyncFetchPageTool(timeout=timeout),
             AsyncCodeSandboxTool(sandbox),
@@ -344,14 +586,21 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
             AsyncDeleteMemoryTool(store),
             AsyncListMemoriesTool(store),
         ]
-    return [
-        SearchTool(timeout=timeout),
-        FetchPageTool(timeout=timeout),
-        CodeSandboxTool(sandbox),
-        ReadDocumentTool(workspace_root),
-        AddMemoryTool(store),
-        UpdateMemoryTool(store),
-        DeleteMemoryTool(store),
-        ListMemoriesTool(store),
-    ]
+    else:
+        tools = [
+            SearchTool(timeout=timeout),
+            FetchPageTool(timeout=timeout),
+            CodeSandboxTool(sandbox),
+            ReadDocumentTool(workspace_root),
+            AddMemoryTool(store),
+            UpdateMemoryTool(store),
+            DeleteMemoryTool(store),
+            ListMemoriesTool(store),
+        ]
+    # 绑定会话 (read_document 等工具按会话解析工作区)
+    for tool in tools:
+        bind = safe_getattr_callable(tool, "_bind")
+        if bind is not None:
+            bind(session)
+    return tools
 

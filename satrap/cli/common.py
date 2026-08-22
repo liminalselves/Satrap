@@ -13,7 +13,15 @@ from satrap.core.type import safe_getattr, safe_getattr_bool
 
 
 def load_cli_config(args: Namespace) -> BackendConfig:
-    """加载 CLI 配置并应用 API 覆盖"""
+    """
+    加载 CLI 配置并应用 API 覆盖
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - BackendConfig: 加载 CLI 配置并应用 API 覆盖
+    """
     config = ConfigLoader.autodetect()
     config_path = safe_getattr(args, "config")
     if config_path:
@@ -28,22 +36,53 @@ def load_cli_config(args: Namespace) -> BackendConfig:
 
 
 def daemon_client_from_args(args: Namespace, timeout: float = 2) -> DaemonClient:
-    """按 CLI 参数创建 daemon client"""
+    """
+    按 CLI 参数创建 daemon client
+
+    参数:
+    - args: 额外位置参数
+    - timeout: 超时时间
+
+    返回:
+    - DaemonClient: 按 CLI 参数创建 daemon client
+    """
     return DaemonClient(daemon=DaemonInfo.from_config(load_cli_config(args)), timeout=timeout)
 
 
 def offline_requested(args: Namespace) -> bool:
-    """是否显式请求离线模式"""
+    """
+    是否显式请求离线模式
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - bool: 是否显式请求离线模式
+    """
     return safe_getattr_bool(args, "offline")
 
 
 def force_offline(args: Namespace) -> bool:
-    """是否允许在线时强制离线写入"""
+    """
+    是否允许在线时强制离线写入
+
+    参数:
+    - args: 额外位置参数
+
+    返回:
+    - bool: 是否允许在线时强制离线写入
+    """
     return safe_getattr_bool(args, "force_offline")
 
 
 def ensure_offline_allowed(args: Namespace, action: str = "写入本地配置") -> None:
-    """后端在线时阻止普通离线写入"""
+    """
+    后端在线时阻止普通离线写入
+
+    参数:
+    - args: 额外位置参数
+    - action: 操作类型
+    """
     client = daemon_client_from_args(args)
     if client.is_alive() and not force_offline(args):
         print(f"错误: 后端正在运行, 为避免 CLI 与后端抢写配置, 已拒绝离线{action}.")
@@ -54,7 +93,15 @@ def ensure_offline_allowed(args: Namespace, action: str = "写入本地配置") 
 
 
 def parse_kv_pairs(groups: list[list[str]] | None) -> dict[str, Any]:
-    """解析 argparse 中的 key=value 参数组"""
+    """
+    解析 argparse 中的 key=value 参数组
+
+    参数:
+    - groups: groups 输入值
+
+    返回:
+    - dict[str, Any]: 解析 argparse 中的 key=value 参数组
+    """
     updates: dict[str, Any] = {}
     for group in groups or []:
         for item in group:
@@ -66,7 +113,15 @@ def parse_kv_pairs(groups: list[list[str]] | None) -> dict[str, Any]:
 
 
 def coerce_value(value: str) -> Any:
-    """将 CLI 字符串尽量转换为 JSON 标量"""
+    """
+    将 CLI 字符串尽量转换为 JSON 标量
+
+    参数:
+    - value: 输入值
+
+    返回:
+    - Any: 将 CLI 字符串尽量转换为 JSON 标量
+    """
     if value in ("true", "True"):
         return True
     if value in ("false", "False"):
@@ -80,5 +135,10 @@ def coerce_value(value: str) -> Any:
 
 
 def print_json(data: Any) -> None:
-    """输出 JSON"""
+    """
+    输出 JSON
+
+    参数:
+    - data: 输入数据
+    """
     print(json.dumps(data, ensure_ascii=False, indent=2))

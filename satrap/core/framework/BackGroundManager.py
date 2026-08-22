@@ -18,7 +18,8 @@ TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig)
 
 
 class ModelConfigManager:
-    """模型配置管理器
+    """
+    模型配置管理器
 
     支持:
     - LLM/Embedding/ReRank 多配置(按 name 区分)
@@ -33,6 +34,13 @@ class ModelConfigManager:
     DEFAULT_NAME = "default"
 
     def __init__(self, storage_path: str | Path | None = None, auto_create: bool = True):
+        """
+        初始化 ModelConfigManager
+
+        参数:
+        - storage_path: 存储路径
+        - auto_create: auto创建
+        """
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
 
@@ -52,7 +60,12 @@ class ModelConfigManager:
 
     @staticmethod
     def _default_storage_path() -> Path:
-        """获取默认模型配置存储路径"""
+        """
+        获取默认模型配置存储路径
+
+        返回:
+        - Path: 默认模型配置存储路径
+        """
         env_path = os.getenv("SATRAP_MODEL_CONFIG_PATH")
         if env_path:
             return Path(env_path)
@@ -60,7 +73,15 @@ class ModelConfigManager:
 
     @staticmethod
     def _safe_key(api_key: str | None) -> str | None:
-        """脱敏 API 密钥"""
+        """
+        脱敏 API 密钥
+
+        参数:
+        - api_key: API 密钥
+
+        返回:
+        - str | None: 脱敏 API 密钥
+        """
         if not api_key:
             return api_key
         if len(api_key) <= 4:
@@ -69,7 +90,15 @@ class ModelConfigManager:
 
     @staticmethod
     def _from_dict(payload: Dict[str, Any], cls: type[TConfig]) -> TConfig:
-        """从字典创建配置实例"""
+        """
+        从字典创建配置实例
+
+        参数:
+        - payload: 请求数据
+
+        返回:
+        - TConfig: 从字典创建配置实例
+        """
         allow = {f.name for f in fields(cls)}
         data = {k: v for k, v in payload.items() if k in allow}
         return cls(**data)
@@ -81,7 +110,17 @@ class ModelConfigManager:
         config_cls: type[TConfig],
         default_name: str,
     ) -> Dict[str, TConfig]:
-        """反序列化命名配置"""
+        """
+        反序列化命名配置
+
+        参数:
+        - raw: 原始数据
+        - config_cls: 配置cls
+        - default_name: 默认名称
+
+        返回:
+        - Dict[str, TConfig]: 反序列化命名配置
+        """
         # 新格式: {"name1": {...}, "name2": {...}}
         # 旧格式: {"model": "...", ...}
         result: Dict[str, TConfig] = {}
@@ -112,14 +151,30 @@ class ModelConfigManager:
         return result
 
     def _mask_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """脱敏配置字典"""
+        """
+        脱敏配置字典
+
+        参数:
+        - payload: 请求数据
+
+        返回:
+        - Dict[str, Any]: 脱敏配置字典
+        """
         cfg = dict(payload)
         if cfg.get("lock_api_key", True):
             cfg["api_key"] = self._safe_key(cfg.get("api_key"))
         return cfg
 
     def _to_payload_locked(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """序列化配置"""
+        """
+        序列化配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Dict[str, Any]]]: 序列化配置
+        """
         def dump_named(source: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             output: Dict[str, Dict[str, Any]] = {}
             for name, cfg in source.items():
@@ -179,20 +234,44 @@ class ModelConfigManager:
 
     @staticmethod
     def _normalize_name(name: str | None) -> str:
-        """归一化配置名称"""
+        """
+        归一化配置名称
+
+        参数:
+        - name: 名称
+
+        返回:
+        - str: 归一化配置名称
+        """
         return (name or ModelConfigManager.DEFAULT_NAME).strip() or ModelConfigManager.DEFAULT_NAME
 
     def _target_store(self, target: ConfigTarget) -> Dict[str, Any]:
-        """获取指定配置目标的存储字典"""
+        """
+        获取指定配置目标的存储字典
+
+        参数:
+        - target: 目标
+
+        返回:
+        - Dict[str, Any]: 指定配置目标的存储字典
+        """
         if target == "llm":
             return self._llm_configs
         if target == "embedding":
             return self._embedding_configs
         return self._rerank_configs
 
-    # -------- LLM --------
+    # ---------- LLM 配置 ----------
     def get_llm_config(self, name: str = DEFAULT_NAME) -> LLMConfig:
-        """获取 LLM 配置"""
+        """
+        获取 LLM 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - LLMConfig:  LLM 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             cfg = self._llm_configs.get(key)
@@ -201,12 +280,26 @@ class ModelConfigManager:
             return LLMConfig(**asdict(cfg))
 
     def list_llm_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Any]]:
-        """列出所有 LLM 配置"""
+        """
+        列出所有 LLM 配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 列出所有 LLM 配置
+        """
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)["llm"]
 
     def set_llm_config(self, config: LLMConfig, name: str | None = None):
-        """设置 LLM 配置"""
+        """
+        设置 LLM 配置
+
+        参数:
+        - config: 配置信息
+        - name: 名称
+        """
         with self._lock:
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
@@ -215,7 +308,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def update_llm_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
-        """更新 LLM 配置"""
+        """
+        更新 LLM 配置
+
+        参数:
+        - name: 名称
+        - kwargs: 额外关键字参数
+        """
         with self._lock:
             key = self._normalize_name(name)
             current = asdict(self._llm_configs.get(key, LLMConfig(name=key)))
@@ -225,7 +324,15 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_llm_config(self, name: str) -> bool:
-        """删除 LLM 配置"""
+        """
+        删除 LLM 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 删除 LLM 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._llm_configs:
@@ -237,9 +344,17 @@ class ModelConfigManager:
             self._save_locked()
             return True
 
-    # -------- Embedding --------
+    # ---------- Embedding 配置 ----------
     def get_embedding_config(self, name: str = DEFAULT_NAME) -> EmbeddingConfig:
-        """获取 Embedding 配置"""
+        """
+        获取 Embedding 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - EmbeddingConfig:  Embedding 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             cfg = self._embedding_configs.get(key)
@@ -248,12 +363,26 @@ class ModelConfigManager:
             return EmbeddingConfig(**asdict(cfg))
 
     def list_embedding_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Any]]:
-        """列出所有 Embedding 配置"""
+        """
+        列出所有 Embedding 配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 列出所有 Embedding 配置
+        """
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)["embedding"]
 
     def set_embedding_config(self, config: EmbeddingConfig, name: str | None = None):
-        """设置 Embedding 配置"""
+        """
+        设置 Embedding 配置
+
+        参数:
+        - config: 配置信息
+        - name: 名称
+        """
         with self._lock:
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
@@ -262,7 +391,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def update_embedding_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
-        """更新 Embedding 配置"""
+        """
+        更新 Embedding 配置
+
+        参数:
+        - name: 名称
+        - kwargs: 额外关键字参数
+        """
         with self._lock:
             key = self._normalize_name(name)
             current = asdict(self._embedding_configs.get(key, EmbeddingConfig(name=key)))
@@ -272,7 +407,15 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_embedding_config(self, name: str) -> bool:
-        """删除 Embedding 配置"""
+        """
+        删除 Embedding 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 删除 Embedding 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._embedding_configs:
@@ -284,9 +427,17 @@ class ModelConfigManager:
             self._save_locked()
             return True
 
-    # -------- ReRank --------
+    # ---------- ReRank 配置 ----------
     def get_rerank_config(self, name: str = DEFAULT_NAME) -> ReRankConfig:
-        """获取 ReRank 配置"""
+        """
+        获取 ReRank 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - ReRankConfig:  ReRank 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             cfg = self._rerank_configs.get(key)
@@ -295,12 +446,26 @@ class ModelConfigManager:
             return ReRankConfig(**asdict(cfg))
 
     def list_rerank_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Any]]:
-        """列出所有 ReRank 配置"""
+        """
+        列出所有 ReRank 配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 列出所有 ReRank 配置
+        """
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)["rerank"]
 
     def set_rerank_config(self, config: ReRankConfig, name: str | None = None):
-        """设置 ReRank 配置"""
+        """
+        设置 ReRank 配置
+
+        参数:
+        - config: 配置信息
+        - name: 名称
+        """
         with self._lock:
             key = self._normalize_name(name or config.name)
             payload = asdict(config)
@@ -309,7 +474,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def update_rerank_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
-        """更新 ReRank 配置"""
+        """
+        更新 ReRank 配置
+
+        参数:
+        - name: 名称
+        - kwargs: 额外关键字参数
+        """
         with self._lock:
             key = self._normalize_name(name)
             current = asdict(self._rerank_configs.get(key, ReRankConfig(name=key)))
@@ -319,7 +490,15 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_rerank_config(self, name: str) -> bool:
-        """删除 ReRank 配置"""
+        """
+        删除 ReRank 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 删除 ReRank 配置
+        """
         with self._lock:
             key = self._normalize_name(name)
             if key not in self._rerank_configs:
@@ -331,25 +510,52 @@ class ModelConfigManager:
             self._save_locked()
             return True
 
-    # -------- Common --------
+    # ---------- 公共配置 ----------
     def get_all_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """获取所有配置"""
+        """
+        获取所有配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Dict[str, Any]]]: 所有配置
+        """
         with self._lock:
             return self._to_payload_locked(mask_api_key=mask_api_key)
 
     def get_runtime_configs(self) -> Dict[str, Dict[str, Dict[str, Any]]]:
-        """获取运行时配置"""
+        """
+        获取运行时配置
+
+        返回:
+        - Dict[str, Dict[str, Dict[str, Any]]]: 运行时配置
+        """
         with self._lock:
             return self._to_payload_locked(mask_api_key=False)
 
     def has_config(self, target: ConfigTarget, name: str) -> bool:
-        """检查是否存在指定配置"""
+        """
+        检查是否存在指定配置
+
+        参数:
+        - target: 目标
+        - name: 名称
+
+        返回:
+        - bool: 检查结果
+        """
         with self._lock:
             key = self._normalize_name(name)
             return key in self._target_store(target)
 
     def reset(self, target: ResetTarget = "all"):
-        """重置指定配置"""
+        """
+        重置指定配置
+
+        参数:
+        - target: 目标
+        """
         with self._lock:
             if target in ("llm", "all"):
                 self._llm_configs = {self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)}

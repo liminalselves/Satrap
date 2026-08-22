@@ -43,8 +43,8 @@ def bench_db(db_cls: type[LiteVectorDB] | type[DataBase], persist_path: str, doc
     added = db.add_to_collection(collection, docs, vecs, metas)
     t3 = time.perf_counter()
 
-    # warmup
     _ = db.search(collection, queries[0], k=k, threshold=threshold)
+    # 预热
 
     search_latencies: list[float] = []
     total_hits = 0

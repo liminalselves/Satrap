@@ -56,7 +56,8 @@ class MainWF(AsyncModelWorkflowFramework):
 
 
 class MisskeySession(AsyncSession):
-    """Misskey 平台 AI 助手会话
+    """
+    Misskey 平台 AI 助手会话
 
     参数(通过 SessionClassConfigManager.params 配置):
       - system_prompt: 系统提示词
@@ -64,8 +65,8 @@ class MisskeySession(AsyncSession):
       - llm 参数由框架自动传入, 不在 params 中配置
     """
 
-    # AsyncSession 中定义为 None, SessionManager 注入后才有值
     _user_manager: UserManager | None
+    # AsyncSession 中定义为 None, SessionManager 注入后才有值
 
     def __init__(self, session_id: str,
                  llm: AsyncLLM | None = None,
@@ -109,7 +110,15 @@ class MisskeySession(AsyncSession):
         )
 
     async def run(self, message: str) -> str:
-        """处理用户消息: 命令检查 → 转发给工作流"""
+        """
+        处理用户消息: 命令检查 -> 转发给工作流
+
+        参数:
+        - message: 消息内容
+
+        返回:
+        - str: 处理用户消息: 命令检查 -> 转发给工作流
+        """
         result, is_cmd = await self.cmd_process(message)
         if is_cmd:
             return result or ""

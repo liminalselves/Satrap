@@ -28,8 +28,8 @@ interface ListPos {
   width: number;
 }
 
-const LIST_MAX_HEIGHT = 240; // max-h-60
-const GAP = 6;               // 与触发按钮间距
+const LIST_MAX_HEIGHT = 240;   // 限制列表最大高度为 max-h-60
+const GAP = 6;   // 与触发按钮间距
 
 // 自定义下拉: 原生 select 弹出层由 OS 渲染无法自定义; 用 button + Portal 弹出列表实现
 // 弹出层渲染到 body 并用 fixed 定位, 脱离玻璃卡片 backdrop-filter 产生的 containing block, 避免被遮挡

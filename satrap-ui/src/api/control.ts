@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { CONTROL_API_URL } from '@/utils/constants';
 
-// 后端控制 API 客户端（独立于主后端）
+// 后端控制 API 客户端(独立于主后端)
 const controlClient = axios.create({
   baseURL: CONTROL_API_URL,
   timeout: 30000,

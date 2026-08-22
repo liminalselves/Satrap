@@ -17,11 +17,14 @@ TOOLKIT_PATH = PROJECT_ROOT / ".toolkit" / "apikey.txt"
 
 
 def _load_deepseek_config() -> dict[str, str]:
-    """Parse .toolkit/apikey.txt and return the DeepSeek config block.
+    """
+    解析 .toolkit/apikey.txt 并返回 DeepSeek 配置块
 
-    The file contains multiple config blocks separated by blank lines.
-    Each block is a set of `key: value` pairs. Returns the block whose
-    base_url contains 'deepseek.com'.
+    文件包含多个由空行分隔的配置块
+    每个配置块由一组 `key: value` 键值对组成, 返回 base_url 包含 'deepseek.com' 的配置块
+
+    返回:
+    - dict[str, str]:  DeepSeek 配置块
     """
     if not TOOLKIT_PATH.exists():
         return {}
@@ -40,7 +43,12 @@ def _load_deepseek_config() -> dict[str, str]:
 
 
 def _build_deepseek_llm() -> tuple[LLM | None, AsyncLLM | None]:
-    """Create sync/async LLM instances using the DeepSeek config from .toolkit"""
+    """
+    使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例
+
+    返回:
+    - tuple[LLM | None, AsyncLLM | None]: 使用 .toolkit 中的 DeepSeek 配置创建同步和异步 LLM 实例
+    """
     cfg = _load_deepseek_config()
     api_key = cfg.get("api key", "")
     base_url = cfg.get("base url", "")
@@ -106,15 +114,15 @@ class _FakeAsyncLLM:
         return LLMCallResponse(type="message", content=f"async fake reply #{self.call_count}")
 
 
-# ===============================================================
-# Sync SubAgent tests (unit tests with fake LLM)
-# ===============================================================
+# ================================================================
+# 同步 SubAgent 测试 (使用 fake LLM 的单元测试)
+# ================================================================
 
 
 def test_sub_agent_parses_json_array_task():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
 
     result = agent.execute('["task one", "task two"]')
     assert "子代理1执行任务" in result
@@ -126,7 +134,7 @@ def test_sub_agent_parses_json_array_task():
 def test_sub_agent_parses_single_string_task():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
 
     result = agent.execute("single task description")
     assert "子代理1执行任务" in result
@@ -136,7 +144,7 @@ def test_sub_agent_parses_single_string_task():
 def test_sub_agent_handles_empty_task_list():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
 
     result = agent.execute("[]")
     assert result == "未收到任何子任务"
@@ -145,7 +153,7 @@ def test_sub_agent_handles_empty_task_list():
 def test_sub_agent_handles_malformed_json():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
 
     result = agent.execute("{bad json}")
     assert "子代理1执行任务" in result
@@ -155,7 +163,7 @@ def test_sub_agent_handles_malformed_json():
 def test_sub_agent_preserves_task_order():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
 
     result = agent.execute('["first", "second", "third"]')
     first_pos = result.index("first")
@@ -164,15 +172,15 @@ def test_sub_agent_preserves_task_order():
     assert first_pos < second_pos < third_pos
 
 
-# ===============================================================
-# Async SubAgent tests (unit tests with fake async LLM)
-# ===============================================================
+# ================================================================
+# 异步 SubAgent 测试 (使用 fake 异步 LLM 的单元测试)
+# ================================================================
 
 
 async def _run_async_sub_agent(task_input: str) -> str:
     llm = _FakeAsyncLLM()
     tools_manager = _FakeToolsManager()
-    agent = AsyncSubAgent(llm, tools_manager)  # type: ignore[arg-type]
+    agent = AsyncSubAgent(llm, tools_manager)   # type: ignore[arg-type]
     return await agent.execute(task_input)
 
 
@@ -212,9 +220,9 @@ async def test_async_sub_agent_invalid_type():
     assert "just a string" in result
 
 
-# ===============================================================
-# Integration tests with DeepSeek API (skip if toolkit config missing)
-# ===============================================================
+# ================================================================
+# DeepSeek API 集成测试 (缺少 toolkit 配置时跳过)
+# ================================================================
 
 
 @pytest.mark.integration
@@ -268,7 +276,7 @@ async def test_async_sub_agent_parallelism_with_deepseek():
 def test_sub_agent_model_forward_returns_string():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    model = SubAgentModel(llm, "test-id", tools_manager)  # type: ignore[arg-type]
+    model = SubAgentModel(llm, "test-id", tools_manager)   # type: ignore[arg-type]
     result = model.forward("some task")
     assert isinstance(result, str)
     assert len(result) > 0
@@ -278,7 +286,7 @@ def test_sub_agent_model_forward_returns_string():
 async def test_async_sub_agent_model_forward_returns_string():
     llm = _FakeAsyncLLM()
     tools_manager = _FakeToolsManager()
-    model = await AsyncSubAgentModel.create(llm, "test-async-id", tools_manager)  # type: ignore[arg-type]
+    model = await AsyncSubAgentModel.create(llm, "test-async-id", tools_manager)   # type: ignore[arg-type]
     result = await model.forward("some async task")
     assert isinstance(result, str)
     assert len(result) > 0

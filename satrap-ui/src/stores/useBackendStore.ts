@@ -8,7 +8,7 @@ interface BackendState {
   controlStatus: BackendStatus | null;
   loading: boolean;
   error: string | null;
-  // 统一的后端运行状态：优先使用控制服务状态，其次是 health 状态
+  // 统一的后端运行状态: 优先使用控制服务状态, 其次是 health 状态
   isRunning: boolean;
   refreshHealth: () => Promise<void>;
   refreshControlStatus: () => Promise<void>;

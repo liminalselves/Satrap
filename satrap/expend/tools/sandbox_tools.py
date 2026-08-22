@@ -7,7 +7,15 @@ from satrap.core.log import logger
 
 
 def extract_code(response: str) -> str:
-    """从模型响应中提取代码块"""
+    """
+    从模型响应中提取代码块
+
+    参数:
+    - response: 响应
+
+    返回:
+    - str: 从模型响应中提取代码块
+    """
     code_pattern = r"```(?:python)?\s*([\s\S]*?)```"
     match = re.search(code_pattern, response)
     if match:
@@ -18,6 +26,12 @@ def extract_code(response: str) -> str:
 class CodeSandboxTool(Tool):
     """代码沙箱工具, 封装对 CodeSandbox 的各种操作"""
     def __init__(self, sandbox: CodeSandbox):
+        """
+        初始化 CodeSandboxTool
+
+        参数:
+        - sandbox: 沙箱实例
+        """
         super().__init__(
             tool_name="code_sandbox",
             description="在代码沙箱中执行代码或管理文件。支持的操作：run（执行代码字符串）、run_file（执行文件）、save（保存代码到文件）、read（读取文件内容）、delete（删除文件）、delete_dir（删除目录）、list（列出文件）。",
@@ -32,6 +46,14 @@ class CodeSandboxTool(Tool):
     def execute(self, operation: str, code: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
         """
         执行沙箱操作, 返回结果字典
+
+        参数:
+        - operation: 操作信息
+        - code: 代码内容
+        - path: 路径
+
+        返回:
+        - Dict[str, Any]: 结果字典
         """
         try:
             if code is not None:   # 如果提供了代码参数, 尝试从中提取代码块
@@ -106,6 +128,12 @@ class CodeSandboxTool(Tool):
 class AsyncCodeSandboxTool(AsyncTool):
     """异步代码沙箱工具, 封装对 CodeSandbox 的各种异步操作"""
     def __init__(self, sandbox: CodeSandbox):
+        """
+        初始化 AsyncCodeSandboxTool
+
+        参数:
+        - sandbox: 沙箱实例
+        """
         super().__init__(
             tool_name="code_sandbox",
             description="在代码沙箱中执行代码或管理文件。支持的操作：run（执行代码字符串）、run_file（执行文件）、save（保存代码到文件）、read（读取文件内容）、delete（删除文件）、delete_dir（删除目录）、list（列出文件）。",
@@ -120,11 +148,19 @@ class AsyncCodeSandboxTool(AsyncTool):
     async def execute(self, operation: str, code: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
         """
         异步执行沙箱操作, 返回结果字典
+
+        参数:
+        - operation: 操作信息
+        - code: 代码内容
+        - path: 路径
+
+        返回:
+        - Dict[str, Any]: 结果字典
         """
         try:
-            # 如果提供了代码参数，尝试从中提取代码块（同步函数，直接调用）
             if code is not None:
                 code = extract_code(code)   # 假设 extract_code 是同步函数
+            # 如果提供了代码参数, 尝试从中提取代码块(同步函数, 直接调用)
 
             if operation == "run":
                 if code is None:

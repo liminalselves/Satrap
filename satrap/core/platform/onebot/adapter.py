@@ -25,8 +25,8 @@ class _MissingCQHttp:
 
 try:
     from aiocqhttp import CQHttp
-except ImportError:  # pragma: no cover - 在安装依赖后走真实分支
-    CQHttp = _MissingCQHttp  # type: ignore
+except ImportError:   # pragma: no cover - 在安装依赖后走真实分支
+    CQHttp = _MissingCQHttp   # type: ignore
 
 
 @register_platform_adapter("aiocqhttp")
@@ -42,7 +42,14 @@ class OneBotAdapter(PlatformAdapter):
         event_handler: EventHandler | None = None,
         event_queue: asyncio.Queue[Any] | None = None,
     ) -> None:
-        """初始化 OneBotAdapter 实例"""
+        """
+        初始化 OneBotAdapter 实例
+
+        参数:
+        - config: 配置信息
+        - event_handler: 事件处理器
+        - event_queue: 事件queue
+        """
         super().__init__(config, event_handler, event_queue)
         settings = config.settings or {}
         self.host = str(settings.get("host") or settings.get("listen_host") or "127.0.0.1")
@@ -56,7 +63,12 @@ class OneBotAdapter(PlatformAdapter):
         self._running = False
 
     def meta(self) -> PlatformMetadata:
-        """返回平台元信息"""
+        """
+        返回平台元信息
+
+        返回:
+        - PlatformMetadata: 平台元信息
+        """
         return PlatformMetadata(
             name=f"OneBot({self.host}:{self.port})",
             id=self.config.id,
@@ -106,7 +118,13 @@ class OneBotAdapter(PlatformAdapter):
         self._register_optional_handler("on_request", self._handle_request)
 
     def _register_optional_handler(self, method_name: str, handler: Any) -> None:
-        """兼容不同 aiocqhttp 版本的可选事件装饰器"""
+        """
+        兼容不同 aiocqhttp 版本的可选事件装饰器
+
+        参数:
+        - method_name: method名称
+        - handler: 处理器
+        """
         method = safe_getattr_callable(self._bot, method_name)
         if method is None:
             return
@@ -118,19 +136,34 @@ class OneBotAdapter(PlatformAdapter):
             logger.debug(f"[OneBotAdapter] 当前 aiocqhttp 版本不支持空参数 {method_name}, 已跳过")
 
     async def _handle_private_message(self, event: dict[str, Any]) -> None:
-        """处理私聊消息"""
+        """
+        处理私聊消息
+
+        参数:
+        - event: 事件
+        """
         if not self.enable_private:
             return
         await self._handle_message_event(event)
 
     async def _handle_group_message(self, event: dict[str, Any]) -> None:
-        """处理群聊消息"""
+        """
+        处理群聊消息
+
+        参数:
+        - event: 事件
+        """
         if not self.enable_group:
             return
         await self._handle_message_event(event)
 
     async def _handle_message_event(self, event: dict[str, Any]) -> None:
-        """将 OneBot 消息事件转换并提交到 Satrap 管线"""
+        """
+        将 OneBot 消息事件转换并提交到 Satrap 管线
+
+        参数:
+        - event: 事件
+        """
         try:
             if event.get("self_id"):
                 self.bot_self_id = str(event.get("self_id"))
@@ -141,19 +174,42 @@ class OneBotAdapter(PlatformAdapter):
             logger.error(f"[OneBotAdapter] 处理消息失败: {e}")
 
     async def _handle_notice(self, event: dict[str, Any]) -> None:
-        """记录暂未接入会话管线的 notice 事件"""
+        """
+        记录暂未接入会话管线的 notice 事件
+
+        参数:
+        - event: 事件
+        """
         logger.debug(f"[OneBotAdapter] notice 事件暂未处理: {event.get('notice_type')}")
 
     async def _handle_request(self, event: dict[str, Any]) -> None:
-        """记录暂未接入会话管线的 request 事件"""
+        """
+        记录暂未接入会话管线的 request 事件
+
+        参数:
+        - event: 事件
+        """
         logger.debug(f"[OneBotAdapter] request 事件暂未处理: {event.get('request_type')}")
 
     async def convert_message(self, raw_event: dict[str, Any]) -> PlatformMessage:
-        """将 OneBot 消息事件转换为 Satrap PlatformMessage"""
+        """
+        将 OneBot 消息事件转换为 Satrap PlatformMessage
+
+        参数:
+        - raw_event: raw事件
+
+        返回:
+        - PlatformMessage: 将 OneBot 消息事件转换为 Satrap PlatformMessage
+        """
         return create_platform_message(raw_event, self.bot_self_id)
 
     def _commit_platform_message(self, message: PlatformMessage) -> None:
-        """将 PlatformMessage 封装为 MessageEvent 并提交"""
+        """
+        将 PlatformMessage 封装为 MessageEvent 并提交
+
+        参数:
+        - message: 消息内容
+        """
         event = MessageEvent(
             message_str=message.message_str,
             platform_message=message,
@@ -165,11 +221,29 @@ class OneBotAdapter(PlatformAdapter):
         self.commit_event(event)
 
     async def send_text(self, session_id: str, text: str) -> Any:
-        """发送纯文本消息"""
+        """
+        发送纯文本消息
+
+        参数:
+        - session_id: 会话 ID
+        - text: 待处理文本
+
+        返回:
+        - Any: 发送纯文本消息
+        """
         return await self.send_message(session_id, MessageChain.from_text(text))
 
     async def send_message(self, session_id: str, message: MessageChain) -> Any:
-        """按 OneBot 会话 ID 发送完整消息链"""
+        """
+        按 OneBot 会话 ID 发送完整消息链
+
+        参数:
+        - session_id: 会话 ID
+        - message: 消息内容
+
+        返回:
+        - Any: 按 OneBot 会话 ID 发送完整消息链
+        """
         if not self._bot:
             logger.error("[OneBotAdapter] 客户端未初始化, 无法发送消息")
             return None
@@ -199,7 +273,17 @@ class OneBotAdapter(PlatformAdapter):
         generator: AsyncGenerator[MessageChain, None],
         use_fallback: bool = False,
     ) -> Any:
-        """OneBot 流式发送降级为合并或分段发送"""
+        """
+        OneBot 流式发送降级为合并或分段发送
+
+        参数:
+        - session_id: 会话 ID
+        - generator: 生成器
+        - use_fallback: 是否usefallback
+
+        返回:
+        - Any: OneBot 流式发送降级为合并或分段发送
+        """
         if use_fallback:
             result = None
             async for chain in generator:
@@ -226,5 +310,10 @@ class OneBotAdapter(PlatformAdapter):
         await super().terminate()
 
     def get_client(self) -> Any:
-        """返回底层 aiocqhttp 客户端"""
+        """
+        返回底层 aiocqhttp 客户端
+
+        返回:
+        - Any: 底层 aiocqhttp 客户端
+        """
         return self._bot

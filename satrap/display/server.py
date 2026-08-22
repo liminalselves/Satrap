@@ -1,4 +1,5 @@
-"""聊天展示层独立 HTTP + WebSocket 服务
+"""
+聊天展示层独立 HTTP + WebSocket 服务
 
 基于共享基类 satrap.core.utils.minihttp.MiniHTTPServer, 只保留本服务特有逻辑:
 
@@ -30,8 +31,11 @@ WebSocket:
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
+import base64
 import json
+import signal
 from typing import Any
 from urllib.parse import unquote
 
@@ -55,19 +59,35 @@ class ChatHTTPServer(MiniHTTPServer):
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
     ) -> None:
+        """
+        初始化 ChatHTTPServer
+
+        参数:
+        - service: 服务实例
+        - host: 监听地址
+        - port: 监听端口
+        """
         super().__init__(host=host, port=port, log_errors=True)
         self.service = service
 
     async def start(self) -> None:
+        """启动"""
         await super().start()
         logger.info(f"[聊天服务] HTTP API: http://{self.host}:{self.port}")
 
-    # ---------------- WebSocket 端点分发 ----------------
+    # ---------- WebSocket 端点分发 ----------
 
     async def _ws_dispatch(
         self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
-        """按路径分发 WebSocket 端点"""
+        """
+        按路径分发 WebSocket 端点
+
+        参数:
+        - path: 路径
+        - reader: 流读取器
+        - writer: 流写入器
+        """
         if path.split("?", 1)[0] == "/ws/chat":
             await self._ws_chat_handler(reader, writer, path)
         else:
@@ -76,7 +96,14 @@ class ChatHTTPServer(MiniHTTPServer):
     async def _ws_chat_handler(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, path: str
     ) -> None:
-        """订阅会话广播, 把队列消息经 WS 推给客户端"""
+        """
+        订阅会话广播, 把队列消息经 WS 推给客户端
+
+        参数:
+        - reader: 流读取器
+        - writer: 流写入器
+        - path: 路径
+        """
         conversation_id = self._query_param(path, "conversation")
         if not conversation_id:
             await self._ws_send(writer, {"type": "error", "message": "missing conversation"})
@@ -102,7 +129,7 @@ class ChatHTTPServer(MiniHTTPServer):
         finally:
             self.service.unsubscribe(conversation_id, queue)
 
-    # ---------------- API 路由 ----------------
+    # ---------- API 路由 ----------
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
@@ -114,9 +141,9 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}
 
-        # 模型配置管理
         if method == "GET" and clean == "/api/chat/models/detail":
             return 200, svc.list_models_detail()
+        # 模型配置管理
 
         if method == "POST" and clean == "/api/chat/models":
             payload = json.loads(body or b"{}")
@@ -133,22 +160,61 @@ class ChatHTTPServer(MiniHTTPServer):
 
         if method == "POST" and clean == "/api/chat/conversations":
             payload = json.loads(body or b"{}")
-            cid = await svc.create_conversation(
-                model=str(payload.get("model") or "default"),
-                think=str(payload.get("think") or "off"),
-                system_prompt=str(payload.get("system_prompt") or "") or None,
-            )
+            try:
+                cid = await svc.create_conversation(
+                    model=str(payload.get("model") or "default"),
+                    think=str(payload.get("think") or "off"),
+                    system_prompt=str(payload.get("system_prompt") or "") or None,
+                    project_id=str(payload.get("project_id") or "") or None,
+                )
+            except ValueError as e:
+                return 400, {"ok": False, "error": str(e)}
             return 200, {"ok": True, "conversation_id": cid}
 
         if method == "GET" and clean == "/api/chat/conversations":
             return 200, {"conversations": list_conversations()}
 
-        # DELETE /api/chat/conversations/{id}
+        if method == "POST" and clean.startswith("/api/chat/conversations/") and clean.endswith("/project"):
+            conv_id = unquote(clean[len("/api/chat/conversations/"):-len("/project")])
+            if not conv_id:
+                return 400, {"error": "缺少 conversation_id"}
+            payload = json.loads(body or b"{}")
+            project_id = payload.get("project_id")
+            result = svc.set_conversation_project(conv_id, str(project_id) if project_id else None)
+            return (200 if result.get("ok") else 400), result
+        # 会话改绑项目: POST /api/chat/conversations/{id}/project  (project_id 为 null = 移出项目)
+
+        if method == "GET" and clean == "/api/fs/browse":
+            dir_path = self._query_param(path, "path") or ""
+            result = svc.browse_directories(dir_path)
+            return (200 if result.get("ok") else 400), result
+        # 目录浏览: GET /api/fs/browse?path=xxx  (前端新建项目选择工作区; 只列子目录, 只读)
+
+        if clean == "/api/projects":
+            if method == "GET":
+                return 200, {"projects": svc.list_projects()}
+            if method == "POST":
+                payload = json.loads(body or b"{}")
+                result = svc.create_project(
+                    str(payload.get("name") or ""),
+                    str(payload.get("root_path") or ""),
+                )
+                return (200 if result.get("ok") else 400), result
+        # 项目 (工作区文件夹绑定)
+
+        if method == "DELETE" and clean.startswith("/api/projects/"):
+            project_id = unquote(clean[len("/api/projects/"):])
+            if not project_id:
+                return 400, {"error": "缺少 project_id"}
+            return 200, svc.delete_project(project_id)
+        # 接口: DELETE /api/projects/{id}  (仅解绑会话, 不动磁盘)
+
         if method == "DELETE" and clean.startswith("/api/chat/conversations/"):
             conv_id = unquote(clean[len("/api/chat/conversations/"):])
             if not conv_id:
                 return 400, {"error": "缺少 conversation_id"}
             return 200, await svc.delete_conversation(conv_id)
+        # 接口: DELETE /api/chat/conversations/{id}
 
         if method == "GET" and clean == "/api/chat/turns":
             conv = self._query_param(path, "conversation")
@@ -161,7 +227,7 @@ class ChatHTTPServer(MiniHTTPServer):
             conv = str(payload.get("conversation") or "").strip()
             text = str(payload.get("text") or "")
             think = payload.get("think")
-            attachments = payload.get("attachments")  # list[dict] | None
+            attachments = payload.get("attachments")   # 返回类型: list[dict] | None
             if not conv:
                 return 400, {"error": "缺少 conversation 参数"}
             # think 缺省 (None) 时由 ChatService 用会话默认
@@ -169,7 +235,6 @@ class ChatHTTPServer(MiniHTTPServer):
             result = await svc.send(conv, text, think=think, attachments=attachments)
             return (200 if result.get("ok") else 400), result
 
-        # 文件上传
         if method == "POST" and clean == "/api/chat/upload":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()
@@ -177,14 +242,13 @@ class ChatHTTPServer(MiniHTTPServer):
             file_data_b64 = str(payload.get("file_data") or "")
             if not conv or not file_name or not file_data_b64:
                 return 400, {"error": "缺少 conversation / file_name / file_data"}
-            import base64 as _b64
             try:
-                file_data = _b64.b64decode(file_data_b64)
+                file_data = base64.b64decode(file_data_b64)
             except Exception:
                 return 400, {"error": "file_data base64 解码失败"}
             return 200, svc.save_upload(conv, file_name, file_data)
+        # 文件上传
 
-        # Retry / Fork
         if method == "POST" and clean == "/api/chat/retry":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()
@@ -194,6 +258,7 @@ class ChatHTTPServer(MiniHTTPServer):
             think = str(think) if think is not None else None
             result = await svc.retry(conv, think=think)
             return (200 if result.get("ok") else 400), result
+        # 重试与分支
 
         if method == "POST" and clean == "/api/chat/fork":
             payload = json.loads(body or b"{}")
@@ -204,7 +269,6 @@ class ChatHTTPServer(MiniHTTPServer):
             result = await svc.fork(conv, turn_index)
             return (200 if result.get("ok") else 400), result
 
-        # 取消生成
         if method == "POST" and clean == "/api/chat/cancel":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()
@@ -212,11 +276,11 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 400, {"error": "缺少 conversation 参数"}
             result = await svc.cancel(conv)
             return (200 if result.get("ok") else 400), result
+        # 取消生成
 
         if method == "GET" and clean == "/api/chat/plugins":
             return 200, {"plugins": svc.list_plugins()}
 
-        # GET/PUT /api/chat/plugins/{name}/config (需在 POST 分支之前匹配)
         if clean.startswith("/api/chat/plugins/") and clean.endswith("/config"):
             rest = clean[len("/api/chat/plugins/"):]
             name = unquote(rest[:rest.index("/")])
@@ -229,8 +293,8 @@ class ChatHTTPServer(MiniHTTPServer):
                     return 400, {"error": "缺少 config 对象"}
                 return 200, svc.save_plugin_config(name, cfg)
             return 405, {"error": f"method not allowed: {method}"}
+        # 接口: GET/PUT /api/chat/plugins/{name}/config (需在 POST 分支之前匹配)
 
-        # POST /api/chat/plugins/{name}/enable|disable|capability
         if method == "POST" and clean.startswith("/api/chat/plugins/"):
             rest = clean[len("/api/chat/plugins/"):]
             parts = rest.split("/")
@@ -250,13 +314,13 @@ class ChatHTTPServer(MiniHTTPServer):
                 )
                 return (200 if result.get("ok") else 400), result
             return 404, {"error": f"unknown plugin action: {action}"}
+        # 接口: POST /api/chat/plugins/{name}/enable|disable|capability
 
-        # GET /api/chat/memories?scope=xxx
         if method == "GET" and clean == "/api/chat/memories":
             scope = self._query_param(path, "scope") or "web_chat"
             return 200, svc.list_memories(scope)
+        # 接口: GET /api/chat/memories?scope=xxx
 
-        # POST /api/chat/memories
         if method == "POST" and clean == "/api/chat/memories":
             payload = json.loads(body or b"{}")
             title = str(payload.get("title") or "").strip()
@@ -269,8 +333,8 @@ class ChatHTTPServer(MiniHTTPServer):
                 importance=int(payload.get("importance") or 1),
                 scope=str(payload.get("scope") or "web_chat"),
             )
+        # 接口: POST /api/chat/memories
 
-        # PUT /api/chat/memories/{id}  /  DELETE /api/chat/memories/{id}?scope=xxx
         if clean.startswith("/api/chat/memories/"):
             memory_id = unquote(clean[len("/api/chat/memories/"):])
             if method == "PUT":
@@ -285,11 +349,12 @@ class ChatHTTPServer(MiniHTTPServer):
                 scope = self._query_param(path, "scope") or "web_chat"
                 return 200, svc.delete_memory(memory_id, scope=scope)
             return 405, {"error": f"method not allowed: {method}"}
+        # 接口: PUT /api/chat/memories/{id}  /  DELETE /api/chat/memories/{id}?scope=xxx
 
         return 404, {"error": f"unknown route: {method} {path}"}
 
 
-# ---------------- 入口 ----------------
+# ---------- 入口 ----------
 
 async def _run(host: str, port: int) -> None:
     model_cfg = ModelConfigManager()
@@ -301,7 +366,6 @@ async def _run(host: str, port: int) -> None:
 
     stop = asyncio.Event()
     loop = asyncio.get_event_loop()
-    import signal
     for sig in ("SIGINT", "SIGTERM"):
         try:
             loop.add_signal_handler(getattr(signal, sig), stop.set)
@@ -316,8 +380,7 @@ async def _run(host: str, port: int) -> None:
 
 
 def main() -> None:
-    import argparse
-
+    """执行 `main` 操作"""
     parser = argparse.ArgumentParser(description="Satrap 聊天展示层服务")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)

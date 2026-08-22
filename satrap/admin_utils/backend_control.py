@@ -30,17 +30,42 @@ class BackendControlResult:
 
 
 def daemon_info(config: BackendConfig) -> DaemonInfo:
-    """从当前配置构建后端连接信息"""
+    """
+    从当前配置构建后端连接信息
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - DaemonInfo: 从当前配置构建后端连接信息
+    """
     return DaemonInfo.from_config(config)
 
 
 def daemon_client(config: BackendConfig, timeout: float = 5) -> DaemonClient:
-    """创建当前配置对应的后端客户端"""
+    """
+    创建当前配置对应的后端客户端
+
+    参数:
+    - config: 配置信息
+    - timeout: 超时时间
+
+    返回:
+    - DaemonClient: 创建当前配置对应的后端客户端
+    """
     return DaemonClient(daemon=daemon_info(config), timeout=timeout)
 
 
 def check_backend(config: BackendConfig) -> tuple[dict[str, Any] | None, str | None]:
-    """检测后端是否运行"""
+    """
+    检测后端是否运行
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - tuple[dict[str, Any] | None, str | None]: 检测后端是否运行
+    """
     client = daemon_client(config, timeout=2)
     health = client.health()
     if health.get("running", False):
@@ -49,18 +74,34 @@ def check_backend(config: BackendConfig) -> tuple[dict[str, Any] | None, str | N
 
 
 def managed_process() -> subprocess.Popen[Any] | None:
-    """返回当前面板启动的后端进程"""
+    """
+    返回当前面板启动的后端进程
+
+    返回:
+    - subprocess.Popen[Any] | None: 当前面板启动的后端进程
+    """
     return st.session_state.get(PROC_KEY)
 
 
 def managed_process_alive() -> bool:
-    """检查当前面板启动的后端进程是否还在运行"""
+    """
+    检查当前面板启动的后端进程是否还在运行
+
+    返回:
+    - bool: 检查结果
+    """
     proc = managed_process()
     return proc is not None and proc.poll() is None
 
 
 def show_notification(message: str, level: str = "info"):
-    """通过 toast 和 session_state 展示通知"""
+    """
+    通过 toast 和 session_state 展示通知
+
+    参数:
+    - message: 消息内容
+    - level: 级别
+    """
     st.toast(message)
     st.session_state[NOTIFY_KEY] = (level, message)
 
@@ -82,13 +123,23 @@ def render_notification():
 
 
 def err_log_path() -> Path:
-    """stderr 捕获文件路径"""
+    """
+    stderr 捕获文件路径
+
+    返回:
+    - Path: stderr 捕获文件路径
+    """
     root = project_root()
     return root / ".satrap" / "_backend_stderr.log"
 
 
 def project_root() -> Path:
-    """返回项目根目录"""
+    """
+    返回项目根目录
+
+    返回:
+    - Path: 项目根目录
+    """
     return Path(__file__).resolve().parent.parent.parent
 
 
@@ -101,7 +152,12 @@ def clean_err_log():
 
 
 def read_err_log() -> str:
-    """读取 stderr 捕获文件并删除"""
+    """
+    读取 stderr 捕获文件并删除
+
+    返回:
+    - str: 读取 stderr 捕获文件并删除
+    """
     path = err_log_path()
     try:
         return path.read_text(encoding="utf-8", errors="replace")
@@ -112,7 +168,17 @@ def read_err_log() -> str:
 
 
 def wait_backend_ready(config: BackendConfig, proc: subprocess.Popen[Any], seconds: float = 8) -> bool:
-    """等待后端 health 接口就绪"""
+    """
+    等待后端 health 接口就绪
+
+    参数:
+    - config: 配置信息
+    - proc: proc 输入值
+    - seconds: 等待秒数
+
+    返回:
+    - bool: 等待后端 health 接口就绪
+    """
     client = daemon_client(config, timeout=1)
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -126,7 +192,16 @@ def wait_backend_ready(config: BackendConfig, proc: subprocess.Popen[Any], secon
 
 
 def wait_backend_down(config: BackendConfig, seconds: float = 8) -> bool:
-    """等待后端停止响应"""
+    """
+    等待后端停止响应
+
+    参数:
+    - config: 配置信息
+    - seconds: 等待秒数
+
+    返回:
+    - bool: 等待后端停止响应
+    """
     client = daemon_client(config, timeout=1)
     deadline = time.time() + seconds
     while time.time() < deadline:
@@ -137,7 +212,15 @@ def wait_backend_down(config: BackendConfig, seconds: float = 8) -> bool:
 
 
 def start_backend(config: BackendConfig) -> BackendControlResult:
-    """由管理面板启动后端"""
+    """
+    由管理面板启动后端
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - BackendControlResult: 由管理面板启动后端
+    """
     client = daemon_client(config, timeout=1)
     info = client.daemon
     if client.is_alive():
@@ -199,7 +282,15 @@ def start_backend(config: BackendConfig) -> BackendControlResult:
 
 
 def stop_backend(config: BackendConfig) -> BackendControlResult:
-    """停止当前配置对应的后端"""
+    """
+    停止当前配置对应的后端
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - BackendControlResult: 停止当前配置对应的后端
+    """
     client = daemon_client(config, timeout=2)
     proc = managed_process()
 
@@ -231,7 +322,15 @@ def stop_backend(config: BackendConfig) -> BackendControlResult:
 
 
 def restart_backend(config: BackendConfig) -> BackendControlResult:
-    """重启当前配置对应的后端"""
+    """
+    重启当前配置对应的后端
+
+    参数:
+    - config: 配置信息
+
+    返回:
+    - BackendControlResult: 重启当前配置对应的后端
+    """
     stopped = stop_backend(config)
     if not stopped.ok and stopped.level != "warning":
         return stopped

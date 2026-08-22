@@ -30,12 +30,23 @@ class SearchTool(Tool):
     }
 
     def __init__(self, timeout: int = 10):
+        """
+        初始化 SearchTool
+
+        参数:
+        - timeout: 超时时间
+        """
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = timeout
         self.base_urls = ["https://cn.bing.com", "https://www.bing.com"]   # 备用域名列表
 
     def _get_headers(self) -> dict[str, str]:
-        """生成随机请求头"""
+        """
+        生成随机请求头
+
+        返回:
+        - dict[str, str]: 生成随机请求头
+        """
         return {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "*/*",
@@ -45,11 +56,19 @@ class SearchTool(Tool):
         }
 
     def _parse_result(self, html: str, max_results: int) -> list[dict[str, str]]:
-        """解析 Bing 搜索结果页面"""
+        """
+        解析 Bing 搜索结果页面
+
+        参数:
+        - html: HTML 内容
+        - max_results: 最大results
+
+        返回:
+        - list[dict[str, str]]: 解析 Bing 搜索结果页面
+        """
         soup = cast(Any, BeautifulSoup(html, "html.parser"))
         results: list[dict[str, str]] = []
 
-        # Bing 结果容器: <li class="b_algo">
         for item in cast(list[Any], soup.select("li.b_algo")):
             title_elem = item.select_one("h2 a")
             if not title_elem:
@@ -57,8 +76,8 @@ class SearchTool(Tool):
             title = title_elem.get_text(strip=True)
             url = title_elem.get("href")
 
-            # 提取摘要
             snippet_elem = item.select_one("p")
+            # 提取摘要
             snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
             results.append({
                 "title": title,
@@ -67,12 +86,22 @@ class SearchTool(Tool):
             })
             if len(results) >= max_results:
                 break
+        # Bing 结果容器: <li class="b_algo">
 
         return results
     
     def execute(self, query: str, max_results: int = 5) -> str:
-        """执行搜索，返回 JSON 字符串"""
-        max_results = min(max_results, 20)  # 限制最大条数
+        """
+        执行搜索, 返回 JSON 字符串
+
+        参数:
+        - query: 查询内容
+        - max_results: 最大results
+
+        返回:
+        - str:  JSON 字符串
+        """
+        max_results = min(max_results, 20)   # 限制最大条数
         for base_url in self.base_urls:
             try:
                 url = f"{base_url}/search?q={query}&count={max_results}"
@@ -98,6 +127,12 @@ class AsyncSearchTool(AsyncTool):
     }
 
     def __init__(self, timeout: int = 10):
+        """
+        初始化 AsyncSearchTool
+
+        参数:
+        - timeout: 超时时间
+        """
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.base_urls = ["https://cn.bing.com", "https://www.bing.com"]
@@ -132,6 +167,16 @@ class AsyncSearchTool(AsyncTool):
         return results
 
     async def execute(self, query: str, max_results: int = 5) -> str:
+        """
+        执行
+
+        参数:
+        - query: 查询内容
+        - max_results: 最大结果列表
+
+        返回:
+        - str: 执行
+        """
         max_results = min(max_results, 20)
         async with aiohttp.ClientSession() as session:
             for base_url in self.base_urls:
@@ -159,11 +204,22 @@ class FetchPageTool(Tool):
     }
 
     def __init__(self, timeout: int = 10):
+        """
+        初始化 FetchPageTool
+
+        参数:
+        - timeout: 超时时间
+        """
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = timeout
 
     def _get_headers(self) -> dict[str, str]:
-        """生成随机请求头"""
+        """
+        生成随机请求头
+
+        返回:
+        - dict[str, str]: 生成随机请求头
+        """
         return {
             "User-Agent": random.choice(USER_AGENTS),
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -172,7 +228,15 @@ class FetchPageTool(Tool):
         }
 
     def _extract_text(self, html: str) -> str:
-        """从HTML中提取纯文本; 去除脚本, 样式等无关内容"""
+        """
+        从HTML中提取纯文本; 去除脚本, 样式等无关内容
+
+        参数:
+        - html: HTML 内容
+
+        返回:
+        - str: 从HTML中提取纯文本; 去除脚本, 样式等无关内容
+        """
         soup = cast(Any, BeautifulSoup(html, "html.parser"))
         # 移除脚本和样式
         for element in soup(["script", "style", "meta", "link", "noscript"]):
@@ -183,18 +247,27 @@ class FetchPageTool(Tool):
         return "\n".join(line for line in lines if line)
 
     def execute(self, url: str, max_length: int = 5000) -> str:
-        """执行网页获取, 返回JSON字符串"""
+        """
+        执行网页获取, 返回JSON字符串
+
+        参数:
+        - url: URL
+        - max_length: 最大length
+
+        返回:
+        - str: JSON字符串
+        """
         try:
             resp = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
             resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
 
-            # 提取标题
             soup = cast(Any, BeautifulSoup(resp.text, "html.parser"))
+            # 提取标题
             title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
 
-            # 提取正文文本
             text = self._extract_text(resp.text)
+            # 提取正文文本
             if len(text) > max_length:
                 text = text[:max_length] + "...(内容已截断)"
 
@@ -227,6 +300,12 @@ class AsyncFetchPageTool(AsyncTool):
     }
 
     def __init__(self, timeout: int = 10):
+        """
+        初始化 AsyncFetchPageTool
+
+        参数:
+        - timeout: 超时时间
+        """
         super().__init__(self.tool_name, self.description, self.params_dict)
         self.timeout = aiohttp.ClientTimeout(total=timeout)
 
@@ -247,7 +326,16 @@ class AsyncFetchPageTool(AsyncTool):
         return "\n".join(line for line in lines if line)
 
     async def execute(self, url: str, max_length: int = 5000) -> str:
-        """异步执行网页获取"""
+        """
+        异步执行网页获取
+
+        参数:
+        - url: URL
+        - max_length: 最大length
+
+        返回:
+        - str: 异步执行网页获取
+        """
         async with aiohttp.ClientSession() as session:
             try:
                 async with session.get(url, headers=self._get_headers(), timeout=self.timeout) as resp:
@@ -259,12 +347,12 @@ class AsyncFetchPageTool(AsyncTool):
 
                     html = await resp.text(encoding="utf-8", errors="replace")
 
-                    # 提取标题
                     soup = cast(Any, BeautifulSoup(html, "html.parser"))
+                    # 提取标题
                     title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
 
-                    # 提取正文
                     text = self._extract_text(html)
+                    # 提取正文
                     if len(text) > max_length:
                         text = text[:max_length] + "...(内容已截断)"
 

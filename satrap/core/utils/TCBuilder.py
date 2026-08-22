@@ -7,7 +7,17 @@ from satrap.core.log import logger
 
 
 def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[str, Any]:
-    """创建工具错误结果"""
+    """
+    创建工具错误结果
+
+    参数:
+    - tool_name: 工具名称
+    - message: 消息内容
+    - error_type: 错误类型
+
+    返回:
+    - Dict[str, Any]: 创建工具错误结果
+    """
     return {
         "error": message,
         "ok": False,
@@ -17,7 +27,15 @@ def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[st
 
 
 def _safe_json_dumps(data: Any) -> str:
-    """安全序列化工具参数"""
+    """
+    安全序列化工具参数
+
+    参数:
+    - data: 输入数据
+
+    返回:
+    - str: 安全序列化工具参数
+    """
     try:
         return json.dumps(data, ensure_ascii=False)
     except TypeError:
@@ -25,7 +43,16 @@ def _safe_json_dumps(data: Any) -> str:
 
 
 def _summarize_arguments(arguments: Any, max_length: int = 500) -> str:
-    """生成日志用参数摘要"""
+    """
+    生成日志用参数摘要
+
+    参数:
+    - arguments: 调用参数
+    - max_length: 最大length
+
+    返回:
+    - str: 生成日志用参数摘要
+    """
     summary = _safe_json_dumps(arguments)
     if len(summary) <= max_length:
         return summary
@@ -36,7 +63,8 @@ def create_tool_defined(
     description: str,
     params_dict: Dict[str, Tuple[str, str]]   # 参数名 -> (类型, 描述)
 ) -> Dict[str, Any]:
-    """创建一个符合 OpenAI function calling 规范的工具定义
+    """
+    创建一个符合 OpenAI function calling 规范的工具定义
 
     参数:
     - tool_name: 工具名称
@@ -136,9 +164,13 @@ class Tool:
     ```
     """
     def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None, owner_plugin: str | None = None):
-        """初始化工具
+        """
+        初始化工具
 
         参数:
+        - tool_name: 工具名称; 为 None 时读取同名类属性
+        - description: 工具描述; 为 None 时读取同名类属性
+        - params_dict: 工具参数定义; 为 None 时读取同名类属性
         - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
         """
         cls = self.__class__
@@ -154,21 +186,45 @@ class Tool:
             self.tool_available = False
 
     def get_tool_defined(self) -> Dict[str, Any]:
-        """获取工具定义"""
+        """
+        获取工具定义
+
+        返回:
+        - Dict[str, Any]: 工具定义
+        """
         if not self.assert_tool():
             return {}
         return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore
 
     def get_tool_name(self) -> str:
-        """获取工具名称"""
+        """
+        获取工具名称
+
+        返回:
+        - str: 工具名称
+        """
         return self.tool_name or "unknown_tool"
 
     def execute(self, *input: Any, **kwargs: Any) -> Any:
-        """执行工具"""
+        """
+        执行工具
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行工具
+        """
         return None
 
     def assert_tool(self) -> bool:
-        """断言工具是否可用"""
+        """
+        断言工具是否可用
+
+        返回:
+        - bool: 断言工具是否可用
+        """
         return self.tool_available
 
     def enable(self) -> None:
@@ -180,13 +236,25 @@ class Tool:
         self.tool_enabled = False
 
     def is_enabled(self) -> bool:
-        """检查工具是否启用"""
+        """
+        检查工具是否启用
+
+        返回:
+        - bool: 检查结果
+        """
         return self.tool_enabled
 
     def __call__(self, *input: Any, **kwargs: Any):
         """
         使工具实例可被调用
         使用方式: result = tool_instance(...)
+
+        参数:
+        - input: 输入
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 使工具实例可被调用
         """
         result = self.execute(*input, **kwargs)
         return result
@@ -227,7 +295,7 @@ class AsyncTool:
             super().__init__(tool_name, description, params_dict)
 
         async def execute(self, query: str) -> str:
-            return f"搜索结果：{query}"
+            return f"搜索结果: {query}"
 
     # 执行
     async def main():
@@ -239,9 +307,13 @@ class AsyncTool:
     ```
     """
     def __init__(self, tool_name: str | None = None, description: str | None = None, params_dict: Dict[str, Tuple[str, str]] | None = None, owner_plugin: str | None = None):
-        """初始化工具
+        """
+        初始化工具
 
         参数:
+        - tool_name: 工具名称; 为 None 时读取同名类属性
+        - description: 工具描述; 为 None 时读取同名类属性
+        - params_dict: 工具参数定义; 为 None 时读取同名类属性
         - owner_plugin: 所属插件名 (插件禁用时执行路径过滤), None 表示不属于任何插件
         """
         cls = self.__class__
@@ -257,24 +329,46 @@ class AsyncTool:
             self.tool_available = False
 
     def get_tool_defined(self) -> Dict[str, Any]:
-        """获取工具定义 (同步方法, 仅读取元数据)"""
+        """
+        获取工具定义 (同步方法, 仅读取元数据)
+
+        返回:
+        - Dict[str, Any]: 工具定义 (同步方法, 仅读取元数据)
+        """
         if not self.assert_tool():
             return {}
         return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore
 
     def get_tool_name(self) -> str:
-        """获取工具名称"""
+        """
+        获取工具名称
+
+        返回:
+        - str: 工具名称
+        """
         return self.tool_name or "unknown_tool"
 
     async def execute(self, *args: Any, **kwargs: Any) -> Any:
         """
         执行工具 (异步)
         子类必须重写此方法, 并使用 async def
+
+        参数:
+        - args: 额外位置参数
+        - kwargs: 额外关键字参数
+
+        返回:
+        - Any: 执行工具 (异步)
         """
         return None
 
     def assert_tool(self) -> bool:
-        """断言工具是否可用"""
+        """
+        断言工具是否可用
+
+        返回:
+        - bool: 断言工具是否可用
+        """
         return self.tool_available
 
     def enable(self) -> None:
@@ -286,13 +380,25 @@ class AsyncTool:
         self.tool_enabled = False
 
     def is_enabled(self) -> bool:
-        """检查工具是否启用"""
+        """
+        检查工具是否启用
+
+        返回:
+        - bool: 检查结果
+        """
         return self.tool_enabled
 
     async def __call__(self, *args: Any, **kwargs: Any):
         """
         使工具实例可被调用
         使用方式: result = await tool_instance(...)
+
+        参数:
+        - args: 额外位置参数
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 使工具实例可被调用
         """
         if not self.assert_tool():
             raise RuntimeError(f"工具 {self.get_tool_name()} 不可用")
@@ -303,6 +409,7 @@ class AsyncTool:
 class ToolsManager:
     """工具管理器, 用于注册和执行工具"""
     def __init__(self):
+        """初始化 ToolsManager"""
         self.tools: Dict[str, Tool] = {}
         self.effectiveness_guard: Callable[[str], bool] | None = None
         """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
@@ -316,7 +423,13 @@ class ToolsManager:
         hook: Callable[[Dict[str, Any]], None] | None,
         event: Dict[str, Any],
     ) -> None:
-        """触发工具观察钩子 (异常隔离: 观察者绝不能拖垮工具执行主流程)"""
+        """
+        触发工具观察钩子 (异常隔离: 观察者绝不能拖垮工具执行主流程)
+
+        参数:
+        - hook: 钩子函数
+        - event: 事件
+        """
         if hook is None:
             return
         try:
@@ -324,7 +437,8 @@ class ToolsManager:
         except Exception as e:
             logger.warning(f"[执行工具] 工具观察钩子异常 (已忽略): {e}")
     def register_tool(self, tool: Tool):
-        """注册工具
+        """
+        注册工具
 
         参数:
         - tool: 要注册的工具实例, 必须是 Tool 类的子类
@@ -337,7 +451,8 @@ class ToolsManager:
             logger.info(f"[注册工具] 工具 {tool.get_tool_name()} 已注册")
 
     def get_tools_definitions(self) -> list[dict[str, Any]]:
-        """获取所有工具的 OpenAI 格式定义
+        """
+        获取所有工具的 OpenAI 格式定义
 
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
@@ -345,7 +460,15 @@ class ToolsManager:
         return [tool.get_tool_defined() for tool in self.tools.values() if tool.assert_tool() and tool.is_enabled()]
 
     def enable_tool(self, tool_name: str) -> bool:
-        """启用指定工具"""
+        """
+        启用指定工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 启用指定工具
+        """
         tool = self.tools.get(tool_name)
         if not tool:
             logger.warning(f"[启用工具] 工具 {tool_name} 不存在, 无法启用")
@@ -355,7 +478,15 @@ class ToolsManager:
         return True
 
     def disable_tool(self, tool_name: str) -> bool:
-        """禁用指定工具"""
+        """
+        禁用指定工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 禁用指定工具
+        """
         tool = self.tools.get(tool_name)
         if not tool:
             logger.warning(f"[禁用工具] 工具 {tool_name} 不存在, 无法禁用")
@@ -365,12 +496,25 @@ class ToolsManager:
         return True
 
     def is_tool_enabled(self, tool_name: str) -> bool:
-        """检查指定工具是否启用"""
+        """
+        检查指定工具是否启用
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 检查结果
+        """
         tool = self.tools.get(tool_name)
         return bool(tool and tool.is_enabled())
 
     def enable_all_tools(self) -> bool:
-        """启用所有已注册工具"""
+        """
+        启用所有已注册工具
+
+        返回:
+        - bool: 启用所有已注册工具
+        """
         if not self.tools:
             logger.warning("[启用工具] 当前没有已注册工具")
             return False
@@ -380,7 +524,12 @@ class ToolsManager:
         return True
 
     def disable_all_tools(self) -> bool:
-        """禁用所有已注册工具"""
+        """
+        禁用所有已注册工具
+
+        返回:
+        - bool: 禁用所有已注册工具
+        """
         if not self.tools:
             logger.warning("[禁用工具] 当前没有已注册工具")
             return False
@@ -390,7 +539,16 @@ class ToolsManager:
         return True
 
     def execute_tool(self, tool_name: str, arguments: Dict[str, Any] | None) -> Any:
-        """执行指定工具"""
+        """
+        执行指定工具
+
+        参数:
+        - tool_name: 工具名称
+        - arguments: 调用参数
+
+        返回:
+        - Any: 执行指定工具
+        """
         if not isinstance(tool_name, str) or not tool_name.strip():
             return _create_tool_error("", "工具名称无效", "invalid_tool_call")
 
@@ -420,7 +578,8 @@ class ToolsManager:
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
-        """获取工具调用信息
+        """
+        获取工具调用信息
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
@@ -439,11 +598,12 @@ class ToolsManager:
 
     @staticmethod
     def create_call_message(call_info: Dict[str, Any] | None) -> Dict[str, Any]:
-        """创建工具调用消息
+        """
+        创建工具调用消息
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
-        
+
         返回:
         - 一个字典, 符合 OpenAI function calling 的工具调用消息格式
 
@@ -480,7 +640,15 @@ class ToolsManager:
 
     @staticmethod
     def validate_call_info(call_info: Dict[str, Any] | None) -> Dict[str, Any] | None:
-        """校验工具调用信息"""
+        """
+        校验工具调用信息
+
+        参数:
+        - call_info: 调用信息
+
+        返回:
+        - Dict[str, Any] | None: 校验工具调用信息
+        """
         if not isinstance(call_info, dict):
             return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
 
@@ -495,7 +663,8 @@ class ToolsManager:
         return None
 
     def execute_tool_call(self, call_info: Dict[str, Any]) -> Any:
-        """执行工具调用流程
+        """
+        执行工具调用流程
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
@@ -518,7 +687,15 @@ class ToolsManager:
         return tool_message, tool_result
 
     def unregister_tool(self, tool_name: str) -> bool:
-        """注销工具"""
+        """
+        注销工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 注销工具
+        """
         if tool_name in self.tools:
             del self.tools[tool_name]
             logger.info(f"[注销工具] 工具 {tool_name} 已注销")
@@ -528,7 +705,12 @@ class ToolsManager:
             return False
         
     def unregister_all_tools(self) -> bool:
-        """注销所有工具"""
+        """
+        注销所有工具
+
+        返回:
+        - bool: 注销所有工具
+        """
         if self.tools:
             self.tools.clear()
             logger.info(f"[注销工具] 已注销所有工具")
@@ -540,6 +722,7 @@ class ToolsManager:
 class AsyncToolsManager:
     """异步工具管理器, 用于注册和执行异步工具"""
     def __init__(self):
+        """初始化 AsyncToolsManager"""
         self.tools: Dict[str, AsyncTool] = {}
         self.effectiveness_guard: Callable[[str], bool] | None = None
         """生效过滤钩子 (执行路径合成): 返回 False 时工具视为不可用 (如所属插件已禁用); None 不启用"""
@@ -548,7 +731,8 @@ class AsyncToolsManager:
         self.tool_call_end: Callable[[Dict[str, Any]], None] | None = None
         """工具调用后观察钩子: 收到 {name, arguments, call_id, success}; None 不启用 (回调异常隔离, 不影响执行)"""
     def register_tool(self, tool: AsyncTool):
-        """注册异步工具
+        """
+        注册异步工具
 
         参数:
         - tool: 要注册的异步工具实例, 必须是 AsyncTool 类的子类
@@ -560,7 +744,8 @@ class AsyncToolsManager:
             logger.info(f"[注册异步工具] 工具 {tool.get_tool_name()} 已注册")
 
     def get_tools_definitions(self) -> list[dict[str, Any]]:
-        """获取所有工具的 OpenAI 格式定义
+        """
+        获取所有工具的 OpenAI 格式定义
 
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
@@ -568,7 +753,15 @@ class AsyncToolsManager:
         return [tool.get_tool_defined() for tool in self.tools.values() if tool.assert_tool() and tool.is_enabled()]
 
     def enable_tool(self, tool_name: str) -> bool:
-        """启用指定异步工具"""
+        """
+        启用指定异步工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 启用指定异步工具
+        """
         tool = self.tools.get(tool_name)
         if not tool:
             logger.warning(f"[启用异步工具] 工具 {tool_name} 不存在, 无法启用")
@@ -578,7 +771,15 @@ class AsyncToolsManager:
         return True
 
     def disable_tool(self, tool_name: str) -> bool:
-        """禁用指定异步工具"""
+        """
+        禁用指定异步工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 禁用指定异步工具
+        """
         tool = self.tools.get(tool_name)
         if not tool:
             logger.warning(f"[禁用异步工具] 工具 {tool_name} 不存在, 无法禁用")
@@ -588,12 +789,25 @@ class AsyncToolsManager:
         return True
 
     def is_tool_enabled(self, tool_name: str) -> bool:
-        """检查指定异步工具是否启用"""
+        """
+        检查指定异步工具是否启用
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 检查结果
+        """
         tool = self.tools.get(tool_name)
         return bool(tool and tool.is_enabled())
 
     def enable_all_tools(self) -> bool:
-        """启用所有已注册异步工具"""
+        """
+        启用所有已注册异步工具
+
+        返回:
+        - bool: 启用所有已注册异步工具
+        """
         if not self.tools:
             logger.warning("[启用异步工具] 当前没有已注册工具")
             return False
@@ -603,7 +817,12 @@ class AsyncToolsManager:
         return True
 
     def disable_all_tools(self) -> bool:
-        """禁用所有已注册异步工具"""
+        """
+        禁用所有已注册异步工具
+
+        返回:
+        - bool: 禁用所有已注册异步工具
+        """
         if not self.tools:
             logger.warning("[禁用异步工具] 当前没有已注册工具")
             return False
@@ -615,13 +834,13 @@ class AsyncToolsManager:
     async def execute_tool(self, tool_name: str, arguments: Dict[str, Any] | None) -> Any:
         """
         执行指定工具 (异步方法)
-        
+
         参数:
         - tool_name: 工具名称
         - arguments: 参数字典
 
         返回:
-        - 工具执行结果，如果工具不存在返回错误字典
+        - 工具执行结果, 如果工具不存在返回错误字典
         """
         if not isinstance(tool_name, str) or not tool_name.strip():
             return _create_tool_error("", "工具名称无效", "invalid_tool_call")
@@ -652,7 +871,8 @@ class AsyncToolsManager:
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
-        """获取工具调用信息
+        """
+        获取工具调用信息
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
@@ -671,7 +891,8 @@ class AsyncToolsManager:
 
     @staticmethod
     def create_call_message(call_info: Dict[str, Any] | None) -> Dict[str, Any]:
-        """创建工具调用消息
+        """
+        创建工具调用消息
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
@@ -712,7 +933,15 @@ class AsyncToolsManager:
 
     @staticmethod
     def validate_call_info(call_info: Dict[str, Any] | None) -> Dict[str, Any] | None:
-        """校验工具调用信息"""
+        """
+        校验工具调用信息
+
+        参数:
+        - call_info: 调用信息
+
+        返回:
+        - Dict[str, Any] | None: 校验工具调用信息
+        """
         if not isinstance(call_info, dict):
             return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
 
@@ -727,7 +956,8 @@ class AsyncToolsManager:
         return None
     
     async def execute_tool_call(self, call_info: Dict[str, Any]) -> Any:
-        """执行工具调用流程 (异步方法)
+        """
+        执行工具调用流程 (异步方法)
 
         参数:
         - call_info: 工具调用信息, 格式为 {"name": "工具名", "arguments": {"param1": "值1", "param2": "值2", ...}}
@@ -750,7 +980,15 @@ class AsyncToolsManager:
         return tool_message, tool_result
 
     def unregister_tool(self, tool_name: str) -> bool:
-        """注销异步工具"""
+        """
+        注销异步工具
+
+        参数:
+        - tool_name: 工具名称
+
+        返回:
+        - bool: 注销异步工具
+        """
         if tool_name in self.tools:
             del self.tools[tool_name]
             logger.info(f"[注销异步工具] 工具 {tool_name} 已注销")
@@ -760,7 +998,12 @@ class AsyncToolsManager:
             return False
         
     def unregister_all_tools(self) -> bool:
-        """注销所有异步工具"""
+        """
+        注销所有异步工具
+
+        返回:
+        - bool: 注销所有异步工具
+        """
         if self.tools:
             self.tools.clear()
             logger.info(f"[注销异步工具] 已注销所有工具")

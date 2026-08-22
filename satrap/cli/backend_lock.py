@@ -14,11 +14,26 @@ class BackendInstanceLock:
     """后端单实例锁, 防止同一工作目录启动多个后端"""
 
     def __init__(self, path: str | Path | None = None):
+        """
+        初始化 BackendInstanceLock
+
+        参数:
+        - path: 路径
+        """
         self.path = Path(path) if path is not None else get_data_dir() / "backend.lock"
         self._fh: IO[str] | None = None
 
     def acquire(self, host: str, port: int) -> bool:
-        """尝试获取锁, 成功返回 True"""
+        """
+        尝试获取锁, 成功返回 True
+
+        参数:
+        - host: 主机
+        - port: 端口
+
+        返回:
+        - bool: 尝试获取锁, 成功返回 True
+        """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._fh = self.path.open("a+", encoding="utf-8")
         try:

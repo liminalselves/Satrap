@@ -85,7 +85,12 @@ def test_same_adapter_type_can_register_multiple_instances():
 
 
 def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: Path):
-    """同一用户在不同 adapter_id 下应拥有不同上下文"""
+    """
+    同一用户在不同 adapter_id 下应拥有不同上下文
+
+    参数:
+    - tmp_path: tmp路径
+    """
     scm = _session_class_mgr(tmp_path)
     sm = _session_manager(tmp_path, scm)
     um = UserManager(sm, db_path=tmp_path / "users.db")
@@ -99,7 +104,12 @@ def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: P
 
 
 def test_pipeline_uses_configured_adapter_override(tmp_path: Path):
-    """类级 adapter_id 存在且有效时, 管线使用该适配器绑定上下文"""
+    """
+    类级 adapter_id 存在且有效时, 管线使用该适配器绑定上下文
+
+    参数:
+    - tmp_path: tmp路径
+    """
     scm = _session_class_mgr(tmp_path, {"adapter_id": "misskey2"})
     sm = _session_manager(tmp_path, scm)
     scheduler = PipelineScheduler(sm)
@@ -112,7 +122,12 @@ def test_pipeline_uses_configured_adapter_override(tmp_path: Path):
 
 
 def test_pipeline_falls_back_when_adapter_override_is_missing(tmp_path: Path):
-    """显式 adapter_id 不存在时回退事件来源适配器"""
+    """
+    显式 adapter_id 不存在时回退事件来源适配器
+
+    参数:
+    - tmp_path: tmp路径
+    """
     scm = _session_class_mgr(tmp_path, {"adapter_id": "missing"})
     sm = _session_manager(tmp_path, scm)
     scheduler = PipelineScheduler(sm)

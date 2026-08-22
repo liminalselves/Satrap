@@ -1,4 +1,4 @@
-"""快照编排: 构建、恢复与引用重映射"""
+"""快照编排: 构建, 恢复与引用重映射"""
 from typing import Dict, List
 
 from satrap.core.state.registry import DomainRegistry
@@ -17,7 +17,8 @@ def build_snapshot(
     scope: StateScope,
     registry: DomainRegistry,
 ) -> StateSnapshot:
-    """按注册顺序构建完整状态快照
+    """
+    按注册顺序构建完整状态快照
 
     参数:
     - conn: 存储连接 (应在事务内)
@@ -47,7 +48,8 @@ def restore_snapshot(
     registry: DomainRegistry,
     options: RestoreOptions,
 ) -> None:
-    """把快照恢复到指定作用域: 先按序清理, 再按序恢复
+    """
+    把快照恢复到指定作用域: 先按序清理, 再按序恢复
 
     参数:
     - conn: 存储连接 (应在事务内)
@@ -68,7 +70,8 @@ def build_id_map(
     snapshot: StateSnapshot,
     new_scope: StateScope,
 ) -> Dict[str, str]:
-    """构建引用字段的旧值 -> 新值映射表
+    """
+    构建引用字段的旧值 -> 新值映射表
 
     新值格式: {新作用域 ID}:{旧值}, 保证 fork 后引用唯一且可读
 
@@ -96,9 +99,18 @@ def _remap_rows(
     domain: SnapshotDomain,
     options: RestoreOptions,
 ) -> List[JsonRow]:
-    """按领域声明的引用字段与 id_map 改写行数据 (仅 fork 时生效)
+    """
+    按领域声明的引用字段与 id_map 改写行数据 (仅 fork 时生效)
+
+    参数:
+    - rows: 数据行集合
+    - domain: 数据领域
+    - options: 选项集合
 
     回滚 (preserve_ids=True) 时原样返回, 保证引用不被改写
+
+    返回:
+    - List[JsonRow]: 按领域声明的引用字段与 id_map 改写行数据 (仅 fork 时生效)
     """
     if options.preserve_ids or not domain.reference_fields or not options.id_map:
         return rows

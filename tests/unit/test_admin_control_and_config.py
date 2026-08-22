@@ -26,7 +26,12 @@ from satrap.core.config_loader import ConfigLoader
 
 
 def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch: pytest.MonkeyPatch):
-    """DaemonClient.shutdown 应请求后端 shutdown 路由"""
+    """
+    DaemonClient.shutdown 应请求后端 shutdown 路由
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     calls: list[Any] = []
 
     def fake_request(method: str, path: str, body: dict[str, Any] | None = None):
@@ -57,7 +62,12 @@ async def test_http_shutdown_route_sets_backend_event():
 
 
 def test_config_editor_yaml_roundtrip(tmp_path: Path):
-    """配置编辑器应能读写 YAML 配置"""
+    """
+    配置编辑器应能读写 YAML 配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     path = tmp_path / "config.yaml"
     data: dict[str, Any] = {
         "api": {"host": "127.0.0.1", "port": 19870},
@@ -74,7 +84,12 @@ def test_config_editor_yaml_roundtrip(tmp_path: Path):
 
 
 def test_config_editor_json_roundtrip(tmp_path: Path):
-    """配置编辑器应能读写 JSON 配置"""
+    """
+    配置编辑器应能读写 JSON 配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     path = tmp_path / "config.json"
     data: dict[str, Any] = {"api": {"host": "127.0.0.1", "port": 19871}, "platforms": []}
 
@@ -86,7 +101,12 @@ def test_config_editor_json_roundtrip(tmp_path: Path):
 
 
 def test_parse_raw_config_rejects_non_object(tmp_path: Path):
-    """原始配置根节点必须是对象"""
+    """
+    原始配置根节点必须是对象
+
+    参数:
+    - tmp_path: tmp路径
+    """
     path = tmp_path / "config.json"
 
     try:
@@ -126,12 +146,22 @@ def test_configured_platform_types_uses_config_and_health():
 
 
 def test_find_config_path_defaults_to_yaml(tmp_path: Path):
-    """没有配置文件时默认指向 .satrap/config.yaml"""
+    """
+    没有配置文件时默认指向 .satrap/config.yaml
+
+    参数:
+    - tmp_path: tmp路径
+    """
     assert find_config_path(tmp_path) == tmp_path / ".satrap" / "config.yaml"
 
 
 def test_find_config_path_prefers_root_config(tmp_path: Path):
-    """根目录配置优先于 satrap 目录配置"""
+    """
+    根目录配置优先于 satrap 目录配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     root_config = tmp_path / "config.yaml"
     nested_config = tmp_path / ".satrap" / "config.yaml"
     nested_config.parent.mkdir()
@@ -142,7 +172,12 @@ def test_find_config_path_prefers_root_config(tmp_path: Path):
 
 
 def test_create_default_config_under_satrap(tmp_path: Path):
-    """无配置文件时应在 .satrap/config.yaml 创建默认配置"""
+    """
+    无配置文件时应在 .satrap/config.yaml 创建默认配置
+
+    参数:
+    - tmp_path: tmp路径
+    """
     assert not config_exists(tmp_path)
 
     config = create_default_config(tmp_path)
@@ -154,7 +189,13 @@ def test_create_default_config_under_satrap(tmp_path: Path):
 
 
 def test_config_loader_autodetect_creates_default_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """ConfigLoader.autodetect 无配置时创建并加载 .satrap/config.yaml"""
+    """
+    ConfigLoader.autodetect 无配置时创建并加载 .satrap/config.yaml
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.chdir(tmp_path)
 
     config = ConfigLoader.autodetect()
@@ -165,7 +206,13 @@ def test_config_loader_autodetect_creates_default_config(tmp_path: Path, monkeyp
 
 
 def test_config_loader_autodetect_keeps_root_priority(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """根目录已有配置时不创建 .satrap/config.yaml"""
+    """
+    根目录已有配置时不创建 .satrap/config.yaml
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     monkeypatch.chdir(tmp_path)
     (tmp_path / "config.yaml").write_text("api:\n  port: 19999\nplatforms: []\n", encoding="utf-8")
 
@@ -241,7 +288,12 @@ def test_platform_upsert_rejects_duplicate_id():
 
 
 def test_save_config_document_validates_platforms(tmp_path: Path):
-    """保存配置前应校验 platforms 结构"""
+    """
+    保存配置前应校验 platforms 结构
+
+    参数:
+    - tmp_path: tmp路径
+    """
     path = tmp_path / "satrap" / "config.yaml"
 
     try:

@@ -16,7 +16,7 @@ interface ConfigState {
   sessionClasses: Record<string, SessionClassConfig>;
   sessionLoading: boolean;
 
-  // Actions
+  // 操作
   fetchModels: (type: ModelType) => Promise<void>;
   fetchAllModels: () => Promise<void>;
   fetchSessionClasses: () => Promise<void>;

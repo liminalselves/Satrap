@@ -1,8 +1,9 @@
-"""检查点管理 HTTP API handlers
+"""
+检查点管理 HTTP API handlers
 
 与 CLI (satrap checkpoint) 同套逻辑: 直接构造 ContextManager / StateStore
 操作上下文库, 与运行时 Session 解耦; 会话级聚合操作请在运行时通过
-Session.create_checkpoint / rollback / fork 使用。
+Session.create_checkpoint / rollback / fork 使用
 """
 from __future__ import annotations
 
@@ -15,7 +16,15 @@ from satrap.core.utils.context import ContextManager
 
 
 def _cp_to_dict(cp: StateCheckpoint) -> dict[str, Any]:
-    """StateCheckpoint -> JSON 可序列化 dict"""
+    """
+    StateCheckpoint -> JSON 可序列化 dict
+
+    参数:
+    - cp: cp 输入值
+
+    返回:
+    - dict[str, Any]: StateCheckpoint -> JSON 可序列化 dict
+    """
     return {
         "checkpoint_id": cp.checkpoint_id,
         "namespace": cp.namespace,
@@ -37,7 +46,16 @@ def _cp_to_dict(cp: StateCheckpoint) -> dict[str, Any]:
 
 @contextmanager
 def _open_ctx(db_path: str, conversation_id: str) -> Iterator[ContextManager]:
-    """构造启用检查点的对话上下文, 用完释放复用连接"""
+    """
+    构造启用检查点的对话上下文, 用完释放复用连接
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+
+    返回:
+    - Iterator[ContextManager]: 构造启用检查点的对话上下文, 用完释放复用连接
+    """
     ctx = ContextManager(conversation_id, db_path=db_path, enable_checkpoint=True)
     try:
         yield ctx
@@ -46,7 +64,16 @@ def _open_ctx(db_path: str, conversation_id: str) -> Iterator[ContextManager]:
 
 
 def list_checkpoints(db_path: str, conversation_id: str) -> dict[str, Any]:
-    """列出对话的检查点与全部分支"""
+    """
+    列出对话的检查点与全部分支
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+
+    返回:
+    - dict[str, Any]: 列出对话的检查点与全部分支
+    """
     with _open_ctx(db_path, conversation_id) as ctx:
         checkpoints = ctx.list_checkpoints()
     store = StateStore(db_path=db_path)
@@ -64,7 +91,18 @@ def create_checkpoint(
     name: str = "",
     description: str = "",
 ) -> dict[str, Any]:
-    """为对话创建手动检查点"""
+    """
+    为对话创建手动检查点
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+    - name: 名称
+    - description: 说明文本
+
+    返回:
+    - dict[str, Any]: 为对话创建手动检查点
+    """
     with _open_ctx(db_path, conversation_id) as ctx:
         cp = ctx.create_checkpoint(name=name, description=description)
     return {"checkpoint_id": cp.checkpoint_id, "ok": True}
@@ -73,7 +111,17 @@ def create_checkpoint(
 def rollback_checkpoint(
     db_path: str, conversation_id: str, checkpoint_id: str
 ) -> dict[str, Any]:
-    """回滚对话到指定检查点"""
+    """
+    回滚对话到指定检查点
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+    - checkpoint_id: 检查点 ID
+
+    返回:
+    - dict[str, Any]: 回滚对话到指定检查点
+    """
     with _open_ctx(db_path, conversation_id) as ctx:
         ctx.rollback(checkpoint_id)
     return {"checkpoint_id": checkpoint_id, "ok": True}
@@ -82,7 +130,17 @@ def rollback_checkpoint(
 def retry_checkpoint(
     db_path: str, conversation_id: str, checkpoint_id: str
 ) -> dict[str, Any]:
-    """从指定检查点重试 (保留未来检查点)"""
+    """
+    从指定检查点重试 (保留未来检查点)
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+    - checkpoint_id: 检查点 ID
+
+    返回:
+    - dict[str, Any]: 从指定检查点重试 (保留未来检查点)
+    """
     with _open_ctx(db_path, conversation_id) as ctx:
         ctx.retry(checkpoint_id)
     return {"checkpoint_id": checkpoint_id, "ok": True}
@@ -94,7 +152,18 @@ def fork_checkpoint(
     branch_name: str,
     checkpoint_id: str | None = None,
 ) -> dict[str, Any]:
-    """从检查点 fork 一条新对话线"""
+    """
+    从检查点 fork 一条新对话线
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+    - branch_name: 分支名称
+    - checkpoint_id: 检查点 ID
+
+    返回:
+    - dict[str, Any]: 从检查点 fork 一条新对话线
+    """
     with _open_ctx(db_path, conversation_id) as ctx:
         new_ctx = ctx.fork(branch_name, checkpoint_id=checkpoint_id)
         new_id = new_ctx.conversation_id
@@ -103,7 +172,16 @@ def fork_checkpoint(
 
 
 def list_branches(db_path: str, conversation_id: str) -> dict[str, Any]:
-    """列出对话 fork 出的全部分支"""
+    """
+    列出对话 fork 出的全部分支
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+
+    返回:
+    - dict[str, Any]: 列出对话 fork 出的全部分支
+    """
     store = StateStore(db_path=db_path)
     branches = store.list_branches(f"{conversation_id}:fork:")
     return {
@@ -113,7 +191,16 @@ def list_branches(db_path: str, conversation_id: str) -> dict[str, Any]:
 
 
 def trace_lineage(db_path: str, checkpoint_id: str) -> dict[str, Any]:
-    """查看检查点血缘链 (根在前)"""
+    """
+    查看检查点血缘链 (根在前)
+
+    参数:
+    - db_path: 数据库路径
+    - checkpoint_id: 检查点 ID
+
+    返回:
+    - dict[str, Any]: 查看检查点血缘链 (根在前)
+    """
     store = StateStore(db_path=db_path)
     lineage = store.trace_lineage(checkpoint_id)
     return {
@@ -123,7 +210,16 @@ def trace_lineage(db_path: str, checkpoint_id: str) -> dict[str, Any]:
 
 
 def list_mutations(db_path: str, conversation_id: str) -> dict[str, Any]:
-    """查看对话的检查点变更记录 (含 source / reason, 最新在前)"""
+    """
+    查看对话的检查点变更记录 (含 source / reason, 最新在前)
+
+    参数:
+    - db_path: 数据库路径
+    - conversation_id: 会话 ID
+
+    返回:
+    - dict[str, Any]: 查看对话的检查点变更记录 (含 source / reason, 最新在前)
+    """
     store = StateStore(db_path=db_path)
     mutations = store.list_mutations(StateScope("conversation", conversation_id))
     return {

@@ -22,30 +22,62 @@ _callback_api_base: str = ""
 
 
 def get_satrap_temp_path() -> str:
-    """获取 Satrap 临时目录, 不存在时自动创建"""
+    """
+    获取 Satrap 临时目录, 不存在时自动创建
+
+    返回:
+    - str:  Satrap 临时目录, 不存在时自动创建
+    """
     _SATRAP_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     return str(_SATRAP_TEMP_DIR)
 
 
 def set_callback_api_base(base_url: str | None) -> None:
-    """设置文件回调服务地址, 用于 register_to_file_service()"""
+    """
+    设置文件回调服务地址, 用于 register_to_file_service()
+
+    参数:
+    - base_url: API 服务地址
+    """
     global _callback_api_base
     _callback_api_base = (base_url or "").strip().rstrip("/")
 
 
 def get_callback_api_base() -> str:
-    """获取当前文件回调服务地址"""
+    """
+    获取当前文件回调服务地址
+
+    返回:
+    - str: 当前文件回调服务地址
+    """
     return _callback_api_base
 
 
 def file_to_base64(path: str) -> str:
-    """读取本地文件并转为 base64 字符串"""
+    """
+    读取本地文件并转为 base64 字符串
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: 读取本地文件并转为 base64 字符串
+    """
     with open(path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
 async def download_file(url: str, path: str) -> str:
-    """异步下载文件到指定路径"""
+    """
+    异步下载文件到指定路径
+
+    参数:
+    - url: URL
+    - path: 路径
+
+    返回:
+    - str: 异步下载文件到指定路径
+    """
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     timeout = aiohttp.ClientTimeout(total=120)
     async with aiohttp.ClientSession(timeout=timeout) as session:
@@ -58,14 +90,30 @@ async def download_file(url: str, path: str) -> str:
 
 
 async def download_image_by_url(url: str) -> str:
-    """下载图片到 Satrap 临时目录"""
+    """
+    下载图片到 Satrap 临时目录
+
+    参数:
+    - url: URL
+
+    返回:
+    - str: 下载图片到 Satrap 临时目录
+    """
     suffix = Path(url.split("?", 1)[0]).suffix or ".jpg"
     path = os.path.join(get_satrap_temp_path(), f"imgseg_{uuid.uuid4().hex}{suffix}")
     return await download_file(url, path)
 
 
 def _strip_file_uri(path: str) -> str:
-    """兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符"""
+    """
+    兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
+
+    参数:
+    - path: 路径
+
+    返回:
+    - str: 兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
+    """
     if not path.startswith("file://"):
         return path
     stripped = path[7:]
@@ -78,10 +126,19 @@ class SatrapFileTokenService:
     """轻量文件 token 注册服务, 只维护 token 到本地路径的映射"""
 
     def __init__(self) -> None:
+        """初始化 SatrapFileTokenService"""
         self._files: dict[str, str] = {}
 
     async def register_file(self, path: str) -> str:
-        """注册文件路径并返回 token"""
+        """
+        注册文件路径并返回 token
+
+        参数:
+        - path: 路径
+
+        返回:
+        - str: 注册文件路径并返回 token
+        """
         real_path = os.path.abspath(_strip_file_uri(path))
         if not os.path.exists(real_path):
             raise FileNotFoundError(f"文件不存在, 无法注册: {real_path}")
@@ -90,7 +147,15 @@ class SatrapFileTokenService:
         return token
 
     def get_file(self, token: str) -> str | None:
-        """按 token 获取已注册的本地文件路径"""
+        """
+        按 token 获取已注册的本地文件路径
+
+        参数:
+        - token: 令牌
+
+        返回:
+        - str | None: 按 token 获取已注册的本地文件路径
+        """
         return self._files.get(token)
 
 
@@ -159,13 +224,23 @@ class BaseMessageComponent(BaseModel):
     type: PlatformComponentType
 
     def __init__(self, **data: Any) -> None:
+        """
+        初始化 BaseMessageComponent
+
+        参数:
+        - data: 输入数据
+        """
         super().__init__(**data)
 
     def toDict(self) -> Dict[str, Any]:
-        """同步转换为通用消息组件格式"""
+        """
+        同步转换为通用消息组件格式
+
+        返回:
+        - Dict[str, Any]: 同步转换为通用消息组件格式
+        """
         data = self.model_dump(exclude_none=True, exclude={"type"}, by_alias=False)
-        from satrap.core.type import safe_getattr_dict   # 延迟导入, 避免 type->components->message 循环依赖
-        extras = safe_getattr_dict(self, "__pydantic_extra__")
+        extras = self.__pydantic_extra__ or {}
         data.update({k: v for k, v in extras.items() if v is not None})
         if "type_" in data:
             data["type"] = data.pop("type_")
@@ -175,7 +250,12 @@ class BaseMessageComponent(BaseModel):
         return {"type": type_str.lower(), "data": data}
 
     async def to_dict(self) -> dict[str, Any]:
-        """异步转换接口, 默认回退到同步 toDict()"""
+        """
+        异步转换接口, 默认回退到同步 toDict()
+
+        返回:
+        - dict[str, Any]: 异步转换接口, 默认回退到同步 toDict()
+        """
         return self.toDict()
 
 
@@ -186,12 +266,32 @@ class Plain(BaseMessageComponent):
     text: str
 
     def __init__(self, text: str, convert: bool = True, **kwargs: Any) -> None:
+        """
+        初始化 Plain
+
+        参数:
+        - text: 文本内容
+        - convert: 转换
+        - kwargs: 额外关键字参数
+        """
         super().__init__(text=text, convert=convert, **kwargs)
 
     def toDict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         return {"type": "text", "data": {"text": self.text}}
 
     async def to_dict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         return self.toDict()
 
 
@@ -211,16 +311,46 @@ class _FileLikeComponent(BaseMessageComponent):
 
     @classmethod
     def fromFileSystem(cls, path: str, **kwargs: Any):
+        """
+        从文件系统创建实例
+
+        参数:
+        - path: 路径
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 从文件系统创建实例
+        """
         return cls(file=f"file:///{os.path.abspath(path)}", path=path, **kwargs)
 
     @classmethod
     def fromURL(cls, url: str, **kwargs: Any):
+        """
+        从 URL 创建实例
+
+        参数:
+        - url: URL
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 从 URL 创建实例
+        """
         if url.startswith(("http://", "https://")):
             return cls(file=url, **kwargs)
         raise ValueError("not a valid url")
 
     @classmethod
     def fromBase64(cls, bs64_data: str, **kwargs: Any):
+        """
+        从 Base64 数据创建实例
+
+        参数:
+        - bs64_data: Base64 数据
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 从 Base64 数据创建实例
+        """
         return cls(file=f"base64://{bs64_data}", **kwargs)
 
     def _source(self) -> str:
@@ -230,7 +360,12 @@ class _FileLikeComponent(BaseMessageComponent):
         return source
 
     async def convert_to_file_path(self) -> str:
-        """将消息段统一转换为本地文件路径"""
+        """
+        将消息段统一转换为本地文件路径
+
+        返回:
+        - str: 将消息段统一转换为本地文件路径
+        """
         source = self._source()
         if source.startswith("file://"):
             path = _strip_file_uri(source)
@@ -252,7 +387,12 @@ class _FileLikeComponent(BaseMessageComponent):
         raise FileNotFoundError(f"not a valid file: {source}")
 
     async def convert_to_base64(self) -> str:
-        """将消息段统一转换为 base64 字符串"""
+        """
+        将消息段统一转换为 base64 字符串
+
+        返回:
+        - str: 将消息段统一转换为 base64 字符串
+        """
         source = self._source()
         if source.startswith("file://"):
             bs64_data = file_to_base64(_strip_file_uri(source))
@@ -268,7 +408,12 @@ class _FileLikeComponent(BaseMessageComponent):
         return bs64_data.removeprefix("base64://")
 
     async def register_to_file_service(self) -> str:
-        """将消息段文件注册到 Satrap 文件 token 服务"""
+        """
+        将消息段文件注册到 Satrap 文件 token 服务
+
+        返回:
+        - str: 将消息段文件注册到 Satrap 文件 token 服务
+        """
         callback_host = get_callback_api_base()
         if not callback_host:
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
@@ -285,6 +430,13 @@ class Record(_FileLikeComponent):
     text: str | None = None
 
     def __init__(self, file: str | None, **kwargs: Any) -> None:
+        """
+        初始化 Record
+
+        参数:
+        - file: 文件对象
+        - kwargs: 额外关键字参数
+        """
         super().__init__(file=file, **kwargs)
 
 
@@ -296,14 +448,36 @@ class Video(_FileLikeComponent):
     cover: str | None = ""
 
     def __init__(self, file: str, **kwargs: Any) -> None:
+        """
+        初始化 Video
+
+        参数:
+        - file: 文件对象
+        - kwargs: 额外关键字参数
+        """
         super().__init__(file=file, **kwargs)
 
     @classmethod
     def fromBase64(cls, bs64_data: str, **kwargs: Any):
+        """
+        从 Base64 数据创建实例
+
+        参数:
+        - bs64_data: Base64 数据
+        - kwargs: 额外关键字参数
+
+        返回:
+        - 从 Base64 数据创建实例
+        """
         return cls(file=f"base64://{bs64_data}", **kwargs)
 
     async def to_dict(self) -> dict[str, Any]:
-        """异步序列化视频, 支持按 callback 地址暴露本地文件"""
+        """
+        异步序列化视频, 支持按 callback 地址暴露本地文件
+
+        返回:
+        - dict[str, Any]: 异步序列化视频, 支持按 callback 地址暴露本地文件
+        """
         payload_file = self.file
         if payload_file and not payload_file.startswith("http"):
             callback_host = get_callback_api_base()
@@ -322,6 +496,12 @@ class At(BaseMessageComponent):
     name: str | None = ""
 
     def toDict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         return {"type": "at", "data": {"qq": str(self.qq)}}
 
 
@@ -331,6 +511,12 @@ class AtAll(At):
     qq: int | str = "all"
 
     def __init__(self, **kwargs: Any) -> None:
+        """
+        初始化 AtAll
+
+        参数:
+        - kwargs: 额外关键字参数
+        """
         super().__init__(**kwargs)
 
 
@@ -400,16 +586,39 @@ class Image(_FileLikeComponent):
     type_: str | None = Field(default="", alias="_type")
 
     def __init__(self, file: str | None, **kwargs: Any) -> None:
+        """
+        初始化 Image
+
+        参数:
+        - file: 文件对象
+        - kwargs: 额外关键字参数
+        """
         super().__init__(file=file, **kwargs)
 
     @staticmethod
     def fromBytes(data: bytes):
-        """从字节数据创建图片消息段"""
+        """
+        从字节数据创建图片消息段
+
+        参数:
+        - data: 输入数据
+
+        返回:
+        - 从字节数据创建图片消息段
+        """
         return Image.fromBase64(base64.b64encode(data).decode("utf-8"))
 
     @staticmethod
     def fromIO(io_obj: Any):
-        """从类文件对象创建图片消息段"""
+        """
+        从类文件对象创建图片消息段
+
+        参数:
+        - io_obj: io_obj 输入值
+
+        返回:
+        - 从类文件对象创建图片消息段
+        """
         return Image.fromBytes(io_obj.read())
 
 
@@ -430,11 +639,11 @@ class Reply(BaseMessageComponent):
     message_str: str | None = ""
     """被引用消息解析后的纯文本内容"""
     text: str | None = ""
-    """deprecated"""
+    """已弃用"""
     qq: int | None = 0
-    """deprecated"""
+    """已弃用"""
     seq: int | None = 0
-    """deprecated"""
+    """已弃用"""
 
 
 class Poke(BaseMessageComponent):
@@ -446,6 +655,13 @@ class Poke(BaseMessageComponent):
     qq: int | str | None = 0
 
     def __init__(self, poke_type: str | int | None = None, **kwargs: Any) -> None:
+        """
+        初始化 Poke
+
+        参数:
+        - poke_type: poke_type 输入值
+        - kwargs: 额外关键字参数
+        """
         legacy_type = kwargs.pop("type", None)
         if poke_type is None:
             poke_type = legacy_type
@@ -454,7 +670,12 @@ class Poke(BaseMessageComponent):
         super().__init__(_type=str(poke_type), **kwargs)
 
     def target_id(self) -> str | None:
-        """获取规范化目标 ID, 兼容旧 qq 字段"""
+        """
+        获取规范化目标 ID, 兼容旧 qq 字段
+
+        返回:
+        - str | None: 规范化目标 ID, 兼容旧 qq 字段
+        """
         for value in (self.id, self.qq):
             if value is None:
                 continue
@@ -464,6 +685,12 @@ class Poke(BaseMessageComponent):
         return None
 
     def toDict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         data = {"type": str(self.type_ or "126")}
         if target_id := self.target_id():
             data["id"] = target_id
@@ -489,11 +716,24 @@ class Node(BaseMessageComponent):
     time: int | None = 0
 
     def __init__(self, content: list[BaseMessageComponent] | BaseMessageComponent, **kwargs: Any) -> None:
+        """
+        初始化 Node
+
+        参数:
+        - content: 内容
+        - kwargs: 额外关键字参数
+        """
         if isinstance(content, BaseMessageComponent):
             content = [content]
         super().__init__(content=content, **kwargs)
 
     async def to_dict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         data_content: list[dict[str, Any]] = []
         for comp in self.content:
             if isinstance(comp, (Image, Record)):
@@ -525,13 +765,31 @@ class Nodes(BaseMessageComponent):
     nodes: list[Node]
 
     def __init__(self, nodes: list[Node], **kwargs: Any) -> None:
+        """
+        初始化 Nodes
+
+        参数:
+        - nodes: 节点列表
+        - kwargs: 额外关键字参数
+        """
         super().__init__(nodes=nodes, **kwargs)
 
     def toDict(self) -> dict[str, Any]:
+        """
+        转换为字典
+
+        返回:
+        - dict[str, Any]: 转换为字典
+        """
         return {"messages": [node.toDict() for node in self.nodes]}
 
     async def to_dict(self) -> dict[str, Any]:
-        """将 Nodes 转换为 OneBot 风格的消息列表"""
+        """
+        将 Nodes 转换为 OneBot 风格的消息列表
+
+        返回:
+        - dict[str, Any]: 将 Nodes 转换为 OneBot 风格的消息列表
+        """
         return {"messages": [await node.to_dict() for node in self.nodes]}
 
 
@@ -542,6 +800,13 @@ class Json(BaseMessageComponent):
     data: dict[str, Any]
 
     def __init__(self, data: str | dict[str, Any], **kwargs: Any) -> None:
+        """
+        初始化 Json
+
+        参数:
+        - data: 输入数据
+        - kwargs: 额外关键字参数
+        """
         if isinstance(data, str):
             data = json.loads(data)
         super().__init__(data=data, **kwargs)
@@ -563,16 +828,34 @@ class File(BaseMessageComponent):
     url: str | None = ""
 
     def __init__(self, name: str, file: str = "", url: str = "") -> None:
+        """
+        初始化 File
+
+        参数:
+        - name: 名称
+        - file: 文件对象
+        - url: URL
+        """
         super().__init__(name=name, file_=file, url=url)
 
     def toDict(self) -> dict[str, Any]:
-        """同步序列化文件消息段, 不触发网络下载"""
+        """
+        同步序列化文件消息段, 不触发网络下载
+
+        返回:
+        - dict[str, Any]: 同步序列化文件消息段, 不触发网络下载
+        """
         payload_file = self.file_ or self.url or ""
         return {"type": "file", "data": {"name": self.name, "file": payload_file}}
 
     @property
     def file(self) -> str:
-        """同步获取文件路径, 异步上下文中不会阻塞下载"""
+        """
+        同步获取文件路径, 异步上下文中不会阻塞下载
+
+        返回:
+        - str: 同步获取文件路径, 异步上下文中不会阻塞下载
+        """
         if self.file_:
             path = _strip_file_uri(self.file_)
             if os.path.exists(path):
@@ -596,14 +879,27 @@ class File(BaseMessageComponent):
 
     @file.setter
     def file(self, value: str) -> None:
-        """向前兼容 file 属性设置"""
+        """
+        向前兼容 file 属性设置
+
+        参数:
+        - value: 输入值
+        """
         if value.startswith(("http://", "https://")):
             self.url = value
         else:
             self.file_ = value
 
     async def get_file(self, allow_return_url: bool = False) -> str:
-        """异步获取文件路径, 可选择直接返回 URL"""
+        """
+        异步获取文件路径, 可选择直接返回 URL
+
+        参数:
+        - allow_return_url: 是否allowreturnURL
+
+        返回:
+        - str: 异步获取文件路径, 可选择直接返回 URL
+        """
         if allow_return_url and self.url:
             return self.url
         if self.file_:
@@ -628,7 +924,12 @@ class File(BaseMessageComponent):
         self.file_ = await download_file(self.url, os.path.join(get_satrap_temp_path(), filename))
 
     async def register_to_file_service(self) -> str:
-        """将文件注册到 Satrap 文件 token 服务"""
+        """
+        将文件注册到 Satrap 文件 token 服务
+
+        返回:
+        - str: 将文件注册到 Satrap 文件 token 服务
+        """
         callback_host = get_callback_api_base()
         if not callback_host:
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
@@ -638,7 +939,12 @@ class File(BaseMessageComponent):
         return f"{callback_host}/api/file/{token}"
 
     async def to_dict(self) -> dict[str, Any]:
-        """异步序列化文件, 支持按 callback 地址暴露本地文件"""
+        """
+        异步序列化文件, 支持按 callback 地址暴露本地文件
+
+        返回:
+        - dict[str, Any]: 异步序列化文件, 支持按 callback 地址暴露本地文件
+        """
         payload_file = await self.get_file(allow_return_url=True)
         if payload_file and not payload_file.startswith("http"):
             callback_host = get_callback_api_base()

@@ -20,7 +20,12 @@ st.set_page_config(page_title="仪表盘", page_icon="", layout="wide")
 
 
 def _check_backend():
-    """检测后端是否在线并返回健康信息"""
+    """
+    检测后端是否在线并返回健康信息
+
+    返回:
+    - 健康信息
+    """
     return check_backend(st.session_state.config)
 
 
@@ -33,7 +38,12 @@ def _start_backend():
 
 
 def _stop_backend(rerun: bool = True):
-    """停止后端子进程"""
+    """
+    停止后端子进程
+
+    参数:
+    - rerun: 是否重新运行
+    """
     result = stop_backend(st.session_state.config)
     show_notification(result.message, result.level)
     if rerun and result.ok:
@@ -41,7 +51,12 @@ def _stop_backend(rerun: bool = True):
 
 
 def _render_start_stop_buttons(backend_ok: bool):
-    """渲染启动/停止/重启按钮"""
+    """
+    渲染启动/停止/重启按钮
+
+    参数:
+    - backend_ok: 后端ok
+    """
     managed = managed_process_alive()
 
     col1, col2, col3 = st.columns([1, 1, 3])
@@ -72,11 +87,12 @@ def _render_start_stop_buttons(backend_ok: bool):
 
 
 def render():
+    """渲染"""
     ensure_state()
     st.subheader("仪表盘")
 
-    # 渲染之前滞留的通知
     render_notification()
+    # 渲染之前滞留的通知
 
     health_data, err = _check_backend()
     backend_ok = health_data is not None
@@ -125,7 +141,7 @@ def render():
                     "status": info.get("status", "?"),
                     "started": "" if info.get("started") else "否",
                 })
-            st.dataframe(ad_data, use_container_width=True)  # pyright: ignore[reportUnknownMemberType]
+            st.dataframe(ad_data, use_container_width=True)   # pyright: ignore[reportUnknownMemberType]
     else:
         detail = f"({err})" if err else ""
         st.warning(f"后端未运行, 部分实时状态不可用 {detail}")

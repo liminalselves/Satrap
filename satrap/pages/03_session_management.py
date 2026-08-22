@@ -21,7 +21,12 @@ def _reload_caches():
 
 
 def _adapter_options() -> list[str]:
-    """获取可绑定的平台适配器实例 ID 列表"""
+    """
+    获取可绑定的平台适配器实例 ID 列表
+
+    返回:
+    - list[str]: 可绑定的平台适配器实例 ID 列表
+    """
     config = st.session_state.config
     ids = [str(p.get("id", "")).strip() for p in config.platforms if str(p.get("id", "")).strip()]
 
@@ -37,13 +42,26 @@ def _adapter_options() -> list[str]:
 
 
 def _class_name_to_config_name(class_name: str) -> str:
-    """将类名转换为默认配置名"""
+    """
+    将类名转换为默认配置名
+
+    参数:
+    - class_name: 类名称
+
+    返回:
+    - str: 将类名转换为默认配置名
+    """
     name = re.sub(r"(?<!^)(?=[A-Z])", "_", class_name).lower()
     return name.removesuffix("_session") or name
 
 
 def _scan_path_options() -> list[str]:
-    """获取 Session 扫描目录选项"""
+    """
+    获取 Session 扫描目录选项
+
+    返回:
+    - list[str]:  Session 扫描目录选项
+    """
     paths = [str(item) for item in safe_getattr_list(st.session_state.config, "session_scan_paths")]
     if not paths:
         paths = [".satrap/session"]
@@ -85,7 +103,7 @@ def _register_dialog():
                 f"{Path(item['file_path']).name} -> {item['class_name']} ({'async' if item.get('is_async') else 'sync'})"
                 for item in choices
             ]
-            selected_index = st.selectbox("选择会话类", range(len(labels)), format_func=lambda i: labels[i])  # pyright: ignore[reportUnknownLambdaType]
+            selected_index = st.selectbox("选择会话类", range(len(labels)), format_func=lambda i: labels[i])   # pyright: ignore[reportUnknownLambdaType]
             selected = choices[int(selected_index)]
             selected_class_path = str(selected.get("class_path", ""))
             default_name = _class_name_to_config_name(str(selected.get("class_name", "")))
@@ -220,13 +238,13 @@ def _edit_model_key_dialog(name: str):
     cfg_entry = scm.get_config(name)
     current_params = dict((cfg_entry or {}).get("params", {}) or {})
 
-    # 从 model_config.json 获取已有 LLM 配置列表
     mcm = st.session_state.mcm
+    # 从 model_config.json 获取已有 LLM 配置列表
     llm_configs = mcm.list_llm_configs(mask_api_key=True)
     llm_names = list(llm_configs.keys())
 
-    # 当前 params 中 model_name 的值（即当前选中的 LLM 配置名）
     current_model_name = current_params.get("model_name", "")
+    # 当前 params 中 model_name 的值(即当前选中的 LLM 配置名)
     if current_model_name not in llm_names:
         current_model_name = llm_names[0] if llm_names else ""
 
@@ -258,6 +276,7 @@ def _get_session_configs(_scm: SessionClassConfigManager) -> dict[str, dict[str,
 
 
 def render():
+    """渲染"""
     ensure_state()
     st.subheader("会话类管理")
 
@@ -284,7 +303,7 @@ def render():
             "Class Path": cp,
         })
 
-    st.dataframe(rows, use_container_width=True, hide_index=True)  # pyright: ignore[reportUnknownMemberType]
+    st.dataframe(rows, use_container_width=True, hide_index=True)   # pyright: ignore[reportUnknownMemberType]
 
     st.divider()
     st.caption("对单个会话类的操作:")
