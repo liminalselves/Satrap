@@ -1,3 +1,4 @@
+"""Satrap 项目的打包与安装配置"""
 from __future__ import annotations
 
 from pathlib import Path

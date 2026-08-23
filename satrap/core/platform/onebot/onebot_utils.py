@@ -1,3 +1,4 @@
+"""OneBot 消息段与 Satrap 消息组件转换工具"""
 from __future__ import annotations
 
 import json

@@ -1,3 +1,9 @@
+"""
+Satrap 共享类型定义
+
+集中声明模型响应, 会话配置, 用户信息, 平台消息和状态检查点等数据结构,
+同时提供处理未知对象属性的类型安全访问函数
+"""
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
 from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar, cast, overload
 from dataclasses import dataclass, field

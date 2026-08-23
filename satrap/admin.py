@@ -1,3 +1,4 @@
+"""Satrap Streamlit 管理后台入口"""
 from __future__ import annotations
 
 import sys

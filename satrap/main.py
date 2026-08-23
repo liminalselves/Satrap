@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Satrap CLI 入口"""
+"""
+Satrap CLI 入口
+
+解析后端运行, 配置, 会话, 模型, 平台, 检查点和用户等子命令,
+并将请求分发到对应的 CLI 命令模块
+"""
 import argparse
 import asyncio
 import sys

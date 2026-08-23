@@ -1,3 +1,4 @@
+"""管理后台的会话类型与实例管理页面"""
 from __future__ import annotations
 
 import json

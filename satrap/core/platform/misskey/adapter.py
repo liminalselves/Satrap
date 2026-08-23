@@ -1,3 +1,4 @@
+"""Misskey 平台事件与消息收发适配器"""
 from __future__ import annotations
 
 import asyncio

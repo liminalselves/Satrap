@@ -1,3 +1,4 @@
+"""管理后台的实时日志监控页面"""
 from __future__ import annotations
 
 import time

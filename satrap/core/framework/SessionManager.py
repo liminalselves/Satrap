@@ -1,3 +1,9 @@
+"""
+会话实例生命周期管理器
+
+按会话类型创建并缓存同步或异步会话, 管理容量与空闲回收,
+同时负责会话元数据持久化, 恢复和默认模型配置注入
+"""
 from __future__ import annotations
 
 import asyncio

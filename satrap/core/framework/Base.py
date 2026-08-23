@@ -1,3 +1,9 @@
+"""
+模型工作流与会话基础框架
+
+定义同步和异步工作流的模型调用, 工具执行与上下文处理流程,
+并为会话提供命令, 状态检查点和持久化能力
+"""
 from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
 from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
 from satrap.core.utils.context import ContextManager, AsyncContextManager, _messages_domain

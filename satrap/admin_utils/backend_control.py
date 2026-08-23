@@ -1,3 +1,4 @@
+"""管理后台的后端进程控制与状态查询工具"""
 from __future__ import annotations
 
 import subprocess

@@ -1,3 +1,9 @@
+"""
+文本嵌入模型 API 调用封装
+
+提供单条和批量文本的同步与异步向量化接口,
+统一处理模型配置, 输入校验与嵌入响应提取
+"""
 from typing import List, Dict, Any, Optional, Union, Literal, cast
 from satrap.core.utils import normalize_openai_base_url
 from openai import OpenAI, AsyncOpenAI, APIError

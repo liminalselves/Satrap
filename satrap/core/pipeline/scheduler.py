@@ -1,3 +1,9 @@
+"""
+平台事件处理管线调度器
+
+将平台消息转换为用户调用并交给目标会话执行,
+统一应用限流, 超时, 错误反馈和执行前后处理钩子
+"""
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,4 @@
+"""CLI 模型配置管理命令"""
 from __future__ import annotations
 import argparse
 

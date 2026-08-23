@@ -1,3 +1,4 @@
+"""CLI 与 Satrap 后端守护进程通信的 HTTP 客户端"""
 from __future__ import annotations
 
 import json

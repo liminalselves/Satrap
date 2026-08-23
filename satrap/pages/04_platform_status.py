@@ -1,3 +1,4 @@
+"""管理后台的平台适配器状态页面"""
 from __future__ import annotations
 
 from typing import Any, cast

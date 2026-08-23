@@ -1,3 +1,4 @@
+"""Satrap 核心通用工具函数导出入口"""
 from typing import Any, overload
 import json
 import ast

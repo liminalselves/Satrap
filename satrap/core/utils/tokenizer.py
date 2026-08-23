@@ -1,3 +1,4 @@
+"""基于 splintr 的模型文本分词与令牌计数工具"""
 from splintr import Tokenizer   # pyright: ignore[reportUnknownVariableType]
 import math
 from typing import Any

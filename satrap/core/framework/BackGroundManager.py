@@ -1,3 +1,9 @@
+"""
+模型配置后台管理组件
+
+负责 LLM 配置的读取, 校验, 持久化与增删改查,
+为后端服务, 管理页面和聊天服务提供共享模型配置来源
+"""
 from __future__ import annotations
 
 import json

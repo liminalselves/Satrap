@@ -1,3 +1,9 @@
+"""
+会话类配置管理器
+
+维护可用会话类的配置与启用状态, 扫描指定目录发现会话实现,
+并通过类路径完成动态加载和运行时注册
+"""
 from __future__ import annotations
 
 import importlib

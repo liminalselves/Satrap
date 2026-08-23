@@ -1,3 +1,9 @@
+"""
+Satrap 配置加载器
+
+支持从 YAML, JSON 和字典构建 BackendConfig,
+并负责默认配置生成, 配置文件探测以及环境变量覆盖
+"""
 from __future__ import annotations
 
 import json

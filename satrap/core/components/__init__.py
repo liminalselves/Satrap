@@ -1,3 +1,4 @@
+"""跨平台消息组件公共导出入口"""
 from .message import (
     At,
     AtAll,

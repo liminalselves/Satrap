@@ -1,3 +1,4 @@
+"""基于 SQLite 的轻量向量数据库实现"""
 from typing import List, Dict, Any, cast
 import faiss as _faiss
 import numpy as np

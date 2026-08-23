@@ -1,3 +1,4 @@
+"""管理后台的日志读取, 过滤与页面状态工具"""
 from __future__ import annotations
 
 from pathlib import Path

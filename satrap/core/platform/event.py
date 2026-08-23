@@ -1,3 +1,9 @@
+"""
+平台事件与消息分发组件
+
+定义统一的平台元数据, 消息事件和消息链模型,
+负责平台消息组件转换, 会话回复以及事件处理器的异步分发
+"""
 from __future__ import annotations
 
 import asyncio

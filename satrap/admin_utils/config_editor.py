@@ -1,3 +1,4 @@
+"""管理后台的配置读取, 校验与表单编辑工具"""
 from __future__ import annotations
 
 import json

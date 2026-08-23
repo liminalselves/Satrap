@@ -1,3 +1,4 @@
+"""CLI 命令共享的参数, 输出与连接辅助函数"""
 from __future__ import annotations
 
 import json

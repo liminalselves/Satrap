@@ -1,3 +1,4 @@
+"""Satrap 统一日志配置与输出接口"""
 import logging
 from os.path import dirname, abspath
 import os

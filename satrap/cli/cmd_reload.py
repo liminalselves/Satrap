@@ -1,3 +1,4 @@
+"""CLI 后端配置热重载命令"""
 import argparse
 import sys
 

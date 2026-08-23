@@ -1,3 +1,4 @@
+"""CLI 平台适配器配置与状态管理命令"""
 from __future__ import annotations
 import argparse
 

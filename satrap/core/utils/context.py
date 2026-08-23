@@ -1,3 +1,9 @@
+"""
+对话上下文管理组件
+
+提供消息的 SQLite 持久化, 查询, 分支和令牌预算裁剪,
+并实现供同步与异步工作流使用的上下文管理器
+"""
 from __future__ import annotations
 
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate

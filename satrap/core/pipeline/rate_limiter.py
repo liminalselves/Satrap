@@ -1,3 +1,4 @@
+"""后端请求管线使用的令牌桶限流器"""
 from __future__ import annotations
 
 import asyncio

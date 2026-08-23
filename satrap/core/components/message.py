@@ -1,3 +1,9 @@
+"""
+跨平台消息组件模型
+
+定义文本, 图片, 文件, 回复和转发等统一消息组件,
+并提供文件下载, Base64 转换与临时文件令牌服务
+"""
 from __future__ import annotations
 
 import asyncio

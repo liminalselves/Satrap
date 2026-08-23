@@ -1,3 +1,9 @@
+"""
+文本重排序模型 API 调用封装
+
+提供查询与候选文档的同步和异步相关性排序,
+统一处理模型配置, 返回数量与排序结果解析
+"""
 from typing import List, Dict, Any, Optional, Union, Literal, cast
 from satrap.core.utils import normalize_openai_base_url
 import requests

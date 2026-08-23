@@ -1,3 +1,9 @@
+"""
+大语言模型 API 调用封装
+
+提供兼容 OpenAI 接口的同步, 异步, 流式和非流式调用,
+统一处理多模态消息, 思考内容, 工具调用与响应事件
+"""
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, safe_getattr, safe_getattr_str, safe_getattr_list, safe_getattr_dict

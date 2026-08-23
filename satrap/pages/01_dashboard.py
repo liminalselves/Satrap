@@ -1,3 +1,4 @@
+"""管理后台的运行状态总览页面"""
 from __future__ import annotations
 
 import time

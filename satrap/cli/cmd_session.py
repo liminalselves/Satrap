@@ -1,3 +1,4 @@
+"""CLI 会话配置与生命周期管理命令"""
 from __future__ import annotations
 import argparse
 

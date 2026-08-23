@@ -1,3 +1,4 @@
+"""CLI 配置查看与修改命令"""
 from __future__ import annotations
 import argparse
 from typing import Any, cast

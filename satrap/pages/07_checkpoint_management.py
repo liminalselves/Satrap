@@ -1,3 +1,4 @@
+"""管理后台的会话检查点管理页面"""
 from __future__ import annotations
 
 import datetime

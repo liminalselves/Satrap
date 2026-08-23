@@ -1,3 +1,4 @@
+"""CLI 后端状态, 停止与重启命令"""
 from __future__ import annotations
 import argparse
 

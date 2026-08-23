@@ -1,3 +1,4 @@
+"""会话内置命令的注册与处理逻辑"""
 from __future__ import annotations
 
 import secrets

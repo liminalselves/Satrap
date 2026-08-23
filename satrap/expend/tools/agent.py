@@ -1,3 +1,4 @@
+"""子代理任务创建与执行工具"""
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
 from concurrent.futures import ThreadPoolExecutor, as_completed

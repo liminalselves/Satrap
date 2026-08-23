@@ -1,3 +1,4 @@
+"""多模态图片输入的解析, 下载与格式转换工具"""
 from __future__ import annotations
 
 import base64

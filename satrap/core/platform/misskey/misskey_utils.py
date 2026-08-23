@@ -1,3 +1,4 @@
+"""Misskey 消息组件转换与文件标识处理工具"""
 from __future__ import annotations
 
 from typing import Any, cast

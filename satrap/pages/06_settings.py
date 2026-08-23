@@ -1,3 +1,4 @@
+"""管理后台的全局配置与后端控制页面"""
 from __future__ import annotations
 
 import json

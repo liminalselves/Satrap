@@ -1,3 +1,4 @@
+"""同步与异步会话命令的注册, 解析和执行器"""
 from typing import Any, Optional, Callable, Dict, List, Tuple, Awaitable
 
 from satrap.core.log import logger

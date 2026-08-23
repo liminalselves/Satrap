@@ -1,3 +1,9 @@
+"""
+Satrap 后端服务组件的统一编排器
+
+集中构建模型配置, 会话, 用户, 请求管线和平台适配器等管理组件,
+负责后端的启动, 停止, 配置热重载与运行状态汇总
+"""
 from __future__ import annotations
 
 import asyncio

@@ -1,3 +1,9 @@
+"""
+用户与会话归属管理器
+
+持久化平台用户资料及其会话列表, 根据用户调用选择或创建会话,
+并协调 SessionManager 完成用户侧会话生命周期管理
+"""
 from __future__ import annotations
 
 import json

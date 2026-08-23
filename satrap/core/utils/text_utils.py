@@ -1,3 +1,4 @@
+"""消息文本清理与片段提取辅助函数"""
 from typing import List, Optional
 import re
 

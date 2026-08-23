@@ -1,3 +1,4 @@
+"""CLI 后端服务启动命令"""
 from __future__ import annotations
 import argparse
 

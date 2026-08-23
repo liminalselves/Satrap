@@ -1,3 +1,4 @@
+"""网页搜索与页面内容抓取工具"""
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from bs4 import BeautifulSoup
 from typing import Any, cast

@@ -1,3 +1,4 @@
+"""平台适配器协议, 注册表与运行时管理器"""
 from __future__ import annotations
 
 import asyncio
