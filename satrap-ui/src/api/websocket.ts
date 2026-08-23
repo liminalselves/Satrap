@@ -37,6 +37,8 @@ export type WebSocketEventHandler = {
   onDisconnect?: () => void;
 };
 
+export type WebSocketEndpoint = '/ws/status' | '/ws/logs' | `/ws/logs?lines=${number}`;
+
 export class SatrapWebSocket {
   private ws: WebSocket | null = null;
   private reconnectAttempts = 0;
@@ -46,7 +48,7 @@ export class SatrapWebSocket {
   private endpoint: string;
   private isIntentionallyClosed = false;
 
-  constructor(endpoint: '/ws/logs' | '/ws/status') {
+  constructor(endpoint: WebSocketEndpoint) {
     this.endpoint = endpoint;
   }
 

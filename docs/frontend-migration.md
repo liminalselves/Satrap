@@ -1,6 +1,6 @@
-# 前端迁移指南
+# React 前端迁移说明
 
-从 Streamlit 迁移到 React 的完整指南。
+Satrap 管理前端已经从 Streamlit 完整迁移到 React + TypeScript + Vite, 旧 Streamlit 入口与依赖已移除
 
 ## 概述
 
@@ -19,7 +19,10 @@ Satrap 前端已从 Streamlit 迁移到 React + TypeScript + Vite，带来以下
 # 终端 1: 启动后端
 python -m satrap.main run
 
-# 终端 2: 启动前端开发服务器
+# 终端 2: 启动独立控制服务, 用于配置与进程控制
+python -m satrap.core.backend.control_server
+
+# 终端 3: 启动前端开发服务器
 cd satrap-ui
 npm install
 npm run dev
@@ -34,7 +37,10 @@ npm run dev
 cd satrap-ui
 npm run build
 
-# 启动后端 (自动托管前端)
+# 终端 1: 启动控制服务
+python -m satrap.core.backend.control_server
+
+# 终端 2: 启动后端, 自动托管前端
 python -m satrap.main run
 ```
 
@@ -44,15 +50,15 @@ python -m satrap.main run
 
 | Streamlit 页面 | React 页面 | 状态 |
 |---------------|-----------|------|
-| `admin.py` (欢迎页) | `Dashboard` | 已合并 |
-| `01_dashboard.py` | `Dashboard` | 完成 |
-| `02_model_config.py` | `Models` | 完成 |
-| `03_session_management.py` | `Sessions` | 完成 |
-| `04_platform_status.py` | `Platforms` | 完成 |
-| `05_log_monitor.py` | `Logs` | 完成 |
-| `06_settings.py` | `Settings` | 完成 |
-| `07_checkpoint_management.py` | `Checkpoints` | 完成 |
-| `08_user_management.py` | `Users` | 完成 |
+| `admin.py` (欢迎页) | `Dashboard` | 已替换, 旧入口已移除 |
+| `01_dashboard.py` | `Dashboard` | 已替换, 旧页面已移除 |
+| `02_model_config.py` | `Models` | 已替换, 旧页面已移除 |
+| `03_session_management.py` | `Sessions` | 已替换, 支持目录发现、完整配置和实例创建 |
+| `04_platform_status.py` | `Platforms` | 已替换, 支持离线配置 CRUD 和运行时热加载 |
+| `05_log_monitor.py` | `Logs` | 已替换, 支持历史行数、多级筛选和无丢失暂停 |
+| `06_settings.py` | `Settings` | 已替换, 支持默认配置创建、校验和按需重启 |
+| `07_checkpoint_management.py` | `Checkpoints` | 已替换, 支持回滚、重试、描述和血缘查看 |
+| `08_user_management.py` | `Users` | 已替换, 旧页面已移除 |
 | — (新增) | `Chat` | React 新增聊天页, 独立整页, 由聊天展示层服务 (19872) 提供, 见 [聊天展示层](chat-display.md) |
 
 ## 架构变化
@@ -98,10 +104,16 @@ const apiClient = axios.create({
 | `/api/shutdown` | POST | 关闭后端 |
 | `/api/config/models` | GET/POST/PATCH/DELETE | 模型配置 |
 | `/api/config/session-classes` | GET/POST/PUT/DELETE | 会话类 |
+| `/api/session/discovery` | GET | 扫描配置声明的 Session 目录 |
+| `/api/session/discovery/directories` | POST | 创建配置声明的 Session 目录 |
+| `/api/sessions` | GET/POST | 查看和创建会话实例 |
 | `/api/users` | GET | 用户列表 |
 | `/api/user/*` | POST | 用户操作 |
 | `/api/checkpoints` | GET | 检查点列表 |
 | `/api/checkpoint/*` | POST | 检查点操作 |
+| `/ws/logs?lines=100` | WebSocket | 日志历史与实时推送, 行数范围 50–500 |
+
+独立控制服务默认监听 `127.0.0.1:19871`, 提供 `/config`、`/config/default`、`/config/validate`、`/config/platforms` 和后端启动、停止、重启接口
 
 ## 状态管理
 
@@ -191,20 +203,8 @@ npm run build
 npm run build
 ```
 
-## 回滚到 Streamlit
-
-如需回滚到 Streamlit 前端:
-
-```bash
-# 直接运行 Streamlit
-streamlit run satrap/admin.py
-```
-
-Streamlit 代码仍保留在 `satrap/pages/` 目录。
-
 ## 后续计划
 
-- [ ] WebSocket 实时日志推送
 - [ ] 用户认证与权限
 - [ ] 多主题支持
 - [ ] 移动端适配

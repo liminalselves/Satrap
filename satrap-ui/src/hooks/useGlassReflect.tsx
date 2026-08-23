@@ -138,14 +138,16 @@ export function useGlassReflect<T extends HTMLElement>(options?: {
 }) {
   const ref = useRef<T>(null);
   const context = useContext(GlassReflectContext);
+  const reflectRange = options?.reflectRange;
+  const reflectSize = options?.reflectSize;
 
   useEffect(() => {
     const element = ref.current;
     if (!element || !context) return;
 
-    context.register(element, options);
+    context.register(element, { reflectRange, reflectSize });
     return () => context.unregister(element);
-  }, [context, options?.reflectRange, options?.reflectSize]);
+  }, [context, reflectRange, reflectSize]);
 
   return ref;
 }

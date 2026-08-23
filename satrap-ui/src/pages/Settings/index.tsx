@@ -26,12 +26,13 @@ interface ConfigData {
 }
 
 export function Settings() {
-  const { health, reloadConfig, shutdown } = useBackendStore();
+  const { health, isRunning, reloadConfig, shutdown, refreshAll } = useBackendStore();
   const [config, setConfig] = useState<ConfigData>({});
   const [rawConfig, setRawConfig] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [configPath, setConfigPath] = useState('');
+  const [configExists, setConfigExists] = useState(false);
   const [controlAvailable, setControlAvailable] = useState(false);
 
   // 从控制服务加载配置
@@ -43,6 +44,7 @@ export function Settings() {
         setConfig(result.config);
         setRawConfig(yaml.dump(result.config, { indent: 2 }));
         setConfigPath(result.path || '');
+        setConfigExists(result.exists !== false);
         setControlAvailable(true);
       } else {
         setControlAvailable(false);
@@ -58,23 +60,38 @@ export function Settings() {
     loadConfig();
   }, [loadConfig]);
 
-  // 保存配置
-  const handleSave = useCallback(async () => {
+  const persistConfig = useCallback(async (data: ConfigData) => {
     setSaving(true);
     try {
-      const result = await controlApi.saveConfig(config);
+      const result = await controlApi.saveConfig(data);
       if (result.ok) {
-        toast('success', '配置已保存');
-        setRawConfig(yaml.dump(config, { indent: 2 }));
+        setConfig(data);
+        setRawConfig(yaml.dump(data, { indent: 2 }));
+        setConfigExists(true);
+        if (isRunning) {
+          const restarted = await controlApi.restart();
+          toast(
+            restarted.ok ? 'success' : 'warning',
+            restarted.ok ? '配置已保存, 后端正在重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
+          );
+          await refreshAll();
+        } else {
+          toast('success', '配置已保存');
+        }
       } else {
         toast('error', result.error || '保存失败');
       }
-    } catch {
-      toast('error', '控制服务未运行，无法保存配置');
+    } catch (e) {
+      toast('error', '保存失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
     } finally {
       setSaving(false);
     }
-  }, [config]);
+  }, [isRunning, refreshAll]);
+
+  // 保存配置
+  const handleSave = useCallback(async () => {
+    await persistConfig(config);
+  }, [config, persistConfig]);
 
   // 保存原始配置
   const handleSaveRaw = useCallback(async () => {
@@ -90,23 +107,34 @@ export function Settings() {
         return;
       }
       
-      const result = await controlApi.saveConfig(parsed);
-      if (result.ok) {
-        toast('success', '配置已保存');
-        setConfig(parsed);
-      } else {
-        toast('error', result.error || '保存失败');
-      }
+      await persistConfig(parsed);
     } catch (e) {
       if (e instanceof yaml.YAMLException) {
         toast('error', 'YAML 格式错误: ' + e.message);
       } else {
-        toast('error', '控制服务未运行，无法保存配置');
+        toast('error', '配置处理失败: ' + (e instanceof Error ? e.message : '未知错误'));
       }
     } finally {
       setSaving(false);
     }
-  }, [rawConfig]);
+  }, [persistConfig, rawConfig]);
+
+  const handleCreateDefault = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await controlApi.createDefaultConfig();
+      if (!result.ok || !result.config) throw new Error(result.error || '创建失败');
+      setConfig(result.config);
+      setRawConfig(yaml.dump(result.config, { indent: 2 }));
+      setConfigPath(result.path || '');
+      setConfigExists(true);
+      toast('success', '默认配置已创建');
+    } catch (e) {
+      toast('error', '创建默认配置失败: ' + (e instanceof Error ? e.message : '未知错误'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   // 重载配置
   const handleReload = useCallback(async () => {
@@ -130,6 +158,16 @@ export function Settings() {
       toast('error', '控制服务未运行');
     }
   }, []);
+
+  const handleRestart = useCallback(async () => {
+    try {
+      const result = await controlApi.restart();
+      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端重启中') : (result.error || '重启失败'));
+      await refreshAll();
+    } catch {
+      toast('error', '控制服务未运行');
+    }
+  }, [refreshAll]);
 
   // 更新配置字段
   const updateConfig = useCallback((key: string, value: unknown) => {
@@ -184,11 +222,15 @@ export function Settings() {
             )}
           </div>
           <div className="flex gap-2">
-            {health?.running ? (
+            {isRunning ? (
               <>
                 <Button variant="default" onClick={handleReload}>
                   <RotateCcw className="h-4 w-4 mr-2" />
                   重载配置
+                </Button>
+                <Button variant="primary" onClick={handleRestart}>
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                  重启后端
                 </Button>
                 <Button variant="danger" onClick={handleShutdown}>
                   <Power className="h-4 w-4 mr-2" />
@@ -222,6 +264,18 @@ export function Settings() {
           </div>
         </div>
 
+        {!configExists && controlAvailable && (
+          <div className="mb-4 flex items-center justify-between rounded-sm border border-border-glass bg-glass p-4">
+            <div>
+              <p className="font-medium text-text-primary">尚未创建配置文件</p>
+              <p className="text-sm text-text-secondary">可以生成完整的默认配置后再编辑</p>
+            </div>
+            <Button variant="primary" onClick={handleCreateDefault} disabled={loading}>
+              创建默认配置
+            </Button>
+          </div>
+        )}
+
         <Tabs defaultValue="general">
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
@@ -238,7 +292,7 @@ export function Settings() {
                 <Input
                   value={config.api?.host || ''}
                   onChange={(e) => updateApiConfig('host', e.target.value)}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -249,7 +303,7 @@ export function Settings() {
                   type="number"
                   value={config.api?.port || 19870}
                   onChange={(e) => updateApiConfig('port', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -259,7 +313,7 @@ export function Settings() {
                 <Input
                   value={config.default_session_type || ''}
                   onChange={(e) => updateConfig('default_session_type', e.target.value)}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -270,7 +324,7 @@ export function Settings() {
                   type="number"
                   value={config.max_sessions || 100}
                   onChange={(e) => updateConfig('max_sessions', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -281,7 +335,7 @@ export function Settings() {
                   type="number"
                   value={config.idle_timeout || 3600}
                   onChange={(e) => updateConfig('idle_timeout', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -292,7 +346,7 @@ export function Settings() {
                   type="number"
                   value={config.llm_timeout || 60}
                   onChange={(e) => updateConfig('llm_timeout', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -303,7 +357,7 @@ export function Settings() {
                   type="number"
                   value={config.rate_limit || 10}
                   onChange={(e) => updateConfig('rate_limit', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div>
@@ -314,13 +368,13 @@ export function Settings() {
                   type="number"
                   value={config.rate_burst || 20}
                   onChange={(e) => updateConfig('rate_burst', Number(e.target.value))}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
             </div>
 
             <div className="flex gap-3 mt-6 pt-6 border-t border-border-glass">
-              <Button variant="primary" onClick={handleSave} disabled={!controlAvailable || saving}>
+              <Button variant="primary" onClick={handleSave} disabled={!controlAvailable || !configExists || saving}>
                 <Save className="h-4 w-4 mr-2" />
                 {saving ? '保存中...' : '保存配置'}
               </Button>
@@ -338,11 +392,11 @@ export function Settings() {
                   placeholder="# 配置文件内容"
                   value={rawConfig}
                   onChange={(e) => setRawConfig(e.target.value)}
-                  disabled={!controlAvailable}
+                  disabled={!controlAvailable || !configExists}
                 />
               </div>
               <div className="flex gap-3">
-                <Button variant="primary" onClick={handleSaveRaw} disabled={!controlAvailable || saving}>
+                <Button variant="primary" onClick={handleSaveRaw} disabled={!controlAvailable || !configExists || saving}>
                   <Save className="h-4 w-4 mr-2" />
                   {saving ? '保存中...' : '保存原始配置'}
                 </Button>

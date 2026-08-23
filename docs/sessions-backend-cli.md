@@ -171,11 +171,17 @@ satrap user sessions misskey:user1
 ### 管理面板
 
 ```bash
-pip install -e .[admin]
-streamlit run satrap/admin.py
+cd satrap-ui
+npm install
+npm run build
+cd ..
+# 终端 1
+python -m satrap.core.backend.control_server
+# 终端 2
+python -m satrap.main run
 ```
 
-当前管理面板包含:
+访问 `http://127.0.0.1:19870`。当前 React 管理面板包含:
 
 - 仪表盘
 - 模型配置

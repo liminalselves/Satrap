@@ -40,9 +40,6 @@ install_requires = [
 ]
 
 extras_require = {
-    "admin": [
-        "streamlit>=1.36.0",
-    ],
     "vector": [
         "faiss-cpu>=1.7.4",
     ],
@@ -61,9 +58,6 @@ setup(
     license="GPL-3.0-only",
     packages=find_packages(include=["satrap", "satrap.*"]),
     include_package_data=True,
-    package_data={
-        "satrap": ["pages/*.py"],
-    },
     python_requires=">=3.10",
     install_requires=install_requires,
     extras_require=extras_require,

@@ -1099,6 +1099,7 @@ class SessionManager:
             if self._default_checkpoint_db is not None and "db_path" not in source and ("db_path" in accepted or has_var_kw):
                 target.setdefault("db_path", self._default_checkpoint_db)
 
+        # case 1: 优先支持显式 session_config 入参
         if any(p.name == "session_config" for p in params):
             payload = dict(session_cfg.session_config or {})
             payload.pop("session_id", None)
@@ -1115,10 +1116,9 @@ class SessionManager:
                         kwargs[key] = value
             inject_checkpoint_defaults(kwargs, payload)
             return session_class(**kwargs)   # type: ignore[misc]
-        # case 1: 优先支持显式 session_config 入参
 
-        payload = dict(session_cfg.session_config or {})
         # case 2/3: 走 session_id + 配置透传
+        payload = dict(session_cfg.session_config or {})
         payload.pop("session_id", None)
 
         kwargs: Dict[str, Any] = {}
@@ -1172,6 +1172,7 @@ class SessionManager:
 
             model_cfg_mgr = self._model_cfg_mgr
             # 读取 model_name -> 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
+
             llm_instance = None
             llm_cfg = None
             if model_cfg_mgr:
@@ -1212,10 +1213,13 @@ class SessionManager:
 
             session = self._instantiate_session(session_class, session_cfg)
             # 注入 CM 三参数(同源配置), 使滞回截断生效 (safe_getattr 兼容测试替身)
+
             _ctx_window = safe_getattr(llm_cfg, "context_window") if llm_cfg else None
             _hist_ratio = safe_getattr(llm_cfg, "history_ratio") if llm_cfg else None
+
             if model_cfg_mgr and _ctx_window and _hist_ratio:
-                _ctx = safe_getattr(session, 'session_ctx')
+                _ctx: ContextManager | AsyncContextManager | None = safe_getattr(session, 'session_ctx')
+
                 if _ctx is not None:
                     _ctx.max_context = _ctx_window
                     _ctx.history_ratio = _hist_ratio
@@ -1224,6 +1228,7 @@ class SessionManager:
                     _ctx.floor_tokens = int(_ctx.history_budget * _ctx.truncation_floor)
                     _ctx.output_budget = _ctx_window - _ctx.history_budget
             # 注入 UserManager, 使 Session 能访问当前用户的所有上下文
+
             user_mgr = self._user_mgr
             if user_mgr is not None:
                 session._user_manager = user_mgr

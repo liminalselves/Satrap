@@ -9,14 +9,16 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import mimetypes
 from pathlib import Path
-from urllib.parse import unquote
-from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qs, unquote, urlsplit
+from typing import TYPE_CHECKING, Any, cast
 
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
+from satrap.core.framework.session_discovery import create_default_session_dir, discover_session_classes
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr, safe_getattr_str
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.utils.paths import get_data_dir, get_db_path, get_project_root
@@ -26,6 +28,22 @@ if TYPE_CHECKING:
 
 STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "satrap-ui" / "dist"
 # 静态文件目录 - 前端构建产物
+
+
+def _parse_json_object(body: bytes) -> dict[str, Any]:
+    """
+    将请求体解析为 JSON 对象
+
+    参数:
+    - body: 请求体
+
+    返回:
+    - dict[str, Any]: JSON 对象
+    """
+    payload: object = json.loads(body or b"{}")
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    return dict(cast(dict[str, Any], payload))
 
 
 class BackendHTTPServer(MiniHTTPServer):
@@ -130,20 +148,32 @@ class BackendHTTPServer(MiniHTTPServer):
         - reader: 流读取器
         - writer: 流写入器
         """
-        if path == "/ws/logs":
-            await self._ws_log_handler(reader, writer)
-        elif path == "/ws/status":
+        parsed_path = urlsplit(path)
+        if parsed_path.path == "/ws/logs":
+            query = parse_qs(parsed_path.query)
+            try:
+                history_lines = int(query.get("lines", ["100"])[0])
+            except ValueError:
+                history_lines = 100
+            await self._ws_log_handler(reader, writer, max(50, min(history_lines, 500)))
+        elif parsed_path.path == "/ws/status":
             await self._ws_status_handler(reader, writer)
         else:
             await self._ws_close(writer, 1008, "unknown endpoint")
 
-    async def _ws_log_handler(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _ws_log_handler(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        history_lines: int = 100,
+    ):
         """
         WebSocket 日志推送处理器
 
         参数:
         - reader: 流读取器
         - writer: 流写入器
+        - history_lines: 首次连接时推送的历史行数
         """
         log_file = self._find_log_file()
         if not log_file:
@@ -155,11 +185,11 @@ class BackendHTTPServer(MiniHTTPServer):
             with log_file.open("rb") as f:
                 f.seek(0, 2)   # 移到文件末尾
                 file_size = f.tell()
-                # 读取最后 10KB 或整个文件
-                read_size = min(10 * 1024, file_size)
+                # 按历史行数放大读取窗口, 最多读取 1MB
+                read_size = min(max(history_lines * 1024, 10 * 1024), 1024 * 1024, file_size)
                 f.seek(file_size - read_size)
                 data = f.read().decode("utf-8", errors="replace")
-                lines = data.strip().split("\n")[-100:]
+                lines = data.strip().split("\n")[-history_lines:]
                 for line in lines:
                     if line.strip():
                         await self._ws_send(writer, {
@@ -168,7 +198,7 @@ class BackendHTTPServer(MiniHTTPServer):
                         })
         except Exception as e:
             await self._ws_send(writer, {"type": "error", "message": str(e)})
-        # 发送历史日志 (最后 100 行)
+        # 发送指定行数的历史日志
 
         position = log_file.stat().st_size
         # 监控新日志
@@ -326,7 +356,7 @@ class BackendHTTPServer(MiniHTTPServer):
 
         if method == "POST" and path == "/api/config/session-classes" and backend.session_class_mgr:
             try:
-                payload = json.loads(body or b"{}")
+                payload = _parse_json_object(body)
                 backend.session_class_mgr.register_by_class_path(
                     str(payload.get("name", "")),
                     str(payload.get("class_path", "")),
@@ -334,10 +364,89 @@ class BackendHTTPServer(MiniHTTPServer):
                     context_key=str(payload.get("context_key", "")),
                     model_key=str(payload.get("model_key", "")),
                 )
+                params = payload.get("params")
+                if params is not None:
+                    if not isinstance(params, dict):
+                        raise ValueError("params 必须是对象")
+                    backend.session_class_mgr.set_config(
+                        str(payload.get("name", "")),
+                        cast(dict[str, Any], params),
+                    )
                 return 200, {"ok": True}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/session-classes
+
+        route_path, _, query_string = path.partition("?")
+        if method == "GET" and route_path == "/api/session/discovery":
+            try:
+                query = parse_qs(query_string)
+                requested_paths = [item for item in query.get("path", []) if item.strip()]
+                configured_paths = list(backend.config.session_scan_paths)
+                if any(item not in configured_paths for item in requested_paths):
+                    raise ValueError("只能扫描配置中的 Session 目录")
+                scan_paths = requested_paths or configured_paths
+                results = [item.to_dict() for item in discover_session_classes(scan_paths)]
+                return 200, {"paths": list(backend.config.session_scan_paths), "results": results}
+            except Exception as e:
+                return 400, {"error": str(e)}
+        # 接口: GET /api/session/discovery
+
+        if method == "POST" and route_path == "/api/session/discovery/directories":
+            try:
+                payload = _parse_json_object(body)
+                requested_path = str(payload.get("path", "")).strip()
+                configured_paths = list(backend.config.session_scan_paths)
+                if requested_path and requested_path not in configured_paths:
+                    raise ValueError("只能创建配置中的 Session 扫描目录")
+                target = create_default_session_dir([requested_path] if requested_path else configured_paths)
+                return 200, {"ok": True, "path": str(target)}
+            except Exception as e:
+                return 400, {"error": str(e)}
+        # 接口: POST /api/session/discovery/directories
+
+        if method == "GET" and route_path == "/api/sessions" and backend.session_manager:
+            active_ids = {item.session_id for item in backend.session_manager.list_sessions()}
+            sessions: list[dict[str, Any]] = []
+            for item in backend.session_manager.list_session_configs():
+                serialized = dataclasses.asdict(item)
+                serialized["active"] = item.session_id in active_ids
+                sessions.append(serialized)
+            return 200, {"sessions": sessions}
+        # 接口: GET /api/sessions
+
+        if (
+            method == "POST"
+            and route_path == "/api/sessions"
+            and backend.session_manager
+            and backend.session_class_mgr
+        ):
+            try:
+                payload = _parse_json_object(body)
+                class_name = str(payload.get("class_name", "")).strip()
+                if not class_name:
+                    raise ValueError("class_name 不能为空")
+                raw_extra_params = cast(object, payload.get("params") or {})
+                if not isinstance(raw_extra_params, dict):
+                    raise ValueError("params 必须是对象")
+                extra_params = dict(cast(dict[str, Any], raw_extra_params))
+                adapter_id = str(payload.get("adapter_id", "")).strip()
+                if adapter_id:
+                    extra_params["adapter_id"] = adapter_id
+                llm_name = str(payload.get("llm_name", "")).strip()
+                if llm_name:
+                    model_key = backend.session_class_mgr.get_model_key(class_name) or "model_name"
+                    extra_params[model_key] = llm_name
+                config = backend.session_manager.register_session_from_class_config(
+                    class_name,
+                    backend.session_class_mgr,
+                    session_id=str(payload.get("session_id", "")).strip() or None,
+                    extra_params=extra_params,
+                )
+                return 200, {"ok": True, "session": dataclasses.asdict(config)}
+            except Exception as e:
+                return 400, {"error": str(e)}
+        # 接口: POST /api/sessions
 
         if method == "POST" and path.endswith("/enable") and "/api/config/session-classes/" in path and backend.session_class_mgr:
             name = unquote(path.split("/")[5])
@@ -362,10 +471,21 @@ class BackendHTTPServer(MiniHTTPServer):
 
         if method == "PUT" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
-            payload = json.loads(body)
-            if "params" in payload:
-                backend.session_class_mgr.set_config(name, payload["params"])
-            return 200, {"ok": True}
+            payload = _parse_json_object(body)
+            params = payload.get("params")
+            if params is not None and not isinstance(params, dict):
+                return 400, {"error": "params 必须是对象"}
+            try:
+                updated = backend.session_class_mgr.update_entry(
+                    name,
+                    params=cast(dict[str, Any], params) if isinstance(params, dict) else None,
+                    description=str(payload["description"]) if "description" in payload else None,
+                    context_key=str(payload["context_key"]) if "context_key" in payload else None,
+                    model_key=str(payload["model_key"]) if "model_key" in payload else None,
+                )
+                return 200, {"ok": True, "config": updated}
+            except Exception as e:
+                return 400, {"error": str(e)}
         # 接口: PUT /api/config/session-classes/{name}
 
         if method == "DELETE" and path.startswith(path_prefix) and backend.session_class_mgr:

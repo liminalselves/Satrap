@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pathlib import Path
 
-from satrap.admin_utils.config_editor import (
+from satrap.core.config_document import (
     config_exists,
     create_default_config,
     configured_platform_types,
@@ -78,7 +78,7 @@ def test_config_editor_yaml_roundtrip(tmp_path: Path):
     config = save_config_document(path, data)
     loaded = load_config_document(path)
 
-    assert isinstance(config, BackendConfig)
+    assert isinstance(config, dict)
     assert loaded["api"]["port"] == 19870
     assert loaded["platforms"][0]["id"] == "misskey1"
 
@@ -96,7 +96,7 @@ def test_config_editor_json_roundtrip(tmp_path: Path):
     config = save_config_document(path, data)
     loaded = load_config_document(path)
 
-    assert config.api_port == 19871
+    assert config["api"]["port"] == 19871
     assert loaded["api"]["host"] == "127.0.0.1"
 
 
@@ -180,11 +180,11 @@ def test_create_default_config_under_satrap(tmp_path: Path):
     """
     assert not config_exists(tmp_path)
 
-    config = create_default_config(tmp_path)
     path = tmp_path / ".satrap" / "config.yaml"
+    config = create_default_config(path)
 
     assert path.exists()
-    assert config.api_host == "127.0.0.1"
+    assert config["api"]["host"] == "127.0.0.1"
     assert load_config_document(path)["platforms"] == []
 
 
@@ -227,36 +227,38 @@ def test_platform_upsert_add_update_and_delete():
     platforms: list[dict[str, Any]] = []
     platforms = upsert_platform(
         platforms,
-        original_id=None,
-        platform_id="misskey_main",
-        platform_type="misskey",
-        settings={
-            "base_url": "https://misskey.example/",
-            "api_token": "token",
-            "chat_enabled": True,
-            "room_enabled": False,
+        {
+            "id": "misskey_main",
+            "type": "misskey",
+            "settings": {
+                "base_url": "https://misskey.example/",
+                "api_token": "token",
+                "chat_enabled": True,
+                "room_enabled": False,
+            },
         },
+        original_id=None,
     )
     platforms = upsert_platform(
         platforms,
-        original_id=None,
-        platform_id="onebot_main",
-        platform_type="onebot",
-        settings={
-            "host": "127.0.0.1",
-            "port": 6700,
-            "access_token": "token",
-            "secret": "",
-            "enable_private": True,
-            "enable_group": True,
+        {
+            "id": "onebot_main",
+            "type": "onebot",
+            "settings": {
+                "host": "127.0.0.1",
+                "port": 6700,
+                "access_token": "token",
+                "secret": "",
+                "enable_private": True,
+                "enable_group": True,
+            },
         },
+        original_id=None,
     )
     platforms = upsert_platform(
         platforms,
+        {"id": "misskey_prod", "type": "misskey", "settings": {"base_url": "https://misskey.prod/", "api_token": "token2"}},
         original_id="misskey_main",
-        platform_id="misskey_prod",
-        platform_type="misskey",
-        settings={"base_url": "https://misskey.prod/", "api_token": "token2"},
     )
 
     assert [item["id"] for item in platforms] == ["misskey_prod", "onebot_main"]
@@ -276,10 +278,8 @@ def test_platform_upsert_rejects_duplicate_id():
     try:
         upsert_platform(
             platforms,
+            {"id": "onebot_main", "type": "misskey", "settings": {}},
             original_id="misskey_main",
-            platform_id="onebot_main",
-            platform_type="misskey",
-            settings={},
         )
     except ValueError as e:
         assert "已存在" in str(e)
@@ -295,9 +295,10 @@ def test_save_config_document_validates_platforms(tmp_path: Path):
     - tmp_path: tmp路径
     """
     path = tmp_path / "satrap" / "config.yaml"
+    invalid_data: dict[str, Any] = {"platforms": [{"id": "", "type": "misskey", "settings": {}}]}
 
     try:
-        save_config_document(path, {"platforms": [{"id": "", "type": "misskey", "settings": {}}]})
+        save_config_document(path, invalid_data)
     except ValueError as e:
         assert "id 不能为空" in str(e)
     else:

@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import sys
 
-from satrap.admin_utils.config_editor import (
+from satrap.core.config_document import (
     create_default_config,
     find_config_path,
     load_config_document,
@@ -13,6 +13,7 @@ from satrap.admin_utils.config_editor import (
     save_config_document,
 )
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs, print_json
+from satrap.core.backend.BackendManager import BackendConfig
 
 
 def _warn_if_backend_running(args: argparse.Namespace):
@@ -58,8 +59,9 @@ def cmd_config_init(args: argparse.Namespace):
     - args: 额外位置参数
     """
     _warn_if_backend_running(args)
-    config = create_default_config()
-    print(f"配置已就绪: {find_config_path()}")
+    path = find_config_path()
+    config = BackendConfig.from_dict(create_default_config(path))
+    print(f"配置已就绪: {path}")
     print(f"API: {config.api_host}:{config.api_port}")
 
 

@@ -7,7 +7,7 @@ import sys
 
 from typing import Any, cast
 
-from satrap.admin_utils.config_editor import (
+from satrap.core.config_document import (
     delete_platform,
     find_config_path,
     load_config_document,
@@ -113,10 +113,12 @@ def cmd_platform_upsert(args: argparse.Namespace):
     try:
         data["platforms"] = upsert_platform(
             platforms,
+            {
+                "id": args.id,
+                "type": args.type,
+                "settings": _settings_from_args(args),
+            },
             original_id=args.id if args.action == "update" else None,
-            platform_id=args.id,
-            platform_type=args.type,
-            settings=_settings_from_args(args),
         )
         save_config_document(path, data)
         print(f"平台配置已保存: {args.id}")

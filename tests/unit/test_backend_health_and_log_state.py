@@ -8,7 +8,7 @@ import pytest
 from pathlib import Path
 
 from satrap.core.backend.BackendManager import BackendManager
-from satrap.admin_utils.log_state import read_log_increment
+from satrap.core.log_reader import read_log_increment
 
 
 @pytest.mark.asyncio

@@ -219,6 +219,7 @@ plans/
 .toolkit/
 .agents/
 .qoder/
+.zcode/
 .qoderignore
 .pyrightcfg/
 

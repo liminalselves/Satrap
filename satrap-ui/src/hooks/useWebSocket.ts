@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { SatrapWebSocket, WebSocketEventHandler } from '@/api/websocket';
+import { SatrapWebSocket, WebSocketEventHandler, WebSocketEndpoint } from '@/api/websocket';
 
-export function useWebSocket(endpoint: '/ws/logs' | '/ws/status') {
+export function useWebSocket(endpoint: WebSocketEndpoint) {
   const wsRef = useRef<SatrapWebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
 

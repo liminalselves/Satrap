@@ -7,13 +7,19 @@ import { toast } from '@/components/ui/Toast';
 import { PLATFORM_TYPES } from '@/utils/constants';
 import { PageHeader, FormModal, ActionButtons, EmptyState } from '@/components/common';
 import { Plus, Edit2, Trash2, RefreshCw } from 'lucide-react';
+import { controlApi } from '@/api/control';
+import { normalizePlatformSettings } from '@/utils/adminMigration';
+import type { FormField } from '@/components/common';
 import type { PlatformConfig } from '@/api/types';
 
 export function Platforms() {
-  const { health, refreshHealth } = useBackendStore();
+  const { health, refreshHealth, reloadConfig } = useBackendStore();
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editingPlatform, setEditingPlatform] = useState<PlatformConfig | null>(null);
+  const [rawSettings, setRawSettings] = useState('{}');
   const [formData, setFormData] = useState({
     id: '',
     type: 'misskey',
@@ -23,15 +29,27 @@ export function Platforms() {
   // 从 health 中提取适配器信息
   const adapters = useMemo(() => health?.adapters || {}, [health?.adapters]);
 
+  const loadPlatforms = useCallback(async () => {
+    setLoading(true);
+    try {
+      const result = await controlApi.listPlatforms();
+      if (!result.ok) throw new Error(result.error || '读取失败');
+      setPlatforms(result.platforms || []);
+    } catch (e) {
+      toast('error', '读取平台配置失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    // 从后端配置中读取平台列表
-    const configPlatforms = health?.running ? [] : [];
-    setPlatforms(configPlatforms);
-  }, [health]);
+    loadPlatforms();
+  }, [loadPlatforms]);
 
   const handleAdd = useCallback(() => {
     setEditingPlatform(null);
     setFormData({ id: '', type: 'misskey', settings: {} });
+    setRawSettings('{}');
     setShowModal(true);
   }, []);
 
@@ -42,20 +60,65 @@ export function Platforms() {
       type: platform.type,
       settings: platform.settings,
     });
+    setRawSettings(JSON.stringify(platform.settings, null, 2));
     setShowModal(true);
   }, []);
 
   const handleDelete = useCallback(async (id: string) => {
-    if (!confirm(`确定要删除平台 "${id}" 吗？`)) return;
-    // TODO: 调用 API 删除
-    toast('success', '已删除');
-  }, []);
+    if (!confirm(`确定要删除平台 "${id}" 吗?`)) return;
+    try {
+      const result = await controlApi.deletePlatform(id);
+      if (!result.ok) throw new Error(result.error || '删除失败');
+      setPlatforms(result.platforms || []);
+      if (health?.running) {
+        const reloaded = await reloadConfig();
+        toast(reloaded ? 'success' : 'warning', reloaded ? '平台已删除并热加载' : '平台已删除, 但热加载失败');
+      } else {
+        toast('success', '平台已删除');
+      }
+    } catch (e) {
+      toast('error', '删除失败: ' + (e instanceof Error ? e.message : '未知错误'));
+    }
+  }, [health?.running, reloadConfig]);
 
   const handleSubmit = useCallback(async () => {
-    // TODO: 调用 API 保存
-    toast('success', editingPlatform ? '已更新' : '已创建');
-    setShowModal(false);
-  }, [editingPlatform]);
+    if (!formData.id.trim()) {
+      toast('error', '平台名称不能为空');
+      return;
+    }
+    setSaving(true);
+    try {
+      let settings = formData.settings;
+      if (formData.type !== 'onebot' && formData.type !== 'misskey') {
+        const parsed = JSON.parse(rawSettings) as unknown;
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          throw new Error('Settings 必须是 JSON 对象');
+        }
+        settings = parsed as Record<string, unknown>;
+      }
+      const platform: PlatformConfig = {
+        id: formData.id.trim(),
+        type: formData.type,
+        settings: normalizePlatformSettings(formData.type, settings),
+      };
+      const result = editingPlatform
+        ? await controlApi.updatePlatform(editingPlatform.id, platform)
+        : await controlApi.createPlatform(platform);
+      if (!result.ok) throw new Error(result.error || '保存失败');
+      setPlatforms(result.platforms || []);
+      setShowModal(false);
+      if (health?.running) {
+        const reloaded = await reloadConfig();
+        toast(reloaded ? 'success' : 'warning', reloaded ? '平台已保存并热加载' : '平台已保存, 但热加载失败');
+      } else {
+        toast('success', editingPlatform ? '平台已更新' : '平台已创建');
+      }
+    } catch (e) {
+      toast('error', '保存失败: ' + (e instanceof Error ? e.message : '未知错误'));
+    } finally {
+      setSaving(false);
+    }
+  }, [editingPlatform, formData, health?.running, rawSettings, reloadConfig]);
 
   const handleFieldChange = useCallback((key: string, value: unknown) => {
     if (key.startsWith('settings.')) {
@@ -65,19 +128,29 @@ export function Platforms() {
         settings: { ...prev.settings, [settingKey]: value },
       }));
     } else {
-      setFormData((prev) => ({ ...prev, [key]: value }));
+      if (key === 'settings_json') {
+        setRawSettings(value as string);
+      } else {
+        setFormData((prev) => ({ ...prev, [key]: value }));
+      }
     }
   }, []);
 
   // 表单字段
-  const formFields = useMemo(() => {
-    const baseFields = [
+  const formFields = useMemo<FormField[]>(() => {
+    const typeOptions = new Set<string>(PLATFORM_TYPES);
+    platforms.forEach((platform) => typeOptions.add(platform.type));
+    Object.values(adapters).forEach((info) => {
+      const type = String(info.config_type || info.type || '').trim();
+      if (type) typeOptions.add(type);
+    });
+    const baseFields: FormField[] = [
       { key: 'id', label: '平台名称', required: true, disabled: !!editingPlatform },
       {
         key: 'type',
         label: '类型',
-        type: 'select' as const,
-        options: PLATFORM_TYPES.map((t) => ({ value: t, label: t })),
+        type: 'select',
+        options: Array.from(typeOptions).map((type) => ({ value: type, label: type })),
       },
     ];
 
@@ -85,18 +158,38 @@ export function Platforms() {
       return [
         ...baseFields,
         { key: 'settings.host', label: 'Host' },
-        { key: 'settings.port', label: 'Port', type: 'number' as const },
-        { key: 'settings.access_token', label: 'Access Token', type: 'password' as const },
+        { key: 'settings.port', label: 'Port', type: 'number' },
+        { key: 'settings.access_token', label: 'Access Token', type: 'password' },
+        { key: 'settings.secret', label: 'Secret', type: 'password' },
+        { key: 'settings.self_id', label: 'Self ID' },
+        { key: 'settings.enable_private', label: '私聊', type: 'checkbox', placeholder: '启用私聊' },
+        { key: 'settings.enable_group', label: '群聊', type: 'checkbox', placeholder: '启用群聊' },
       ];
     }
 
-    // misskey 默认
+    if (formData.type === 'misskey') {
+      return [
+        ...baseFields,
+        { key: 'settings.base_url', label: 'Base URL' },
+        { key: 'settings.api_token', label: 'API Token', type: 'password' },
+        { key: 'settings.chat_enabled', label: 'Chat', type: 'checkbox', placeholder: '启用 Chat' },
+        { key: 'settings.room_enabled', label: 'Room', type: 'checkbox', placeholder: '启用 Room' },
+        { key: 'settings.max_message_length', label: '最大消息长度', type: 'number' },
+        {
+          key: 'settings.misskey_default_visibility',
+          label: '默认可见性',
+          type: 'select',
+          options: ['public', 'home', 'followers', 'specified'].map((value) => ({ value, label: value })),
+        },
+        { key: 'settings.misskey_local_only', label: 'Local Only', type: 'checkbox', placeholder: '仅本地可见' },
+      ];
+    }
+
     return [
       ...baseFields,
-      { key: 'settings.base_url', label: 'Base URL' },
-      { key: 'settings.api_token', label: 'API Token', type: 'password' as const },
+      { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [formData.type, editingPlatform]);
+  }, [adapters, editingPlatform, formData.type, platforms]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -105,9 +198,19 @@ export function Platforms() {
     'settings.host': formData.settings.host,
     'settings.port': formData.settings.port,
     'settings.access_token': formData.settings.access_token,
+    'settings.secret': formData.settings.secret,
+    'settings.self_id': formData.settings.self_id,
+    'settings.enable_private': formData.settings.enable_private ?? true,
+    'settings.enable_group': formData.settings.enable_group ?? true,
     'settings.base_url': formData.settings.base_url,
     'settings.api_token': formData.settings.api_token,
-  }), [formData]);
+    'settings.chat_enabled': formData.settings.chat_enabled ?? formData.settings.misskey_enable_chat ?? true,
+    'settings.room_enabled': formData.settings.room_enabled ?? false,
+    'settings.max_message_length': formData.settings.max_message_length ?? 3000,
+    'settings.misskey_default_visibility': formData.settings.misskey_default_visibility ?? 'public',
+    'settings.misskey_local_only': formData.settings.misskey_local_only ?? false,
+    settings_json: rawSettings,
+  }), [formData, rawSettings]);
 
   return (
     <div className="space-y-6">
@@ -116,8 +219,15 @@ export function Platforms() {
         description="管理平台适配器配置和运行状态"
         actions={
           <>
-            <Button variant="ghost" onClick={refreshHealth}>
-              <RefreshCw className="h-4 w-4 mr-2" />
+            <Button
+              variant="ghost"
+              onClick={() => {
+                refreshHealth();
+                loadPlatforms();
+              }}
+              disabled={loading}
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
               刷新
             </Button>
             <Button variant="primary" onClick={handleAdd}>
@@ -178,6 +288,9 @@ export function Platforms() {
                 <div>
                   <span className="font-medium text-text-primary">{platform.id}</span>
                   <Badge variant="default" className="ml-2">{platform.type}</Badge>
+                  <p className="mt-1 max-w-2xl truncate text-xs text-text-secondary">
+                    {JSON.stringify(platform.settings)}
+                  </p>
                 </div>
                 <ActionButtons
                   actions={[
@@ -212,6 +325,7 @@ export function Platforms() {
         onChange={handleFieldChange}
         onSubmit={handleSubmit}
         submitText={editingPlatform ? '保存修改' : '创建'}
+        loading={saving}
         size="lg"
       />
     </div>

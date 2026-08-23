@@ -3,11 +3,12 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
+import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toast';
 import { checkpointApi } from '@/api/checkpoint';
 import { formatTime } from '@/utils/format';
 import { PageHeader, DataTable, FormModal, Column, FormField, StatCard, StatCardGrid } from '@/components/common';
-import { Search, GitBranch, RotateCcw, RefreshCw, Plus } from 'lucide-react';
+import { Search, GitBranch, RotateCcw, RefreshCw, Plus, GitCommitHorizontal } from 'lucide-react';
 import type { Checkpoint } from '@/api/types';
 
 export function Checkpoints() {
@@ -19,10 +20,14 @@ export function Checkpoints() {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showForkModal, setShowForkModal] = useState(false);
   const [showRevertModal, setShowRevertModal] = useState(false);
+  const [showLineageModal, setShowLineageModal] = useState(false);
   const [selectedCheckpoint, setSelectedCheckpoint] = useState<string>('');
   const [newCheckpointName, setNewCheckpointName] = useState('');
+  const [newCheckpointDescription, setNewCheckpointDescription] = useState('');
   const [newBranchName, setNewBranchName] = useState('');
-  const [revertMode] = useState<'rollback' | 'retry'>('rollback');
+  const [revertMode, setRevertMode] = useState<'rollback' | 'retry'>('rollback');
+  const [lineage, setLineage] = useState<Checkpoint[]>([]);
+  const [lineageLoading, setLineageLoading] = useState(false);
 
   const fetchData = useCallback(async () => {
     if (!conversationId.trim()) {
@@ -49,15 +54,20 @@ export function Checkpoints() {
 
   const handleCreate = useCallback(async () => {
     try {
-      await checkpointApi.create(conversationId, newCheckpointName || undefined);
+      await checkpointApi.create(
+        conversationId,
+        newCheckpointName || undefined,
+        newCheckpointDescription || undefined,
+      );
       toast('success', '检查点已创建');
       setShowCreateModal(false);
       setNewCheckpointName('');
+      setNewCheckpointDescription('');
       fetchData();
-    } catch {
-      toast('error', '创建失败');
+    } catch (e) {
+      toast('error', '创建失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [conversationId, newCheckpointName, fetchData]);
+  }, [conversationId, newCheckpointName, newCheckpointDescription, fetchData]);
 
   const handleFork = useCallback(async () => {
     try {
@@ -66,13 +76,16 @@ export function Checkpoints() {
       setShowForkModal(false);
       setNewBranchName('');
       fetchData();
-    } catch {
-      toast('error', 'Fork 失败');
+    } catch (e) {
+      toast('error', 'Fork 失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
   }, [conversationId, newBranchName, selectedCheckpoint, fetchData]);
 
   const handleRevert = useCallback(async () => {
     if (!selectedCheckpoint) return;
+    if (revertMode === 'rollback' && !window.confirm('回滚会丢弃该检查点之后的状态, 确定继续吗?')) {
+      return;
+    }
     try {
       if (revertMode === 'rollback') {
         await checkpointApi.rollback(conversationId, selectedCheckpoint);
@@ -83,10 +96,25 @@ export function Checkpoints() {
       }
       setShowRevertModal(false);
       fetchData();
-    } catch {
-      toast('error', '操作失败');
+    } catch (e) {
+      toast('error', '操作失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
   }, [conversationId, selectedCheckpoint, revertMode, fetchData]);
+
+  const handleTraceLineage = useCallback(async (checkpointId: string) => {
+    setShowLineageModal(true);
+    setLineage([]);
+    setLineageLoading(true);
+    try {
+      const result = await checkpointApi.traceLineage(checkpointId);
+      setLineage(result.lineage);
+    } catch (e) {
+      toast('error', '获取血缘失败: ' + (e instanceof Error ? e.message : '未知错误'));
+      setShowLineageModal(false);
+    } finally {
+      setLineageLoading(false);
+    }
+  }, []);
 
   const getKindBadge = useCallback((kind: string) => {
     const variants: Record<string, 'success' | 'warning' | 'error' | 'info'> = {
@@ -110,6 +138,11 @@ export function Checkpoints() {
       title: '名称',
       render: (cp) => cp.name || '-',
     },
+    {
+      key: 'description',
+      title: '描述',
+      render: (cp) => cp.description || '-',
+    },
     { key: 'position', title: '水位' },
     { key: 'state_revision', title: '版本' },
     { key: 'source', title: '来源' },
@@ -125,7 +158,17 @@ export function Checkpoints() {
         <span className="font-mono text-xs">{cp.checkpoint_id.slice(0, 8)}...</span>
       ),
     },
-  ], [getKindBadge]);
+    {
+      key: 'lineage',
+      title: '操作',
+      render: (cp) => (
+        <Button variant="ghost" size="sm" onClick={() => handleTraceLineage(cp.checkpoint_id)}>
+          <GitCommitHorizontal className="h-4 w-4 mr-1" />
+          血缘
+        </Button>
+      ),
+    },
+  ], [getKindBadge, handleTraceLineage]);
 
   // 变更记录表格列
   const mutationColumns: Column<Checkpoint>[] = useMemo(() => [
@@ -150,6 +193,7 @@ export function Checkpoints() {
   // 创建检查点表单字段
   const createFields: FormField[] = useMemo(() => [
     { key: 'name', label: '名称（可选）', placeholder: '默认自动命名' },
+    { key: 'description', label: '描述（可选）', type: 'textarea', placeholder: '说明这个检查点的用途' },
   ], []);
 
   // Fork 表单字段
@@ -171,6 +215,15 @@ export function Checkpoints() {
 
   // 回滚表单字段
   const revertFields: FormField[] = useMemo(() => [
+    {
+      key: 'mode',
+      label: '操作方式',
+      type: 'select',
+      options: [
+        { value: 'rollback', label: '回滚到检查点' },
+        { value: 'retry', label: '从检查点重试' },
+      ],
+    },
     {
       key: 'checkpoint',
       label: '选择检查点',
@@ -214,13 +267,24 @@ export function Checkpoints() {
         <>
           {/* 操作按钮 */}
           <div className="flex gap-3">
-            <Button variant="default" onClick={() => setShowCreateModal(true)}>
+            <Button
+              variant="default"
+              onClick={() => {
+                setNewCheckpointName('');
+                setNewCheckpointDescription('');
+                setShowCreateModal(true);
+              }}
+            >
               <Plus className="h-4 w-4 mr-2" />
               创建检查点
             </Button>
             <Button
               variant="default"
-              onClick={() => setShowRevertModal(true)}
+              onClick={() => {
+                setSelectedCheckpoint('');
+                setRevertMode('rollback');
+                setShowRevertModal(true);
+              }}
               disabled={checkpoints.length === 0}
             >
               <RotateCcw className="h-4 w-4 mr-2" />
@@ -228,7 +292,11 @@ export function Checkpoints() {
             </Button>
             <Button
               variant="default"
-              onClick={() => setShowForkModal(true)}
+              onClick={() => {
+                setSelectedCheckpoint('');
+                setNewBranchName('');
+                setShowForkModal(true);
+              }}
               disabled={checkpoints.length === 0}
             >
               <GitBranch className="h-4 w-4 mr-2" />
@@ -306,8 +374,11 @@ export function Checkpoints() {
         onClose={() => setShowCreateModal(false)}
         title="创建检查点"
         fields={createFields}
-        values={{ name: newCheckpointName }}
-        onChange={(_, value) => setNewCheckpointName(value as string)}
+        values={{ name: newCheckpointName, description: newCheckpointDescription }}
+        onChange={(key, value) => {
+          if (key === 'name') setNewCheckpointName(value as string);
+          if (key === 'description') setNewCheckpointDescription(value as string);
+        }}
         onSubmit={handleCreate}
         submitText="创建"
       />
@@ -336,10 +407,47 @@ export function Checkpoints() {
         values={{ checkpoint: selectedCheckpoint, mode: revertMode }}
         onChange={(key, value) => {
           if (key === 'checkpoint') setSelectedCheckpoint(value as string);
+          if (key === 'mode') setRevertMode(value as 'rollback' | 'retry');
         }}
         onSubmit={handleRevert}
         submitText="执行"
       />
+
+      <Modal
+        open={showLineageModal}
+        onClose={() => setShowLineageModal(false)}
+        title="检查点血缘"
+        size="lg"
+      >
+        {lineageLoading ? (
+          <p className="py-8 text-center text-text-secondary">加载中...</p>
+        ) : lineage.length === 0 ? (
+          <p className="py-8 text-center text-text-secondary">没有血缘记录</p>
+        ) : (
+          <div className="space-y-3 pb-1">
+            {lineage.map((item, index) => (
+              <div key={item.checkpoint_id} className="relative rounded-sm bg-glass p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Badge variant="info">{index + 1}</Badge>
+                      <span className="font-medium text-text-primary">{item.name || item.checkpoint_id}</span>
+                    </div>
+                    <p className="mt-1 text-sm text-text-secondary">{item.description || '无描述'}</p>
+                  </div>
+                  <div className="shrink-0 text-right text-xs text-text-secondary">
+                    <div>{item.checkpoint_kind}</div>
+                    <div>{formatTime(item.created_at)}</div>
+                  </div>
+                </div>
+                <div className="mt-2 break-all font-mono text-xs text-text-secondary">
+                  {item.checkpoint_id}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

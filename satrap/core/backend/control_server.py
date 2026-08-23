@@ -22,11 +22,21 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 import urllib.error
+import urllib.parse
 import urllib.request
 
-import yaml
+from satrap.core.config_document import (
+    create_default_config,
+    delete_platform,
+    find_config_path,
+    load_config_document,
+    save_config_document,
+    upsert_platform,
+    validate_config_document,
+    validate_platforms,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 # 项目根目录
@@ -42,12 +52,12 @@ BACKEND_PID_FILE = DATA_DIR / "backend.pid"
 _backend_process: subprocess.Popen | None = None
 # 后端进程
 
-CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+CONFIG_PATH = find_config_path(PROJECT_ROOT)
 # 配置文件路径
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
 # CORS 头
@@ -243,6 +253,33 @@ def _check_backend_health(host: str = "127.0.0.1", port: int = 19870) -> dict[st
         return {"running": False, "error": str(e)}
 
 
+async def _read_json_body(
+    reader: asyncio.StreamReader,
+    raw_request: bytes,
+) -> dict[str, Any]:
+    """
+    读取并解析 JSON 请求体
+
+    参数:
+    - reader: 流读取器
+    - raw_request: HTTP 请求头
+
+    返回:
+    - dict[str, Any]: JSON 对象
+    """
+    content_length: int | None = None
+    for raw_line in raw_request.split(b"\r\n")[1:]:
+        if raw_line.lower().startswith(b"content-length:"):
+            content_length = int(raw_line.split(b":", 1)[1].strip())
+            break
+    if content_length is None or content_length <= 0:
+        raise ValueError("缺少请求体")
+    payload: object = json.loads((await reader.readexactly(content_length)).decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("请求体必须是 JSON 对象")
+    return dict(cast(dict[str, Any], payload))
+
+
 async def _handle_request(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -260,7 +297,8 @@ async def _handle_request(
         first_line = raw_request.split(b"\r\n")[0].decode()
         parts = first_line.split(" ")
         method = parts[0]
-        path = parts[1] if len(parts) > 1 else "/"
+        raw_path = parts[1] if len(parts) > 1 else "/"
+        path = urllib.parse.urlsplit(raw_path).path
         
         if method == "OPTIONS":
             response = "HTTP/1.1 204 No Content\r\n"
@@ -392,38 +430,99 @@ async def _handle_request(
         
         elif method == "GET" and path == "/config":
             try:
-                if CONFIG_PATH.exists():
-                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                        config_data = yaml.safe_load(f) or {}
-                    body = {"ok": True, "config": config_data, "path": str(CONFIG_PATH)}
-                else:
-                    body = {"ok": True, "config": {}, "path": str(CONFIG_PATH), "exists": False}
-            except Exception as e:
+                config_data = load_config_document(CONFIG_PATH)
+                body = {
+                    "ok": True,
+                    "config": config_data,
+                    "path": str(CONFIG_PATH),
+                    "exists": CONFIG_PATH.exists(),
+                }
+            except (OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
-                status = 500
+                status = 400
         
         elif method == "PUT" and path == "/config":
             try:
-                cl_idx = raw_request.lower().find(b"content-length:")
-                # 读取请求体
-                if cl_idx >= 0:
-                    cl_end = raw_request.find(b"\r\n", cl_idx)
-                    cl_line = raw_request[cl_idx:cl_end].decode()
-                    cl = int(cl_line.split(":")[1].strip())
-                    request_body = await reader.readexactly(cl)
-                    config_data = json.loads(request_body.decode())
-                    
-                    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                        yaml.dump(config_data, f, allow_unicode=True, default_flow_style=False)
-                    # 保存配置
-                    
-                    body = {"ok": True, "message": "配置已保存", "path": str(CONFIG_PATH)}
-                else:
-                    body = {"ok": False, "error": "Missing request body"}
-                    status = 400
-            except Exception as e:
+                config_data = save_config_document(CONFIG_PATH, await _read_json_body(reader, raw_request))
+                body = {
+                    "ok": True,
+                    "message": "配置已保存",
+                    "config": config_data,
+                    "path": str(CONFIG_PATH),
+                    "exists": True,
+                }
+            except (json.JSONDecodeError, OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
-                status = 500
+                status = 400
+
+        elif method == "POST" and path == "/config/default":
+            try:
+                config_data = create_default_config(CONFIG_PATH)
+                body = {
+                    "ok": True,
+                    "message": "默认配置已创建",
+                    "config": config_data,
+                    "path": str(CONFIG_PATH),
+                    "exists": True,
+                }
+            except (OSError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/validate":
+            try:
+                config_data = validate_config_document(await _read_json_body(reader, raw_request))
+                body = {"ok": True, "config": config_data}
+            except (json.JSONDecodeError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/platforms":
+            try:
+                config_data = load_config_document(CONFIG_PATH)
+                platforms = validate_platforms(config_data.get("platforms", []))
+                body = {"ok": True, "platforms": platforms, "exists": CONFIG_PATH.exists()}
+            except (OSError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/platforms":
+            try:
+                payload = await _read_json_body(reader, raw_request)
+                config_data = load_config_document(CONFIG_PATH)
+                config_data["platforms"] = upsert_platform(config_data.get("platforms", []), payload)
+                saved_config = save_config_document(CONFIG_PATH, config_data)
+                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已创建"}
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
+
+        elif method == "PUT" and path.startswith("/config/platforms/"):
+            try:
+                original_id = urllib.parse.unquote(path.removeprefix("/config/platforms/"))
+                payload = await _read_json_body(reader, raw_request)
+                config_data = load_config_document(CONFIG_PATH)
+                config_data["platforms"] = upsert_platform(
+                    config_data.get("platforms", []),
+                    payload,
+                    original_id=original_id,
+                )
+                saved_config = save_config_document(CONFIG_PATH, config_data)
+                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已更新"}
+            except (json.JSONDecodeError, OSError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
+
+        elif method == "DELETE" and path.startswith("/config/platforms/"):
+            try:
+                platform_id = urllib.parse.unquote(path.removeprefix("/config/platforms/"))
+                config_data = load_config_document(CONFIG_PATH)
+                config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
+                saved_config = save_config_document(CONFIG_PATH, config_data)
+                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已删除"}
+            except (OSError, ValueError) as e:
+                body = {"ok": False, "error": str(e)}
+                status = 400
         
         else:
             status = 404
@@ -435,6 +534,9 @@ async def _handle_request(
         # 接口: POST /shutdown - 停止控制服务和后端
         # 接口: GET /config - 读取配置文件
         # 接口: PUT /config - 保存配置文件
+        # 接口: POST /config/default - 创建默认配置文件
+        # 接口: POST /config/validate - 校验配置文件
+        # 接口: GET/POST/PUT/DELETE /config/platforms - 管理平台配置
         
         response_body = json.dumps(body).encode()
         # 发送响应
@@ -497,6 +599,9 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     print("  POST /shutdown - Stop control server and backend")
     print("  GET  /config   - Read config file")
     print("  PUT  /config   - Save config file")
+    print("  POST /config/default - Create default config file")
+    print("  POST /config/validate - Validate config file")
+    print("  GET/POST/PUT/DELETE /config/platforms - Manage platform config")
     
     async with server:
         await server.serve_forever()

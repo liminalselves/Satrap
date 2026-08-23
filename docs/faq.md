@@ -9,10 +9,12 @@ python -m pip install -e .
 python -c "import colorlog; print(colorlog.__file__)"
 ```
 
-如果使用管理面板:
+如果使用管理面板, 还需要安装并构建前端依赖:
 
 ```bash
-python -m pip install -e .[admin]
+cd satrap-ui
+npm install
+npm run build
 ```
 
 ## API key 应该放在哪里

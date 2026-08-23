@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input';
 import { Badge } from '@/components/ui/Badge';
 import { Select } from '@/components/ui/Select';
 import { LOG_LEVELS } from '@/utils/constants';
+import { appendWithLimit, filterLogs, visibleLogs } from '@/utils/adminMigration';
 import { useWebSocket } from '@/hooks/useWebSocket';
 import { PageHeader } from '@/components/common';
 import { Play, Pause, Trash2, Download, Search, Wifi, WifiOff } from 'lucide-react';
@@ -59,31 +60,32 @@ const LogLineItem = memo(function LogLineItem({ log }: { log: LogLine }) {
 
 export function Logs() {
   const [logs, setLogs] = useState<LogLine[]>([]);
+  const [pausedLogs, setPausedLogs] = useState<LogLine[]>([]);
   const [paused, setPaused] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [levelFilter, setLevelFilter] = useState<string[]>(['INFO', 'WARNING', 'ERROR', 'CRITICAL']);
+  const [levelFilter, setLevelFilter] = useState<string[]>(LOG_LEVELS.slice());
+  const [historyLines, setHistoryLines] = useState(100);
   const [autoScroll, setAutoScroll] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const logIdRef = useRef(0);
-  const pausedRef = useRef(paused);
-  
-  useEffect(() => {
-    pausedRef.current = paused;
-  }, [paused]);
 
-  const { connect, disconnect, isConnected } = useWebSocket('/ws/logs');
+  const { connect, disconnect, isConnected } = useWebSocket(`/ws/logs?lines=${historyLines}`);
 
   const handleLog = useCallback((data: { content: string; level: string }) => {
-    if (pausedRef.current) return;
-    
     const newLog: LogLine = {
       id: logIdRef.current++,
       content: data.content,
       level: data.level,
       timestamp: new Date(),
     };
-    setLogs((prev) => [...prev.slice(-499), newLog]);
+    setLogs((prev) => appendWithLimit(prev, newLog, 5000));
   }, []);
+
+  useEffect(() => {
+    setLogs([]);
+    setPausedLogs([]);
+    logIdRef.current = 0;
+  }, [historyLines]);
 
   useEffect(() => {
     connect({
@@ -108,16 +110,31 @@ export function Logs() {
 
   const clearLogs = useCallback(() => {
     setLogs([]);
+    setPausedLogs([]);
   }, []);
 
-  const filteredLogs = useMemo(() => 
-    logs.filter((log) => {
-      if (levelFilter.length > 0 && !levelFilter.includes(log.level)) return false;
-      if (searchQuery && !log.content.toLowerCase().includes(searchQuery.toLowerCase())) return false;
-      return true;
-    }),
-    [logs, levelFilter, searchQuery]
+  const togglePaused = useCallback(() => {
+    setPaused((current) => {
+      if (!current) setPausedLogs(logs);
+      else setPausedLogs([]);
+      return !current;
+    });
+  }, [logs]);
+
+  const toggleLevel = useCallback((level: string) => {
+    setLevelFilter((current) => (
+      current.includes(level)
+        ? current.filter((item) => item !== level)
+        : [...current, level]
+    ));
+  }, []);
+
+  const filteredLogs = useMemo(
+    () => filterLogs(visibleLogs(logs, pausedLogs, paused), levelFilter, searchQuery),
+    [levelFilter, logs, paused, pausedLogs, searchQuery]
   );
+
+  const bufferedCount = paused ? Math.max(0, logs.length - pausedLogs.length) : 0;
 
   const exportLogs = useCallback(() => {
     const content = filteredLogs.map((l) => l.content).join('\n');
@@ -157,7 +174,7 @@ export function Logs() {
             <Button
               variant={paused ? 'primary' : 'default'}
               size="sm"
-              onClick={() => setPaused(!paused)}
+              onClick={togglePaused}
             >
               {paused ? <Play className="h-4 w-4 mr-1" /> : <Pause className="h-4 w-4 mr-1" />}
               {paused ? '继续' : '暂停'}
@@ -184,18 +201,35 @@ export function Logs() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-text-secondary">级别:</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-text-secondary">历史:</span>
             <Select
-              options={LOG_LEVELS.map((l) => ({ value: l, label: l }))}
-              value={levelFilter[0] || ''}
-              onChange={(e) => {
-                const val = e.target.value;
-                setLevelFilter(val ? [val] : LOG_LEVELS.slice());
-              }}
-              className="w-32"
+              options={[50, 100, 200, 300, 500].map((value) => ({ value: String(value), label: `${value} 行` }))}
+              value={String(historyLines)}
+              onChange={(e) => setHistoryLines(Number(e.target.value))}
+              className="w-28"
             />
           </div>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-glass-border pt-3">
+          <span className="text-sm text-text-secondary">级别:</span>
+          {LOG_LEVELS.map((level) => (
+            <Button
+              key={level}
+              variant={levelFilter.includes(level) ? 'primary' : 'subtle'}
+              size="sm"
+              onClick={() => toggleLevel(level)}
+            >
+              {level}
+            </Button>
+          ))}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setLevelFilter(levelFilter.length === LOG_LEVELS.length ? [] : LOG_LEVELS.slice())}
+          >
+            {levelFilter.length === LOG_LEVELS.length ? '取消全选' : '全部'}
+          </Button>
         </div>
       </Card>
 
@@ -219,7 +253,10 @@ export function Logs() {
 
         {/* 状态栏 */}
         <div className="px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary">
-          <span>共 {filteredLogs.length} 条日志</span>
+          <span>
+            共 {filteredLogs.length} 条日志
+            {bufferedCount > 0 ? `, 暂停期间收到 ${bufferedCount} 条` : ''}
+          </span>
           <span>{autoScroll ? '自动滚动' : '已暂停滚动'}</span>
         </div>
       </Card>

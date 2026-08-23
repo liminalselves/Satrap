@@ -786,7 +786,7 @@ export function Chat() {
       console.error('[Chat] 重试失败:', err);
       alert(`重试失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [active, generating, updateConversation]);
+  }, [active, generating, settings.think, updateConversation]);
 
   // Fork: 从指定轮次创建新会话
   const handleFork = useCallback(async (turnIndex: number) => {

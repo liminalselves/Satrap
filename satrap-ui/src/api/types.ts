@@ -45,13 +45,36 @@ export interface ReRankConfig {
 export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
 
 export interface SessionClassConfig {
-  name: string;
-  class_path: string;
-  description?: string;
-  enabled: boolean;
-  model_key?: string;
-  params?: Record<string, unknown>;
-}
+    name?: string;
+    class_path: string;
+    description?: string;
+    is_async?: boolean;
+    enabled: boolean;
+    context_key?: string;
+    model_key?: string;
+    params?: Record<string, unknown>;
+  }
+
+  export interface DiscoveredSessionClass {
+    file_path: string;
+    module_name: string;
+    class_name: string;
+    class_path: string;
+    is_async: boolean;
+    init_params: Record<string, unknown>;
+    error: string;
+  }
+
+  export interface RuntimeSession {
+    session_id: string;
+    active?: boolean;
+    session_type?: string;
+    session_type_name?: string;
+    created_at: number;
+    last_used_at: number;
+    message_count: number;
+    session_config?: Record<string, unknown>;
+  }
 
 export interface PlatformConfig {
   id: string;

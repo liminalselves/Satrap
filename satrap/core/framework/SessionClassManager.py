@@ -533,6 +533,47 @@ class SessionClassConfigManager:
             self._configs[key]["params"] = dict(params)
             self._save_locked()
 
+    def update_entry(
+        self,
+        name: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        description: str | None = None,
+        context_key: str | None = None,
+        model_key: str | None = None,
+    ) -> Dict[str, Any]:
+        """
+        原子更新会话类配置中的可编辑字段
+
+        参数:
+        - name: 会话类配置名称
+        - params: 完整参数配置
+        - description: 描述
+        - context_key: 上下文键
+        - model_key: 模型键
+
+        返回:
+        - Dict[str, Any]: 更新后的完整配置
+        """
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._configs:
+                raise ValueError(f"未知的会话类配置: {key}")
+            entry = self._configs[key]
+            if params is not None:
+                entry["params"] = dict(params)
+            if description is not None:
+                entry["description"] = description
+            if context_key is not None:
+                entry["context_key"] = context_key
+            if model_key is not None:
+                entry["model_key"] = model_key
+            self._save_locked()
+            updated = self.get_config(key)
+            if updated is None:
+                raise ValueError(f"未知的会话类配置: {key}")
+            return updated
+
     def update_config(self, name: str, **kwargs: Any):
         """
         部分更新 params

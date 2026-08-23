@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from argparse import Namespace
+import json
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from satrap.main import _build_parser
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 
 
@@ -113,6 +115,75 @@ async def test_http_session_class_write_routes(tmp_path: Path):
     status, data = await server._route("DELETE", "/api/config/session-classes/dummy", b"")
     assert status == 200
     assert data == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_http_session_config_and_runtime_routes(tmp_path: Path):
+    """
+    React 会话页依赖的配置编辑和实例创建路由应完整工作
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    backend = BackendManager()
+    backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
+    backend._session_mgr = SessionManager(db_path=tmp_path / "session-config.db")
+    backend._session_mgr.class_cfg_mgr = backend._session_cls_cfg
+    backend._session_cls_cfg.register_by_class_path("dummy", "satrap.core.framework.Base.Session")
+    server = BackendHTTPServer(backend)
+
+    status, data = await server._route(
+        "PUT",
+        "/api/config/session-classes/dummy",
+        b'{"description":"demo","context_key":"room_id","model_key":"model_name","params":{"model_name":"default"}}',
+    )
+    assert status == 200
+    assert data["config"]["description"] == "demo"
+    assert data["config"]["context_key"] == "room_id"
+
+    status, data = await server._route(
+        "POST",
+        "/api/sessions",
+        b'{"class_name":"dummy","session_id":"runtime-1","adapter_id":"main","llm_name":"default"}',
+    )
+    assert status == 200
+    assert data["session"]["session_id"] == "runtime-1"
+    assert data["session"]["session_config"]["adapter_id"] == "main"
+
+    status, data = await server._route("GET", "/api/sessions", b"")
+    assert status == 200
+    assert data["sessions"][0]["session_id"] == "runtime-1"
+    assert data["sessions"][0]["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_http_session_discovery_directory_is_limited_to_config(tmp_path: Path):
+    """
+    Session 目录 API 只能操作配置声明的扫描目录
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    configured_path = tmp_path / "sessions"
+    backend = BackendManager()
+    backend.config.session_scan_paths = [str(configured_path)]
+    server = BackendHTTPServer(backend)
+
+    status, data = await server._route(
+        "POST",
+        "/api/session/discovery/directories",
+        json.dumps({"path": str(configured_path)}).encode(),
+    )
+    assert status == 200
+    assert Path(data["path"]).exists()
+
+    status, data = await server._route(
+        "POST",
+        "/api/session/discovery/directories",
+        b'{"path":"outside"}',
+    )
+    assert status == 400
+    assert "只能创建" in data["error"]
 
 
 @pytest.mark.asyncio

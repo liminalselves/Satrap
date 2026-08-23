@@ -25,7 +25,7 @@
 satrap/
   core/
     APICall/          # LLM, Embedding, ReRank 调用封装
-    backend/          # BackendManager 和 HTTP API
+    backend/          # BackendManager, HTTP API, WebSocket 与 React 静态资源托管
     components/       # 跨平台消息组件
     framework/        # Workflow, Session, SessionManager, 配置管理
     platform/         # 平台适配器基类和内置适配器
@@ -35,7 +35,6 @@ satrap/
   display/            # 聊天展示层: DisplayRecorder / ChatService / 独立 HTTP+WS 服务 / 插件注册
   cli/                # satrap 命令行实现
   edictum/            # 简易 Agent 框架: SimpleSession / AsyncSimpleSession / SessionHandler / Plugin
-  pages/              # Streamlit 管理面板页面
   expend/             # 可选扩展: tools/ 工具类, mcp/, command/, skills/, plugins/
 tests/                # unit, integration 和 manual 测试
 satrap-ui/            # React 管理面板 + 聊天页 (前端)

@@ -574,7 +574,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
         self.user_input_provider: Callable[[str], str] | None = None
-        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
+        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
         self.stream = stream
         if tools:
             for tool in tools:
@@ -1395,7 +1395,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         self._run_lock = asyncio.Lock()
         """run 串行化锁: 同一会话不支持并发 run (第二个 run 排队等待)"""
         self.user_input_provider: Callable[[str], str | Awaitable[str]] | None = None
-        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 可注入 input, Streamlit 可注入 st.text_input)"""
+        """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
         self.stream = stream
 
     async def _async_init(self):

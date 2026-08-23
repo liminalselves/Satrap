@@ -1,6 +1,6 @@
 # Satrap
 
-Satrap 是一个面向 Python Agent 应用的轻量框架。它提供 OpenAI-compatible LLM 调用, 多模态上下文, 工具调用, Agent workflow, Session 管理, 后端服务, CLI, Streamlit 管理面板, 以及 OneBot / Misskey 等平台适配能力。
+Satrap 是一个面向 Python Agent 应用的轻量框架。它提供 OpenAI-compatible LLM 调用, 多模态上下文, 工具调用, Agent workflow, Session 管理, 后端服务, CLI, React 管理面板, 以及 OneBot / Misskey 等平台适配能力。
 
 > 当前项目仍处于早期开发阶段, API 可能继续调整。建议在业务项目中锁定版本或提交号后再集成。
 
@@ -13,7 +13,7 @@ Satrap 是一个面向 Python Agent 应用的轻量框架。它提供 OpenAI-com
 - **Agent workflow**: `full_agent()` 封装“用户输入 -> 模型请求工具 -> 工具执行 -> 模型最终回复”的完整流程
 - **Session 与后端**: 管理多会话, 持久化 Session 配置, 支持后端守护进程和 HTTP 管理 API
 - **平台接入**: 内置 Misskey, OneBot / aiocqhttp 适配器, 可配置多个同类型平台实例
-- **管理入口**: 提供 `satrap` CLI 和 Streamlit 管理面板
+- **管理入口**: 提供 `satrap` CLI 和 React 管理面板
 
 ## 安装
 
@@ -24,7 +24,6 @@ pip install -e .
 可选依赖:
 
 ```bash
-pip install -e .[admin]   # Streamlit 管理面板
 pip install -e .[vector]  # faiss 向量检索
 pip install -e .[all]     # 全部可选依赖
 ```
@@ -67,12 +66,20 @@ satrap session list
 satrap platform list
 ```
 
-启动管理面板:
+React 管理面板由后端托管, 首次使用先构建前端:
 
 ```bash
-pip install -e .[admin]
-streamlit run satrap/admin.py
+cd satrap-ui
+npm install
+npm run build
+cd ..
+# 终端 1
+python -m satrap.core.backend.control_server
+# 终端 2
+python -m satrap.main run
 ```
+
+访问 `http://127.0.0.1:19870`。控制服务用于配置读写和后端进程控制, 默认监听 `127.0.0.1:19871`
 
 ## 文档
 

@@ -94,7 +94,7 @@ curl -X POST http://127.0.0.1:19870/api/checkpoint/create \
 
 ## Web 管理面板
 
-Streamlit 面板的 **检查点管理** 页面 (07_checkpoint_management.py) 提供图形化操作: 输入对话 ID 后查看检查点 / 分支 / 变更记录, 支持创建、回滚、重试与 Fork。
+React 管理面板的 **检查点管理** 页面提供图形化操作: 输入对话 ID 后查看检查点、分支、变更记录与血缘, 支持创建、回滚、重试与 Fork
 
 ## 存储与性能
 
