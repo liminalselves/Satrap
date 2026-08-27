@@ -301,6 +301,53 @@ class SessionClassConfigManager:
             model_key=model_key,
         )
 
+    def register_config_entry(
+        self,
+        name: str,
+        class_path: str,
+        *,
+        is_async: bool = False,
+        enabled: bool = True,
+        context_key: str = "",
+        model_key: str = "",
+        description: str = "",
+        params: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """
+        注册会话类配置但不导入或实例化对应类
+
+        参数:
+        - name: 会话类配置名称
+        - class_path: 类路径
+        - is_async: 是否为异步会话类
+        - enabled: 是否启用
+        - context_key: 上下文键
+        - model_key: 模型键
+        - description: 描述
+        - params: 参数配置
+
+        返回:
+        - Dict[str, Any]: 已保存的完整配置
+        """
+        with self._lock:
+            key = self._normalize_name(name)
+            if key in self._configs:
+                raise ValueError(f"会话类配置名称已存在: {key}")
+            self._configs[key] = {
+                "class_path": class_path,
+                "is_async": is_async,
+                "enabled": enabled,
+                "context_key": context_key,
+                "model_key": model_key,
+                "description": description,
+                "params": dict(params or {}),
+            }
+            self._save_locked()
+            created = self.get_config(key)
+            if created is None:
+                raise ValueError(f"会话类配置创建失败: {key}")
+            return created
+
     # ---------- 查询 ----------
     def get_config(self, name: str) -> Optional[Dict[str, Any]]:
         """
@@ -373,7 +420,7 @@ class SessionClassConfigManager:
         - Dict[str, Dict[str, Any]]: 列出所有已注册配置
         """
         with self._lock:
-            return {k: dict(v) for k, v in self._configs.items()}
+            return self._to_payload_locked()
 
     def has_config(self, name: str) -> bool:
         """
@@ -537,6 +584,10 @@ class SessionClassConfigManager:
         self,
         name: str,
         *,
+        new_name: str | None = None,
+        class_path: str | None = None,
+        is_async: bool | None = None,
+        enabled: bool | None = None,
         params: Dict[str, Any] | None = None,
         description: str | None = None,
         context_key: str | None = None,
@@ -547,6 +598,10 @@ class SessionClassConfigManager:
 
         参数:
         - name: 会话类配置名称
+        - new_name: 新配置名称
+        - class_path: 类路径
+        - is_async: 是否为异步会话类
+        - enabled: 是否启用
         - params: 完整参数配置
         - description: 描述
         - context_key: 上下文键
@@ -559,7 +614,19 @@ class SessionClassConfigManager:
             key = self._normalize_name(name)
             if key not in self._configs:
                 raise ValueError(f"未知的会话类配置: {key}")
-            entry = self._configs[key]
+            target_key = self._normalize_name(new_name) if new_name is not None else key
+            if target_key != key and target_key in self._configs:
+                raise ValueError(f"会话类配置名称已存在: {target_key}")
+
+            entry = dict(self._configs[key])
+            entry["params"] = dict(entry.get("params", {}))
+            original_class_path = str(entry.get("class_path", ""))
+            if class_path is not None:
+                entry["class_path"] = class_path
+            if is_async is not None:
+                entry["is_async"] = is_async
+            if enabled is not None:
+                entry["enabled"] = enabled
             if params is not None:
                 entry["params"] = dict(params)
             if description is not None:
@@ -568,10 +635,17 @@ class SessionClassConfigManager:
                 entry["context_key"] = context_key
             if model_key is not None:
                 entry["model_key"] = model_key
+
+            cached_class = self._class_cache.pop(key, None)
+            if target_key != key:
+                self._configs.pop(key)
+            self._configs[target_key] = entry
+            if cached_class is not None and str(entry.get("class_path", "")) == original_class_path:
+                self._class_cache[target_key] = cached_class
             self._save_locked()
-            updated = self.get_config(key)
+            updated = self.get_config(target_key)
             if updated is None:
-                raise ValueError(f"未知的会话类配置: {key}")
+                raise ValueError(f"未知的会话类配置: {target_key}")
             return updated
 
     def update_config(self, name: str, **kwargs: Any):

@@ -38,7 +38,7 @@ class DaemonInfo:
         - DaemonInfo: 从配置文件和环境变量检测 daemon 地址
         """
         try:
-            from satrap.core.config_loader import ConfigLoader   # 探测失败时仍允许客户端退回默认连接信息
+            from satrap.core.config.loader import ConfigLoader   # 探测失败时仍允许客户端退回默认连接信息
 
             config = ConfigLoader.autodetect()
             return cls.from_config(config)

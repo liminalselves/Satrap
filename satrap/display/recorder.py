@@ -80,7 +80,7 @@ def _has_table(conn: sqlite3.Connection, name: str) -> bool:
 
 def _ensure_project_schema_locked(conn: sqlite3.Connection) -> None:
     """
-    项目功能 schema: projects 表 + conversation_meta.project_id 列 (幂等, 调用方持锁)
+    确保 projects 表存在
 
     参数:
     - conn: 数据库连接
@@ -95,14 +95,6 @@ def _ensure_project_schema_locked(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # 兼容旧表: 无 project_id 列时 ALTER TABLE 添加;
-    # conversation_meta 可能尚未创建 (项目先于任何会话登记), 此时跳过, 待建表后由同一补丁补列
-    if not _has_table(conn, "conversation_meta"):
-        return
-    try:
-        conn.execute("SELECT project_id FROM conversation_meta LIMIT 1")
-    except sqlite3.OperationalError:
-        conn.execute("ALTER TABLE conversation_meta ADD COLUMN project_id TEXT")
 
 
 class DisplayRecorder:
@@ -111,7 +103,7 @@ class DisplayRecorder:
 
     用法 (外层组合, 零侵入会话):
     ```python
-    recorder = DisplayRecorder(conversation_id=session_id)  # db 默认 .satrap/satrapdata/display.db
+    recorder = DisplayRecorder(conversation_id=session_id)  # db 默认 local 平台的 platform.db
     session = SimpleSession(
         session_id, llm,
         content_callback=recorder.on_content,
@@ -132,11 +124,11 @@ class DisplayRecorder:
         初始化记录器
 
         参数:
-        - db_path: 展示层独立 db 路径, 默认 .satrap/satrapdata/display.db
+        - db_path: 展示层 db 路径, 默认 local 平台的 platform.db
           (与 CM 的 chat_history.db 分离)
         - conversation_id: 会话 ID (与 CM conversation_id 对齐, 便于关联)
         """
-        self.db_path = db_path or get_db_path("display.db")
+        self.db_path = db_path or get_db_path()
         self.conversation_id = conversation_id
         self._lock = threading.RLock()
         """可重入锁: 允许持锁方法内调 _get_conn (其内部也拿锁), 避免死锁"""
@@ -202,16 +194,6 @@ class DisplayRecorder:
                 )
                 """
             )
-            # 兼容旧表: 无 attachments 列时 ALTER TABLE 添加
-            try:
-                conn.execute("SELECT attachments FROM display_turns LIMIT 1")
-            except sqlite3.OperationalError:
-                conn.execute("ALTER TABLE display_turns ADD COLUMN attachments TEXT")
-            # 兼容旧表: 无 segments 列时 ALTER TABLE 添加
-            try:
-                conn.execute("SELECT segments FROM display_turns LIMIT 1")
-            except sqlite3.OperationalError:
-                conn.execute("ALTER TABLE display_turns ADD COLUMN segments TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_conv_turn ON display_turns (conversation_id, turn_index)"
             )
@@ -239,15 +221,11 @@ class DisplayRecorder:
                     conversation_id TEXT PRIMARY KEY,
                     model TEXT NOT NULL DEFAULT 'default',
                     think TEXT NOT NULL DEFAULT 'off',
+                    project_id TEXT,
                     created_at REAL NOT NULL
                 )
                 """
             )
-            # 兼容旧表: 无 think 列时 ALTER TABLE 添加
-            try:
-                conn.execute("SELECT think FROM conversation_meta LIMIT 1")
-            except sqlite3.OperationalError:
-                conn.execute("ALTER TABLE conversation_meta ADD COLUMN think TEXT NOT NULL DEFAULT 'off'")
             _ensure_project_schema_locked(conn)
             conn.commit()
 
@@ -610,7 +588,7 @@ def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
     模块级函数: 不绑定某个 conversation 实例, 直接开独立连接查询
 
     参数:
-    - db_path: 展示层 db 路径, 默认 .satrap/satrapdata/display.db
+    - db_path: 展示层 db 路径, 默认 local 平台的 platform.db
 
     返回按最近活跃倒序: 每会话取首条用户输入作标题 + 轮次计数 + 最近时间 + 项目归属;
     以 conversation_meta 为基表, 新建未发言的空会话也在列表中
@@ -618,7 +596,7 @@ def list_conversations(db_path: str | None = None) -> list[dict[str, Any]]:
     返回:
     - list[dict[str, Any]]: 列出全部会话 (跨 conversation), 供前端会话列表
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return []
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -705,7 +683,7 @@ def create_project(name: str, root_path: str, db_path: str | None = None) -> dic
     返回:
     - dict[str, Any]: 项目记录
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     conn = sqlite3.connect(path, check_same_thread=False)
     try:
         _ensure_project_schema_locked(conn)
@@ -736,7 +714,7 @@ def list_projects(db_path: str | None = None) -> list[dict[str, Any]]:
     返回:
     - list[dict[str, Any]]: 列出全部项目 (按创建时间正序)
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return []
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -765,7 +743,7 @@ def get_project(project_id: str, db_path: str | None = None) -> dict[str, Any] |
     返回:
     - dict[str, Any] | None:  None
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return None
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -794,7 +772,7 @@ def delete_project(project_id: str, db_path: str | None = None) -> bool:
     返回:
     - bool: 删除项目: 仅解绑其下会话 (project_id 置 NULL), 不动会话数据与磁盘文件
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return False
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -824,7 +802,7 @@ def set_conversation_project(conversation_id: str, project_id: str | None, db_pa
     返回:
     - bool:  False
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return False
     conn = sqlite3.connect(path, check_same_thread=False)
@@ -855,7 +833,7 @@ def get_conversation_meta(conversation_id: str, db_path: str | None = None) -> d
     返回:
     - dict[str, Any] | None: 查询会话元数据 (model / think / project_id)
     """
-    path = db_path or get_db_path("display.db")
+    path = db_path or get_db_path()
     if not Path(path).exists():
         return None
     conn = sqlite3.connect(path, check_same_thread=False)

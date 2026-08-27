@@ -1,7 +1,7 @@
 """
 用户管理 CLI: list / info / create / update / delete / bind / unbind / sessions
 
-直接操作用户信息库 (默认 .satrap/satrapdata/user_info.db, 可用 --db 覆盖),
+按平台实例直接操作其唯一 platform.db,
 与运行时 Session 解耦; 运行时自动绑定请使用 UserManager (resolve_session / route_call)
 """
 from __future__ import annotations
@@ -12,24 +12,20 @@ import sys
 from typing import Any, cast
 
 from satrap.api import user as user_api
-from satrap.core.utils.paths import get_db_path
-
-
-DEFAULT_DB = get_db_path("user_info.db")
-"""用户信息库默认路径 (与 UserInfoStore 默认一致)"""
+from satrap.core.storage import StorageLayout
 
 
 def _db_path(args: argparse.Namespace) -> str:
     """
-    用户信息库路径: --db 优先, 否则默认路径
+    返回指定平台实例的唯一数据库路径
 
     参数:
     - args: 额外位置参数
 
     返回:
-    - str: 用户信息库路径: --db 优先, 否则默认路径
+    - str: 平台实例数据库路径
     """
-    return args.db or DEFAULT_DB
+    return str(StorageLayout(args.data_root).platform_db(str(args.platform_id)))
 
 
 def _print_user(info: dict[str, Any]):

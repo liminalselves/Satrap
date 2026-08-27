@@ -16,7 +16,9 @@ from typing import Any
 import pytest
 
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.storage import StorageLayout
 from satrap.display.plugins import ChatPluginRegistry
+from satrap.display.recorder import DisplayRecorder
 from satrap.display.server import ChatHTTPServer
 from satrap.display.service import ChatService
 
@@ -205,6 +207,7 @@ def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
     )
     return ChatHTTPServer(svc)
 
@@ -221,3 +224,26 @@ async def test_chat_server_health_route(tmp_path: Path):
     status, data = await server._route("GET", "/api/chat/health", b"")
     assert status == 200
     assert data["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_chat_server_lists_conversations_from_service_database(tmp_path: Path):
+    """
+    会话列表接口必须读取 ChatService 当前平台数据库
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    server = _make_chat_server(tmp_path)
+    recorder = DisplayRecorder(
+        db_path=server.service._display_db_path,
+        conversation_id="conversation-1",
+    )
+    recorder.save_meta("default")
+    recorder.close()
+
+    status, data = await server._route("GET", "/api/chat/conversations", b"")
+
+    assert status == 200
+    assert [item["conversation_id"] for item in data["conversations"]] == ["conversation-1"]
+    await server.service.close()

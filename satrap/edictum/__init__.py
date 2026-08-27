@@ -17,8 +17,20 @@ from satrap.edictum.simple_session import (
     SessionHandler,
     SimpleSession,
 )
+from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.registry import (
+    EDICTUM_PROVIDER,
+    EdictumTypeDefinition,
+    EdictumTypeRegistry,
+    EdictumPluginInstaller,
+    EdictumPluginUninstaller,
+    create_default_edictum_type_registry,
+)
 
 __all__ = [
     "SimpleSession", "AsyncSimpleSession", "SessionHandler",
     "HandlerConfig", "HandlerContext", "HandlerResult", "HandlerAbortError", "Plugin",
+    "EDICTUM_PROVIDER", "EdictumConfigManager", "EdictumTypeDefinition",
+    "EdictumTypeRegistry", "EdictumPluginInstaller", "EdictumPluginUninstaller",
+    "create_default_edictum_type_registry",
 ]

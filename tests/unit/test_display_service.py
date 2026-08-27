@@ -10,6 +10,7 @@ import pytest
 import yaml
 
 from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.storage import StorageLayout
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.display import service as service_mod
 from satrap.display.plugins import ChatPluginRegistry
@@ -179,6 +180,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
     )
 
 
@@ -233,6 +235,325 @@ def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
     assert any(c["conversation_id"] == cid for c in convs)
 
 
+def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
+    """
+    ask_user 经 WS 发出问题并由 HTTP 服务层回填回答
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        provider = conv.session.user_input_provider
+        assert provider is not None
+        queue = svc.subscribe(cid)
+
+        async def _run_with_question(
+            user_input: str,
+            img_urls: list[str] | None = None,
+            *,
+            thinking: str = "off",
+        ) -> str:
+            answer = provider("请选择: 1. 继续  2. 取消")
+            if isinstance(answer, str):
+                return answer
+            return await answer
+
+        monkeypatch.setattr(conv.session, "run", _run_with_question)
+        assert (await svc.send(cid, "开始询问"))["ok"] is True
+        turn_start = await asyncio.wait_for(queue.get(), timeout=1)
+        assert turn_start["type"] == "turn_start"
+        event = await asyncio.wait_for(queue.get(), timeout=1)
+        assert event["type"] == "ask_user"
+        assert event["question"] == "请选择: 1. 继续  2. 取消"
+        request_id = event["request_id"]
+
+        replay_queue = svc.subscribe(cid)
+        replay = replay_queue.get_nowait()
+        assert replay["type"] == "ask_user"
+        assert replay["request_id"] == request_id
+
+        assert svc.answer_user_input(cid, request_id, "1") == {"ok": True}
+        assert conv.task is not None
+        await asyncio.wait_for(conv.task, timeout=1)
+        assert svc.answer_user_input(cid, request_id, "重复回答")["ok"] is False
+
+        end = await asyncio.wait_for(queue.get(), timeout=1)
+        assert end["type"] == "ask_user_end"
+        assert end["status"] == "answered"
+        done = await asyncio.wait_for(queue.get(), timeout=1)
+        assert done["type"] == "turn_done"
+        assert done["answer"] == "1"
+        assert not conv.pending_user_inputs
+        await svc.close()
+
+    asyncio.run(_run())
+
+
+def test_service_cancel_pending_ask_user(tmp_path: Path, monkeypatch: Any):
+    """
+    取消生成会结束等待中的 ask_user 请求
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        provider = conv.session.user_input_provider
+        assert provider is not None
+
+        async def _run_with_question(
+            user_input: str,
+            img_urls: list[str] | None = None,
+            *,
+            thinking: str = "off",
+        ) -> str:
+            answer = provider("是否取消?")
+            if isinstance(answer, str):
+                return answer
+            return await answer
+
+        monkeypatch.setattr(conv.session, "run", _run_with_question)
+        queue = svc.subscribe(cid)
+        assert (await svc.send(cid, "开始询问"))["ok"] is True
+        assert (await asyncio.wait_for(queue.get(), timeout=1))["type"] == "turn_start"
+        assert (await asyncio.wait_for(queue.get(), timeout=1))["type"] == "ask_user"
+
+        assert await svc.cancel(cid) == {"ok": True}
+        events = [queue.get_nowait(), queue.get_nowait()]
+        assert [event["type"] for event in events] == ["ask_user_end", "turn_done"]
+        assert events[0]["status"] == "cancelled"
+        assert not conv.pending_user_inputs
+        await svc.close()
+
+    asyncio.run(_run())
+
+
+def test_service_preload_is_invisible_until_first_send(tmp_path: Path, monkeypatch: Any):
+    """
+    预加载只创建内存运行时, 首次发送时才写入会话列表
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+
+    async def _run() -> str:
+        cid = await svc.preload_conversation(model="default", think="off")
+        conv = svc.get_conversation(cid)
+        assert conv is not None and conv.persisted is False
+        assert list_conversations(str(svc._display_db_path)) == []
+
+        result = await svc.send(
+            cid,
+            "你好",
+            think="high",
+            preload_settings={
+                "model": "default",
+                "temperature": 0.3,
+                "system_prompt": "测试提示词",
+                "project_id": None,
+            },
+        )
+        assert result["ok"] is True
+        conv = svc.get_conversation(cid)
+        assert conv is not None and conv.persisted is True
+        assert conv.default_think == "high"
+        assert conv.temperature == 0.3
+        assert conv.system_prompt == "测试提示词"
+        assert conv.task is not None
+        await conv.task
+        await svc.close()
+        return cid
+
+    cid = asyncio.run(_run())
+    conversations = list_conversations(str(svc._display_db_path))
+    assert [item["conversation_id"] for item in conversations] == [cid]
+    assert conversations[0]["turn_count"] == 1
+
+
+def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, monkeypatch: Any):
+    """
+    首次发送时模型设置变化应在同一 ID 下重建预加载运行时
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    built_models: list[str | None] = []
+
+    def _fake_build_llm(cfg: Any) -> AsyncLLM:
+        built_models.append(cfg.name)
+        return _FakeAsyncLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    svc = ChatService(
+        _FakeModelConfig(),   # type: ignore[arg-type]
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    async def _run() -> tuple[str, str]:
+        cid = await svc.preload_conversation(model="default")
+        result = await svc.send(
+            cid,
+            "切换模型",
+            preload_settings={"model": "fast", "system_prompt": "", "project_id": None},
+        )
+        assert result["ok"] is True
+        conv = svc.get_conversation(cid)
+        assert conv is not None and conv.task is not None
+        await conv.task
+        model = conv.model
+        await svc.close()
+        return cid, model
+
+    cid, model = asyncio.run(_run())
+    assert model == "fast"
+    assert built_models == ["default", "fast"]
+    from satrap.display.recorder import get_conversation_meta
+    meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
+    assert meta is not None and meta["model"] == "fast"
+
+
+def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: Path, monkeypatch: Any):
+    """
+    同名模型的参数变化也应使预加载指纹失效
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    from satrap.core.type import LLMConfig
+
+    temperatures: list[float | None] = []
+
+    class _MutableModelConfig(_FakeModelConfig):
+        temperature = 0.1
+
+        def get_llm_config(self, name: str = "default") -> LLMConfig:
+            return LLMConfig(
+                name=name,
+                model="m",
+                api_key="k",
+                base_url="http://x",
+                temperature=self.temperature,
+            )
+
+    def _fake_build_llm(cfg: Any) -> AsyncLLM:
+        temperatures.append(cfg.temperature)
+        return _FakeAsyncLLM()
+
+    model_config = _MutableModelConfig()
+    monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
+    svc = ChatService(
+        model_config,   # type: ignore[arg-type]
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    async def _run() -> None:
+        cid = await svc.preload_conversation(model="default")
+        model_config.temperature = 0.9
+        result = await svc.send(cid, "参数已修改", preload_settings={"model": "default"})
+        assert result["ok"] is True
+        conv = svc.get_conversation(cid)
+        assert conv is not None and conv.task is not None
+        await conv.task
+        await svc.close()
+
+    asyncio.run(_run())
+    assert temperatures == [0.1, 0.9]
+
+
+def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
+    tmp_path: Path,
+    monkeypatch: Any,
+):
+    """
+    插件能力开关和全局配置变化都应改变会话运行时指纹
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    from satrap.edictum.plugin import load_plugin_meta
+    from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
+
+    preset = tmp_path / "preset"
+    plugin_dir = _write_plugin(preset, "plug", tools={"shell": "执行命令"})
+    meta = cast(dict[str, Any], yaml.safe_load((plugin_dir / "meta.yaml").read_text(encoding="utf-8")))
+    meta["config_schema"] = {
+        "mode": {"type": "string", "default": "safe", "description": "运行模式"},
+    }
+    dumped = cast(Any, yaml).safe_dump(meta, allow_unicode=True)
+    (plugin_dir / "meta.yaml").write_text(str(dumped), encoding="utf-8")
+    monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", preset)
+    monkeypatch.setattr("satrap.display.plugins.USER_PLUGINS_DIR", tmp_path / "user")
+
+    config_manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    registry = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
+    registry.set_enabled("plug", True)
+    svc = ChatService(
+        _FakeModelConfig(),   # type: ignore[arg-type]
+        registry,
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    first = svc._runtime_fingerprint("default", system_prompt=None, project_id=None, temperature=None)
+    registry.set_capability("plug", "tools", "shell", False)
+    second = svc._runtime_fingerprint("default", system_prompt=None, project_id=None, temperature=None)
+    assert second != first
+
+    schema = parse_config_schema(load_plugin_meta(plugin_dir))
+    config_manager.save_global("plug", schema, {"mode": "fast"})
+    third = svc._runtime_fingerprint("default", system_prompt=None, project_id=None, temperature=None)
+    assert third != second
+
+
+def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatch: Any):
+    """
+    未发送的预加载会话超时后应释放内存并清除私有目录
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._preload_ttl_seconds = 0.01
+
+    async def _run() -> tuple[str, Path]:
+        cid = await svc.preload_conversation()
+        session_root = svc._storage.session_root("chat", cid)
+        assert session_root.is_dir()
+        await asyncio.sleep(0.05)
+        assert svc.get_conversation(cid) is None
+        await svc.close()
+        return cid, session_root
+
+    cid, session_root = asyncio.run(_run())
+    assert not session_root.exists()
+    assert all(item["conversation_id"] != cid for item in list_conversations(str(svc._display_db_path)))
+
+
 def test_service_send_concurrent_rejected(tmp_path: Path, monkeypatch: Any):
     """
     同一会话上一个 run 未完成时拒绝并发 send
@@ -264,6 +585,40 @@ def test_service_send_missing_conversation(tmp_path: Path, monkeypatch: Any):
     result = asyncio.run(svc.send("not-exist", "x"))
     assert result["ok"] is False
     assert "不存在" in result["error"]
+
+
+def test_service_delete_conversation_cascades_data_and_trashes_files(
+    tmp_path: Path,
+    monkeypatch: Any,
+):
+    """
+    删除 Chat 会话应清理上下文和会话记忆, 并把全部私有文件移入回收区
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    from satrap.expend.tools.memory_store import MemoryStore
+
+    svc = _make_service(tmp_path, monkeypatch)
+    conversation_id = asyncio.run(svc.create_conversation())
+    session_root = svc._storage.session_root("chat", conversation_id)
+    (session_root / "sandbox" / "result.txt").write_text("data", encoding="utf-8")
+    memory = MemoryStore(
+        db_path=svc._chat_db_path,
+        scope=f"session:{conversation_id}",
+    )
+    memory.add("私有记忆", "仅属于当前会话")
+
+    result = asyncio.run(svc.delete_conversation(conversation_id))
+
+    assert result["ok"] is True
+    assert not session_root.exists()
+    trashed = list((svc._storage.trash_root("chat") / "sessions").iterdir())
+    assert len(trashed) == 1
+    assert (trashed[0] / "sandbox" / "result.txt").read_text(encoding="utf-8") == "data"
+    assert memory.count() == 0
+    assert svc.list_turns(conversation_id) == []
 
 
 def test_service_plugin_enable_no_plugins(tmp_path: Path, monkeypatch: Any):
@@ -308,6 +663,7 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
     )
 
     async def _run() -> tuple[str, str]:
@@ -353,6 +709,7 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
     )
 
     async def _run() -> list[Any]:
@@ -385,19 +742,20 @@ def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):
     monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
     svc = _make_service(tmp_path, monkeypatch)
 
-    result = svc.add_memory("  ", "内容")
+    scope = "session:test-memory"
+    result = svc.add_memory("  ", "内容", scope=scope)
     # 空标题/空内容 -> 失败传播
     assert result["ok"] is False and result["error"]
 
-    added = svc.add_memory("标题", "内容", tags="a, b", importance=3)
+    added = svc.add_memory("标题", "内容", tags="a, b", importance=3, scope=scope)
     # 正常添加
     assert added["ok"] is True
     memory_id = added["memory"]["memory_id"]
 
-    assert svc.update_memory("不存在的id", content="x")["ok"] is False
+    assert svc.update_memory("不存在的id", content="x", scope=scope)["ok"] is False
     # 更新/删除不存在的 ID -> 失败传播
-    assert svc.delete_memory("不存在的id")["ok"] is False
+    assert svc.delete_memory("不存在的id", scope=scope)["ok"] is False
 
-    assert svc.update_memory(memory_id, content="新内容")["ok"] is True
+    assert svc.update_memory(memory_id, content="新内容", scope=scope)["ok"] is True
     # 正常更新/删除仍成功
-    assert svc.delete_memory(memory_id)["ok"] is True
+    assert svc.delete_memory(memory_id, scope=scope)["ok"] is True

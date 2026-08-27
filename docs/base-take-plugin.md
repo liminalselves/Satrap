@@ -36,23 +36,23 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 
 | 配置键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| sandbox_root | path | .satrap/sandbox | 沙箱根目录 (全局共享) |
+| sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时始终使用会话私有 sandbox |
 | workspace_root | path | 项目根 | read_document 白名单根目录 |
 | search_timeout | number | 10 | 搜索超时 (秒) |
-| memory_scope | string | web_chat | 记忆作用域 |
+| memory_scope | string | 空 | 独立调用的作用域覆盖; 平台运行时固定按会话注入 |
 | memory_mode | select | full | 记忆模式: disabled (不注入/不可写) / base (只读) / full (可增删改); 仅约束模型工具与注入, web 管理接口 (前端面板) 恒定可写 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/base_take.json`。
 
 ## 沙箱协调
 
-base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当两插件同时启用时, 由 ChatService 层自动停用 base_take 的 `code_sandbox` 工具 (coding 的 shell 能力更强), 避免模型困惑。
+base_take 与 satrap_coding 在同一会话内共享该会话的私有 sandbox, 不与其他会话共享。当两插件同时启用时, ChatService 自动停用 base_take 的 `code_sandbox` 工具, 避免能力重复。
 
 ## 长期记忆
 
-记忆存储使用公共 MemoryStore (`.satrap/satrapdata/memory.db`), 按 scope 隔离 (默认 `web_chat`)。记忆由注入处理器自动拼接到后续用户消息头部 (importance 降序, 上限 30 条), 保证模型每轮都携带已知约定。
+记忆存储使用当前平台的 `platform.db`, 按 scope 隔离, 默认 `session:<session_id>`。记忆由注入处理器自动拼接到后续用户消息头部 (importance 降序, 上限 30 条), 保证模型每轮都携带已知约定。
 
-**记忆分层 (项目功能)**: 项目会话的记忆分两层 —— 全局层 (`web_chat`, 所有会话可见) 与项目层 (`project:<project_id>`, 仅本项目会话可见)。注入时两层合并渲染 (`[项目记忆]` / `[全局记忆]` 分节, 项目层优先占 30 条配额); `add_memory` 默认写项目层, 可传 `level='global'` 写全局层; `list_memories` / `/memory list` 分层标注。无项目会话仅全局层, 行为与分层前一致。
+**记忆隔离**: 平台运行时始终使用 `session:<session_id>`。项目绑定不改变记忆边界, 不允许通过插件配置覆盖平台注入的作用域。
 
 两点语义说明:
 
@@ -68,4 +68,4 @@ base_take 与 satrap_coding 共享同一沙箱目录 (`.satrap/sandbox`)。当�
 - `.pdf` — pdfplumber 逐页提取文本
 - 纯文本 — 直接读取 (utf-8)
 
-文件路径限制在 workspace_root 白名单内 (项目会话为项目工作区, 调用时按会话解析); 若工作区根下未找到, 会回退在**当前工作区**的 `.satrap/uploads/` 各会话目录中按文件名搜索 (聊天页上传的文件保存为 `{uuid}_{filename}` 形式) —— 即项目内跨会话可见, 跨项目不可见。输出按 `max_length` 截断 (默认 131072 字符)。
+文件路径限制在 workspace_root 白名单内 (项目会话为项目工作区, 调用时按会话解析); 若工作区根下未找到, 只回退搜索当前会话的私有 `uploads/`。输出按 `max_length` 截断 (默认 131072 字符)。

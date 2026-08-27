@@ -71,14 +71,14 @@ class MisskeySession(AsyncSession):
     def __init__(self, session_id: str,
                  llm: AsyncLLM | None = None,
                  system_prompt: str = SYSTEM_PROMPT,
-                 sandbox_dir: str = ".satrap/sandbox",
+                 sandbox_dir: str = ".satrap/data/platforms/local/cache/manual-sandbox",
                  content_callback: Callable[[str], Awaitable[None]] | None = None, command_handler: AsyncCommandHandler | None = None):
         super().__init__(session_id, content_callback=content_callback,
                          command_handler=command_handler)
 
         self._llm = llm
         self.system_prompt = system_prompt
-        sandbox_root = sandbox_dir or ".satrap/sandbox"
+        sandbox_root = sandbox_dir or ".satrap/data/platforms/local/cache/manual-sandbox"
         self.user_sandbox_path = str(
             Path(sandbox_root) / session_id.replace(":", "_")
         )
@@ -91,6 +91,8 @@ class MisskeySession(AsyncSession):
 
     async def _async_init(self):
         """异步初始化: 创建工作流并注册工具"""
+        if self._wf is not None:
+            return
         if self._llm is None:
             raise RuntimeError("LLM 未配置, 请通过 'satrap session create --llm <name>' 指定")
 
@@ -101,13 +103,16 @@ class MisskeySession(AsyncSession):
         tools_mgr.register_tool(AsyncSearchTool(timeout=10))
         tools_mgr.register_tool(AsyncFetchPageTool(timeout=10))
 
-        self._wf = await MainWF.create(
+        workflow_id = self.workflow_id_assign("main")
+        workflow = await MainWF.create(
             llm=self._llm,
-            context_id=self.session_id,
+            context_id=workflow_id,
             tools_manager=tools_mgr,
             system_prompt=self.system_prompt,
             content_callback=self._content_callback,
         )
+        self._track_workflow_context(workflow_id, workflow.ctx)
+        self._wf = workflow
 
     async def run(self, message: str) -> str:
         """

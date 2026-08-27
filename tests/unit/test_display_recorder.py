@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -279,6 +278,7 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
 
     rec.start_turn("看看目录")
     ans = s.run("看看目录", thinking="medium")
+    assert isinstance(ans, str)
     rec.end_turn(ans)
 
     turns = rec.list_turns()
@@ -313,9 +313,9 @@ def test_recorder_meta_think_roundtrip(tmp_path: Any):
     assert meta["think"] == "high"
 
 
-def test_recorder_meta_think_legacy_compat(tmp_path: Any):
+def test_recorder_meta_has_complete_schema(tmp_path: Any):
     """
-    旧库无 think 列时自动 ALTER 添加, 旧记录回落 off
+    新库的会话元数据直接包含默认思考模式和项目归属
 
     参数:
     - tmp_path: tmp路径
@@ -323,23 +323,11 @@ def test_recorder_meta_think_legacy_compat(tmp_path: Any):
     from satrap.display.recorder import get_conversation_meta
 
     db = str(tmp_path / "display.db")
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE conversation_meta ("
-        "conversation_id TEXT PRIMARY KEY,"
-        " model TEXT NOT NULL DEFAULT 'default',"
-        " created_at REAL NOT NULL)"
-    )
-    conn.execute(
-        "INSERT INTO conversation_meta (conversation_id, model, created_at) VALUES ('c1', 'default', 1.0)"
-    )
-    conn.commit()
-    conn.close()
-
     rec = DisplayRecorder(db_path=db, conversation_id="c1")
-    # DisplayRecorder 初始化应自动 ALTER 添加 think 列
+    rec.save_meta("default")
     rec.close()
 
     meta = get_conversation_meta("c1", db_path=db)
     assert meta is not None
     assert meta["think"] == "off"
+    assert meta["project_id"] is None

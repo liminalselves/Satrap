@@ -5,7 +5,7 @@ import { cn } from '@/utils/cn';
 
 export interface Column<T> {
   key: string;
-  title: string;
+  title: ReactNode;
   render?: (item: T, index: number) => ReactNode;
   className?: string;
 }
@@ -16,6 +16,8 @@ export interface DataTableProps<T> {
   keyExtractor: (item: T) => string;
   emptyMessage?: string;
   className?: string;
+  scrollClassName?: string;
+  stickyHeader?: boolean;
 }
 
 function DataTableInner<T>({
@@ -24,6 +26,8 @@ function DataTableInner<T>({
   keyExtractor,
   emptyMessage = '暂无数据',
   className,
+  scrollClassName,
+  stickyHeader = false,
 }: DataTableProps<T>) {
   if (data.length === 0) {
     return (
@@ -35,8 +39,8 @@ function DataTableInner<T>({
 
   return (
     <Card className={className}>
-      <Table>
-        <TableHeader>
+      <Table containerClassName={scrollClassName}>
+        <TableHeader className={stickyHeader ? 'sticky top-0 z-10 bg-bg-layer1 backdrop-blur' : undefined}>
           <TableRow>
             {columns.map((col) => (
               <TableHead key={col.key} className={col.className}>

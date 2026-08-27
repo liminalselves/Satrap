@@ -12,11 +12,13 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Type, Dict, cast
+from typing import Any, Dict, Iterable, List, Optional, Type, cast
 
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, StorageScope
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.log import logger
 from satrap.core.type import SessionConfig, UserCall, UserInfo
 from satrap.core.utils.paths import get_db_path
@@ -28,6 +30,7 @@ class ContextSession:
     context_key: str = ""
     user_id: str = ""
     platform: str = ""
+    provider_name: str = SESSION_CLASS_PROVIDER
     session_type: str = ""
     session_id: str = ""
     created_at: float = 0.0
@@ -42,10 +45,10 @@ class UserInfoStore:
         初始化用户信息存储
 
         参数:
-        - db_path: 数据库文件路径, 默认 .satrap/satrapdata/user_info.db
+        - db_path: 数据库文件路径, 默认 local 平台的 platform.db
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else Path(get_db_path("user_info.db"))
+        self.db_path = Path(db_path) if db_path else Path(get_db_path())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 
@@ -80,6 +83,7 @@ class UserInfoStore:
                         context_key TEXT PRIMARY KEY,
                         user_id TEXT NOT NULL,
                         platform TEXT NOT NULL,
+                        provider_name TEXT NOT NULL DEFAULT 'session_class',
                         session_type TEXT NOT NULL,
                         session_id TEXT NOT NULL,
                         created_at REAL NOT NULL,
@@ -87,8 +91,18 @@ class UserInfoStore:
                     )
                     """
                 )
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(context_sessions)").fetchall()
+                }
+                if "provider_name" not in columns:
+                    conn.execute(
+                        "ALTER TABLE context_sessions "
+                        "ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'session_class'"
+                    )
                 conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_cs_user ON context_sessions (user_id, platform, session_type)"
+                    "CREATE INDEX IF NOT EXISTS idx_cs_user ON context_sessions "
+                    "(user_id, platform, provider_name, session_type)"
                 )
                 conn.commit()
 
@@ -256,6 +270,47 @@ class UserInfoStore:
             info.user_session = sessions
             self.upsert(info)
 
+    def remove_session_references(self, session_ids: Iterable[str]) -> tuple[int, int]:
+        """
+        批量移除用户绑定和上下文路由中的会话引用
+
+        参数:
+        - session_ids: 待清理的会话 ID 集合
+
+        返回:
+        - tuple[int, int]: 更新的用户数和删除的上下文路由数
+        """
+        targets = {str(session_id).strip() for session_id in session_ids if str(session_id).strip()}
+        if not targets:
+            return 0, 0
+        with self._lock:
+            with self._connect() as conn:
+                updated_users = 0
+                rows = conn.execute("SELECT user_id, user_session FROM user_info").fetchall()
+                for row in rows:
+                    try:
+                        parsed: object = json.loads(row["user_session"] or "[]")
+                    except Exception:
+                        parsed = []
+                    sessions = [
+                        str(item)
+                        for item in cast(list[Any], parsed)
+                    ] if isinstance(parsed, list) else []
+                    remaining = [session_id for session_id in sessions if session_id not in targets]
+                    if remaining != sessions:
+                        conn.execute(
+                            "UPDATE user_info SET user_session=? WHERE user_id=?",
+                            (json.dumps(remaining, ensure_ascii=False), row["user_id"]),
+                        )
+                        updated_users += 1
+                placeholders = ",".join("?" for _ in targets)
+                cursor = conn.execute(
+                    f"DELETE FROM context_sessions WHERE session_id IN ({placeholders})",
+                    tuple(sorted(targets)),
+                )
+                conn.commit()
+                return updated_users, max(cursor.rowcount, 0)
+
     def list_user_sessions(self, user_id: str) -> List[str]:
         """
         获取用户的 session_id 列表
@@ -274,8 +329,37 @@ class UserInfoStore:
 
     # ---------- 上下文会话 ----------
 
-    def upsert_context_session(self, user_id: str, platform: str,
-                                session_type: str, session_id: str) -> str:
+    @staticmethod
+    def _context_key(
+        user_id: str,
+        platform: str,
+        session_type: str,
+        provider_name: str,
+    ) -> str:
+        """
+        构建上下文会话唯一键
+
+        参数:
+        - user_id: 用户 ID
+        - platform: 平台名称
+        - session_type: 命名会话类型
+        - provider_name: Provider 名称
+
+        返回:
+        - str: 兼容旧 session_class 数据的上下文键
+        """
+        if provider_name == SESSION_CLASS_PROVIDER:
+            return f"{session_type}:{platform}:{user_id}"
+        return f"{provider_name}:{session_type}:{platform}:{user_id}"
+
+    def upsert_context_session(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str,
+        session_id: str,
+        provider_name: str = SESSION_CLASS_PROVIDER,
+    ) -> str:
         """
         创建或更新上下文会话记录
 
@@ -284,32 +368,39 @@ class UserInfoStore:
         - platform: 平台名称
         - session_type: 会话类型
         - session_id: 会话 ID
+        - provider_name: Provider 名称
 
         返回: context_key (格式: "{session_type}:{platform}:{user_id}")
 
         返回:
         - str: 创建或更新上下文会话记录
         """
-        context_key = f"{session_type}:{platform}:{user_id}"
+        context_key = self._context_key(user_id, platform, session_type, provider_name)
         now = time.time()
         with self._lock:
             with self._connect() as conn:
                 conn.execute(
                     """
                     INSERT INTO context_sessions
-                    (context_key, user_id, platform, session_type, session_id, created_at, last_used_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (context_key, user_id, platform, provider_name, session_type, session_id, created_at, last_used_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(context_key) DO UPDATE SET
                         session_id=excluded.session_id,
+                        provider_name=excluded.provider_name,
                         last_used_at=excluded.last_used_at
                     """,
-                    (context_key, user_id, platform, session_type, session_id, now, now),
+                    (context_key, user_id, platform, provider_name, session_type, session_id, now, now),
                 )
                 conn.commit()
         return context_key
 
-    def get_context_session(self, user_id: str, platform: str,
-                             session_type: str) -> Optional[ContextSession]:
+    def get_context_session(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str,
+        provider_name: str = SESSION_CLASS_PROVIDER,
+    ) -> Optional[ContextSession]:
         """
         查询上下文会话记录
 
@@ -317,11 +408,12 @@ class UserInfoStore:
         - user_id: 用户 ID
         - platform: 平台名称
         - session_type: 会话类型
+        - provider_name: Provider 名称
 
         返回:
         - Optional[ContextSession]: 查询上下文会话记录
         """
-        context_key = f"{session_type}:{platform}:{user_id}"
+        context_key = self._context_key(user_id, platform, session_type, provider_name)
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
@@ -334,14 +426,20 @@ class UserInfoStore:
                     context_key=row["context_key"],
                     user_id=row["user_id"],
                     platform=row["platform"],
+                    provider_name=row["provider_name"],
                     session_type=row["session_type"],
                     session_id=row["session_id"],
                     created_at=row["created_at"],
                     last_used_at=row["last_used_at"],
                 )
 
-    def delete_context_session(self, user_id: str, platform: str,
-                                session_type: str):
+    def delete_context_session(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str,
+        provider_name: str = SESSION_CLASS_PROVIDER,
+    ):
         """
         删除上下文会话记录
 
@@ -349,8 +447,9 @@ class UserInfoStore:
         - user_id: 用户 ID
         - platform: 平台名称
         - session_type: 会话类型
+        - provider_name: Provider 名称
         """
-        context_key = f"{session_type}:{platform}:{user_id}"
+        context_key = self._context_key(user_id, platform, session_type, provider_name)
         with self._lock:
             with self._connect() as conn:
                 conn.execute("DELETE FROM context_sessions WHERE context_key=?", (context_key,))
@@ -365,18 +464,24 @@ class UserManager:
         session_manager: SessionManager,
         db_path: str | Path | None = None,
         auto_create: bool = True,
+        platform_id: str = LOCAL_PLATFORM_ID,
+        storage_layout: StorageLayout | None = None,
     ):
         """
         初始化用户管理器
 
         参数:
         - session_manager: 共享的 SessionManager 实例
-        - db_path: 用户信息数据库路径, 默认 .satrap/satrapdata/user_info.db
+        - db_path: 用户信息数据库路径, 默认 local 平台的 platform.db
         - auto_create: 是否允许自动创建用户, 关闭后未知用户不落库
+        - platform_id: 此管理器所属的平台实例 ID
+        - storage_layout: 可选 v2 数据布局
         """
         self.sm = session_manager
         self.store = UserInfoStore(db_path=db_path)
         self.auto_create = bool(auto_create)
+        self.platform_id = platform_id.strip() or LOCAL_PLATFORM_ID
+        self.storage_layout = storage_layout
         self._lock = threading.RLock()
 
     # ---------- 用户信息 ----------
@@ -409,6 +514,10 @@ class UserManager:
                     changed = True
                 if changed:
                     self.store.upsert(existed)
+                if self.storage_layout is not None:
+                    self.storage_layout.ensure_user(
+                        StorageScope(platform_id=self.platform_id, user_id=user_id)
+                    )
                 return existed
 
             if not self.auto_create:
@@ -421,6 +530,10 @@ class UserManager:
                 user_session=[],
             )
             self.store.upsert(created)
+            if self.storage_layout is not None:
+                self.storage_layout.ensure_user(
+                    StorageScope(platform_id=self.platform_id, user_id=user_id)
+                )
             return created
 
     def get_user(self, user_id: str) -> Optional[UserInfo]:
@@ -625,6 +738,22 @@ class UserManager:
                 logger.error(f"[UserManager] unbind_orphan_sessions 失败: user_id={user_id}, 错误={e}")
                 return removed
 
+    def remove_session_references(self, session_ids: Iterable[str]) -> tuple[int, int]:
+        """
+        清理已删除会话的用户绑定和上下文路由
+
+        参数:
+        - session_ids: 已删除的会话 ID 集合
+
+        返回:
+        - tuple[int, int]: 更新的用户数和删除的上下文路由数
+        """
+        try:
+            return self.store.remove_session_references(session_ids)
+        except Exception as error:
+            logger.error(f"[UserManager] remove_session_references 失败: {error}")
+            return 0, 0
+
     # ---------- 快捷创建 ----------
     def create_user_session(
         self,
@@ -678,6 +807,7 @@ class UserManager:
         session_type: str = "",
         class_cfg_mgr: SessionClassConfigManager | None = None,
         extra_params: Optional[Dict[str, Any]] = None,
+        session_provider: str = SESSION_CLASS_PROVIDER,
     ) -> str:
         """
         解析用户+平台到 session_id, 不存在则自动创建
@@ -688,6 +818,7 @@ class UserManager:
         - session_type: 会话类型名称 (SessionClassConfigManager 中的注册名)
         - class_cfg_mgr: SessionClassConfigManager 实例 (自动创建时需要)
         - extra_params: 补充/覆盖 params
+        - session_provider: 会话 Provider 名称
 
         返回: session_id (格式: "{session_type}:{platform}:{user_id}")
 
@@ -701,29 +832,57 @@ class UserManager:
             )
             return ""
 
-        existed = self.store.get_context_session(user_id, platform, session_type)
+        provider_name = session_provider.strip() or SESSION_CLASS_PROVIDER
+        existed = self.store.get_context_session(
+            user_id,
+            platform,
+            session_type,
+            provider_name,
+        )
         if existed is not None:
             return existed.session_id
 
-        if class_cfg_mgr is None or not session_type:
+        if not session_type:
             return ""
 
-        session_id = self.sm.register_session_from_context(
-            class_config_name=session_type,
-            class_cfg_mgr=class_cfg_mgr,
+        if provider_name == SESSION_CLASS_PROVIDER and class_cfg_mgr is not None:
+            self.sm.class_cfg_mgr = class_cfg_mgr
+        session_id = self.sm.register_session_from_provider_context(
+            provider_name=provider_name,
+            definition_name=session_type,
             context_value=user_id,
             platform=platform,
             extra_params=extra_params,
         ).session_id or ""
 
         if session_id:
-            self.store.upsert_context_session(user_id, platform, session_type, session_id)
+            if self.storage_layout is not None:
+                self.storage_layout.ensure_session(
+                    StorageScope(
+                        platform_id=self.platform_id,
+                        user_id=user_id,
+                        session_id=session_id,
+                    )
+                )
+            self.store.upsert_context_session(
+                user_id,
+                platform,
+                session_type,
+                session_id,
+                provider_name,
+            )
             self.bind_session(user_id=user_id, session_id=session_id)
 
         return session_id
 
-    def update_context_session(self, user_id: str, platform: str,
-                                session_type: str, session_id: str):
+    def update_context_session(
+        self,
+        user_id: str,
+        platform: str,
+        session_type: str,
+        session_id: str,
+        session_provider: str = SESSION_CLASS_PROVIDER,
+    ):
         """
         更新上下文会话路由, 使该用户的后续消息路由到指定 session_id
 
@@ -732,9 +891,16 @@ class UserManager:
         - platform: 平台标识
         - session_type: 会话类型名称
         - session_id: 目标会话 ID
+        - session_provider: 会话 Provider 名称
         """
         try:
-            self.store.upsert_context_session(user_id, platform, session_type, session_id)
+            self.store.upsert_context_session(
+                user_id,
+                platform,
+                session_type,
+                session_id,
+                session_provider,
+            )
         except Exception as e:
             logger.error(
                 f"[UserManager] update_context_session 失败: "
@@ -749,6 +915,7 @@ class UserManager:
         session_type: str,
         class_cfg_mgr: SessionClassConfigManager,
         extra_params: Optional[Dict[str, Any]] = None,
+        session_provider: str = SESSION_CLASS_PROVIDER,
     ) -> str:
         """
         获取或创建用户上下文 (resolve_session 的别名)
@@ -759,6 +926,7 @@ class UserManager:
         - session_type: 会话类型
         - class_cfg_mgr: 类cfgmgr
         - extra_params: extra参数集合
+        - session_provider: 会话 Provider 名称
 
         返回:
         - str: 或创建用户上下文 (resolve_session 的别名)
@@ -769,6 +937,7 @@ class UserManager:
             session_type=session_type,
             class_cfg_mgr=class_cfg_mgr,
             extra_params=extra_params,
+            session_provider=session_provider,
         )
 
     # ---------- 消息路由 ----------

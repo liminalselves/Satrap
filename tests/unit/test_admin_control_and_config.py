@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from pathlib import Path
 
-from satrap.core.config_document import (
+from satrap.core.config.document import (
     config_exists,
     create_default_config,
     configured_platform_types,
@@ -22,7 +22,7 @@ from satrap.core.config_document import (
 from satrap.cli.client import DaemonClient
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.config_loader import ConfigLoader
+from satrap.core.config.loader import ConfigLoader
 
 
 def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch: pytest.MonkeyPatch):

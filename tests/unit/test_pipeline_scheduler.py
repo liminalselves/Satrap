@@ -315,11 +315,12 @@ async def test_execute_resolves_session_via_user_manager():
 
     class _FakeUserManager:
         def __init__(self):
-            self.resolved: list[tuple[str, str, str]] = []
+            self.resolved: list[tuple[str, str, str, str]] = []
 
         def resolve_session(self, user_id: str, platform: str, session_type: str,
-                            class_cfg_mgr: Any, extra_params: Any) -> str:
-            self.resolved.append((user_id, platform, session_type))
+                            class_cfg_mgr: Any, extra_params: Any,
+                            session_provider: str) -> str:
+            self.resolved.append((user_id, platform, session_provider, session_type))
             return f"{platform}:{user_id}:sid"
 
     fake_um = _FakeUserManager()
@@ -327,12 +328,12 @@ async def test_execute_resolves_session_via_user_manager():
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
-    assert fake_um.resolved == [("user-1", "rec1", "dummy")]
+    assert fake_um.resolved == [("user-1", "rec1", "session_class", "dummy")]
     assert sm.calls[0].session_id == "rec1:user-1:sid"
 
 
 def test_resolve_route_adapter_no_requested_uses_source():
-    """未配置 adapter_id 时回退到事件来源适配器"""
+    """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()
     sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1"})
@@ -340,11 +341,11 @@ def test_resolve_route_adapter_no_requested_uses_source():
     adapter = _RecorderAdapter()
     platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
     assert platform_id == "rec1"
-    assert extra is None
+    assert extra == {"adapter_id": "rec1"}
 
 
 def test_resolve_route_adapter_requested_missing_falls_back():
-    """配置的 adapter_id 不存在时回退到事件来源"""
+    """会话类中的旧 adapter_id 不应覆盖实际事件来源"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("ghost"))
     sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1"})
@@ -352,11 +353,11 @@ def test_resolve_route_adapter_requested_missing_falls_back():
     adapter = _RecorderAdapter()
     platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
     assert platform_id == "rec1"
-    assert extra is None
+    assert extra == {"adapter_id": "rec1"}
 
 
 def test_resolve_route_adapter_requested_exists():
-    """配置的 adapter_id 存在时路由到目标适配器"""
+    """存在同名 adapter_id 参数时仍应绑定事件来源适配器"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("rec1"))
     sched = PipelineScheduler(sm)   # type: ignore[arg-type]
     sched.set_adapter_ids({"rec1", "rec2"})

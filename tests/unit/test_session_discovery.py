@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.config_loader import ConfigLoader
+from satrap.core.config.loader import ConfigLoader
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.session_discovery import (
+    SessionClassDiscoveryService,
     create_default_session_dir,
     discover_session_classes,
 )
@@ -63,6 +64,33 @@ class AsyncDemo(AsyncSession):
     assert classes["AsyncDemo"].is_async is True
     assert classes["SyncDemo"].is_async is False
     assert classes["SyncDemo"].init_params == {"topic": "", "count": 0}
+
+
+def test_discovery_service_matches_compatibility_function(tmp_path: Path):
+    """
+    发现服务与原兼容函数应返回相同结果
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    scan_dir = tmp_path / "service_src"
+    _write_session_file(
+        scan_dir,
+        "service_demo.py",
+        """
+from satrap.core.framework import Session
+
+class ServiceDemo(Session):
+    pass
+""".strip(),
+    )
+
+    service_results = SessionClassDiscoveryService([str(scan_dir)]).discover()
+    compatibility_results = discover_session_classes([str(scan_dir)])
+
+    assert [item.to_dict() for item in service_results] == [
+        item.to_dict() for item in compatibility_results
+    ]
 
 
 def test_discover_reports_import_errors_without_stopping(tmp_path: Path):

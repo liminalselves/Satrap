@@ -234,6 +234,7 @@ def collect_commands(
     plugin_dir: Path,
     module_name: str,
     session: SessionType | None = None,
+    config: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """
     收集 commands.py 的命令映射, 返回 (同步命令, 异步命令)
@@ -242,8 +243,10 @@ def collect_commands(
     - plugin_dir: 插件目录
     - module_name: module名称
     - session: 会话
+    - config: 会话级插件配置
 
-    优先 build_commands(session) 工厂 (返回 (同步映射, 异步映射) 二元组或同步映射, 解决会话依赖注入);
+    优先 build_commands(session, config) 工厂, 并兼容 build_commands(session);
+    工厂返回 (同步映射, 异步映射) 二元组或同步映射, 解决会话和配置依赖注入;
     其次导出 commands (同步) / async_commands (异步) 字典;
     否则按约定收集: cmd_xxx 为同步命令, cmd_xxx_async 为异步命令
 
@@ -255,7 +258,13 @@ def collect_commands(
         return {}, {}
     builder = safe_getattr_callable(mod, "build_commands")
     if builder is not None and session is not None:
-        built: Any = builder(session)
+        built: Any = None
+        for args in ((session, config or {}), (session,)):
+            try:
+                built = builder(*args)
+                break
+            except TypeError:
+                continue
         if isinstance(built, tuple):
             pair = cast(tuple[Any, ...], built)
             if len(pair) == 2:
@@ -327,6 +336,30 @@ def scan_plugin_dirs(plugins_dir: str | Path | None = None) -> list[Path]:
             seen.add(name)
             found.append(entry)
     return found
+
+
+def resolve_plugin_dir(name: str, plugins_dir: str | Path | None = None) -> Path | None:
+    """
+    按插件元数据名称解析插件目录
+
+    参数:
+    - name: 插件名称
+    - plugins_dir: 可选用户插件目录
+
+    返回:
+    - Path | None: 插件不存在时返回 None
+    """
+    target = name.strip()
+    if not target:
+        return None
+    for plugin_dir in scan_plugin_dirs(plugins_dir):
+        try:
+            meta = load_plugin_meta(plugin_dir)
+        except Exception:
+            continue
+        if str(meta.get("name") or "").strip() == target:
+            return plugin_dir
+    return None
 
 
 def install_all_plugins(session: SimpleSession, plugins_dir: str | Path | None = None) -> list[Plugin]:

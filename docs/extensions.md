@@ -73,7 +73,7 @@ from satrap.core.utils.sandbox import CodeSandbox
 from satrap.expend import CodeSandboxTool
 
 sandbox = CodeSandbox(
-    sandbox_path=".satrap/sandbox",
+    sandbox_path=session.coding_sandbox_root,
     env=sys.executable,
 )
 
@@ -245,17 +245,17 @@ MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机�
 
 ## 长期记忆存储 (MemoryStore)
 
-`satrap.expend.tools.memory_store.MemoryStore` 是公共的 SQLite 长期记忆存储, 供 base_take / satrap_coding 等插件共用。默认数据文件 `.satrap/satrapdata/memory.db` (纳入集中 db 路径管理)。
+`satrap.expend.tools.memory_store.MemoryStore` 是公共的 SQLite 长期记忆存储, 供 base_take / satrap_coding 等插件共用。平台运行时使用所属平台的 `platform.db`, 默认按会话 scope 隔离。
 
 ```python
 from satrap.expend.tools import MemoryStore
 
-store = MemoryStore(scope="web_chat")
+store = MemoryStore(scope="session:example")
 store.add(title="偏好", content="用户喜欢简洁回答", tags=["偏好"], importance=3)
 memories = store.list_all()
 ```
 
-**多 scope 可见集合 (记忆分层)**: `store.scopes` 为读操作 (list/get/delete/clear/count/注入) 的可见 scope 集合, `store.scope` 为默认写入层。契约: `scopes[0]` 为全局层, 其余为项目层; 集合含空串 `''` 表示不限定 (旧行为)。`to_context_block()` 在多 scope 时分层渲染 (`[项目记忆]` / `[全局记忆]` 分节, 项目层优先占 `max_entries` 配额), 单 scope 时保持原有平铺渲染。项目会话由 ChatService 在建会话/改绑时完成分层绑定, 见 [聊天展示层](chat-display.md#项目-工作区文件夹绑定)。
+`scope` 是必填的非空会话作用域。一个 `MemoryStore` 实例只能读写自己的 scope, 不提供全库读取、全局层或项目共享层。项目绑定不改变记忆作用域, 见 [聊天展示层](chat-display.md#项目-工作区文件夹绑定)。
 
 ## 插件配置机制
 

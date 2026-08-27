@@ -94,7 +94,7 @@ for event in llm.stream_call(messages, thinking="high"):
 
 ## ContextManager
 
-`ContextManager` 使用 SQLite 保存对话上下文, 默认数据库为 `.satrap/satrapdata/chat_history.db` (数据库文件统一存放于 `.satrap/satrapdata/`)。
+`ContextManager` 使用 SQLite 保存对话上下文。平台后端会注入当前平台实例的 `platform.db`; 独立调用默认使用 `local` 平台数据库。
 
 ```python
 from satrap import ContextManager

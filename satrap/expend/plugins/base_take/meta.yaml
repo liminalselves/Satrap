@@ -9,7 +9,7 @@ config_schema:
   sandbox_root:
     type: path
     default: ""
-    description: "沙箱根目录 (留空用全局默认 .satrap/sandbox, 与 coding 插件共享)"
+    description: "独立调用的沙箱兜底路径 (平台运行时固定使用会话私有 sandbox)"
   workspace_root:
     type: path
     default: ""
@@ -20,8 +20,8 @@ config_schema:
     description: "搜索/网页抓取超时秒数"
   memory_scope:
     type: string
-    default: "web_chat"
-    description: "记忆作用域 (网页聊天统一 web_chat, 与前端记忆管理对齐)"
+    default: ""
+    description: "独立调用的记忆作用域覆盖 (平台运行时固定使用 session:<session_id>)"
   memory_mode:
     type: select
     default: "full"

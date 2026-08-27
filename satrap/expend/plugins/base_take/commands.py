@@ -55,15 +55,10 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
         memories = store.list_all()
         if not memories:
             return "当前没有长期记忆"
-        global_scope = store.scopes[0] if store.scopes else store.scope
-        layered = len([s for s in store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            layer = ""
-            if layered:
-                layer = " (全局层)" if m["scope"] == global_scope else " (项目层)"
-            lines.append(f"- {m['id']}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            lines.append(f"- {m['id']} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
     if sub in ("add", "添加"):
         rest = _parse_args(args[1:])

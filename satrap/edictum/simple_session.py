@@ -29,7 +29,7 @@ from satrap.core.framework.Base import (
     Session,
 )
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr_callable
+from satrap.core.type import CommandAction, safe_getattr_callable
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.paths import get_db_path
 from satrap.core.utils.skills import SkillsManager
@@ -532,7 +532,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         system_prompt: str | None = None,
         tools: Iterable[Tool] | None = None,
         content_callback: Callable[[str], None] | None = None,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         enable_checkpoint: bool = True,
         stream: bool = False,
         return_thinking: bool = False,
@@ -631,7 +631,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         *,
         thinking: str = "off",
         max_iterations: int = 10,
-    ) -> str:
+    ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
 
@@ -650,8 +650,14 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         - run 期间 remove/replace 的 handler 延迟 close, 本轮 run 结束后冲刷
 
         返回:
-        - str: 最终模型输出
+        - str | CommandAction: 命令结果或最终模型输出
         """
+        command_result, is_command = self.cmd_process(user_input)
+        if is_command:
+            if isinstance(command_result, CommandAction):
+                return command_result
+            return "" if command_result is None else str(command_result)
+
         with self._registry_lock:
             self._active_runs += 1
             handlers = self._enabled_handlers()
@@ -764,7 +770,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         finally:
             logger.debug(f"[edictum] 处理器 {handler.name}.{stage} 耗时 {time.perf_counter() - t0:.3f}s")
 
-    def __call__(self, user_input: str, **kwargs: Any) -> str:
+    def __call__(self, user_input: str, **kwargs: Any) -> str | CommandAction:
         return self.run(user_input, **kwargs)
 
     # ---------- 命令管理 ----------
@@ -1085,7 +1091,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
-            sync_commands, _async_commands = collect_commands(plugin_dir, name, self)
+            sync_commands, _async_commands = collect_commands(plugin_dir, name, self, plugin_config)
             for cname, chandler in sync_commands.items():
                 if cname in self.cmd_handler.commands or cname in command_states:
                     raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
@@ -1354,7 +1360,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         system_prompt: str | None = None,
         tools: Iterable[AsyncTool] | None = None,
         content_callback: Callable[[str], Any] | None = None,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         enable_checkpoint: bool = True,
         stream: bool = False,
         return_thinking: bool = False,
@@ -1497,7 +1503,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         *,
         thinking: str = "off",
         max_iterations: int = 10,
-    ) -> str:
+    ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
 
@@ -1512,8 +1518,14 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         并发: 同一会话的 run 经 _run_lock 串行执行 (不支持并发 run, 第二个 run 排队等待)
 
         返回:
-        - str: 最终模型输出
+        - str | CommandAction: 命令结果或最终模型输出
         """
+        command_result, is_command = await self.cmd_process(user_input)
+        if is_command:
+            if isinstance(command_result, CommandAction):
+                return command_result
+            return "" if command_result is None else str(command_result)
+
         async with self._run_lock:
             wf = self._require_wf()
             with self._registry_lock:
@@ -1633,7 +1645,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         finally:
             logger.debug(f"[edictum] 处理器 {handler.name}.{stage} 耗时 {time.perf_counter() - t0:.3f}s")
 
-    async def __call__(self, user_input: str, **kwargs: Any) -> str:
+    async def __call__(self, user_input: str, **kwargs: Any) -> str | CommandAction:
         return await self.run(user_input, **kwargs)
 
     # ---------- 命令管理 ----------
@@ -2064,7 +2076,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
-            _sync_commands, async_commands = collect_commands(plugin_dir, name, self)
+            _sync_commands, async_commands = collect_commands(plugin_dir, name, self, plugin_config)
             for cname, chandler in async_commands.items():
                 if cname in self.command_handler.commands or cname in command_states:
                     raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")

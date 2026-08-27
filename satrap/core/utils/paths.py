@@ -41,29 +41,26 @@ def ensure_data_dir() -> Path:
     return data_dir
 
 
-def get_satrapdata_dir() -> Path:
+def get_storage_dir() -> Path:
     """
-    获取数据库文件存放目录 (.satrap/satrapdata)
-
-    所有 .db 默认路径统一放该目录, 与配置/日志等其它 .satrap 内容分离
+    获取 v2 持久化数据根目录
 
     返回:
-    - Path: 数据库文件存放目录 (.satrap/satrapdata)
+    - Path: `.satrap/data` 目录
     """
-    return get_data_dir() / "satrapdata"
+    return get_data_dir() / "data"
 
 
-def get_db_path(filename: str) -> str:
+def get_db_path(*, platform_id: str = "local") -> str:
     """
-    获取某个数据库文件的默认完整路径 (.satrap/satrapdata/<filename>)
+    获取指定平台实例唯一的数据库路径
 
     参数:
-    - filename: 数据库文件名 (如 "chat_history.db")
-
-    返回字符串路径, 供各 Manager 的 db_path 默认值使用;
-    调用方如需 Path 对象可自行包装
+    - platform_id: 平台实例 ID, 默认 `local`
 
     返回:
-    - str: 某个数据库文件的默认完整路径 (.satrap/satrapdata/<filename>)
+    - str: `.satrap/data/platforms/<platform-key>/platform.db`
     """
-    return str(get_satrapdata_dir() / filename)
+    from satrap.core.storage import default_storage_layout
+
+    return str(default_storage_layout.platform_db(platform_id))

@@ -1,9 +1,13 @@
 import { HTMLAttributes, TdHTMLAttributes, ThHTMLAttributes } from 'react';
 import { cn } from '@/utils/cn';
 
-export function Table({ className, ...props }: HTMLAttributes<HTMLTableElement>) {
+interface TableProps extends HTMLAttributes<HTMLTableElement> {
+  containerClassName?: string;
+}
+
+export function Table({ className, containerClassName, ...props }: TableProps) {
   return (
-    <div className="w-full overflow-auto custom-scrollbar">
+    <div className={cn('w-full overflow-auto custom-scrollbar', containerClassName)}>
       <table className={cn('w-full text-sm', className)} {...props} />
     </div>
   );

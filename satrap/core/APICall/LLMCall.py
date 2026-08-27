@@ -6,7 +6,7 @@
 """
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, safe_getattr, safe_getattr_str, safe_getattr_list, safe_getattr_dict
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, safe_getattr, safe_getattr_str, safe_getattr_list
 from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
@@ -177,10 +177,11 @@ def parse_call_response(
 
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
-        message = safe_getattr_dict(first_choice, "message")
-        if not message and isinstance(first_choice, dict):
+        if isinstance(first_choice, dict):
             first_choice = cast(Dict[str, Any], first_choice)
-            message = first_choice.get("message", {})
+            message: Any = first_choice.get("message")
+        else:
+            message = safe_getattr(first_choice, "message")
         
         if not message:
             return LLMCallResponse(type="message", content="")
@@ -211,10 +212,11 @@ def parse_call_response(
                     tool_call = cast(Dict[str, Any], tool_call)
                     call_id = tool_call.get("id", "")
                 
-                function_data = safe_getattr_dict(tool_call, "function")
-                if not function_data and isinstance(tool_call, dict):
+                if isinstance(tool_call, dict):
                     tool_call = cast(Dict[str, Any], tool_call)
-                    function_data = tool_call.get("function", {})
+                    function_data: Any = tool_call.get("function")
+                else:
+                    function_data = safe_getattr(tool_call, "function")
                 # 提取 function 对象 (兼容对象和字典)
 
                 if function_data:

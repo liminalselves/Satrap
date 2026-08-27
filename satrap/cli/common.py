@@ -9,7 +9,7 @@ from typing import Any
 
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.config_loader import ConfigLoader
+from satrap.core.config.loader import ConfigLoader
 from satrap.core.type import safe_getattr, safe_getattr_bool
 
 

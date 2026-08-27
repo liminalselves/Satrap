@@ -81,6 +81,8 @@ class UserCall:
     """用户调用数据结构"""
     session_id: Optional[str] = None
     """会话 ID, 如 `sr7dws`"""
+    session_provider: Optional[str] = None
+    """会话 Provider 名称, 未指定时使用 session_class"""
     session_type: Optional[str] = None
     """会话类型"""
     message: Optional[str] = None
@@ -161,6 +163,8 @@ class SessionConfig:
     """会话 ID, 如 `sr7dws`"""
     session_type_name: Optional[str] = None
     """会话类型名称"""
+    provider_name: str = "session_class"
+    """创建该会话实例的 Provider 名称"""
     created_at: float = 0.0
     """会话创建时间"""
     last_used_at: float = 0.0

@@ -30,7 +30,7 @@ config_schema:
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 # 注: search/fetch_page/memory 已移交 base_take 插件
 tools:
-  ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图
+  ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
   shell: 在本机执行 shell 命令 (PowerShell/cmd), 写/高危命令需批准
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
   read_file: 读取工作区内文件内容, 支持分页

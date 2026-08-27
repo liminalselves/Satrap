@@ -39,7 +39,7 @@ class ModelWorkflowFramework:
         content_callback: Optional[Callable[[str], None]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], None]] = None,
-        *, db_path: str = get_db_path("chat_history.db"),
+        *, db_path: str = get_db_path(),
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -89,7 +89,9 @@ class ModelWorkflowFramework:
         """
         self.llm = llm
         self.ctx = ContextManager(context_id, db_path=db_path)
-        self.tools_manager = tools_manager if tools_manager else ToolsManager()   # 如果未提供工具管理器, 则创建一个空的工具管理器实例
+        self.tools_manager = tools_manager if tools_manager else ToolsManager()
+        # 如果未提供工具管理器, 则创建一个空的工具管理器实例
+
         self.return_thinking = return_thinking
         self.thinking_callback = thinking_callback
 
@@ -166,6 +168,7 @@ class ModelWorkflowFramework:
                     break
 
                 if now_iteration >= max_iterations:   # 达到最大迭代次数
+
                     if callback:   # 回调回复
                         if now_response.thinking and self.content_callback:
                             self._content_callback(f"<think>\n{now_response.thinking}\n</think>")
@@ -530,7 +533,7 @@ class ModelWorkflowFramework:
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
     def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
-        command_handler: Optional[CommandHandler] | None = None, *, db_path: str = get_db_path("chat_history.db"),
+        command_handler: Optional[CommandHandler] | None = None, *, db_path: str = get_db_path(),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False):
         """
         会话框架, 用于管理多个模型工作流的会话
@@ -960,7 +963,7 @@ class AsyncModelWorkflowFramework:
         content_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-        *, db_path: str = get_db_path("chat_history.db"),
+        *, db_path: str = get_db_path(),
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -1466,14 +1469,14 @@ class AsyncSession:
         run = cls.__dict__.get("run")
         if run is not None and inspect.iscoroutinefunction(run):
             async def _wrapped_run(self: Any, *args: Any, **kw: Any):
-                await self.initialize()
+                await self._ensure_initialized()
                 return await run(self, *args, **kw)
             cls.run = _wrapped_run
 
     def __init__(self, session_id: str,
         content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,
         command_handler: Optional[AsyncCommandHandler] | None = None, *,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False
     ):
         """
@@ -1522,6 +1525,7 @@ class AsyncSession:
         self.wf_list: list[str] = []
         self.content_callback = content_callback
         self._initialized = False
+        self._initialize_lock = asyncio.Lock()
         self._user_manager: UserManager | None = None
 
         if self._state_store is not None:
@@ -1531,17 +1535,20 @@ class AsyncSession:
         self.command_handler = command_handler if command_handler else AsyncCommandHandler()
         # 如果未提供命令处理器, 则创建一个空的命令处理器实例
 
-    async def _ensure_initialized(self):
+    async def _ensure_initialized(self) -> None:
         """确保异步初始化完成 (幂等)"""
+        await self.initialize()
+
+    async def initialize(self) -> None:
+        """执行实际初始化, 可被子类重写, 但需调用 super().initialize()"""
         if self._initialized:
             return
-        await self.initialize()
-        self._initialized = True
-
-    async def initialize(self):
-        """执行实际初始化, 可被子类重写, 但需调用 super().initialize()"""
-        await self.session_ctx.initialize()
-        await self._async_init()   # 钩子: 子类可在此创建工作流等
+        async with self._initialize_lock:
+            if self._initialized:
+                return
+            await self.session_ctx.initialize()
+            await self._async_init()   # 钩子: 子类可在此创建工作流等
+            self._initialized = True
 
     async def _async_init(self):
         """子类可重写的异步初始化钩子"""

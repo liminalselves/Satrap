@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -8,13 +9,16 @@ import { PLATFORM_TYPES } from '@/utils/constants';
 import { PageHeader, FormModal, ActionButtons, EmptyState } from '@/components/common';
 import { Plus, Edit2, Trash2, RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
+import { edictumApi } from '@/api/edictum';
 import { normalizePlatformSettings } from '@/utils/adminMigration';
 import type { FormField } from '@/components/common';
-import type { PlatformConfig } from '@/api/types';
+import type { EdictumSessionConfig, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
   const { health, refreshHealth, reloadConfig } = useBackendStore();
+  const { sessionClasses, fetchSessionClasses } = useConfigStore();
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
+  const [edictumConfigs, setEdictumConfigs] = useState<Record<string, EdictumSessionConfig>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -23,6 +27,8 @@ export function Platforms() {
   const [formData, setFormData] = useState({
     id: '',
     type: 'misskey',
+    session_provider: 'session_class',
+    session_type: '',
     settings: {} as Record<string, unknown>,
   });
 
@@ -42,13 +48,23 @@ export function Platforms() {
     }
   }, []);
 
+  const loadEdictumConfigs = useCallback(async () => {
+    try {
+      setEdictumConfigs(await edictumApi.list());
+    } catch {
+      setEdictumConfigs({});
+    }
+  }, []);
+
   useEffect(() => {
     loadPlatforms();
-  }, [loadPlatforms]);
+    loadEdictumConfigs();
+    fetchSessionClasses();
+  }, [fetchSessionClasses, loadEdictumConfigs, loadPlatforms]);
 
   const handleAdd = useCallback(() => {
     setEditingPlatform(null);
-    setFormData({ id: '', type: 'misskey', settings: {} });
+    setFormData({ id: '', type: 'misskey', session_provider: 'session_class', session_type: '', settings: {} });
     setRawSettings('{}');
     setShowModal(true);
   }, []);
@@ -58,6 +74,8 @@ export function Platforms() {
     setFormData({
       id: platform.id,
       type: platform.type,
+      session_provider: platform.session_provider || 'session_class',
+      session_type: platform.session_type || '',
       settings: platform.settings,
     });
     setRawSettings(JSON.stringify(platform.settings, null, 2));
@@ -86,6 +104,10 @@ export function Platforms() {
       toast('error', '平台名称不能为空');
       return;
     }
+    if (formData.session_provider === 'edictum' && !formData.session_type.trim()) {
+      toast('error', 'EdictumProvider 必须绑定一个命名配置');
+      return;
+    }
     setSaving(true);
     try {
       let settings = formData.settings;
@@ -99,6 +121,8 @@ export function Platforms() {
       const platform: PlatformConfig = {
         id: formData.id.trim(),
         type: formData.type,
+        session_provider: formData.session_provider,
+        session_type: formData.session_type || undefined,
         settings: normalizePlatformSettings(formData.type, settings),
       };
       const result = editingPlatform
@@ -130,6 +154,8 @@ export function Platforms() {
     } else {
       if (key === 'settings_json') {
         setRawSettings(value as string);
+      } else if (key === 'session_provider') {
+        setFormData((prev) => ({ ...prev, session_provider: String(value), session_type: '' }));
       } else {
         setFormData((prev) => ({ ...prev, [key]: value }));
       }
@@ -151,6 +177,37 @@ export function Platforms() {
         label: '类型',
         type: 'select',
         options: Array.from(typeOptions).map((type) => ({ value: type, label: type })),
+      },
+      {
+        key: 'session_provider',
+        label: '会话 Provider',
+        type: 'select',
+        options: [
+          { value: 'session_class', label: 'SessionClassProvider' },
+          { value: 'edictum', label: 'EdictumProvider' },
+        ],
+      },
+      {
+        key: 'session_type',
+        label: formData.session_provider === 'edictum' ? 'Edictum 命名配置' : '默认会话类',
+        type: 'select',
+        options: [
+          {
+            value: '',
+            label: formData.session_provider === 'edictum'
+              ? '请选择 Edictum 命名配置'
+              : '自动（同名会话类或全局默认）',
+          },
+          ...(formData.session_provider === 'edictum'
+            ? Object.entries(edictumConfigs).map(([name, config]) => ({
+                value: name,
+                label: config.enabled ? name : `${name}（已停用）`,
+              }))
+            : Object.entries(sessionClasses).map(([name, config]) => ({
+                value: name,
+                label: config.enabled ? name : `${name}（已停用）`,
+              }))),
+        ],
       },
     ];
 
@@ -189,12 +246,14 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, editingPlatform, formData.type, platforms]);
+  }, [adapters, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, sessionClasses]);
 
   // 表单值
   const formValues = useMemo(() => ({
     id: formData.id,
     type: formData.type,
+    session_provider: formData.session_provider,
+    session_type: formData.session_type,
     'settings.host': formData.settings.host,
     'settings.port': formData.settings.port,
     'settings.access_token': formData.settings.access_token,
@@ -224,6 +283,7 @@ export function Platforms() {
               onClick={() => {
                 refreshHealth();
                 loadPlatforms();
+                loadEdictumConfigs();
               }}
               disabled={loading}
             >
@@ -253,6 +313,9 @@ export function Platforms() {
                     <span className="font-medium text-text-primary">{id}</span>
                     <Badge variant="info" className="ml-2">
                       {info.config_type || info.type || 'unknown'}
+                    </Badge>
+                    <Badge variant="default" className="ml-2">
+                      {(info.session_provider || 'session_class')}: {info.session_type || '自动'}
                     </Badge>
                   </div>
                 </div>
@@ -288,6 +351,9 @@ export function Platforms() {
                 <div>
                   <span className="font-medium text-text-primary">{platform.id}</span>
                   <Badge variant="default" className="ml-2">{platform.type}</Badge>
+                  <Badge variant="info" className="ml-2">
+                    {(platform.session_provider || 'session_class')}: {platform.session_type || '自动'}
+                  </Badge>
                   <p className="mt-1 max-w-2xl truncate text-xs text-text-secondary">
                     {JSON.stringify(platform.settings)}
                   </p>

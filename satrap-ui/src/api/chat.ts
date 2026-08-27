@@ -1,4 +1,4 @@
-import { CHAT_API_URL } from '@/utils/constants';
+import { getChatApiUrl } from '@/utils/constants';
 
 // ==================== 类型 ====================
 
@@ -78,6 +78,15 @@ export interface ModelConfigItem {
   thinking_fields?: string[];
 }
 
+// 预加载及首次发送使用的会话构建设置
+export interface ChatPreloadSettings {
+  model: string;
+  think: string;
+  temperature: number;
+  systemPrompt: string;
+  projectId: string | null;
+}
+
 // 能力项
 export interface CapabilityItem {
   name: string;
@@ -132,13 +141,15 @@ export type ChatEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_start'; name: string; arguments: unknown; call_id: string }
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
+  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string }
+  | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
   | { type: 'turn_done'; answer: string }
   | { type: 'error'; error?: string; message?: string };
 
 // ==================== HTTP 请求 ====================
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const resp = await fetch(`${CHAT_API_URL}${path}`, {
+  const resp = await fetch(`${getChatApiUrl()}${path}`, {
     method,
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -151,7 +162,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export const chatApi = {
-  health: () => request<{ ok: boolean; conversations: number }>('GET', '/api/chat/health'),
+  health: () => request<{ ok: boolean; conversations: number; preloaded: number }>('GET', '/api/chat/health'),
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),
 
@@ -160,6 +171,15 @@ export const chatApi = {
       model, think,
       ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
       ...(projectId ? { project_id: projectId } : {}),
+    }),
+
+  preloadConversation: (settings: ChatPreloadSettings) =>
+    request<{ ok: boolean; conversation_id: string }>('POST', '/api/chat/conversations/preload', {
+      model: settings.model,
+      think: settings.think,
+      temperature: settings.temperature,
+      system_prompt: settings.systemPrompt,
+      project_id: settings.projectId,
     }),
 
   // 会话改绑项目 (null = 移出项目)
@@ -194,8 +214,32 @@ export const chatApi = {
   listTurns: (conversation: string) =>
     request<{ turns: ChatTurn[] }>('GET', `/api/chat/turns?conversation=${encodeURIComponent(conversation)}`),
 
-  send: (conversation: string, text: string, think = 'off', attachments?: Attachment[]) =>
-    request<{ ok: boolean; error?: string }>('POST', '/api/chat/send', { conversation, text, think, attachments }),
+  send: (
+    conversation: string,
+    text: string,
+    think = 'off',
+    attachments?: Attachment[],
+    preloadSettings?: ChatPreloadSettings,
+  ) =>
+    request<{ ok: boolean; error?: string }>('POST', '/api/chat/send', {
+      conversation,
+      text,
+      think,
+      attachments,
+      ...(preloadSettings ? {
+        model: preloadSettings.model,
+        temperature: preloadSettings.temperature,
+        system_prompt: preloadSettings.systemPrompt,
+        project_id: preloadSettings.projectId,
+      } : {}),
+    }),
+
+  answerAskUser: (conversation: string, requestId: string, answer: string) =>
+    request<{ ok: boolean; error?: string }>('POST', '/api/chat/ask-user/answer', {
+      conversation,
+      request_id: requestId,
+      answer,
+    }),
 
   // 模型配置管理
   listModelsDetail: () =>
@@ -258,20 +302,20 @@ export const chatApi = {
     ),
 
   // 记忆管理
-  listMemories: (scope = 'web_chat') =>
+  listMemories: (scope: string) =>
     request<{ ok: boolean; memories: MemoryRecord[] }>('GET', `/api/chat/memories?scope=${encodeURIComponent(scope)}`),
 
-  addMemory: (title: string, content: string, tags = '', importance = 1, scope = 'web_chat') =>
+  addMemory: (title: string, content: string, tags: string, importance: number, scope: string) =>
     request<{ ok: boolean; memory: MemoryRecord }>('POST', '/api/chat/memories', {
       title, content, tags, importance, scope,
     }),
 
-  updateMemory: (id: string, fields: Partial<Pick<MemoryRecord, 'title' | 'content' | 'tags' | 'importance'>>, scope = 'web_chat') =>
+  updateMemory: (id: string, fields: Partial<Pick<MemoryRecord, 'title' | 'content' | 'tags' | 'importance'>>, scope: string) =>
     request<{ ok: boolean; memory: MemoryRecord }>('PUT', `/api/chat/memories/${encodeURIComponent(id)}`, {
       ...fields, scope,
     }),
 
-  deleteMemory: (id: string, scope = 'web_chat') =>
+  deleteMemory: (id: string, scope: string) =>
     request<{ ok: boolean }>('DELETE', `/api/chat/memories/${encodeURIComponent(id)}?scope=${encodeURIComponent(scope)}`),
 };
 
@@ -281,7 +325,7 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
-  const wsUrl = `${CHAT_API_URL.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
+  const wsUrl = `${getChatApiUrl().replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
   const ws = new WebSocket(wsUrl);
 
   ws.onmessage = (e) => {

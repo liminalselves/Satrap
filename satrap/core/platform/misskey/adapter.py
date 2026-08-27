@@ -268,7 +268,8 @@ class MisskeyAdapter(PlatformAdapter):
             platform_message=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
-            session_type=self.adapter_type,
+            session_provider=self.get_session_provider(),
+            session_type=self.get_session_type(),
             adapter=self,
         )
         self.commit_event(event)
@@ -604,10 +605,10 @@ class MisskeyAdapter(PlatformAdapter):
     async def terminate(self) -> None:
         """终止 Misskey 适配器并释放资源"""
         self._running = False
+        await super().terminate()
         if self._client:
             await self._client.close()
             self._client = None
-        await super().terminate()
 
     def get_client(self) -> Any:
         """

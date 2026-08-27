@@ -111,7 +111,7 @@ export function Models() {
 
     let ok: boolean;
     if (editingName) {
-      ok = await updateModel(activeTab, editingName, cleanConfig);
+      ok = await updateModel(activeTab, editingName, { ...cleanConfig, name });
     } else {
       ok = await createModel(activeTab, name, cleanConfig);
     }
@@ -134,9 +134,9 @@ export function Models() {
 
   // 表单字段
   const formFields: FormField[] = useMemo(() => [
-    { key: 'name', label: '配置名称', required: true, disabled: !!editingName },
+    { key: 'name', label: '配置名称', required: true },
     ...FIELD_META[activeTab],
-  ], [activeTab, editingName]);
+  ], [activeTab]);
 
   // 当前类型标签
   const currentTypeLabel = useMemo(() => 

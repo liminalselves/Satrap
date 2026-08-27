@@ -42,9 +42,9 @@ class ConfigLoader:
         cfg = config or BackendConfig()
         return {
             "model_config_path": cfg.model_config_path,
+            "data_root": cfg.data_root,
             "session_class_config_path": cfg.session_class_config_path,
-            "session_db_path": cfg.session_db_path,
-            "user_db_path": cfg.user_db_path,
+            "edictum_config_path": cfg.edictum_config_path,
             "default_session_type": cfg.default_session_type,
             "max_sessions": cfg.max_sessions,
             "idle_timeout": cfg.idle_timeout,
@@ -205,7 +205,8 @@ class ConfigLoader:
         支持的环境变量:
         - SATRAP_MODEL_CONFIG_PATH
         - SATRAP_SESSION_CLASS_CONFIG_PATH
-        - SATRAP_DB_DIR (同时更新 session_db 和 user_db 的目录)
+        - SATRAP_EDICTUM_CONFIG_PATH
+        - SATRAP_DATA_ROOT
         - SATRAP_LLM_TIMEOUT
 
         返回:
@@ -213,20 +214,15 @@ class ConfigLoader:
         """
         env_map = {
             "SATRAP_MODEL_CONFIG_PATH": "model_config_path",
+            "SATRAP_DATA_ROOT": "data_root",
             "SATRAP_SESSION_CLASS_CONFIG_PATH": "session_class_config_path",
+            "SATRAP_EDICTUM_CONFIG_PATH": "edictum_config_path",
             "SATRAP_API_HOST": "api_host",
         }
         for env_key, attr in env_map.items():
             val = os.getenv(env_key)
             if val:
                 setattr(config, attr, val)
-
-        db_dir = os.getenv("SATRAP_DB_DIR")
-        if db_dir:
-            if config.session_db_path:
-                config.session_db_path = str(Path(db_dir) / Path(config.session_db_path).name)
-            if config.user_db_path:
-                config.user_db_path = str(Path(db_dir) / Path(config.user_db_path).name)
 
         timeout = os.getenv("SATRAP_LLM_TIMEOUT")
         if timeout:

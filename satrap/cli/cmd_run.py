@@ -10,8 +10,9 @@ from pathlib import Path
 from satrap.cli.backend_lock import BackendInstanceLock
 from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendManager
-from satrap.core.config_loader import ConfigLoader
+from satrap.core.config.loader import ConfigLoader
 from satrap.core.log import logger
+from satrap.core.log.stream import install_standard_stream_capture
 from satrap.core.type import safe_getattr
 
 
@@ -44,6 +45,7 @@ async def cmd_run(args: argparse.Namespace):
     参数:
     - args: 额外位置参数
     """
+    install_standard_stream_capture()
     config = load_run_config(args)
 
     daemon = DaemonInfo.from_config(config)

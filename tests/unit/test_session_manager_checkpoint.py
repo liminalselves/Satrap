@@ -34,7 +34,7 @@ class _RecordingSession(Session):
         content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None,
         *,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         **kw: Any,
@@ -63,7 +63,7 @@ class _CkptSession(Session):
         content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None,
         *,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         **kw: Any,
@@ -170,7 +170,7 @@ def test_default_db_only_when_configured(tmp_path: Path):
     entry = sm._create_entry(_make_cfg("sid-4"))
 
     assert entry is not None
-    assert _RecordingSession.received["db_path"] == get_db_path("chat_history.db")
+    assert _RecordingSession.received["db_path"] == get_db_path()
 
 
 def test_injection_ignored_when_constructor_rejects(tmp_path: Path):
@@ -294,13 +294,12 @@ def test_end_to_end_real_session_checkpoint(tmp_path: Path):
 
 
 def test_backend_config_parses_checkpoint_fields():
-    """BackendConfig 解析 session_checkpoint / session_checkpoint_db"""
-    cfg = BackendConfig.from_dict(
-        {"session_checkpoint": True, "session_checkpoint_db": ".satrap/ctx.db"}
-    )
+    """BackendConfig 只接受检查点开关, 数据库固定由平台作用域决定"""
+    cfg = BackendConfig.from_dict({"session_checkpoint": True})
     assert cfg.session_checkpoint is True
-    assert cfg.session_checkpoint_db == ".satrap/ctx.db"
 
     default = BackendConfig.from_dict({})
     assert default.session_checkpoint is False
-    assert default.session_checkpoint_db is None
+
+    with pytest.raises(ValueError, match="不再支持独立数据库路径"):
+        BackendConfig.from_dict({"session_checkpoint_db": ".satrap/ctx.db"})

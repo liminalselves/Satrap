@@ -4,7 +4,7 @@
 插件在 meta.yaml 用 config_schema 声明可配项 (键 -> type/default/description):
     config_schema:
       sandbox_root:
-        type: path            # string/path/number/bool/select
+        type: path            # string/path/textarea/number/bool/select
         default: ""
         description: "沙箱根目录"
 
@@ -26,7 +26,7 @@ from satrap.core.log import logger
 CONFIG_DIR = Path(".satrap") / "plugin_config"
 """插件全局配置目录 (相对工作目录)"""
 
-_FIELD_TYPES = ("string", "path", "number", "bool", "select")
+_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select")
 """支持的配置字段类型"""
 
 
@@ -68,7 +68,7 @@ class ConfigField:
                     logger.warning(f"[插件配置] {self.name} 值 {text} 不在可选 {self.options}, 回退默认")
                     return self.default
                 return text
-            # string / path 统一按字符串
+            # string / path / textarea 统一按字符串
             return str(value)
         except (TypeError, ValueError):
             logger.warning(f"[插件配置] {self.name} 值 {value!r} 非法, 回退默认 {self.default!r}")

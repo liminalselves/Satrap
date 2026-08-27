@@ -12,9 +12,11 @@ API (前缀 /api/chat/):
 - GET  /api/chat/health                     健康检查
 - GET  /api/chat/models                     LLM 配置名列表
 - POST /api/chat/conversations              新建会话 {model, think, system_prompt} -> {conversation_id}
+- POST /api/chat/conversations/preload      预分配 ID 并加载 Session 与插件, 不持久化空会话
 - GET  /api/chat/conversations              会话列表 (display db)
 - GET  /api/chat/turns?conversation=xxx     对话轮次 (含工具明细)
 - POST /api/chat/send                       发送 {conversation, text, think} -> 立即返回, WS 推流
+- POST /api/chat/ask-user/answer            回填 ask_user 工具等待的用户回答
 - GET  /api/chat/plugins                    插件清单 (扫描 + 启用状态)
 - POST /api/chat/plugins/{name}/enable      启用插件 (对活动会话即时 install)
 - POST /api/chat/plugins/{name}/disable     停用插件 (对活动会话即时 uninstall)
@@ -27,7 +29,7 @@ API (前缀 /api/chat/):
 - DELETE /api/chat/memories/{id}?scope=xxx  删除记忆
 
 WebSocket:
-- /ws/chat?conversation=xxx                 订阅会话实时事件 (thinking/content/tool/turn_done)
+- /ws/chat?conversation=xxx                 订阅会话实时事件 (thinking/content/tool/ask_user/turn_done)
 """
 from __future__ import annotations
 
@@ -136,7 +138,12 @@ class ChatHTTPServer(MiniHTTPServer):
         clean = path.split("?", 1)[0]
 
         if method == "GET" and clean == "/api/chat/health":
-            return 200, {"ok": True, "conversations": len(svc._conversations)}
+            persisted = sum(1 for conv in svc._conversations.values() if conv.persisted)
+            return 200, {
+                "ok": True,
+                "conversations": persisted,
+                "preloaded": len(svc._conversations) - persisted,
+            }
 
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}
@@ -171,8 +178,23 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 400, {"ok": False, "error": str(e)}
             return 200, {"ok": True, "conversation_id": cid}
 
+        if method == "POST" and clean == "/api/chat/conversations/preload":
+            payload = json.loads(body or b"{}")
+            temperature = payload.get("temperature")
+            try:
+                cid = await svc.preload_conversation(
+                    model=str(payload.get("model") or "default"),
+                    think=str(payload.get("think") or "off"),
+                    system_prompt=str(payload.get("system_prompt") or "") or None,
+                    project_id=str(payload.get("project_id") or "") or None,
+                    temperature=float(temperature) if temperature is not None else None,
+                )
+            except (TypeError, ValueError) as e:
+                return 400, {"ok": False, "error": str(e)}
+            return 200, {"ok": True, "conversation_id": cid}
+
         if method == "GET" and clean == "/api/chat/conversations":
-            return 200, {"conversations": list_conversations()}
+            return 200, {"conversations": list_conversations(db_path=svc._display_db_path)}
 
         if method == "POST" and clean.startswith("/api/chat/conversations/") and clean.endswith("/project"):
             conv_id = unquote(clean[len("/api/chat/conversations/"):-len("/project")])
@@ -232,8 +254,30 @@ class ChatHTTPServer(MiniHTTPServer):
                 return 400, {"error": "缺少 conversation 参数"}
             # think 缺省 (None) 时由 ChatService 用会话默认
             think = str(think) if think is not None else None
-            result = await svc.send(conv, text, think=think, attachments=attachments)
+            preload_settings = {
+                key: payload[key]
+                for key in ("model", "temperature", "system_prompt", "project_id")
+                if key in payload
+            }
+            result = await svc.send(
+                conv,
+                text,
+                think=think,
+                attachments=attachments,
+                preload_settings=preload_settings,
+            )
             return (200 if result.get("ok") else 400), result
+
+        if method == "POST" and clean == "/api/chat/ask-user/answer":
+            payload = json.loads(body or b"{}")
+            conv = str(payload.get("conversation") or "").strip()
+            request_id = str(payload.get("request_id") or "").strip()
+            answer = str(payload.get("answer") or "")
+            if not conv or not request_id:
+                return 400, {"error": "缺少 conversation / request_id 参数"}
+            result = svc.answer_user_input(conv, request_id, answer)
+            return (200 if result.get("ok") else 400), result
+        # ask_user 工具回答回填
 
         if method == "POST" and clean == "/api/chat/upload":
             payload = json.loads(body or b"{}")
@@ -317,7 +361,7 @@ class ChatHTTPServer(MiniHTTPServer):
         # 接口: POST /api/chat/plugins/{name}/enable|disable|capability
 
         if method == "GET" and clean == "/api/chat/memories":
-            scope = self._query_param(path, "scope") or "web_chat"
+            scope = self._query_param(path, "scope")
             return 200, svc.list_memories(scope)
         # 接口: GET /api/chat/memories?scope=xxx
 
@@ -331,7 +375,7 @@ class ChatHTTPServer(MiniHTTPServer):
                 title, content,
                 tags=str(payload.get("tags") or ""),
                 importance=int(payload.get("importance") or 1),
-                scope=str(payload.get("scope") or "web_chat"),
+                scope=str(payload.get("scope") or ""),
             )
         # 接口: POST /api/chat/memories
 
@@ -343,10 +387,10 @@ class ChatHTTPServer(MiniHTTPServer):
                 for key in ("title", "content", "tags", "importance"):
                     if key in payload:
                         fields[key] = payload[key]
-                scope = str(payload.get("scope") or "web_chat")
+                scope = str(payload.get("scope") or "")
                 return 200, svc.update_memory(memory_id, scope=scope, **fields)
             if method == "DELETE":
-                scope = self._query_param(path, "scope") or "web_chat"
+                scope = self._query_param(path, "scope")
                 return 200, svc.delete_memory(memory_id, scope=scope)
             return 405, {"error": f"method not allowed: {method}"}
         # 接口: PUT /api/chat/memories/{id}  /  DELETE /api/chat/memories/{id}?scope=xxx

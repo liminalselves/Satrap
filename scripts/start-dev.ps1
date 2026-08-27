@@ -5,7 +5,7 @@ param(
     [switch]$Force   # 强制重启且不询问
 )
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Stop"
 
 # 项目根目录 (脚本位于 scripts 子目录)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -89,66 +89,10 @@ if ($hasExisting) {
 }
 
 # ============================================================
-# 启动控制服务 (完全隐藏)
+# 清理并隐藏启动控制服务与聊天服务
 # ============================================================
-Write-Host "Starting control server..." -ForegroundColor Cyan
-
-# 使用 Start-Process 直接启动隐藏窗口
-$pythonPath = (Get-Command python).Source
-$controlArgs = "-m satrap.core.backend.control_server"
-
-Start-Process -FilePath $pythonPath -ArgumentList $controlArgs -WorkingDirectory $ProjectRoot -WindowStyle Hidden
-
-# 等待控制服务启动
-Start-Sleep -Seconds 2
-
-# 验证控制服务是否成功启动
-$controlRunning = $false
-for ($i = 0; $i -lt 10; $i++) {
-    try {
-        $response = Invoke-RestMethod -Uri "http://127.0.0.1:19871/status" -Method Get -TimeoutSec 1
-        $controlRunning = $true
-        break
-    } catch {
-        Start-Sleep -Milliseconds 500
-    }
-}
-
-if ($controlRunning) {
-    Write-Host "Control server started (http://127.0.0.1:19871)" -ForegroundColor Green
-} else {
-    Write-Host "Warning: Control server may not have started properly" -ForegroundColor Yellow
-}
-
-# ============================================================
-# 启动聊天服务 (完全隐藏)
-# ============================================================
-Write-Host "Starting chat server..." -ForegroundColor Cyan
-
-$chatArgs = "-m satrap.display.server"
-
-Start-Process -FilePath $pythonPath -ArgumentList $chatArgs -WorkingDirectory $ProjectRoot -WindowStyle Hidden
-
-# 等待聊天服务启动
-Start-Sleep -Seconds 1
-
-# 验证聊天服务是否成功启动
-$chatRunning = $false
-for ($i = 0; $i -lt 10; $i++) {
-    try {
-        $response = Invoke-RestMethod -Uri "http://127.0.0.1:19872/api/chat/health" -Method Get -TimeoutSec 1
-        $chatRunning = $true
-        break
-    } catch {
-        Start-Sleep -Milliseconds 500
-    }
-}
-
-if ($chatRunning) {
-    Write-Host "Chat server started (http://127.0.0.1:19872)" -ForegroundColor Green
-} else {
-    Write-Host "Warning: Chat server may not have started properly" -ForegroundColor Yellow
-}
+$backgroundServiceScript = Join-Path $ScriptDir "start-background-services.ps1"
+& $backgroundServiceScript -ProjectRoot $ProjectRoot
 
 # ============================================================
 # 启动前端 (监控模式, 关闭时自动停止后端)

@@ -3,57 +3,61 @@ import type { Checkpoint } from './types';
 
 export const checkpointApi = {
   // 列出检查点
-  list: (conversationId: string) =>
+  list: (platformId: string, conversationId: string) =>
     apiClient.get<{
       conversation_id: string;
       checkpoints: Checkpoint[];
       branches: Checkpoint[];
-    }>(`/api/checkpoints?conversation=${conversationId}`),
+    }>(`/api/checkpoints?platform_id=${encodeURIComponent(platformId)}&conversation=${encodeURIComponent(conversationId)}`),
 
   // 列出分支
-  listBranches: (conversationId: string) =>
+  listBranches: (platformId: string, conversationId: string) =>
     apiClient.get<{ conversation_id: string; branches: Checkpoint[] }>(
-      `/api/checkpoint/branches?conversation=${conversationId}`
+      `/api/checkpoint/branches?platform_id=${encodeURIComponent(platformId)}&conversation=${encodeURIComponent(conversationId)}`
     ),
 
   // 查看血缘
-  traceLineage: (checkpointId: string) =>
+  traceLineage: (platformId: string, checkpointId: string) =>
     apiClient.get<{ checkpoint_id: string; lineage: Checkpoint[] }>(
-      `/api/checkpoint/lineage?checkpoint_id=${checkpointId}`
+      `/api/checkpoint/lineage?platform_id=${encodeURIComponent(platformId)}&checkpoint_id=${encodeURIComponent(checkpointId)}`
     ),
 
   // 列出变更记录
-  listMutations: (conversationId: string) =>
+  listMutations: (platformId: string, conversationId: string) =>
     apiClient.get<{ conversation_id: string; mutations: Checkpoint[] }>(
-      `/api/checkpoint/audit?conversation=${conversationId}`
+      `/api/checkpoint/audit?platform_id=${encodeURIComponent(platformId)}&conversation=${encodeURIComponent(conversationId)}`
     ),
 
   // 创建检查点
-  create: (conversationId: string, name?: string, description?: string) =>
+  create: (platformId: string, conversationId: string, name?: string, description?: string) =>
     apiClient.post<{ checkpoint_id: string; ok: boolean }>('/api/checkpoint/create', {
       conversation: conversationId,
+      platform_id: platformId,
       name,
       description,
     }),
 
   // 回滚
-  rollback: (conversationId: string, checkpointId: string) =>
+  rollback: (platformId: string, conversationId: string, checkpointId: string) =>
     apiClient.post<{ checkpoint_id: string; ok: boolean }>('/api/checkpoint/rollback', {
       conversation: conversationId,
+      platform_id: platformId,
       checkpoint_id: checkpointId,
     }),
 
   // 重试
-  retry: (conversationId: string, checkpointId: string) =>
+  retry: (platformId: string, conversationId: string, checkpointId: string) =>
     apiClient.post<{ checkpoint_id: string; ok: boolean }>('/api/checkpoint/retry', {
       conversation: conversationId,
+      platform_id: platformId,
       checkpoint_id: checkpointId,
     }),
 
   // Fork 分支
-  fork: (conversationId: string, branchName: string, checkpointId?: string) =>
+  fork: (platformId: string, conversationId: string, branchName: string, checkpointId?: string) =>
     apiClient.post<{ conversation_id: string; ok: boolean }>('/api/checkpoint/fork', {
       conversation: conversationId,
+      platform_id: platformId,
       branch_name: branchName,
       checkpoint_id: checkpointId,
     }),

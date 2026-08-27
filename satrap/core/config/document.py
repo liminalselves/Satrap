@@ -10,7 +10,7 @@ from typing import Any, cast
 import yaml
 
 from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.config_loader import ConfigLoader
+from satrap.core.config.loader import ConfigLoader
 
 
 def find_config_path(cwd: str | Path | None = None) -> Path:
@@ -141,6 +141,8 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         item = cast(dict[str, Any], raw_item)
         platform_id = str(item.get("id", "")).strip()
         platform_type = str(item.get("type", "")).strip()
+        session_provider = str(item.get("session_provider", "session_class")).strip() or "session_class"
+        session_type = str(item.get("session_type", "")).strip()
         settings = item.get("settings", {})
         if not platform_id:
             raise ValueError("平台 id 不能为空")
@@ -154,6 +156,11 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         normalized = dict(item)
         normalized["id"] = platform_id
         normalized["type"] = platform_type
+        normalized["session_provider"] = session_provider
+        if session_type:
+            normalized["session_type"] = session_type
+        else:
+            normalized.pop("session_type", None)
         normalized["settings"] = dict(cast(dict[str, Any], settings))
         result.append(normalized)
     return result

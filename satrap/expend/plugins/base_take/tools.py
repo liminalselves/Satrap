@@ -42,41 +42,42 @@ DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
 # ================= read_document 工具 =================
 
 
-def _resolve_doc_path(path: str, workspace_root: Path) -> Path:
+def _resolve_doc_path(
+    path: str,
+    workspace_root: Path,
+    uploads_root: Path | None = None,
+) -> Path:
     """
     解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内;
-    若工作区根下未找到, 尝试在 **本工作区** 的 .satrap/uploads/ 各会话目录中按文件名搜索
+    若工作区根下未找到, 只在当前会话独占 uploads 目录中按文件名搜索
 
     参数:
     - path: 路径
     - workspace_root: workspace根目录
-
-    项目语义: 项目内跨会话可见 (uploads 在项目工作区下共享), 跨项目不可见
+    - uploads_root: 当前会话独占 uploads 目录
 
     返回:
     - Path: 解析文档路径: 相对路径基于工作区根, 绝对路径须在工作区内
     """
     p = Path(path)
-    abs_path = p.resolve() if p.is_absolute() else (workspace_root / p).resolve()
-    if not abs_path.is_relative_to(workspace_root.resolve()):
-        raise ValueError(f"路径越出工作区: {path}")
-    # 工作区根下找到则直接返回
+    workspace = workspace_root.resolve()
+    uploads = uploads_root.resolve() if uploads_root is not None else None
+    abs_path = p.resolve() if p.is_absolute() else (workspace / p).resolve()
+    in_workspace = abs_path.is_relative_to(workspace)
+    in_uploads = uploads is not None and abs_path.is_relative_to(uploads)
+    if not in_workspace and not in_uploads:
+        raise ValueError(f"路径越出当前会话可见范围: {path}")
     if abs_path.is_file():
         return abs_path
-    # fallback: 在 uploads 目录中按文件名搜索 (上传文件保存为 {uuid}_{filename})
-    uploads_root = workspace_root / ".satrap" / "uploads"
-    if uploads_root.is_dir():
+    # fallback: 只搜索当前会话 uploads (上传文件保存为 {uuid}_{filename})
+    if uploads is not None and uploads.is_dir():
         target_name = p.name.lower()
-        for conv_dir in uploads_root.iterdir():
-            if not conv_dir.is_dir():
+        for fpath in uploads.iterdir():
+            if not fpath.is_file():
                 continue
-            for fpath in conv_dir.iterdir():
-                if not fpath.is_file():
-                    continue
-                # 匹配 uuid_filename 格式中的文件名部分
-                fname = fpath.name.lower()
-                if fname == target_name or fname.endswith(f"_{target_name}"):
-                    return fpath.resolve()
+            fname = fpath.name.lower()
+            if fname == target_name or fname.endswith(f"_{target_name}"):
+                return fpath.resolve()
     # 均未找到, 返回原始路径 (让调用方报文件不存在)
     return abs_path
 
@@ -95,6 +96,20 @@ def _doc_workspace_root(tool: Any) -> Path:
     if override:
         return Path(str(override)).resolve()
     return cast(Path, tool._base_root)
+
+
+def _doc_upload_root(tool: Any) -> Path | None:
+    """
+    获取当前会话独占 uploads 目录
+
+    参数:
+    - tool: 文档工具
+
+    返回:
+    - Path | None: 未注入会话存储时返回 None
+    """
+    override = safe_getattr(getattr(tool, "_session", None), "coding_upload_root")
+    return Path(str(override)).resolve() if override else None
 
 
 class ReadDocumentTool(Tool):
@@ -130,7 +145,7 @@ class ReadDocumentTool(Tool):
         - str: 执行
         """
         try:
-            abs_path = _resolve_doc_path(path, _doc_workspace_root(self))
+            abs_path = _resolve_doc_path(path, _doc_workspace_root(self), _doc_upload_root(self))
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -179,7 +194,7 @@ class AsyncReadDocumentTool(AsyncTool):
         - str: 执行
         """
         try:
-            abs_path = _resolve_doc_path(path, _doc_workspace_root(self))
+            abs_path = _resolve_doc_path(path, _doc_workspace_root(self), _doc_upload_root(self))
         except ValueError as e:
             return f"错误: {e}"
         try:
@@ -212,53 +227,16 @@ class _MemoryToolBase(Tool):
         self.store = store
 
 
-def _global_scope(store: MemoryStore) -> str:
-    """
-    全局层 scope (可见集合首元素, 契约见 display.service 分层绑定)
-
-    参数:
-    - store: 存储实例
-
-    返回:
-    - str: 全局层 scope (可见集合首元素, 契约见 display.service 分层绑定)
-    """
-    return store.scopes[0] if store.scopes else store.scope
-
-
-def _resolve_level_scope(store: MemoryStore, level: str) -> str | None:
-    """
-    add_memory 层级路由: ''/project = 写入默认层 (项目会话为项目层); global = 全局层;
-    非法值返回 None (调用方据此报错); 无项目会话两层同为全局, 行为不变
-
-    参数:
-    - store: 存储实例
-    - level: 级别
-
-    返回:
-    - str | None: add_memory 层级路由: ''/project = 写入默认层 (项目会话为项目层); global = 全局层
-    """
-    if level == "global":
-        return _global_scope(store)
-    if level in ("", "project"):
-        return store.scope
-    return None
-
-
 class AddMemoryTool(_MemoryToolBase):
     """添加一条长期记忆 (用户偏好/项目约定/关键决策)"""
 
     tool_name = "add_memory"
-    description = (
-        "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策。"
-        "记忆分层: 项目会话默认写入项目层 (仅本项目会话可见), "
-        "level='global' 写入全局层 (所有会话可见)"
-    )
+    description = "添加一条当前会话的长期记忆, 记忆仅会注入当前会话的后续上下文"
     params_dict = {
         "title": ("string", "简短记忆标题"),
         "content": ("string", "记忆内容"),
         "tags": ("array", "分类标签"),
         "importance": ("number", "重要程度 1-5, 默认 1"),
-        "level": ("string", "记忆层级: project (默认, 仅当前项目可见) 或 global (全局共享)"),
     }
 
     def execute(
@@ -267,7 +245,6 @@ class AddMemoryTool(_MemoryToolBase):
         content: str,
         tags: list[str] | None = None,
         importance: int = 1,
-        level: str = "",
     ) -> str:
         """
         执行
@@ -277,20 +254,15 @@ class AddMemoryTool(_MemoryToolBase):
         - content: 内容
         - tags: 标签集合
         - importance: 重要度
-        - level: level 输入值
 
         返回:
         - str: 执行
         """
         if not self.store.can_write():
             return self.store.write_denied_reason("添加")
-        scope = _resolve_level_scope(self.store, level)
-        if scope is None:
-            return f"未知记忆层级: {level}, 可选 project / global"
-        result = self.store.add(title, content, tags, importance, scope=scope)
+        result = self.store.add(title, content, tags, importance)
         if result.get("ok"):
-            layer = "全局" if scope == _global_scope(self.store) else "项目"
-            return f"记忆已添加 ({layer}层): [{title}] {content}"
+            return f"记忆已添加: [{title}] {content}"
         return f"添加失败: {result.get('error')}"
 
 
@@ -374,16 +346,10 @@ class ListMemoriesTool(_MemoryToolBase):
         memories = self.store.list_all()
         if not memories:
             return "当前没有长期记忆"
-        global_scope = _global_scope(self.store)
-        layered = len([s for s in self.store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            layer = ""
-            if layered:
-                layer = "全局" if m["scope"] == global_scope else "项目"
-                layer = f" ({layer}层)"
-            lines.append(f"- {m['id'][:8]}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
 
 
@@ -408,17 +374,12 @@ class AsyncAddMemoryTool(_AsyncMemoryToolBase):
     """添加长期记忆 (异步)"""
 
     tool_name = "add_memory"
-    description = (
-        "添加一条长期记忆, 记忆会注入后续对话上下文; 适合记录用户偏好、项目约定、关键决策。"
-        "记忆分层: 项目会话默认写入项目层 (仅本项目会话可见), "
-        "level='global' 写入全局层 (所有会话可见)"
-    )
+    description = "添加一条当前会话的长期记忆, 记忆仅会注入当前会话的后续上下文"
     params_dict = {
         "title": ("string", "简短记忆标题"),
         "content": ("string", "记忆内容"),
         "tags": ("array", "分类标签"),
         "importance": ("number", "重要程度 1-5, 默认 1"),
-        "level": ("string", "记忆层级: project (默认, 仅当前项目可见) 或 global (全局共享)"),
     }
 
     async def execute(
@@ -427,7 +388,6 @@ class AsyncAddMemoryTool(_AsyncMemoryToolBase):
         content: str,
         tags: list[str] | None = None,
         importance: int = 1,
-        level: str = "",
     ) -> str:
         """
         执行
@@ -437,20 +397,15 @@ class AsyncAddMemoryTool(_AsyncMemoryToolBase):
         - content: 内容
         - tags: 标签集合
         - importance: 重要度
-        - level: level 输入值
 
         返回:
         - str: 执行
         """
         if not self.store.can_write():
             return self.store.write_denied_reason("添加")
-        scope = _resolve_level_scope(self.store, level)
-        if scope is None:
-            return f"未知记忆层级: {level}, 可选 project / global"
-        result = self.store.add(title, content, tags, importance, scope=scope)
+        result = self.store.add(title, content, tags, importance)
         if result.get("ok"):
-            layer = "全局" if scope == _global_scope(self.store) else "项目"
-            return f"记忆已添加 ({layer}层): [{title}] {content}"
+            return f"记忆已添加: [{title}] {content}"
         return f"添加失败: {result.get('error')}"
 
 
@@ -534,16 +489,10 @@ class AsyncListMemoriesTool(_AsyncMemoryToolBase):
         memories = self.store.list_all()
         if not memories:
             return "当前没有长期记忆"
-        global_scope = _global_scope(self.store)
-        layered = len([s for s in self.store.scopes if s]) > 1
         lines = [f"共 {len(memories)} 条记忆:"]
         for m in memories:
             tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
-            layer = ""
-            if layered:
-                layer = "全局" if m["scope"] == global_scope else "项目"
-                layer = f" ({layer}层)"
-            lines.append(f"- {m['id'][:8]}{layer} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+            lines.append(f"- {m['id'][:8]} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
         return "\n".join(lines)
 
 

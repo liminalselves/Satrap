@@ -10,6 +10,8 @@ export interface AdapterInfo {
   status: string;
   started: boolean;
   config_type?: string;
+  session_provider?: string;
+  session_type?: string;
   type?: string;
   last_error?: string;
 }
@@ -55,6 +57,53 @@ export interface SessionClassConfig {
     params?: Record<string, unknown>;
   }
 
+export interface EdictumTypeCapabilities {
+  plugins: boolean;
+  mcp: boolean;
+  stream: boolean;
+}
+
+export interface EdictumTypeDefinition {
+  name: string;
+  is_async: boolean;
+  description: string;
+  config_schema: Record<string, unknown>;
+  capabilities: EdictumTypeCapabilities;
+}
+
+export interface EdictumPluginConfig {
+  name: string;
+  enabled?: boolean;
+  config?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface EdictumPluginConfigField {
+  type: string;
+  default: unknown;
+  description: string;
+  options?: string[];
+}
+
+export interface EdictumAvailablePlugin {
+  name: string;
+  version: string;
+  author: string;
+  description: string;
+  config_schema: Record<string, EdictumPluginConfigField>;
+  capabilities: Record<string, Record<string, string>>;
+}
+
+export interface EdictumSessionConfig {
+  provider: 'edictum';
+  edictum_type: string;
+  enabled: boolean;
+  description: string;
+  model_name: string;
+  params: Record<string, unknown>;
+  plugins: Array<string | EdictumPluginConfig>;
+}
+
   export interface DiscoveredSessionClass {
     file_path: string;
     module_name: string;
@@ -66,19 +115,37 @@ export interface SessionClassConfig {
   }
 
   export interface RuntimeSession {
+    platform_id: string;
     session_id: string;
     active?: boolean;
+    provider_name?: string;
     session_type?: string;
     session_type_name?: string;
     created_at: number;
     last_used_at: number;
     message_count: number;
     session_config?: Record<string, unknown>;
+    runtime?: {
+      plugins?: Array<{
+        name: string;
+        enabled: boolean;
+        status: 'pending' | 'loaded' | 'disabled' | 'error' | string;
+        error?: string | null;
+      }>;
+      plugin_summary?: {
+        total: number;
+        loaded: number;
+        errors: number;
+        pending: number;
+      };
+    };
   }
 
 export interface PlatformConfig {
   id: string;
   type: string;
+  session_provider?: string;
+  session_type?: string;
   settings: Record<string, unknown>;
 }
 
@@ -129,10 +196,10 @@ export interface BackendConfig {
   llm_timeout: number;
   rate_limit: number;
   rate_burst: number;
-  platforms: PlatformConfig[];
-  model_config_path?: string;
-  session_class_config_path?: string;
-  session_db_path?: string;
-  user_db_path?: string;
+    platforms: PlatformConfig[];
+    model_config_path?: string;
+    data_root?: string;
+    session_class_config_path?: string;
+    edictum_config_path?: string;
   session_scan_paths?: string[];
 }

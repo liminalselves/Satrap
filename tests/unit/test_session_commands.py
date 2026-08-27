@@ -1,7 +1,10 @@
 import pytest
+from pathlib import Path
+from typing import Any, cast
 
 from satrap.core.framework import AsyncSession, CommandHandler, Session
 from satrap.core.type import CommandAction
+from satrap.edictum.plugin import collect_commands
 from satrap.expend.command.session_commands import (
     cmd_about,
     cmd_history,
@@ -129,3 +132,56 @@ async def test_async_pre_registered_command_is_preserved():
     session = AsyncSession("chat:misskey:user1", command_handler=handler)
 
     assert await session.cmd_process("/about") == ("pre", True)
+
+
+def test_platform_session_commands_plugin_builds_bound_sync_commands():
+    """平台命令插件应以当前会话为作用域构建同步命令"""
+    plugin_dir = (
+        Path(__file__).resolve().parents[2]
+        / "satrap"
+        / "expend"
+        / "plugins"
+        / "session_commands"
+    )
+    session = Session("onebot-edictum:onebot-platform:user1:old")
+    session._user_manager = FakeUserManager([session.session_id])   # type: ignore[assignment]
+
+    sync_commands, async_commands = collect_commands(
+        plugin_dir,
+        "session_commands",
+        cast(Any, session),
+        {"about_text": "自定义平台说明"},
+    )
+    result = sync_commands["new"]()
+    about = sync_commands["about"]()
+
+    assert set(sync_commands) == {"new", "history", "switch", "about"}
+    assert async_commands == {}
+    assert about == "自定义平台说明"
+    assert isinstance(result, CommandAction)
+    assert result.target_session_id is not None
+    assert result.target_session_id.startswith("onebot-edictum:onebot-platform:user1:")
+
+
+@pytest.mark.asyncio
+async def test_platform_session_commands_plugin_builds_bound_async_about():
+    """平台命令插件应为异步 Edictum 会话绑定关于命令"""
+    plugin_dir = (
+        Path(__file__).resolve().parents[2]
+        / "satrap"
+        / "expend"
+        / "plugins"
+        / "session_commands"
+    )
+    session = AsyncSession("onebot-edictum:onebot-platform:user1:old")
+
+    sync_commands, async_commands = collect_commands(
+        plugin_dir,
+        "session_commands",
+        cast(Any, session),
+        {"about_text": "异步自定义说明"},
+    )
+
+    assert sync_commands == {}
+    assert set(async_commands) == {"new", "history", "switch", "about"}
+    assert await async_commands["about"]() == "异步自定义说明"

@@ -419,7 +419,8 @@ class TestMemoryStore:
         assert "high" in block and "mid" in block and "low" not in block   # max_entries=2 截断
         assert block.index("high") < block.index("mid")
         assert block.count("<long-term-memory>") == 1
-        assert store.to_context_block(scope="nobody") == ""
+        other = MemoryStore(db_path=tmp_path / "m.db", scope="nobody")
+        assert other.to_context_block() == ""
 
     def test_empty_content_rejected(self, store: MemoryStore):
         """

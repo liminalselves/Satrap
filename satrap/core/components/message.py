@@ -19,11 +19,10 @@ import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
 
 from satrap.core.log import logger
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 
-_SATRAP_DATA_DIR = get_data_dir() / "satrapdata"
-_SATRAP_TEMP_DIR = _SATRAP_DATA_DIR / "temp"
+_SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"
 _callback_api_base: str = ""
 
 

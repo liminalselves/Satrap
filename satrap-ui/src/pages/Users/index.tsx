@@ -4,12 +4,15 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/components/ui/Toast';
 import { userApi } from '@/api/user';
+import { useBackendStore } from '@/stores/useBackendStore';
 import { PageHeader, DataTable, FormModal, ActionButtons, Column, FormField } from '@/components/common';
 import { Plus, Edit2, Trash2, Link, Unlink } from 'lucide-react';
 import type { UserInfo } from '@/api/types';
 
 export function Users() {
+  const { health } = useBackendStore();
   const [users, setUsers] = useState<UserInfo[]>([]);
+  const [selectedPlatformId, setSelectedPlatformId] = useState('local');
   const [loading, setLoading] = useState(false);
   const [selectedUser, setSelectedUser] = useState<UserInfo | null>(null);
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -25,14 +28,19 @@ export function Users() {
   const fetchUsers = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await userApi.list(500);
+      const data = await userApi.list(selectedPlatformId, 500);
       setUsers(data.users);
     } catch {
       toast('error', '获取用户列表失败');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [selectedPlatformId]);
+
+  const platformIds = useMemo(
+    () => Array.from(new Set(['local', ...Object.keys(health?.adapters || {})])),
+    [health?.adapters],
+  );
 
   useEffect(() => {
     fetchUsers();
@@ -40,7 +48,7 @@ export function Users() {
 
   const handleCreate = useCallback(async () => {
     try {
-      await userApi.create(formData.user_id, formData.platform, formData.nickname);
+      await userApi.create(selectedPlatformId, formData.user_id, formData.platform, formData.nickname);
       toast('success', '用户已创建');
       setShowCreateModal(false);
       setFormData({ user_id: '', platform: '', nickname: '' });
@@ -48,12 +56,12 @@ export function Users() {
     } catch (e) {
       toast('error', '创建失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [formData, fetchUsers]);
+  }, [formData, fetchUsers, selectedPlatformId]);
 
   const handleUpdate = useCallback(async () => {
     if (!selectedUser) return;
     try {
-      await userApi.update(selectedUser.user_id, {
+      await userApi.update(selectedPlatformId, selectedUser.user_id, {
         nickname: formData.nickname,
         platform: formData.platform,
       });
@@ -63,12 +71,12 @@ export function Users() {
     } catch {
       toast('error', '保存失败');
     }
-  }, [selectedUser, formData, fetchUsers]);
+  }, [selectedUser, formData, fetchUsers, selectedPlatformId]);
 
   const handleDelete = useCallback(async (userId: string) => {
     if (!confirm(`确定要删除用户 "${userId}" 吗？`)) return;
     try {
-      await userApi.delete(userId);
+      await userApi.delete(selectedPlatformId, userId);
       toast('success', '已删除');
       if (selectedUser?.user_id === userId) {
         setSelectedUser(null);
@@ -77,35 +85,35 @@ export function Users() {
     } catch {
       toast('error', '删除失败');
     }
-  }, [selectedUser, fetchUsers]);
+  }, [selectedUser, fetchUsers, selectedPlatformId]);
 
   const handleBind = useCallback(async () => {
     if (!selectedUser) return;
     try {
-      await userApi.bindSession(selectedUser.user_id, bindSessionId);
+      await userApi.bindSession(selectedPlatformId, selectedUser.user_id, bindSessionId);
       toast('success', '已绑定');
       setShowBindModal(false);
       setBindSessionId('');
       fetchUsers();
-      const updated = await userApi.get(selectedUser.user_id);
+      const updated = await userApi.get(selectedPlatformId, selectedUser.user_id);
       if (updated.user) setSelectedUser(updated.user);
     } catch {
       toast('error', '绑定失败');
     }
-  }, [selectedUser, bindSessionId, fetchUsers]);
+  }, [selectedUser, bindSessionId, fetchUsers, selectedPlatformId]);
 
   const handleUnbind = useCallback(async (sessionId: string) => {
     if (!selectedUser) return;
     try {
-      await userApi.unbindSession(selectedUser.user_id, sessionId);
+      await userApi.unbindSession(selectedPlatformId, selectedUser.user_id, sessionId);
       toast('success', '已解绑');
       fetchUsers();
-      const updated = await userApi.get(selectedUser.user_id);
+      const updated = await userApi.get(selectedPlatformId, selectedUser.user_id);
       if (updated.user) setSelectedUser(updated.user);
     } catch {
       toast('error', '解绑失败');
     }
-  }, [selectedUser, fetchUsers]);
+  }, [selectedUser, fetchUsers, selectedPlatformId]);
 
   const openEdit = useCallback((user: UserInfo) => {
     setSelectedUser(user);
@@ -190,12 +198,25 @@ export function Users() {
       <PageHeader
         title="用户管理"
         description="管理系统用户和会话绑定"
-        actions={
+        actions={<div className="flex items-center gap-2">
+          <select
+            className="glass-input min-w-44"
+            value={selectedPlatformId}
+            onChange={(event) => {
+              setSelectedPlatformId(event.target.value);
+              setSelectedUser(null);
+            }}
+            aria-label="平台实例"
+          >
+            {platformIds.map((platformId) => (
+              <option key={platformId} value={platformId}>{platformId}</option>
+            ))}
+          </select>
           <Button variant="primary" onClick={() => setShowCreateModal(true)}>
             <Plus className="h-4 w-4 mr-2" />
             新建用户
           </Button>
-        }
+        </div>}
       />
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

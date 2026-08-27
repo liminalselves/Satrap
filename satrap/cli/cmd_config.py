@@ -5,7 +5,7 @@ from typing import Any, cast
 
 import sys
 
-from satrap.core.config_document import (
+from satrap.core.config.document import (
     create_default_config,
     find_config_path,
     load_config_document,

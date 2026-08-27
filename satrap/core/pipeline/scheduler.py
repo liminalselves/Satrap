@@ -56,6 +56,7 @@ class PipelineScheduler:
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], bool]] = []
         self.adapter_ids: set[str] = set()
+        self.platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], bool]):
         """
@@ -75,6 +76,18 @@ class PipelineScheduler:
         """
         self.adapter_ids = set(adapter_ids)
 
+    def set_platform_runtimes(
+        self,
+        runtimes: dict[str, tuple[SessionManager, UserManager]],
+    ) -> None:
+        """
+        设置按平台实例隔离的运行时管理器
+
+        参数:
+        - runtimes: 平台实例 ID 到会话和用户管理器的映射
+        """
+        self.platform_runtimes = dict(runtimes)
+
     async def execute(self, event: MessageEvent) -> None:
         """
         执行完整管线
@@ -83,6 +96,11 @@ class PipelineScheduler:
         - event: 消息事件
         """
         try:
+            source_platform_id = event.get_platform_id()
+            platform_runtime = self.platform_runtimes.get(source_platform_id)
+            session_manager = platform_runtime[0] if platform_runtime else self.session_manager
+            user_manager = platform_runtime[1] if platform_runtime else self.user_manager
+
             for processor in self.preprocessors:
                 if not await self._await_if_needed(processor(event)):
                     logger.debug(f"[PipelineScheduler] preprocessor 丢弃事件: {event.session_id}")
@@ -90,7 +108,8 @@ class PipelineScheduler:
             # ---------- Stage 0: preprocessor 链 ----------
 
             if self.rate_limiter:
-                allowed, wait = await self.rate_limiter.check(event.session_id)
+                rate_key = f"{source_platform_id}:{event.session_id}"
+                allowed, wait = await self.rate_limiter.check(rate_key)
                 if not allowed:
                     logger.debug(
                         f"[PipelineScheduler] 限流丢弃事件: session={event.session_id}, "
@@ -115,13 +134,14 @@ class PipelineScheduler:
 
             session_id = event.session_id
             # ---------- Stage 1d: 通过 UserManager 解析 session_id ----------
-            if self.user_manager and event.session_type:
+            if user_manager and event.session_type:
                 platform_id, extra_params = self._resolve_route_adapter(event)
-                resolved = self.user_manager.resolve_session(
+                resolved = user_manager.resolve_session(
                     user_id=event.get_sender_id(),
                     platform=platform_id,
+                    session_provider=event.session_provider,
                     session_type=event.session_type,
-                    class_cfg_mgr=safe_getattr(self.session_manager, 'class_cfg_mgr'),
+                    class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
                     extra_params=extra_params,
                 )
                 if resolved:
@@ -129,6 +149,7 @@ class PipelineScheduler:
 
             user_call = UserCall(
                 session_id=session_id,
+                session_provider=event.session_provider,
                 session_type=event.session_type,
                 message=message,
                 img_urls=self._extract_img_urls(event),
@@ -136,7 +157,7 @@ class PipelineScheduler:
             # ---------- Stage 2: LLM 请求 via Session (带超时保护) ----------
             try:
                 response = await asyncio.wait_for(
-                    self.session_manager.handle_call_async(user_call),
+                    session_manager.handle_call_async(user_call),
                     timeout=self.llm_timeout,
                 )
             except asyncio.TimeoutError:
@@ -196,26 +217,9 @@ class PipelineScheduler:
         - tuple[str, dict[str, str] | None]: 解析事件应绑定到哪个适配器实例
         """
         source_adapter_id = event.get_platform_id()
-        class_cfg_mgr = safe_getattr(self.session_manager, 'class_cfg_mgr')
-        requested = ""
-        if class_cfg_mgr is not None and event.session_type:
-            try:
-                params = class_cfg_mgr.get_params(event.session_type)
-                requested = str(params.get("adapter_id", "") or "").strip()
-            except Exception:
-                requested = ""
-
-        if not requested:
-            return source_adapter_id, None
-
-        if self.adapter_ids and requested not in self.adapter_ids:
-            logger.warning(
-                f"[PipelineScheduler] 适配器实例不存在: {requested}, "
-                f"回退到事件来源: {source_adapter_id}"
-            )
-            return source_adapter_id, None
-
-        return requested, {"adapter_id": requested}
+        if not source_adapter_id:
+            return "", None
+        return source_adapter_id, {"adapter_id": source_adapter_id}
 
     @staticmethod
     def _extract_img_urls(event: MessageEvent) -> list[str]:

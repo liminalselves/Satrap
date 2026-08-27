@@ -160,15 +160,16 @@ export function Logs() {
   ), [isConnected, paused]);
 
   return (
-    <div className="space-y-4 h-full flex flex-col">
+    <div className="h-full min-h-0 overflow-hidden flex flex-col gap-4">
       <PageHeader
         title="日志监控"
-        description="实时查看系统运行日志"
+        description="实时查看后端进程的标准输出和标准错误"
         actions={headerActions}
+        className="shrink-0"
       />
 
       {/* 工具栏 */}
-      <Card className="p-4">
+      <Card className="p-4 shrink-0">
         <div className="flex flex-wrap items-center gap-4">
           <div className="flex items-center gap-2">
             <Button
@@ -234,11 +235,11 @@ export function Logs() {
       </Card>
 
       {/* 日志终端 */}
-      <Card className="flex-1 min-h-[500px] p-0 overflow-hidden flex flex-col">
+      <Card className="flex-1 min-h-0 p-0 overflow-hidden flex flex-col">
         <div
           ref={containerRef}
           onScroll={handleScroll}
-          className="flex-1 overflow-auto custom-scrollbar p-4 font-mono text-sm"
+          className="flex-1 min-h-0 overflow-auto custom-scrollbar p-4 font-mono text-sm"
         >
           {filteredLogs.length === 0 ? (
             <div className="text-text-tertiary text-center py-8">
@@ -252,7 +253,7 @@ export function Logs() {
         </div>
 
         {/* 状态栏 */}
-        <div className="px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary">
+        <div className="shrink-0 px-4 py-2 border-t border-glass-border flex items-center justify-between text-xs text-text-tertiary">
           <span>
             共 {filteredLogs.length} 条日志
             {bufferedCount > 0 ? `, 暂停期间收到 ${bufferedCount} 条` : ''}

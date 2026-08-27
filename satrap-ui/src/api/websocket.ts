@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '@/utils/constants';
+import { getApiBaseUrl } from '@/utils/constants';
 
 export interface LogMessage {
   type: 'log';
@@ -16,6 +16,7 @@ export interface StatusMessage {
       status: string;
       started: boolean;
       config_type?: string;
+      session_type?: string;
       type?: string;
       last_error?: string;
     }>;
@@ -60,7 +61,7 @@ export class SatrapWebSocket {
 
   private _connect() {
     try {
-      const wsUrl = API_BASE_URL.replace(/^http/, 'ws') + this.endpoint;
+      const wsUrl = getApiBaseUrl().replace(/^http/, 'ws') + this.endpoint;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {

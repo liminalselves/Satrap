@@ -19,6 +19,7 @@ import {
   type Attachment,
   type CapabilityKind,
   type ChatEvent,
+  type ChatPreloadSettings,
   type ChatPlugin,
   type DirEntry,
   type MemoryRecord,
@@ -140,6 +141,11 @@ interface ChatMessage {
   segments?: LocalMessageSegment[];
 }
 
+interface PendingUserInput {
+  requestId: string;
+  question: string;
+}
+
 // 一个会话
 interface Conversation {
   id: string;   // 后端 conversation_id
@@ -150,6 +156,10 @@ interface Conversation {
   loaded?: boolean;
   // 所属项目 id (无项目会话为 null/缺省, 归入"最近")
   projectId?: string | null;
+  // 是否为尚未发送首条消息的后端预加载会话
+  preloaded?: boolean;
+  // 前端触发本次预加载时的设置键
+  preloadKey?: string;
 }
 
 // 生成唯一 id (本地消息用)
@@ -167,6 +177,8 @@ export function Chat() {
   const [input, setInput] = useState('');
   const [search, setSearch] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [pendingUserInputs, setPendingUserInputs] = useState<Record<string, PendingUserInput[]>>({});
+  const [answeringRequestId, setAnsweringRequestId] = useState<string | null>(null);
   // 聊天设置与设置弹窗 / 折叠面板
   const [settings, setSettings] = useState<ChatSettings>(DEFAULT_SETTINGS);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -177,6 +189,8 @@ export function Chat() {
   const [models, setModels] = useState<string[]>([]);
   // 插件列表(来自聊天服务)
   const [plugins, setPlugins] = useState<ChatPlugin[]>([]);
+  // 插件配置保存后递增, 用于主动刷新空的预加载会话
+  const [pluginConfigRevision, setPluginConfigRevision] = useState(0);
   // 能力弹窗当前查看的插件名 (null = 关闭)
   const [capabilityPlugin, setCapabilityPlugin] = useState<string | null>(null);
   // 配置弹窗当前查看的插件名 (null = 关闭)
@@ -201,6 +215,16 @@ export function Chat() {
   const [editingModel, setEditingModel] = useState<string | null>(null);
   // 文件选择器 ref
   const fileInputRef = useRef<HTMLInputElement>(null);
+  // 最新会话快照, 供异步预加载结果判断目标是否仍存在
+  const conversationsRef = useRef<Conversation[]>([]);
+  // 预加载请求序号与当前请求, 防止较慢的旧请求覆盖新设置
+  const preloadVersionRef = useRef(0);
+  const preloadRequestRef = useRef<{
+    version: number;
+    key: string;
+    sourceId: string;
+    promise: Promise<string | null>;
+  } | null>(null);
 
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
@@ -220,6 +244,8 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const activePendingUserInput = pendingUserInputs[activeId]?.[0];
+  conversationsRef.current = conversations;
 
   // 更新指定会话
   const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
@@ -302,8 +328,31 @@ export function Chat() {
             return { ...m, toolCalls: updatedTools, segments };
           });
           break;
+        case 'ask_user':
+          setGenerating(true);
+          setPendingUserInputs((prev) => {
+            const current = prev[event.conversation_id] ?? [];
+            if (current.some((item) => item.requestId === event.request_id)) return prev;
+            return {
+              ...prev,
+              [event.conversation_id]: [
+                ...current,
+                { requestId: event.request_id, question: event.question },
+              ],
+            };
+          });
+          break;
+        case 'ask_user_end':
+          setPendingUserInputs((prev) => ({
+            ...prev,
+            [event.conversation_id]: (prev[event.conversation_id] ?? []).filter(
+              (item) => item.requestId !== event.request_id
+            ),
+          }));
+          break;
         case 'turn_done':
           updateStreamingMessage((m) => ({ ...m, content: event.answer || m.content, streaming: false }));
+          setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
           streamingMsgIdRef.current = null;
           setGenerating(false);
           break;
@@ -313,12 +362,13 @@ export function Chat() {
             content: m.content + `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`,
             streaming: false,
           }));
+          setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
           streamingMsgIdRef.current = null;
           setGenerating(false);
           break;
       }
     },
-    [updateStreamingMessage]
+    [activeId, updateStreamingMessage]
   );
 
   // 加载会话历史消息
@@ -461,6 +511,87 @@ export function Chat() {
     setSettings((prev) => ({ ...prev, [key]: value }));
   }, []);
 
+  // 生成会影响 Session, 模型或插件安装结果的前端设置键
+  const preloadBaseKey = useMemo(() => JSON.stringify({
+    model: settings.model,
+    temperature: settings.temperature,
+    systemPrompt: settings.systemPrompt,
+    modelConfig: modelsDetail[settings.model] ?? null,
+    plugins,
+    pluginConfigRevision,
+  }), [settings.model, settings.temperature, settings.systemPrompt, modelsDetail, plugins, pluginConfigRevision]);
+
+  const preloadKeyFor = useCallback(
+    (projectId: string | null | undefined) => `${preloadBaseKey}:${projectId ?? ''}`,
+    [preloadBaseKey]
+  );
+
+  const preloadSettingsFor = useCallback(
+    (projectId: string | null | undefined): ChatPreloadSettings => ({
+      model: settings.model,
+      think: settings.think,
+      temperature: settings.temperature,
+      systemPrompt: settings.systemPrompt,
+      projectId: projectId ?? null,
+    }),
+    [settings.model, settings.think, settings.temperature, settings.systemPrompt]
+  );
+
+  // 启动或复用当前设置对应的预加载请求
+  const startPreload = useCallback((target: Conversation, key: string): Promise<string | null> => {
+    const running = preloadRequestRef.current;
+    if (
+      running
+      && running.version === preloadVersionRef.current
+      && running.sourceId === target.id
+      && running.key === key
+    ) {
+      return running.promise;
+    }
+
+    const version = preloadVersionRef.current + 1;
+    preloadVersionRef.current = version;
+    const sourceId = target.id;
+    const oldPreloadedId = target.preloaded ? target.id : null;
+    const request = chatApi.preloadConversation(preloadSettingsFor(target.projectId))
+      .then(async ({ conversation_id: conversationId }) => {
+        if (preloadVersionRef.current !== version) {
+          await chatApi.deleteConversation(conversationId).catch(() => undefined);
+          return null;
+        }
+        const latest = conversationsRef.current.find((conv) => conv.id === sourceId);
+        if (!latest) {
+          await chatApi.deleteConversation(conversationId).catch(() => undefined);
+          return null;
+        }
+        setConversations((prev) => prev.map((conv) => (
+          conv.id === sourceId
+            ? { ...conv, id: conversationId, preloaded: true, preloadKey: key, loaded: true }
+            : conv
+        )));
+        setActiveId((current) => (current === sourceId ? conversationId : current));
+        if (oldPreloadedId && oldPreloadedId !== conversationId) {
+          await chatApi.deleteConversation(oldPreloadedId).catch((err) => {
+            console.error('[Chat] 释放旧预加载会话失败:', err);
+          });
+        }
+        return conversationId;
+      })
+      .catch((err) => {
+        if (preloadVersionRef.current === version) {
+          console.error('[Chat] 预加载会话失败:', err);
+        }
+        return null;
+      });
+    preloadRequestRef.current = { version, key, sourceId, promise: request };
+    void request.finally(() => {
+      if (preloadRequestRef.current?.version === version) {
+        preloadRequestRef.current = null;
+      }
+    });
+    return request;
+  }, [preloadSettingsFor]);
+
   // 过滤 + 分组会话列表 (项目分组 + 最近区; 颜色按全局排序位置稳定分配)
   const grouped = useMemo(() => {
     const sorted = [...conversations].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -525,14 +656,54 @@ export function Chat() {
     return draft;
   }, []);
 
-  // 新建会话 (本地草稿, 首次发送时才调后端创建); projectId = 在项目下新建
+  // 新建会话并触发后端预加载; projectId = 在项目下新建
   const handleNew = useCallback((projectId?: string) => {
+    const existing = conversations.find((conv) => (
+      conv.preloaded
+      && conv.messages.length === 0
+      && (conv.projectId ?? null) === (projectId ?? null)
+    ));
+    if (existing) {
+      setActiveId(existing.id);
+      setShowEntryChoice(false);
+      setInput('');
+      textareaRef.current?.focus();
+      return;
+    }
+
+    const abandoned = conversations.filter((conv) => conv.preloaded && conv.messages.length === 0);
+    preloadVersionRef.current += 1;
+    for (const conv of abandoned) {
+      void chatApi.deleteConversation(conv.id).catch((err) => {
+        console.error('[Chat] 释放未使用预加载会话失败:', err);
+      });
+    }
+    if (abandoned.length > 0) {
+      const abandonedIds = new Set(abandoned.map((conv) => conv.id));
+      setConversations((prev) => prev.filter((conv) => !abandonedIds.has(conv.id)));
+    }
     const draft = createDraft(projectId);
     setActiveId(draft.id);
     setShowEntryChoice(false);
     setInput('');
     textareaRef.current?.focus();
-  }, [createDraft]);
+  }, [conversations, createDraft]);
+
+  // 草稿立即预加载; 未发送前变更构建设置时防抖刷新
+  useEffect(() => {
+    if (!active || active.messages.length > 0) return;
+    if (active.id !== '__draft__' && !active.preloaded) return;
+    const key = preloadKeyFor(active.projectId);
+    if (active.preloaded && active.preloadKey === key) return;
+    // 已上传附件时保留同一 ID 和文件, 首次发送由后端按指纹原地重建
+    if (active.preloaded && pendingAttachments.length > 0) return;
+
+    const delay = active.id === '__draft__' ? 0 : 250;
+    const timer = window.setTimeout(() => {
+      void startPreload(active, key);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [active, pendingAttachments.length, preloadKeyFor, startPreload]);
 
   // 删除会话 (调后端删除 + 本地移除)
   const handleDelete = useCallback(
@@ -546,6 +717,11 @@ export function Chat() {
         if (id === activeId) {
           setActiveId(next[0]?.id ?? '');
         }
+        return next;
+      });
+      setPendingUserInputs((prev) => {
+        const next = { ...prev };
+        delete next[id];
         return next;
       });
       // 后端删除 (草稿会话无需调后端)
@@ -637,25 +813,26 @@ export function Chat() {
     setGenerating(true);
     streamingMsgIdRef.current = assistantId;
 
-    // 草稿会话: 后台创建真实会话
+    // 草稿或设置已变化的空会话: 等待对应预加载完成
     let realConvId = convId;
-    if (isDraft) {
+    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const shouldRefreshPreload = isDraft || (
+      targetConv.preloaded
+      && targetConv.preloadKey !== preloadKey
+      && !atts
+    );
+    if (shouldRefreshPreload) {
       try {
-        const { conversation_id } = await chatApi.createConversation(
-          settings.model, settings.think, settings.systemPrompt || undefined,
-          targetConv.projectId ?? undefined,
-        );
-        realConvId = conversation_id;
-        // 替换草稿 id 为真实 id (消息已写入, 一并迁移)
-        setConversations((prev) => prev.map((c) => (c.id === '__draft__' ? { ...c, id: realConvId } : c)));
-        setActiveId(realConvId);
+        const preloadedId = await startPreload(targetConv, preloadKey);
+        if (!preloadedId) throw new Error('后端未能完成会话预加载');
+        realConvId = preloadedId;
       } catch (err) {
-        console.error('[Chat] 创建会话失败:', err);
-        updateConversation('__draft__', (c) => ({
+        console.error('[Chat] 预加载会话失败:', err);
+        updateConversation(convId, (c) => ({
           ...c,
           messages: c.messages.map((m) =>
             m.id === assistantId
-              ? { ...m, content: `[创建会话失败] ${err instanceof Error ? err.message : String(err)}`, streaming: false }
+              ? { ...m, content: `[预加载会话失败] ${err instanceof Error ? err.message : String(err)}`, streaming: false }
               : m
           ),
         }));
@@ -666,7 +843,14 @@ export function Chat() {
     }
 
     try {
-      await chatApi.send(realConvId, content, settings.think, atts);
+      await chatApi.send(
+        realConvId,
+        content,
+        settings.think,
+        atts,
+        preloadSettingsFor(targetConv.projectId),
+      );
+      updateConversation(realConvId, (c) => ({ ...c, preloaded: false, preloadKey: undefined }));
       // 流式内容经 WS 推送, 此处仅等待发送确认
     } catch (err) {
       console.error('[Chat] 发送失败:', err);
@@ -681,40 +865,39 @@ export function Chat() {
       streamingMsgIdRef.current = null;
       setGenerating(false);
     }
-  }, [input, active, generating, settings.think, settings.model, settings.systemPrompt, pendingAttachments, updateConversation, createDraft]);
+  }, [input, active, generating, settings.think, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
 
-    // 无选中会话或草稿会话时, 先创建真实会话 (上传需要真实 id)
+    // 上传需要预分配的真实 ID, 但此时仍不持久化正式会话
     let targetConv = active;
-    if (!targetConv || targetConv.id === '__draft__') {
+    if (!targetConv) {
+      targetConv = createDraft();
+      setActiveId(targetConv.id);
+      setShowEntryChoice(false);
+    }
+    const preloadKey = preloadKeyFor(targetConv.projectId);
+    const needsPreload = targetConv.id === '__draft__' || (
+      targetConv.preloaded
+      && targetConv.preloadKey !== preloadKey
+      && pendingAttachments.length === 0
+    );
+    if (needsPreload) {
       try {
-        const { conversation_id } = await chatApi.createConversation(
-          settings.model, settings.think, settings.systemPrompt || undefined,
-          targetConv?.projectId ?? undefined,
-        );
-        const newConv: Conversation = {
-          id: conversation_id,
-          title: '新对话',
-          messages: [],
-          updatedAt: Math.round(Date.now() / 1000),
-          loaded: true,
-          projectId: targetConv?.projectId ?? null,
+        const conversationId = await startPreload(targetConv, preloadKey);
+        if (!conversationId) throw new Error('后端未能完成会话预加载');
+        targetConv = {
+          ...targetConv,
+          id: conversationId,
+          preloaded: true,
+          preloadKey,
         };
-        setConversations((prev) => {
-          // 替换已有草稿或追加
-          const filtered = prev.filter((c) => c.id !== '__draft__');
-          return [newConv, ...filtered];
-        });
-        setActiveId(conversation_id);
-        setShowEntryChoice(false);
-        targetConv = newConv;
       } catch (err) {
-        console.error('[Chat] 创建会话失败:', err);
-        alert('创建会话失败, 无法上传文件');
+        console.error('[Chat] 预加载会话失败:', err);
+        alert('预加载会话失败, 无法上传文件');
         e.target.value = '';
         return;
       }
@@ -746,7 +929,7 @@ export function Chat() {
     }
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
-  }, [active, settings.model, settings.think, settings.systemPrompt]);
+  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload]);
 
   // 移除待发送附件
   const removeAttachment = useCallback((index: number) => {
@@ -755,7 +938,7 @@ export function Chat() {
 
   // Retry: 重试最后一轮
   const handleRetry = useCallback(async () => {
-    if (!active || active.id === '__draft__' || generating) return;
+    if (!active || active.id === '__draft__' || active.preloaded || generating) return;
     try {
       const result = await chatApi.retry(active.id, settings.think);
       if (result.ok) {
@@ -790,7 +973,7 @@ export function Chat() {
 
   // Fork: 从指定轮次创建新会话
   const handleFork = useCallback(async (turnIndex: number) => {
-    if (!active || active.id === '__draft__') return;
+    if (!active || active.id === '__draft__' || active.preloaded) return;
     try {
       const result = await chatApi.fork(active.id, turnIndex);
       if (result.ok && result.conversation_id) {
@@ -852,6 +1035,26 @@ export function Chat() {
   }, []);
 
   // 停止生成 (调用后端取消 + 解除前端流式标记)
+  const handleAnswerUserInput = useCallback(async () => {
+    const answer = input.trim();
+    if (!active || !activePendingUserInput || !answer || answeringRequestId) return;
+    const requestId = activePendingUserInput.requestId;
+    setAnsweringRequestId(requestId);
+    try {
+      await chatApi.answerAskUser(active.id, requestId, answer);
+      setInput('');
+      setPendingUserInputs((prev) => ({
+        ...prev,
+        [active.id]: (prev[active.id] ?? []).filter((item) => item.requestId !== requestId),
+      }));
+    } catch (err) {
+      console.error('[Chat] 提交工具回答失败:', err);
+      alert(`提交回答失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setAnsweringRequestId(null);
+    }
+  }, [active, activePendingUserInput, answeringRequestId, input]);
+
   const handleStop = useCallback(async () => {
     if (active) {
       try {
@@ -861,6 +1064,7 @@ export function Chat() {
       }
     }
     setGenerating(false);
+    setPendingUserInputs((prev) => active ? { ...prev, [active.id]: [] } : prev);
     streamingMsgIdRef.current = null;
     if (active) {
       updateConversation(active.id, (c) => ({
@@ -875,10 +1079,14 @@ export function Chat() {
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        handleSend();
+        if (activePendingUserInput) {
+          void handleAnswerUserInput();
+        } else {
+          void handleSend();
+        }
       }
     },
-    [handleSend]
+    [activePendingUserInput, handleAnswerUserInput, handleSend]
   );
 
   // 切换插件聚合启停
@@ -917,6 +1125,10 @@ export function Chat() {
     },
     []
   );
+
+  const handlePluginConfigSaved = useCallback(() => {
+    setPluginConfigRevision((revision) => revision + 1);
+  }, []);
 
   // 能力弹窗当前插件对象
   const activeCapabilityPlugin = plugins.find((p) => p.name === capabilityPlugin) ?? null;
@@ -1020,7 +1232,7 @@ export function Chat() {
                         setShowEntryChoice(false);
                       }}
                       onDelete={() => handleDelete(conv.id)}
-                      onMove={conv.id === '__draft__' ? undefined : () => setMovingConvId(conv.id)}
+                      onMove={conv.id === '__draft__' || conv.preloaded ? undefined : () => setMovingConvId(conv.id)}
                     />
                   ))}
                 </div>
@@ -1130,6 +1342,18 @@ export function Chat() {
                 </div>
               )}
 
+              {activePendingUserInput && (
+                <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2">
+                  <div className="flex items-center gap-2 text-sm font-medium text-accent mb-1.5">
+                    <Wrench className="h-4 w-4" />
+                    工具正在等待你的回答
+                  </div>
+                  <p className="text-sm text-text-primary whitespace-pre-wrap">
+                    {activePendingUserInput.question}
+                  </p>
+                </div>
+              )}
+
               <div ref={inputCardRef} className="glass-card glass-card-accent rounded-xl p-3 flex items-end gap-2">
                 {/* 隐藏文件选择器 */}
                 <input
@@ -1145,6 +1369,7 @@ export function Chat() {
                   size="sm"
                   title="附件"
                   className="shrink-0 mb-0.5"
+                  disabled={Boolean(activePendingUserInput)}
                   onClick={() => fileInputRef.current?.click()}
                 >
                   <Paperclip className="h-4 w-4" />
@@ -1154,7 +1379,9 @@ export function Chat() {
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
-                  placeholder="输入消息, Enter 发送, Shift+Enter 换行"
+                  placeholder={activePendingUserInput
+                    ? '输入对工具提问的回答, Enter 提交'
+                    : '输入消息, Enter 发送, Shift+Enter 换行'}
                   rows={1}
                   className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
                 />
@@ -1168,7 +1395,25 @@ export function Chat() {
                 >
                   <ChevronDown className={cn('h-4 w-4 transition-transform', optionsOpen && 'rotate-180')} />
                 </Button>
-                {generating ? (
+                {activePendingUserInput ? (
+                  <>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => void handleAnswerUserInput()}
+                      disabled={!input.trim() || answeringRequestId === activePendingUserInput.requestId}
+                      className="shrink-0 mb-0.5"
+                      title="提交回答"
+                    >
+                      {answeringRequestId === activePendingUserInput.requestId
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Send className="h-4 w-4" />}
+                    </Button>
+                    <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
+                      <Square className="h-4 w-4" />
+                    </Button>
+                  </>
+                ) : generating ? (
                   <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
                     <Square className="h-4 w-4" />
                   </Button>
@@ -1231,13 +1476,14 @@ export function Chat() {
       <PluginConfigModal
         pluginName={configPlugin}
         onClose={() => setConfigPlugin(null)}
+        onSaved={handlePluginConfigSaved}
       />
 
       {/* 记忆管理面板 */}
       <MemoryPanel
         open={memoryOpen}
         onClose={() => setMemoryOpen(false)}
-        projects={projects}
+        conversationId={activeId === '__draft__' || active?.preloaded ? '' : activeId}
       />
 
       {/* 新建项目对话框 */}
@@ -1844,9 +2090,11 @@ function PluginCapabilitiesModal({
 function PluginConfigModal({
   pluginName,
   onClose,
+  onSaved,
 }: {
   pluginName: string | null;
   onClose: () => void;
+  onSaved: () => void;
 }) {
   const [data, setData] = useState<PluginConfigResponse | null>(null);
   const [form, setForm] = useState<Record<string, unknown>>({});
@@ -1882,6 +2130,7 @@ function PluginConfigModal({
     setError('');
     try {
       await chatApi.savePluginConfig(pluginName, form);
+      onSaved();
       onClose();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1926,6 +2175,13 @@ function PluginConfigModal({
                   onChange={(e) => setForm((prev) => ({ ...prev, [key]: Number(e.target.value) }))}
                   className="glass-input w-full text-sm"
                 />
+              ) : field.type === 'textarea' ? (
+                <textarea
+                  value={String(value)}
+                  onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="glass-input w-full resize-y text-sm"
+                  rows={5}
+                />
               ) : (
                 <input
                   type="text"
@@ -1953,12 +2209,11 @@ function PluginConfigModal({
 function MemoryPanel({
   open,
   onClose,
-  projects,
+  conversationId,
 }: {
   open: boolean;
   onClose: () => void;
-  // 项目列表 (记忆分层: 全局层 + 每个项目一层)
-  projects: ProjectItem[];
+  conversationId: string;
 }) {
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1968,33 +2223,25 @@ function MemoryPanel({
   const [newContent, setNewContent] = useState('');
   const [newTags, setNewTags] = useState('');
   const [newImportance, setNewImportance] = useState(1);
-  const [newScope, setNewScope] = useState('web_chat');
   const [adding, setAdding] = useState(false);
-
-  // scope -> 层级显示名 (全局 / 项目名)
-  const layerLabel = useCallback(
-    (scope: string) => {
-      if (scope === 'web_chat') return '全局';
-      const pid = scope.startsWith('project:') ? scope.slice('project:'.length) : scope;
-      return projects.find((p) => p.project_id === pid)?.name ?? scope;
-    },
-    [projects]
-  );
+  const memoryScope = conversationId ? `session:${conversationId}` : '';
 
   const loadMemories = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      // 全局层 + 各项目层合并拉取 (scope 在记录上自带, 供分组/删除路由)
-      const scopes = ['web_chat', ...projects.map((p) => `project:${p.project_id}`)];
-      const results = await Promise.all(scopes.map((s) => chatApi.listMemories(s)));
-      setMemories(results.flatMap((r) => r.memories));
+      if (!memoryScope) {
+        setMemories([]);
+        return;
+      }
+      const result = await chatApi.listMemories(memoryScope);
+      setMemories(result.memories);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }, [projects]);
+  }, [memoryScope]);
 
   useEffect(() => {
     if (open) loadMemories();
@@ -2005,7 +2252,7 @@ function MemoryPanel({
     setAdding(true);
     setError('');
     try {
-      await chatApi.addMemory(newTitle.trim(), newContent.trim(), newTags.trim(), newImportance, newScope);
+      await chatApi.addMemory(newTitle.trim(), newContent.trim(), newTags.trim(), newImportance, memoryScope);
       setNewTitle('');
       setNewContent('');
       setNewTags('');
@@ -2027,22 +2274,15 @@ function MemoryPanel({
     }
   };
 
-  // 按层分组 (全局在前, 项目层按项目顺序; 未知 scope 归尾)
   const layeredGroups = useMemo(() => {
-    const order = ['web_chat', ...projects.map((p) => `project:${p.project_id}`)];
     const byScope = new Map<string, MemoryRecord[]>();
     for (const m of memories) {
       const list = byScope.get(m.scope) ?? [];
       list.push(m);
       byScope.set(m.scope, list);
     }
-    const keys = [...byScope.keys()].sort((a, b) => {
-      const ia = order.indexOf(a);
-      const ib = order.indexOf(b);
-      return (ia === -1 ? order.length : ia) - (ib === -1 ? order.length : ib);
-    });
-    return keys.map((scope) => ({ scope, memories: byScope.get(scope) ?? [] }));
-  }, [memories, projects]);
+    return [...byScope.keys()].map((scope) => ({ scope, memories: byScope.get(scope) ?? [] }));
+  }, [memories]);
 
   return (
     <Modal open={open} onClose={onClose} title="长期记忆管理" size="lg">
@@ -2079,17 +2319,10 @@ function MemoryPanel({
               onChange={(e) => setNewImportance(Number(e.target.value))}
               options={[1, 2, 3, 4, 5].map((n) => ({ value: String(n), label: `权重 ${n}` }))}
             />
-            <Select
-              value={newScope}
-              onChange={(e) => setNewScope(e.target.value)}
-              options={[
-                { value: 'web_chat', label: '层级: 全局' },
-                ...projects.map((p) => ({ value: `project:${p.project_id}`, label: `层级: ${p.name}` })),
-              ]}
-            />
+            <span className="glass-input text-sm text-text-secondary">当前会话</span>
           </div>
           <div className="flex justify-end">
-            <Button variant="primary" onClick={handleAdd} disabled={adding || !newTitle.trim() || !newContent.trim()}>
+            <Button variant="primary" onClick={handleAdd} disabled={adding || !memoryScope || !newTitle.trim() || !newContent.trim()}>
               {adding ? '添加中...' : '添加'}
             </Button>
           </div>
@@ -2105,12 +2338,8 @@ function MemoryPanel({
             {layeredGroups.map((g) => (
               <div key={g.scope} className="space-y-2">
                 <div className="flex items-center gap-1.5 text-xs text-text-tertiary">
-                  {g.scope === 'web_chat' ? (
-                    <Brain className="h-3.5 w-3.5" />
-                  ) : (
-                    <Folder className="h-3.5 w-3.5" />
-                  )}
-                  <span>{layerLabel(g.scope)}层 · {g.memories.length} 条</span>
+                  <Brain className="h-3.5 w-3.5" />
+                  <span>当前会话 · {g.memories.length} 条</span>
                 </div>
                 {g.memories.map((m) => (
                   <div key={m.id} className="glass-card rounded-lg px-3 py-2.5">
@@ -2340,7 +2569,7 @@ function ProjectGroup({
                 active={conv.id === activeId}
                 onSelect={() => onSelect(conv.id)}
                 onDelete={() => onDelete(conv.id)}
-                onMove={conv.id === '__draft__' ? undefined : () => onMove(conv.id)}
+                onMove={conv.id === '__draft__' || conv.preloaded ? undefined : () => onMove(conv.id)}
               />
             ))
           )}

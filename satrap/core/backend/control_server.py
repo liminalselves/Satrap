@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import atexit
 import ctypes
+import dataclasses
 import json
 import os
 import signal
@@ -27,7 +28,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from satrap.core.config_document import (
+from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
+from satrap.core.backend.ui_config import build_ui_config
+from satrap.core.config.document import (
     create_default_config,
     delete_platform,
     find_config_path,
@@ -37,8 +40,25 @@ from satrap.core.config_document import (
     validate_config_document,
     validate_platforms,
 )
+from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.session_discovery import (
+    SessionClassDiscoveryService,
+    create_default_session_dir,
+)
+from satrap.core.config.model_service import ModelConfigService
+from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.session_instance_service import SessionInstanceConfigService
+from satrap.core.config.session_class_service import SessionClassConfigService
+from satrap.core.framework.SessionManager import SessionConfigStore
+from satrap.core.framework.UserManager import UserInfoStore
+from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
+from satrap.core.utils.paths import get_project_root
+from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.registry import create_default_edictum_type_registry
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+PROJECT_ROOT = get_project_root()
 # 项目根目录
 
 DATA_DIR = PROJECT_ROOT / ".satrap"
@@ -57,10 +77,24 @@ CONFIG_PATH = find_config_path(PROJECT_ROOT)
 
 CORS_HEADERS = {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
 }
 # CORS 头
+
+CONTROL_STATIC_UI = SPAStaticService(
+    DEFAULT_STATIC_DIR,
+    excluded_prefixes=(
+        "/status",
+        "/start",
+        "/stop",
+        "/restart",
+        "/shutdown",
+        "/config",
+        "/ui-config.json",
+    ),
+)
+"""控制服务使用的 React SPA 静态文件服务"""
 
 
 def _write_pid_file(pid_file: Path, pid: int) -> None:
@@ -280,6 +314,209 @@ async def _read_json_body(
     return dict(cast(dict[str, Any], payload))
 
 
+def _request_origin(raw_request: bytes) -> str:
+    """
+    从 HTTP 请求头解析当前控制服务来源地址
+
+    参数:
+    - raw_request: HTTP 请求头
+
+    返回:
+    - str: 控制服务来源地址
+    """
+    for raw_line in raw_request.split(b"\r\n")[1:]:
+        if raw_line.lower().startswith(b"host:"):
+            host = raw_line.split(b":", 1)[1].strip().decode("utf-8")
+            if host:
+                return f"http://{host}"
+    return "http://127.0.0.1:19871"
+
+
+def _model_config_service() -> ModelConfigService:
+    """
+    根据当前后端配置创建共享模型配置服务
+
+    返回:
+    - ModelConfigService: 使用当前模型配置文件的领域服务
+    """
+    config_data = load_config_document(CONFIG_PATH)
+    raw_path = config_data.get("model_config_path")
+    storage_path: Path | None = None
+    if raw_path:
+        storage_path = Path(str(raw_path))
+        if not storage_path.is_absolute():
+            storage_path = PROJECT_ROOT / storage_path
+    return ModelConfigService(ModelConfigManager(storage_path=storage_path))
+
+
+def _session_class_config_service() -> SessionClassConfigService:
+    """
+    根据当前后端配置创建共享会话类配置服务
+
+    返回:
+    - SessionClassConfigService: 使用当前会话类配置文件的领域服务
+    """
+    config_data = load_config_document(CONFIG_PATH)
+    raw_path = config_data.get("session_class_config_path")
+    storage_path: Path | None = None
+    if raw_path:
+        storage_path = Path(str(raw_path))
+        if not storage_path.is_absolute():
+            storage_path = PROJECT_ROOT / storage_path
+    manager = SessionClassConfigManager(
+        storage_path=storage_path,
+        session_scan_paths=_configured_session_scan_paths(config_data),
+    )
+    return SessionClassConfigService(manager)
+
+
+def _edictum_config_service() -> EdictumConfigService:
+    """
+    根据当前后端配置创建共享 Edictum 冷配置服务
+
+    返回:
+    - EdictumConfigService: 使用当前 Edictum 配置文件的领域服务
+    """
+    config_data = load_config_document(CONFIG_PATH)
+    raw_path = config_data.get("edictum_config_path")
+    storage_path: Path | None = None
+    if raw_path:
+        storage_path = Path(str(raw_path))
+        if not storage_path.is_absolute():
+            storage_path = PROJECT_ROOT / storage_path
+    registry = create_default_edictum_type_registry()
+    manager = EdictumConfigManager(registry, storage_path=storage_path)
+    return EdictumConfigService(manager, registry)
+
+
+def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | None:
+    """
+    将配置中的可选存储路径解析为项目内绝对路径
+
+    参数:
+    - config_data: 当前后端配置文档
+    - key: 路径配置键
+
+    返回:
+    - Path | None: 未配置时返回 None
+    """
+    raw_path = config_data.get(key)
+    if not raw_path:
+        return None
+    storage_path = Path(str(raw_path))
+    if not storage_path.is_absolute():
+        storage_path = PROJECT_ROOT / storage_path
+    return storage_path
+
+
+def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigService:
+    """
+    根据当前后端配置创建指定平台的会话实例冷管理服务
+
+    参数:
+    - platform_id: 平台实例 ID
+
+    返回:
+    - SessionInstanceConfigService: 共享运行时数据库的冷管理服务
+    """
+    config_data = load_config_document(CONFIG_PATH)
+    raw_data_root = str(config_data.get("data_root", "")).strip()
+    data_root = Path(raw_data_root) if raw_data_root else PROJECT_ROOT / ".satrap" / "data"
+    if not data_root.is_absolute():
+        data_root = PROJECT_ROOT / data_root
+    storage_layout = StorageLayout(data_root)
+    database = storage_layout.platform_db(platform_id)
+    session_class_manager = SessionClassConfigManager(
+        storage_path=_configured_storage_path(config_data, "session_class_config_path"),
+        session_scan_paths=_configured_session_scan_paths(config_data),
+    )
+    edictum_registry = create_default_edictum_type_registry()
+    edictum_manager = EdictumConfigManager(
+        edictum_registry,
+        storage_path=_configured_storage_path(config_data, "edictum_config_path"),
+    )
+    return SessionInstanceConfigService(
+        SessionConfigStore(database),
+        UserInfoStore(database),
+        session_class_manager,
+        edictum_manager,
+        platform_id,
+        storage_layout,
+    )
+
+
+def _configured_platform_ids(config_data: dict[str, Any] | None = None) -> list[str]:
+    """
+    返回可冷管理的平台实例 ID, 始终包含 local
+
+    参数:
+    - config_data: 可选后端配置文档
+
+    返回:
+    - list[str]: 去重后的平台实例 ID
+    """
+    document = config_data if config_data is not None else load_config_document(CONFIG_PATH)
+    result = [LOCAL_PLATFORM_ID]
+    raw_platforms: object = document.get("platforms", [])
+    if isinstance(raw_platforms, list):
+        for raw_platform in cast(list[object], raw_platforms):
+            if not isinstance(raw_platform, dict):
+                continue
+            platform_id = str(cast(dict[str, Any], raw_platform).get("id", "")).strip()
+            if platform_id and platform_id not in result:
+                result.append(platform_id)
+    return result
+
+
+def _require_backend_stopped() -> None:
+    """阻止冷写操作与运行中的后端争用活跃会话状态"""
+    if bool(_check_backend_health().get("running", False)):
+        raise RuntimeError("平台后端运行中, 请使用热管理接口")
+
+
+def _configured_session_scan_paths(
+    config_data: dict[str, Any] | None = None,
+) -> list[str]:
+    """
+    读取配置中的会话扫描目录
+
+    参数:
+    - config_data: 已加载的配置, 未提供时读取当前配置文件
+
+    返回:
+    - list[str]: 非空且保持配置顺序的扫描目录
+    """
+    document = config_data if config_data is not None else load_config_document(CONFIG_PATH)
+    raw_paths: object = document.get("session_scan_paths", [".satrap/session"])
+    if not isinstance(raw_paths, list):
+        return [".satrap/session"]
+    paths: list[str] = []
+    for item in cast(list[object], raw_paths):
+        text = str(item).strip()
+        if text:
+            paths.append(text)
+    return paths or [".satrap/session"]
+
+
+def _resolve_session_scan_paths(paths: list[str]) -> list[str]:
+    """
+    将会话扫描目录按项目根目录解析为绝对路径
+
+    参数:
+    - paths: 配置中的扫描目录
+
+    返回:
+    - list[str]: 可供发现服务使用的绝对路径
+    """
+    resolved: list[str] = []
+    for item in paths:
+        path = Path(item)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        resolved.append(str(path.resolve()))
+    return resolved
+
+
 async def _handle_request(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
@@ -313,7 +550,29 @@ async def _handle_request(
         status = 200
         body: dict[str, Any] = {}
         
-        if method == "GET" and path == "/status":
+        if method == "GET" and path == "/ui-config.json":
+            try:
+                config_data = load_config_document(CONFIG_PATH)
+                raw_api_config: object = config_data.get("api", {})
+                api_config = (
+                    cast(dict[str, object], raw_api_config)
+                    if isinstance(raw_api_config, dict)
+                    else {}
+                )
+                raw_host = api_config.get("host", "127.0.0.1")
+                raw_port = api_config.get("port", 19870)
+                backend_host = raw_host if isinstance(raw_host, str) else "127.0.0.1"
+                backend_port = int(raw_port) if isinstance(raw_port, (int, str)) else 19870
+                body = build_ui_config(
+                    backend_host=backend_host,
+                    backend_port=backend_port,
+                    control_api=_request_origin(raw_request),
+                )
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/status":
             health = _check_backend_health()
             body = {
                 "running": health.get("running", False),
@@ -523,7 +782,338 @@ async def _handle_request(
             except (OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
+
+        elif method == "GET" and path == "/config/models":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
+                model_type = str(query.get("type", ["llm"])[0])
+                body = _model_config_service().list_configs(model_type)
+            except (OSError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif path.startswith("/config/models/"):
+            parts = path.removeprefix("/config/models/").split("/", 1)
+            if len(parts) != 2:
+                body = {"error": f"not found: {method} {path}"}
+                status = 404
+            else:
+                model_type = urllib.parse.unquote(parts[0])
+                name = urllib.parse.unquote(parts[1])
+                try:
+                    service = _model_config_service()
+                    if method == "POST":
+                        service.create(model_type, name, await _read_json_body(reader, raw_request))
+                        body = {"ok": True}
+                    elif method == "PATCH":
+                        service.update(model_type, name, await _read_json_body(reader, raw_request))
+                        body = {"ok": True}
+                    elif method == "DELETE":
+                        if service.delete(model_type, name):
+                            body = {"ok": True}
+                        else:
+                            body = {"error": "not found"}
+                            status = 404
+                    else:
+                        body = {"error": f"not found: {method} {path}"}
+                        status = 404
+                except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                    body = {"error": str(e)}
+                    status = 400
+
+        elif method == "GET" and path == "/config/session-classes":
+            try:
+                body = _session_class_config_service().list_configs()
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/edictum/types":
+            try:
+                body = {"types": _edictum_config_service().list_types()}
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/edictum/plugins":
+            try:
+                body = {"plugins": _edictum_config_service().list_plugins()}
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/edictum/sessions":
+            try:
+                body = _edictum_config_service().list_configs()
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/session-instances":
+            try:
+                sessions: list[dict[str, Any]] = []
+                for platform_id in _configured_platform_ids():
+                    sessions.extend(_session_instance_config_service(platform_id).list_instances())
+                sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+                body = {"sessions": sessions}
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/session-instances":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                raw_params: object = payload.get("params", {})
+                if not isinstance(raw_params, dict):
+                    raise ValueError("params 必须是对象")
+                adapter_id = str(payload.get("adapter_id", "")).strip()
+                platform_id = str(payload.get("platform_id", "")).strip() or adapter_id or LOCAL_PLATFORM_ID
+                if platform_id not in _configured_platform_ids():
+                    raise ValueError(f"未知平台实例: {platform_id}")
+                extra_params = dict(cast(dict[str, Any], raw_params))
+                if adapter_id:
+                    extra_params["adapter_id"] = adapter_id
+                created = _session_instance_config_service(platform_id).create_instance(
+                    str(payload.get("session_provider") or payload.get("provider_name") or SESSION_CLASS_PROVIDER),
+                    str(payload.get("session_type") or payload.get("class_name") or ""),
+                    session_id=str(payload.get("session_id", "")).strip() or None,
+                    llm_name=str(payload.get("llm_name", "")).strip() or None,
+                    extra_params=extra_params,
+                )
+                serialized = dataclasses.asdict(created)
+                serialized["platform_id"] = platform_id
+                serialized["active"] = False
+                serialized["runtime"] = {}
+                body = {"ok": True, "session": serialized}
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/session-instances/bulk-delete":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                mode = str(payload.get("mode", "selected")).strip()
+                platform_ids = _configured_platform_ids()
+                targets: dict[str, list[str]] = {}
+                if mode == "selected":
+                    raw_refs: object = payload.get("session_refs", [])
+                    if not isinstance(raw_refs, list):
+                        raise ValueError("session_refs 必须是数组")
+                    for raw_ref in cast(list[object], raw_refs):
+                        if not isinstance(raw_ref, dict):
+                            raise ValueError("session_refs 的每一项必须是对象")
+                        ref = cast(dict[str, Any], raw_ref)
+                        platform_id = str(ref.get("platform_id", "")).strip()
+                        session_id = str(ref.get("session_id", "")).strip()
+                        if platform_id not in platform_ids:
+                            raise ValueError(f"未知平台实例: {platform_id}")
+                        if session_id:
+                            targets.setdefault(platform_id, []).append(session_id)
+                    if not any(targets.values()):
+                        raise ValueError("至少选择一个会话实例")
+                elif mode in {"empty", "single"}:
+                    targets = {platform_id: [] for platform_id in platform_ids}
+                else:
+                    raise ValueError(f"未知批量删除模式: {mode}")
+                deleted_refs: list[dict[str, str]] = []
+                for platform_id, session_ids in targets.items():
+                    deleted = _session_instance_config_service(platform_id).delete_by_mode(
+                        mode,
+                        session_ids,
+                    )
+                    deleted_refs.extend(
+                        {"platform_id": platform_id, "session_id": session_id}
+                        for session_id in deleted
+                    )
+                body = {
+                    "ok": True,
+                    "deleted_count": len(deleted_refs),
+                    "deleted_ids": [item["session_id"] for item in deleted_refs],
+                    "deleted_refs": deleted_refs,
+                }
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif path.startswith("/config/session-instances/"):
+            session_id = urllib.parse.unquote(path.removeprefix("/config/session-instances/")).strip()
+            try:
+                if method != "DELETE":
+                    body = {"error": f"not found: {method} {path}"}
+                    status = 404
+                elif not session_id:
+                    body = {"error": "session_id 不能为空"}
+                    status = 400
+                else:
+                    _require_backend_stopped()
+                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
+                    platform_id = str(query.get("platform_id", [""])[0]).strip()
+                    if platform_id not in _configured_platform_ids():
+                        raise ValueError(f"未知平台实例: {platform_id}")
+                    deleted = _session_instance_config_service(platform_id).delete_instances([session_id])
+                    if deleted:
+                        body = {
+                            "ok": True,
+                            "deleted_count": 1,
+                            "deleted_ids": deleted,
+                            "deleted_refs": [{"platform_id": platform_id, "session_id": session_id}],
+                        }
+                    else:
+                        body = {"error": "会话实例不存在"}
+                        status = 404
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/edictum/sessions":
+            try:
+                created = _edictum_config_service().create(
+                    await _read_json_body(reader, raw_request)
+                )
+                body = {"ok": True, "config": created}
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif path.startswith("/config/edictum/sessions/"):
+            suffix = path.removeprefix("/config/edictum/sessions/")
+            action = ""
+            if suffix.endswith("/enable"):
+                suffix = suffix.removesuffix("/enable")
+                action = "enable"
+            elif suffix.endswith("/disable"):
+                suffix = suffix.removesuffix("/disable")
+                action = "disable"
+            name = urllib.parse.unquote(suffix)
+            try:
+                service = _edictum_config_service()
+                if method == "GET" and not action:
+                    config_entry = service.get(name)
+                    if config_entry is None:
+                        body = {"error": "not found"}
+                        status = 404
+                    else:
+                        body = config_entry
+                elif method == "PATCH" and not action:
+                    final_name, updated = service.update(
+                        name,
+                        await _read_json_body(reader, raw_request),
+                    )
+                    body = {"ok": True, "name": final_name, "config": updated}
+                elif method == "POST" and action:
+                    updated = service.set_enabled(name, action == "enable")
+                    body = {"ok": True, "config": updated}
+                elif method == "DELETE" and not action:
+                    if service.delete(name):
+                        body = {"ok": True}
+                    else:
+                        body = {"error": "not found"}
+                        status = 404
+                else:
+                    body = {"error": f"not found: {method} {path}"}
+                    status = 404
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/session-classes":
+            try:
+                created = _session_class_config_service().create(
+                    await _read_json_body(reader, raw_request)
+                )
+                body = {"ok": True, "config": created}
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/config/session/discovery":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
+                requested_paths = [item for item in query.get("path", []) if item.strip()]
+                configured_paths = _configured_session_scan_paths()
+                if any(item not in configured_paths for item in requested_paths):
+                    raise ValueError("只能扫描配置中的 Session 目录")
+                scan_paths = requested_paths or configured_paths
+                resolved_configured_paths = _resolve_session_scan_paths(configured_paths)
+                resolved_scan_paths = _resolve_session_scan_paths(scan_paths)
+                results = [
+                    item.to_dict()
+                    for item in SessionClassDiscoveryService(
+                        resolved_configured_paths
+                    ).discover(resolved_scan_paths)
+                ]
+                body = {"paths": configured_paths, "results": results}
+            except (ImportError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/config/session/discovery/directories":
+            try:
+                payload = await _read_json_body(reader, raw_request)
+                requested_path = str(payload.get("path", "")).strip()
+                configured_paths = _configured_session_scan_paths()
+                if requested_path and requested_path not in configured_paths:
+                    raise ValueError("只能创建配置中的 Session 扫描目录")
+                target_paths = [requested_path] if requested_path else configured_paths
+                target = create_default_session_dir(_resolve_session_scan_paths(target_paths))
+                body = {"ok": True, "path": str(target)}
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif path.startswith("/config/session-classes/"):
+            suffix = path.removeprefix("/config/session-classes/")
+            action = ""
+            if suffix.endswith("/enable"):
+                suffix = suffix.removesuffix("/enable")
+                action = "enable"
+            elif suffix.endswith("/disable"):
+                suffix = suffix.removesuffix("/disable")
+                action = "disable"
+            name = urllib.parse.unquote(suffix)
+            try:
+                service = _session_class_config_service()
+                if method == "GET" and not action:
+                    config_entry = service.get(name)
+                    if config_entry is None:
+                        body = {"error": "not found"}
+                        status = 404
+                    else:
+                        body = config_entry
+                elif method == "PATCH" and not action:
+                    updated = service.update(name, await _read_json_body(reader, raw_request))
+                    body = {"ok": True, "config": updated}
+                elif method == "POST" and action:
+                    updated = service.set_enabled(name, action == "enable")
+                    body = {"ok": True, "config": updated}
+                elif method == "DELETE" and not action:
+                    if service.delete(name):
+                        body = {"ok": True}
+                    else:
+                        body = {"error": "not found"}
+                        status = 404
+                else:
+                    body = {"error": f"not found: {method} {path}"}
+                    status = 404
+            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
         
+        elif method == "GET" and await CONTROL_STATIC_UI.serve(writer, raw_path):
+            await writer.drain()
+            return
+
         else:
             status = 404
             body = {"error": "not found"}
@@ -537,6 +1127,12 @@ async def _handle_request(
         # 接口: POST /config/default - 创建默认配置文件
         # 接口: POST /config/validate - 校验配置文件
         # 接口: GET/POST/PUT/DELETE /config/platforms - 管理平台配置
+        # 接口: GET/POST/PATCH/DELETE /config/models - 管理模型配置
+        # 接口: GET/POST/PATCH/DELETE /config/session-classes - 冷管理会话类配置
+        # 接口: GET/POST/PATCH/DELETE /config/edictum - 冷管理 Edictum 命名配置
+        # 接口: GET/POST/DELETE /config/session-instances - 冷管理持久化会话实例
+        # 接口: GET /config/session/discovery - 冷扫描会话类
+        # 接口: POST /config/session/discovery/directories - 冷创建会话扫描目录
         
         response_body = json.dumps(body).encode()
         # 发送响应
@@ -602,6 +1198,10 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     print("  POST /config/default - Create default config file")
     print("  POST /config/validate - Validate config file")
     print("  GET/POST/PUT/DELETE /config/platforms - Manage platform config")
+    print("  GET/POST/PATCH/DELETE /config/models - Manage model config")
+    print("  GET/POST/PATCH/DELETE /config/session-classes - Manage session class config")
+    print("  GET  /config/session/discovery - Discover session classes")
+    print("  POST /config/session/discovery/directories - Create session scan directory")
     
     async with server:
         await server.serve_forever()

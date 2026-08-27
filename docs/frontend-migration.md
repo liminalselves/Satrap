@@ -53,7 +53,7 @@ python -m satrap.main run
 | `admin.py` (欢迎页) | `Dashboard` | 已替换, 旧入口已移除 |
 | `01_dashboard.py` | `Dashboard` | 已替换, 旧页面已移除 |
 | `02_model_config.py` | `Models` | 已替换, 旧页面已移除 |
-| `03_session_management.py` | `Sessions` | 已替换, 支持目录发现、完整配置和实例创建 |
+| `03_session_management.py` | `Sessions` | 已替换, 支持会话类发现、Edictum 命名冷配置和实例查看 |
 | `04_platform_status.py` | `Platforms` | 已替换, 支持离线配置 CRUD 和运行时热加载 |
 | `05_log_monitor.py` | `Logs` | 已替换, 支持历史行数、多级筛选和无丢失暂停 |
 | `06_settings.py` | `Settings` | 已替换, 支持默认配置创建、校验和按需重启 |
@@ -104,6 +104,8 @@ const apiClient = axios.create({
 | `/api/shutdown` | POST | 关闭后端 |
 | `/api/config/models` | GET/POST/PATCH/DELETE | 模型配置 |
 | `/api/config/session-classes` | GET/POST/PUT/DELETE | 会话类 |
+| `/api/config/edictum/types` | GET | Edictum 可用类型与能力 |
+| `/api/config/edictum/sessions` | GET/POST/PATCH/DELETE | Edictum 命名冷配置 |
 | `/api/session/discovery` | GET | 扫描配置声明的 Session 目录 |
 | `/api/session/discovery/directories` | POST | 创建配置声明的 Session 目录 |
 | `/api/sessions` | GET/POST | 查看和创建会话实例 |
@@ -113,7 +115,9 @@ const apiClient = axios.create({
 | `/api/checkpoint/*` | POST | 检查点操作 |
 | `/ws/logs?lines=100` | WebSocket | 日志历史与实时推送, 行数范围 50–500 |
 
-独立控制服务默认监听 `127.0.0.1:19871`, 提供 `/config`、`/config/default`、`/config/validate`、`/config/platforms` 和后端启动、停止、重启接口
+独立控制服务默认监听 `127.0.0.1:19871`, 提供 `/config`、`/config/default`、`/config/validate`、`/config/platforms`、`/config/models`、`/config/session-classes`、`/config/edictum`、`/config/session/discovery`、`/config/session/discovery/directories` 和后端启动、停止、重启接口
+
+模型配置、会话类配置和 Edictum 命名配置的管理请求由控制服务处理, 因此平台后端停止时仍可完成增删改查。会话扫描目录的创建和 Session 类扫描同样由控制服务处理; 冷扫描会导入扫描目录中的模块以识别 Session/AsyncSession 子类, 但不会创建运行时会话实例。运行时会话的列出与创建仍由平台后端负责。
 
 ## 状态管理
 

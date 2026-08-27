@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from satrap.cli.cmd_session import _configured_adapter_ids
 from satrap.core.framework.Base import Session
@@ -12,7 +15,7 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
 from satrap.core.platform.event import MessageEvent, PlatformMetadata
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
-from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 
 
 class _EchoSession(Session):
@@ -30,6 +33,17 @@ class _DummyAdapter(PlatformAdapter):
 
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(name=self.config.id, id=self.config.id)
+
+
+class _CleanupAdapter(_DummyAdapter):
+    """记录 terminate 是否被调用的适配器"""
+
+    terminated = False
+
+    async def terminate(self) -> None:
+        """记录客户端清理并执行基类终止流程"""
+        self.terminated = True
+        await super().terminate()
 
 
 def _session_class_mgr(tmp_path: Path, params: dict[str, Any] | None = None) -> SessionClassConfigManager:
@@ -84,6 +98,22 @@ def test_same_adapter_type_can_register_multiple_instances():
     assert mgr.list_adapters() == ["dummy1", "dummy2"]
 
 
+@pytest.mark.asyncio
+async def test_manager_stop_all_terminates_adapter_resources():
+    """管理器停止平台时必须执行完整的客户端清理"""
+    registry = PlatformAdapterRegistry()
+    registry.register("cleanup", _CleanupAdapter)
+    manager = PlatformAdapterManager(registry=registry)
+    adapter = manager.add_adapter(PlatformConfig(id="cleanup1", type="cleanup"))
+    assert isinstance(adapter, _CleanupAdapter)
+
+    await manager.start_all()
+    await manager.stop_all()
+
+    assert adapter.terminated is True
+    assert adapter.started is False
+
+
 def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: Path):
     """
     同一用户在不同 adapter_id 下应拥有不同上下文
@@ -103,9 +133,9 @@ def test_user_manager_routes_same_user_to_different_adapter_sessions(tmp_path: P
     assert first != second
 
 
-def test_pipeline_uses_configured_adapter_override(tmp_path: Path):
+def test_pipeline_uses_source_adapter_binding(tmp_path: Path):
     """
-    类级 adapter_id 存在且有效时, 管线使用该适配器绑定上下文
+    类级 adapter_id 不应覆盖产生事件的适配器实例
 
     参数:
     - tmp_path: tmp路径
@@ -117,13 +147,13 @@ def test_pipeline_uses_configured_adapter_override(tmp_path: Path):
 
     platform_id, extra = scheduler._resolve_route_adapter(_message_event("misskey1"))
 
-    assert platform_id == "misskey2"
-    assert extra == {"adapter_id": "misskey2"}
+    assert platform_id == "misskey1"
+    assert extra == {"adapter_id": "misskey1"}
 
 
-def test_pipeline_falls_back_when_adapter_override_is_missing(tmp_path: Path):
+def test_pipeline_records_source_adapter_in_session_params(tmp_path: Path):
     """
-    显式 adapter_id 不存在时回退事件来源适配器
+    自动创建会话时应把事件来源适配器写入实例参数
 
     参数:
     - tmp_path: tmp路径
@@ -136,7 +166,66 @@ def test_pipeline_falls_back_when_adapter_override_is_missing(tmp_path: Path):
     platform_id, extra = scheduler._resolve_route_adapter(_message_event("misskey1"))
 
     assert platform_id == "misskey1"
-    assert extra is None
+    assert extra == {"adapter_id": "misskey1"}
+
+
+def test_backend_resolves_explicit_same_name_and_default_session_types(tmp_path: Path):
+    """
+    平台会话类应按显式配置, 同名兼容和全局默认的顺序解析
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    backend = BackendManager(BackendConfig(default_session_type="fallback"))
+    manager = SessionClassConfigManager(storage_path=tmp_path / "session_classes.json")
+    manager.register("misskey", _EchoSession)
+    backend._session_cls_cfg = manager
+
+    assert backend._resolve_platform_session_type("misskey", "assistant") == "assistant"
+    assert backend._resolve_platform_session_type("misskey", "") == "misskey"
+    assert backend._resolve_platform_session_type("onebot", "") == "fallback"
+
+
+@pytest.mark.asyncio
+async def test_backend_awaits_platform_start_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """平台初始化应在当前事件循环中等待 start_all 且只调用一次"""
+    calls = 0
+
+    async def start_all(_manager: PlatformAdapterManager) -> None:
+        """
+        参数:
+        - _manager: 平台适配器管理器
+        """
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0)
+
+    monkeypatch.setattr(PlatformAdapterManager, "start_all", start_all)
+    backend = BackendManager(BackendConfig(platforms=[]))
+
+    await backend._init_platforms()
+
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_backend_propagates_platform_start_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """平台启动异常应直接传递给后端启动流程"""
+
+    async def start_all(_manager: PlatformAdapterManager) -> None:
+        """
+        参数:
+        - _manager: 平台适配器管理器
+        """
+        raise RuntimeError("platform start failed")
+
+    monkeypatch.setattr(PlatformAdapterManager, "start_all", start_all)
+    backend = BackendManager(BackendConfig(platforms=[]))
+
+    with pytest.raises(RuntimeError, match="platform start failed"):
+        await backend._init_platforms()
 
 
 def test_configured_adapter_ids_reads_backend_config_platforms():
@@ -149,3 +238,36 @@ def test_configured_adapter_ids_reads_backend_config_platforms():
     )
 
     assert _configured_adapter_ids(config) == {"misskey1", "misskey2"}
+
+
+def test_backend_isolates_same_session_id_between_platform_databases(tmp_path: Path):
+    """
+    两个平台可拥有同名会话, 其数据库和私有目录必须完全隔离
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    backend = BackendManager(
+        BackendConfig(
+            data_root=str(tmp_path / "data"),
+            model_config_path=str(tmp_path / "models.json"),
+            session_class_config_path=str(tmp_path / "session-classes.json"),
+            edictum_config_path=str(tmp_path / "edictum.json"),
+        )
+    )
+    backend._init_model_config()
+    backend._init_session_class_config()
+    backend._init_edictum_config()
+    first_manager, _ = backend._ensure_platform_runtime("onebot-main")
+    second_manager, _ = backend._ensure_platform_runtime("misskey-main")
+
+    first_manager.register_session(_EchoSession, "echo", session_id="same-id")
+    second_manager.register_session(_EchoSession, "echo", session_id="same-id")
+
+    assert first_manager.store.db_path != second_manager.store.db_path
+    assert first_manager.store.get("same-id") is not None
+    assert second_manager.store.get("same-id") is not None
+    first_root = backend._storage.session_root("onebot-main", "same-id")
+    second_root = backend._storage.session_root("misskey-main", "same-id")
+    assert first_root.is_dir() and second_root.is_dir()
+    assert first_root != second_root

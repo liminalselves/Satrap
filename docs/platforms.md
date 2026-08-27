@@ -8,6 +8,7 @@ Satrap 用统一的 `PlatformAdapter` 把不同聊天平台接入后端。平台
 platforms:
   - id: misskey1
     type: misskey
+    session_type: assistant
     settings:
       base_url: https://misskey.example.com
       api_token: ${MISSKEY_API_TOKEN}
@@ -21,6 +22,7 @@ platforms:
 | --- | --- |
 | `id` | 适配器实例唯一 ID |
 | `type` | 适配器类型, 如 `misskey`, `onebot`, `aiocqhttp` |
+| `session_type` | 入站消息使用的会话类配置名称; 未设置时优先使用与适配器类型同名的会话类, 再回退到全局 `default_session_type` |
 | `settings` | 适配器专属配置 |
 
 同一种平台可以配置多个实例, 只要 `id` 唯一即可。
@@ -31,6 +33,7 @@ platforms:
 platforms:
   - id: misskey1
     type: misskey
+    session_type: assistant
     settings:
       base_url: https://misskey.example.com
       api_token: ${MISSKEY_API_TOKEN}
@@ -55,6 +58,7 @@ Misskey 适配器会处理 note, chat, room 等会话来源, 并尽量把文件�
 platforms:
   - id: qq_bot
     type: onebot
+    session_type: assistant
     settings:
       host: 127.0.0.1
       port: 6700
@@ -77,9 +81,9 @@ platforms:
 
 ## 多平台路由
 
-后端会根据平台实例和用户来源构建会话 ID。不同平台实例上的同一用户会进入不同上下文, 避免消息串线。
+后端会根据平台实例, `session_type` 和用户来源构建会话 ID。不同平台实例上的同一用户会进入不同上下文, 避免消息串线。平台管理页可直接从已注册且启用的会话类中选择 `session_type`。
 
-手动创建 Session 时也可以通过 `adapter_id` 绑定到指定平台实例:
+手动创建 Session 时可以通过 `adapter_id` 写入会话初始化参数, 供会话类或插件使用; 它不会改变平台入站路由, 入站会话类由平台的 `session_type` 决定:
 
 ```bash
 satrap session create assistant --id demo --adapter-id misskey1
@@ -90,8 +94,8 @@ satrap session create assistant --id demo --adapter-id misskey1
 ```bash
 satrap platform list
 satrap platform show misskey1
-satrap platform add misskey1 --type misskey --set base_url=https://misskey.example.com api_token=${MISSKEY_API_TOKEN}
-satrap platform update misskey1 --type misskey --set chat_enabled=true
+satrap platform add misskey1 --type misskey --session-type assistant --set base_url=https://misskey.example.com api_token=${MISSKEY_API_TOKEN}
+satrap platform update misskey1 --type misskey --session-type assistant --set chat_enabled=true
 satrap platform remove misskey1
 ```
 

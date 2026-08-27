@@ -3,7 +3,7 @@ from typing import Any
 
 import pytest
 
-from satrap.core.config_document import (
+from satrap.core.config.document import (
     create_default_config,
     delete_platform,
     load_config_document,
@@ -21,7 +21,14 @@ def test_save_config_document_validates_and_replaces_atomically(tmp_path: Path):
     """
     path = tmp_path / "config.yaml"
     config_data: dict[str, Any] = {
-        "platforms": [{"id": " demo ", "type": " misskey ", "settings": {}}],
+        "platforms": [
+            {
+                "id": " demo ",
+                "type": " misskey ",
+                "session_type": " assistant ",
+                "settings": {},
+            }
+        ],
     }
     saved = save_config_document(
         path,
@@ -29,6 +36,8 @@ def test_save_config_document_validates_and_replaces_atomically(tmp_path: Path):
     )
 
     assert saved["platforms"][0]["id"] == "demo"
+    assert saved["platforms"][0]["session_provider"] == "session_class"
+    assert saved["platforms"][0]["session_type"] == "assistant"
     assert load_config_document(path) == saved
     assert list(tmp_path.glob(".*.tmp")) == []
 

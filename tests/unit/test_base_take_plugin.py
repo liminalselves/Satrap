@@ -99,7 +99,7 @@ def test_config_schema_on_plugin(session: SimpleSession):
     plugin = session.list_plugins()[0]
     assert plugin.config_schema["sandbox_root"]["type"] == "path"
     assert plugin.config_schema["search_timeout"]["default"] == 10
-    assert plugin.config_schema["memory_scope"]["default"] == "web_chat"
+    assert plugin.config_schema["memory_scope"]["default"] == ""
     assert plugin.config_schema["memory_mode"]["default"] == "full"
     assert plugin.config_schema["memory_mode"]["options"] == ["disabled", "base", "full"]
 

@@ -36,7 +36,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 os.chdir(str(PROJECT_ROOT))
 
-
 def _reconfigure_utf8(stream: Any) -> None:
     """
     stdin/stdout 切到 UTF-8 (typeshed 未标注 reconfigure, 用 Any 兼容)
@@ -65,7 +64,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 
 from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import CommandAction, LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 
@@ -429,7 +428,8 @@ class TuiApp:
         for round_no in range(1, AUTO_MAX_ROUNDS + 1):
             console.print(f"[dim]── 第 {round_no}/{AUTO_MAX_ROUNDS} 轮 ──[/dim]")
             try:
-                reply = self.session.run(AUTO_PROMPT, thinking="medium")
+                result = self.session.run(AUTO_PROMPT, thinking="medium")
+                reply = result.message if isinstance(result, CommandAction) else result
             except Exception as e:
                 self.messages.append(("系统", f"执行出错: {e}"))
                 break
@@ -458,7 +458,8 @@ class TuiApp:
         self.render()
         console.print("[dim]… 思考中 (工具调用需批准时会在下方询问) …[/dim]")
         try:
-            reply = self.session.run(text, thinking="medium")
+            result = self.session.run(text, thinking="medium")
+            reply = result.message if isinstance(result, CommandAction) else result
         except Exception as e:
             self.messages.append(("系统", f"执行出错: {e}"))
             console.print()

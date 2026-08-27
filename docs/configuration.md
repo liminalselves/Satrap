@@ -47,9 +47,8 @@ Copy-Item config.example.yaml config.yaml
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `model_config_path` | `null` | 模型配置 JSON 路径 |
+| `data_root` | `.satrap/data` | 按平台实例隔离的运行数据根目录 |
 | `session_class_config_path` | `null` | Session 类配置 JSON 路径 |
-| `session_db_path` | `null` | Session 实例配置 SQLite 路径 |
-| `user_db_path` | `null` | 用户绑定 SQLite 路径 |
 | `default_session_type` | `default` | 默认 Session 类型 |
 | `max_sessions` | `1000` | 活跃 Session 池最大容量 |
 | `idle_timeout` | `3600` | Session 闲置超时秒数 |
@@ -142,7 +141,7 @@ satrap session enable assistant
 | `SATRAP_SESSION_CLASS_CONFIG_PATH` | `session_class_config_path` |
 | `SATRAP_API_HOST` | `api_host` |
 | `SATRAP_API_PORT` | `api_port` |
-| `SATRAP_DB_DIR` | `session_db_path` 和 `user_db_path` 所在目录 |
+| `SATRAP_DATA_ROOT` | `data_root` |
 | `SATRAP_LLM_TIMEOUT` | `llm_timeout` |
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。

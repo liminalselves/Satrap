@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from satrap.core.utils.paths import get_project_root
+from satrap.core.type import safe_getattr
+from satrap.core.storage import storage_key
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
     SessionType = SimpleSession | AsyncSimpleSession
     """插件支持的会话类型"""
 
-_registry: dict[str, dict[str, Any]] = {}
+_registry: dict[int, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
 
 
@@ -61,10 +63,28 @@ def get_plugin_state(session: SessionType, data_root: Path | None = None) -> dic
     返回:
     - dict[str, Any]: 会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)
     """
-    resolved_data_root = (data_root or (get_project_root() / ".satrap" / "coding")).resolve()
-    sid = session.session_id
+    session_cache = safe_getattr(session, "coding_cache_root")
+    session_context = safe_getattr(session, "session_ctx")
+    context_database = safe_getattr(session_context, "db_path")
+    if session_cache:
+        default_root = Path(str(session_cache)) / "satrap_coding"
+    elif context_database:
+        default_root = (
+            Path(str(context_database)).resolve().parent
+            / "sessions"
+            / storage_key(session.session_id, fallback="session")
+            / "cache"
+            / "satrap_coding"
+        )
+    else:
+        default_root = get_project_root() / ".satrap" / "data" / "unscoped" / storage_key(
+            session.session_id,
+            fallback="session",
+        )
+    resolved_data_root = (data_root or default_root).resolve()
+    registry_key = id(session)
     with _registry_lock:
-        state = _registry.get(sid)
+        state = _registry.get(registry_key)
         if (
             state is None
             or state.get("_owner") is not session
@@ -72,7 +92,7 @@ def get_plugin_state(session: SessionType, data_root: Path | None = None) -> dic
         ):
             state = _build_state(session, resolved_data_root)
             state["_owner"] = session
-            _registry[sid] = state
+            _registry[registry_key] = state
     return state
 
 
@@ -84,6 +104,7 @@ def reset_plugin_state(session: SessionType) -> None:
     - session: 会话
     """
     with _registry_lock:
-        state = _registry.get(session.session_id)
+        registry_key = id(session)
+        state = _registry.get(registry_key)
         if state is not None and state.get("_owner") is session:
-            _registry.pop(session.session_id, None)
+            _registry.pop(registry_key, None)

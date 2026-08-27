@@ -7,7 +7,7 @@ import sys
 
 from typing import Any, cast
 
-from satrap.core.config_document import (
+from satrap.core.config.document import (
     delete_platform,
     find_config_path,
     load_config_document,
@@ -47,8 +47,14 @@ def cmd_platform_list(args: argparse.Namespace):
         if adapters:
             rows: list[list[str]] = []
             for aid, info in adapters.items():
-                rows.append([aid, info.get("config_type", "?"), info.get("status", "?"), str(info.get("started", False))])
-            print(_fmt_table(rows, ["ID", "类型", "状态", "已启动"]))
+                rows.append([
+                    aid,
+                    info.get("config_type", "?"),
+                    info.get("session_type", "?"),
+                    info.get("status", "?"),
+                    str(info.get("started", False)),
+                ])
+            print(_fmt_table(rows, ["ID", "类型", "会话类", "状态", "已启动"]))
         else:
             print("当前无运行中的适配器实例")
     else:
@@ -57,10 +63,15 @@ def cmd_platform_list(args: argparse.Namespace):
     if configured:
         print("\n配置中的平台:")
         rows = [
-            [str(p.get("id", "")), str(p.get("type", "")), json.dumps(p.get("settings", {}), ensure_ascii=False)]
+            [
+                str(p.get("id", "")),
+                str(p.get("type", "")),
+                str(p.get("session_type", "自动")),
+                json.dumps(p.get("settings", {}), ensure_ascii=False),
+            ]
             for p in configured
         ]
-        print(_fmt_table(rows, ["ID", "类型", "settings"]))
+        print(_fmt_table(rows, ["ID", "类型", "会话类", "settings"]))
     else:
         print("\n配置中的平台: (空)")
 
@@ -111,13 +122,17 @@ def cmd_platform_upsert(args: argparse.Namespace):
     data = load_config_document(path)
     platforms = list(data.get("platforms", []) or [])
     try:
+        platform: dict[str, Any] = {
+            "id": str(args.id),
+            "type": str(args.type),
+            "settings": _settings_from_args(args),
+        }
+        session_type = str(safe_getattr(args, "session_type") or "").strip()
+        if session_type:
+            platform["session_type"] = session_type
         data["platforms"] = upsert_platform(
             platforms,
-            {
-                "id": args.id,
-                "type": args.type,
-                "settings": _settings_from_args(args),
-            },
+            platform,
             original_id=args.id if args.action == "update" else None,
         )
         save_config_document(path, data)

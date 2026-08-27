@@ -1,4 +1,7 @@
 
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from satrap.core.framework import AsyncSession, Session, SessionManager
@@ -25,6 +28,21 @@ class AsyncEchoSession(AsyncSession):
         self.call_count += 1
         await self.session_ctx.add_user_message(query)
         return f"async-echo:{query}"
+
+
+class AsyncInitCountingSession(AsyncSession):
+    """记录异步初始化次数的测试会话"""
+
+    def __init__(self, session_id: str):
+        super().__init__(session_id=session_id)
+        self.initialize_count = 0
+
+    async def _async_init(self):
+        await asyncio.sleep(0.01)
+        self.initialize_count += 1
+
+    async def run(self, query: str) -> str:
+        return query
 
 
 def test_sync_handle_call_with_auto_create_and_reuse():
@@ -58,6 +76,31 @@ async def test_async_handle_call_with_async_session():
     assert call.session_id is not None
 
 
+@pytest.mark.asyncio
+async def test_async_session_initializes_once_after_explicit_initialize():
+    session = AsyncInitCountingSession("explicit-initialize")
+
+    await session.initialize()
+    await session.run("first")
+    await session.run("second")
+
+    assert session.initialize_count == 1
+
+
+@pytest.mark.asyncio
+async def test_async_session_initializes_once_for_concurrent_first_calls():
+    session = AsyncInitCountingSession("concurrent-initialize")
+
+    results = await asyncio.gather(
+        session.run("first"),
+        session.run("second"),
+        session.run("third"),
+    )
+
+    assert results == ["first", "second", "third"]
+    assert session.initialize_count == 1
+
+
 def test_list_sessions_metadata():
     manager = SessionManager(default_session_type="echo")
     manager.register_session_type("echo", EchoSession)
@@ -69,6 +112,19 @@ def test_list_sessions_metadata():
     assert sessions[0].session_id == call.session_id
     assert sessions[0].session_type == "echo"
     assert sessions[0].message_count >= 1
+
+
+def test_session_message_count_includes_unique_workflow_contexts(tmp_path: Path):
+    session = EchoSession("message-count")
+    db_path = str(tmp_path / "chat_history.db")
+    session.session_ctx = type(session.session_ctx)("message-count", db_path=db_path)
+    session.session_ctx.add_user_message("session-message")
+    workflow_ctx = type(session.session_ctx)("message-count_main", db_path=db_path)
+    workflow_ctx.add_user_message("workflow-message")
+    session._track_workflow_context("main", workflow_ctx)
+    session._track_workflow_context("duplicate", workflow_ctx)
+
+    assert SessionManager._session_message_count(session) == 2
 
 
 def test_cleanup_idle_sessions():

@@ -2,18 +2,14 @@
 base_take 插件级共享状态: 记忆库按会话隔离单例
 
 memory 工具与 inject handler 通过本模块获取同一份 MemoryStore (按会话隔离),
-scope 默认 web_chat (网页聊天统一), 可被插件配置 memory_scope 覆盖
-
-记忆分层 (项目功能): 状态携带 global_scope / project_scope 两个键;
-项目会话由 display.service 在建会话后调用 store 分层绑定
-(store.scopes = [全局, 项目], store.scope = 项目层为写入默认),
-无项目会话保持单层 (scopes = [global_scope])
+scope 使用会话注入的 `session:<session_id>`, 不提供跨会话共享层
 """
 from __future__ import annotations
 
 import threading
 from typing import TYPE_CHECKING, Any
 
+from satrap.core.type import safe_getattr
 from satrap.expend.tools.memory_store import DEFAULT_MEMORY_DB, MemoryStore
 
 if TYPE_CHECKING:
@@ -22,25 +18,33 @@ if TYPE_CHECKING:
     SessionType = SimpleSession | AsyncSimpleSession
     """插件支持的会话类型"""
 
-_registry: dict[str, dict[str, Any]] = {}
+_registry: dict[int, dict[str, Any]] = {}
 _registry_lock = threading.Lock()
 
 
 def _build_state(session: SessionType, config: dict[str, Any]) -> dict[str, Any]:
     """
-    构建一份插件状态 (记忆库); global_scope 为全局层, project_scope 初始为空 (未绑项目)
+    构建当前会话的插件记忆状态
 
     参数:
     - session: 会话
     - config: 配置信息
 
     返回:
-    - dict[str, Any]: 构建一份插件状态 (记忆库); global_scope 为全局层, project_scope 初始为空 (未绑项目)
+    - dict[str, Any]: 当前会话的插件记忆状态
     """
-    scope = str(config.get("memory_scope") or "web_chat")
+    scope = str(
+        safe_getattr(session, "coding_memory_scope")
+        or config.get("memory_scope")
+        or f"session:{session.session_id}"
+    )
     mode = str(config.get("memory_mode") or "full")
-    store = MemoryStore(db_path=DEFAULT_MEMORY_DB, scope=scope, mode=mode)
-    return {"store": store, "global_scope": scope, "project_scope": None}
+    db_path = safe_getattr(session, "coding_memory_db") or DEFAULT_MEMORY_DB
+    store = MemoryStore(db_path=db_path, scope=scope, mode=mode)
+    return {
+        "store": store,
+        "session_scope": scope,
+    }
 
 
 def get_plugin_state(session: SessionType, config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -54,13 +58,13 @@ def get_plugin_state(session: SessionType, config: dict[str, Any] | None = None)
     返回:
     - dict[str, Any]: 会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)
     """
-    sid = session.session_id
+    registry_key = id(session)
     with _registry_lock:
-        state = _registry.get(sid)
+        state = _registry.get(registry_key)
         if state is None or state.get("_owner") is not session:
             state = _build_state(session, config or {})
             state["_owner"] = session
-            _registry[sid] = state
+            _registry[registry_key] = state
     return state
 
 
@@ -72,6 +76,7 @@ def reset_plugin_state(session: SessionType) -> None:
     - session: 会话
     """
     with _registry_lock:
-        state = _registry.get(session.session_id)
+        registry_key = id(session)
+        state = _registry.get(registry_key)
         if state is not None and state.get("_owner") is session:
-            _registry.pop(session.session_id, None)
+            _registry.pop(registry_key, None)

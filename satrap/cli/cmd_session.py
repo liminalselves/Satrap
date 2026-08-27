@@ -12,7 +12,8 @@ from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.framework.session_discovery import discover_session_classes
+from satrap.core.framework.session_discovery import SessionClassDiscoveryService
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 
 
 def _configured_adapter_ids(config: BackendConfig) -> set[str]:
@@ -302,7 +303,7 @@ def cmd_session_scan(args: argparse.Namespace):
     """
     config = load_cli_config(args)
     paths = safe_getattr(args, "path") or config.session_scan_paths
-    results = discover_session_classes(paths)
+    results = SessionClassDiscoveryService(paths).discover()
     if not results:
         print("未发现 Session/AsyncSession 子类")
         return
@@ -335,12 +336,18 @@ def cmd_session_create(args: argparse.Namespace):
         storage_path=config.session_class_config_path,
         session_scan_paths=config.session_scan_paths,
     )
-    sm = SessionManager(db_path=config.session_db_path)
     context_value = safe_getattr_str(args, 'context_value')
     sid = args.id or ""
 
     extra: dict[str, Any] = {}
     adapter_id = safe_getattr_str(args, 'adapter_id').strip()
+    platform_id = adapter_id or LOCAL_PLATFORM_ID
+    storage_layout = StorageLayout(config.data_root)
+    sm = SessionManager(
+        db_path=storage_layout.platform_db(platform_id),
+        platform_id=platform_id,
+        storage_layout=storage_layout,
+    )
     if adapter_id:
         configured_ids = _configured_adapter_ids(config)
         if configured_ids and adapter_id not in configured_ids:

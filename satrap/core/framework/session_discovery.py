@@ -37,6 +37,78 @@ class DiscoveredSessionClass:
         return asdict(self)
 
 
+class SessionClassDiscoveryService:
+    """
+    Session 类发现服务
+
+    统一承担扫描目录并发现 Session/AsyncSession 子类的职责,
+    CLI 和 HTTP 等入口只负责提供扫描路径与展示结果
+    """
+
+    def __init__(self, paths: list[str] | tuple[str, ...] | None = None):
+        """
+        初始化 Session 类发现服务
+
+        参数:
+        - paths: 默认扫描路径
+        """
+        self.paths = tuple(str(path) for path in (paths or [DEFAULT_SESSION_SCAN_PATH]))
+
+    def discover(
+        self,
+        paths: list[str] | tuple[str, ...] | None = None,
+    ) -> list[DiscoveredSessionClass]:
+        """
+        扫描目录下的 Session/AsyncSession 子类
+
+        参数:
+        - paths: 本次扫描路径, 未提供时使用初始化路径
+
+        返回:
+        - list[DiscoveredSessionClass]: 扫描到的 Session 类信息
+        """
+        scan_paths = ensure_session_scan_paths(paths or self.paths)
+        discovered: list[DiscoveredSessionClass] = []
+        for scan_path in scan_paths:
+            if not scan_path.exists():
+                continue
+            for file_path in sorted(scan_path.glob("*.py")):
+                if _should_skip_file(file_path):
+                    continue
+                module_name = _module_name_for_file(scan_path, file_path)
+                try:
+                    module = importlib.import_module(module_name)
+                    module = importlib.reload(module)
+                except Exception as e:
+                    discovered.append(
+                        DiscoveredSessionClass(
+                            file_path=str(file_path),
+                            module_name=module_name,
+                            class_name="",
+                            class_path="",
+                            is_async=False,
+                            init_params={},
+                            error=str(e),
+                        )
+                    )
+                    continue
+
+                for _, cls in inspect.getmembers(module, inspect.isclass):
+                    if not _is_declared_session_class(module_name, cls):
+                        continue
+                    discovered.append(
+                        DiscoveredSessionClass(
+                            file_path=str(file_path),
+                            module_name=module_name,
+                            class_name=cls.__name__,
+                            class_path=f"{cls.__module__}.{cls.__qualname__}",
+                            is_async=issubclass(cls, AsyncSession),
+                            init_params=_generate_template(_detect_params(cls)),   # type: ignore[arg-type] _is_declared_session_class 已保证为 Session/AsyncSession 子类
+                        )
+                    )
+        return discovered
+
+
 def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> list[Path]:
     """
     归一化扫描目录, 保留顺序并去重
@@ -113,46 +185,7 @@ def discover_session_classes(paths: list[str] | tuple[str, ...] | None = None) -
     返回:
     - list[DiscoveredSessionClass]: 扫描目录下的 Session/AsyncSession 子类
     """
-    scan_paths = ensure_session_scan_paths(paths)
-    discovered: list[DiscoveredSessionClass] = []
-    for scan_path in scan_paths:
-        if not scan_path.exists():
-            continue
-        for file_path in sorted(scan_path.glob("*.py")):
-            if _should_skip_file(file_path):
-                continue
-            module_name = _module_name_for_file(scan_path, file_path)
-            try:
-                module = importlib.import_module(module_name)
-                module = importlib.reload(module)
-            except Exception as e:
-                discovered.append(
-                    DiscoveredSessionClass(
-                        file_path=str(file_path),
-                        module_name=module_name,
-                        class_name="",
-                        class_path="",
-                        is_async=False,
-                        init_params={},
-                        error=str(e),
-                    )
-                )
-                continue
-
-            for _, cls in inspect.getmembers(module, inspect.isclass):
-                if not _is_declared_session_class(module_name, cls):
-                    continue
-                discovered.append(
-                    DiscoveredSessionClass(
-                        file_path=str(file_path),
-                        module_name=module_name,
-                        class_name=cls.__name__,
-                        class_path=f"{cls.__module__}.{cls.__qualname__}",
-                        is_async=issubclass(cls, AsyncSession),
-                        init_params=_generate_template(_detect_params(cls)),   # type: ignore[arg-type] _is_declared_session_class 已保证为 Session/AsyncSession 子类
-                    )
-                )
-    return discovered
+    return SessionClassDiscoveryService(paths).discover()
 
 
 def _should_skip_file(path: Path) -> bool:

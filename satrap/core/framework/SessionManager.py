@@ -22,6 +22,19 @@ from typing import Any, Dict, List, Optional, Type, cast
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.providers import (
+    SESSION_CLASS_PROVIDER,
+    SessionClassProvider,
+    SessionProvider,
+    SessionProviderRegistry,
+)
+from satrap.core.storage import (
+    LOCAL_PLATFORM_ID,
+    StorageLayout,
+    StorageScope,
+    default_storage_layout,
+    delete_session_domain_rows,
+)
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_db_path
@@ -139,10 +152,10 @@ class SessionConfigStore:
         初始化会话配置存储
 
         参数:
-        - db_path: 数据库文件路径 (默认 .satrap/satrapdata/session_config.db)
+        - db_path: 数据库文件路径, 默认 local 平台的 platform.db
         """
         self._lock = threading.RLock()
-        self.db_path = Path(db_path) if db_path else Path(get_db_path("session_config.db"))
+        self.db_path = Path(db_path) if db_path else Path(get_db_path())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_table()
 
@@ -170,6 +183,7 @@ class SessionConfigStore:
                     CREATE TABLE IF NOT EXISTS session_configs (
                         session_id TEXT PRIMARY KEY,
                         session_type_name TEXT NOT NULL,
+                        provider_name TEXT NOT NULL DEFAULT 'session_class',
                         created_at REAL NOT NULL,
                         last_used_at REAL NOT NULL,
                         message_count INTEGER NOT NULL,
@@ -177,6 +191,14 @@ class SessionConfigStore:
                     )
                     """
                 )
+                columns = {
+                    str(row["name"])
+                    for row in conn.execute("PRAGMA table_info(session_configs)").fetchall()
+                }
+                if "provider_name" not in columns:
+                    conn.execute(
+                        "ALTER TABLE session_configs ADD COLUMN provider_name TEXT NOT NULL DEFAULT 'session_class'"
+                    )
                 conn.commit()
 
     @staticmethod
@@ -203,6 +225,7 @@ class SessionConfigStore:
         return SessionConfig(
             session_id=row["session_id"],
             session_type_name=row["session_type_name"],
+            provider_name=str(row["provider_name"] or SESSION_CLASS_PROVIDER),
             created_at=float(row["created_at"]),
             last_used_at=float(row["last_used_at"]),
             message_count=int(row["message_count"]),
@@ -224,10 +247,11 @@ class SessionConfigStore:
                 conn.execute(
                     """
                     INSERT INTO session_configs
-                    (session_id, session_type_name, created_at, last_used_at, message_count, session_config)
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    (session_id, session_type_name, provider_name, created_at, last_used_at, message_count, session_config)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(session_id) DO UPDATE SET
                         session_type_name=excluded.session_type_name,
+                        provider_name=excluded.provider_name,
                         created_at=excluded.created_at,
                         last_used_at=excluded.last_used_at,
                         message_count=excluded.message_count,
@@ -236,6 +260,7 @@ class SessionConfigStore:
                     (
                         config.session_id,
                         config.session_type_name or "",
+                        config.provider_name or SESSION_CLASS_PROVIDER,
                         float(config.created_at),
                         float(config.last_used_at),
                         int(config.message_count),
@@ -296,6 +321,24 @@ class SessionConfigStore:
             with self._connect() as conn:
                 conn.execute("DELETE FROM session_configs WHERE session_id=?", (session_id,))
                 conn.commit()
+
+    def list_ids_by_message_count(self, message_count: int) -> List[str]:
+        """
+        按消息数列出全部会话 ID
+
+        参数:
+        - message_count: 精确匹配的消息数
+
+        返回:
+        - List[str]: 符合条件的全部会话 ID
+        """
+        with self._lock:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT session_id FROM session_configs WHERE message_count=?",
+                    (int(message_count),),
+                ).fetchall()
+                return [str(row["session_id"]) for row in rows]
 
     def update_runtime_fields(self, session_id: str, last_used_at: float, message_count: int):
         """
@@ -467,6 +510,8 @@ class SessionManager:
         db_path: str | Path | None = None,
         default_checkpoint: bool = False,
         default_checkpoint_db: str | None = None,
+        platform_id: str = LOCAL_PLATFORM_ID,
+        storage_layout: StorageLayout | None = None,
     ):
         """
         初始化会话管理器
@@ -476,9 +521,11 @@ class SessionManager:
         - default_session_class: 默认会话类
         - max_size: 最大会话池大小 (默认 1000)
         - idle_timeout: 最大闲置时间 (秒, 默认 3600)
-        - db_path: 数据库文件路径 (默认 .satrap/satrapdata/session_config.db)
+        - db_path: 数据库文件路径, 默认 local 平台的 platform.db
         - default_checkpoint: 实例化会话时若未显式配置 enable_checkpoint, 是否默认启用状态检查点 (默认 False)
         - default_checkpoint_db: 实例化会话时若未显式配置 db_path, 注入的上下文库路径 (默认 None, 使用会话自身默认库)
+        - platform_id: 此管理器所属的平台实例 ID
+        - storage_layout: 可选 v2 数据布局, 提供后启用会话目录隔离与回收
         """
         self.registry = SessionRegistry()
         self.pool = SessionPool(max_size=max_size, idle_timeout=idle_timeout)
@@ -487,10 +534,25 @@ class SessionManager:
         self.default_session_type = default_session_type
         self._default_checkpoint = default_checkpoint
         self._default_checkpoint_db = default_checkpoint_db
+        self.platform_id = platform_id.strip() or LOCAL_PLATFORM_ID
+        self.storage_layout = (
+            storage_layout
+            if storage_layout is not None
+            else StorageLayout(Path(db_path).parent / "data")
+            if db_path is not None
+            else default_storage_layout
+        )
         self._async_lock = asyncio.Lock()
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
+        self.provider_registry = SessionProviderRegistry()
+        self.session_class_provider = SessionClassProvider(
+            self.registry,
+            default_checkpoint=default_checkpoint,
+            default_checkpoint_db=default_checkpoint_db,
+        )
+        self.provider_registry.register(self.session_class_provider)
 
         try:
             self.registry.register(default_session_type, default_session_class)
@@ -514,12 +576,23 @@ class SessionManager:
                 f"[SessionManager] 注册会话类型失败：session_type_name={session_type_name}, 错误={e}"
             )
 
+    def register_provider(self, provider: SessionProvider, *, replace: bool = False) -> None:
+        """
+        注册运行时会话 Provider
+
+        参数:
+        - provider: Provider 实例
+        - replace: 是否允许覆盖同名 Provider
+        """
+        self.provider_registry.register(provider, replace=replace)
+
     def register_session(
         self,
         session_class: Type[Session] | Type[AsyncSession],
         session_type_name: str | None = None,
         session_config: Optional[Dict[str, Any]] = None,
         session_id: str | None = None,
+        provider_name: str = SESSION_CLASS_PROVIDER,
     ) -> SessionConfig:
         """
         注册会话并分配 session_id, 同时持久化 SessionConfig
@@ -529,6 +602,7 @@ class SessionManager:
         - session_type_name: 可选, 不传则使用类名
         - session_config: 会话实例初始化配置(会存库)
         - session_id: 可选, 不传则自动生成
+        - provider_name: 创建会话实例的 Provider 名称
 
         返回:
         - SessionConfig: 注册会话并分配 session_id, 同时持久化 SessionConfig
@@ -541,12 +615,13 @@ class SessionManager:
         cfg = SessionConfig(
             session_id=sid,
             session_type_name=type_name,
+            provider_name=provider_name,
             created_at=now,
             last_used_at=now,
             message_count=0,
             session_config=dict(session_config or {}),
         )
-        self.store.upsert(cfg)
+        self._persist_config(cfg)
         return cfg
 
     def register_session_from_class_config(
@@ -584,6 +659,88 @@ class SessionManager:
             session_type_name=class_config_name,
             session_config=params,
             session_id=session_id,
+        )
+
+    def register_session_from_provider_config(
+        self,
+        provider_name: str,
+        definition_name: str,
+        session_id: str | None = None,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> SessionConfig:
+        """
+        从指定 Provider 的命名定义创建实例级配置
+
+        参数:
+        - provider_name: Provider 名称
+        - definition_name: Provider 内的命名定义
+        - session_id: 可选会话 ID, 不传则自动生成
+        - extra_params: 实例级补充或覆盖参数
+
+        返回:
+        - SessionConfig: 已持久化的会话实例配置
+        """
+        resolved = self.provider_registry.resolve_definition(definition_name, provider_name)
+        if resolved is None:
+            raise ValueError(f"未知会话定义: provider={provider_name}, name={definition_name}")
+        provider, definition = resolved
+        if not definition.enabled:
+            raise ValueError(f"会话定义已禁用: provider={provider_name}, name={definition_name}")
+        params = dict(definition.params)
+        if extra_params:
+            params.update(extra_params)
+        now = time.time()
+        config = SessionConfig(
+            session_id=(session_id or _short_uid()).strip(),
+            session_type_name=definition.name,
+            provider_name=provider.provider_name,
+            created_at=now,
+            last_used_at=now,
+            message_count=0,
+            session_config=params,
+        )
+        self._persist_config(config)
+        return config
+
+    def register_session_from_provider_context(
+        self,
+        provider_name: str,
+        definition_name: str,
+        context_value: str,
+        platform: str = "",
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> SessionConfig:
+        """
+        从指定 Provider 定义创建平台上下文会话
+
+        参数:
+        - provider_name: Provider 名称
+        - definition_name: Provider 内的命名定义
+        - context_value: 用户或频道等上下文区分值
+        - platform: 平台实例标识
+        - extra_params: 实例级补充或覆盖参数
+
+        返回:
+        - SessionConfig: 已持久化的上下文会话配置
+        """
+        resolved = self.provider_registry.resolve_definition(definition_name, provider_name)
+        if resolved is None:
+            raise ValueError(f"未知会话定义: provider={provider_name}, name={definition_name}")
+        _, definition = resolved
+        context_key = str(definition.metadata.get("context_key", "")).strip()
+        params = dict(extra_params or {})
+        if context_key:
+            params[context_key] = context_value
+        random_id = _short_uid()
+        if platform and platform != definition_name:
+            session_id = f"{definition_name}:{platform}:{context_value}:{random_id}"
+        else:
+            session_id = f"{definition_name}:{context_value}:{random_id}"
+        return self.register_session_from_provider_config(
+            provider_name,
+            definition_name,
+            session_id=session_id,
+            extra_params=params,
         )
 
     def register_session_from_context(
@@ -644,6 +801,42 @@ class SessionManager:
         """
         return self.store.get(session_id)
 
+    def activate_session(self, session_id: str) -> bool:
+        """
+        将已持久化会话实例加载到活跃会话池
+
+        参数:
+        - session_id: 会话 ID
+
+        返回:
+        - bool: 会话是否已成功处于活跃状态
+        """
+        if self.pool.get(session_id) is not None:
+            return True
+        config = self.store.get(session_id)
+        return bool(config and self._create_entry(config) is not None)
+
+    async def activate_session_async(self, session_id: str) -> bool:
+        """
+        将持久化会话加载到活跃池并完成异步 Provider 准备
+
+        参数:
+        - session_id: 会话 ID
+
+        返回:
+        - bool: 会话及其 Provider 生命周期是否准备完成
+        """
+        entry = self.pool.get(session_id)
+        if entry is None:
+            config = self.store.get(session_id)
+            if config is None:
+                return False
+            entry = self._create_entry(config)
+        if entry is None:
+            return False
+        await self._prepare_session_async(entry.session)
+        return True
+
     def list_session_configs(self, limit: int = 200) -> List[SessionConfig]:
         """
         列出持久化 SessionConfig (来自 SQLite)
@@ -691,7 +884,7 @@ class SessionManager:
         if session_type_name is not None:
             cfg.session_type_name = session_type_name
         cfg.last_used_at = time.time()
-        self.store.upsert(cfg)
+        self._persist_config(cfg)
         return cfg
 
     # ---------- 调用入口 ----------
@@ -762,6 +955,8 @@ class SessionManager:
                 logger.error(f"[SessionManager] handle_call_async 失败：会话创建失败，session_id={session_id}")
                 return ""
 
+            await self._prepare_session_async(entry.session)
+
             if isinstance(entry.session, AsyncSession):
                 response = await self._invoke_async_session(entry.session, user_call)
             else:
@@ -783,14 +978,28 @@ class SessionManager:
                 if new_entry is None:
                     return f"切换失败：无法创建会话 {new_id}"
 
+                await self._prepare_session_async(new_entry.session)
+
                 user_mgr = self._user_mgr
                 # 更新 context_sessions 路由, 使下一条消息能路由到新会话
                 if user_mgr and new_id:
                     parts = new_id.split(":")
                     if len(parts) >= 4:
-                        user_mgr.update_context_session(parts[2], parts[1], parts[0], new_id)
+                        user_mgr.update_context_session(
+                            parts[2],
+                            parts[1],
+                            parts[0],
+                            new_id,
+                            new_cfg.provider_name or SESSION_CLASS_PROVIDER,
+                        )
                     elif len(parts) == 3:
-                        user_mgr.update_context_session(parts[1], parts[0], parts[0], new_id)
+                        user_mgr.update_context_session(
+                            parts[1],
+                            parts[0],
+                            parts[0],
+                            new_id,
+                            new_cfg.provider_name or SESSION_CLASS_PROVIDER,
+                        )
 
                 response = response.message
                 await self.cleanup_idle_sessions_async()
@@ -927,6 +1136,8 @@ class SessionManager:
             if entry:
                 self._release_session_memory(entry.session)
             if remove_config:
+                self._retire_session_storage(session_id)
+                delete_session_domain_rows(self.store.db_path, session_id)
                 self.store.delete(session_id)
         except Exception as e:
             logger.error(f"[SessionManager] remove_session 失败：session_id={session_id}, 错误={e}")
@@ -944,9 +1155,30 @@ class SessionManager:
             if entry:
                 await self._release_session_memory_async(entry.session)
             if remove_config:
+                self._retire_session_storage(session_id)
+                delete_session_domain_rows(self.store.db_path, session_id)
                 self.store.delete(session_id)
         except Exception as e:
             logger.error(f"[SessionManager] remove_session_async 失败：session_id={session_id}, 错误={e}")
+
+    async def delete_sessions_async(self, session_ids: List[str]) -> List[str]:
+        """
+        批量删除活跃实例, 持久化配置和用户侧引用
+
+        参数:
+        - session_ids: 待删除的会话 ID 列表
+
+        返回:
+        - List[str]: 实际删除的会话 ID 列表
+        """
+        requested = list(dict.fromkeys(session_id.strip() for session_id in session_ids if session_id.strip()))
+        existing = [session_id for session_id in requested if self.store.get(session_id) is not None]
+        for session_id in existing:
+            await self.remove_session_async(session_id, remove_config=True)
+        deleted = [session_id for session_id in existing if self.store.get(session_id) is None]
+        if deleted and self._user_mgr is not None:
+            self._user_mgr.remove_session_references(deleted)
+        return deleted
 
     @property
     def class_cfg_mgr(self) -> SessionClassConfigManager | None:
@@ -967,6 +1199,7 @@ class SessionManager:
         - mgr: 管理器实例
         """
         self._class_cfg_mgr = mgr
+        self.session_class_provider.set_config_manager(mgr)
 
     @property
     def user_manager(self):
@@ -1028,120 +1261,59 @@ class SessionManager:
             if existed is not None:
                 return existed
 
+        requested_provider = (user_call.session_provider or SESSION_CLASS_PROVIDER).strip()
         requested_type = (user_call.session_type or self.default_session_type).strip()
-        session_class = self.registry.get_class(requested_type)
-        if session_class is None:
+        try:
+            resolved = self.provider_registry.resolve_definition(requested_type, requested_provider)
+        except ValueError:
+            resolved = None
+        if resolved is None:
             logger.warning(
-                f"[SessionManager] 未知会话类型 {requested_type}，回退到默认类型 {self.default_session_type}"
+                f"[SessionManager] 未知会话定义 provider={requested_provider}, name={requested_type}, "
+                f"回退到 {SESSION_CLASS_PROVIDER}:{self.default_session_type}"
             )
             requested_type = self.default_session_type
+            resolved = self.provider_registry.resolve_definition(
+                requested_type,
+                SESSION_CLASS_PROVIDER,
+            )
 
-        default_cls = self.registry.get_class(requested_type)
-        if default_cls is None:
+        if resolved is None:
             self.registry.register(self.default_session_type, Session)
-            # 理论上不会发生; 兜底保证注册
+            resolved = self.provider_registry.resolve_definition(
+                self.default_session_type,
+                SESSION_CLASS_PROVIDER,
+            )
+        if resolved is None:
+            raise ValueError(f"无法解析默认会话定义: {self.default_session_type}")
+        provider, definition = resolved
 
-        if self._class_cfg_mgr is not None and not self._class_cfg_mgr.is_enabled(requested_type):
+        if not definition.enabled:
             logger.warning(
                 f"[SessionManager] 会话类型 {requested_type} 已被禁用"
             )
             requested_type = self.default_session_type
+            fallback = self.provider_registry.resolve_definition(
+                requested_type,
+                SESSION_CLASS_PROVIDER,
+            )
+            if fallback is None:
+                raise ValueError(f"无法解析默认会话定义: {self.default_session_type}")
+            provider, definition = fallback
 
         sid = user_call.session_id or _short_uid()
         now = time.time()
-        class_params: dict[str, Any] = {}
-        if self._class_cfg_mgr is not None:
-            class_params = dict(self._class_cfg_mgr.get_params(requested_type))
         cfg = SessionConfig(
             session_id=sid,
             session_type_name=requested_type,
+            provider_name=provider.provider_name,
             created_at=now,
             last_used_at=now,
             message_count=0,
-            session_config=class_params,
+            session_config=dict(definition.params),
         )
-        self.store.upsert(cfg)
+        self._persist_config(cfg)
         return cfg
-
-    def _instantiate_session(
-        self, session_class: Type[Session] | Type[AsyncSession], session_cfg: SessionConfig
-    ) -> Session | AsyncSession:
-        """
-        根据 SessionConfig 实例化 session 类
-
-        参数:
-        - session_class: 会话类 (Session 或 AsyncSession)
-        - session_cfg: 会话配置 (SessionConfig)
-
-        返回:
-        - 会话实例 (Session 或 AsyncSession)
-
-        兼容三类构造习惯:
-        1. `__init__(self, session_config: SessionConfig, ...)`
-        2. `__init__(self, session_id: str, ..., **session_config)`
-        3. `__init__(self, session_id: str, ...)` (忽略 session_config)
-        """
-        sig = inspect.signature(session_class)
-        params = list(sig.parameters.values())
-        has_var_kw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
-        accepted = {p.name for p in params}
-
-        def inject_checkpoint_defaults(target: Dict[str, Any], source: Dict[str, Any]) -> None:
-            """
-            仅在目标未显式提供时注入检查点默认值 (构造器不接受则自然忽略)
-
-            参数:
-            - target: 目标
-            - source: 来源
-            """
-            if "enable_checkpoint" not in source and ("enable_checkpoint" in accepted or has_var_kw):
-                target.setdefault("enable_checkpoint", self._default_checkpoint)
-            if self._default_checkpoint_db is not None and "db_path" not in source and ("db_path" in accepted or has_var_kw):
-                target.setdefault("db_path", self._default_checkpoint_db)
-
-        # case 1: 优先支持显式 session_config 入参
-        if any(p.name == "session_config" for p in params):
-            payload = dict(session_cfg.session_config or {})
-            payload.pop("session_id", None)
-
-            kwargs = {"session_config": session_cfg}
-            # 若构造器同时也要求 session_id, 这里补齐
-            if any(p.name == "session_id" for p in params):
-                kwargs["session_id"] = session_cfg.session_id
-            if has_var_kw:
-                kwargs.update(payload)
-            else:
-                for key, value in payload.items():
-                    if key in accepted and key not in kwargs:
-                        kwargs[key] = value
-            inject_checkpoint_defaults(kwargs, payload)
-            return session_class(**kwargs)   # type: ignore[misc]
-
-        # case 2/3: 走 session_id + 配置透传
-        payload = dict(session_cfg.session_config or {})
-        payload.pop("session_id", None)
-
-        kwargs: Dict[str, Any] = {}
-
-        if "session_id" in accepted:
-            kwargs["session_id"] = session_cfg.session_id
-
-        if has_var_kw:
-            kwargs.update(payload)
-        else:
-            for key, value in payload.items():
-                if key in accepted:
-                    kwargs[key] = value
-        inject_checkpoint_defaults(kwargs, payload)
-
-        if not kwargs and session_cfg.session_id:
-            try:
-                return session_class(session_cfg.session_id)   # type: ignore[misc]
-            except Exception:
-                pass
-        # 最后兜底: 仍无法提供 session_id 关键字时, 尝试位置参数
-
-        return session_class(**kwargs)   # type: ignore[misc]
 
     def _create_entry(self, session_cfg: SessionConfig) -> Optional[SessionEntry]:
         """
@@ -1156,19 +1328,26 @@ class SessionManager:
         session_id = session_cfg.session_id or ""
         session_type = session_cfg.session_type_name or self.default_session_type
 
-        session_class = self.registry.get_class(session_type)
-        if session_class is None:
-            logger.error(f"[SessionManager] 创建会话失败：未知 session_type_name={session_type}")
+        provider_name = session_cfg.provider_name or SESSION_CLASS_PROVIDER
+        resolved = self.provider_registry.resolve_definition(session_type, provider_name)
+        if resolved is None:
+            logger.error(
+                f"[SessionManager] 创建会话失败：未知会话定义 provider={provider_name}, "
+                f"session_type_name={session_type}"
+            )
             return None
+        provider, definition = resolved
 
         try:
-            if self._class_cfg_mgr:
-                class_params = dict(self._class_cfg_mgr.get_params(session_type))
-                current_params = dict(session_cfg.session_config or {})
-                merged = dict(class_params)
-                merged.update(current_params)
-                session_cfg = dataclasses.replace(session_cfg, session_config=merged)
-            # 合并类级配置模板到实例级配置 (实例级优先)
+            current_params = dict(session_cfg.session_config or {})
+            merged = dict(definition.params)
+            merged.update(current_params)
+            session_cfg = dataclasses.replace(
+                session_cfg,
+                provider_name=provider.provider_name,
+                session_config=merged,
+            )
+            # 合并 Provider 定义参数到实例级配置 (实例级优先)
 
             model_cfg_mgr = self._model_cfg_mgr
             # 读取 model_name -> 通过 ModelConfigManager 构建 LLM/AsyncLLM 实例
@@ -1177,41 +1356,28 @@ class SessionManager:
             llm_cfg = None
             if model_cfg_mgr:
                 cfg_params = session_cfg.session_config or {}
-                # 从 class_cfg_mgr 获取 model_key, 确定 session_config 中哪个字段存有模型名
-                model_name_key = "model_name"
-                if self._class_cfg_mgr is not None:
-                    try:
-                        mk = self._class_cfg_mgr.get_model_key(session_type)
-                        if mk:
-                            model_name_key = mk
-                    except Exception:
-                        pass
+                model_name_key = definition.model_key or "model_name"
                 model_name = cfg_params.get(model_name_key)
-                if not model_name and self._class_cfg_mgr is not None:
-                    try:
-                        class_params = self._class_cfg_mgr.get_params(session_type)
-                        model_name = class_params.get(model_name_key)
-                    except Exception:
-                        pass
+                if not model_name:
+                    model_name = definition.params.get(model_name_key)
                 if not model_name:
                     model_name = "default"
                 llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
                 if llm_cfg and llm_cfg.api_key:
                     llm_instance = build_llm_from_config(
-                        llm_cfg, async_=issubclass(session_class, AsyncSession)
+                        llm_cfg, async_=definition.is_async
                     )
                 else:
                     logger.warning(
                         f"[SessionManager] LLM 配置 '{model_name}' 不存在或缺少 api_key, "
                         f"请先通过 'satrap model set' 配置"
                     )
-            # 将 LLM 实例放入 session_config, 通过 __init__ 传递
-            if llm_instance is not None:
-                modified_params = dict(session_cfg.session_config or {})
-                modified_params["llm"] = llm_instance
-                session_cfg = dataclasses.replace(session_cfg, session_config=modified_params)
-
-            session = self._instantiate_session(session_class, session_cfg)
+            session = provider.create_session(session_cfg, llm=llm_instance)
+            self._apply_storage_scope(session, session_id)
+            try:
+                setattr(session, "_satrap_provider_name", provider.provider_name)
+            except Exception:
+                pass
             # 注入 CM 三参数(同源配置), 使滞回截断生效 (safe_getattr 兼容测试替身)
 
             _ctx_window = safe_getattr(llm_cfg, "context_window") if llm_cfg else None
@@ -1232,6 +1398,8 @@ class SessionManager:
             user_mgr = self._user_mgr
             if user_mgr is not None:
                 session._user_manager = user_mgr
+            if not isinstance(session, AsyncSession):
+                self._prepare_session_sync(session)
         except Exception as e:
             logger.error(
                 f"[SessionManager] 创建会话实例失败：session_type_name={session_type}, "
@@ -1256,6 +1424,55 @@ class SessionManager:
             logger.error(f"[SessionManager] 创建会话条目失败：session_id={session_id}")
             return None
         return entry
+
+    def _persist_config(self, config: SessionConfig) -> None:
+        """
+        持久化会话配置并初始化其私有目录
+
+        参数:
+        - config: 会话配置
+        """
+        self.store.upsert(config)
+        session_id = str(config.session_id or "").strip()
+        if session_id:
+            self.storage_layout.ensure_session(
+                StorageScope(platform_id=self.platform_id, session_id=session_id)
+            )
+
+    def _apply_storage_scope(self, session: Session | AsyncSession, session_id: str) -> None:
+        """
+        向运行时会话注入平台与私有目录
+
+        参数:
+        - session: 运行时会话
+        - session_id: 会话 ID
+        """
+        root = self.storage_layout.ensure_session(
+            StorageScope(platform_id=self.platform_id, session_id=session_id)
+        )
+        setattr(session, "storage_platform_id", self.platform_id)
+        setattr(session, "coding_session_root", str(root))
+        setattr(session, "coding_workspace_root", str(root / "sandbox"))
+        setattr(session, "coding_sandbox_root", str(root / "sandbox"))
+        setattr(session, "coding_upload_root", str(root / "uploads"))
+        setattr(session, "coding_artifacts_root", str(root / "artifacts"))
+        setattr(session, "coding_indexes_root", str(root / "indexes"))
+        setattr(session, "coding_cache_root", str(root / "cache"))
+        setattr(session, "coding_memory_db", str(self.storage_layout.platform_db(self.platform_id)))
+        setattr(session, "coding_memory_scope", f"session:{session_id}")
+
+    def _retire_session_storage(
+        self,
+        session_id: str,
+    ) -> None:
+        """
+        将会话私有目录移入回收区
+
+        参数:
+        - session_id: 会话 ID
+        """
+        self.storage_layout.trash_session(self.platform_id, session_id)
+
 
     def _sync_runtime_to_store(self, session_id: str, session: Session | AsyncSession):
         """
@@ -1351,7 +1568,7 @@ class SessionManager:
     @staticmethod
     def _session_message_count(session: Session | AsyncSession) -> int:
         """
-        获取会话已处理消息数量
+        获取会话及其工作流已处理消息总数
 
         参数:
         - session: 会话实例 (Session 或 AsyncSession)
@@ -1359,23 +1576,99 @@ class SessionManager:
         返回:
         - 会话已处理消息数量
         """
-        ctx: ContextManager | AsyncContextManager | None = safe_getattr(session, "session_ctx")
-        if ctx is None:
-            return 0
-        try:
-            return int(ctx.static_message())
-        except Exception as e:
-            logger.error(f"[SessionManager] 读取会话消息数失败：{e}")
-            return 0
+        contexts: list[ContextManager | AsyncContextManager] = []
+        session_ctx: ContextManager | AsyncContextManager | None = safe_getattr(session, "session_ctx")
+        if session_ctx is not None:
+            contexts.append(session_ctx)
 
-    @staticmethod
-    def _release_session_memory(session: Session | AsyncSession):
+        empty_contexts: dict[str, ContextManager | AsyncContextManager] = {}
+        workflow_contexts = cast(
+            dict[str, ContextManager | AsyncContextManager],
+            safe_getattr(session, "_workflow_contexts", empty_contexts),
+        )
+        contexts.extend(workflow_contexts.values())
+
+        total = 0
+        counted_contexts: set[str] = set()
+        for context in contexts:
+            conversation_id = safe_getattr(context, "conversation_id")
+            context_key = str(conversation_id) if conversation_id is not None else f"object:{id(context)}"
+            if context_key in counted_contexts:
+                continue
+            counted_contexts.add(context_key)
+            try:
+                total += int(context.static_message())
+            except Exception as e:
+                logger.error(f"[SessionManager] 读取会话消息数失败：{e}")
+        return total
+
+    def _prepare_session_sync(self, session: Session | AsyncSession) -> None:
+        """
+        执行 Provider 的同步会话准备生命周期
+
+        参数:
+        - session: 已创建的会话实例
+        """
+        provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
+        provider = self.provider_registry.get(provider_name) if provider_name else None
+        prepare = safe_getattr_callable(provider, "prepare_session")
+        if prepare is not None:
+            prepare(session)
+
+    async def _prepare_session_async(self, session: Session | AsyncSession) -> None:
+        """
+        执行 Provider 的异步会话准备生命周期
+
+        参数:
+        - session: 已创建的会话实例
+        """
+        provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
+        provider = self.provider_registry.get(provider_name) if provider_name else None
+        prepare_async = safe_getattr_callable(provider, "prepare_session_async")
+        if prepare_async is not None:
+            result = prepare_async(session)
+            if inspect.isawaitable(result):
+                await result
+            return
+        self._prepare_session_sync(session)
+
+    def get_session_runtime_metadata(self, session_id: str) -> dict[str, Any]:
+        """
+        获取活跃会话的 Provider 运行时元数据
+
+        参数:
+        - session_id: 会话 ID
+
+        返回:
+        - dict[str, Any]: 非活跃或无元数据时返回空对象
+        """
+        entry = self.pool.list_entries().get(session_id)
+        if entry is None:
+            return {}
+        provider_name = str(safe_getattr(entry.session, "_satrap_provider_name") or "")
+        provider = self.provider_registry.get(provider_name) if provider_name else None
+        get_metadata = safe_getattr_callable(provider, "get_runtime_metadata")
+        if get_metadata is None:
+            return {}
+        metadata = get_metadata(entry.session)
+        return cast(dict[str, Any], metadata).copy() if isinstance(metadata, dict) else {}
+
+    def _release_session_memory(self, session: Session | AsyncSession):
         """
         释放会话内存
 
         参数:
         - session: 会话实例 (Session 或 AsyncSession)
         """
+        provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
+        provider = self.provider_registry.get(provider_name) if provider_name else None
+        release = safe_getattr_callable(provider, "release_session")
+        if release is not None:
+            try:
+                release(session)
+            except Exception as e:
+                logger.warning(f"[SessionManager] Provider 同步释放失败: {e}")
+
         clear_method = safe_getattr_callable(session, "clear_memory")
         if clear_method is None:
             return
@@ -1387,14 +1680,29 @@ class SessionManager:
         except Exception as e:
             logger.warning(f"[SessionManager] clear_memory 执行失败：{e}")
 
-    @staticmethod
-    async def _release_session_memory_async(session: Session | AsyncSession):
+    async def _release_session_memory_async(self, session: Session | AsyncSession):
         """
         释放会话内存 (异步)
 
         参数:
         - session: 会话实例 (Session 或 AsyncSession)
         """
+        provider_name = str(safe_getattr(session, "_satrap_provider_name") or "")
+        provider = self.provider_registry.get(provider_name) if provider_name else None
+        release_async = safe_getattr_callable(provider, "release_session_async")
+        release = safe_getattr_callable(provider, "release_session")
+        try:
+            if release_async is not None:
+                result = release_async(session)
+                if inspect.isawaitable(result):
+                    await result
+            elif release is not None:
+                result = release(session)
+                if inspect.isawaitable(result):
+                    await result
+        except Exception as e:
+            logger.warning(f"[SessionManager] Provider 异步释放失败: {e}")
+
         clear_method = safe_getattr_callable(session, "clear_memory")
         if clear_method is None:
             return

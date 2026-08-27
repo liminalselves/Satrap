@@ -882,7 +882,8 @@ class AskUserTool(Tool):
     tool_name = "ask_user"
     description = (
         "向用户提出一个问题并等待回复, 用于获取缺失信息或确认意图; "
-        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择"
+        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择; "
+        "需要宿主通过 session.user_input_provider 适配用户输入通道"
     )
     params_dict = {
         "question": ("string", "要询问的问题"),
@@ -1170,7 +1171,8 @@ class AsyncAskUserTool(AsyncTool):
     tool_name = "ask_user"
     description = (
         "向用户提出一个问题并等待回复, 用于获取缺失信息或确认意图; "
-        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择"
+        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择; "
+        "需要宿主通过 session.user_input_provider 适配用户输入通道"
     )
     params_dict = {
         "question": ("string", "要询问的问题"),
@@ -1840,7 +1842,9 @@ def get_tools(session: SimpleSession | AsyncSimpleSession, config: dict[str, Any
     """
     _apply_config(config or {})
 
-    state = get_plugin_state(session, DATA_ROOT)
+    session_cache_root = safe_getattr(session, "coding_cache_root")
+    state_root = Path(str(session_cache_root)) / "satrap_coding" if session_cache_root else None
+    state = get_plugin_state(session, state_root)
     engine = cast(PermissionEngine, state["engine"])
     todos = cast(dict[str, Any], state["todos"])
 

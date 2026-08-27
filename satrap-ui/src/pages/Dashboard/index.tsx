@@ -46,6 +46,7 @@ export function Dashboard() {
       status: string;
       started: boolean;
       config_type?: string;
+      session_type?: string;
       type?: string;
       last_error?: string;
     }>;

@@ -1,11 +1,11 @@
 """
-'项目'功能测试: projects 数据层 + 记忆分层 + 服务绑定 + 工作区按会话解析
+'项目'功能测试: projects 数据层 + 会话记忆隔离 + 服务绑定 + 工作区按会话解析
 
 语义契约:
 - 项目 = 登记的工作区文件夹 (任意绝对路径), 其下会话共享该工作区
 - 删除项目仅解绑会话 (归入"最近"), 不动会话数据与磁盘文件
-- 无项目会话完全保持现状 (全局工作区回落, 记忆仅全局层)
-- 记忆两层: 全局 (web_chat) + 项目 (project:<id>), 项目会话可见集合 = 两层
+- 无项目会话使用自身私有沙箱作为工作区
+- 长期记忆始终按会话隔离, 项目绑定不改变记忆作用域
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.storage import StorageLayout
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.display import service as service_mod
 from satrap.display.plugins import ChatPluginRegistry
@@ -65,26 +66,19 @@ def test_project_crud_roundtrip(tmp_path: Path):
     assert delete_project(proj["project_id"], db_path=db) is False
 
 
-def test_conversation_meta_project_id_legacy_patch(tmp_path: Path):
+def test_conversation_meta_created_with_project_id(tmp_path: Path):
     """
-    旧库无 project_id 列时幂等 ALTER 补丁 (沿用既有迁移模式)
+    新库的 conversation_meta 直接包含 project_id
 
     参数:
     - tmp_path: tmp路径
     """
     db = str(tmp_path / "display.db")
-    conn = sqlite3.connect(db)
-    conn.execute(
-        "CREATE TABLE conversation_meta (conversation_id TEXT PRIMARY KEY, model TEXT, think TEXT, created_at REAL)"
-    )
-    conn.execute("INSERT INTO conversation_meta VALUES ('conv-old', 'default', 'off', 1.0)")
-    conn.commit()
-    conn.close()
-
-    convs = list_conversations(db)
-    # 触发补丁 (list_conversations 内部调 _ensure_project_schema_locked)
-    assert [c["conversation_id"] for c in convs] == ["conv-old"]
-    assert convs[0]["project_id"] is None
+    recorder = DisplayRecorder(db, "conv-new")
+    recorder.save_meta("default")
+    with sqlite3.connect(db) as conn:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(conversation_meta)")}
+    assert "project_id" in columns
 
 
 def test_list_conversations_with_project_and_empty(tmp_path: Path):
@@ -156,125 +150,54 @@ def test_save_meta_upsert_preserves_project(tmp_path: Path):
     assert meta["project_id"] == proj["project_id"]
 
 
-# ================= 记忆分层 =================
+# ================= 会话记忆隔离 =================
 
 
-def _layered_store(tmp_path: Path) -> MemoryStore:
+def test_memory_requires_concrete_session_scope(tmp_path: Path):
     """
-    构造项目会话形态的双层 store (契约: scopes[0]=全局层, scope=写入默认层)
-
-    参数:
-    - tmp_path: tmp路径
-
-    返回:
-    - MemoryStore: 构造项目会话形态的双层 store (契约: scopes[0]=全局层, scope=写入默认层)
-    """
-    store = MemoryStore(db_path=tmp_path / "memory.db", scope="web_chat")
-    store.scopes = ["web_chat", "project:p1"]
-    store.scope = "project:p1"
-    return store
-
-
-def test_memory_layered_injection(tmp_path: Path):
-    """
-    双层注入: 项目层/全局层分节渲染, 项目层优先占配额
+    记忆库不允许空作用域, 防止意外读写整个平台数据
 
     参数:
     - tmp_path: tmp路径
     """
-    store = _layered_store(tmp_path)
-    store.add("全局约定", "g1", importance=1, scope="web_chat")
-    store.add("项目约定", "p1", importance=1)   # 默认写入项目层
-
-    block = store.to_context_block()
-    assert "[项目记忆]" in block and "[全局记忆]" in block
-    # 项目层排在全局层之前 (配额优先)
-    assert block.index("项目约定") < block.index("全局约定")
-
-    store.max_entries = 1
-    # 配额: max_entries=1 时只有项目层入选
-    block = store.to_context_block()
-    assert "项目约定" in block and "全局约定" not in block
+    with pytest.raises(ValueError, match="scope"):
+        MemoryStore(db_path=tmp_path / "memory.db", scope="")
 
 
-def test_memory_layered_visibility_isolation(tmp_path: Path):
+def test_memory_isolated_between_sessions(tmp_path: Path):
     """
-    可见集合隔离: 跨项目记忆不可见/不可删/不计数; 写入默认落项目层
+    同一平台库中的不同会话不能查看、删除或清空对方记忆
 
     参数:
     - tmp_path: tmp路径
     """
-    store = _layered_store(tmp_path)
-    store.add("项目记忆", "p1")
-    store.add("全局记忆", "g1", scope="web_chat")
-    # 另一项目的记忆 (不在可见集合)
-    other = MemoryStore(db_path=tmp_path / "memory.db", scope="project:p2")
-    other.add("他项目记忆", "p2")
+    first = MemoryStore(db_path=tmp_path / "platform.db", scope="session:first")
+    second = MemoryStore(db_path=tmp_path / "platform.db", scope="session:second")
+    first.add("第一会话", "first")
+    second.add("第二会话", "second")
 
-    titles = {m["title"] for m in store.list_all()}
-    assert titles == {"项目记忆", "全局记忆"}
-    assert store.count() == 2
-
-    other_id = other.list_all("project:p2")[0]["id"]
-    # 跨项目删除被拒 (可见集合外)
-    assert store.delete(other_id)["ok"] is False
-    # 可见集合内可删
-    own_id = [m for m in store.list_all() if m["title"] == "项目记忆"][0]["id"]
-    assert store.delete(own_id)["ok"] is True
-    assert {m["title"] for m in store.list_all()} == {"全局记忆"}
+    first_id = first.list_all()[0]["id"]
+    assert [item["title"] for item in first.list_all()] == ["第一会话"]
+    assert [item["title"] for item in second.list_all()] == ["第二会话"]
+    assert second.get(first_id)["ok"] is False
+    assert second.delete(first_id)["ok"] is False
+    assert second.clear() == 1
+    assert first.count() == 1
 
 
-def test_memory_single_scope_backward_compat(tmp_path: Path):
+def test_add_memory_tool_writes_only_current_session(tmp_path: Path):
     """
-    单层兼容: 默认 scope='' 不限定 (全量可见); 显式 scope 参数行为不变
+    add_memory 不暴露层级参数, 并始终写入当前会话
 
     参数:
     - tmp_path: tmp路径
     """
-    store = MemoryStore(db_path=tmp_path / "memory.db")
-    store.add("无作用域", "x")
-    store.add("全局", "g", scope="web_chat")
-    # scope='' = 不限定, 全量可见 (旧行为)
-    assert store.count() == 2
-    assert "全局约定" not in store.to_context_block()   # 无分层标签
-    assert "[项目记忆]" not in store.to_context_block()
-    # 显式 scope 过滤不变
-    assert [m["title"] for m in store.list_all("web_chat")] == ["全局"]
-    # 空串显式传参同样不限定
-    assert store.count("") == 2
-
-
-def test_add_memory_tool_level_routing(tmp_path: Path):
-    """
-    add_memory level 路由: 默认/ project 写项目层, global 写全局层, 非法值报错
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    store = _layered_store(tmp_path)
+    store = MemoryStore(db_path=tmp_path / "platform.db", scope="session:current")
     tool = AddMemoryTool(store)
 
-    assert "项目层" in tool.execute(title="t1", content="c1")
-    assert "全局层" in tool.execute(title="t2", content="c2", level="global")
-    assert "未知记忆层级" in tool.execute(title="t3", content="c3", level="mars")
-
-    by_title = {m["title"]: m["scope"] for m in store.list_all()}
-    assert by_title["t1"] == "project:p1"
-    assert by_title["t2"] == "web_chat"
-
-
-def test_add_memory_tool_no_project_single_layer(tmp_path: Path):
-    """
-    无项目会话: level 两层同为全局, 行为与分层前一致
-
-    参数:
-    - tmp_path: tmp路径
-    """
-    store = MemoryStore(db_path=tmp_path / "memory.db", scope="web_chat")
-    tool = AddMemoryTool(store)
-    assert "全局层" in tool.execute(title="t", content="c")
-    assert "全局层" in tool.execute(title="t2", content="c2", level="project")
-    assert {m["scope"] for m in store.list_all()} == {"web_chat"}
+    assert "level" not in tool.params_dict
+    assert "已添加" in tool.execute(title="t1", content="c1")
+    assert {item["scope"] for item in store.list_all()} == {"session:current"}
 
 
 # ================= 服务层: 项目绑定 =================
@@ -329,6 +252,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
     )
 
 
@@ -380,12 +304,16 @@ def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: A
     assert conv is not None and conv.project_id == pid
     session = conv.session
     assert getattr(session, "coding_workspace_root") == str(ws.resolve())
-    assert getattr(session, "coding_sandbox_root") == str(ws.resolve() / ".satrap" / "sandbox")
+    expected_sandbox = svc._storage.session_sandbox("chat", cid)
+    assert getattr(session, "coding_sandbox_root") == str(expected_sandbox)
+    assert not expected_sandbox.is_relative_to(ws.resolve())
 
     plain_conv = svc.get_conversation(plain)
-    # 无项目会话无鸭子属性 (回落全局)
+    # 无项目会话直接使用自己的私有沙箱作为工作区
     assert plain_conv is not None
-    assert not hasattr(plain_conv.session, "coding_workspace_root")
+    plain_sandbox = svc._storage.session_sandbox("chat", plain)
+    assert getattr(plain_conv.session, "coding_workspace_root") == str(plain_sandbox)
+    assert getattr(plain_conv.session, "coding_sandbox_root") == str(plain_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # meta 持久化项目归属
@@ -431,9 +359,10 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
     assert getattr(conv.session, "coding_workspace_root") == str(ws_b.resolve())
 
     assert svc.set_conversation_project(cid, None)["ok"] is True
-    # 移出项目 -> 鸭子属性移除 (回落全局)
+    # 移出项目后使用会话私有沙箱作为工作区
     assert conv.project_id is None
-    assert not hasattr(conv.session, "coding_workspace_root")
+    private_sandbox = svc._storage.session_sandbox("chat", cid)
+    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
 
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     # 持久化同步
@@ -446,7 +375,7 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
 
 def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any):
     """
-    删除项目: 活动会话解绑 (鸭子属性移除), 会话本身保留
+    删除项目: 活动会话解绑并回到私有沙箱, 会话本身保留
 
     参数:
     - tmp_path: tmp路径
@@ -463,7 +392,8 @@ def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any)
 
     assert svc.delete_project(pid)["ok"] is True
     assert conv.project_id is None
-    assert not hasattr(conv.session, "coding_workspace_root")
+    private_sandbox = svc._storage.session_sandbox("chat", cid)
+    assert getattr(conv.session, "coding_workspace_root") == str(private_sandbox)
     # 会话数据保留
     assert get_conversation_meta(cid, db_path=str(svc._display_db_path)) is not None
 
@@ -492,7 +422,7 @@ def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch
 
 def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
     """
-    上传落盘: 项目会话写入 <项目根>/.satrap/uploads/, 无项目会话保持现有位置
+    上传落盘: 项目会话和普通会话分别写入自己的私有 uploads 目录
 
     参数:
     - tmp_path: tmp路径
@@ -511,17 +441,17 @@ def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
 
     proj_cid, plain_cid = asyncio.run(_run())
 
-    monkeypatch.chdir(tmp_path)
-    # 无项目会话: 相对 cwd 的 .satrap/uploads/ (chdir 隔离验证)
     result = svc.save_upload(plain_cid, "a.txt", b"hello")
     assert result["ok"] is True
-    assert (tmp_path / ".satrap" / "uploads" / plain_cid).is_dir()
+    plain_upload_dir = svc._storage.session_uploads("chat", plain_cid)
+    assert plain_upload_dir.is_dir()
 
     result = svc.save_upload(proj_cid, "b.txt", b"world")
-    # 项目会话: 落在项目工作区内
     assert result["ok"] is True
-    upload_dir = ws.resolve() / ".satrap" / "uploads" / proj_cid
+    upload_dir = svc._storage.session_uploads("chat", proj_cid)
     assert upload_dir.is_dir()
+    assert upload_dir != plain_upload_dir
+    assert not (ws.resolve() / ".satrap" / "uploads").exists()
     files = list(upload_dir.iterdir())
     assert len(files) == 1 and files[0].name.endswith("_b.txt")
 

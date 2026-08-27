@@ -26,11 +26,11 @@ python -m satrap.display.server             # 默认 127.0.0.1:19872
 python -m satrap.display.server --host 0.0.0.0 --port 19873
 ```
 
-开发脚本会自动拉起聊天服务: `scripts/start-dev.ps1` (控制端 19871 + 聊天端 19872 + 前端 5173), `scripts/start-ui.bat` (聊天端 + 前端)。`scripts/kill-chat-server.ps1` 用于清理残留的 `satrap.display.server` 进程。
+开发脚本会自动拉起所需服务: `scripts/start-dev.ps1` 和 `scripts/start-ui.bat` 均启动控制端 19871, 聊天端 19872 与前端 5173。`scripts/kill-chat-server.ps1` 用于清理残留的 `satrap.display.server` 进程。
 
 ## 数据模型 (display.db)
 
-独立 SQLite 库, 默认路径 `.satrap/satrapdata/display.db` (与 `chat_history.db` 分离):
+Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下文通过不同表共库存储:
 
 | 表 | 内容 |
 | --- | --- |
@@ -66,7 +66,7 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 | POST | `/plugins/{name}/capability` | 能力独立启停 `{kind, cap, enabled}` |
 | GET | `/plugins/{name}/config` | 插件配置 (schema + 当前全局值) |
 | PUT | `/plugins/{name}/config` | 保存插件全局配置 `{config}` |
-| GET | `/memories?scope=xxx` | 列出记忆 (默认 scope `web_chat`; 项目层 scope 为 `project:<project_id>`) |
+| GET | `/memories?scope=session:<conversation_id>` | 列出指定会话的记忆 |
 | POST | `/memories` | 添加记忆 `{title, content, tags, importance, scope}` |
 | PUT | `/memories/{id}` | 更新记忆 |
 | DELETE | `/memories/{id}?scope=xxx` | 删除记忆 |
@@ -108,12 +108,12 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 
 **项目** = 登记的工作区文件夹 (任意绝对路径, 创建时校验存在且是目录) + 名称。项目下所有会话共享该工作区, 可见范围 = 项目工作区 + 本会话上传附件。语义要点:
 
-- **无项目会话完全保持现状**: 全局工作区 (Satrap 根), 共享沙箱, 记忆仅全局层。
-- **工作区按会话解析**: 建会话/改绑时 `ChatService` 给会话注入鸭子属性 `coding_workspace_root` / `coding_sandbox_root`; satrap_coding 与 base_take 的工具在调用时经 `safe_getattr` 读取, 属性不存在则回落全局配置 —— 多项目并存互不踩踏, 无项目会话行为逐字节不变。
-- **上传附件项目化**: 项目会话的上传写入 `<项目根>/.satrap/uploads/{conversation_id}/`, `read_document` 的回退搜索限定在当前工作区内 —— 项目内跨会话可见, 跨项目不可见。
-- **删除项目仅解绑**: 其下会话 `project_id` 置空归入"最近", 活动会话鸭子属性即时移除, 磁盘文件不动。
-- **会话允许改绑** (`POST /conversations/{id}/project`): 仅影响之后的工具调用, 历史消息不变; 活动会话的工作区鸭子属性与记忆分层即时刷新。
-- **审批规则/权限数据保持全局**共享, 一期只隔离工作区可见范围。
+- **无项目会话使用私有工作区**: 当前会话的 `sandbox/` 同时是默认工作区, 不读写 Satrap 项目根目录。
+- **外部项目只共享源码工作区**: 建会话/改绑时 `ChatService` 注入 `coding_workspace_root`, 但 `coding_sandbox_root` / `uploads` / `artifacts` / `indexes` / `cache` / 记忆始终属于当前会话。
+- **上传附件会话隔离**: 所有上传写入当前会话的 `uploads/`; 项目绑定不会把附件写入外部项目, `read_document` 只访问当前工作区或当前会话上传目录。
+- **删除项目仅解绑**: 其下会话 `project_id` 置空归入"最近", 工作区立即切换为各自的私有沙箱, 外部项目文件不动。
+- **会话允许改绑** (`POST /conversations/{id}/project`): 仅影响之后的工具调用, 历史消息不变; 记忆、沙箱及其他运行时数据不会因改绑而共享。
+- **工具状态按会话隔离**: 审批、缓存、索引和插件运行状态保存在当前会话目录中。
 - **前端目录选择**: 新建项目对话框的路径输入旁提供"浏览"按钮, 经 `/api/fs/browse` 在网页内浏览服务器目录 (无需手敲绝对路径), 选择后自动回填路径与项目名。
 
 ## 插件管理
@@ -136,8 +136,8 @@ python -m satrap.display.server --host 0.0.0.0 --port 19873
 ## 模型与记忆
 
 - 模型配置与平台后端共用同一份 `.satrap/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
-- 记忆管理走公共 `MemoryStore` (`.satrap/satrapdata/memory.db`), 默认 scope `web_chat`, 见 [扩展模块](extensions.md#长期记忆存储-memorystore)。
-- **记忆分层**: 项目会话的可见集合 = 全局层 (`web_chat`) + 项目层 (`project:<project_id>`), 注入时两层合并渲染 (项目层优先占 30 条配额), 模型 `add_memory` 默认写项目层 (`level='global'` 写全局层); 无项目会话仅全局层, 行为不变。REST 接口经 `scope` 参数访问指定层。
+- 记忆管理走 `chat/platform.db` 中的公共 `MemoryStore` 表, 默认 scope 为 `session:<conversation_id>`, 见 [运行数据布局](data-layout.md)。
+- **记忆隔离**: 每个会话只读写 `session:<conversation_id>` 作用域。项目绑定不会自动共享记忆; 未来增加共享领域时需要单独的数据模型和授权。
 
 ## 前端聊天页
 

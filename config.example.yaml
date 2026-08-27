@@ -1,18 +1,16 @@
 # Satrap 后端配置示例
 # 复制为 config.yaml 并填入实际值后使用: satrap run --config config.yaml
 
-# --- 存储路径, null 表示使用默认路径 .satrap/* ---
+# --- 存储路径 ---
 model_config_path: null              # 模型配置 JSON 路径
+data_root: .satrap/data              # 运行数据根目录, 每个平台实例拥有独立 platform.db
 session_class_config_path: null       # Session 类配置 JSON 路径
-session_db_path: null                 # Session 实例数据库路径, SQLite
-user_db_path: null                    # 用户信息数据库路径, SQLite
 
 # --- Session 管理器 ---
 default_session_type: default         # 默认 Session 类型
 max_sessions: 1000                    # 最大活跃 Session 数
 idle_timeout: 3600                    # Session 闲置超时, 单位秒
 session_checkpoint: false             # 会话实例化时默认启用状态检查点 (类级/实例级显式配置优先)
-session_checkpoint_db: null           # 会话默认上下文库路径 (检查点与消息同库), null 使用各 Session 默认库
 
 # --- 管线参数 ---
 rate_limit: 1.0                       # 限流速率

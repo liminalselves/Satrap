@@ -6,12 +6,15 @@ import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toast';
 import { checkpointApi } from '@/api/checkpoint';
+import { useBackendStore } from '@/stores/useBackendStore';
 import { formatTime } from '@/utils/format';
 import { PageHeader, DataTable, FormModal, Column, FormField, StatCard, StatCardGrid } from '@/components/common';
 import { Search, GitBranch, RotateCcw, RefreshCw, Plus, GitCommitHorizontal } from 'lucide-react';
 import type { Checkpoint } from '@/api/types';
 
 export function Checkpoints() {
+  const { health } = useBackendStore();
+  const [platformId, setPlatformId] = useState('local');
   const [conversationId, setConversationId] = useState('');
   const [loading, setLoading] = useState(false);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
@@ -38,9 +41,9 @@ export function Checkpoints() {
     setLoading(true);
     try {
       const [cpData, branchData, mutationData] = await Promise.all([
-        checkpointApi.list(conversationId),
-        checkpointApi.listBranches(conversationId),
-        checkpointApi.listMutations(conversationId),
+        checkpointApi.list(platformId, conversationId),
+        checkpointApi.listBranches(platformId, conversationId),
+        checkpointApi.listMutations(platformId, conversationId),
       ]);
       setCheckpoints(cpData.checkpoints);
       setBranches(branchData.branches);
@@ -50,11 +53,17 @@ export function Checkpoints() {
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, platformId]);
+
+  const platformIds = useMemo(
+    () => Array.from(new Set(['local', 'chat', ...Object.keys(health?.adapters || {})])),
+    [health?.adapters],
+  );
 
   const handleCreate = useCallback(async () => {
     try {
       await checkpointApi.create(
+        platformId,
         conversationId,
         newCheckpointName || undefined,
         newCheckpointDescription || undefined,
@@ -67,11 +76,16 @@ export function Checkpoints() {
     } catch (e) {
       toast('error', '创建失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [conversationId, newCheckpointName, newCheckpointDescription, fetchData]);
+  }, [conversationId, fetchData, newCheckpointDescription, newCheckpointName, platformId]);
 
   const handleFork = useCallback(async () => {
     try {
-      const result = await checkpointApi.fork(conversationId, newBranchName, selectedCheckpoint || undefined);
+      const result = await checkpointApi.fork(
+        platformId,
+        conversationId,
+        newBranchName,
+        selectedCheckpoint || undefined,
+      );
       toast('success', `已分支: ${result.conversation_id}`);
       setShowForkModal(false);
       setNewBranchName('');
@@ -79,7 +93,7 @@ export function Checkpoints() {
     } catch (e) {
       toast('error', 'Fork 失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [conversationId, newBranchName, selectedCheckpoint, fetchData]);
+  }, [conversationId, fetchData, newBranchName, platformId, selectedCheckpoint]);
 
   const handleRevert = useCallback(async () => {
     if (!selectedCheckpoint) return;
@@ -88,10 +102,10 @@ export function Checkpoints() {
     }
     try {
       if (revertMode === 'rollback') {
-        await checkpointApi.rollback(conversationId, selectedCheckpoint);
+        await checkpointApi.rollback(platformId, conversationId, selectedCheckpoint);
         toast('success', '已回滚');
       } else {
-        await checkpointApi.retry(conversationId, selectedCheckpoint);
+        await checkpointApi.retry(platformId, conversationId, selectedCheckpoint);
         toast('success', '已重试');
       }
       setShowRevertModal(false);
@@ -99,14 +113,14 @@ export function Checkpoints() {
     } catch (e) {
       toast('error', '操作失败: ' + (e instanceof Error ? e.message : '未知错误'));
     }
-  }, [conversationId, selectedCheckpoint, revertMode, fetchData]);
+  }, [conversationId, fetchData, platformId, revertMode, selectedCheckpoint]);
 
   const handleTraceLineage = useCallback(async (checkpointId: string) => {
     setShowLineageModal(true);
     setLineage([]);
     setLineageLoading(true);
     try {
-      const result = await checkpointApi.traceLineage(checkpointId);
+      const result = await checkpointApi.traceLineage(platformId, checkpointId);
       setLineage(result.lineage);
     } catch (e) {
       toast('error', '获取血缘失败: ' + (e instanceof Error ? e.message : '未知错误'));
@@ -114,7 +128,7 @@ export function Checkpoints() {
     } finally {
       setLineageLoading(false);
     }
-  }, []);
+  }, [platformId]);
 
   const getKindBadge = useCallback((kind: string) => {
     const variants: Record<string, 'success' | 'warning' | 'error' | 'info'> = {
@@ -248,6 +262,14 @@ export function Checkpoints() {
       {/* 搜索栏 */}
       <Card>
         <div className="flex gap-4">
+          <select
+            className="glass-input min-w-48"
+            value={platformId}
+            onChange={(event) => setPlatformId(event.target.value)}
+            aria-label="平台实例"
+          >
+            {platformIds.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
           <div className="flex-1">
             <Input
               placeholder="输入对话 ID (如 conv-xxx)"

@@ -13,7 +13,10 @@ from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.UserManager import UserManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.registry import create_default_edictum_type_registry
 
 
 class _FakeClient:
@@ -46,6 +49,16 @@ def test_parser_accepts_api_flags_for_control_commands():
     assert args.command == "status"
     assert args.api_host == "127.0.0.2"
     assert args.api_port == 19871
+
+
+def test_platform_parser_accepts_session_type_binding():
+    """平台命令应支持显式选择入站消息使用的会话类"""
+    parser = _build_parser()
+    args = parser.parse_args(
+        ["platform", "add", "mk", "--type", "misskey", "--session-type", "assistant"]
+    )
+
+    assert args.session_type == "assistant"
 
 
 def test_global_flags_survive_subparser_defaults():
@@ -118,6 +131,59 @@ async def test_http_session_class_write_routes(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_http_edictum_cold_config_routes(tmp_path: Path):
+    """
+    后端 HTTP API 应暴露 Edictum 类型与命名冷配置完整 CRUD
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    backend = BackendManager()
+    backend._edictum_types = create_default_edictum_type_registry()
+    backend._edictum_cfg = EdictumConfigManager(
+        backend._edictum_types,
+        tmp_path / "edictum.json",
+    )
+    server = BackendHTTPServer(backend)
+
+    status, data = await server._route("GET", "/api/config/edictum/types", b"")
+    assert status == 200
+    assert {item["name"] for item in data["types"]} == {"simple", "async_simple"}
+
+    status, data = await server._route(
+        "POST",
+        "/api/config/edictum/sessions",
+        b'{"name":"assistant","edictum_type":"simple","model_name":"default"}',
+    )
+    assert status == 200
+    assert data["config"]["provider"] == "edictum"
+
+    status, data = await server._route(
+        "PUT",
+        "/api/config/edictum/sessions/assistant",
+        b'{"name":"renamed","description":"updated"}',
+    )
+    assert status == 200
+    assert data["name"] == "renamed"
+
+    status, data = await server._route(
+        "POST",
+        "/api/config/edictum/sessions/renamed/disable",
+        b"",
+    )
+    assert status == 200
+    assert data["config"]["enabled"] is False
+
+    status, data = await server._route(
+        "DELETE",
+        "/api/config/edictum/sessions/renamed",
+        b"",
+    )
+    assert status == 200
+    assert data == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_http_session_config_and_runtime_routes(tmp_path: Path):
     """
     React 会话页依赖的配置编辑和实例创建路由应完整工作
@@ -127,24 +193,49 @@ async def test_http_session_config_and_runtime_routes(tmp_path: Path):
     """
     backend = BackendManager()
     backend._session_cls_cfg = SessionClassConfigManager(storage_path=tmp_path / "sessions.json")
-    backend._session_mgr = SessionManager(db_path=tmp_path / "session-config.db")
-    backend._session_mgr.class_cfg_mgr = backend._session_cls_cfg
+    session_manager = SessionManager(db_path=tmp_path / "session-config.db")
+    session_manager.class_cfg_mgr = backend._session_cls_cfg
+    user_manager = UserManager(session_manager, db_path=tmp_path / "users.db")
+    session_manager.user_manager = user_manager
+    backend._session_mgr = session_manager
+    backend._user_mgr = user_manager
+    backend._platform_runtimes = {"main": (session_manager, user_manager)}
     backend._session_cls_cfg.register_by_class_path("dummy", "satrap.core.framework.Base.Session")
     server = BackendHTTPServer(backend)
 
     status, data = await server._route(
         "PUT",
         "/api/config/session-classes/dummy",
-        b'{"description":"demo","context_key":"room_id","model_key":"model_name","params":{"model_name":"default"}}',
+        b'{"name":"renamed","description":"demo","context_key":"room_id","model_key":"model_name","params":{"model_name":"default"}}',
     )
     assert status == 200
     assert data["config"]["description"] == "demo"
     assert data["config"]["context_key"] == "room_id"
+    session_class_mgr = backend.session_class_mgr
+    assert session_class_mgr is not None
+    assert session_class_mgr.has_config("dummy") is False
+    assert session_class_mgr.has_config("renamed") is True
+
+    status, data = await server._route(
+        "POST",
+        "/api/config/session-classes/renamed/disable",
+        b"",
+    )
+    assert status == 200
+    assert data["config"]["enabled"] is False
+
+    status, data = await server._route(
+        "POST",
+        "/api/config/session-classes/renamed/enable",
+        b"",
+    )
+    assert status == 200
+    assert data["config"]["enabled"] is True
 
     status, data = await server._route(
         "POST",
         "/api/sessions",
-        b'{"class_name":"dummy","session_id":"runtime-1","adapter_id":"main","llm_name":"default"}',
+        b'{"class_name":"renamed","session_id":"runtime-1","adapter_id":"main","llm_name":"default"}',
     )
     assert status == 200
     assert data["session"]["session_id"] == "runtime-1"
@@ -154,6 +245,69 @@ async def test_http_session_config_and_runtime_routes(tmp_path: Path):
     assert status == 200
     assert data["sessions"][0]["session_id"] == "runtime-1"
     assert data["sessions"][0]["active"] is False
+
+    session_manager.store.update_runtime_fields("runtime-1", 1.0, 2)
+    empty = session_manager.register_session_from_provider_config(
+        "session_class",
+        "renamed",
+        session_id="runtime-empty",
+    )
+    single = session_manager.register_session_from_provider_config(
+        "session_class",
+        "renamed",
+        session_id="runtime-single",
+    )
+    session_manager.store.update_runtime_fields(single.session_id or "", 1.0, 1)
+    user_manager.get_or_create_user("user-1", "onebot")
+    user_manager.bind_session("user-1", empty.session_id or "")
+    user_manager.store.upsert_context_session(
+        "user-1",
+        "onebot",
+        "renamed",
+        empty.session_id or "",
+    )
+
+    status, data = await server._route(
+        "POST",
+        "/api/sessions/bulk-delete",
+        b'{"mode":"empty"}',
+    )
+    assert status == 200
+    assert data["deleted_ids"] == ["runtime-empty"]
+    assert user_manager.get_user_session_ids("user-1") == []
+    assert user_manager.store.get_context_session("user-1", "onebot", "renamed") is None
+
+    status, data = await server._route(
+        "POST",
+        "/api/sessions/bulk-delete",
+        b'{"mode":"single"}',
+    )
+    assert status == 200
+    assert data["deleted_ids"] == ["runtime-single"]
+
+    selected = session_manager.register_session_from_provider_config(
+        "session_class",
+        "renamed",
+        session_id="runtime-selected",
+    )
+    status, data = await server._route(
+        "POST",
+        "/api/sessions/bulk-delete",
+        json.dumps({
+            "mode": "selected",
+            "session_refs": [{"platform_id": "main", "session_id": selected.session_id}],
+        }).encode(),
+    )
+    assert status == 200
+    assert data["deleted_ids"] == ["runtime-selected"]
+
+    status, data = await server._route(
+        "DELETE",
+        "/api/sessions/runtime-1?platform_id=main",
+        b"",
+    )
+    assert status == 200
+    assert data["deleted_ids"] == ["runtime-1"]
 
 
 @pytest.mark.asyncio

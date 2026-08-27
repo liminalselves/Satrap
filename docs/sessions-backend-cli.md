@@ -120,7 +120,7 @@ satrap restart
 
 ## 用户管理
 
-用户信息与用户-会话绑定关系存储在用户信息库 (默认 `.satrap/satrapdata/user_info.db`, 可通过配置项 `user_db_path` 指定)。
+用户信息与用户-会话绑定关系存储在所属平台实例的 `platform.db`。CLI 和管理 API 必须提供平台实例作用域, 不能配置独立用户数据库。
 
 ### CLI 命令
 
@@ -148,7 +148,7 @@ satrap user unbind misskey:user1 demo-session
 satrap user sessions misskey:user1
 ```
 
-所有子命令支持 `--db` 指定用户信息库路径。
+所有子命令使用 `--platform-id` 选择平台实例, 使用 `--data-root` 选择完整运行数据根目录。
 
 ### HTTP API
 

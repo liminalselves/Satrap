@@ -517,6 +517,47 @@ class ModelConfigManager:
             return True
 
     # ---------- 公共配置 ----------
+    def update_named_config(
+        self,
+        target: ConfigTarget,
+        name: str,
+        changes: dict[str, Any],
+        *,
+        new_name: str | None = None,
+    ) -> None:
+        """
+        原子更新配置字段并按需重命名
+
+        参数:
+        - target: 配置类型
+        - name: 当前配置名称
+        - changes: 待更新字段
+        - new_name: 新配置名称, 不传时保持原名称
+        """
+        with self._lock:
+            current_key = self._normalize_name(name)
+            target_key = self._normalize_name(new_name) if new_name is not None else current_key
+            store = self._target_store(target)
+            if current_key not in store:
+                raise ValueError(f"模型配置不存在: {current_key}")
+            if target_key != current_key and target_key in store:
+                raise ValueError(f"模型配置名称已存在: {target_key}")
+
+            payload = asdict(store[current_key])
+            payload.update(changes)
+            payload["name"] = target_key
+            if target == "llm":
+                updated = self._from_dict(payload, LLMConfig)
+            elif target == "embedding":
+                updated = self._from_dict(payload, EmbeddingConfig)
+            else:
+                updated = self._from_dict(payload, ReRankConfig)
+
+            if target_key != current_key:
+                store.pop(current_key)
+            store[target_key] = updated
+            self._save_locked()
+
     def get_all_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:
         """
         获取所有配置

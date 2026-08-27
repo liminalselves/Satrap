@@ -2,7 +2,7 @@
 
 `satrap_coding` 是官方预设目录 (`satrap/expend/plugins`) 下的目录插件, 把 SimpleSession / AsyncSimpleSession 扩展成一个可用的 Coding Agent: 文件读写、shell、子代理, 以及目标 / 计划两种工作模式。安装后能力自动注册进会话, 卸载时全量回收。
 
-> 搜索 (search/fetch_page)、长期记忆 (memory) 与代码沙箱 (code_sandbox) 已移交 `base_take` 插件; 两插件共享同一沙箱目录 (`.satrap/sandbox`)。
+> 搜索 (search/fetch_page)、长期记忆 (memory) 与代码沙箱 (code_sandbox) 已移交 `base_take` 插件; 两插件在同一会话内共享私有 sandbox。
 
 ## 安装
 
@@ -45,6 +45,8 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 | 技能 | goal / plan | 同命令的面向 Agent 的技能指令 |
 | 处理器 | satrap_coding.inject | 用户消息进入模型前注入目标块 |
 
+> `ask_user` 需要宿主特殊适配: 宿主必须设置 `session.user_input_provider`, 展示工具提出的问题, 等待用户回答并把回答回填到当前工具调用。未适配时工具只返回占位说明, 不会自动暂停并跨消息恢复
+
 ## 审批模型
 
 写类操作 (文件写 / shell 写命令) 经过 `PermissionEngine`, 三种策略 (`/approve mode <user|auto-agent|full>`):
@@ -77,7 +79,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 ## 工作区与免审批语义
 
-插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除), 工作区与沙箱合一: 默认沙箱根目录全局共享 (`.satrap/sandbox`, 可用 `session.coding_sandbox_root` 或插件配置 `sandbox_root` 覆盖)。
+插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除)。平台运行时注入会话私有 sandbox; Chat 项目会话可以操作外部工作区, 但插件缓存和沙箱仍属于当前会话。
 
 **工作区按会话解析 (项目功能)**: 文件/shell 工具的工作区根在**调用时**按会话解析 —— 会话鸭子属性 `session.coding_workspace_root` 优先 (项目会话由 ChatService 在建会话/改绑时注入), 属性不存在则回落全局 `workspace_root` 配置。多项目会话并存时各自操作各自的工作区, 互不干扰; 无项目会话行为与全局配置一致。免审批范围 (仅计划模式可拦截):
 
@@ -104,7 +106,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 └── goal.json            # 目标与子任务状态
 ```
 
-> 长期记忆已迁移到公共 MemoryStore (`.satrap/satrapdata/memory.db`), 由 base_take 插件管理; 沙箱目录已统一为 `.satrap/sandbox` (全局共享)。注意: 迁移仅覆盖代码, 旧数据不迁移 (迁移时项目未推生产, 无存量用户数据); 旧库 `.satrap/coding/memory.db` 如仍存在可直接删除。
+> 长期记忆由 base_take 插件管理并写入当前平台的 `platform.db`; 沙箱, 索引和缓存全部按会话隔离。旧数据不迁移。
 
 ## 卸载与隔离
 
@@ -118,7 +120,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | --- | --- | --- | --- |
 | workspace_root | path | 项目根 | 文件工具白名单根目录 |
 | data_root | path | .satrap/coding | 插件数据目录 |
-| sandbox_root | path | .satrap/sandbox | 沙箱根目录 (全局共享) |
+| sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时使用会话私有 sandbox |
 | shell_timeout | number | 30 | shell 命令超时 (秒) |
 | protected_dirs | string | - | 额外保护目录 (逗号分隔) |
 

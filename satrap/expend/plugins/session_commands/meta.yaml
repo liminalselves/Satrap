@@ -1,0 +1,16 @@
+name: session_commands
+version: 0.1.0
+author: Satrap Team
+description: "平台会话的新建, 历史查看, 切换和关于信息命令"
+
+config_schema:
+  about_text:
+    type: textarea
+    default: ""
+    description: "自定义 /about 返回文本, 留空时显示当前 Satrap 会话信息"
+
+commands:
+  new: 开始一个新对话
+  history: 查看当前用户的历史对话
+  switch: 按 Session ID 切换对话
+  about: 查看 Satrap 平台会话信息

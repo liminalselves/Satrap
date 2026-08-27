@@ -216,7 +216,8 @@ class OneBotAdapter(PlatformAdapter):
             platform_message=message,
             platform_meta=self.meta(),
             session_id=message.session_id,
-            session_type=self.adapter_type,
+            session_provider=self.get_session_provider(),
+            session_type=self.get_session_type(),
             adapter=self,
         )
         self.commit_event(event)
@@ -301,14 +302,8 @@ class OneBotAdapter(PlatformAdapter):
     async def terminate(self) -> None:
         """终止 OneBot 适配器并释放资源"""
         self._running = False
-        if self._bot:
-            close = safe_getattr_callable(self._bot, "close")
-            if close is not None:
-                result = close()
-                if inspect.isawaitable(result):
-                    await result
-            self._bot = None
         await super().terminate()
+        self._bot = None
 
     def get_client(self) -> Any:
         """

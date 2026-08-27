@@ -13,13 +13,15 @@ from typing import Any
 import pytest
 
 from satrap.cli.cmd_checkpoint import dispatch
+from satrap.core.storage import StorageLayout
 from satrap.core.utils.context import ContextManager
 
 
-def _args(db: str, **overrides: Any) -> Namespace:
+def _args(data_root: str, **overrides: Any) -> Namespace:
     base: dict[str, Any] = dict(
         action="list", conversation_id="conv-cli", checkpoint_id="",
-        branch_name="", checkpoint="", name="", description="", db=db,
+        branch_name="", checkpoint="", name="", description="",
+        platform_id="local", data_root=data_root,
     )
     base.update(overrides)
     return Namespace(**base)
@@ -51,10 +53,11 @@ def test_dispatch_business_error_exits_1(tmp_path: Path, capsys: pytest.CaptureF
     - tmp_path: tmp路径
     - capsys: pytest 输出捕获夹具
     """
-    db = str(tmp_path / "chat_history.db")
+    data_root = str(tmp_path / "data")
+    db = str(StorageLayout(data_root).platform_db("local"))
     _seed_conv(db)
 
-    args = _args(db, action="rollback", checkpoint_id="not-exist")
+    args = _args(data_root, action="rollback", checkpoint_id="not-exist")
     with pytest.raises(SystemExit) as ei:
         dispatch(args)
     assert ei.value.code == 1
@@ -69,7 +72,7 @@ def test_dispatch_unknown_action_exits_2(tmp_path: Path, capsys: pytest.CaptureF
     - tmp_path: tmp路径
     - capsys: pytest 输出捕获夹具
     """
-    args = _args(str(tmp_path / "x.db"), action="nope")
+    args = _args(str(tmp_path / "data"), action="nope")
     with pytest.raises(SystemExit) as ei:
         dispatch(args)
     assert ei.value.code == 2
@@ -84,10 +87,11 @@ def test_dispatch_success_paths(tmp_path: Path, capsys: pytest.CaptureFixture[st
     - tmp_path: tmp路径
     - capsys: pytest 输出捕获夹具
     """
-    db = str(tmp_path / "chat_history.db")
+    data_root = str(tmp_path / "data")
+    db = str(StorageLayout(data_root).platform_db("local"))
     cp_id = _seed_conv(db)
 
-    dispatch(_args(db, action="list"))
-    dispatch(_args(db, action="create", name="新检查点"))
-    dispatch(_args(db, action="lineage", checkpoint_id=cp_id))
+    dispatch(_args(data_root, action="list"))
+    dispatch(_args(data_root, action="create", name="新检查点"))
+    dispatch(_args(data_root, action="lineage", checkpoint_id=cp_id))
     capsys.readouterr()   # 吞掉输出

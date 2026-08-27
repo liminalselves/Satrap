@@ -323,6 +323,7 @@ class MessageEvent:
         platform_meta: PlatformMetadata,
         session_id: str,
         adapter: Any,
+        session_provider: str = "session_class",
         session_type: str = "",
     ):
         """
@@ -334,12 +335,14 @@ class MessageEvent:
         - platform_meta: 平台元信息
         - session_id: 会话 ID
         - adapter: 所属平台适配器实例
+        - session_provider: 会话 Provider 名称
         - session_type: 会话类型名称
         """
         self.message_str = message_str
         self.platform_message = platform_message
         self.platform_meta = platform_meta
         self.adapter = adapter
+        self.session_provider = session_provider
         self.session_type = session_type
 
         mt = platform_message.type.value if isinstance(platform_message.type, PlatformMessageType) else str(platform_message.type)

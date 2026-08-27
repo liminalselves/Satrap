@@ -21,6 +21,7 @@ import json
 import copy
 import re
 import threading
+from pathlib import Path
 
 from satrap.core.log import logger
 from satrap.core.utils.paths import get_db_path
@@ -177,7 +178,7 @@ class ContextManager:
         self,
         conversation_id: Union[int, str],
         keep_in_memory: bool = False,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         max_context: int = 128000,
         history_ratio: float = 0.7,
         context_threshold: float = 0.8,
@@ -267,6 +268,7 @@ class ContextManager:
         """
         with self._conn_lock:
             if self._conn is None:
+                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
                 self._conn = sqlite3.connect(self.db_path)
         return self._conn
 
@@ -1063,7 +1065,7 @@ class AsyncContextManager:
         self,
         conversation_id: Union[int, str],
         keep_in_memory: bool = False,
-        db_path: str = get_db_path("chat_history.db"),
+        db_path: str = get_db_path(),
         max_context: int = 128000,
         history_ratio: float = 0.7,
         context_threshold: float = 0.8,
@@ -1083,7 +1085,7 @@ class AsyncContextManager:
         - keep_in_memory:
             True: 加载数据后在内存操作, 需手动调用 save_context() 写入数据库 <br>
             False: (推荐) 每次修改操作自动同步到数据库, 保证数据不丢失
-        - db_path: SQLite 数据库路径, 默认 .satrap/satrapdata/chat_history.db
+        - db_path: SQLite 数据库路径, 默认 local 平台的 platform.db
         - max_context: 最大上下文长度, 默认 128k
         - history_ratio: 历史上下文比例, 历史预算 = max_context x history_ratio, 默认 0.7
         - context_threshold: 上下文阈值(占历史预算比例), 触发线 = 历史预算 x context_threshold, 默认 0.8

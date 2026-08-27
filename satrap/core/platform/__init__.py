@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 
 from satrap.core.log import logger
+from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
 
 if TYPE_CHECKING:
@@ -37,6 +38,8 @@ class PlatformConfig:
     参考 AstrBot 的适配器配置思想, 保留统一字段:
     - id: 适配器实例唯一标识
     - type: 适配器类型 (如 misskey / aiocqhttp / telegram)
+    - session_provider: 入站消息使用的会话 Provider 名称
+    - session_type: 入站消息使用的命名会话配置
     - enable: 是否启用
     - settings: 适配器专属配置
     """
@@ -45,6 +48,8 @@ class PlatformConfig:
     type: str = ""
     enable: bool = True
     settings: Dict[str, Any] = field(default_factory=dict[str, Any])
+    session_provider: str = SESSION_CLASS_PROVIDER
+    session_type: str = ""
 
 
 @dataclass
@@ -106,6 +111,24 @@ class PlatformAdapter(ABC):
         - handler: 事件处理函数, 输入为 PlatformEvent, 输出为可等待对象或 None
         """
         self.event_handler = handler
+
+    def get_session_type(self) -> str:
+        """
+        获取入站消息应使用的会话类配置名称
+
+        返回:
+        - str: 显式绑定的会话类名称, 未绑定时兼容回退到适配器类型
+        """
+        return (self.config.session_type or "").strip() or self.adapter_type
+
+    def get_session_provider(self) -> str:
+        """
+        获取入站消息应使用的会话 Provider 名称
+
+        返回:
+        - str: 显式绑定的 Provider 名称, 未绑定时使用 session_class
+        """
+        return (self.config.session_provider or "").strip() or SESSION_CLASS_PROVIDER
 
     async def emit_event(self, event: PlatformEvent):
         """
@@ -299,6 +322,8 @@ class PlatformAdapter(ABC):
             "client_self_id": self.client_self_id,
             "config_id": self.config.id,
             "config_type": self.config.type,
+            "session_provider": self.get_session_provider(),
+            "session_type": self.get_session_type(),
         }
 
     # ---------- 消息发送 ----------
@@ -597,7 +622,7 @@ class PlatformAdapterManager:
             return
         if not adapter.started:
             return
-        await adapter.stop()
+        await adapter.terminate()
 
     async def enable_adapter(self, adapter_id: str):
         """
@@ -627,7 +652,7 @@ class PlatformAdapterManager:
         """停止所有已启动适配器"""
         for adapter in self._adapters.values():
             if adapter.started:
-                await adapter.stop()
+                await adapter.terminate()
 
 
 class EventDispatcher:

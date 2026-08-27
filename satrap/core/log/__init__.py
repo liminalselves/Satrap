@@ -6,6 +6,34 @@ import colorlog
 import time
 from datetime import datetime
 
+from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
+
+
+class StandardLogHandler(logging.Handler):
+    """将控制台日志同步到进程内标准日志实时流"""
+
+    def __init__(self, stream: StandardLogStream) -> None:
+        """
+        参数:
+        - stream: 标准日志实时流
+        """
+        super().__init__()
+        self._stream = stream
+
+    def emit(self, record: logging.LogRecord) -> None:
+        """
+        发布一条控制台日志
+
+        参数:
+        - record: Python 日志记录
+        """
+        try:
+            content = self.format(record)
+            for line in content.splitlines() or (content,):
+                self._stream.publish(line, record.levelname)
+        except Exception:
+            self.handleError(record)
+
 class Logger():
     def __init__(
         self,
@@ -68,6 +96,16 @@ class Logger():
         sh.setFormatter(formatter)
         self.stdout_logger.addHandler(sh)
         # 绑定 formatter, 按彩色格式输出
+
+        if not isinstance(sh.stream, StandardStreamCapture):
+            stream_handler = StandardLogHandler(standard_log_stream)
+            stream_handler.setLevel(std_level)
+            stream_handler.setFormatter(logging.Formatter(
+                fmt="[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s",
+                datefmt=datefmt,
+            ))
+            self.stdout_logger.addHandler(stream_handler)
+            # 原始标准流尚未安装捕获代理时直接同步日志记录
 
         file_logfmt = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
         # 去掉颜色字段
@@ -242,7 +280,7 @@ class Logger():
         except OSError:
             pass
 
-logger = Logger(logger_name="SATRAP", output_dir=".satrap", file_level=logging.WARNING)
+logger = Logger(logger_name="SATRAP", output_dir=".satrap", file_level=logging.WARNING, std_level=logging.DEBUG)
 
 if __name__ == "__main__":
     logger = Logger(

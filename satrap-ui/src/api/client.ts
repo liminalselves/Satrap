@@ -1,5 +1,5 @@
 import axios, { AxiosInstance, AxiosError } from 'axios';
-import { API_BASE_URL } from '@/utils/constants';
+import { getApiBaseUrl } from '@/utils/constants';
 
 export class ApiError extends Error {
   constructor(
@@ -17,11 +17,15 @@ class ApiClient {
 
   constructor() {
     this.client = axios.create({
-      baseURL: API_BASE_URL,
       timeout: 10000,
       headers: {
         'Content-Type': 'application/json',
       },
+    });
+
+    this.client.interceptors.request.use((config) => {
+      config.baseURL = getApiBaseUrl();
+      return config;
     });
 
     this.setupInterceptors();

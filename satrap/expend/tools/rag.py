@@ -7,6 +7,10 @@ import asyncio, aiofiles, os, traceback
 from typing import Any
 
 from satrap.core.log import logger
+from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
+
+
+_LOCAL_INDEX_ROOT = default_storage_layout.platform_root(LOCAL_PLATFORM_ID) / "indexes"
 
 class LiteVectorRAG:
     """基于 LiteVector 的 RAG 实现"""
@@ -15,7 +19,7 @@ class LiteVectorRAG:
         base_url: str,
         api_key: str,
         embed_model: str,
-        persist_directory: str = ".satrap/satrapdata/lite_vector_rag",
+        persist_directory: str = str(_LOCAL_INDEX_ROOT / "lite_vector_rag"),
         default_vectorstore_name: str = "default",
         k_default: int = 4,
         chunk_size: int = 128,
@@ -490,7 +494,7 @@ class DataBaseRAG(LiteVectorRAG):
         base_url: str,
         api_key: str,
         embed_model: str,
-        persist_directory: str = ".satrap/satrapdata/vector_rag",
+        persist_directory: str = str(_LOCAL_INDEX_ROOT / "vector_rag"),
         default_vectorstore_name: str = "default",
         k_default: int = 4,
         chunk_size: int = 128,

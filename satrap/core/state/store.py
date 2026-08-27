@@ -65,7 +65,7 @@ class StateStore:
     状态检查点存储: 检查点 CRUD, 回滚与分支
 
     用法示例:
-        store = StateStore(db_path=get_db_path("chat_history.db"))
+        store = StateStore(db_path=get_db_path())
         store.register_domain(messages_domain)
         store.create_checkpoint(StateScope("conversation", "demo"), name="起点")
     """
@@ -78,10 +78,10 @@ class StateStore:
         初始化存储
 
         参数:
-        - db_path: 数据库文件路径, 默认 .satrap/satrapdata/state.db
+        - db_path: 数据库文件路径, 默认 local 平台的 platform.db
         - registry: 领域注册表, 默认新建
         """
-        self.db_path = Path(db_path) if db_path else Path(get_db_path("state.db"))
+        self.db_path = Path(db_path) if db_path else Path(get_db_path())
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.registry = registry or DomainRegistry()
         self._lock = threading.RLock()

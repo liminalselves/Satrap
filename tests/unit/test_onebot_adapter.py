@@ -14,7 +14,7 @@ from satrap.core.platform.onebot.onebot_utils import (
     onebot_segments_to_components,
     private_session_id,
 )
-from satrap.core.type import PlatformMessageType
+from satrap.core.type import PlatformMessage, PlatformMessageType
 
 
 class FakeOneBotClient:
@@ -65,6 +65,21 @@ def test_config_defaults_and_aliases():
     assert adapter.port == 8081
     assert adapter.enable_private is True
     assert adapter.enable_group is True
+
+
+def test_committed_event_uses_configured_session_type():
+    """OneBot 入站事件应使用平台实例绑定的会话类"""
+    adapter = make_adapter()
+    adapter.config.session_type = "assistant"
+    message = PlatformMessage()
+    message.type = PlatformMessageType.FRIEND_MESSAGE
+    message.message_str = "hello"
+    message.session_id = "private:10001"
+
+    adapter._commit_platform_message(message)
+    event = adapter._event_queue.get_nowait()
+
+    assert event.session_type == "assistant"
 
 
 def test_onebot_segments_to_components():

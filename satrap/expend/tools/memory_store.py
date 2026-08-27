@@ -1,14 +1,13 @@
 """
-长期记忆存储: SQLite 结构化记忆, 模型自驱增删改 (公共位置, 供 base_take/coding 共用)
+长期记忆存储: SQLite 结构化记忆, 模型自驱增删改
 
 设计 (对齐 proj_astro 模式, 无 embedding 依赖):
 - 记忆 = title + content + tags + importance 的结构化文本, 全部注入 system prompt
 - 模式三档: disabled (不注入/不可用) / base (只读) / full (可增删改)
 - 注入: 全量注入 + importance 降序 + max_entries 截断, 控制 token 成本
-- 作用域: 按 user_id 隔离 (从 session_id 解析), 网页聊天统一 web_chat
-- 分层: scopes 支持多作用域可见集合 (全局 + 项目), 读操作按集合过滤, 注入时项目层优先占配额
+- 作用域: 每个实例必须绑定一个具体会话, 不支持跨会话可见集合
 
-数据文件默认 .satrap/satrapdata/memory.db (纳入集中 db 路径管理)
+数据默认写入当前平台实例的 platform.db
 """
 from __future__ import annotations
 
@@ -22,13 +21,13 @@ from typing import Any, cast
 
 from satrap.core.utils.paths import get_db_path
 
-DEFAULT_MEMORY_DB = Path(get_db_path("memory.db"))
-"""默认记忆数据库路径 (.satrap/satrapdata/memory.db)"""
+DEFAULT_MEMORY_DB = Path(get_db_path())
+"""local 平台的默认记忆数据库路径"""
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
-    scope TEXT NOT NULL DEFAULT '',
+    scope TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
     tags TEXT NOT NULL DEFAULT '[]',
@@ -48,24 +47,22 @@ class MemoryStore:
         db_path: str | Path | None = None,
         mode: str = "full",
         max_entries: int = 30,
-        scope: str = "",
+        *,
+        scope: str,
     ) -> None:
         """
         参数:
-        - db_path: 数据库路径, 默认 .satrap/satrapdata/memory.db
+        - db_path: 数据库路径, 默认 local 平台的 platform.db
         - mode: 记忆模式, disabled / base / full
         - max_entries: 注入上限条数 (importance 降序), 默认 30
-        - scope: 默认写入作用域 (user_id), 为空表示不限定
-
-        说明:
-        - scopes 为可见作用域集合 (读操作过滤), 默认 [scope]; 含空串表示不限定
-        - 多层时约定 scopes[0] 为全局层, 其余为项目层 (注入时项目层优先占配额)
+        - scope: 会话作用域, 必须是非空值
         """
+        if not scope.strip():
+            raise ValueError("记忆 scope 必须绑定到具体会话")
         self.db_path = Path(db_path or DEFAULT_MEMORY_DB)
         self.mode = mode
         self.max_entries = max_entries
-        self.scope = scope
-        self.scopes: list[str] = [scope]
+        self.scope = scope.strip()
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
@@ -82,39 +79,9 @@ class MemoryStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _visible_scopes(self) -> list[str]:
-        """
-        可见 scope 集合: 显式 scopes 优先, 否则退化为单 scope (空串 = 不限定)
-
-        返回:
-        - list[str]: 可见 scope 集合: 显式 scopes 优先, 否则退化为单 scope (空串 = 不限定)
-        """
-        if self.scopes:
-            return list(self.scopes)
-        return [self.scope]
-
-    def _scope_filter(self, scope: str | None) -> tuple[str, tuple[str, ...]]:
-        """
-        生成 scope 过滤 SQL 片段 (以 AND 开头, 或为空串) 与参数
-
-        参数:
-        - scope: 作用域
-
-        - 显式 scope: 空串 = 不限定 (向后兼容), 其余按单值过滤
-        - 未指定: 按可见集合 scopes 过滤, 集合含空串表示不限定, 否则 IN 过滤
-
-        返回:
-        - tuple[str, tuple[str, ...]]: 生成 scope 过滤 SQL 片段 (以 AND 开头, 或为空串) 与参数
-        """
-        if scope is not None:
-            if scope == "":
-                return "", ()
-            return " AND scope=?", (scope,)
-        visible = self._visible_scopes()
-        if not visible or "" in visible:
-            return "", ()
-        placeholders = ",".join("?" * len(visible))
-        return f" AND scope IN ({placeholders})", tuple(visible)
+    def _scope_filter(self) -> tuple[str, tuple[str]]:
+        """生成当前会话的 scope 过滤条件"""
+        return " AND scope=?", (self.scope,)
 
     # ---------- 模式管理 ----------
 
@@ -172,7 +139,6 @@ class MemoryStore:
         content: str,
         tags: list[str] | None = None,
         importance: int = 1,
-        scope: str | None = None,
     ) -> dict[str, Any]:
         """
         添加一条记忆, 返回记忆记录
@@ -182,7 +148,6 @@ class MemoryStore:
         - content: 内容
         - tags: 标签集合
         - importance: 重要度
-        - scope: 作用域
 
         返回:
         - dict[str, Any]: 记忆记录
@@ -195,7 +160,7 @@ class MemoryStore:
         now = datetime.now().isoformat(timespec="seconds")
         record: dict[str, Any] = {
             "id": memory_id,
-            "scope": scope if scope is not None else self.scope,
+            "scope": self.scope,
             "title": title.strip(),
             "content": content.strip(),
             "tags": [str(t) for t in (tags or [])],
@@ -249,36 +214,38 @@ class MemoryStore:
             resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
                 return {"error": f"记忆不存在: {memory_id}", "ok": False}
-            existing = conn.execute("SELECT * FROM memories WHERE id=?", (resolved,)).fetchone()
+            existing = conn.execute(
+                "SELECT * FROM memories WHERE id=? AND scope=?",
+                (resolved, self.scope),
+            ).fetchone()
             conn.execute(
-                "UPDATE memories SET title=?, content=?, tags=?, importance=?, updated_at=? WHERE id=?",
+                "UPDATE memories SET title=?, content=?, tags=?, importance=?, updated_at=? WHERE id=? AND scope=?",
                 (
                     updates.get("title", existing["title"]),
                     updates.get("content", existing["content"]),
                     updates.get("tags", existing["tags"]),
                     updates.get("importance", existing["importance"]),
                     updates["updated_at"],
-                    resolved,
+                    resolved, self.scope,
                 ),
             )
         return self.get(resolved)
 
-    def delete(self, memory_id: str, scope: str | None = None) -> dict[str, Any]:
+    def delete(self, memory_id: str) -> dict[str, Any]:
         """
         按 ID (或唯一前缀) 删除记忆
 
         参数:
         - memory_id: 记忆 ID
-        - scope: 作用域
 
         返回:
         - dict[str, Any]: 按 ID (或唯一前缀) 删除记忆
         """
         if not self.can_write():
             return self._write_denied_error("删除")
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         with self._lock, self._connect() as conn:
-            resolved = self._resolve_memory_id(conn, memory_id, scope)
+            resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
                 return {"error": f"记忆不存在: {memory_id}", "ok": False}
             cursor = conn.execute(
@@ -289,20 +256,19 @@ class MemoryStore:
             return {"error": f"记忆不存在: {memory_id}", "ok": False}
         return {"memory_id": resolved, "status": "deleted", "ok": True}
 
-    def get(self, memory_id: str, scope: str | None = None) -> dict[str, Any]:
+    def get(self, memory_id: str) -> dict[str, Any]:
         """
         按 ID (或唯一前缀) 获取单条记忆
 
         参数:
         - memory_id: 记忆 ID
-        - scope: 作用域
 
         返回:
         - dict[str, Any]: 按 ID (或唯一前缀) 获取单条记忆
         """
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         with self._lock, self._connect() as conn:
-            resolved = self._resolve_memory_id(conn, memory_id, scope)
+            resolved = self._resolve_memory_id(conn, memory_id)
             row = None
             if resolved is not None:
                 row = conn.execute(
@@ -311,19 +277,18 @@ class MemoryStore:
                 ).fetchone()
         return self._row_to_dict(row) if row is not None else {"error": f"记忆不存在: {memory_id}", "ok": False}
 
-    def _resolve_memory_id(self, conn: sqlite3.Connection, memory_id: str, scope: str | None = None) -> str | None:
+    def _resolve_memory_id(self, conn: sqlite3.Connection, memory_id: str) -> str | None:
         """
-        解析记忆 ID: 精确匹配优先, 否则唯一前缀匹配 (多匹配返回 None); 未指定 scope 时按可见集合过滤
+        在当前会话中解析记忆 ID, 精确匹配优先, 否则使用唯一前缀匹配
 
         参数:
         - conn: 数据库连接
         - memory_id: 记忆 ID
-        - scope: 作用域
 
         返回:
-        - str | None:  None); 未指定 scope 时按可见集合过滤
+        - str | None: 解析到的完整 ID, 不唯一或不存在时返回 None
         """
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         row = conn.execute(
             f"SELECT id FROM memories WHERE id=?{clause}",
             (memory_id, *params),
@@ -338,17 +303,14 @@ class MemoryStore:
             return str(rows[0]["id"])
         return None
 
-    def list_all(self, scope: str | None = None) -> list[dict[str, Any]]:
+    def list_all(self) -> list[dict[str, Any]]:
         """
-        列出可见集合内全部记忆 (importance 降序)
-
-        参数:
-        - scope: 作用域
+        列出当前会话的全部记忆 (importance 降序)
 
         返回:
-        - list[dict[str, Any]]: 列出可见集合内全部记忆 (importance 降序)
+        - list[dict[str, Any]]: 当前会话的记忆列表
         """
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 f"SELECT * FROM memories WHERE 1=1{clause} ORDER BY importance DESC, updated_at DESC",
@@ -356,19 +318,16 @@ class MemoryStore:
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
 
-    def clear(self, scope: str | None = None) -> int:
+    def clear(self) -> int:
         """
-        清空可见集合内记忆, 返回删除条数
-
-        参数:
-        - scope: 作用域
+        清空当前会话的记忆, 返回删除条数
 
         返回:
         - int: 删除条数
         """
         if not self.can_write():
             return 0
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         with self._lock, self._connect() as conn:
             cursor = conn.execute(
                 f"DELETE FROM memories WHERE 1=1{clause}",
@@ -378,46 +337,16 @@ class MemoryStore:
 
     # ---------- 注入格式化 ----------
 
-    def to_context_block(self, scope: str | None = None) -> str:
+    def to_context_block(self) -> str:
         """
         生成可注入 system prompt 的记忆块 (disabled 模式返回空串)
 
-        参数:
-        - scope: 作用域
-
-        多 scope 可见集合时分层渲染: scopes[0] 为全局层, 其余为项目层;
-        项目层优先占 max_entries 配额, 全局层填充剩余配额
-
         返回:
-        - str: 空串)
+        - str: 当前会话的记忆上下文块
         """
         if self.mode == "disabled":
             return ""
-        if scope is not None:
-            return self._render_block(self.list_all(scope)[: self.max_entries])
-        visible = self._visible_scopes()
-        if len(visible) <= 1:
-            return self._render_block(self.list_all()[: self.max_entries])
-        global_scope, project_scopes = visible[0], visible[1:]
-        project_mems: list[dict[str, Any]] = []
-        for ps in project_scopes:
-            project_mems.extend(self.list_all(ps))
-        project_mems = project_mems[: self.max_entries]
-        remain = self.max_entries - len(project_mems)
-        global_mems = self.list_all(global_scope)[:remain] if remain > 0 else []
-        sections: list[tuple[str, list[dict[str, Any]]]] = []
-        if project_mems:
-            sections.append(("项目记忆", project_mems))
-        if global_mems:
-            sections.append(("全局记忆", global_mems))
-        if not sections:
-            return ""
-        lines = ["<long-term-memory>"]
-        for label, mems in sections:
-            lines.append(f"[{label}]")
-            lines.extend(self._render_lines(mems))
-        lines.append("</long-term-memory>")
-        return "\n".join(lines)
+        return self._render_block(self.list_all()[: self.max_entries])
 
     def _render_block(self, memories: list[dict[str, Any]]) -> str:
         """
@@ -453,17 +382,14 @@ class MemoryStore:
             lines.append(f"- [{m['title']}] {m['content']}{tags}")
         return lines
 
-    def count(self, scope: str | None = None) -> int:
+    def count(self) -> int:
         """
-        统计可见集合内记忆条数
-
-        参数:
-        - scope: 作用域
+        统计当前会话的记忆条数
 
         返回:
         - int: 统计可见集合内记忆条数
         """
-        clause, params = self._scope_filter(scope)
+        clause, params = self._scope_filter()
         with self._lock, self._connect() as conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM memories WHERE 1=1{clause}",
