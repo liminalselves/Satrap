@@ -10,6 +10,12 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { cn } from '@/utils/cn';
+import {
+  DEFAULT_THINKING_LEVELS,
+  getThinkingOptions,
+  THINKING_FIELD_OPTIONS,
+  THINKING_LEVEL_OPTIONS,
+} from '@/utils/constants';
 import { formatRelativeTime } from '@/utils/format';
 import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
@@ -21,6 +27,8 @@ import {
   type ChatEvent,
   type ChatPreloadSettings,
   type ChatPlugin,
+  type ChatTurnVariant,
+  type ConversationItem as ChatConversationItem,
   type DirEntry,
   type MemoryRecord,
   type ModelConfigItem,
@@ -28,6 +36,7 @@ import {
   type ProjectItem,
   type ToolCall,
 } from '@/api/chat';
+import { ChatHistoryManager } from './ChatHistoryManager';
 import {
   Plus,
   Send,
@@ -45,6 +54,7 @@ import {
   Sun,
   Moon,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   Brain,
   Puzzle,
@@ -78,6 +88,16 @@ const DEFAULT_SETTINGS: ChatSettings = {
   temperature: 0.7,
   systemPrompt: '',
 };
+
+const CHAT_THINK_STORAGE_KEY = 'satrap.chat.think';
+
+function loadPersistedThink(): string {
+  try {
+    return window.localStorage.getItem(CHAT_THINK_STORAGE_KEY)?.trim() || DEFAULT_SETTINGS.think;
+  } catch {
+    return DEFAULT_SETTINGS.think;
+  }
+}
 
 // 能力类别中文名
 const CAPABILITY_LABELS: Record<CapabilityKind, string> = {
@@ -121,6 +141,14 @@ type LocalMessageSegment =
   | { type: 'tool'; tool: ToolCall }
   | { type: 'content'; content: string };
 
+interface LocalResponseVariant {
+  variantIndex: number;
+  content: string;
+  thinking?: string;
+  toolCalls: ToolCall[];
+  segments?: LocalMessageSegment[];
+}
+
 // 单条消息
 interface ChatMessage {
   id: string;
@@ -137,6 +165,12 @@ interface ChatMessage {
   streaming?: boolean;
   // 对应后端 turn_index (用于 fork)
   turnIndex?: number;
+  // 同一用户输入对应的多个助手回复
+  variants?: LocalResponseVariant[];
+  // 当前激活的回复版本
+  activeVariant?: number;
+  // 已持久化的回复版本总数
+  variantCount?: number;
   // 分段内容 (按时间顺序, 用于流式渲染)
   segments?: LocalMessageSegment[];
 }
@@ -171,6 +205,35 @@ const deriveTitle = (content: string) => {
   return text.length > 24 ? `${text.slice(0, 24)}…` : text || '新对话';
 };
 
+function convertSegments(variant: ChatTurnVariant): LocalMessageSegment[] | undefined {
+  if (variant.segments && variant.segments.length > 0) {
+    return variant.segments.map((segment) => {
+      if (segment.type === 'thinking') {
+        return { type: 'thinking' as const, content: segment.content ?? '' };
+      }
+      if (segment.type === 'tool' && segment.tool) {
+        return { type: 'tool' as const, tool: segment.tool };
+      }
+      return { type: 'content' as const, content: segment.content ?? '' };
+    });
+  }
+  const fallback: LocalMessageSegment[] = [];
+  if (variant.thinking) fallback.push({ type: 'thinking', content: variant.thinking });
+  for (const tool of variant.tool_calls ?? []) fallback.push({ type: 'tool', tool });
+  if (variant.answer) fallback.push({ type: 'content', content: variant.answer });
+  return fallback;
+}
+
+function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
+  return {
+    variantIndex: variant.variant_index,
+    content: variant.answer,
+    thinking: variant.thinking ?? undefined,
+    toolCalls: variant.tool_calls ?? [],
+    segments: convertSegments(variant),
+  };
+}
+
 export function Chat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -180,7 +243,10 @@ export function Chat() {
   const [pendingUserInputs, setPendingUserInputs] = useState<Record<string, PendingUserInput[]>>({});
   const [answeringRequestId, setAnsweringRequestId] = useState<string | null>(null);
   // 聊天设置与设置弹窗 / 折叠面板
-  const [settings, setSettings] = useState<ChatSettings>(DEFAULT_SETTINGS);
+  const [settings, setSettings] = useState<ChatSettings>(() => ({
+    ...DEFAULT_SETTINGS,
+    think: loadPersistedThink(),
+  }));
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [optionsOpen, setOptionsOpen] = useState(false);
   // 后端连接状态
@@ -197,6 +263,8 @@ export function Chat() {
   const [configPlugin, setConfigPlugin] = useState<string | null>(null);
   // 记忆面板开关
   const [memoryOpen, setMemoryOpen] = useState(false);
+  // 历史管理面板开关
+  const [historyOpen, setHistoryOpen] = useState(false);
   // 项目列表 (绑定的工作区文件夹)
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   // 项目组折叠状态 (project_id -> 是否折叠)
@@ -237,7 +305,6 @@ export function Chat() {
   // 输入卡片独立反光
   const inputCardRef = useStandaloneGlassReflect<HTMLDivElement>({
     reflectRange: 120,
-    reflectSize: 120,
   });
 
   const active = useMemo(
@@ -246,6 +313,39 @@ export function Chat() {
   );
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   conversationsRef.current = conversations;
+
+  const mergeHistoryItems = useCallback((items: ChatConversationItem[]) => {
+    setConversations((current) => {
+      const existing = new Map(current.map((conversation) => [conversation.id, conversation]));
+      const restored = items.map((item): Conversation => {
+        const previous = existing.get(item.conversation_id);
+        return {
+          id: item.conversation_id,
+          title: item.title,
+          messages: previous?.messages ?? [],
+          updatedAt: item.last_at,
+          loaded: previous?.loaded ?? false,
+          projectId: item.project_id ?? null,
+        };
+      });
+      const drafts = current.filter((conversation) => (
+        conversation.id === '__draft__' || conversation.preloaded
+      ));
+      const next = [...drafts, ...restored];
+      setActiveId((currentId) => (
+        currentId && next.some((conversation) => conversation.id === currentId)
+          ? currentId
+          : next[0]?.id ?? ''
+      ));
+      return next;
+    });
+  }, []);
+
+  const refreshHistorySidebar = useCallback(async () => {
+    if (backendOk === false) return;
+    const { conversations: items } = await chatApi.listConversations();
+    mergeHistoryItems(items);
+  }, [backendOk, mergeHistoryItems]);
 
   // 更新指定会话
   const updateConversation = useCallback((id: string, updater: (c: Conversation) => Conversation) => {
@@ -270,6 +370,26 @@ export function Chat() {
   const handleEvent = useCallback(
     (event: ChatEvent) => {
       switch (event.type) {
+        case 'turn_start':
+          updateStreamingMessage((message) => ({
+            ...message,
+            turnIndex: event.turn_index,
+            activeVariant: event.variant_index,
+          }));
+          updateConversation(activeId, (conversation) => {
+            const messages = [...conversation.messages];
+            const assistantIndex = messages.findIndex(
+              (message) => message.id === streamingMsgIdRef.current,
+            );
+            if (assistantIndex > 0 && messages[assistantIndex - 1].role === 'user') {
+              messages[assistantIndex - 1] = {
+                ...messages[assistantIndex - 1],
+                turnIndex: event.turn_index,
+              };
+            }
+            return { ...conversation, messages };
+          });
+          break;
         case 'thinking_delta':
           updateStreamingMessage((m) => {
             const segments = [...(m.segments ?? [])];
@@ -351,7 +471,31 @@ export function Chat() {
           }));
           break;
         case 'turn_done':
-          updateStreamingMessage((m) => ({ ...m, content: event.answer || m.content, streaming: false }));
+          updateStreamingMessage((message) => {
+            const content = event.answer || message.content;
+            const completedVariant: LocalResponseVariant = {
+              variantIndex: event.variant_index,
+              content,
+              thinking: message.thinking,
+              toolCalls: message.toolCalls ?? [],
+              segments: message.segments,
+            };
+            const variants = [
+              ...(message.variants ?? []).filter(
+                (variant) => variant.variantIndex !== event.variant_index,
+              ),
+              completedVariant,
+            ].sort((left, right) => left.variantIndex - right.variantIndex);
+            return {
+              ...message,
+              content,
+              streaming: false,
+              turnIndex: event.turn_index,
+              activeVariant: event.variant_index,
+              variantCount: event.variant_count,
+              variants,
+            };
+          });
           setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
           streamingMsgIdRef.current = null;
           setGenerating(false);
@@ -361,14 +505,19 @@ export function Chat() {
             ...m,
             content: m.content + `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`,
             streaming: false,
+            turnIndex: event.turn_index ?? m.turnIndex,
+            activeVariant: event.variant_index ?? m.activeVariant,
+            variantCount: event.variant_count ?? m.variantCount,
           }));
           setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
           streamingMsgIdRef.current = null;
           setGenerating(false);
           break;
+        case 'variant_selected':
+          break;
       }
     },
-    [activeId, updateStreamingMessage]
+    [activeId, updateConversation, updateStreamingMessage]
   );
 
   // 加载会话历史消息
@@ -386,33 +535,15 @@ export function Chat() {
             attachments: turn.attachments ?? undefined,
             turnIndex: turn.turn_index,
           });
-          // 优先使用后端返回的 segments (含时间顺序), 否则按固定顺序构建
-          let segments: LocalMessageSegment[] | undefined;
-          if (turn.segments && turn.segments.length > 0) {
-            // 转换后端 segments 格式为前端格式
-            segments = turn.segments.map((seg) => {
-              if (seg.type === 'thinking') {
-                return { type: 'thinking' as const, content: seg.content ?? '' };
-              }
-              if (seg.type === 'tool' && seg.tool) {
-                return { type: 'tool' as const, tool: seg.tool };
-              }
-              return { type: 'content' as const, content: seg.content ?? '' };
-            });
-          } else {
-            // 兼容旧数据: 按固定顺序构建 (thinking -> tools -> content)
-            const fallback: LocalMessageSegment[] = [];
-            if (turn.thinking) {
-              fallback.push({ type: 'thinking', content: turn.thinking });
-            }
-            for (const tool of turn.tool_calls ?? []) {
-              fallback.push({ type: 'tool', tool });
-            }
-            if (turn.answer) {
-              fallback.push({ type: 'content', content: turn.answer });
-            }
-            segments = fallback;
-          }
+          const currentVariant: ChatTurnVariant = {
+            variant_index: turn.active_variant ?? 0,
+            thinking: turn.thinking,
+            answer: turn.answer,
+            segments: turn.segments,
+            created_at: turn.created_at,
+            tool_calls: turn.tool_calls,
+          };
+          const segments = convertSegments(currentVariant);
           messages.push({
             id: `${turn.id}-a`,
             role: 'assistant',
@@ -422,6 +553,9 @@ export function Chat() {
             timestamp: turn.created_at * 1000,
             turnIndex: turn.turn_index,
             segments,
+            activeVariant: turn.active_variant ?? 0,
+            variantCount: turn.variant_count ?? 1,
+            variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
           });
         }
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
@@ -505,6 +639,37 @@ export function Chat() {
     const all = list.includes(settings.model) ? list : [settings.model, ...list];
     return all.map((name) => ({ value: name, label: name }));
   }, [models, settings.model]);
+
+  const thinkingOptions = useMemo(
+    () => getThinkingOptions(modelsDetail[settings.model]),
+    [modelsDetail, settings.model]
+  );
+
+  useEffect(() => {
+    if (!Object.prototype.hasOwnProperty.call(modelsDetail, settings.model)) return;
+    if (thinkingOptions.some((option) => option.value === settings.think)) return;
+    setSettings((current) => ({ ...current, think: 'off' }));
+  }, [modelsDetail, settings.model, settings.think, thinkingOptions]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(CHAT_THINK_STORAGE_KEY, settings.think);
+    } catch {
+      // 浏览器禁用本地存储时继续使用当前页面状态
+    }
+  }, [settings.think]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== CHAT_THINK_STORAGE_KEY) return;
+      setSettings((current) => ({
+        ...current,
+        think: event.newValue?.trim() || DEFAULT_SETTINGS.think,
+      }));
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   // 更新单项设置
   const updateSettings = useCallback(<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => {
@@ -707,11 +872,18 @@ export function Chat() {
 
   // 删除会话 (调后端删除 + 本地移除)
   const handleDelete = useCallback(
-    (id: string) => {
+    async (id: string) => {
       const conv = conversations.find((c) => c.id === id);
       const title = conv?.title || id;
       if (!window.confirm(`确定删除会话 "${title}" 吗？`)) return;
-      // 本地先移除 (乐观更新)
+      if (id !== '__draft__') {
+        try {
+          await chatApi.deleteConversation(id);
+        } catch (err) {
+          alert(`删除会话失败: ${err instanceof Error ? err.message : String(err)}`);
+          return;
+        }
+      }
       setConversations((prev) => {
         const next = prev.filter((c) => c.id !== id);
         if (id === activeId) {
@@ -724,12 +896,6 @@ export function Chat() {
         delete next[id];
         return next;
       });
-      // 后端删除 (草稿会话无需调后端)
-      if (id !== '__draft__') {
-        chatApi.deleteConversation(id).catch((err) => {
-          console.error('[Chat] 后端删除会话失败:', err);
-        });
-      }
     },
     [activeId, conversations]
   );
@@ -783,12 +949,17 @@ export function Chat() {
     }
 
     const atts = pendingAttachments.length > 0 ? [...pendingAttachments] : undefined;
+    const nextTurnIndex = targetConv.messages.reduce(
+      (maximum, message) => Math.max(maximum, message.turnIndex ?? -1),
+      -1,
+    ) + 1;
     const userMsg: ChatMessage = {
       id: genId(),
       role: 'user',
       content,
       timestamp: Date.now(),
       attachments: atts,
+      turnIndex: nextTurnIndex,
     };
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -797,6 +968,9 @@ export function Chat() {
       content: '',
       timestamp: Date.now(),
       streaming: true,
+      turnIndex: nextTurnIndex,
+      activeVariant: 0,
+      variantCount: 0,
     };
 
     // 乐观更新: 先写入用户消息 + 占位 assistant 消息
@@ -843,14 +1017,23 @@ export function Chat() {
     }
 
     try {
-      await chatApi.send(
+      const sendResult = await chatApi.send(
         realConvId,
         content,
         settings.think,
         atts,
         preloadSettingsFor(targetConv.projectId),
       );
-      updateConversation(realConvId, (c) => ({ ...c, preloaded: false, preloadKey: undefined }));
+      updateConversation(realConvId, (conversation) => ({
+        ...conversation,
+        preloaded: false,
+        preloadKey: undefined,
+        messages: conversation.messages.map((message) => (
+          message.id === assistantId || message.id === userMsg.id
+            ? { ...message, turnIndex: sendResult.turn_index }
+            : message
+        )),
+      }));
       // 流式内容经 WS 推送, 此处仅等待发送确认
     } catch (err) {
       console.error('[Chat] 发送失败:', err);
@@ -939,37 +1122,90 @@ export function Chat() {
   // Retry: 重试最后一轮
   const handleRetry = useCallback(async () => {
     if (!active || active.id === '__draft__' || active.preloaded || generating) return;
+    const previousAssistant = active.messages[active.messages.length - 1];
+    if (!previousAssistant || previousAssistant.role !== 'assistant') return;
+    const preservedVariants = previousAssistant.variants?.length
+      ? previousAssistant.variants
+      : [{
+        variantIndex: previousAssistant.activeVariant ?? 0,
+        content: previousAssistant.content,
+        thinking: previousAssistant.thinking,
+        toolCalls: previousAssistant.toolCalls ?? [],
+        segments: previousAssistant.segments,
+      }];
+    const assistantId = genId();
+    const assistantMsg: ChatMessage = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+      streaming: true,
+      turnIndex: previousAssistant.turnIndex,
+      variants: preservedVariants,
+      activeVariant: previousAssistant.activeVariant,
+      variantCount: previousAssistant.variantCount ?? preservedVariants.length,
+    };
+    updateConversation(active.id, (conversation) => ({
+      ...conversation,
+      messages: [...conversation.messages.slice(0, -1), assistantMsg],
+      updatedAt: Math.round(Date.now() / 1000),
+    }));
+    streamingMsgIdRef.current = assistantId;
+    setGenerating(true);
     try {
       const result = await chatApi.retry(active.id, settings.think);
       if (result.ok) {
-        // 保留 user 消息, 替换最后的 assistant 消息为新的流式占位
-        const assistantId = genId();
-        const assistantMsg: ChatMessage = {
-          id: assistantId,
-          role: 'assistant',
-          content: '',
-          timestamp: Date.now(),
-          streaming: true,
-        };
-        updateConversation(active.id, (c) => {
-          const msgs = [...c.messages];
-          // 删掉最后的 assistant 消息 (如果存在)
-          if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
-            msgs.pop();
-          }
-          msgs.push(assistantMsg);
-          return { ...c, messages: msgs, updatedAt: Date.now() };
-        });
-        streamingMsgIdRef.current = assistantId;
-        setGenerating(true);
+        updateStreamingMessage((message) => ({
+          ...message,
+          turnIndex: result.turn_index,
+          activeVariant: result.variant_index,
+        }));
       } else {
-        alert(result.error || '重试失败');
+        throw new Error(result.error || '重试失败');
       }
     } catch (err) {
       console.error('[Chat] 重试失败:', err);
+      updateConversation(active.id, (conversation) => ({
+        ...conversation,
+        messages: [...conversation.messages.slice(0, -1), previousAssistant],
+      }));
+      streamingMsgIdRef.current = null;
+      setGenerating(false);
       alert(`重试失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [active, generating, settings.think, updateConversation]);
+  }, [active, generating, settings.think, updateConversation, updateStreamingMessage]);
+
+  const handleSelectVariant = useCallback(async (turnIndex: number, variantIndex: number) => {
+    if (!active || active.id === '__draft__' || active.preloaded || generating) return;
+    try {
+      const result = await chatApi.selectVariant(active.id, turnIndex, variantIndex);
+      const turn = result.turn;
+      const selected = turn.variants.find(
+        (variant) => variant.variant_index === turn.active_variant,
+      );
+      if (!selected) throw new Error('后端未返回选中的回复版本');
+      updateConversation(active.id, (conversation) => ({
+        ...conversation,
+        messages: conversation.messages.map((message) => (
+          message.role === 'assistant' && message.turnIndex === turnIndex
+            ? {
+              ...message,
+              content: selected.answer,
+              thinking: selected.thinking ?? undefined,
+              toolCalls: selected.tool_calls,
+              segments: convertSegments(selected),
+              activeVariant: turn.active_variant,
+              variantCount: turn.variant_count,
+              variants: turn.variants.map(convertVariant),
+            }
+            : message
+        )),
+      }));
+    } catch (err) {
+      console.error('[Chat] 切换回复版本失败:', err);
+      alert(`切换回复版本失败: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [active, generating, updateConversation]);
 
   // Fork: 从指定轮次创建新会话
   const handleFork = useCallback(async (turnIndex: number) => {
@@ -1092,8 +1328,11 @@ export function Chat() {
   // 切换插件聚合启停
   const togglePlugin = useCallback(async (name: string, enabled: boolean) => {
     try {
-      await chatApi.setPluginEnabled(name, enabled);
+      const result = await chatApi.setPluginEnabled(name, enabled);
       setPlugins((prev) => prev.map((p) => (p.name === name ? { ...p, enabled } : p)));
+      if (result.applied === false) {
+        alert(`插件配置已保存, 但有 ${result.failed || 0} 个活跃会话应用失败`);
+      }
     } catch (err) {
       console.error('[Chat] 切换插件失败:', err);
       alert(`切换插件失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1104,7 +1343,7 @@ export function Chat() {
   const toggleCapability = useCallback(
     async (pluginName: string, kind: CapabilityKind, capName: string, enabled: boolean) => {
       try {
-        await chatApi.setPluginCapability(pluginName, kind, capName, enabled);
+        const result = await chatApi.setPluginCapability(pluginName, kind, capName, enabled);
         setPlugins((prev) =>
           prev.map((p) =>
             p.name === pluginName
@@ -1118,6 +1357,9 @@ export function Chat() {
               : p
           )
         );
+        if (result.applied === false) {
+          alert(`能力配置已保存, 但有 ${result.failed || 0} 个活跃会话应用失败`);
+        }
       } catch (err) {
         console.error('[Chat] 切换能力失败:', err);
         alert(`切换能力失败: ${err instanceof Error ? err.message : String(err)}`);
@@ -1144,7 +1386,32 @@ export function Chat() {
           <p className="text-sm text-text-tertiary">
             请先启动聊天服务: python -m satrap.display.server
           </p>
+          <Button variant="default" onClick={() => setSettingsOpen(true)}>
+            <Settings2 className="mr-2 h-4 w-4" />对话设置
+          </Button>
         </Card>
+        <Modal open={settingsOpen} onClose={() => setSettingsOpen(false)} title="对话设置" size="md">
+          <button
+            onClick={() => setHistoryOpen(true)}
+            className="glass-card w-full rounded-lg px-3 py-3 text-left transition-colors hover:bg-glass-active"
+          >
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 shrink-0 text-accent" />
+              <span className="text-sm text-text-primary">管理会话历史</span>
+            </div>
+            <p className="mt-1 text-xs text-text-tertiary">Chat 服务停止时使用冷管理读取历史和回收站</p>
+          </button>
+        </Modal>
+        <ChatHistoryManager
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          projects={projects}
+          models={models}
+          activeConversationId={activeId}
+          preferCold
+          onOpenConversation={() => undefined}
+          onChanged={() => undefined}
+        />
       </div>
     );
   }
@@ -1304,6 +1571,7 @@ export function Chat() {
                     isLast={idx === active.messages.length - 1}
                     onRetry={handleRetry}
                     onFork={handleFork}
+                    onSelectVariant={handleSelectVariant}
                   />
                 ))}
                 <div ref={messagesEndRef} />
@@ -1321,6 +1589,7 @@ export function Chat() {
                     think={settings.think}
                     model={settings.model}
                     modelOptions={modelOptions}
+                    thinkingOptions={thinkingOptions}
                     onToggleThink={(v) => updateSettings('think', v)}
                     onModelChange={(v) => updateSettings('model', v)}
                   />
@@ -1445,12 +1714,14 @@ export function Chat() {
         onClose={() => setSettingsOpen(false)}
         settings={settings}
         modelOptions={modelOptions}
+        thinkingOptions={thinkingOptions}
         onChange={updateSettings}
         plugins={plugins}
         onTogglePlugin={togglePlugin}
         onViewCapabilities={(name) => setCapabilityPlugin(name)}
         onViewConfig={(name) => setConfigPlugin(name)}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenHistory={() => setHistoryOpen(true)}
         modelsDetail={modelsDetail}
         onAddModel={() => setEditingModel('')}
         onEditModel={(name) => setEditingModel(name)}
@@ -1477,6 +1748,21 @@ export function Chat() {
         pluginName={configPlugin}
         onClose={() => setConfigPlugin(null)}
         onSaved={handlePluginConfigSaved}
+      />
+
+      <ChatHistoryManager
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        projects={projects}
+        models={models}
+        activeConversationId={activeId}
+        onOpenConversation={(conversationId) => {
+          setActiveId(conversationId);
+          setShowEntryChoice(false);
+          setHistoryOpen(false);
+          setSettingsOpen(false);
+        }}
+        onChanged={refreshHistorySidebar}
       />
 
       {/* 记忆管理面板 */}
@@ -1745,18 +2031,19 @@ function OptionsPanel({
   think,
   model,
   modelOptions,
+  thinkingOptions,
   onToggleThink,
   onModelChange,
 }: {
   think: string;
   model: string;
   modelOptions: { value: string; label: string }[];
+  thinkingOptions: { value: string; label: string }[];
   onToggleThink: (v: string) => void;
   onModelChange: (v: string) => void;
 }) {
   const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
     reflectRange: 100,
-    reflectSize: 100,
   });
 
   return (
@@ -1771,12 +2058,7 @@ function OptionsPanel({
         <Select
           value={think}
           onChange={(e) => onToggleThink(e.target.value)}
-          options={[
-            { value: 'off', label: '关闭' },
-            { value: 'low', label: '低' },
-            { value: 'medium', label: '中' },
-            { value: 'high', label: '高' },
-          ]}
+          options={thinkingOptions}
         />
       </div>
 
@@ -1804,12 +2086,14 @@ function ChatSettingsModal({
   onClose,
   settings,
   modelOptions,
+  thinkingOptions,
   onChange,
   plugins,
   onTogglePlugin,
   onViewCapabilities,
   onViewConfig,
   onOpenMemory,
+  onOpenHistory,
   modelsDetail,
   onAddModel,
   onEditModel,
@@ -1819,12 +2103,14 @@ function ChatSettingsModal({
   onClose: () => void;
   settings: ChatSettings;
   modelOptions: { value: string; label: string }[];
+  thinkingOptions: { value: string; label: string }[];
   onChange: <K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) => void;
   plugins: ChatPlugin[];
   onTogglePlugin: (name: string, enabled: boolean) => void;
   onViewCapabilities: (name: string) => void;
   onViewConfig: (name: string) => void;
   onOpenMemory: () => void;
+  onOpenHistory: () => void;
   modelsDetail: Record<string, ModelConfigItem>;
   onAddModel: () => void;
   onEditModel: (name: string) => void;
@@ -1894,12 +2180,7 @@ function ChatSettingsModal({
           <Select
             value={settings.think}
             onChange={(e) => onChange('think', e.target.value)}
-            options={[
-              { value: 'off', label: '关闭' },
-              { value: 'low', label: '低' },
-              { value: 'medium', label: '中' },
-              { value: 'high', label: '高' },
-            ]}
+            options={thinkingOptions}
           />
         </div>
 
@@ -1998,6 +2279,21 @@ function ChatSettingsModal({
               <span className="text-sm text-text-primary">管理记忆</span>
             </div>
             <p className="text-xs text-text-tertiary mt-1">查看 / 添加 / 删除长期记忆条目</p>
+          </button>
+        </div>
+
+        {/* 会话历史管理 */}
+        <div>
+          <label className="block text-sm font-medium text-text-primary mb-2">会话历史</label>
+          <button
+            onClick={onOpenHistory}
+            className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
+          >
+            <div className="flex items-center gap-2">
+              <HardDrive className="h-4 w-4 text-accent shrink-0" />
+              <span className="text-sm text-text-primary">管理历史与回收站</span>
+            </div>
+            <p className="text-xs text-text-tertiary mt-1">搜索、批量清理、恢复或永久删除 Chat 会话</p>
           </button>
         </div>
 
@@ -2397,7 +2693,6 @@ function ChatHeader({
 }) {
   const headerRef = useStandaloneGlassReflect<HTMLElement>({
     reflectRange: 150,
-    reflectSize: 150,
   });
 
   return (
@@ -2448,7 +2743,6 @@ function ConversationItem({
 }) {
   const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
     reflectRange: 80,
-    reflectSize: 60,
   });
 
   return (
@@ -2613,7 +2907,6 @@ function SuggestionCard({
 }) {
   const reflectRef = useStandaloneGlassReflect<HTMLButtonElement>({
     reflectRange: 100,
-    reflectSize: 90,
   });
   const Icon = suggestion.icon;
 
@@ -2645,17 +2938,25 @@ function MessageBubble({
   isLast,
   onRetry,
   onFork,
+  onSelectVariant,
 }: {
   message: ChatMessage;
   isLast?: boolean;
   onRetry?: () => void;
   onFork?: (turnIndex: number) => void;
+  onSelectVariant?: (turnIndex: number, variantIndex: number) => void;
 }) {
   const isUser = message.role === 'user';
   const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
     reflectRange: 90,
-    reflectSize: 80,
   });
+  const variants = [...(message.variants ?? [])].sort(
+    (left, right) => left.variantIndex - right.variantIndex,
+  );
+  const activeVariantPosition = Math.max(
+    0,
+    variants.findIndex((variant) => variant.variantIndex === message.activeVariant),
+  );
 
   return (
     <div className="flex gap-3 group">
@@ -2788,6 +3089,33 @@ function MessageBubble({
               'flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity',
               isUser && 'justify-end'
             )}>
+              {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variants.length > 1 && (
+                <div className="flex items-center gap-0.5 px-1 text-xs text-text-tertiary">
+                  <button
+                    onClick={() => onSelectVariant(
+                      message.turnIndex!,
+                      variants[Math.max(0, activeVariantPosition - 1)].variantIndex,
+                    )}
+                    disabled={activeVariantPosition <= 0}
+                    className="rounded p-0.5 hover:text-accent disabled:opacity-30"
+                    title="上一个回复"
+                  >
+                    <ChevronLeft className="h-3.5 w-3.5" />
+                  </button>
+                  <span>{activeVariantPosition + 1} / {variants.length}</span>
+                  <button
+                    onClick={() => onSelectVariant(
+                      message.turnIndex!,
+                      variants[Math.min(variants.length - 1, activeVariantPosition + 1)].variantIndex,
+                    )}
+                    disabled={activeVariantPosition >= variants.length - 1}
+                    className="rounded p-0.5 hover:text-accent disabled:opacity-30"
+                    title="下一个回复"
+                  >
+                    <ChevronRight className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
               {!isUser && isLast && onRetry && (
                 <button
                   onClick={onRetry}
@@ -2818,7 +3146,6 @@ function MessageBubble({
 function ThinkingBlock({ thinking }: { thinking: string }) {
   const reflectRef = useStandaloneGlassReflect<HTMLDetailsElement>({
     reflectRange: 60,
-    reflectSize: 50,
   });
   return (
     <details ref={reflectRef} className="glass-card glass-card-teal rounded-lg px-3 py-2 text-xs">
@@ -2857,9 +3184,10 @@ function ModelEditModal({
   const [maxTokens, setMaxTokens] = useState('');
   const [contextWindow, setContextWindow] = useState('');
   const [historyRatio, setHistoryRatio] = useState('');
-  const [reasoningBody, setReasoningBody] = useState('');
   const [thinkingFieldName, setThinkingFieldName] = useState('');
-  const [thinkingFields, setThinkingFields] = useState('');
+  const [thinkingFields, setThinkingFields] = useState<string[]>([]);
+  const [thinkingLevels, setThinkingLevels] = useState<string[]>([...DEFAULT_THINKING_LEVELS]);
+  const [omitNoneThinkingFields, setOmitNoneThinkingFields] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // 打开时填充表单
@@ -2875,9 +3203,10 @@ function ModelEditModal({
       setMaxTokens('');
       setContextWindow('');
       setHistoryRatio('');
-      setReasoningBody('');
       setThinkingFieldName('');
-      setThinkingFields('');
+      setThinkingFields([]);
+      setThinkingLevels([...DEFAULT_THINKING_LEVELS]);
+      setOmitNoneThinkingFields(false);
     } else if (existing) {
       setName(existing.name);
       setModel(existing.model ?? '');
@@ -2890,9 +3219,10 @@ function ModelEditModal({
       setMaxTokens(existing.max_tokens !== undefined ? String(existing.max_tokens) : '');
       setContextWindow(existing.context_window !== undefined ? String(existing.context_window) : '');
       setHistoryRatio(existing.history_ratio !== undefined ? String(existing.history_ratio) : '');
-      setReasoningBody(existing.reasoning_body ? JSON.stringify(existing.reasoning_body, null, 2) : '');
       setThinkingFieldName(existing.thinking_field_name ?? '');
-      setThinkingFields(existing.thinking_fields ? existing.thinking_fields.join(', ') : '');
+      setThinkingFields(existing.thinking_fields ?? []);
+      setThinkingLevels(existing.thinking_levels ?? [...DEFAULT_THINKING_LEVELS]);
+      setOmitNoneThinkingFields(existing.omit_none_thinking_fields ?? false);
     }
   }, [modelName, isNew, existing]);
 
@@ -2913,9 +3243,10 @@ function ModelEditModal({
         ...(maxTokens.trim() ? { max_tokens: Number(maxTokens) } : {}),
         ...(contextWindow.trim() ? { context_window: Number(contextWindow) } : {}),
         ...(historyRatio.trim() ? { history_ratio: Number(historyRatio) } : {}),
-        ...(reasoningBody.trim() ? { reasoning_body: JSON.parse(reasoningBody) } : {}),
-        ...(thinkingFieldName.trim() ? { thinking_field_name: thinkingFieldName.trim() } : {}),
-        ...(thinkingFields.trim() ? { thinking_fields: thinkingFields.split(',').map(s => s.trim()).filter(Boolean) } : {}),
+        thinking_field_name: thinkingFieldName.trim() || null,
+        thinking_fields: thinkingFields,
+        thinking_levels: thinkingLevels,
+        omit_none_thinking_fields: omitNoneThinkingFields,
       };
       const result = isNew
         ? await chatApi.addModel(config)
@@ -2932,7 +3263,7 @@ function ModelEditModal({
     } finally {
       setSaving(false);
     }
-  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, reasoningBody, thinkingFieldName, thinkingFields, isNew, modelName, onSaved, onClose]);
+  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, isNew, modelName, onSaved, onClose]);
 
   if (modelName === null) return null;
 
@@ -3057,16 +3388,6 @@ function ModelEditModal({
 
         {/* 思考参数 */}
         <div>
-          <label className="block text-xs font-medium text-text-secondary mb-1">思考请求格式 (JSON)</label>
-          <textarea
-            value={reasoningBody}
-            onChange={(e) => setReasoningBody(e.target.value)}
-            placeholder='{"thinking": {"type": "enabled"}}'
-            rows={3}
-            className="glass-input w-full text-sm font-mono"
-          />
-        </div>
-        <div>
           <label className="block text-xs font-medium text-text-secondary mb-1">思考字段名</label>
           <input
             value={thinkingFieldName}
@@ -3076,15 +3397,74 @@ function ModelEditModal({
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-text-secondary mb-1">思考字段列表</label>
-          <input
-            value={thinkingFields}
-            onChange={(e) => setThinkingFields(e.target.value)}
-            placeholder="reasoning_effort, thinking.type"
-            className="glass-input w-full text-sm"
-          />
-          <p className="text-xs text-text-tertiary mt-1">逗号分隔, 如: reasoning_effort, thinking.type</p>
+          <label className="block text-xs font-medium text-text-secondary mb-2">思考请求字段</label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {THINKING_FIELD_OPTIONS.map((option) => (
+              <label
+                key={option.value}
+                className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={thinkingFields.includes(option.value)}
+                  onChange={(event) => setThinkingFields((current) => (
+                    event.target.checked
+                      ? [...current, option.value]
+                      : current.filter((field) => field !== option.value)
+                  ))}
+                  className="h-4 w-4 mt-0.5 accent-accent"
+                />
+                <span className="min-w-0">
+                  <span className="block text-xs font-mono text-text-primary">{option.label}</span>
+                  <span className="block text-[11px] text-text-tertiary mt-0.5">{option.description}</span>
+                </span>
+              </label>
+            ))}
+          </div>
         </div>
+        {(thinkingFields.includes('thinking_level') || thinkingFields.includes('reasoning_effort')) && (
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-2">可用思考强度</label>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+              {THINKING_LEVEL_OPTIONS.map((option) => (
+                <label
+                  key={option.value}
+                  className="glass-card rounded-md px-3 py-2 flex items-center gap-2 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={thinkingLevels.includes(option.value)}
+                    onChange={(event) => setThinkingLevels((current) => (
+                      event.target.checked
+                        ? [...current, option.value]
+                        : current.filter((level) => level !== option.value)
+                    ))}
+                    className="h-4 w-4 accent-accent"
+                  />
+                  <span className="min-w-0 text-xs text-text-primary">
+                    <span className="font-mono">{option.value}</span>
+                    <span className="ml-1 text-text-tertiary">{option.label}</span>
+                  </span>
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-text-tertiary mt-1.5">Chat 只显示这里勾选的强度, 关闭选项始终保留</p>
+          </div>
+        )}
+        <label className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={omitNoneThinkingFields}
+            onChange={(event) => setOmitNoneThinkingFields(event.target.checked)}
+            className="h-4 w-4 mt-0.5 accent-accent"
+          />
+          <span>
+            <span className="block text-xs font-medium text-text-primary">关闭思考时省略 none 字段</span>
+            <span className="block text-[11px] text-text-tertiary mt-0.5">
+              不发送值为 none 的强度字段, 仍保留 disabled 或 false 等显式关闭字段
+            </span>
+          </span>
+        </label>
 
         {/* 操作按钮 */}
         <div className="flex justify-end gap-2 pt-2">

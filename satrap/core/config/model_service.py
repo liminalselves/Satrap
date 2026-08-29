@@ -5,7 +5,7 @@ from dataclasses import fields
 from typing import Any, cast
 
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, validate_thinking_levels
 
 
 _CONFIG_CLASSES = {
@@ -167,4 +167,6 @@ class ModelConfigService:
             if not allow_masked_key:
                 raise ValueError("不能使用脱敏后的 API Key 创建配置")
             raw.pop("api_key", None)
+        if target == "llm" and "thinking_levels" in raw:
+            raw["thinking_levels"] = validate_thinking_levels(raw["thinking_levels"])
         return raw

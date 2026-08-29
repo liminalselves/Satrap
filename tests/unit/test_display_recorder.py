@@ -201,6 +201,52 @@ def test_recorder_tool_failure_recorded(tmp_path: Any):
     assert rec.list_turns()[0]["tool_calls"][0]["success"] is False
 
 
+def test_recorder_retry_variants_are_persisted_and_selectable(tmp_path: Any):
+    """
+    Retry 追加回复版本并隔离工具调用, 切换后同步当前展示值
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    db = str(tmp_path / "display.db")
+    rec = DisplayRecorder(db, "conv-variants")
+    started = rec.start_turn("问题")
+    assert started["turn_index"] == 0 and started["variant_index"] == 0
+    rec.on_content("第一版")
+    rec.on_tool_start({"name": "first", "arguments": {}, "call_id": "first-call"})
+    rec.on_tool_end({"call_id": "first-call", "success": True})
+    rec.end_turn(
+        context_messages=[
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "第一版"},
+        ]
+    )
+
+    retry = rec.start_retry_variant()
+    assert retry is not None and retry["variant_index"] == 1
+    rec.on_content("第二版")
+    rec.on_tool_start({"name": "second", "arguments": {}, "call_id": "second-call"})
+    rec.on_tool_end({"call_id": "second-call", "success": False})
+    rec.end_turn(
+        context_messages=[
+            {"role": "user", "content": "问题"},
+            {"role": "assistant", "content": "第二版"},
+        ]
+    )
+
+    turn = rec.list_turns()[0]
+    assert turn["variant_count"] == 2 and turn["active_variant"] == 1
+    assert turn["answer"] == "第二版"
+    assert [item["name"] for item in turn["tool_calls"]] == ["second"]
+    assert [item["answer"] for item in turn["variants"]] == ["第一版", "第二版"]
+
+    selected = rec.activate_variant(0, 0)
+    assert selected is not None and selected["answer"] == "第一版"
+    assert [item["name"] for item in selected["tool_calls"]] == ["first"]
+    context = rec.variant_context(0, 0)
+    assert context is not None and context[-1]["content"] == "第一版"
+
+
 def test_recorder_isolated_from_conversations(tmp_path: Any):
     """
     不同 conversation_id 数据隔离

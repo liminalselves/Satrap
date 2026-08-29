@@ -29,6 +29,7 @@ from satrap.display.recorder import (
     get_conversation_meta,
     get_project,
     list_conversations,
+    query_conversations,
     list_projects,
     set_conversation_project,
 )
@@ -108,6 +109,31 @@ def test_list_conversations_with_project_and_empty(tmp_path: Path):
     assert convs["conv-empty"]["turn_count"] == 0
     assert convs["conv-empty"]["project_id"] is None
     assert convs["conv-empty"]["title"] == "新对话"
+
+
+def test_query_conversations_filters_and_paginates(tmp_path: Path):
+    """
+    历史查询应支持标题、模型、轮数和分页过滤
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    db = str(tmp_path / "display.db")
+    first = DisplayRecorder(db, "conv-first")
+    first.save_meta("fast", think="high")
+    first.start_turn("查找目标会话")
+    first.end_turn("完成")
+    second = DisplayRecorder(db, "conv-empty")
+    second.save_meta("default")
+
+    searched = query_conversations(db, search="目标", model="fast")
+    empty = query_conversations(db, turn_count="empty", page=1, page_size=1)
+
+    assert searched["total"] == 1
+    assert searched["items"][0]["conversation_id"] == "conv-first"
+    assert searched["items"][0]["think"] == "high"
+    assert empty["total"] == 1
+    assert empty["items"][0]["conversation_id"] == "conv-empty"
 
 
 def test_set_conversation_project_rebind(tmp_path: Path):

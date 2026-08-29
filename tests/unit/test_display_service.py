@@ -16,6 +16,7 @@ from satrap.display import service as service_mod
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.recorder import list_conversations
 from satrap.display.service import ChatService
+from satrap.edictum.plugin_config import PluginConfigManager
 
 
 # ---------- ChatPluginRegistry 测试 ----------
@@ -529,6 +530,80 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
     assert third != second
 
 
+def test_chat_plugin_capability_updates_active_session(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """
+    Chat 子能力开关应通过插件命名空间即时更新活跃会话
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    config_manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("session_commands", True)
+    svc._plugins.set_capability("session_commands", "commands", "about", False)
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        plugin = next(item for item in conv.session.list_plugins() if item.name == "session_commands")
+        assert plugin.commands["about"] is False
+
+        result = await svc.set_plugin_capability(
+            "session_commands",
+            "commands",
+            "about",
+            True,
+        )
+
+        assert result["ok"] is True
+        assert result["sessions"][0]["status"] == "applied"
+        assert plugin.commands["about"] is True
+        await svc.close()
+
+    asyncio.run(_run())
+
+
+def test_chat_plugin_config_hot_reinstalls_active_session(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    """
+    Chat 插件配置保存后应通过共享协调器热重装活跃会话
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    config_manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("session_commands", True)
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+
+        result = await svc.save_plugin_config(
+            "session_commands",
+            {"about_text": "Chat 热重装说明"},
+        )
+
+        assert result["ok"] is True
+        assert result["applied"] is True
+        assert result["sessions"][0]["plugins"][0]["action"] == "reinstall"
+        assert await conv.session.run("/about") == "Chat 热重装说明"
+        await svc.close()
+
+    asyncio.run(_run())
+
+
 def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatch: Any):
     """
     未发送的预加载会话超时后应释放内存并清除私有目录
@@ -616,7 +691,9 @@ def test_service_delete_conversation_cascades_data_and_trashes_files(
     assert not session_root.exists()
     trashed = list((svc._storage.trash_root("chat") / "sessions").iterdir())
     assert len(trashed) == 1
-    assert (trashed[0] / "sandbox" / "result.txt").read_text(encoding="utf-8") == "data"
+    assert (trashed[0] / "files" / "sandbox" / "result.txt").read_text(encoding="utf-8") == "data"
+    assert (trashed[0] / "manifest.json").exists()
+    assert (trashed[0] / "records.json").exists()
     assert memory.count() == 0
     assert svc.list_turns(conversation_id) == []
 
@@ -716,7 +793,9 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
         cid = await svc.create_conversation(model="default", think="off")
         conv = svc.get_conversation(cid)
         assert conv is not None
-        assert await svc.send(cid, "你好", think="low") == {"ok": True, "conversation_id": cid}
+        sent = await svc.send(cid, "你好", think="low")
+        assert sent["ok"] is True and sent["conversation_id"] == cid
+        assert sent["turn_index"] == 0 and sent["variant_index"] == 0
         assert conv.task is not None
         await conv.task
         result = await svc.retry(cid, think="high")
@@ -727,6 +806,112 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
 
     thinks = asyncio.run(_run())
     assert thinks == ["low", "high"]
+
+
+def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, monkeypatch: Any):
+    """
+    Retry 保留旧回复, 新生成不携带旧回答, 左右切换同步模型上下文
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    model_inputs: list[list[dict[str, Any]]] = []
+
+    class _VariantLLM(_FakeAsyncLLM):
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_call(
+            self,
+            messages: list[dict[str, Any]],
+            **kw: Any,
+        ) -> AsyncIterator[LLMCallStreamEvent]:
+            self.calls += 1
+            model_inputs.append([dict(message) for message in messages])
+            answer = f"版本{self.calls}"
+            yield LLMCallStreamEvent(kind="content_delta", delta=answer)
+            yield LLMCallStreamEvent(
+                kind="done",
+                response=LLMCallResponse(type="answer", content=answer),
+            )
+
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: _VariantLLM())
+    svc = ChatService(
+        _FakeModelConfig(),   # type: ignore[arg-type]
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        first = await svc.send(cid, "问题")
+        assert first["turn_index"] == 0
+        assert conv.task is not None
+        await conv.task
+
+        retried = await svc.retry(cid)
+        assert retried["turn_index"] == 0 and retried["variant_index"] == 1
+        assert conv.task is not None
+        await conv.task
+        turns = svc.list_turns(cid)
+        assert len(turns) == 1
+        assert turns[0]["variant_count"] == 2 and turns[0]["active_variant"] == 1
+        assert [item["answer"] for item in turns[0]["variants"]] == ["版本1", "版本2"]
+        assert not any(message.get("content") == "版本1" for message in model_inputs[1])
+
+        selected = await svc.select_variant(cid, 0, 0)
+        assert selected["ok"] is True and selected["turn"]["answer"] == "版本1"
+        assert conv.session.ctx.get_context()[-1]["content"] == "版本1"
+        selected = await svc.select_variant(cid, 0, 1)
+        assert selected["ok"] is True and selected["turn"]["answer"] == "版本2"
+        assert conv.session.ctx.get_context()[-1]["content"] == "版本2"
+
+    asyncio.run(_run())
+
+
+def test_service_fork_copies_display_and_model_context(tmp_path: Path, monkeypatch: Any):
+    """
+    Fork 同时复制展示轮次和模型实际使用的上下文
+
+    参数:
+    - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: _FakeAsyncLLM())
+    svc = ChatService(
+        _FakeModelConfig(),   # type: ignore[arg-type]
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        source = svc.get_conversation(cid)
+        assert source is not None
+        await svc.send(cid, "第一问")
+        assert source.task is not None
+        await source.task
+        await svc.send(cid, "第二问")
+        assert source.task is not None
+        await source.task
+
+        result = await svc.fork(cid, 1)
+        forked = svc.get_conversation(result["conversation_id"])
+        assert forked is not None and result["copied_turns"] == 1
+        assert len(forked.recorder.list_turns()) == 1
+        context = forked.session.ctx.get_context()
+        assert any(message.get("content") == "第一问" for message in context)
+        assert any(message.get("content") == "答复" for message in context)
+        assert not any(message.get("content") == "第二问" for message in context)
+
+    asyncio.run(_run())
 
 
 def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):

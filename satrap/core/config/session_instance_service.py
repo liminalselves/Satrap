@@ -16,7 +16,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
-from satrap.core.storage import StorageLayout, StorageScope, delete_session_domain_rows
+from satrap.core.storage import StorageLayout, StorageMaintenanceService, StorageScope
 from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import EDICTUM_PROVIDER
@@ -129,10 +129,7 @@ class SessionInstanceConfigService:
                 raise ValueError(f"未知 Edictum 配置: {definition}")
             if not bool(config.get("enabled", True)):
                 raise ValueError(f"Edictum 配置已禁用: {definition}")
-            params = dict(config.get("params", {}))
-            configured_model = str(config.get("model_name", "")).strip()
-            if configured_model:
-                params[model_key] = configured_model
+            params = {}   # Edictum 实例只保存覆盖值, 默认值始终继承命名配置
         else:
             raise ValueError(f"冷管理不支持会话 Provider: {provider}")
         if extra_params:
@@ -176,9 +173,11 @@ class SessionInstanceConfigService:
             if (config := self.store.get(item)) is not None
         }
         for session_id in existing_configs:
-            self.storage_layout.trash_session(self.platform_id, session_id)
-            delete_session_domain_rows(self.store.db_path, session_id)
-            self.store.delete(session_id)
+            StorageMaintenanceService(self.storage_layout).archive_session(
+                self.platform_id,
+                session_id,
+                database_path=self.store.db_path,
+            )
         deleted = [item for item in existing_configs if self.store.get(item) is None]
         if deleted:
             self.user_store.remove_session_references(deleted)

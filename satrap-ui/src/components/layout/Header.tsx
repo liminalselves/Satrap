@@ -15,7 +15,6 @@ export function Header() {
   const isChat = location.pathname === '/chat';
   const headerRef = useStandaloneGlassReflect<HTMLElement>({
     reflectRange: 150,
-    reflectSize: 150,
   });
 
   // 定期刷新控制服务状态

@@ -6,7 +6,7 @@ import { Input } from '@/components/ui/Input';
 export interface FormField {
   key: string;
   label: string;
-  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox';
+  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox' | 'checkbox-group';
   placeholder?: string;
   required?: boolean;
   disabled?: boolean;
@@ -100,6 +100,35 @@ export const FormModal = memo(function FormModal({
             <span className="text-sm text-text-primary">{field.placeholder || '启用'}</span>
           </label>
         );
+      case 'checkbox-group': {
+        const selected = Array.isArray(value)
+          ? value.filter((item): item is string => typeof item === 'string')
+          : [];
+        return (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {field.options?.map((option) => (
+              <label
+                key={option.value}
+                className="flex cursor-pointer items-center gap-3 rounded-sm bg-glass px-3 py-2"
+              >
+                <input
+                  type="checkbox"
+                  checked={selected.includes(option.value)}
+                  onChange={(event) => onChange(
+                    field.key,
+                    event.target.checked
+                      ? [...selected, option.value]
+                      : selected.filter((item) => item !== option.value),
+                  )}
+                  disabled={field.disabled}
+                  className="h-4 w-4 accent-accent"
+                />
+                <span className="text-sm text-text-primary">{option.label}</span>
+              </label>
+            ))}
+          </div>
+        );
+      }
       case 'password':
         return (
           <Input

@@ -30,9 +30,10 @@ from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
     CAPABILITY_KINDS,
-    load_plugin_meta,
-    parse_capability_descriptions,
 )
+from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
 
 CAPABILITY_LABELS = {
     "tools": "工具",
@@ -70,6 +71,10 @@ class ChatPluginRegistry:
         """
         self._lock = threading.RLock()
         self.state_path = Path(state_path) if state_path else _default_state_path()
+        self.catalog = PluginCatalog(
+            preset_dir=PLUGINS_PRESET_DIR,
+            user_dir=USER_PLUGINS_DIR,
+        )
         # 插件名 -> {"enabled": bool, "capabilities": {kind: {cap: bool}}}
         self._states: dict[str, dict[str, Any]] = {}
         self._load()
@@ -137,31 +142,16 @@ class ChatPluginRegistry:
         返回:
         - list[dict[str, Any]]: 清单 (合并启用状态)
         """
-        found: dict[str, Path] = {}
-        for base in (USER_PLUGINS_DIR, PLUGINS_PRESET_DIR):
-            if not base.is_dir():
-                continue
-            for child in sorted(base.iterdir()):
-                if child.is_dir() and (child / "meta.yaml").is_file():
-                    try:
-                        meta = load_plugin_meta(child)
-                        name = str(meta.get("name") or "").strip()
-                        if name:
-                            found[name] = child   # 后写覆盖: 官方目录后扫, 优先级高
-                    except ValueError as e:
-                        logger.warning(f"[聊天插件] 跳过无效插件 {child}: {e}")
-
         result: list[dict[str, Any]] = []
         with self._lock:
-            for name, pdir in found.items():
-                meta = load_plugin_meta(pdir)
-                declared = parse_capability_descriptions(meta)
+            for entry in self.catalog.scan():
+                name = entry.name
                 state = self._states.get(name, {"enabled": False, "capabilities": {}})
                 cap_states = state.get("capabilities", {})
                 capabilities: dict[str, list[dict[str, Any]]] = {}
                 for kind in CAPABILITY_KINDS:
                     items: list[dict[str, Any]] = []
-                    for cap_name, desc in declared.get(kind, {}).items():
+                    for cap_name, desc in entry.capabilities.get(kind, {}).items():
                         items.append({
                             "name": cap_name,
                             "description": desc,
@@ -170,9 +160,9 @@ class ChatPluginRegistry:
                     capabilities[kind] = items
                 result.append({
                     "name": name,
-                    "version": str(meta.get("version") or ""),
-                    "description": str(meta.get("description") or ""),
-                    "dir": str(pdir),
+                    "version": entry.version,
+                    "description": entry.description,
+                    "dir": str(entry.path),
                     "enabled": bool(state.get("enabled", False)),
                     "capabilities": capabilities,
                 })
@@ -188,11 +178,51 @@ class ChatPluginRegistry:
         返回:
         - Path | None: 取插件目录 (官方优先), 供 install_plugin 使用
         """
-        for base in (PLUGINS_PRESET_DIR, USER_PLUGINS_DIR):
-            pdir = base / name
-            if pdir.is_dir() and (pdir / "meta.yaml").is_file():
-                return pdir
-        return None
+        entry = self.catalog.get(name)
+        return entry.path if entry is not None else None
+
+    def resolve_specs(
+        self,
+        config_manager: PluginConfigManager | None = None,
+    ) -> list[PluginSpec]:
+        """
+        解析 Chat 当前插件状态为统一运行规格
+
+        参数:
+        - config_manager: 插件全局配置管理器
+
+        返回:
+        - list[PluginSpec]: 插件运行规格
+        """
+        manager = config_manager or PluginConfigManager()
+        raw_items: list[dict[str, Any]] = []
+        with self._lock:
+            states: dict[str, dict[str, Any]] = {
+                name: {
+                    "enabled": bool(state.get("enabled", False)),
+                    "capabilities": self._normalize_caps(state.get("capabilities")),
+                }
+                for name, state in self._states.items()
+            }
+        for entry in self.catalog.scan():
+            state: dict[str, Any] = states.get(
+                entry.name,
+                {"enabled": False, "capabilities": {}},
+            )
+            raw_items.append({
+                "name": entry.name,
+                "enabled": state["enabled"],
+                "capabilities": state["capabilities"],
+            })
+        return parse_plugin_specs(
+            raw_items,
+            self.catalog,
+            require_available=True,
+            config_resolver=lambda entry, _config: manager.load_global(
+                entry.name,
+                entry.config_schema,
+            ),
+        )
 
     # ---------- 启用状态 ----------
 

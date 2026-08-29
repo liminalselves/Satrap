@@ -57,6 +57,16 @@ describe('sessionApi cold management', () => {
     });
   });
 
+  it('restarts one runtime session without replacing its cold config', async () => {
+    const result = { ok: true, runtime: { plugins: [] } };
+    const backendSpy = vi.spyOn(apiClient, 'post').mockResolvedValue(result);
+
+    await expect(sessionApi.restartRuntime('onebot-platform', 'session/1')).resolves.toEqual(result);
+    expect(backendSpy).toHaveBeenCalledWith(
+      '/api/sessions/session%2F1/restart?platform_id=onebot-platform',
+    );
+  });
+
   it('uses cold instance APIs while the backend is stopped', async () => {
     const listed = { sessions: [] };
     const created = {

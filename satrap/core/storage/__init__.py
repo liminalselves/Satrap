@@ -7,7 +7,12 @@ from satrap.core.storage.layout import (
     default_storage_layout,
     storage_key,
 )
-from satrap.core.storage.database import delete_session_domain_rows
+from satrap.core.storage.database import (
+    delete_session_domain_rows,
+    restore_session_domain,
+    snapshot_session_domain,
+)
+from satrap.core.storage.maintenance import StorageAuditItem, StorageMaintenanceService
 
 __all__ = [
     "CHAT_PLATFORM_ID",
@@ -17,4 +22,8 @@ __all__ = [
     "default_storage_layout",
     "storage_key",
     "delete_session_domain_rows",
+    "restore_session_domain",
+    "snapshot_session_domain",
+    "StorageAuditItem",
+    "StorageMaintenanceService",
 ]

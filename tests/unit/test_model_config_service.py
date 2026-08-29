@@ -22,13 +22,23 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     service.create(
         "llm",
         "demo",
-        {"model": "gpt-demo", "api_key": "secret-key", "temperature": 0.5},
+        {
+            "model": "gpt-demo",
+            "api_key": "secret-key",
+            "temperature": 0.5,
+            "thinking_fields": ["thinking.type", "reasoning_effort"],
+            "thinking_levels": ["low", "high", "xhigh"],
+            "omit_none_thinking_fields": True,
+        },
     )
     listed = service.list_configs("llm")
 
     assert listed["demo"]["model"] == "gpt-demo"
     assert listed["demo"]["api_key"] != "secret-key"
     assert str(listed["demo"]["api_key"]).endswith("-key")
+    assert listed["demo"]["thinking_fields"] == ["thinking.type", "reasoning_effort"]
+    assert listed["demo"]["thinking_levels"] == ["low", "high", "xhigh"]
+    assert listed["demo"]["omit_none_thinking_fields"] is True
 
     service.update(
         "llm",
@@ -57,6 +67,10 @@ def test_model_config_service_rejects_invalid_input(tmp_path: Path):
         service.list_configs("unknown")
     with pytest.raises(ValueError, match="未知模型配置字段"):
         service.create("llm", "demo", {"unknown": True})
+    with pytest.raises(ValueError, match="未知模型配置字段"):
+        service.create("llm", "demo", {"reasoning_body": {}})
+    with pytest.raises(ValueError, match="不支持的思考强度"):
+        service.create("llm", "demo", {"thinking_levels": ["extreme"]})
     with pytest.raises(ValueError, match="脱敏"):
         service.create("llm", "demo", {"api_key": "*****abcd"})
 

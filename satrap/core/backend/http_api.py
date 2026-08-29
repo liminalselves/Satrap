@@ -23,7 +23,7 @@ from satrap.core.config.model_service import ModelConfigService
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.log.stream import standard_log_stream
-from satrap.core.storage import LOCAL_PLATFORM_ID
+from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMaintenanceService
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -65,7 +65,11 @@ def _platform_runtimes(backend: BackendManager) -> dict[str, tuple[Any, Any]]:
     getter = getattr(backend, "list_platform_runtimes", None)
     if callable(getter):
         runtimes = cast(dict[str, tuple[Any, Any]], getter())
-        return dict(runtimes)
+        return {
+            platform_id: runtime
+            for platform_id, runtime in runtimes.items()
+            if platform_id != CHAT_PLATFORM_ID
+        }
     session_manager = getattr(backend, "session_manager", None)
     user_manager = getattr(backend, "user_manager", None)
     if session_manager is None:
@@ -248,7 +252,12 @@ class BackendHTTPServer(MiniHTTPServer):
 
     # ---------- API 路由 ----------
 
-    async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
+    async def _route(   # pyright: ignore[reportGeneralTypeIssues] 路由表按资源分段, 运行时分支明确
+        self,
+        method: str,
+        path: str,
+        body: bytes,
+    ) -> tuple[int, dict[str, Any]]:
         """
         路由分发到 BackendManager 对应方法
 
@@ -274,9 +283,210 @@ class BackendHTTPServer(MiniHTTPServer):
         # 接口: GET /api/health
 
         if method == "POST" and path == "/api/config/reload":
-            await backend.reload_config()
-            return 200, {"ok": True}
+            return 200, await backend.reload_config()
         # 接口: POST /api/config/reload
+
+        if method == "POST" and path == "/api/edictum/plugins/preview":
+            try:
+                payload = _parse_json_object(body)
+                raw_refs = payload.get("session_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("session_refs 必须是数组")
+                session_refs: list[dict[str, str]] | None = None
+                if isinstance(raw_refs, list):
+                    session_refs = []
+                    for raw_ref in cast(list[object], raw_refs):
+                        if isinstance(raw_ref, dict):
+                            session_refs.append(dict(cast(dict[str, str], raw_ref)))
+                desired_plugins = payload.get("plugins") if "plugins" in payload else None
+                sessions = backend.preview_edictum_plugin_changes(
+                    config_name=str(payload.get("config_name") or "").strip() or None,
+                    session_refs=session_refs,
+                    desired_plugins=desired_plugins,
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in sessions),
+                    "edictum_sessions": sessions,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/edictum/plugins/preview
+
+        if method == "POST" and path == "/api/edictum/plugins/reconcile":
+            try:
+                payload = _parse_json_object(body)
+                raw_refs = payload.get("session_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("session_refs 必须是数组")
+                session_refs = None
+                if isinstance(raw_refs, list):
+                    session_refs = []
+                    for raw_ref in cast(list[object], raw_refs):
+                        if isinstance(raw_ref, dict):
+                            session_refs.append(dict(cast(dict[str, str], raw_ref)))
+                sessions = await backend.reconcile_edictum_plugins_async(
+                    config_name=str(payload.get("config_name") or "").strip() or None,
+                    session_refs=session_refs,
+                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in sessions),
+                    "edictum_sessions": sessions,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/edictum/plugins/reconcile
+
+        if method == "POST" and path == "/api/edictum/runtime/preview":
+            try:
+                payload = _parse_json_object(body)
+                raw_refs = payload.get("session_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("session_refs 必须是数组")
+                session_refs = None
+                if isinstance(raw_refs, list):
+                    session_refs = [
+                        dict(cast(dict[str, str], item))
+                        for item in raw_refs
+                        if isinstance(item, dict)
+                    ]
+                raw_config = payload.get("config")
+                if raw_config is not None and not isinstance(raw_config, dict):
+                    raise ValueError("config 必须是对象")
+                sessions = backend.preview_edictum_runtime_changes(
+                    config_name=str(payload.get("config_name") or "").strip() or None,
+                    session_refs=session_refs,
+                    desired_config=(
+                        dict(cast(dict[str, Any], raw_config))
+                        if isinstance(raw_config, dict)
+                        else None
+                    ),
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in sessions),
+                    "edictum_sessions": sessions,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/edictum/runtime/preview
+
+        if method == "POST" and path == "/api/edictum/runtime/apply":
+            try:
+                payload = _parse_json_object(body)
+                raw_refs = payload.get("session_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("session_refs 必须是数组")
+                session_refs = None
+                if isinstance(raw_refs, list):
+                    session_refs = [
+                        dict(cast(dict[str, str], item))
+                        for item in raw_refs
+                        if isinstance(item, dict)
+                    ]
+                sessions = await backend.reconcile_edictum_runtime_async(
+                    config_name=str(payload.get("config_name") or "").strip() or None,
+                    session_refs=session_refs,
+                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in sessions),
+                    "edictum_sessions": sessions,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/edictum/runtime/apply
+
+        storage_route = urlsplit(path).path
+        if method == "GET" and storage_route == "/api/storage/audit":
+            service = StorageMaintenanceService(backend.storage_layout)
+            configured_platforms = {
+                LOCAL_PLATFORM_ID,
+                CHAT_PLATFORM_ID,
+                *(
+                    str(item.get("id", "")).strip()
+                    for item in backend.config.platforms
+                    if str(item.get("id", "")).strip()
+                ),
+            }
+            items = await asyncio.to_thread(service.scan, configured_platforms)
+            return 200, {
+                "items": [item.to_dict() for item in items],
+                "summary": {
+                    "count": len(items),
+                    "size_bytes": sum(item.size_bytes for item in items),
+                },
+            }
+        # 接口: GET /api/storage/audit
+
+        if method == "POST" and storage_route == "/api/storage/cleanup":
+            try:
+                payload = _parse_json_object(body)
+                raw_ids = payload.get("item_ids", [])
+                if not isinstance(raw_ids, list):
+                    raise ValueError("item_ids 必须是数组")
+                results = await asyncio.to_thread(
+                    StorageMaintenanceService(backend.storage_layout).cleanup,
+                    [str(item) for item in raw_ids],
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in results),
+                    "results": results,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/storage/cleanup
+
+        if method == "POST" and storage_route == "/api/storage/trash/restore":
+            try:
+                payload = _parse_json_object(body)
+                result = await asyncio.to_thread(
+                    StorageMaintenanceService(backend.storage_layout).restore_archive,
+                    str(payload.get("platform_id", "")).strip(),
+                    str(payload.get("archive_id", "")).strip(),
+                )
+                return 200, result
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/storage/trash/restore
+
+        if method == "POST" and storage_route == "/api/storage/trash/purge":
+            try:
+                payload = _parse_json_object(body)
+                deleted = await asyncio.to_thread(
+                    StorageMaintenanceService(backend.storage_layout).purge_archive,
+                    str(payload.get("platform_id", "")).strip(),
+                    str(payload.get("archive_id", "")).strip(),
+                )
+                return 200, {"ok": deleted}
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/storage/trash/purge
+
+        if method == "POST" and storage_route == "/api/storage/trash/purge-batch":
+            try:
+                payload = _parse_json_object(body)
+                raw_refs = payload.get("archive_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("archive_refs 必须是数组")
+                archive_refs = [
+                    dict(cast(dict[str, str], item))
+                    for item in raw_refs or []
+                    if isinstance(item, dict)
+                ]
+                raw_days = payload.get("older_than_days")
+                results = await asyncio.to_thread(
+                    StorageMaintenanceService(backend.storage_layout).purge_archives,
+                    archive_refs=archive_refs,
+                    older_than_days=(float(raw_days) if raw_days is not None else None),
+                    platform_id=str(payload.get("platform_id", "")).strip() or None,
+                )
+                return 200, {
+                    "ok": all(item.get("ok", False) for item in results),
+                    "results": results,
+                }
+            except Exception as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/storage/trash/purge-batch
 
         if method == "POST" and path == "/api/shutdown":
             asyncio.get_event_loop().call_soon(backend.request_shutdown)
@@ -368,12 +578,36 @@ class BackendHTTPServer(MiniHTTPServer):
                         return 404, {"error": "not found"}
                     return 200, config_entry
                 if method in {"PATCH", "PUT"} and not action:
-                    final_name, updated = service.update(name, _parse_json_object(body))
-                    return 200, {"ok": True, "name": final_name, "config": updated}
+                    payload = _parse_json_object(body)
+                    previous = service.get(name)
+                    final_name, updated = service.update(name, payload)
+                    migrated_refs: list[dict[str, str]] = []
+                    if final_name != name:
+                        try:
+                            migrated_refs = backend.rename_edictum_config_references(
+                                name,
+                                final_name,
+                            )
+                        except Exception:
+                            if previous is not None:
+                                service.update(final_name, {**previous, "name": name})
+                            raise
+                    return 200, {
+                        "ok": True,
+                        "name": final_name,
+                        "config": updated,
+                        "migrated_refs": migrated_refs,
+                    }
                 if method == "POST" and action:
                     updated = service.set_enabled(name, action == "enable")
                     return 200, {"ok": True, "config": updated}
                 if method == "DELETE" and not action:
+                    references = backend.list_edictum_config_references(name)
+                    if references:
+                        return 409, {
+                            "error": f"Edictum 配置仍被 {len(references)} 个会话实例引用",
+                            "references": references,
+                        }
                     if service.delete(name):
                         return 200, {"ok": True}
                     return 404, {"error": "not found"}
@@ -478,6 +712,27 @@ class BackendHTTPServer(MiniHTTPServer):
         # 接口: POST /api/sessions/bulk-delete
 
         session_path_prefix = "/api/sessions/"
+        if (
+            method == "POST"
+            and route_path.startswith(session_path_prefix)
+            and route_path.endswith("/restart")
+        ):
+            session_id = unquote(
+                route_path[len(session_path_prefix):-len("/restart")]
+            ).strip()
+            if not session_id:
+                return 400, {"error": "session_id 不能为空"}
+            platform_id = self._query_param(path, "platform_id")
+            runtime = _platform_runtimes(backend).get(platform_id)
+            if runtime is None:
+                return 404, {"error": f"平台实例不存在: {platform_id}"}
+            session_manager = runtime[0]
+            if session_manager.get_session_config(session_id) is None:
+                return 404, {"error": "会话实例不存在"}
+            result = await session_manager.restart_session_async(session_id)
+            return (200 if result.get("ok", False) else 400), result
+        # 接口: POST /api/sessions/{session_id}/restart
+
         if (
             method == "DELETE"
             and route_path.startswith(session_path_prefix)

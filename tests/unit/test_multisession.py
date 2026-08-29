@@ -9,8 +9,8 @@ from satrap.core.type import UserCall
 
 
 class EchoSession(Session):
-    def __init__(self, session_id: str):
-        super().__init__(session_id=session_id)
+    def __init__(self, session_id: str, *, db_path: str):
+        super().__init__(session_id=session_id, db_path=db_path)
         self.call_count = 0
 
     def run(self, query: str) -> str:
@@ -20,8 +20,8 @@ class EchoSession(Session):
 
 
 class AsyncEchoSession(AsyncSession):
-    def __init__(self, session_id: str):
-        super().__init__(session_id=session_id)
+    def __init__(self, session_id: str, *, db_path: str):
+        super().__init__(session_id=session_id, db_path=db_path)
         self.call_count = 0
 
     async def run(self, query: str) -> str:
@@ -33,8 +33,8 @@ class AsyncEchoSession(AsyncSession):
 class AsyncInitCountingSession(AsyncSession):
     """记录异步初始化次数的测试会话"""
 
-    def __init__(self, session_id: str):
-        super().__init__(session_id=session_id)
+    def __init__(self, session_id: str, *, db_path: str):
+        super().__init__(session_id=session_id, db_path=db_path)
         self.initialize_count = 0
 
     async def _async_init(self):
@@ -45,8 +45,28 @@ class AsyncInitCountingSession(AsyncSession):
         return query
 
 
-def test_sync_handle_call_with_auto_create_and_reuse():
-    manager = SessionManager(default_session_type="echo")
+def _manager(tmp_path: Path, default_session_type: str) -> SessionManager:
+    """
+    创建完全隔离的测试会话管理器
+
+    参数:
+    - tmp_path: 测试临时目录
+    - default_session_type: 默认会话类型
+
+    返回:
+    - SessionManager: 数据库和上下文均位于临时目录的管理器
+    """
+    database = tmp_path / "platform.db"
+    return SessionManager(
+        default_session_type=default_session_type,
+        db_path=database,
+        default_checkpoint_db=str(database),
+        platform_id="test",
+    )
+
+
+def test_sync_handle_call_with_auto_create_and_reuse(tmp_path: Path):
+    manager = _manager(tmp_path, "echo")
     manager.register_session_type("echo", EchoSession)
 
     first_call = UserCall(session_id=None, session_type="echo", message="hello")
@@ -65,8 +85,8 @@ def test_sync_handle_call_with_auto_create_and_reuse():
 
 
 @pytest.mark.asyncio
-async def test_async_handle_call_with_async_session():
-    manager = SessionManager(default_session_type="aecho")
+async def test_async_handle_call_with_async_session(tmp_path: Path):
+    manager = _manager(tmp_path, "aecho")
     manager.register_session_type("aecho", AsyncEchoSession)
 
     call = UserCall(session_id=None, session_type="aecho", message="hello")
@@ -77,8 +97,11 @@ async def test_async_handle_call_with_async_session():
 
 
 @pytest.mark.asyncio
-async def test_async_session_initializes_once_after_explicit_initialize():
-    session = AsyncInitCountingSession("explicit-initialize")
+async def test_async_session_initializes_once_after_explicit_initialize(tmp_path: Path):
+    session = AsyncInitCountingSession(
+        "explicit-initialize",
+        db_path=str(tmp_path / "platform.db"),
+    )
 
     await session.initialize()
     await session.run("first")
@@ -88,8 +111,11 @@ async def test_async_session_initializes_once_after_explicit_initialize():
 
 
 @pytest.mark.asyncio
-async def test_async_session_initializes_once_for_concurrent_first_calls():
-    session = AsyncInitCountingSession("concurrent-initialize")
+async def test_async_session_initializes_once_for_concurrent_first_calls(tmp_path: Path):
+    session = AsyncInitCountingSession(
+        "concurrent-initialize",
+        db_path=str(tmp_path / "platform.db"),
+    )
 
     results = await asyncio.gather(
         session.run("first"),
@@ -101,8 +127,8 @@ async def test_async_session_initializes_once_for_concurrent_first_calls():
     assert session.initialize_count == 1
 
 
-def test_list_sessions_metadata():
-    manager = SessionManager(default_session_type="echo")
+def test_list_sessions_metadata(tmp_path: Path):
+    manager = _manager(tmp_path, "echo")
     manager.register_session_type("echo", EchoSession)
     call = UserCall(session_id=None, session_type="echo", message="meta")
     manager.handle_call(call)
@@ -115,9 +141,8 @@ def test_list_sessions_metadata():
 
 
 def test_session_message_count_includes_unique_workflow_contexts(tmp_path: Path):
-    session = EchoSession("message-count")
     db_path = str(tmp_path / "chat_history.db")
-    session.session_ctx = type(session.session_ctx)("message-count", db_path=db_path)
+    session = EchoSession("message-count", db_path=db_path)
     session.session_ctx.add_user_message("session-message")
     workflow_ctx = type(session.session_ctx)("message-count_main", db_path=db_path)
     workflow_ctx.add_user_message("workflow-message")
@@ -127,8 +152,8 @@ def test_session_message_count_includes_unique_workflow_contexts(tmp_path: Path)
     assert SessionManager._session_message_count(session) == 2
 
 
-def test_cleanup_idle_sessions():
-    manager = SessionManager(default_session_type="echo")
+def test_cleanup_idle_sessions(tmp_path: Path):
+    manager = _manager(tmp_path, "echo")
     manager.register_session_type("echo", EchoSession)
     call = UserCall(session_id=None, session_type="echo", message="idle")
     manager.handle_call(call)

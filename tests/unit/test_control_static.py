@@ -12,7 +12,9 @@ import pytest
 from satrap.core.backend import control_server
 from satrap.core.backend.static_ui import SPAStaticService
 from satrap.core.type import UserInfo
+from satrap.core.storage import StorageLayout
 from satrap.core.utils.paths import get_project_root
+from satrap.display.recorder import DisplayRecorder
 
 
 def test_control_server_uses_workspace_project_root():
@@ -280,7 +282,11 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
     edictum_path = tmp_path / "edictum.json"
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        json.dumps({"edictum_config_path": str(edictum_path), "platforms": []}),
+        json.dumps({
+            "data_root": str(tmp_path / "data"),
+            "edictum_config_path": str(edictum_path),
+            "platforms": [],
+        }),
         encoding="utf-8",
     )
     monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
@@ -290,6 +296,11 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
         "/config/edictum/sessions",
         "POST",
         b'{"name":"assistant","edictum_type":"async_simple","model_name":"default","plugins":["session_commands"]}',
+    )
+    instance = await _request(
+        "/config/session-instances",
+        "POST",
+        b'{"session_provider":"edictum","session_type":"assistant","session_id":"edictum-cold-1","params":{"topic":"demo"}}',
     )
     renamed = await _request(
         "/config/edictum/sessions/assistant",
@@ -304,10 +315,27 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
 
     assert b'"async_simple"' in types
     assert b'"ok": true' in created
+    assert b'"ok": true' in instance
     assert b'"name": "platform-assistant"' in renamed
     assert b'"enabled": false' in disabled
     assert b'"description": "cold"' in fetched
 
+    stored = control_server._session_instance_config_service("local").store.get(
+        "edictum-cold-1"
+    )
+    assert stored is not None
+    assert stored.session_type_name == "platform-assistant"
+    assert stored.session_config == {"topic": "demo"}
+
+    blocked = await _request(
+        "/config/edictum/sessions/platform-assistant",
+        "DELETE",
+    )
+    assert b'"references"' in blocked
+    await _request(
+        "/config/session-instances/edictum-cold-1?platform_id=local",
+        "DELETE",
+    )
     deleted = await _request(
         "/config/edictum/sessions/platform-assistant",
         "DELETE",
@@ -325,6 +353,65 @@ async def test_control_server_lists_edictum_plugins():
     assert b'"session_commands"' in response
     assert b'"config_schema"' in response
     assert b'"capabilities"' in response
+
+
+def test_configured_platform_ids_excludes_chat_display_scope():
+    """平台会话冷管理不应包含 Chat 展示层保留域"""
+    platform_ids = control_server._configured_platform_ids({
+        "platforms": [
+            {"id": "chat", "type": "onebot"},
+            {"id": "onebot-main", "type": "onebot"},
+        ],
+    })
+
+    assert platform_ids == ["local", "onebot-main"]
+
+
+@pytest.mark.asyncio
+async def test_control_server_cold_manages_chat_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    Chat 服务停止时控制服务应查询、回收和恢复历史
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    data_root = tmp_path / "data"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"data_root": str(data_root), "platforms": []}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(control_server, "_check_chat_health", lambda: False)
+    layout = StorageLayout(data_root)
+    recorder = DisplayRecorder(str(layout.platform_db("chat")), "cold-history")
+    recorder.save_meta("default")
+    recorder.start_turn("冷管理历史")
+    recorder.end_turn("完成")
+    recorder.close()
+
+    listed = await _request("/chat/history?search=%E5%86%B7%E7%AE%A1%E7%90%86")
+    assert b'"conversation_id": "cold-history"' in listed
+    deleted = await _request(
+        "/chat/history/delete",
+        "POST",
+        b'{"mode":"selected","conversation_ids":["cold-history"]}',
+    )
+    assert b'"deleted_count": 1' in deleted
+    trash = await _request("/chat/history/trash")
+    trash_body = json.loads(trash.split(b"\r\n\r\n", 1)[1])
+    archive_id = trash_body["items"][0]["archive_id"]
+
+    restored = await _request(
+        "/chat/history/trash/restore",
+        "POST",
+        json.dumps({"archive_id": archive_id}).encode("utf-8"),
+    )
+    assert b'"session_id": "cold-history"' in restored
 
 
 @pytest.mark.asyncio

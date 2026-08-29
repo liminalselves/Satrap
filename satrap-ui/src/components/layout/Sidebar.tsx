@@ -28,7 +28,6 @@ const navItems = [
 function NavItem({ item }: { item: typeof navItems[number] }) {
   const reflectRef = useStandaloneGlassReflect<HTMLAnchorElement>({
     reflectRange: 100,
-    reflectSize: 80,
   });
 
   return (
@@ -52,7 +51,6 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
 export function Sidebar() {
   const sidebarRef = useStandaloneGlassReflect<HTMLElement>({
     reflectRange: 150,
-    reflectSize: 150,
   });
 
   return (

@@ -23,7 +23,7 @@ EdictumPluginInstaller = Callable[
     [Session | AsyncSession, str, dict[str, Any] | None],
     object | Awaitable[object],
 ]
-"""Edictum 类型的插件安装适配器"""
+"""Edictum 类型的插件安装适配器, 子能力启停时返回值需作为插件句柄"""
 
 EdictumPluginUninstaller = Callable[
     [Session | AsyncSession, str],

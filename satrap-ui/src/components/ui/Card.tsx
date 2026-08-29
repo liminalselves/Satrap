@@ -11,7 +11,6 @@ const Card = forwardRef<HTMLDivElement, CardProps>(
   ({ className, variant = 'default', interactive = false, children, ...props }, forwardedRef) => {
     const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
       reflectRange: 150,
-      reflectSize: 150,
     });
     
     // 合并 refs

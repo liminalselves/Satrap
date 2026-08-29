@@ -119,9 +119,9 @@ def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm.max_tokens = 1000
     llm.suppress_error = True
     llm.return_false = False
-    llm.reasoning_body = {"thinking": {"type": "enabled"}}
     llm.thinking_field_name = "reasoning_content"
     llm.thinking_fields = None
+    llm.omit_none_thinking_fields = False
     return llm
 
 
@@ -153,9 +153,9 @@ async def test_async_llm_call_appends_images_to_last_user_message():
     llm.max_tokens = 1000
     llm.suppress_error = True
     llm.return_false = False
-    llm.reasoning_body = {"thinking": {"type": "enabled"}}
     llm.thinking_field_name = "reasoning_content"
     llm.thinking_fields = None
+    llm.omit_none_thinking_fields = False
 
     response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
 
@@ -197,7 +197,7 @@ def test_real_toolkit_vision_call_when_available():
         base_url=values["base url"],
         model=values["model"],
         max_tokens=200,
-        reasoning_body=None,
+        thinking_fields=None,
     )
 
     response = llm.call(

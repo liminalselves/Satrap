@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, createContext, useContext, ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback, createContext, useContext, ReactNode } from 'react';
 
 /**
  * 全局玻璃反射管理器
@@ -22,48 +22,47 @@ const GlassReflectContext = createContext<GlassReflectContextType | null>(null);
 const DEFAULT_REFLECT_RANGE = 150;   // 反光影响范围
 const DEFAULT_REFLECT_SIZE = 150;   // 反光光圈大小
 
+function updateReflectState(
+  element: HTMLElement,
+  mouseX: number,
+  mouseY: number,
+  reflectRange: number,
+) {
+  const rect = element.getBoundingClientRect();
+  const x = mouseX - rect.left;
+  const y = mouseY - rect.top;
+  const closestX = Math.max(rect.left, Math.min(mouseX, rect.right));
+  const closestY = Math.max(rect.top, Math.min(mouseY, rect.bottom));
+  const distanceToEdge = Math.hypot(mouseX - closestX, mouseY - closestY);
+  const isInRange = distanceToEdge < reflectRange;
+  const isHovering = mouseX >= rect.left && mouseX <= rect.right
+    && mouseY >= rect.top && mouseY <= rect.bottom;
+
+  element.style.setProperty('--mouse-x', `${x}px`);
+  element.style.setProperty('--mouse-y', `${y}px`);
+  if (isHovering) {
+    element.classList.add('glass-hovering');
+    element.classList.remove('glass-nearby');
+  } else if (isInRange) {
+    element.classList.remove('glass-hovering');
+    element.classList.add('glass-nearby');
+  } else {
+    element.classList.remove('glass-hovering', 'glass-nearby');
+  }
+}
+
 export function GlassReflectProvider({ children }: { children: ReactNode }) {
   const elementsRef = useRef<Map<HTMLElement, GlassElement>>(new Map());
   const mousePosRef = useRef<{ x: number; y: number }>({ x: -1000, y: -1000 });
   const rafRef = useRef<number | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
 
   // 更新所有元素的反射状态
   const updateAllElements = useCallback(() => {
     const { x: mouseX, y: mouseY } = mousePosRef.current;
 
     elementsRef.current.forEach(({ element, reflectRange }) => {
-      const rect = element.getBoundingClientRect();
-      
-      // 计算鼠标相对于元素的位置
-      const x = mouseX - rect.left;
-      const y = mouseY - rect.top;
-      
-      // 计算鼠标到元素边缘的最短距离
-      const closestX = Math.max(rect.left, Math.min(mouseX, rect.right));
-      const closestY = Math.max(rect.top, Math.min(mouseY, rect.bottom));
-      const distanceToEdge = Math.sqrt(
-        Math.pow(mouseX - closestX, 2) + Math.pow(mouseY - closestY, 2)
-      );
-      
-      // 检查是否在影响范围内
-      const isInRange = distanceToEdge < reflectRange;
-      const isHovering = mouseX >= rect.left && mouseX <= rect.right && 
-                         mouseY >= rect.top && mouseY <= rect.bottom;
-      
-      // 更新 CSS 变量
-      element.style.setProperty('--mouse-x', `${x}px`);
-      element.style.setProperty('--mouse-y', `${y}px`);
-      
-      // 设置状态类
-      if (isHovering) {
-        element.classList.add('glass-hovering');
-        element.classList.remove('glass-nearby');
-      } else if (isInRange) {
-        element.classList.remove('glass-hovering');
-        element.classList.add('glass-nearby');
-      } else {
-        element.classList.remove('glass-hovering', 'glass-nearby');
-      }
+      updateReflectState(element, mouseX, mouseY, reflectRange);
     });
   }, []);
 
@@ -78,25 +77,46 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
 
   // 全局鼠标移动监听
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
+    const handlePointerMove = (e: PointerEvent) => {
       mousePosRef.current = { x: e.clientX, y: e.clientY };
       scheduleUpdate();
     };
 
-    const handleMouseLeave = () => {
+    const handlePointerLeave = () => {
       mousePosRef.current = { x: -1000, y: -1000 };
       scheduleUpdate();
     };
 
-    document.addEventListener('mousemove', handleMouseMove);
-    document.documentElement.addEventListener('mouseleave', handleMouseLeave);
+    const handleGeometryChange = () => scheduleUpdate();
+
+    document.addEventListener('pointermove', handlePointerMove);
+    document.documentElement.addEventListener('pointerleave', handlePointerLeave);
+    document.addEventListener('scroll', handleGeometryChange, true);
+    window.addEventListener('resize', handleGeometryChange);
+    window.visualViewport?.addEventListener('resize', handleGeometryChange);
+    window.visualViewport?.addEventListener('scroll', handleGeometryChange);
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.documentElement.removeEventListener('mouseleave', handleMouseLeave);
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.documentElement.removeEventListener('pointerleave', handlePointerLeave);
+      document.removeEventListener('scroll', handleGeometryChange, true);
+      window.removeEventListener('resize', handleGeometryChange);
+      window.visualViewport?.removeEventListener('resize', handleGeometryChange);
+      window.visualViewport?.removeEventListener('scroll', handleGeometryChange);
       if (rafRef.current) {
         cancelAnimationFrame(rafRef.current);
       }
+    };
+  }, [scheduleUpdate]);
+
+  useEffect(() => {
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => scheduleUpdate());
+    resizeObserverRef.current = observer;
+    elementsRef.current.forEach(({ element }) => observer.observe(element));
+    return () => {
+      observer.disconnect();
+      resizeObserverRef.current = null;
     };
   }, [scheduleUpdate]);
 
@@ -110,15 +130,13 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       reflectRange: options?.reflectRange ?? DEFAULT_REFLECT_RANGE,
       reflectSize: options?.reflectSize ?? DEFAULT_REFLECT_SIZE,
     });
-    
-    // 设置反光大小变量
-    if (options?.reflectSize) {
-      element.style.setProperty('--reflect-size', `${options.reflectSize}px`);
-    }
+    element.style.setProperty('--reflect-size', `${options?.reflectSize ?? DEFAULT_REFLECT_SIZE}px`);
+    resizeObserverRef.current?.observe(element);
   }, []);
 
   // 注销元素
   const unregister = useCallback((element: HTMLElement) => {
+    resizeObserverRef.current?.unobserve(element);
     elementsRef.current.delete(element);
   }, []);
 
@@ -158,56 +176,78 @@ export function useGlassReflect<T extends HTMLElement>(options?: {
  */
 export function useStandaloneGlassReflect<T extends HTMLElement>(options?: {
   reflectRange?: number;
-  reflectSize?: number;
 }) {
   const ref = useRef<T>(null);
+  const mousePosRef = useRef({ x: -1000, y: -1000 });
+  const rafRef = useRef<number | null>(null);
+  const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const observedElementRef = useRef<T | null>(null);
   const reflectRange = options?.reflectRange ?? DEFAULT_REFLECT_RANGE;
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = ref.current;
-    if (!element) return;
+    const previous = observedElementRef.current;
+    if (element === previous) return;
+    if (previous) resizeObserverRef.current?.unobserve(previous);
+    if (element) {
+      resizeObserverRef.current?.observe(element);
+    }
+    observedElementRef.current = element;
+  });
 
-    const handleMouseMove = (e: MouseEvent) => {
-      const rect = element.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
-      
-      // 计算鼠标到元素边缘的最短距离
-      const closestX = Math.max(rect.left, Math.min(e.clientX, rect.right));
-      const closestY = Math.max(rect.top, Math.min(e.clientY, rect.bottom));
-      const distanceToEdge = Math.sqrt(
-        Math.pow(e.clientX - closestX, 2) + Math.pow(e.clientY - closestY, 2)
-      );
-      
-      const isInRange = distanceToEdge < reflectRange;
-      const isHovering = e.clientX >= rect.left && e.clientX <= rect.right && 
-                         e.clientY >= rect.top && e.clientY <= rect.bottom;
-      
-      element.style.setProperty('--mouse-x', `${x}px`);
-      element.style.setProperty('--mouse-y', `${y}px`);
-      
-      if (isHovering) {
-        element.classList.add('glass-hovering');
-        element.classList.remove('glass-nearby');
-      } else if (isInRange) {
-        element.classList.remove('glass-hovering');
-        element.classList.add('glass-nearby');
-      } else {
-        element.classList.remove('glass-hovering', 'glass-nearby');
-      }
+  useEffect(() => {
+    const update = () => {
+      const element = ref.current;
+      if (!element) return;
+      const { x, y } = mousePosRef.current;
+      updateReflectState(element, x, y, reflectRange);
     };
-
-    const handleMouseLeave = () => {
-      element.classList.remove('glass-hovering', 'glass-nearby');
+    const scheduleUpdate = () => {
+      if (rafRef.current !== null) return;
+      rafRef.current = requestAnimationFrame(() => {
+        update();
+        rafRef.current = null;
+      });
     };
+    const handlePointerMove = (event: PointerEvent) => {
+      mousePosRef.current = { x: event.clientX, y: event.clientY };
+      scheduleUpdate();
+    };
+    const handlePointerLeave = () => {
+      mousePosRef.current = { x: -1000, y: -1000 };
+      scheduleUpdate();
+    };
+    const handleGeometryChange = () => scheduleUpdate();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(handleGeometryChange);
 
-    // 监听全局鼠标移动
-    document.addEventListener('mousemove', handleMouseMove);
-    element.addEventListener('mouseleave', handleMouseLeave);
+    resizeObserverRef.current = observer;
+    const element = ref.current;
+    if (element) {
+      observer?.observe(element);
+      observedElementRef.current = element;
+    }
+    document.addEventListener('pointermove', handlePointerMove);
+    document.documentElement.addEventListener('pointerleave', handlePointerLeave);
+    document.addEventListener('scroll', handleGeometryChange, true);
+    window.addEventListener('resize', handleGeometryChange);
+    window.visualViewport?.addEventListener('resize', handleGeometryChange);
+    window.visualViewport?.addEventListener('scroll', handleGeometryChange);
 
     return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      element.removeEventListener('mouseleave', handleMouseLeave);
+      observer?.disconnect();
+      resizeObserverRef.current = null;
+      document.removeEventListener('pointermove', handlePointerMove);
+      document.documentElement.removeEventListener('pointerleave', handlePointerLeave);
+      document.removeEventListener('scroll', handleGeometryChange, true);
+      window.removeEventListener('resize', handleGeometryChange);
+      window.visualViewport?.removeEventListener('resize', handleGeometryChange);
+      window.visualViewport?.removeEventListener('scroll', handleGeometryChange);
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
     };
   }, [reflectRange]);
 

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from satrap.core.framework.Base import AsyncSession, Session
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
 from satrap.core.framework.providers import (
     EdictumProvider,
@@ -21,6 +24,7 @@ from satrap.edictum.registry import (
     EdictumTypeRegistry,
     create_default_edictum_type_registry,
 )
+from satrap.edictum.simple_session import AsyncSimpleSession
 
 
 class _CapturingSession(Session):
@@ -48,6 +52,16 @@ class _AsyncPluginSession(AsyncSession):
         self.session_id = session_id
         self.installed: list[str] = []
         self.uninstalled: list[str] = []
+
+
+class _CapturingAsyncSession(AsyncSession):
+    """记录热重启后有效配置的异步测试会话"""
+
+    def __init__(self, session_id: str, marker: str = "", **kwargs: Any) -> None:
+        if marker == "fail":
+            raise RuntimeError("候选实例初始化失败")
+        self.session_id = session_id
+        self.marker = marker
 
 
 class _FakeProvider:
@@ -259,7 +273,14 @@ def test_edictum_provider_manages_sync_plugin_lifecycle(tmp_path: Path) -> None:
 
     assert isinstance(created, _PluginSession)
     assert created.installed == ["session_commands"]
-    assert metadata["plugin_summary"] == {"total": 2, "loaded": 1, "errors": 0, "pending": 0}
+    assert metadata["plugin_summary"] == {
+        "total": 2,
+        "loaded": 1,
+        "errors": 0,
+        "pending": 0,
+        "drift": 0,
+        "restart_required": 0,
+    }
     assert metadata["plugins"][1]["status"] == "disabled"
     provider.release_session(created)
     assert created.uninstalled == ["session_commands"]
@@ -358,3 +379,193 @@ def test_default_edictum_type_loads_platform_command_plugin(tmp_path: Path) -> N
     assert isinstance(new_result, CommandAction)
     assert provider.get_runtime_metadata(created)["plugin_summary"]["loaded"] == 1
     provider.release_session(created)
+
+
+@pytest.mark.asyncio
+async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
+    tmp_path: Path,
+) -> None:
+    """
+    EdictumProvider 应在新会话和活跃会话中统一应用子能力状态
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    registry = create_default_edictum_type_registry()
+    config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    initial_config: dict[str, Any] = {
+        "edictum_type": "async_simple",
+        "model_name": "demo",
+        "plugins": [
+            {
+                "name": "session_commands",
+                "capabilities": {"commands": {"about": False}},
+            }
+        ],
+    }
+    config_manager.create(
+        "assistant",
+        initial_config,
+    )
+    provider = EdictumProvider(config_manager, registry)
+    config = SessionConfig(
+        session_id="plugin-capability-1",
+        session_type_name="assistant",
+        provider_name="edictum",
+    )
+
+    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    await provider.prepare_session_async(created)
+    assert isinstance(created, AsyncSimpleSession)
+    plugin = next(item for item in created.list_plugins() if item.name == "session_commands")
+    assert plugin.commands["about"] is False
+
+    updated_plugins: dict[str, Any] = {
+        "plugins": [
+            {
+                "name": "session_commands",
+                "capabilities": {"commands": {"about": True}},
+            }
+        ]
+    }
+    config_manager.update(
+        "assistant",
+        updated_plugins,
+    )
+    result = await provider.reconcile_session_plugins_async(created)
+
+    assert result["ok"] is True
+    assert result["restart_required"] is False
+    assert plugin.commands["about"] is True
+
+    reconfigure_payload: dict[str, Any] = {
+        "plugins": [
+            {
+                "name": "session_commands",
+                "config": {"about_text": "OneBot 热重装说明"},
+            }
+        ]
+    }
+    config_manager.update(
+        "assistant",
+        reconfigure_payload,
+    )
+    preview = provider.preview_session_plugins(created)
+    reinstalled = await provider.reconcile_session_plugins_async(created)
+
+    assert preview["plugins"][0]["action"] == "reinstall"
+    assert reinstalled["ok"] is True
+    assert reinstalled["plugins"][0]["status"] == "applied"
+    assert await created.run("/about") == "OneBot 热重装说明"
+
+    disable_payload: dict[str, Any] = {
+        "plugins": [{"name": "session_commands", "enabled": False}]
+    }
+    config_manager.update(
+        "assistant",
+        disable_payload,
+    )
+    disabled = await provider.reconcile_session_plugins_async(created)
+
+    assert disabled["ok"] is True
+    assert disabled["plugins"][0]["action"] == "disable"
+    assert created.list_plugins() == []
+    assert provider.get_runtime_metadata(created)["plugins"][0]["drift"] is False
+    await provider.release_session_async(created)
+
+
+@pytest.mark.asyncio
+async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Edictum 命名参数变化应原子热重启且实例只持久化覆盖项
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    registry = EdictumTypeRegistry()
+    registry.register(
+        EdictumTypeDefinition(
+            name="capturing_async",
+            factory=_CapturingAsyncSession,
+            is_async=True,
+        )
+    )
+    config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    config_manager.create(
+        "onebot-assistant",
+        {
+            "edictum_type": "capturing_async",
+            "model_name": "demo",
+            "params": {"marker": "before"},
+        },
+    )
+    manager = SessionManager(db_path=tmp_path / "platform.db", platform_id="onebot-main")
+    provider = EdictumProvider(config_manager, registry)
+    manager.register_provider(provider)
+    model_manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    model_manager.update_llm_config("demo", api_key="key", model="demo")
+    manager.model_config_manager = model_manager
+    session_manager_module = importlib.import_module("satrap.core.framework.SessionManager")
+
+    def fake_build_llm(*_args: object, **_kwargs: object) -> object:
+        """返回无需网络连接的模型占位对象"""
+        return object()
+
+    monkeypatch.setattr(
+        session_manager_module,
+        "build_llm_from_config",
+        fake_build_llm,
+    )
+    stored = manager.register_session_from_provider_config(
+        "edictum",
+        "onebot-assistant",
+        session_id="onebot-session",
+    )
+
+    assert stored.session_config == {}
+    assert await manager.activate_session_async("onebot-session") is True
+    old_entry = manager.pool.get("onebot-session")
+    assert old_entry is not None
+    old_session = old_entry.session
+    assert isinstance(old_session, _CapturingAsyncSession)
+    assert old_session.marker == "before"
+
+    config_manager.update(
+        "onebot-assistant",
+        {"params": {"marker": "after"}},
+    )
+    preview = manager.preview_edictum_runtime(config_name="onebot-assistant")
+    result = await manager.reconcile_edictum_runtime_async(
+        config_name="onebot-assistant"
+    )
+
+    assert preview[0]["action"] == "restart"
+    assert result[0]["ok"] is True
+    assert result[0]["action"] == "restart"
+    new_entry = manager.pool.get("onebot-session")
+    assert new_entry is old_entry
+    assert new_entry is not None
+    assert new_entry.session is not old_session
+    assert isinstance(new_entry.session, _CapturingAsyncSession)
+    assert new_entry.session.marker == "after"
+    assert manager.get_session_config("onebot-session").session_config == {}   # type: ignore[union-attr]
+
+    config_manager.update(
+        "onebot-assistant",
+        {"params": {"marker": "fail"}},
+    )
+    failed = await manager.reconcile_edictum_runtime_async(
+        config_name="onebot-assistant"
+    )
+
+    assert failed[0]["ok"] is False
+    assert failed[0]["old_runtime_preserved"] is True
+    preserved = manager.pool.get("onebot-session")
+    assert preserved is new_entry
+    assert preserved is not None
+    assert isinstance(preserved.session, _CapturingAsyncSession)
+    assert preserved.session.marker == "after"

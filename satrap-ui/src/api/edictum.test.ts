@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { controlApi } from './control';
+import { backendApi } from './backend';
 import { edictumApi } from './edictum';
 
 describe('edictumApi cold management', () => {
@@ -45,5 +46,40 @@ describe('edictumApi cold management', () => {
     expect(enabledSpy).toHaveBeenNthCalledWith(1, 'renamed', true);
     expect(enabledSpy).toHaveBeenNthCalledWith(2, 'renamed', false);
     expect(deleteSpy).toHaveBeenCalledWith('renamed');
+  });
+
+  it('delegates active session plugin application to the running backend', async () => {
+    const reloadSpy = vi.spyOn(backendApi, 'reloadConfig').mockResolvedValue({
+      ok: true,
+      edictum_sessions: [],
+    });
+
+    await expect(edictumApi.applyRuntimeChanges()).resolves.toEqual({
+      ok: true,
+      edictum_sessions: [],
+    });
+    expect(reloadSpy).toHaveBeenCalledOnce();
+  });
+
+  it('delegates plugin preview and targeted retry to the running backend', async () => {
+    const previewSpy = vi.spyOn(backendApi, 'previewEdictumPlugins').mockResolvedValue({
+      ok: true,
+      edictum_sessions: [],
+    });
+    const retrySpy = vi.spyOn(backendApi, 'reconcileEdictumPlugins').mockResolvedValue({
+      ok: true,
+      edictum_sessions: [],
+    });
+    const plugins = [{ name: 'session_commands', enabled: false }];
+    const refs = [{ platform_id: 'onebot-platform', session_id: 'session-1' }];
+
+    await edictumApi.previewRuntimeChanges('onebot-edictum', plugins);
+    await edictumApi.retryRuntimeChanges({ session_refs: refs });
+
+    expect(previewSpy).toHaveBeenCalledWith({
+      config_name: 'onebot-edictum',
+      plugins,
+    });
+    expect(retrySpy).toHaveBeenCalledWith({ session_refs: refs });
   });
 });

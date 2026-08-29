@@ -70,6 +70,9 @@ def test_edictum_cold_config_crud_is_named_and_has_no_placeholders(tmp_path: Pat
 
     assert created["provider"] == "edictum"
     assert created["edictum_type"] == "async_simple"
+    assert all(isinstance(plugin, dict) for plugin in created["plugins"])
+    assert created["plugins"][0]["name"] == "session_commands"
+    assert created["plugins"][0]["capabilities"]["commands"]["about"] is True
     assert final_name == "platform-assistant"
     assert renamed["description"] == "平台会话"
     assert disabled["enabled"] is False

@@ -12,6 +12,14 @@ import type {
   RuntimeSession,
   SessionClassConfig,
 } from './types';
+import type { StorageAuditResult } from './storage';
+import type {
+  ChatHistoryDeleteRequest,
+  ChatHistoryDeleteResult,
+  ChatHistoryQuery,
+  ChatHistoryResult,
+  ChatHistoryTrashResult,
+} from './chat';
 
 // 后端控制 API 客户端(独立于主后端)
 const controlClient = axios.create({
@@ -313,6 +321,37 @@ export const controlApi = {
     return response.data;
   },
 
+  queryChatHistory: async (query: ChatHistoryQuery = {}): Promise<ChatHistoryResult> => {
+    const response = await controlClient.get<ChatHistoryResult>('/chat/history', { params: query });
+    return response.data;
+  },
+
+  deleteChatHistory: async (data: ChatHistoryDeleteRequest): Promise<ChatHistoryDeleteResult> => {
+    const response = await controlClient.post<ChatHistoryDeleteResult>('/chat/history/delete', data);
+    return response.data;
+  },
+
+  listChatHistoryTrash: async (): Promise<ChatHistoryTrashResult> => {
+    const response = await controlClient.get<ChatHistoryTrashResult>('/chat/history/trash');
+    return response.data;
+  },
+
+  restoreChatHistory: async (archiveId: string): Promise<{ ok: boolean; session_id: string }> => {
+    const response = await controlClient.post<{ ok: boolean; session_id: string }>(
+      '/chat/history/trash/restore',
+      { archive_id: archiveId },
+    );
+    return response.data;
+  },
+
+  purgeChatHistory: async (archiveId: string): Promise<{ ok: boolean }> => {
+    const response = await controlClient.post<{ ok: boolean }>(
+      '/chat/history/trash/purge',
+      { archive_id: archiveId },
+    );
+    return response.data;
+  },
+
   listEdictumTypes: async (): Promise<EdictumTypeDefinition[]> => {
     const response = await controlClient.get<unknown>('/config/edictum/types');
     return parseEdictumTypes(response.data);
@@ -424,6 +463,63 @@ export const controlApi = {
       deleted_count: number;
       deleted_ids: string[];
     }>('/config/session-instances/bulk-delete', data);
+    return response.data;
+  },
+
+  auditStorage: async (): Promise<StorageAuditResult> => {
+    const response = await controlClient.get<StorageAuditResult>('/storage/audit');
+    return response.data;
+  },
+
+  cleanupStorage: async (itemIds: string[]): Promise<{
+    ok: boolean;
+    results: Array<{ item_id: string; ok: boolean; error?: string }>;
+  }> => {
+    const response = await controlClient.post<{
+      ok: boolean;
+      results: Array<{ item_id: string; ok: boolean; error?: string }>;
+    }>('/storage/cleanup', { item_ids: itemIds });
+    return response.data;
+  },
+
+  restoreStorageArchive: async (platformId: string, archiveId: string): Promise<{
+    ok: boolean;
+    platform_id: string;
+    session_id: string;
+    archive_id: string;
+  }> => {
+    const response = await controlClient.post<{
+      ok: boolean;
+      platform_id: string;
+      session_id: string;
+      archive_id: string;
+    }>('/storage/trash/restore', {
+      platform_id: platformId,
+      archive_id: archiveId,
+    });
+    return response.data;
+  },
+
+  purgeStorageArchive: async (platformId: string, archiveId: string): Promise<{ ok: boolean }> => {
+    const response = await controlClient.post<{ ok: boolean }>('/storage/trash/purge', {
+      platform_id: platformId,
+      archive_id: archiveId,
+    });
+    return response.data;
+  },
+
+  purgeStorageArchives: async (data: {
+    archive_refs?: Array<{ platform_id: string; archive_id: string }>;
+    older_than_days?: number;
+    platform_id?: string;
+  }): Promise<{
+    ok: boolean;
+    results: Array<{ platform_id: string; archive_id: string; ok: boolean; error?: string }>;
+  }> => {
+    const response = await controlClient.post<{
+      ok: boolean;
+      results: Array<{ platform_id: string; archive_id: string; ok: boolean; error?: string }>;
+    }>('/storage/trash/purge-batch', data);
     return response.data;
   },
 };

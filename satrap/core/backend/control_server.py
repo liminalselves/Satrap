@@ -53,10 +53,16 @@ from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
-from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
+from satrap.core.storage import (
+    CHAT_PLATFORM_ID,
+    LOCAL_PLATFORM_ID,
+    StorageLayout,
+    StorageMaintenanceService,
+)
 from satrap.core.utils.paths import get_project_root
+from satrap.display.recorder import query_conversations
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.registry import create_default_edictum_type_registry
+from satrap.edictum.registry import EDICTUM_PROVIDER, create_default_edictum_type_registry
 
 PROJECT_ROOT = get_project_root()
 # 项目根目录
@@ -445,6 +451,26 @@ def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigS
     )
 
 
+def _configured_storage_layout(
+    config_data: dict[str, Any] | None = None,
+) -> StorageLayout:
+    """
+    根据当前配置返回 v2 数据布局
+
+    参数:
+    - config_data: 可选后端配置文档
+
+    返回:
+    - StorageLayout: 当前数据布局
+    """
+    document = config_data if config_data is not None else load_config_document(CONFIG_PATH)
+    raw_data_root = str(document.get("data_root", "")).strip()
+    data_root = Path(raw_data_root) if raw_data_root else PROJECT_ROOT / ".satrap" / "data"
+    if not data_root.is_absolute():
+        data_root = PROJECT_ROOT / data_root
+    return StorageLayout(data_root)
+
+
 def _configured_platform_ids(config_data: dict[str, Any] | None = None) -> list[str]:
     """
     返回可冷管理的平台实例 ID, 始终包含 local
@@ -463,9 +489,192 @@ def _configured_platform_ids(config_data: dict[str, Any] | None = None) -> list[
             if not isinstance(raw_platform, dict):
                 continue
             platform_id = str(cast(dict[str, Any], raw_platform).get("id", "")).strip()
-            if platform_id and platform_id not in result:
+            if (
+                platform_id
+                and platform_id != CHAT_PLATFORM_ID
+                and platform_id not in result
+            ):
                 result.append(platform_id)
     return result
+
+
+def _check_chat_health() -> bool:
+    """检查独立 Chat 服务是否正在运行"""
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:19872/api/chat/health", timeout=0.4) as response:
+            return response.status == 200
+    except (OSError, urllib.error.URLError):
+        return False
+
+
+def _require_chat_stopped() -> None:
+    """阻止冷写操作与运行中的 Chat 服务争用状态"""
+    if _check_chat_health():
+        raise RuntimeError("Chat 服务正在运行, 请使用热管理接口")
+
+
+def _cold_chat_history_query(
+    *,
+    search: str = "",
+    project_id: str | None = None,
+    model: str = "",
+    turn_count: str = "all",
+    older_than_days: float | None = None,
+    page: int = 1,
+    page_size: int = 50,
+) -> dict[str, Any]:
+    """
+    从 Chat 平台数据库冷查询历史
+
+    参数:
+    - search: 标题或会话 ID 搜索文本
+    - project_id: 项目 ID 或 `__none__`
+    - model: 模型配置名称
+    - turn_count: 轮数过滤
+    - older_than_days: 最后使用时间过滤
+    - page: 页码
+    - page_size: 每页数量
+
+    返回:
+    - dict[str, Any]: 冷管理分页结果
+    """
+    layout = _configured_storage_layout()
+    result = query_conversations(
+        str(layout.platform_db(CHAT_PLATFORM_ID)),
+        search=search,
+        project_id=project_id,
+        model=model,
+        turn_count=turn_count,
+        older_than_days=older_than_days,
+        page=page,
+        page_size=page_size,
+    )
+    for item in cast(list[dict[str, Any]], result["items"]):
+        item.update({"active": False, "generating": False, "waiting_user": False})
+    sessions_root = layout.platform_root(CHAT_PLATFORM_ID) / "sessions"
+    result["storage_size_bytes"] = StorageMaintenanceService._directory_size(sessions_root)
+    result["mode"] = "cold"
+    return result
+
+
+def _cold_chat_history_targets(
+    mode: str,
+    conversation_ids: list[str],
+    filters: dict[str, Any],
+) -> list[str]:
+    """
+    解析冷管理批量回收目标
+
+    参数:
+    - mode: selected、empty、single 或 filtered
+    - conversation_ids: 显式选择的会话 ID
+    - filters: 自定义过滤条件
+
+    返回:
+    - list[str]: 去重后的目标会话 ID
+    """
+    if mode == "selected":
+        targets = list(dict.fromkeys(item.strip() for item in conversation_ids if item.strip()))
+        if not targets:
+            raise ValueError("至少选择一个会话")
+        return targets
+    if mode in {"empty", "single"}:
+        query_filters: dict[str, Any] = {"turn_count": mode}
+    elif mode != "filtered":
+        raise ValueError(f"未知批量删除模式: {mode}")
+    else:
+        query_filters = dict(filters)
+    raw_days = query_filters.get("older_than_days")
+    page = 1
+    results: list[str] = []
+    while True:
+        batch = _cold_chat_history_query(
+            search=str(query_filters.get("search") or ""),
+            project_id=str(query_filters.get("project_id") or "") or None,
+            model=str(query_filters.get("model") or ""),
+            turn_count=str(query_filters.get("turn_count") or "all"),
+            older_than_days=float(raw_days) if raw_days is not None else None,
+            page=page,
+            page_size=200,
+        )
+        results.extend(
+            str(item["conversation_id"])
+            for item in cast(list[dict[str, Any]], batch["items"])
+        )
+        if len(results) >= int(batch["total"]):
+            return results
+        page += 1
+
+
+def _edictum_config_references(config_name: str) -> list[dict[str, str]]:
+    """
+    列出全部可管理平台中的 Edictum 配置引用
+
+    参数:
+    - config_name: Edictum 配置名称
+
+    返回:
+    - list[dict[str, str]]: 平台和会话引用
+    """
+    layout = _configured_storage_layout()
+    platform_ids = _configured_platform_ids()
+    if CHAT_PLATFORM_ID not in platform_ids:
+        platform_ids.append(CHAT_PLATFORM_ID)
+    references: list[dict[str, str]] = []
+    for platform_id in platform_ids:
+        store = SessionConfigStore(layout.platform_db(platform_id))
+        references.extend(
+            {"platform_id": platform_id, "session_id": session_id}
+            for session_id in store.list_definition_references(
+                EDICTUM_PROVIDER,
+                config_name,
+            )
+        )
+    return references
+
+
+def _rename_edictum_config_references(
+    old_name: str,
+    new_name: str,
+) -> list[dict[str, str]]:
+    """
+    迁移全部可管理平台中的 Edictum 配置引用
+
+    参数:
+    - old_name: 原配置名称
+    - new_name: 新配置名称
+
+    返回:
+    - list[dict[str, str]]: 已迁移的平台和会话引用
+    """
+    layout = _configured_storage_layout()
+    platform_ids = _configured_platform_ids()
+    if CHAT_PLATFORM_ID not in platform_ids:
+        platform_ids.append(CHAT_PLATFORM_ID)
+    completed: list[SessionConfigStore] = []
+    migrated: list[dict[str, str]] = []
+    try:
+        for platform_id in platform_ids:
+            store = SessionConfigStore(layout.platform_db(platform_id))
+            session_ids = store.rename_definition_references(
+                EDICTUM_PROVIDER,
+                old_name,
+                new_name,
+            )
+            completed.append(store)
+            migrated.extend(
+                {"platform_id": platform_id, "session_id": session_id}
+                for session_id in session_ids
+            )
+    except Exception:
+        for store in reversed(completed):
+            store.rename_definition_references(
+                EDICTUM_PROVIDER,
+                new_name,
+                old_name,
+            )
+        raise
+    return migrated
 
 
 def _require_backend_stopped() -> None:
@@ -517,7 +726,7 @@ def _resolve_session_scan_paths(paths: list[str]) -> list[str]:
     return resolved
 
 
-async def _handle_request(
+async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制路由集中维护, 运行时分支明确
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     """
@@ -579,6 +788,126 @@ async def _handle_request(
                 "managed": _backend_process is not None and _backend_process.poll() is None,
                 "health": health,
             }
+
+        elif method == "GET" and path == "/chat/history":
+            try:
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
+                raw_days = str(query.get("older_than_days", [""])[0]).strip()
+                body = await asyncio.to_thread(
+                    _cold_chat_history_query,
+                    search=str(query.get("search", [""])[0]),
+                    project_id=str(query.get("project_id", [""])[0]) or None,
+                    model=str(query.get("model", [""])[0]),
+                    turn_count=str(query.get("turn_count", ["all"])[0]),
+                    older_than_days=float(raw_days) if raw_days else None,
+                    page=int(query.get("page", ["1"])[0]),
+                    page_size=int(query.get("page_size", ["50"])[0]),
+                )
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/chat/history/delete":
+            try:
+                _require_chat_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                raw_ids = payload.get("conversation_ids", [])
+                raw_filters = payload.get("filters", {})
+                if not isinstance(raw_ids, list) or not isinstance(raw_filters, dict):
+                    raise ValueError("conversation_ids 必须是数组且 filters 必须是对象")
+                targets = _cold_chat_history_targets(
+                    str(payload.get("mode") or "selected"),
+                    [str(item) for item in raw_ids],
+                    dict(cast(dict[str, Any], raw_filters)),
+                )
+                service = StorageMaintenanceService(_configured_storage_layout())
+                results: list[dict[str, Any]] = []
+                for conversation_id in targets:
+                    try:
+                        archived = await asyncio.to_thread(
+                            service.archive_session,
+                            CHAT_PLATFORM_ID,
+                            conversation_id,
+                        )
+                        results.append({
+                            "ok": True,
+                            "conversation_id": conversation_id,
+                            "archive_id": archived["archive_id"],
+                        })
+                    except Exception as error:
+                        results.append({
+                            "ok": False,
+                            "conversation_id": conversation_id,
+                            "error": str(error),
+                        })
+                body = {
+                    "ok": all(item.get("ok", False) for item in results),
+                    "deleted_count": sum(1 for item in results if item.get("ok", False)),
+                    "results": results,
+                }
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "GET" and path == "/chat/history/trash":
+            try:
+                items = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).list_archives,
+                    CHAT_PLATFORM_ID,
+                )
+                body = {
+                    "items": items,
+                    "total": len(items),
+                    "storage_size_bytes": sum(int(item["size_bytes"]) for item in items),
+                    "mode": "cold",
+                }
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/chat/history/trash/restore":
+            try:
+                _require_chat_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                archive_id = str(payload.get("archive_id") or "").strip()
+                if not archive_id:
+                    raise ValueError("archive_id 不能为空")
+                body = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).restore_archive,
+                    CHAT_PLATFORM_ID,
+                    archive_id,
+                )
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/chat/history/trash/purge":
+            try:
+                _require_chat_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                archive_id = str(payload.get("archive_id") or "").strip()
+                if not archive_id:
+                    raise ValueError("archive_id 不能为空")
+                body = {
+                    "ok": await asyncio.to_thread(
+                        StorageMaintenanceService(_configured_storage_layout()).purge_archive,
+                        CHAT_PLATFORM_ID,
+                        archive_id,
+                    ),
+                    "archive_id": archive_id,
+                }
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
         
         elif method == "POST" and path == "/start":
             health = _check_backend_health()
@@ -828,6 +1157,115 @@ async def _handle_request(
                 body = {"error": str(e)}
                 status = 400
 
+        elif method == "GET" and path == "/storage/audit":
+            try:
+                config_data = load_config_document(CONFIG_PATH)
+                configured_platforms = {
+                    CHAT_PLATFORM_ID,
+                    *_configured_platform_ids(config_data),
+                }
+                items = await asyncio.to_thread(
+                    StorageMaintenanceService(
+                        _configured_storage_layout(config_data)
+                    ).scan,
+                    configured_platforms,
+                )
+                body = {
+                    "items": [item.to_dict() for item in items],
+                    "summary": {
+                        "count": len(items),
+                        "size_bytes": sum(item.size_bytes for item in items),
+                    },
+                }
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/storage/cleanup":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                raw_ids = payload.get("item_ids", [])
+                if not isinstance(raw_ids, list):
+                    raise ValueError("item_ids 必须是数组")
+                results = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).cleanup,
+                    [str(item) for item in raw_ids],
+                )
+                body = {
+                    "ok": all(item.get("ok", False) for item in results),
+                    "results": results,
+                }
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/storage/trash/restore":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                body = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).restore_archive,
+                    str(payload.get("platform_id", "")).strip(),
+                    str(payload.get("archive_id", "")).strip(),
+                )
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/storage/trash/purge":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                deleted = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).purge_archive,
+                    str(payload.get("platform_id", "")).strip(),
+                    str(payload.get("archive_id", "")).strip(),
+                )
+                body = {"ok": deleted}
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+                body = {"error": str(e)}
+                status = 400
+
+        elif method == "POST" and path == "/storage/trash/purge-batch":
+            try:
+                _require_backend_stopped()
+                payload = await _read_json_body(reader, raw_request)
+                raw_refs = payload.get("archive_refs")
+                if raw_refs is not None and not isinstance(raw_refs, list):
+                    raise ValueError("archive_refs 必须是数组")
+                archive_refs = [
+                    dict(cast(dict[str, str], item))
+                    for item in raw_refs or []
+                    if isinstance(item, dict)
+                ]
+                raw_days = payload.get("older_than_days")
+                results = await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).purge_archives,
+                    archive_refs=archive_refs,
+                    older_than_days=(float(raw_days) if raw_days is not None else None),
+                    platform_id=str(payload.get("platform_id", "")).strip() or None,
+                )
+                body = {
+                    "ok": all(item.get("ok", False) for item in results),
+                    "results": results,
+                }
+            except RuntimeError as e:
+                body = {"error": str(e)}
+                status = 409
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+                body = {"error": str(e)}
+                status = 400
+
         elif method == "GET" and path == "/config/edictum/types":
             try:
                 body = {"types": _edictum_config_service().list_types()}
@@ -1006,16 +1444,38 @@ async def _handle_request(
                     else:
                         body = config_entry
                 elif method == "PATCH" and not action:
-                    final_name, updated = service.update(
-                        name,
-                        await _read_json_body(reader, raw_request),
-                    )
-                    body = {"ok": True, "name": final_name, "config": updated}
+                    payload = await _read_json_body(reader, raw_request)
+                    previous = service.get(name)
+                    final_name, updated = service.update(name, payload)
+                    migrated_refs: list[dict[str, str]] = []
+                    if final_name != name:
+                        try:
+                            migrated_refs = _rename_edictum_config_references(
+                                name,
+                                final_name,
+                            )
+                        except Exception:
+                            if previous is not None:
+                                service.update(final_name, {**previous, "name": name})
+                            raise
+                    body = {
+                        "ok": True,
+                        "name": final_name,
+                        "config": updated,
+                        "migrated_refs": migrated_refs,
+                    }
                 elif method == "POST" and action:
                     updated = service.set_enabled(name, action == "enable")
                     body = {"ok": True, "config": updated}
                 elif method == "DELETE" and not action:
-                    if service.delete(name):
+                    references = _edictum_config_references(name)
+                    if references:
+                        body = {
+                            "error": f"Edictum 配置仍被 {len(references)} 个会话实例引用",
+                            "references": references,
+                        }
+                        status = 409
+                    elif service.delete(name):
                         body = {"ok": True}
                     else:
                         body = {"error": "not found"}

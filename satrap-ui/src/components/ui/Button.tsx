@@ -13,7 +13,6 @@ const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'default', size = 'md', reflect = true, children, ...props }, forwardedRef) => {
     const reflectRef = useStandaloneGlassReflect<HTMLButtonElement>({
       reflectRange: 120,
-      reflectSize: 120,
     });
 
     // 合并反光 ref 与外部 ref

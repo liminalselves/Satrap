@@ -14,6 +14,12 @@ API (前缀 /api/chat/):
 - POST /api/chat/conversations              新建会话 {model, think, system_prompt} -> {conversation_id}
 - POST /api/chat/conversations/preload      预分配 ID 并加载 Session 与插件, 不持久化空会话
 - GET  /api/chat/conversations              会话列表 (display db)
+- GET  /api/chat/history                    历史分页、过滤和统计
+- POST /api/chat/history/delete             批量回收历史
+- GET  /api/chat/history/trash              历史回收站
+- POST /api/chat/history/trash/restore      恢复历史
+- POST /api/chat/history/trash/purge        永久删除回收项
+- POST /api/chat/turns/variant              切换最后一轮回复版本
 - GET  /api/chat/turns?conversation=xxx     对话轮次 (含工具明细)
 - POST /api/chat/send                       发送 {conversation, text, think} -> 立即返回, WS 推流
 - POST /api/chat/ask-user/answer            回填 ask_user 工具等待的用户回答
@@ -38,7 +44,7 @@ import asyncio
 import base64
 import json
 import signal
-from typing import Any
+from typing import Any, cast
 from urllib.parse import unquote
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
@@ -196,6 +202,65 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "GET" and clean == "/api/chat/conversations":
             return 200, {"conversations": list_conversations(db_path=svc._display_db_path)}
 
+        if method == "GET" and clean == "/api/chat/history":
+            raw_days = self._query_param(path, "older_than_days")
+            try:
+                return 200, svc.query_history(
+                    search=self._query_param(path, "search"),
+                    project_id=self._query_param(path, "project_id") or None,
+                    model=self._query_param(path, "model"),
+                    turn_count=self._query_param(path, "turn_count") or "all",
+                    older_than_days=float(raw_days) if raw_days else None,
+                    page=int(self._query_param(path, "page") or 1),
+                    page_size=int(self._query_param(path, "page_size") or 50),
+                )
+            except (TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
+        # 接口: GET /api/chat/history
+
+        if method == "POST" and clean == "/api/chat/history/delete":
+            try:
+                payload = json.loads(body or b"{}")
+                raw_ids = payload.get("conversation_ids", [])
+                raw_filters = payload.get("filters", {})
+                if not isinstance(raw_ids, list) or not isinstance(raw_filters, dict):
+                    raise ValueError("conversation_ids 必须是数组且 filters 必须是对象")
+                return 200, await svc.delete_conversations(
+                    mode=str(payload.get("mode") or "selected"),
+                    conversation_ids=[str(item) for item in raw_ids],
+                    filters=dict(cast(dict[str, Any], raw_filters)),
+                    force=bool(payload.get("force", False)),
+                )
+            except (TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/chat/history/delete
+
+        if method == "GET" and clean == "/api/chat/history/trash":
+            return 200, svc.list_history_archives()
+        # 接口: GET /api/chat/history/trash
+
+        if method == "POST" and clean == "/api/chat/history/trash/restore":
+            try:
+                payload = json.loads(body or b"{}")
+                archive_id = str(payload.get("archive_id") or "").strip()
+                if not archive_id:
+                    raise ValueError("archive_id 不能为空")
+                return 200, svc.restore_history_archive(archive_id)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/chat/history/trash/restore
+
+        if method == "POST" and clean == "/api/chat/history/trash/purge":
+            try:
+                payload = json.loads(body or b"{}")
+                archive_id = str(payload.get("archive_id") or "").strip()
+                if not archive_id:
+                    raise ValueError("archive_id 不能为空")
+                return 200, svc.purge_history_archive(archive_id)
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+                return 400, {"error": str(error)}
+        # 接口: POST /api/chat/history/trash/purge
+
         if method == "POST" and clean.startswith("/api/chat/conversations/") and clean.endswith("/project"):
             conv_id = unquote(clean[len("/api/chat/conversations/"):-len("/project")])
             if not conv_id:
@@ -235,7 +300,10 @@ class ChatHTTPServer(MiniHTTPServer):
             conv_id = unquote(clean[len("/api/chat/conversations/"):])
             if not conv_id:
                 return 400, {"error": "缺少 conversation_id"}
-            return 200, await svc.delete_conversation(conv_id)
+            try:
+                return 200, await svc.delete_conversation(conv_id)
+            except ValueError as error:
+                return 409, {"error": str(error)}
         # 接口: DELETE /api/chat/conversations/{id}
 
         if method == "GET" and clean == "/api/chat/turns":
@@ -304,6 +372,19 @@ class ChatHTTPServer(MiniHTTPServer):
             return (200 if result.get("ok") else 400), result
         # 重试与分支
 
+        if method == "POST" and clean == "/api/chat/turns/variant":
+            payload = json.loads(body or b"{}")
+            conv = str(payload.get("conversation") or "").strip()
+            if not conv:
+                return 400, {"error": "缺少 conversation 参数"}
+            try:
+                turn_index = int(payload["turn_index"])
+                variant_index = int(payload["variant_index"])
+            except (KeyError, TypeError, ValueError):
+                return 400, {"error": "turn_index 和 variant_index 必须是整数"}
+            result = await svc.select_variant(conv, turn_index, variant_index)
+            return (200 if result.get("ok") else 409), result
+
         if method == "POST" and clean == "/api/chat/fork":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()
@@ -335,7 +416,10 @@ class ChatHTTPServer(MiniHTTPServer):
                 cfg = payload.get("config")
                 if not isinstance(cfg, dict):
                     return 400, {"error": "缺少 config 对象"}
-                return 200, svc.save_plugin_config(name, cfg)
+                return 200, await svc.save_plugin_config(
+                    name,
+                    dict(cast(dict[str, Any], cfg)),
+                )
             return 405, {"error": f"method not allowed: {method}"}
         # 接口: GET/PUT /api/chat/plugins/{name}/config (需在 POST 分支之前匹配)
 

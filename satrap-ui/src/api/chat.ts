@@ -26,6 +26,15 @@ export interface MessageSegment {
   tool?: ToolCall;
 }
 
+export interface ChatTurnVariant {
+  variant_index: number;
+  thinking: string | null;
+  answer: string;
+  segments: MessageSegment[] | null;
+  created_at: number;
+  tool_calls: ToolCall[];
+}
+
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
   id: number;
@@ -37,6 +46,9 @@ export interface ChatTurn {
   segments: MessageSegment[] | null;
   created_at: number;
   tool_calls: ToolCall[];
+  active_variant: number;
+  variant_count: number;
+  variants: ChatTurnVariant[];
 }
 
 // 会话列表项
@@ -46,6 +58,78 @@ export interface ConversationItem {
   last_at: number;
   title: string;
   project_id?: string | null;   // 所属项目 (无项目会话为 null/缺省)
+  model?: string;
+  think?: string;
+  created_at?: number;
+}
+
+export interface ChatHistoryItem extends ConversationItem {
+  model: string;
+  think: string;
+  created_at: number;
+  active: boolean;
+  generating: boolean;
+  waiting_user: boolean;
+}
+
+export interface ChatHistoryQuery {
+  search?: string;
+  project_id?: string;
+  model?: string;
+  turn_count?: 'all' | 'empty' | 'single';
+  older_than_days?: number;
+  page?: number;
+  page_size?: number;
+}
+
+export interface ChatHistoryResult {
+  items: ChatHistoryItem[];
+  total: number;
+  page: number;
+  page_size: number;
+  storage_size_bytes: number;
+  mode: 'hot' | 'cold';
+}
+
+export interface ChatHistoryArchive {
+  archive_id: string;
+  platform_id: string;
+  session_id: string;
+  deleted_at: number;
+  size_bytes: number;
+  has_files: boolean;
+  tables: string[];
+  title: string;
+  model: string;
+  think: string;
+  project_id?: string | null;
+  created_at: number;
+  turn_count: number;
+}
+
+export interface ChatHistoryTrashResult {
+  items: ChatHistoryArchive[];
+  total: number;
+  storage_size_bytes: number;
+  mode: 'hot' | 'cold';
+}
+
+export interface ChatHistoryDeleteRequest {
+  mode: 'selected' | 'empty' | 'single' | 'filtered';
+  conversation_ids?: string[];
+  filters?: ChatHistoryQuery;
+  force?: boolean;
+}
+
+export interface ChatHistoryDeleteResult {
+  ok: boolean;
+  deleted_count: number;
+  results: Array<{
+    ok: boolean;
+    conversation_id: string;
+    archive_id?: string;
+    error?: string;
+  }>;
 }
 
 // 项目 (绑定的工作区文件夹)
@@ -73,9 +157,10 @@ export interface ModelConfigItem {
   max_tokens?: number;
   context_window?: number;
   history_ratio?: number;
-  reasoning_body?: Record<string, unknown>;
-  thinking_field_name?: string;
+  thinking_field_name?: string | null;
   thinking_fields?: string[];
+  thinking_levels?: string[];
+  omit_none_thinking_fields?: boolean;
 }
 
 // 预加载及首次发送使用的会话构建设置
@@ -136,15 +221,16 @@ export interface MemoryRecord {
 // WS 推送事件
 export type ChatEvent =
   | { type: 'subscribed'; conversation_id: string }
-  | { type: 'turn_start'; user_input: string }
+  | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
   | { type: 'thinking_delta'; delta: string }
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_start'; name: string; arguments: unknown; call_id: string }
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string }
-  | { type: 'error'; error?: string; message?: string };
+  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number }
+  | { type: 'variant_selected'; turn_index: number; variant_index: number }
+  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number };
 
 // ==================== HTTP 请求 ====================
 
@@ -159,6 +245,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     throw new Error(data.error || `请求失败: ${resp.status}`);
   }
   return data;
+}
+
+function historyQueryString(query: ChatHistoryQuery = {}): string {
+  const params = new URLSearchParams();
+  Object.entries(query).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      params.set(key, String(value));
+    }
+  });
+  const encoded = params.toString();
+  return encoded ? `?${encoded}` : '';
 }
 
 export const chatApi = {
@@ -208,6 +305,25 @@ export const chatApi = {
 
   listConversations: () => request<{ conversations: ConversationItem[] }>('GET', '/api/chat/conversations'),
 
+  queryHistory: (query: ChatHistoryQuery = {}) =>
+    request<ChatHistoryResult>('GET', `/api/chat/history${historyQueryString(query)}`),
+
+  deleteHistory: (data: ChatHistoryDeleteRequest) =>
+    request<ChatHistoryDeleteResult>('POST', '/api/chat/history/delete', data),
+
+  listHistoryTrash: () =>
+    request<ChatHistoryTrashResult>('GET', '/api/chat/history/trash'),
+
+  restoreHistory: (archiveId: string) =>
+    request<{ ok: boolean; session_id: string; archive_id: string }>(
+      'POST', '/api/chat/history/trash/restore', { archive_id: archiveId },
+    ),
+
+  purgeHistory: (archiveId: string) =>
+    request<{ ok: boolean; archive_id: string }>(
+      'POST', '/api/chat/history/trash/purge', { archive_id: archiveId },
+    ),
+
   deleteConversation: (conversationId: string) =>
     request<{ ok: boolean }>('DELETE', `/api/chat/conversations/${encodeURIComponent(conversationId)}`),
 
@@ -221,7 +337,14 @@ export const chatApi = {
     attachments?: Attachment[],
     preloadSettings?: ChatPreloadSettings,
   ) =>
-    request<{ ok: boolean; error?: string }>('POST', '/api/chat/send', {
+    request<{
+      ok: boolean;
+      conversation_id: string;
+      turn_id: number;
+      turn_index: number;
+      variant_index: number;
+      error?: string;
+    }>('POST', '/api/chat/send', {
       conversation,
       text,
       think,
@@ -263,7 +386,15 @@ export const chatApi = {
 
   // Retry / Fork
   retry: (conversation: string, think?: string) =>
-    request<{ ok: boolean; error?: string }>('POST', '/api/chat/retry', { conversation, think }),
+    request<{ ok: boolean; turn_id: number; turn_index: number; variant_index: number; error?: string }>(
+      'POST', '/api/chat/retry', { conversation, think },
+    ),
+
+  selectVariant: (conversation: string, turnIndex: number, variantIndex: number) =>
+    request<{ ok: boolean; turn: ChatTurn; error?: string }>(
+      'POST', '/api/chat/turns/variant',
+      { conversation, turn_index: turnIndex, variant_index: variantIndex },
+    ),
 
   fork: (conversation: string, turnIndex: number) =>
     request<{ ok: boolean; conversation_id: string; copied_turns: number; error?: string }>(
@@ -278,13 +409,13 @@ export const chatApi = {
   listPlugins: () => request<{ plugins: ChatPlugin[] }>('GET', '/api/chat/plugins'),
 
   setPluginEnabled: (name: string, enabled: boolean) =>
-    request<{ ok: boolean; error?: string }>(
+    request<{ ok: boolean; applied?: boolean; failed?: number; error?: string }>(
       'POST',
       `/api/chat/plugins/${encodeURIComponent(name)}/${enabled ? 'enable' : 'disable'}`
     ),
 
   setPluginCapability: (name: string, kind: CapabilityKind, cap: string, enabled: boolean) =>
-    request<{ ok: boolean; error?: string }>(
+    request<{ ok: boolean; applied?: boolean; failed?: number; error?: string }>(
       'POST',
       `/api/chat/plugins/${encodeURIComponent(name)}/capability`,
       { kind, cap, enabled }

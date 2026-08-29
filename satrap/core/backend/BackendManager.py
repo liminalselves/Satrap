@@ -10,7 +10,7 @@ import asyncio
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Dict, List, Optional
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -22,7 +22,11 @@ from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storag
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.registry import EdictumTypeRegistry, create_default_edictum_type_registry
+from satrap.edictum.registry import (
+    EDICTUM_PROVIDER,
+    EdictumTypeRegistry,
+    create_default_edictum_type_registry,
+)
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import (
@@ -278,6 +282,74 @@ class BackendManager:
         return dict(self._platform_runtimes)
 
     @property
+    def storage_layout(self) -> StorageLayout:
+        """返回后端统一使用的 v2 数据布局"""
+        return self._storage
+
+    def list_edictum_config_references(self, config_name: str) -> list[dict[str, str]]:
+        """
+        列出全部平台中引用指定 Edictum 配置的会话实例
+
+        参数:
+        - config_name: Edictum 配置名称
+
+        返回:
+        - list[dict[str, str]]: 平台和会话引用
+        """
+        references: list[dict[str, str]] = []
+        for platform_id, (session_manager, _) in self._platform_runtimes.items():
+            references.extend(
+                {
+                    "platform_id": platform_id,
+                    "session_id": session_id,
+                }
+                for session_id in session_manager.store.list_definition_references(
+                    EDICTUM_PROVIDER,
+                    config_name,
+                )
+            )
+        return references
+
+    def rename_edictum_config_references(
+        self,
+        old_name: str,
+        new_name: str,
+    ) -> list[dict[str, str]]:
+        """
+        迁移全部平台中的 Edictum 配置引用
+
+        参数:
+        - old_name: 原配置名称
+        - new_name: 新配置名称
+
+        返回:
+        - list[dict[str, str]]: 已迁移的平台和会话引用
+        """
+        migrated: list[dict[str, str]] = []
+        completed: list[SessionManager] = []
+        try:
+            for platform_id, (session_manager, _) in self._platform_runtimes.items():
+                session_ids = session_manager.store.rename_definition_references(
+                    EDICTUM_PROVIDER,
+                    old_name,
+                    new_name,
+                )
+                completed.append(session_manager)
+                migrated.extend(
+                    {"platform_id": platform_id, "session_id": session_id}
+                    for session_id in session_ids
+                )
+        except Exception:
+            for session_manager in reversed(completed):
+                session_manager.store.rename_definition_references(
+                    EDICTUM_PROVIDER,
+                    new_name,
+                    old_name,
+                )
+            raise
+        return migrated
+
+    @property
     def scheduler(self) -> PipelineScheduler | None:
         """
         获取 scheduler
@@ -330,17 +402,183 @@ class BackendManager:
             await self.stop()
             raise
 
-    async def reload_config(self):
-        """热加载模型, 会话类和 Edictum 冷配置"""
+    async def reload_config(self) -> dict[str, Any]:
+        """
+        热加载模型, 会话类和 Edictum 冷配置
+
+        返回:
+        - dict[str, Any]: Edictum 活跃会话插件同步结果
+        """
         if self._model_cfg:
             self._model_cfg.reload()
         if self._session_cls_cfg:
             self._session_cls_cfg.reload()
         if self._edictum_cfg:
             self._edictum_cfg.reload()
+        edictum_results = await self.reconcile_edictum_runtime_async()
         for session_manager, _ in self._platform_runtimes.values():
             session_manager.reload_model_configs()
         logger.info("[BackendManager] 配置已重载")
+        return {
+            "ok": all(item.get("ok", False) for item in edictum_results),
+            "edictum_sessions": edictum_results,
+        }
+
+    def preview_edictum_runtime_changes(
+        self,
+        *,
+        config_name: str | None = None,
+        session_refs: list[dict[str, str]] | None = None,
+        desired_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        预览全部或指定平台会话的完整 Edictum 配置变更
+
+        参数:
+        - config_name: 可选 Edictum 配置名称过滤
+        - session_refs: 可选平台和会话引用
+        - desired_config: 可选的尚未保存目标配置
+
+        返回:
+        - list[dict[str, Any]]: 逐会话影响预览
+        """
+        refs_by_platform: dict[str, set[str]] | None = None
+        if session_refs is not None:
+            refs_by_platform = {}
+            for ref in session_refs:
+                platform_id = str(ref.get("platform_id", "")).strip()
+                session_id = str(ref.get("session_id", "")).strip()
+                if platform_id and session_id:
+                    refs_by_platform.setdefault(platform_id, set()).add(session_id)
+        results: list[dict[str, Any]] = []
+        for platform_id, (session_manager, _) in self._platform_runtimes.items():
+            if refs_by_platform is not None and platform_id not in refs_by_platform:
+                continue
+            results.extend(session_manager.preview_edictum_runtime(
+                config_name=config_name,
+                session_ids=(refs_by_platform or {}).get(platform_id),
+                desired_config=desired_config,
+            ))
+        return results
+
+    async def reconcile_edictum_runtime_async(
+        self,
+        *,
+        config_name: str | None = None,
+        session_refs: list[dict[str, str]] | None = None,
+        desired_config: dict[str, Any] | None = None,
+        concurrency: int = 4,
+    ) -> list[dict[str, Any]]:
+        """
+        有界并发协调完整 Edictum 运行时配置
+
+        参数:
+        - config_name: 可选 Edictum 配置名称过滤
+        - session_refs: 可选平台和会话引用
+        - desired_config: 可选目标配置覆盖
+        - concurrency: 每个平台最大并发协调数
+
+        返回:
+        - list[dict[str, Any]]: 逐会话协调结果
+        """
+        refs_by_platform: dict[str, set[str]] | None = None
+        if session_refs is not None:
+            refs_by_platform = {}
+            for ref in session_refs:
+                platform_id = str(ref.get("platform_id", "")).strip()
+                session_id = str(ref.get("session_id", "")).strip()
+                if platform_id and session_id:
+                    refs_by_platform.setdefault(platform_id, set()).add(session_id)
+        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        for platform_id, (session_manager, _) in self._platform_runtimes.items():
+            if refs_by_platform is not None and platform_id not in refs_by_platform:
+                continue
+            pending.append(session_manager.reconcile_edictum_runtime_async(
+                config_name=config_name,
+                session_ids=(refs_by_platform or {}).get(platform_id),
+                desired_config=desired_config,
+                concurrency=concurrency,
+            ))
+        grouped = await asyncio.gather(*pending) if pending else []
+        return [item for group in grouped for item in group]
+
+    def preview_edictum_plugin_changes(
+        self,
+        *,
+        config_name: str | None = None,
+        session_refs: list[dict[str, str]] | None = None,
+        desired_plugins: object | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        预览全部或指定平台会话的 Edictum 插件变更
+
+        参数:
+        - config_name: 可选 Edictum 配置名称过滤
+        - session_refs: 可选平台和会话引用
+        - desired_plugins: 可选目标插件配置覆盖
+
+        返回:
+        - list[dict[str, Any]]: 逐会话影响预览
+        """
+        refs_by_platform: dict[str, set[str]] | None = None
+        if session_refs is not None:
+            refs_by_platform = {}
+            for ref in session_refs:
+                platform_id = str(ref.get("platform_id", "")).strip()
+                session_id = str(ref.get("session_id", "")).strip()
+                if platform_id and session_id:
+                    refs_by_platform.setdefault(platform_id, set()).add(session_id)
+        results: list[dict[str, Any]] = []
+        for platform_id, (session_manager, _) in self._platform_runtimes.items():
+            if refs_by_platform is not None and platform_id not in refs_by_platform:
+                continue
+            results.extend(session_manager.preview_edictum_plugins(
+                config_name=config_name,
+                session_ids=(refs_by_platform or {}).get(platform_id),
+                desired_plugins=desired_plugins,
+            ))
+        return results
+
+    async def reconcile_edictum_plugins_async(
+        self,
+        *,
+        config_name: str | None = None,
+        session_refs: list[dict[str, str]] | None = None,
+        desired_plugins: object | None = None,
+        concurrency: int = 4,
+    ) -> list[dict[str, Any]]:
+        """
+        有界并发协调全部或指定平台会话的 Edictum 插件
+
+        参数:
+        - config_name: 可选 Edictum 配置名称过滤
+        - session_refs: 可选平台和会话引用
+        - desired_plugins: 可选目标插件配置覆盖
+        - concurrency: 每个平台最大并发协调数
+
+        返回:
+        - list[dict[str, Any]]: 逐会话协调结果
+        """
+        refs_by_platform: dict[str, set[str]] | None = None
+        if session_refs is not None:
+            refs_by_platform = {}
+            for ref in session_refs:
+                platform_id = str(ref.get("platform_id", "")).strip()
+                session_id = str(ref.get("session_id", "")).strip()
+                if platform_id and session_id:
+                    refs_by_platform.setdefault(platform_id, set()).add(session_id)
+        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        for platform_id, (session_manager, _) in self._platform_runtimes.items():
+            if refs_by_platform is not None and platform_id not in refs_by_platform:
+                continue
+            pending.append(session_manager.reconcile_edictum_plugins_async(
+                config_name=config_name,
+                session_ids=(refs_by_platform or {}).get(platform_id),
+                desired_plugins=desired_plugins,
+                concurrency=concurrency,
+            ))
+        grouped = await asyncio.gather(*pending) if pending else []
+        return [item for group in grouped for item in group]
 
     async def stop(self):
         """优雅关闭: 逆序停止"""

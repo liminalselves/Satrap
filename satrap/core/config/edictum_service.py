@@ -4,13 +4,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.plugin import (
-    CAPABILITY_KINDS,
-    load_plugin_meta,
-    parse_capability_descriptions,
-    scan_plugin_dirs,
-)
-from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
+from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.registry import EdictumTypeRegistry
 
 
@@ -43,6 +37,7 @@ class EdictumConfigService:
         """
         self.manager = manager
         self.type_registry = type_registry
+        self.plugin_catalog = PluginCatalog()
 
     def list_types(self) -> list[dict[str, Any]]:
         """
@@ -69,24 +64,7 @@ class EdictumConfigService:
         返回:
         - list[dict[str, Any]]: 插件元数据, 配置结构和能力清单
         """
-        plugins: list[dict[str, Any]] = []
-        for plugin_dir in scan_plugin_dirs():
-            meta = load_plugin_meta(plugin_dir)
-            capabilities = parse_capability_descriptions(meta)
-            plugins.append(
-                {
-                    "name": str(meta.get("name") or ""),
-                    "version": str(meta.get("version") or ""),
-                    "author": str(meta.get("author") or ""),
-                    "description": str(meta.get("description") or ""),
-                    "config_schema": schema_to_payload(parse_config_schema(meta)),
-                    "capabilities": {
-                        kind: capabilities.get(kind, {})
-                        for kind in CAPABILITY_KINDS
-                    },
-                }
-            )
-        return plugins
+        return self.plugin_catalog.list_payloads()
 
     def get(self, name: str) -> dict[str, Any] | None:
         """

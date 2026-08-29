@@ -14,7 +14,16 @@ interface ManagedPluginState {
   present: boolean;
   enabled: boolean;
   config: Record<string, unknown>;
+  capabilities: Record<string, Record<string, boolean>>;
 }
+
+const CAPABILITY_LABELS: Record<string, string> = {
+  tools: '工具',
+  skills: '技能',
+  mcp: 'MCP',
+  handlers: '处理器',
+  commands: '命令',
+};
 
 interface EdictumPluginManagerProps {
   open: boolean;
@@ -32,13 +41,16 @@ function normalizeConfiguredPlugins(
   const normalized: Record<string, ManagedPluginState> = {};
   for (const item of plugins) {
     if (typeof item === 'string') {
-      normalized[item] = { present: true, enabled: true, config: {} };
+      normalized[item] = { present: true, enabled: true, config: {}, capabilities: {} };
       continue;
     }
     normalized[item.name] = {
       present: true,
       enabled: item.enabled !== false,
       config: { ...(item.config || {}) },
+      capabilities: Object.fromEntries(
+        Object.entries(item.capabilities || {}).map(([kind, values]) => [kind, { ...values }]),
+      ),
     };
   }
   return normalized;
@@ -75,6 +87,7 @@ export function EdictumPluginManager({
         present: true,
         enabled: true,
         config: current[name]?.config || {},
+        capabilities: current[name]?.capabilities || {},
       },
     }));
   };
@@ -82,7 +95,10 @@ export function EdictumPluginManager({
   const removePlugin = (name: string) => {
     setStates((current) => ({
       ...current,
-      [name]: { ...(current[name] || { enabled: false, config: {} }), present: false },
+      [name]: {
+        ...(current[name] || { enabled: false, config: {}, capabilities: {} }),
+        present: false,
+      },
     }));
   };
 
@@ -90,7 +106,7 @@ export function EdictumPluginManager({
     setStates((current) => ({
       ...current,
       [name]: {
-        ...(current[name] || { present: true, config: {} }),
+        ...(current[name] || { present: true, config: {}, capabilities: {} }),
         present: true,
         enabled,
       },
@@ -101,8 +117,24 @@ export function EdictumPluginManager({
     setStates((current) => ({
       ...current,
       [name]: {
-        ...(current[name] || { present: true, enabled: true, config: {} }),
+        ...(current[name] || { present: true, enabled: true, config: {}, capabilities: {} }),
         config: { ...(current[name]?.config || {}), [key]: value },
+      },
+    }));
+  };
+
+  const setCapabilityEnabled = (name: string, kind: string, capability: string, enabled: boolean) => {
+    setStates((current) => ({
+      ...current,
+      [name]: {
+        ...(current[name] || { present: true, enabled: true, config: {}, capabilities: {} }),
+        capabilities: {
+          ...(current[name]?.capabilities || {}),
+          [kind]: {
+            ...(current[name]?.capabilities?.[kind] || {}),
+            [capability]: enabled,
+          },
+        },
       },
     }));
   };
@@ -114,6 +146,7 @@ export function EdictumPluginManager({
         name,
         enabled: state.enabled,
         config: state.config,
+        capabilities: state.capabilities,
       }));
     await onSave(plugins);
   };
@@ -127,7 +160,7 @@ export function EdictumPluginManager({
     >
       <div className="space-y-4">
         <p className="text-sm text-text-secondary">
-          插件配置属于当前 Edictum 命名会话, 保存后对新建会话生效
+          插件配置属于当前 Edictum 命名会话, 后端运行时会同步能力变化到活跃会话
         </p>
 
         {availablePlugins.length === 0 && (
@@ -228,6 +261,62 @@ export function EdictumPluginManager({
                           />
                         )}
                       </label>
+                    );
+                  })}
+                </div>
+              )}
+
+              {present && capabilityCount > 0 && (
+                <div className="mt-4 space-y-4 border-t border-glass-border pt-4">
+                  {Object.entries(plugin.capabilities).map(([kind, capabilities]) => {
+                    const capabilityEntries = Object.entries(capabilities);
+                    if (capabilityEntries.length === 0) return null;
+                    return (
+                      <div key={kind}>
+                        <div className="mb-2 flex items-center gap-2">
+                          <span className="text-sm font-medium text-text-primary">
+                            {CAPABILITY_LABELS[kind] || kind}
+                          </span>
+                          <Badge variant="default">{capabilityEntries.length}</Badge>
+                        </div>
+                        <div className="grid gap-2 md:grid-cols-2">
+                          {capabilityEntries.map(([capability, description]) => {
+                            const independentlyEnabled = state.capabilities[kind]?.[capability] !== false;
+                            const effective = state.enabled && independentlyEnabled;
+                            return (
+                              <label
+                                key={capability}
+                                className="glass-card flex items-start justify-between gap-3 rounded-lg px-3 py-2"
+                              >
+                                <span className="min-w-0">
+                                  <span className={effective ? 'text-sm text-text-primary' : 'text-sm text-text-tertiary'}>
+                                    {capability}
+                                  </span>
+                                  {description && (
+                                    <span className="mt-0.5 block text-xs text-text-tertiary">
+                                      {description}
+                                    </span>
+                                  )}
+                                  {!state.enabled && independentlyEnabled && (
+                                    <span className="mt-0.5 block text-xs text-text-tertiary">插件停用中</span>
+                                  )}
+                                </span>
+                                <input
+                                  type="checkbox"
+                                  checked={independentlyEnabled}
+                                  onChange={(event) => setCapabilityEnabled(
+                                    plugin.name,
+                                    kind,
+                                    capability,
+                                    event.target.checked,
+                                  )}
+                                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
+                                />
+                              </label>
+                            );
+                          })}
+                        </div>
+                      </div>
                     );
                   })}
                 </div>

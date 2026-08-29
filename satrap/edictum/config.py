@@ -15,6 +15,8 @@ from typing import Any, cast
 
 from satrap.core.log import logger
 from satrap.core.utils.paths import get_data_dir
+from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 
 
@@ -38,6 +40,7 @@ class EdictumConfigManager:
         """
         self.type_registry = type_registry
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
+        self.plugin_catalog = PluginCatalog()
         self._configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         if auto_create:
@@ -73,8 +76,7 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
-    @staticmethod
-    def _normalize_plugins(value: object) -> list[str | dict[str, Any]]:
+    def _normalize_plugins(self, value: object) -> list[dict[str, Any]]:
         """
         校验插件配置列表并复制为 JSON 安全结构
 
@@ -82,29 +84,16 @@ class EdictumConfigManager:
         - value: 插件名称或插件配置对象列表
 
         返回:
-        - list[str | dict[str, Any]]: 规范化插件配置
+        - list[dict[str, Any]]: 标准插件配置对象列表
         """
-        if value is None:
-            return []
-        if not isinstance(value, list):
-            raise ValueError("plugins 必须是数组")
-        output: list[str | dict[str, Any]] = []
-        for item in cast(list[object], value):
-            if isinstance(item, str):
-                name = item.strip()
-                if not name:
-                    raise ValueError("插件名称不能为空")
-                output.append(name)
-            elif isinstance(item, dict):
-                plugin = dict(cast(dict[str, Any], item))
-                name = str(plugin.get("name", "")).strip()
-                if not name:
-                    raise ValueError("插件配置必须包含 name")
-                plugin["name"] = name
-                output.append(plugin)
-            else:
-                raise ValueError("plugins 项必须是名称或对象")
-        return output
+        return [
+            spec.to_config()
+            for spec in parse_plugin_specs(
+                value,
+                self.plugin_catalog,
+                require_available=False,
+            )
+        ]
 
     def _normalize_entry(self, entry: object) -> dict[str, Any]:
         """

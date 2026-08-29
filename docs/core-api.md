@@ -46,11 +46,12 @@ from satrap import (
 | `timeout` | 请求超时秒数, 默认 `60` |
 | `suppress_error` | 是否捕获异常并返回空结果, 默认 `True` |
 | `return_false` | 出错时是否返回 `False` |
-| `reasoning_body` | 自定义思考请求格式, 非 `None` 时优先于 `thinking_fields` 使用 (默认 `None`) |
 | `thinking_field_name` | 上下文中思考字段名称, 默认 `reasoning_content` |
 | `thinking_fields` | 该模型需要的思考请求字段列表, 如 `["reasoning_effort", "thinking.type"]` |
+| `thinking_levels` | 前端允许选择的思考强度, 可选 `low` / `medium` / `high` / `xhigh` / `max` / `ultra` |
+| `omit_none_thinking_fields` | 关闭思考时是否省略值为 `none` 的字段, 默认 `False` |
 
-`thinking` 参数为字符串思考强度: `off` (默认, 不请求思考) / `low` / `medium` / `high`。请求时由 `thinking_fields` 构造 `extra_body` —— `reasoning_effort` / `thinking_level` 直接把强度值传给模型, `thinking.type` / `enable_thinking` 只区分开关; 若配置了 `reasoning_body` 则直接使用其内容, 不再按强度生成。
+`thinking` 参数为字符串思考强度: `off` 表示不请求思考, 其余可用强度由模型配置的 `thinking_levels` 决定。请求时由 `thinking_fields` 构造 `extra_body` —— `reasoning_effort` / `thinking_level` 直接把强度值传给模型, `thinking.type` / `enable_thinking` 只区分开关。对于关闭时不接受 `reasoning_effort: none` 的供应商, 设置 `omit_none_thinking_fields=True` 即可省略值为 `none` 的字段, 同时保留 `disabled` 或 `false` 等显式关闭字段。
 
 常用方法:
 

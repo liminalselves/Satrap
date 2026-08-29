@@ -246,6 +246,21 @@ async def test_http_session_config_and_runtime_routes(tmp_path: Path):
     assert data["sessions"][0]["session_id"] == "runtime-1"
     assert data["sessions"][0]["active"] is False
 
+    chat_manager = SessionManager(db_path=tmp_path / "chat-platform.db", platform_id="chat")
+    chat_manager.class_cfg_mgr = backend._session_cls_cfg
+    chat_user_manager = UserManager(chat_manager, db_path=tmp_path / "chat-users.db")
+    chat_manager.user_manager = chat_user_manager
+    chat_manager.register_session_from_provider_config(
+        "session_class",
+        "renamed",
+        session_id="chat-history",
+    )
+    backend._platform_runtimes["chat"] = (chat_manager, chat_user_manager)
+
+    status, data = await server._route("GET", "/api/sessions", b"")
+    assert status == 200
+    assert [item["session_id"] for item in data["sessions"]] == ["runtime-1"]
+
     session_manager.store.update_runtime_fields("runtime-1", 1.0, 2)
     empty = session_manager.register_session_from_provider_config(
         "session_class",

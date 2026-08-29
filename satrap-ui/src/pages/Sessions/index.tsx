@@ -7,9 +7,10 @@ import { Card } from '@/components/ui/Card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/Toast';
 import { sessionApi } from '@/api/session';
+import { edictumApi } from '@/api/edictum';
 import { classNameToConfigName } from '@/utils/adminMigration';
 import { PageHeader, DataTable, FormModal, ActionButtons } from '@/components/common';
-import { Plus, Power, PowerOff, Trash2, Settings, Search, FolderPlus, Play, RefreshCw } from 'lucide-react';
+import { Plus, Power, PowerOff, Trash2, Settings, Search, FolderPlus, Play, RefreshCw, RotateCcw } from 'lucide-react';
 import type { Column, FormField } from '@/components/common';
 import type { DiscoveredSessionClass, RuntimeSession, SessionClassConfig } from '@/api/types';
 import { EdictumSessionsPanel } from './EdictumSessionsPanel';
@@ -22,6 +23,7 @@ interface SessionClassItem {
 const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>) => (
   `${session.platform_id}\u0000${session.session_id}`
 );
+const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions() {
   const { sessionClasses, llmConfigs, fetchSessionClasses, fetchModels } = useConfigStore();
@@ -38,6 +40,7 @@ export function Sessions() {
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [retryingRuntimeKey, setRetryingRuntimeKey] = useState<string | null>(null);
   const [registerForm, setRegisterForm] = useState({
     name: '', class_path: '', is_async: false, description: '', context_key: '', model_key: 'model_name', model_name: '', params: '{}',
   });
@@ -52,8 +55,11 @@ export function Sessions() {
   const fetchRuntimeSessions = useCallback(async () => {
     try {
       const result = await sessionApi.listRuntime(backendRunning);
-      setRuntimeSessions(result.sessions);
-      const availableIds = new Set(result.sessions.map(runtimeKey));
+      const platformSessions = result.sessions.filter(
+        (session) => !PLATFORM_SESSION_EXCLUDED_IDS.has(session.platform_id),
+      );
+      setRuntimeSessions(platformSessions);
+      const availableIds = new Set(platformSessions.map(runtimeKey));
       setSelectedRuntimeIds((current) => new Set(
         Array.from(current).filter((sessionId) => availableIds.has(sessionId)),
       ));
@@ -61,6 +67,31 @@ export function Sessions() {
       setRuntimeSessions([]);
     }
   }, [backendRunning]);
+
+  const retryRuntimePlugins = useCallback(async (session: RuntimeSession) => {
+    const key = runtimeKey(session);
+    setRetryingRuntimeKey(key);
+    try {
+      const requiresRestart = Boolean(session.runtime?.config?.drift)
+        || (session.runtime?.plugin_summary?.restart_required || 0) > 0;
+      const applied = requiresRestart
+        ? await sessionApi.restartRuntime(session.platform_id, session.session_id)
+        : (await edictumApi.retryRuntimeChanges({
+          session_refs: [{ platform_id: session.platform_id, session_id: session.session_id }],
+        })).edictum_sessions[0];
+      toast(
+        applied?.ok ? 'success' : 'warning',
+        applied?.ok
+          ? (requiresRestart ? '会话已按冷配置重新激活' : '插件状态已同步')
+          : '插件仍存在漂移, 请查看错误详情',
+      );
+      await fetchRuntimeSessions();
+    } catch (error) {
+      toast('error', '插件重试失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    } finally {
+      setRetryingRuntimeKey(null);
+    }
+  }, [fetchRuntimeSessions]);
 
   useEffect(() => {
     fetchSessionClasses();
@@ -378,6 +409,22 @@ export function Sessions() {
     { key: 'session_type', title: '会话类', render: (item) => item.session_type || item.session_type_name || '-' },
     { key: 'active', title: '状态', render: (item) => <Badge variant={item.active ? 'success' : 'default'}>{item.active ? '活跃' : '已持久化'}</Badge> },
     {
+      key: 'runtime_config',
+      title: '配置状态',
+      render: (item) => {
+        if ((item.provider_name || 'session_class') !== 'edictum' || !item.active) return '-';
+        const configState = item.runtime?.config;
+        if (!configState) return <Badge variant="default">未知</Badge>;
+        if (configState.status === 'error') {
+          return <Badge variant="error" title={configState.error || ''}>重启失败</Badge>;
+        }
+        if (configState.drift || configState.status === 'restart_pending') {
+          return <Badge variant="warning">等待热重启</Badge>;
+        }
+        return <Badge variant="success">已应用</Badge>;
+      },
+    },
+    {
       key: 'plugins',
       title: '插件状态',
       render: (item) => {
@@ -387,9 +434,15 @@ export function Sessions() {
         const plugins = item.runtime?.plugins || [];
         if (!summary || summary.total === 0) return <Badge variant="default">无插件</Badge>;
         const errors = plugins
-          .filter((plugin) => plugin.status === 'error')
-          .map((plugin) => `${plugin.name}: ${plugin.error || '未知错误'}`)
+          .filter((plugin) => plugin.status === 'error' || plugin.drift)
+          .map((plugin) => `${plugin.name}: ${plugin.error || plugin.last_error || '目标状态与实际状态不一致'}`)
           .join('\n');
+        if ((summary.restart_required || 0) > 0) {
+          return <Badge variant="warning" title={errors}>需重启 {summary.restart_required}</Badge>;
+        }
+        if ((summary.drift || 0) > 0) {
+          return <Badge variant="warning" title={errors}>漂移 {summary.drift}/{summary.total}</Badge>;
+        }
         if (summary.errors > 0) {
           return <Badge variant="error" title={errors}>失败 {summary.errors}/{summary.total}</Badge>;
         }
@@ -404,21 +457,46 @@ export function Sessions() {
     {
       key: 'actions',
       title: '操作',
-      render: (item) => (
-        <Button
-          variant="ghost"
-          size="sm"
-          title="删除会话实例"
-          aria-label={`删除会话实例 ${item.session_id}`}
-          disabled={deleting}
-          onClick={() => handleDeleteRuntime(item)}
-          className="text-error hover:text-error"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      ),
+      render: (item) => {
+        const canRetry = backendRunning
+          && item.active
+          && (item.provider_name || 'session_class') === 'edictum'
+          && (
+            Boolean(item.runtime?.config?.drift)
+            || item.runtime?.config?.status === 'error'
+            || (item.runtime?.plugin_summary?.drift || 0) > 0
+            || (item.runtime?.plugin_summary?.errors || 0) > 0
+          );
+        return (
+          <div className="flex items-center gap-1">
+            {canRetry && (
+              <Button
+                variant="ghost"
+                size="sm"
+                title={(item.runtime?.plugin_summary?.restart_required || 0) > 0 ? '按冷配置重新激活' : '重试插件同步'}
+                aria-label={`重试会话插件 ${item.session_id}`}
+                disabled={retryingRuntimeKey !== null}
+                onClick={() => retryRuntimePlugins(item)}
+              >
+                <RotateCcw className={`h-4 w-4 ${retryingRuntimeKey === runtimeKey(item) ? 'animate-spin' : ''}`} />
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="sm"
+              title="删除会话实例"
+              aria-label={`删除会话实例 ${item.session_id}`}
+              disabled={deleting}
+              onClick={() => handleDeleteRuntime(item)}
+              className="text-error hover:text-error"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      },
     },
-  ], [allRuntimeSelected, deleting, handleDeleteRuntime, selectedRuntimeIds, toggleAllRuntimeSelection, toggleRuntimeSelection]);
+  ], [allRuntimeSelected, backendRunning, deleting, handleDeleteRuntime, retryingRuntimeKey, retryRuntimePlugins, selectedRuntimeIds, toggleAllRuntimeSelection, toggleRuntimeSelection]);
 
   const modelOptions = useMemo(
     () => [{ value: '', label: '不绑定' }, ...llmNames.map((name) => ({ value: name, label: name }))],
@@ -513,7 +591,7 @@ export function Sessions() {
           <div>
             <h3 className="text-lg font-semibold text-text-primary">会话实例</h3>
             <p className="mt-1 text-sm text-text-secondary">
-              已持久化的 Provider 会话实例 · {backendRunning ? '后端热管理' : '后端已停止, 当前为冷管理'}
+              已持久化的平台 Provider 会话实例, 不包含 Chat 对话历史 · {backendRunning ? '后端热管理' : '后端已停止, 当前为冷管理'}
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">

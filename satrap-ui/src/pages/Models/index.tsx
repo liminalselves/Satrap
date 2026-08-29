@@ -5,7 +5,12 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/Tabs';
 import { toast } from '@/components/ui/Toast';
-import { MODEL_TYPES } from '@/utils/constants';
+import {
+  DEFAULT_THINKING_LEVELS,
+  MODEL_TYPES,
+  THINKING_FIELD_OPTIONS,
+  THINKING_LEVEL_OPTIONS,
+} from '@/utils/constants';
 import { PageHeader, FormModal, FormField, EmptyState } from '@/components/common';
 import { Plus, Edit2, Trash2, Eye, EyeOff } from 'lucide-react';
 import type { LLMConfig, EmbeddingConfig, ReRankConfig } from '@/api/types';
@@ -20,6 +25,10 @@ interface ModelFormData {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  thinking_field_name?: string | null;
+  thinking_fields?: string[];
+  thinking_levels?: string[];
+  omit_none_thinking_fields?: boolean;
   dimensions?: number;
   max_batch_size?: number;
   top_k?: number;
@@ -36,6 +45,29 @@ const FIELD_META: Record<ModelType, FormField[]> = {
     { key: 'temperature', label: 'Temperature', type: 'number' },
     { key: 'top_p', label: 'Top P', type: 'number' },
     { key: 'max_tokens', label: 'Max Tokens', type: 'number' },
+    {
+      key: 'thinking_field_name',
+      label: '上下文思考字段名',
+      placeholder: 'reasoning_content',
+    },
+    {
+      key: 'thinking_fields',
+      label: '思考请求字段',
+      type: 'checkbox-group',
+      options: [...THINKING_FIELD_OPTIONS],
+    },
+    {
+      key: 'thinking_levels',
+      label: '可用思考强度',
+      type: 'checkbox-group',
+      options: [...THINKING_LEVEL_OPTIONS],
+    },
+    {
+      key: 'omit_none_thinking_fields',
+      label: '关闭思考兼容',
+      type: 'checkbox',
+      placeholder: '关闭思考时不发送值为 none 的字段',
+    },
   ],
   embedding: [
     { key: 'model', label: '模型' },
@@ -85,15 +117,30 @@ export function Models() {
 
   const handleAdd = useCallback(() => {
     setEditingName(null);
-    setFormData({ name: 'default' });
+    setFormData({
+      name: 'default',
+      ...(activeTab === 'llm'
+        ? {
+          thinking_fields: [],
+          thinking_levels: [...DEFAULT_THINKING_LEVELS],
+          omit_none_thinking_fields: false,
+        }
+        : {}),
+    });
     setShowModal(true);
-  }, []);
+  }, [activeTab]);
 
   const handleEdit = useCallback((name: string, config: ModelConfig) => {
     setEditingName(name);
-    setFormData({ ...config, name });
+    setFormData({
+      ...config,
+      name,
+      ...(activeTab === 'llm' && (config as LLMConfig).thinking_levels === undefined
+        ? { thinking_levels: [...DEFAULT_THINKING_LEVELS] }
+        : {}),
+    });
     setShowModal(true);
-  }, []);
+  }, [activeTab]);
 
   const handleDelete = useCallback(async (name: string) => {
     if (!confirm(`确定要删除配置 "${name}" 吗？`)) return;
@@ -133,10 +180,16 @@ export function Models() {
   }, []);
 
   // 表单字段
-  const formFields: FormField[] = useMemo(() => [
-    { key: 'name', label: '配置名称', required: true },
-    ...FIELD_META[activeTab],
-  ], [activeTab]);
+  const formFields: FormField[] = useMemo(() => {
+    const fields = formData.thinking_fields ?? [];
+    const hasThinkingLevelField = fields.includes('thinking_level') || fields.includes('reasoning_effort');
+    return [
+      { key: 'name', label: '配置名称', required: true },
+      ...FIELD_META[activeTab].filter((field) => (
+        field.key !== 'thinking_levels' || hasThinkingLevelField
+      )),
+    ];
+  }, [activeTab, formData.thinking_fields]);
 
   // 当前类型标签
   const currentTypeLabel = useMemo(() => 

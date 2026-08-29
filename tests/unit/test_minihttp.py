@@ -18,7 +18,7 @@ import pytest
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.storage import StorageLayout
 from satrap.display.plugins import ChatPluginRegistry
-from satrap.display.recorder import DisplayRecorder
+from satrap.display.recorder import DisplayRecorder, list_conversations
 from satrap.display.server import ChatHTTPServer
 from satrap.display.service import ChatService
 
@@ -246,4 +246,55 @@ async def test_chat_server_lists_conversations_from_service_database(tmp_path: P
 
     assert status == 200
     assert [item["conversation_id"] for item in data["conversations"]] == ["conversation-1"]
+    await server.service.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_server_manages_history_and_trash(tmp_path: Path):
+    """
+    Chat 热管理接口应查询、回收并恢复完整历史
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    server = _make_chat_server(tmp_path)
+    recorder = DisplayRecorder(
+        db_path=server.service._display_db_path,
+        conversation_id="history-1",
+    )
+    recorder.save_meta("default")
+    recorder.start_turn("历史测试")
+    recorder.end_turn("完成")
+    recorder.close()
+
+    status, listed = await server._route(
+        "GET",
+        "/api/chat/history?search=%E5%8E%86%E5%8F%B2&page=1&page_size=10",
+        b"",
+    )
+    assert status == 200
+    assert listed["total"] == 1
+    assert listed["items"][0]["conversation_id"] == "history-1"
+
+    status, deleted = await server._route(
+        "POST",
+        "/api/chat/history/delete",
+        b'{"mode":"selected","conversation_ids":["history-1"]}',
+    )
+    assert status == 200
+    assert deleted["deleted_count"] == 1
+
+    status, trash = await server._route("GET", "/api/chat/history/trash", b"")
+    assert status == 200
+    assert trash["items"][0]["title"] == "历史测试"
+    archive_id = trash["items"][0]["archive_id"]
+
+    status, restored = await server._route(
+        "POST",
+        "/api/chat/history/trash/restore",
+        json.dumps({"archive_id": archive_id}).encode("utf-8"),
+    )
+    assert status == 200
+    assert restored["session_id"] == "history-1"
+    assert list_conversations(str(server.service._display_db_path))[0]["conversation_id"] == "history-1"
     await server.service.close()

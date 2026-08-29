@@ -2,7 +2,7 @@
 build_llm_from_config 统一 LLM 构造工厂测试
 
 覆盖:
-- 全字段映射 (含 top_p / lock_api_key / reasoning_body / thinking_fields)
+- 全字段映射 (含 top_p / lock_api_key / thinking_fields / omit_none_thinking_fields)
 - 输出预算 = context_window x (1 - history_ratio), 优先于 max_tokens
 - max_tokens 缺省回退 4096
 - sync / async 两种构造
@@ -31,9 +31,9 @@ def test_maps_all_fields():
             top_p=0.9,
             max_tokens=512,
             lock_api_key=False,
-            reasoning_body={"thinking": {"type": "enabled"}},
             thinking_field_name="reasoning",
             thinking_fields=["reasoning_effort"],
+            omit_none_thinking_fields=True,
         )
     )
     assert isinstance(llm, LLM)
@@ -41,9 +41,9 @@ def test_maps_all_fields():
     assert llm.top_p == 0.9
     assert llm.max_tokens == 512
     assert llm.api_key == "k"
-    assert llm.reasoning_body == {"thinking": {"type": "enabled"}}
     assert llm.thinking_field_name == "reasoning"
     assert llm.thinking_fields == ["reasoning_effort"]
+    assert llm.omit_none_thinking_fields is True
 
 
 def test_output_budget_wins_over_max_tokens():

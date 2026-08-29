@@ -70,9 +70,9 @@ export const useBackendStore = create<BackendState>((set, get) => ({
 
   reloadConfig: async () => {
     try {
-      await backendApi.reloadConfig();
+      const result = await backendApi.reloadConfig();
       await get().refreshHealth();
-      return true;
+      return result.ok;
     } catch {
       return false;
     }

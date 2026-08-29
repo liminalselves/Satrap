@@ -9,6 +9,7 @@ import { controlApi } from '@/api/control';
 import { PageHeader, AlertCard } from '@/components/common';
 import { Save, RotateCcw, Power, Play, RefreshCw, FileText, AlertCircle } from 'lucide-react';
 import * as yaml from 'js-yaml';
+import { DataMaintenancePanel } from './DataMaintenancePanel';
 
 interface ConfigData {
   api?: {
@@ -280,6 +281,7 @@ export function Settings() {
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
+            <TabsTrigger value="data">数据维护</TabsTrigger>
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
 
@@ -402,6 +404,13 @@ export function Settings() {
                 </Button>
               </div>
             </div>
+          </TabsContent>
+
+          <TabsContent value="data">
+            <DataMaintenancePanel
+              backendRunning={isRunning}
+              controlAvailable={controlAvailable}
+            />
           </TabsContent>
 
           <TabsContent value="about">

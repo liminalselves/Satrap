@@ -12,6 +12,29 @@ from datetime import datetime
 import sqlite3
 import time
 
+THINKING_LEVEL_VALUES = ("low", "medium", "high", "xhigh", "max", "ultra")
+
+
+def validate_thinking_levels(value: object) -> Optional[List[str]]:
+    """
+    校验并规范化模型支持的思考强度列表
+
+    参数:
+    - value: 待校验的思考强度列表或 None
+
+    返回:
+    - Optional[List[str]]: 去重后的思考强度列表或 None
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("thinking_levels 必须是字符串列表")
+    invalid = [item for item in value if item not in THINKING_LEVEL_VALUES]
+    if invalid:
+        raise ValueError(f"不支持的思考强度: {', '.join(invalid)}")
+    return list(dict.fromkeys(value))
+
+
 @dataclass
 class LLMCallResponse:
     """LLM 调用响应数据结构"""
@@ -113,12 +136,14 @@ class LLMConfig:
     """历史上下文比例, 输出预算 = context_window x (1 - history_ratio)"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
-    reasoning_body: Optional[Dict[str, Any]] = None
-    """思考请求格式, 不同 API 之间不同"""
     thinking_field_name: Optional[str] = None
     """思考内容的字段名称"""
     thinking_fields: Optional[List[str]] = None
     """该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]"""
+    thinking_levels: Optional[List[str]] = None
+    """该模型在前端开放的思考强度列表"""
+    omit_none_thinking_fields: bool = False
+    """关闭思考时是否省略值为 none 的思考字段"""
 
 @dataclass
 class EmbeddingConfig:

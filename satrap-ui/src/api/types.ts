@@ -24,6 +24,13 @@ export interface LLMConfig {
   temperature?: number;
   top_p?: number;
   max_tokens?: number;
+  context_window?: number;
+  history_ratio?: number;
+  lock_api_key?: boolean;
+  thinking_field_name?: string | null;
+  thinking_fields?: string[];
+  thinking_levels?: string[];
+  omit_none_thinking_fields?: boolean;
 }
 
 export interface EmbeddingConfig {
@@ -75,7 +82,7 @@ export interface EdictumPluginConfig {
   name: string;
   enabled?: boolean;
   config?: Record<string, unknown>;
-  [key: string]: unknown;
+  capabilities?: Record<string, Record<string, boolean>>;
 }
 
 export interface EdictumPluginConfigField {
@@ -131,12 +138,36 @@ export interface EdictumSessionConfig {
         enabled: boolean;
         status: 'pending' | 'loaded' | 'disabled' | 'error' | string;
         error?: string | null;
+        last_error?: string | null;
+        last_operation_status?: string;
+        drift?: boolean;
+        restart_required?: boolean;
+        revision?: number;
+        capabilities?: {
+          applied: Record<string, Record<string, boolean>>;
+          desired: Record<string, Record<string, boolean>>;
+        };
       }>;
       plugin_summary?: {
         total: number;
         loaded: number;
         errors: number;
         pending: number;
+        drift?: number;
+        restart_required?: number;
+      };
+      plugin_revision?: number;
+      plugin_fingerprint?: { applied: string; desired: string };
+      config?: {
+        status: 'applied' | 'restart_pending' | 'restarting' | 'error' | string;
+        error?: string | null;
+        drift: boolean;
+        revision: number;
+        applied: Record<string, unknown>;
+        desired: Record<string, unknown>;
+        applied_fingerprint: string;
+        desired_fingerprint: string;
+        last_restarted_at?: number | null;
       };
     };
   }

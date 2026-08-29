@@ -96,4 +96,12 @@ export const sessionApi = {
   }, backendRunning = true) => backendRunning
     ? apiClient.post<DeleteRuntimeSessionsResult>('/api/sessions/bulk-delete', data)
     : controlApi.bulkDeleteSessionInstances(data),
+
+  // 卸载并按冷配置重新激活会话, 不创建新的持久化实例
+  restartRuntime: (platformId: string, sessionId: string) => apiClient.post<{
+    ok: boolean;
+    runtime: RuntimeSession['runtime'];
+  }>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/restart?platform_id=${encodeURIComponent(platformId)}`,
+  ),
 };

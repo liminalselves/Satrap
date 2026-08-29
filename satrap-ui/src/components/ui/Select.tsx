@@ -41,7 +41,6 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
     const triggerRef = useRef<HTMLButtonElement | null>(null);
     const listRef = useStandaloneGlassReflect<HTMLDivElement>({
       reflectRange: 100,
-      reflectSize: 100,
     });
 
     // 合并根 ref

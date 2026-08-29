@@ -68,6 +68,58 @@ export const MODEL_TYPES = [
   { value: 'rerank', label: 'ReRank 配置' },
 ] as const;
 
+export const THINKING_FIELD_OPTIONS = [
+  {
+    value: 'thinking.type',
+    label: 'thinking.type',
+    description: '使用 enabled/disabled 控制思考开关',
+  },
+  {
+    value: 'reasoning_effort',
+    label: 'reasoning_effort',
+    description: '传递当前选择的思考强度',
+  },
+  {
+    value: 'enable_thinking',
+    label: 'enable_thinking',
+    description: '使用 true/false 控制思考开关',
+  },
+  {
+    value: 'thinking_level',
+    label: 'thinking_level',
+    description: '传递当前选择的思考强度',
+  },
+] as const;
+
+export const THINKING_LEVEL_OPTIONS = [
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '高+' },
+  { value: 'max', label: '超高' },
+  { value: 'ultra', label: '最高' },
+] as const;
+
+export const DEFAULT_THINKING_LEVELS = ['low', 'medium', 'high'] as const;
+
+const THINKING_LEVEL_FIELDS = new Set(['thinking_level', 'reasoning_effort']);
+
+export function getThinkingOptions(config?: {
+  thinking_fields?: string[];
+  thinking_levels?: string[];
+}): { value: string; label: string }[] {
+  const fields = config?.thinking_fields ?? [];
+  const offOption = { value: 'off', label: '关闭' };
+  if (fields.some((field) => THINKING_LEVEL_FIELDS.has(field))) {
+    const enabled = config?.thinking_levels ?? [...DEFAULT_THINKING_LEVELS];
+    return [offOption, ...THINKING_LEVEL_OPTIONS.filter((option) => enabled.includes(option.value))];
+  }
+  if (fields.length > 0) {
+    return [offOption, { value: 'high', label: '开启' }];
+  }
+  return [offOption];
+}
+
 export const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const;
 
 export const PLATFORM_TYPES = ['misskey', 'onebot'] as const;
