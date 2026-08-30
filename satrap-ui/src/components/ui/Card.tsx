@@ -1,6 +1,6 @@
-import { HTMLAttributes, forwardRef } from 'react';
+import { HTMLAttributes, forwardRef, useCallback } from 'react';
 import { cn } from '@/utils/cn';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 
 export interface CardProps extends HTMLAttributes<HTMLDivElement> {
   variant?: 'default' | 'accent' | 'purple' | 'teal' | 'pink' | 'orange' | 'green' | 'success' | 'warning' | 'error';
@@ -9,20 +9,19 @@ export interface CardProps extends HTMLAttributes<HTMLDivElement> {
 
 const Card = forwardRef<HTMLDivElement, CardProps>(
   ({ className, variant = 'default', interactive = false, children, ...props }, forwardedRef) => {
-    const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
+    const reflectRef = useGlassReflect<HTMLDivElement>({
       reflectRange: 150,
     });
     
     // 合并 refs
-    const setRefs = (element: HTMLDivElement | null) => {
-      // @ts-expect-error - 合并 refs
-      reflectRef.current = element;
+    const setRefs = useCallback((element: HTMLDivElement | null) => {
+      reflectRef(element);
       if (typeof forwardedRef === 'function') {
         forwardedRef(element);
       } else if (forwardedRef) {
         forwardedRef.current = element;
       }
-    };
+    }, [forwardedRef, reflectRef]);
 
     const variantClass = {
       default: 'glass-card',

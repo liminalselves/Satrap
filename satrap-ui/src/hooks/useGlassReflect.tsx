@@ -1,4 +1,13 @@
-import { useEffect, useLayoutEffect, useRef, useCallback, createContext, useContext, ReactNode } from 'react';
+import {
+  useEffect,
+  useRef,
+  useCallback,
+  useMemo,
+  createContext,
+  useContext,
+  ReactNode,
+  type RefCallback,
+} from 'react';
 
 /**
  * 全局玻璃反射管理器
@@ -132,16 +141,23 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
     });
     element.style.setProperty('--reflect-size', `${options?.reflectSize ?? DEFAULT_REFLECT_SIZE}px`);
     resizeObserverRef.current?.observe(element);
-  }, []);
+    scheduleUpdate();
+  }, [scheduleUpdate]);
 
   // 注销元素
   const unregister = useCallback((element: HTMLElement) => {
     resizeObserverRef.current?.unobserve(element);
     elementsRef.current.delete(element);
+    element.classList.remove('glass-hovering', 'glass-nearby');
   }, []);
 
+  const contextValue = useMemo(
+    () => ({ register, unregister }),
+    [register, unregister],
+  );
+
   return (
-    <GlassReflectContext.Provider value={{ register, unregister }}>
+    <GlassReflectContext.Provider value={contextValue}>
       {children}
     </GlassReflectContext.Provider>
   );
@@ -153,103 +169,23 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
 export function useGlassReflect<T extends HTMLElement>(options?: { 
   reflectRange?: number; 
   reflectSize?: number;
-}) {
-  const ref = useRef<T>(null);
+  enabled?: boolean;
+}): RefCallback<T> {
   const context = useContext(GlassReflectContext);
+  const elementRef = useRef<T | null>(null);
   const reflectRange = options?.reflectRange;
   const reflectSize = options?.reflectSize;
+  const enabled = options?.enabled ?? true;
 
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || !context) return;
-
-    context.register(element, { reflectRange, reflectSize });
-    return () => context.unregister(element);
-  }, [context, reflectRange, reflectSize]);
-
-  return ref;
-}
-
-/**
- * 独立使用的玻璃反射 Hook(不需要 Provider)
- * 适用于单个元素或小组件
- */
-export function useStandaloneGlassReflect<T extends HTMLElement>(options?: {
-  reflectRange?: number;
-}) {
-  const ref = useRef<T>(null);
-  const mousePosRef = useRef({ x: -1000, y: -1000 });
-  const rafRef = useRef<number | null>(null);
-  const resizeObserverRef = useRef<ResizeObserver | null>(null);
-  const observedElementRef = useRef<T | null>(null);
-  const reflectRange = options?.reflectRange ?? DEFAULT_REFLECT_RANGE;
-
-  useLayoutEffect(() => {
-    const element = ref.current;
-    const previous = observedElementRef.current;
-    if (element === previous) return;
-    if (previous) resizeObserverRef.current?.unobserve(previous);
-    if (element) {
-      resizeObserverRef.current?.observe(element);
+  return useCallback((element: T | null) => {
+    const previous = elementRef.current;
+    if (previous === element) return;
+    if (previous && context) {
+      context.unregister(previous);
     }
-    observedElementRef.current = element;
-  });
-
-  useEffect(() => {
-    const update = () => {
-      const element = ref.current;
-      if (!element) return;
-      const { x, y } = mousePosRef.current;
-      updateReflectState(element, x, y, reflectRange);
-    };
-    const scheduleUpdate = () => {
-      if (rafRef.current !== null) return;
-      rafRef.current = requestAnimationFrame(() => {
-        update();
-        rafRef.current = null;
-      });
-    };
-    const handlePointerMove = (event: PointerEvent) => {
-      mousePosRef.current = { x: event.clientX, y: event.clientY };
-      scheduleUpdate();
-    };
-    const handlePointerLeave = () => {
-      mousePosRef.current = { x: -1000, y: -1000 };
-      scheduleUpdate();
-    };
-    const handleGeometryChange = () => scheduleUpdate();
-    const observer = typeof ResizeObserver === 'undefined'
-      ? null
-      : new ResizeObserver(handleGeometryChange);
-
-    resizeObserverRef.current = observer;
-    const element = ref.current;
-    if (element) {
-      observer?.observe(element);
-      observedElementRef.current = element;
+    elementRef.current = element;
+    if (element && context && enabled) {
+      context.register(element, { reflectRange, reflectSize });
     }
-    document.addEventListener('pointermove', handlePointerMove);
-    document.documentElement.addEventListener('pointerleave', handlePointerLeave);
-    document.addEventListener('scroll', handleGeometryChange, true);
-    window.addEventListener('resize', handleGeometryChange);
-    window.visualViewport?.addEventListener('resize', handleGeometryChange);
-    window.visualViewport?.addEventListener('scroll', handleGeometryChange);
-
-    return () => {
-      observer?.disconnect();
-      resizeObserverRef.current = null;
-      document.removeEventListener('pointermove', handlePointerMove);
-      document.documentElement.removeEventListener('pointerleave', handlePointerLeave);
-      document.removeEventListener('scroll', handleGeometryChange, true);
-      window.removeEventListener('resize', handleGeometryChange);
-      window.visualViewport?.removeEventListener('resize', handleGeometryChange);
-      window.visualViewport?.removeEventListener('scroll', handleGeometryChange);
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
-    };
-  }, [reflectRange]);
-
-  return ref;
+  }, [context, enabled, reflectRange, reflectSize]);
 }

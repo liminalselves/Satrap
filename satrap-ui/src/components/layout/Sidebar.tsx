@@ -10,7 +10,7 @@ import {
   Settings,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 
 // 为每个导航项分配颜色
 const navItems = [
@@ -24,9 +24,9 @@ const navItems = [
   { path: '/settings', icon: Settings, label: '系统设置', color: 'purple' },
 ] as const;
 
-// 导航项组件 - 每个项独立跟踪反射
+// 导航项组件 - 每个项向全局管理器注册反射
 function NavItem({ item }: { item: typeof navItems[number] }) {
-  const reflectRef = useStandaloneGlassReflect<HTMLAnchorElement>({
+  const reflectRef = useGlassReflect<HTMLAnchorElement>({
     reflectRange: 100,
   });
 
@@ -49,7 +49,7 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
 }
 
 export function Sidebar() {
-  const sidebarRef = useStandaloneGlassReflect<HTMLElement>({
+  const sidebarRef = useGlassReflect<HTMLElement>({
     reflectRange: 150,
   });
 

@@ -1,6 +1,6 @@
-import { ButtonHTMLAttributes, forwardRef } from 'react';
+import { ButtonHTMLAttributes, forwardRef, useCallback } from 'react';
 import { cn } from '@/utils/cn';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'default' | 'primary' | 'subtle' | 'ghost' | 'danger';
@@ -11,22 +11,20 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 
 const Button = forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant = 'default', size = 'md', reflect = true, children, ...props }, forwardedRef) => {
-    const reflectRef = useStandaloneGlassReflect<HTMLButtonElement>({
+    const reflectRef = useGlassReflect<HTMLButtonElement>({
       reflectRange: 120,
+      enabled: reflect,
     });
 
     // 合并反光 ref 与外部 ref
-    const setRefs = (element: HTMLButtonElement | null) => {
-      if (reflect) {
-        // @ts-expect-error - 合并 refs
-        reflectRef.current = element;
-      }
+    const setRefs = useCallback((element: HTMLButtonElement | null) => {
+      reflectRef(element);
       if (typeof forwardedRef === 'function') {
         forwardedRef(element);
       } else if (forwardedRef) {
         forwardedRef.current = element;
       }
-    };
+    }, [forwardedRef, reflectRef]);
 
     const sizeClasses = {
       sm: 'px-3 py-1.5 text-sm',

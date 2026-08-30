@@ -4,7 +4,7 @@ import { useBackendStore } from '@/stores/useBackendStore';
 import { Badge } from '@/components/ui/Badge';
 import { Sun, Moon, MessageSquare } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { cn } from '@/utils/cn';
 
 export function Header() {
@@ -13,7 +13,7 @@ export function Header() {
   const navigate = useNavigate();
   const location = useLocation();
   const isChat = location.pathname === '/chat';
-  const headerRef = useStandaloneGlassReflect<HTMLElement>({
+  const headerRef = useGlassReflect<HTMLElement>({
     reflectRange: 150,
   });
 

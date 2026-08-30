@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useRef, useState, useCallback, useLayoutEffect, 
 import { createPortal } from 'react-dom';
 import { ChevronDown, Check } from 'lucide-react';
 import { cn } from '@/utils/cn';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 
 export interface SelectOption {
   value: string;
@@ -39,9 +39,14 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
     const [pos, setPos] = useState<ListPos | null>(null);
     const rootRef = useRef<HTMLDivElement | null>(null);
     const triggerRef = useRef<HTMLButtonElement | null>(null);
-    const listRef = useStandaloneGlassReflect<HTMLDivElement>({
+    const listElementRef = useRef<HTMLDivElement | null>(null);
+    const listReflectRef = useGlassReflect<HTMLDivElement>({
       reflectRange: 100,
     });
+    const setListRef = useCallback((element: HTMLDivElement | null) => {
+      listElementRef.current = element;
+      listReflectRef(element);
+    }, [listReflectRef]);
 
     // 合并根 ref
     const setRootRef = useCallback((el: HTMLDivElement | null) => {
@@ -95,7 +100,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
       const onDocClick = (e: MouseEvent) => {
         const target = e.target as Node;
         if (rootRef.current?.contains(target)) return;
-        if (listRef.current?.contains(target)) return;
+        if (listElementRef.current?.contains(target)) return;
         close();
       };
       const onEsc = (e: KeyboardEvent) => {
@@ -107,7 +112,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
         document.removeEventListener('mousedown', onDocClick);
         document.removeEventListener('keydown', onEsc);
       };
-    }, [open, close, listRef]);
+    }, [open, close]);
 
     const handleSelect = useCallback(
       (val: string) => {
@@ -119,7 +124,7 @@ const Select = forwardRef<HTMLDivElement, SelectProps>(
 
     const dropdown = open && pos ? (
       <div
-        ref={listRef}
+        ref={setListRef}
         style={{
           position: 'fixed',
           left: pos.left,

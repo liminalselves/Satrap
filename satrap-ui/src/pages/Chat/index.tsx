@@ -18,7 +18,7 @@ import {
   THINKING_LEVEL_OPTIONS,
 } from '@/utils/constants';
 import { formatRelativeTime } from '@/utils/format';
-import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
+import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
 import { useBackendStore } from '@/stores/useBackendStore';
 import {
@@ -311,7 +311,7 @@ export function Chat() {
   // 当前流式消息 id (assistant)
   const streamingMsgIdRef = useRef<string | null>(null);
   // 输入卡片独立反光
-  const inputCardRef = useStandaloneGlassReflect<HTMLDivElement>({
+  const inputCardRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 120,
   });
 
@@ -2057,7 +2057,7 @@ function OptionsPanel({
   onToggleThink: (v: string) => void;
   onModelChange: (v: string) => void;
 }) {
-  const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
+  const reflectRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 100,
   });
 
@@ -2706,7 +2706,7 @@ function ChatHeader({
   onToggleTheme: () => void;
   onBack: () => void;
 }) {
-  const headerRef = useStandaloneGlassReflect<HTMLElement>({
+  const headerRef = useGlassReflect<HTMLElement>({
     reflectRange: 150,
   });
 
@@ -2756,7 +2756,7 @@ function ConversationItem({
   // 移入/移出项目 (草稿会话无此入口)
   onMove?: () => void;
 }) {
-  const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
+  const reflectRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 80,
   });
 
@@ -2920,7 +2920,7 @@ function SuggestionCard({
   suggestion: { icon: typeof Sparkles; label: string; color: GlassColor };
   onClick: () => void;
 }) {
-  const reflectRef = useStandaloneGlassReflect<HTMLButtonElement>({
+  const reflectRef = useGlassReflect<HTMLButtonElement>({
     reflectRange: 100,
   });
   const Icon = suggestion.icon;
@@ -3005,7 +3005,7 @@ function MessageBubble({
   onSelectVariant?: (turnIndex: number, variantIndex: number) => void;
 }) {
   const isUser = message.role === 'user';
-  const reflectRef = useStandaloneGlassReflect<HTMLDivElement>({
+  const reflectRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 90,
   });
   const variants = [...(message.variants ?? [])].sort(
@@ -3206,7 +3206,7 @@ function MessageBubble({
 
 // 思考流折叠块 (独立反光, 避免与气泡容器光效不对齐)
 function ThinkingBlock({ thinking }: { thinking: string }) {
-  const reflectRef = useStandaloneGlassReflect<HTMLDetailsElement>({
+  const reflectRef = useGlassReflect<HTMLDetailsElement>({
     reflectRange: 60,
   });
   return (
