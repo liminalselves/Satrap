@@ -10,8 +10,9 @@ import pytest
 import yaml
 
 from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.storage import StorageLayout
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.recorder import list_conversations
@@ -223,6 +224,9 @@ def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
     assert "thinking_delta" in types
     assert types.count("content_delta") == 2
     assert "turn_done" in types
+    done = next(event for event in events if event["type"] == "turn_done")
+    assert done["context_stats"]["request_count"] == 1
+    assert done["context_stats"]["last_request"]["strategy"] == "sliding"
 
     turns = svc.list_turns(cid)
     # turns 落库
@@ -230,10 +234,82 @@ def test_service_send_and_turns(tmp_path: Path, monkeypatch: Any):
     assert turns[0]["user_input"] == "你好"
     assert turns[0]["answer"] == "答复"
     assert "思考中" in (turns[0]["thinking"] or "")
+    assert turns[0]["context_stats"]["request_count"] == 1
+    assert turns[0]["variants"][0]["context_stats"]["request_count"] == 1
 
     convs = list_conversations(str(svc._display_db_path))
     # 会话列表
     assert any(c["conversation_id"] == cid for c in convs)
+
+
+def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: Path, monkeypatch: Any):
+    """
+    生成中的 Chat 会话应在本轮结束后安全应用最新上下文策略
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    manager.set_llm_config(
+        LLMConfig(name="default", model="m", api_key="k", base_url="http://x"),
+        "default",
+    )
+    def build_fake_llm(_config: LLMConfig) -> _FakeAsyncLLM:
+        """返回测试使用的异步模型替身"""
+        return _FakeAsyncLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", build_fake_llm)
+    svc = ChatService(
+        manager,
+        ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
+        chat_db_path=str(tmp_path / "chat.db"),
+        display_db_path=str(tmp_path / "display.db"),
+        storage_layout=StorageLayout(tmp_path / "data"),
+    )
+
+    async def _run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = svc.get_conversation(cid)
+        assert conv is not None
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_run(*args: Any, **kwargs: Any) -> str:
+            entered.set()
+            await release.wait()
+            return "完成"
+
+        monkeypatch.setattr(conv.session, "run", _slow_run)
+        assert (await svc.send(cid, "开始"))["ok"] is True
+        await entered.wait()
+        result = svc.update_model(
+            "default",
+            {
+                "context_window": 10000,
+                "history_ratio": 0.6,
+                "context_strategy": "summarize",
+                "context_threshold": 0.75,
+                "truncation_floor": 0.25,
+                "summary_keep_recent_turns": 3,
+            },
+        )
+        assert result["refreshed_conversations"] == 0
+        assert result["deferred_conversations"] == 1
+        assert conv.session.ctx.exceed_process == "sliding"
+
+        release.set()
+        assert conv.task is not None
+        await conv.task
+        assert conv.pending_model_config is None
+        assert conv.session.ctx.exceed_process == "summarize"
+        assert conv.session.ctx.history_budget == 6000
+        assert conv.session.ctx.trigger_tokens == 4500
+        assert conv.session.ctx.floor_tokens == 1500
+        assert conv.session.ctx.summary_keep_recent_turns == 3
+        await svc.close()
+
+    asyncio.run(_run())
 
 
 def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
@@ -498,7 +574,10 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
 
     preset = tmp_path / "preset"
     plugin_dir = _write_plugin(preset, "plug", tools={"shell": "执行命令"})
-    meta = cast(dict[str, Any], yaml.safe_load((plugin_dir / "meta.yaml").read_text(encoding="utf-8")))
+    meta = cast(
+        dict[str, Any],
+        cast(Any, yaml).safe_load((plugin_dir / "meta.yaml").read_text(encoding="utf-8")),
+    )
     meta["config_schema"] = {
         "mode": {"type": "string", "default": "safe", "description": "运行模式"},
     }
@@ -836,7 +915,11 @@ def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, m
                 response=LLMCallResponse(type="answer", content=answer),
             )
 
-    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: _VariantLLM())
+    def build_variant_llm(_config: LLMConfig) -> _VariantLLM:
+        """返回支持回复版本测试的模型替身"""
+        return _VariantLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", build_variant_llm)
     svc = ChatService(
         _FakeModelConfig(),   # type: ignore[arg-type]
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
@@ -882,7 +965,11 @@ def test_service_fork_copies_display_and_model_context(tmp_path: Path, monkeypat
     - tmp_path: tmp路径
     - monkeypatch: pytest monkeypatch 夹具
     """
-    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: _FakeAsyncLLM())
+    def build_fake_llm(_config: LLMConfig) -> _FakeAsyncLLM:
+        """返回 Fork 测试使用的异步模型替身"""
+        return _FakeAsyncLLM()
+
+    monkeypatch.setattr(service_mod, "build_llm", build_fake_llm)
     svc = ChatService(
         _FakeModelConfig(),   # type: ignore[arg-type]
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),

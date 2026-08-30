@@ -1441,7 +1441,8 @@ def test_install_plugin_full_package(tmp_path: Path):
     assert user_msgs[-1]["content"] == "hi [插件]"
     # 技能可激活
     assert session.add_skill("pskill") is True
-    system_msgs = [m for m in llm.calls[0]["messages"] if m.get("role") == "system"]
+    session.run("再次调用")
+    system_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "system"]
     assert system_msgs and "插件技能" in str(system_msgs[0]["content"])
 
 

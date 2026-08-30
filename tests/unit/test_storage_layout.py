@@ -84,10 +84,15 @@ def test_delete_session_domain_rows_preserves_other_sessions(tmp_path: Path):
     database = tmp_path / "platform.db"
     with sqlite3.connect(database) as connection:
         connection.execute("CREATE TABLE chat_history (conversation_id TEXT, content TEXT)")
+        connection.execute("CREATE TABLE context_runtime_state (conversation_id TEXT, summary TEXT)")
         connection.execute("CREATE TABLE memories (scope TEXT, content TEXT)")
         connection.executemany(
             "INSERT INTO chat_history VALUES (?, ?)",
             [("first", "a"), ("second", "b")],
+        )
+        connection.executemany(
+            "INSERT INTO context_runtime_state VALUES (?, ?)",
+            [("first", "摘要 a"), ("second", "摘要 b")],
         )
         connection.executemany(
             "INSERT INTO memories VALUES (?, ?)",
@@ -99,6 +104,7 @@ def test_delete_session_domain_rows_preserves_other_sessions(tmp_path: Path):
 
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT conversation_id FROM chat_history").fetchall() == [("second",)]
+        assert connection.execute("SELECT conversation_id FROM context_runtime_state").fetchall() == [("second",)]
         assert connection.execute("SELECT scope FROM memories").fetchall() == [("session:second",)]
 
 

@@ -9,7 +9,7 @@ from typing import Any, Iterator
 import pytest
 
 from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, TokenUsage
 from satrap.core.utils.TCBuilder import AsyncToolsManager, Tool, ToolsManager
 from satrap.display import DisplayRecorder
 from satrap.display.recorder import _truncate_arguments
@@ -219,7 +219,8 @@ def test_recorder_retry_variants_are_persisted_and_selectable(tmp_path: Any):
         context_messages=[
             {"role": "user", "content": "问题"},
             {"role": "assistant", "content": "第一版"},
-        ]
+        ],
+        context_stats={"request_count": 1, "last_request": {"strategy": "sliding"}},
     )
 
     retry = rec.start_retry_variant()
@@ -231,7 +232,8 @@ def test_recorder_retry_variants_are_persisted_and_selectable(tmp_path: Any):
         context_messages=[
             {"role": "user", "content": "问题"},
             {"role": "assistant", "content": "第二版"},
-        ]
+        ],
+        context_stats={"request_count": 2, "last_request": {"strategy": "summarize"}},
     )
 
     turn = rec.list_turns()[0]
@@ -239,9 +241,12 @@ def test_recorder_retry_variants_are_persisted_and_selectable(tmp_path: Any):
     assert turn["answer"] == "第二版"
     assert [item["name"] for item in turn["tool_calls"]] == ["second"]
     assert [item["answer"] for item in turn["variants"]] == ["第一版", "第二版"]
+    assert turn["context_stats"]["request_count"] == 2
+    assert [item["context_stats"]["request_count"] for item in turn["variants"]] == [1, 2]
 
     selected = rec.activate_variant(0, 0)
     assert selected is not None and selected["answer"] == "第一版"
+    assert selected["context_stats"]["last_request"]["strategy"] == "sliding"
     assert [item["name"] for item in selected["tool_calls"]] == ["first"]
     context = rec.variant_context(0, 0)
     assert context is not None and context[-1]["content"] == "第一版"
@@ -288,12 +293,20 @@ class _ToolThenAnswerLLM(LLM):
                     content="",
                     # LLMCall 层已将 OpenAI 嵌套格式转为扁平 call_info: {name, id, arguments(dict)}
                     tool_calls=[{"name": "list_dir", "id": "c1", "arguments": {"path": "."}}],
+                    usage=TokenUsage(input_tokens=10, output_tokens=2, total_tokens=12),
                 ),
             )
         else:
             yield LLMCallStreamEvent(kind="thinking_delta", delta="整理结果")
             yield LLMCallStreamEvent(kind="content_delta", delta="目录已列出")
-            yield LLMCallStreamEvent(kind="done", response=LLMCallResponse(type="answer", content="目录已列出"))
+            yield LLMCallStreamEvent(
+                kind="done",
+                response=LLMCallResponse(
+                    type="answer",
+                    content="目录已列出",
+                    usage=TokenUsage(input_tokens=15, output_tokens=5, total_tokens=20),
+                ),
+            )
 
 
 def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
@@ -325,7 +338,10 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     rec.start_turn("看看目录")
     ans = s.run("看看目录", thinking="medium")
     assert isinstance(ans, str)
-    rec.end_turn(ans)
+    stats = s.get_context_stats()
+    assert stats is not None and stats["request_count"] == 2
+    assert stats["total_api_tokens"] == 32
+    rec.end_turn(ans, context_stats=stats)
 
     turns = rec.list_turns()
     assert len(turns) == 1
@@ -337,6 +353,8 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     assert len(t["tool_calls"]) == 1
     assert t["tool_calls"][0]["name"] == "list_dir"
     assert t["tool_calls"][0]["success"] is True
+    assert t["context_stats"]["request_count"] == 2
+    assert t["context_stats"]["last_request"]["api_input_tokens"] == 15
 
 
 def test_recorder_meta_think_roundtrip(tmp_path: Any):

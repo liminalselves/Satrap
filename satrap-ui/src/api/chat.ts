@@ -33,6 +33,33 @@ export interface ChatTurnVariant {
   segments: MessageSegment[] | null;
   created_at: number;
   tool_calls: ToolCall[];
+  context_stats?: ContextTurnStats | null;
+}
+
+export interface ContextRequestStats {
+  model?: string | null;
+  strategy: 'sliding' | 'mid_truncate' | 'summarize';
+  compressed: boolean;
+  original_turns: number;
+  prepared_turns: number;
+  original_estimated_input_tokens: number;
+  estimated_input_tokens: number;
+  effective_input_tokens: number;
+  preflight_token_source: 'tokenizer' | 'experience' | 'api_calibrated';
+  history_budget: number;
+  trigger_tokens: number;
+  floor_tokens: number;
+  api_input_tokens?: number | null;
+  api_output_tokens?: number | null;
+  api_total_tokens?: number | null;
+}
+
+export interface ContextTurnStats {
+  request_count: number;
+  last_request: ContextRequestStats;
+  total_api_input_tokens?: number | null;
+  total_api_output_tokens?: number | null;
+  total_api_tokens?: number | null;
 }
 
 // 对话轮次 (对齐 display_turns)
@@ -49,6 +76,7 @@ export interface ChatTurn {
   active_variant: number;
   variant_count: number;
   variants: ChatTurnVariant[];
+  context_stats?: ContextTurnStats | null;
 }
 
 // 会话列表项
@@ -157,6 +185,10 @@ export interface ModelConfigItem {
   max_tokens?: number;
   context_window?: number;
   history_ratio?: number;
+  context_strategy?: 'sliding' | 'mid_truncate' | 'summarize';
+  context_threshold?: number;
+  truncation_floor?: number;
+  summary_keep_recent_turns?: number;
   thinking_field_name?: string | null;
   thinking_fields?: string[];
   thinking_levels?: string[];
@@ -228,9 +260,9 @@ export type ChatEvent =
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
   | { type: 'ask_user'; conversation_id: string; request_id: string; question: string }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
-  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number }
+  | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number };
+  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null };
 
 // ==================== HTTP 请求 ====================
 
@@ -369,10 +401,10 @@ export const chatApi = {
     request<{ ok: boolean; models: Record<string, ModelConfigItem> }>('GET', '/api/chat/models/detail'),
 
   addModel: (config: ModelConfigItem) =>
-    request<{ ok: boolean; error?: string }>('POST', '/api/chat/models', config),
+    request<{ ok: boolean; error?: string; refreshed_conversations?: number; deferred_conversations?: number }>('POST', '/api/chat/models', config),
 
   updateModel: (name: string, config: Partial<ModelConfigItem>) =>
-    request<{ ok: boolean; error?: string }>('PUT', `/api/chat/models/${encodeURIComponent(name)}`, config),
+    request<{ ok: boolean; error?: string; refreshed_conversations?: number; deferred_conversations?: number }>('PUT', `/api/chat/models/${encodeURIComponent(name)}`, config),
 
   deleteModel: (name: string) =>
     request<{ ok: boolean; error?: string }>('DELETE', `/api/chat/models/${encodeURIComponent(name)}`),

@@ -622,6 +622,15 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         """
         return self._wf.tools_manager
 
+    def get_context_stats(self) -> dict[str, Any] | None:
+        """
+        返回最近一轮模型调用的上下文统计
+
+        返回:
+        - dict[str, Any] | None: 没有模型请求时为 None
+        """
+        return self._wf.get_context_stats()
+
     # ---------- 调用入口 ----------
 
     def run(
@@ -652,6 +661,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         返回:
         - str | CommandAction: 命令结果或最终模型输出
         """
+        self._wf.reset_context_stats()
         command_result, is_command = self.cmd_process(user_input)
         if is_command:
             if isinstance(command_result, CommandAction):
@@ -1494,6 +1504,15 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         """
         return self._require_wf().tools_manager
 
+    def get_context_stats(self) -> dict[str, Any] | None:
+        """
+        返回最近一轮模型调用的上下文统计
+
+        返回:
+        - dict[str, Any] | None: 没有模型请求时为 None
+        """
+        return self._require_wf().get_context_stats()
+
     # ---------- 调用入口 ----------
 
     async def run(
@@ -1520,6 +1539,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         返回:
         - str | CommandAction: 命令结果或最终模型输出
         """
+        self._require_wf().reset_context_stats()
         command_result, is_command = await self.cmd_process(user_input)
         if is_command:
             if isinstance(command_result, CommandAction):

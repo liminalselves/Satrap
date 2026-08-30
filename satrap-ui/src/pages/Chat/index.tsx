@@ -9,6 +9,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
+import { toast } from '@/components/ui/Toast';
 import { cn } from '@/utils/cn';
 import {
   DEFAULT_THINKING_LEVELS,
@@ -19,6 +20,7 @@ import {
 import { formatRelativeTime } from '@/utils/format';
 import { useStandaloneGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
+import { useBackendStore } from '@/stores/useBackendStore';
 import {
   chatApi,
   subscribeChat,
@@ -29,6 +31,7 @@ import {
   type ChatPlugin,
   type ChatTurnVariant,
   type ConversationItem as ChatConversationItem,
+  type ContextTurnStats,
   type DirEntry,
   type MemoryRecord,
   type ModelConfigItem,
@@ -72,6 +75,7 @@ import {
   FolderPlus,
   FolderInput,
   HardDrive,
+  Gauge,
 } from 'lucide-react';
 
 // 聊天设置
@@ -147,6 +151,7 @@ interface LocalResponseVariant {
   thinking?: string;
   toolCalls: ToolCall[];
   segments?: LocalMessageSegment[];
+  contextStats?: ContextTurnStats | null;
 }
 
 // 单条消息
@@ -173,6 +178,8 @@ interface ChatMessage {
   variantCount?: number;
   // 分段内容 (按时间顺序, 用于流式渲染)
   segments?: LocalMessageSegment[];
+  // 本回复版本对应的上下文准备和 API token 统计
+  contextStats?: ContextTurnStats | null;
 }
 
 interface PendingUserInput {
@@ -231,6 +238,7 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
     thinking: variant.thinking ?? undefined,
     toolCalls: variant.tool_calls ?? [],
     segments: convertSegments(variant),
+    contextStats: variant.context_stats,
   };
 }
 
@@ -479,6 +487,7 @@ export function Chat() {
               thinking: message.thinking,
               toolCalls: message.toolCalls ?? [],
               segments: message.segments,
+              contextStats: event.context_stats,
             };
             const variants = [
               ...(message.variants ?? []).filter(
@@ -494,6 +503,7 @@ export function Chat() {
               activeVariant: event.variant_index,
               variantCount: event.variant_count,
               variants,
+              contextStats: event.context_stats,
             };
           });
           setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
@@ -508,6 +518,7 @@ export function Chat() {
             turnIndex: event.turn_index ?? m.turnIndex,
             activeVariant: event.variant_index ?? m.activeVariant,
             variantCount: event.variant_count ?? m.variantCount,
+            contextStats: event.context_stats ?? m.contextStats,
           }));
           setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
           streamingMsgIdRef.current = null;
@@ -542,6 +553,7 @@ export function Chat() {
             segments: turn.segments,
             created_at: turn.created_at,
             tool_calls: turn.tool_calls,
+            context_stats: turn.context_stats,
           };
           const segments = convertSegments(currentVariant);
           messages.push({
@@ -556,6 +568,7 @@ export function Chat() {
             activeVariant: turn.active_variant ?? 0,
             variantCount: turn.variant_count ?? 1,
             variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
+            contextStats: turn.context_stats,
           });
         }
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
@@ -1132,6 +1145,7 @@ export function Chat() {
         thinking: previousAssistant.thinking,
         toolCalls: previousAssistant.toolCalls ?? [],
         segments: previousAssistant.segments,
+        contextStats: previousAssistant.contextStats,
       }];
     const assistantId = genId();
     const assistantMsg: ChatMessage = {
@@ -1197,6 +1211,7 @@ export function Chat() {
               activeVariant: turn.active_variant,
               variantCount: turn.variant_count,
               variants: turn.variants.map(convertVariant),
+              contextStats: selected.context_stats,
             }
             : message
         )),
@@ -2932,6 +2947,49 @@ function ToolStatusIcon({ success }: { success: boolean | null }) {
   return <XCircle className="h-3 w-3 text-error" />;
 }
 
+const CONTEXT_STRATEGY_LABELS: Record<string, string> = {
+  sliding: '滑动窗口',
+  mid_truncate: '中间截取',
+  summarize: '总结压缩',
+};
+
+const TOKEN_SOURCE_LABELS: Record<string, string> = {
+  tokenizer: '本地 tokenizer',
+  experience: '本地经验估算',
+  api_calibrated: 'API 校准估算',
+};
+
+function formatTokenCount(value: number | null | undefined): string {
+  return typeof value === 'number' ? value.toLocaleString() : '未知';
+}
+
+function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
+  const last = stats.last_request;
+  const displayInput = last.api_input_tokens ?? last.effective_input_tokens;
+  return (
+    <details className="glass-card rounded-md px-3 py-2 text-xs max-w-xl">
+      <summary className="cursor-pointer select-none flex items-center gap-1.5 text-text-tertiary">
+        <Gauge className="h-3.5 w-3.5" />
+        <span>上下文 {formatTokenCount(displayInput)} Token</span>
+        <span>·</span>
+        <span>{CONTEXT_STRATEGY_LABELS[last.strategy] ?? last.strategy}</span>
+        {last.compressed && <span className="text-warning">· 已压缩</span>}
+      </summary>
+      <div className="mt-2 grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-1.5 text-text-secondary">
+        <span>API 输入: {formatTokenCount(last.api_input_tokens)}</span>
+        <span>API 输出: {formatTokenCount(last.api_output_tokens)}</span>
+        <span>本轮总量: {formatTokenCount(stats.total_api_tokens)}</span>
+        <span>模型请求: {stats.request_count}</span>
+        <span>完整历史: {last.original_turns} 轮</span>
+        <span>实际发送: {last.prepared_turns} 轮</span>
+        <span>发送前计数: {TOKEN_SOURCE_LABELS[last.preflight_token_source] ?? last.preflight_token_source}</span>
+        <span>发送前估算: {formatTokenCount(last.effective_input_tokens)}</span>
+        <span>历史预算: {formatTokenCount(last.history_budget)}</span>
+      </div>
+    </details>
+  );
+}
+
 // 消息气泡(用户紫色 / 助手蓝色, 独立反光)
 function MessageBubble({
   message,
@@ -3083,6 +3141,10 @@ function MessageBubble({
             </>
           )}
 
+          {!isUser && message.contextStats && (
+            <ContextStatsPanel stats={message.contextStats} />
+          )}
+
           {/* 操作按钮 (hover 显示) */}
           {!message.streaming && (
             <div className={cn(
@@ -3174,6 +3236,7 @@ function ModelEditModal({
 }) {
   const isNew = modelName === '';
   const existing = modelName ? modelsDetail[modelName] : undefined;
+  const { isRunning, reloadConfig } = useBackendStore();
 
   const [name, setName] = useState('');
   const [model, setModel] = useState('');
@@ -3184,6 +3247,10 @@ function ModelEditModal({
   const [maxTokens, setMaxTokens] = useState('');
   const [contextWindow, setContextWindow] = useState('');
   const [historyRatio, setHistoryRatio] = useState('');
+  const [contextStrategy, setContextStrategy] = useState<'sliding' | 'mid_truncate' | 'summarize'>('sliding');
+  const [contextThreshold, setContextThreshold] = useState('0.8');
+  const [truncationFloor, setTruncationFloor] = useState('0.4');
+  const [summaryKeepRecentTurns, setSummaryKeepRecentTurns] = useState('6');
   const [thinkingFieldName, setThinkingFieldName] = useState('');
   const [thinkingFields, setThinkingFields] = useState<string[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<string[]>([...DEFAULT_THINKING_LEVELS]);
@@ -3203,6 +3270,10 @@ function ModelEditModal({
       setMaxTokens('');
       setContextWindow('');
       setHistoryRatio('');
+      setContextStrategy('sliding');
+      setContextThreshold('0.8');
+      setTruncationFloor('0.4');
+      setSummaryKeepRecentTurns('6');
       setThinkingFieldName('');
       setThinkingFields([]);
       setThinkingLevels([...DEFAULT_THINKING_LEVELS]);
@@ -3219,6 +3290,10 @@ function ModelEditModal({
       setMaxTokens(existing.max_tokens !== undefined ? String(existing.max_tokens) : '');
       setContextWindow(existing.context_window !== undefined ? String(existing.context_window) : '');
       setHistoryRatio(existing.history_ratio !== undefined ? String(existing.history_ratio) : '');
+      setContextStrategy(existing.context_strategy ?? 'sliding');
+      setContextThreshold(String(existing.context_threshold ?? 0.8));
+      setTruncationFloor(String(existing.truncation_floor ?? 0.4));
+      setSummaryKeepRecentTurns(String(existing.summary_keep_recent_turns ?? 6));
       setThinkingFieldName(existing.thinking_field_name ?? '');
       setThinkingFields(existing.thinking_fields ?? []);
       setThinkingLevels(existing.thinking_levels ?? [...DEFAULT_THINKING_LEVELS]);
@@ -3229,6 +3304,33 @@ function ModelEditModal({
   const handleSave = useCallback(async () => {
     if (!name.trim()) {
       alert('请输入配置名称');
+      return;
+    }
+    const parsedContextWindow = contextWindow.trim() ? Number(contextWindow) : 128000;
+    const parsedHistoryRatio = historyRatio.trim() ? Number(historyRatio) : 0.7;
+    const parsedContextThreshold = Number(contextThreshold);
+    const parsedTruncationFloor = Number(truncationFloor);
+    const parsedKeepRecentTurns = Number(summaryKeepRecentTurns);
+    if (!Number.isFinite(parsedContextWindow) || parsedContextWindow <= 0) {
+      alert('上下文窗口必须大于 0');
+      return;
+    }
+    if (!Number.isFinite(parsedHistoryRatio) || parsedHistoryRatio <= 0 || parsedHistoryRatio > 1) {
+      alert('历史比例必须在 0 到 1 之间');
+      return;
+    }
+    if (
+      !Number.isFinite(parsedContextThreshold)
+      || !Number.isFinite(parsedTruncationFloor)
+      || parsedTruncationFloor <= 0
+      || parsedTruncationFloor >= parsedContextThreshold
+      || parsedContextThreshold > 1
+    ) {
+      alert('上下文比例必须满足 0 < 压缩目标比例 < 触发比例 <= 1');
+      return;
+    }
+    if (!Number.isInteger(parsedKeepRecentTurns) || parsedKeepRecentTurns < 0) {
+      alert('保留最近轮数必须是大于等于 0 的整数');
       return;
     }
     setSaving(true);
@@ -3243,6 +3345,10 @@ function ModelEditModal({
         ...(maxTokens.trim() ? { max_tokens: Number(maxTokens) } : {}),
         ...(contextWindow.trim() ? { context_window: Number(contextWindow) } : {}),
         ...(historyRatio.trim() ? { history_ratio: Number(historyRatio) } : {}),
+        context_strategy: contextStrategy,
+        context_threshold: parsedContextThreshold,
+        truncation_floor: parsedTruncationFloor,
+        summary_keep_recent_turns: parsedKeepRecentTurns,
         thinking_field_name: thinkingFieldName.trim() || null,
         thinking_fields: thinkingFields,
         thinking_levels: thinkingLevels,
@@ -3252,6 +3358,16 @@ function ModelEditModal({
         ? await chatApi.addModel(config)
         : await chatApi.updateModel(modelName!, config);
       if (result.ok) {
+        const platformReloaded = !isRunning || await reloadConfig();
+        const refreshed = result.refreshed_conversations ?? 0;
+        const deferred = result.deferred_conversations ?? 0;
+        const chatStatus = deferred > 0
+          ? `Chat 已更新 ${refreshed} 个会话, ${deferred} 个将在本轮结束后更新`
+          : `Chat 已更新 ${refreshed} 个会话`;
+        toast(
+          platformReloaded ? 'success' : 'warning',
+          platformReloaded ? `${chatStatus}, 平台配置已热加载` : `${chatStatus}, 平台热加载失败`,
+        );
         onSaved();
         onClose();
       } else {
@@ -3263,7 +3379,23 @@ function ModelEditModal({
     } finally {
       setSaving(false);
     }
-  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, isNew, modelName, onSaved, onClose]);
+  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, contextStrategy, contextThreshold, truncationFloor, summaryKeepRecentTurns, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, isNew, modelName, isRunning, reloadConfig, onSaved, onClose]);
+
+  const contextBudgetPreview = useMemo(() => {
+    const windowTokens = contextWindow.trim() ? Number(contextWindow) : 128000;
+    const ratio = historyRatio.trim() ? Number(historyRatio) : 0.7;
+    const threshold = Number(contextThreshold);
+    const floor = Number(truncationFloor);
+    if (![windowTokens, ratio, threshold, floor].every(Number.isFinite)) return null;
+    const historyBudget = Math.floor(windowTokens * ratio);
+    return {
+      windowTokens,
+      historyBudget,
+      triggerTokens: Math.floor(historyBudget * threshold),
+      floorTokens: Math.floor(historyBudget * floor),
+      outputBudget: windowTokens - historyBudget,
+    };
+  }, [contextWindow, historyRatio, contextThreshold, truncationFloor]);
 
   if (modelName === null) return null;
 
@@ -3385,6 +3517,70 @@ function ModelEditModal({
             />
           </div>
         </div>
+        <div>
+          <label className="block text-xs font-medium text-text-secondary mb-1">上下文处理策略</label>
+          <Select
+            value={contextStrategy}
+            onChange={(event) => setContextStrategy(event.target.value as typeof contextStrategy)}
+            align="left"
+            options={[
+              { value: 'sliding', label: '滑动窗口' },
+              { value: 'mid_truncate', label: '中间截取' },
+              { value: 'summarize', label: '总结压缩' },
+            ]}
+          />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-1">触发比例</label>
+            <input
+              value={contextThreshold}
+              onChange={(event) => setContextThreshold(event.target.value)}
+              placeholder="0.8"
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              className="glass-input w-full text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-1">压缩目标比例</label>
+            <input
+              value={truncationFloor}
+              onChange={(event) => setTruncationFloor(event.target.value)}
+              placeholder="0.4"
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              className="glass-input w-full text-sm"
+            />
+          </div>
+        </div>
+        {contextStrategy === 'summarize' && (
+          <div>
+            <label className="block text-xs font-medium text-text-secondary mb-1">保留最近轮数</label>
+            <input
+              value={summaryKeepRecentTurns}
+              onChange={(event) => setSummaryKeepRecentTurns(event.target.value)}
+              placeholder="6"
+              type="number"
+              min="0"
+              step="1"
+              className="glass-input w-full text-sm"
+            />
+          </div>
+        )}
+        {contextBudgetPreview && (
+          <div className="glass-card rounded-md px-3 py-2 text-[11px] text-text-tertiary grid grid-cols-2 gap-x-4 gap-y-1">
+            <span>总窗口: {contextBudgetPreview.windowTokens.toLocaleString()}</span>
+            <span>历史预算: {contextBudgetPreview.historyBudget.toLocaleString()}</span>
+            <span>触发处理: {contextBudgetPreview.triggerTokens.toLocaleString()}</span>
+            <span>处理目标: {contextBudgetPreview.floorTokens.toLocaleString()}</span>
+            <span>输出预算: {contextBudgetPreview.outputBudget.toLocaleString()}</span>
+          </div>
+        )}
 
         {/* 思考参数 */}
         <div>

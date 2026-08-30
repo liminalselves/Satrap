@@ -1280,6 +1280,7 @@ class SessionManager:
             new_llm = build_llm_from_config(llm_cfg, async_=isinstance(session, AsyncSession))
 
             session.reload_llm(new_llm)   # type: ignore[arg-type] session 为 Session|AsyncSession, 运行时由 isinstance 分支保证匹配
+            self._apply_session_context_config(session, llm_cfg)
 
             for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
                 wf = safe_getattr(session, attr)
@@ -1887,26 +1888,13 @@ class SessionManager:
                         f"请先通过 'satrap model set' 配置"
                     )
             session = provider.create_session(session_cfg, llm=llm_instance)
+            if llm_cfg is not None:
+                self._apply_session_context_config(session, llm_cfg)
             self._apply_storage_scope(session, session_id)
             try:
                 setattr(session, "_satrap_provider_name", provider.provider_name)
             except Exception:
                 pass
-            # 注入 CM 三参数(同源配置), 使滞回截断生效 (safe_getattr 兼容测试替身)
-
-            _ctx_window = safe_getattr(llm_cfg, "context_window") if llm_cfg else None
-            _hist_ratio = safe_getattr(llm_cfg, "history_ratio") if llm_cfg else None
-
-            if model_cfg_mgr and _ctx_window and _hist_ratio:
-                _ctx: ContextManager | AsyncContextManager | None = safe_getattr(session, 'session_ctx')
-
-                if _ctx is not None:
-                    _ctx.max_context = _ctx_window
-                    _ctx.history_ratio = _hist_ratio
-                    _ctx.history_budget = int(_ctx_window * _hist_ratio)
-                    _ctx.trigger_tokens = int(_ctx.history_budget * _ctx.context_threshold)
-                    _ctx.floor_tokens = int(_ctx.history_budget * _ctx.truncation_floor)
-                    _ctx.output_budget = _ctx_window - _ctx.history_budget
             # 注入 UserManager, 使 Session 能访问当前用户的所有上下文
 
             user_mgr = self._user_mgr
@@ -1961,6 +1949,30 @@ class SessionManager:
             self.storage_layout.ensure_session(
                 StorageScope(platform_id=self.platform_id, session_id=session_id)
             )
+
+    @staticmethod
+    def _apply_session_context_config(
+        session: Session | AsyncSession,
+        config: LLMConfig,
+    ) -> None:
+        """
+        在会话具备上下文配置能力时应用模型策略
+
+        参数:
+        - session: 运行时会话
+        - config: LLM 配置
+        """
+        method = safe_getattr(session, "apply_context_config")
+        if not callable(method):
+            return
+        class_method = getattr(type(session), "apply_context_config", None)
+        uses_base_method = class_method in {
+            Session.apply_context_config,
+            AsyncSession.apply_context_config,
+        }
+        if uses_base_method and safe_getattr(session, "session_ctx") is None:
+            return
+        method(config)
 
     def _apply_storage_scope(self, session: Session | AsyncSession, session_id: str) -> None:
         """

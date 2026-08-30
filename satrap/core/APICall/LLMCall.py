@@ -6,7 +6,7 @@
 """
 from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, safe_getattr, safe_getattr_str, safe_getattr_list
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, TokenUsage, safe_getattr, safe_getattr_str, safe_getattr_list
 from satrap.core.utils.vision import normalize_chat_messages
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
@@ -175,6 +175,8 @@ def parse_call_response(
             logger.warning("LLM 接口响应中 'choices' 列表为空")
             return LLMCallResponse(type="message", content="")
 
+        usage = _extract_token_usage(api_response)
+
         # Step.3 提取第一条回复的消息对象
         first_choice = choices[0]
         if isinstance(first_choice, dict):
@@ -249,10 +251,16 @@ def parse_call_response(
                     # 封装单个工具调用信息并添加到列表
 
             if tool_calls_list:
-                return LLMCallResponse(type="tools_call", content=text_content, tool_calls=tool_calls_list, thinking=reasoning)
+                return LLMCallResponse(
+                    type="tools_call",
+                    content=text_content,
+                    tool_calls=tool_calls_list,
+                    thinking=reasoning,
+                    usage=usage,
+                )
 
         # Step.5 默认返回普通消息类型
-        return LLMCallResponse(type="message", content=text_content, thinking=reasoning)
+        return LLMCallResponse(type="message", content=text_content, thinking=reasoning, usage=usage)
 
     # Step.6 异常处理
     except Exception as e:
@@ -260,6 +268,90 @@ def parse_call_response(
         if suppress_error:
             return LLMCallResponse(type="message", content="")
         raise e
+
+
+def _usage_int(usage: Any, names: tuple[str, ...]) -> Optional[int]:
+    """
+    读取 usage 中第一个有效的整数值
+
+    参数:
+    - usage: API usage 对象或字典
+    - names: 按优先级排列的字段名
+
+    返回:
+    - Optional[int]: 读取到的 token 数, 不存在时为 None
+    """
+    for name in names:
+        value = safe_getattr(usage, name)
+        if value is None and isinstance(usage, dict):
+            value = cast(dict[str, Any], usage).get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _extract_token_usage(response: Any) -> Optional[TokenUsage]:
+    """
+    从普通或流式响应中提取兼容 OpenAI 命名的 token 使用量
+
+    参数:
+    - response: API 响应对象或字典
+
+    返回:
+    - Optional[TokenUsage]: 规范化后的 token 使用量
+    """
+    usage = safe_getattr(response, "usage")
+    if usage is None and isinstance(response, dict):
+        usage = cast(dict[str, Any], response).get("usage")
+    if usage is None:
+        return None
+
+    input_tokens = _usage_int(usage, ("prompt_tokens", "input_tokens"))
+    output_tokens = _usage_int(usage, ("completion_tokens", "output_tokens"))
+    total_tokens = _usage_int(usage, ("total_tokens",))
+    cached_tokens = _usage_int(
+        usage,
+        ("cached_tokens", "prompt_cache_hit_tokens", "cache_read_input_tokens"),
+    )
+    if cached_tokens is None:
+        for details_name in ("prompt_tokens_details", "input_tokens_details"):
+            details = safe_getattr(usage, details_name)
+            if details is None and isinstance(usage, dict):
+                details = cast(dict[str, Any], usage).get(details_name)
+            if details is not None:
+                cached_tokens = _usage_int(details, ("cached_tokens",))
+            if cached_tokens is not None:
+                break
+    if total_tokens is None and input_tokens is not None and output_tokens is not None:
+        total_tokens = input_tokens + output_tokens
+    if input_tokens is None and output_tokens is None and total_tokens is None and cached_tokens is None:
+        return None
+    return TokenUsage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        total_tokens=total_tokens,
+        cached_tokens=cached_tokens,
+    )
+
+
+def _stream_usage_option_unsupported(error: APIError) -> bool:
+    """
+    判断供应商是否明确拒绝 stream_options.include_usage
+
+    参数:
+    - error: OpenAI SDK API 异常
+
+    返回:
+    - bool: 是否可在尚未收到响应块时安全降级重试
+    """
+    message = str(error).lower()
+    option_named = "stream_options" in message or "include_usage" in message
+    rejected = any(word in message for word in ("unknown", "unsupported", "unrecognized", "invalid", "not support"))
+    return option_named and rejected
 
 
 def _rename_thinking_field(
@@ -400,6 +492,7 @@ class _StreamCallAccumulator:
         self.reasoning_parts: list[str] = []   # 思考内容
         self.tool_calls: dict[int, dict[str, str]] = {}   # tools call 信息
         self.finish_reason: str | None = None   # 完成原因
+        self.usage: TokenUsage | None = None   # 最终 usage 块, choices 为空时也需保留
 
     def consume(self, chunk: Any) -> list[LLMCallStreamEvent]:
         """
@@ -412,6 +505,9 @@ class _StreamCallAccumulator:
         - list[LLMCallStreamEvent]: 接收一个来自 API 的原始响应块, 更新累加器状态, 并返回本次 chunk 产生的事件列表
         """
         events: list[LLMCallStreamEvent] = []
+        chunk_usage = _extract_token_usage(chunk)
+        if chunk_usage is not None:
+            self.usage = chunk_usage
         choices: list[Any] = _stream_field(chunk, "choices", []) or []
 
         for choice in choices:   # 遍历每个 choice
@@ -524,7 +620,14 @@ class _StreamCallAccumulator:
         if self.reasoning_parts:
             message["reasoning_content"] = "".join(self.reasoning_parts)
 
-        payload = {"choices": [{"message": message}]}
+        payload: dict[str, Any] = {"choices": [{"message": message}]}
+        if self.usage is not None:
+            payload["usage"] = {
+                "prompt_tokens": self.usage.input_tokens,
+                "completion_tokens": self.usage.output_tokens,
+                "total_tokens": self.usage.total_tokens,
+                "cached_tokens": self.usage.cached_tokens,
+            }
         return parse_call_response(payload, suppress_error=suppress_error)
 
 
@@ -941,16 +1044,28 @@ class LLM:
                 self.omit_none_thinking_fields,
             ),
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools is not None:
             request_params["tools"] = tools
             request_params["tool_choice"] = tool_choice
 
-        accumulator = _StreamCallAccumulator()
         try:
-            stream = cast(Any, self.client.chat.completions.create(**request_params))
-            for chunk in stream:
-                yield from accumulator.consume(chunk)
+            while True:
+                accumulator = _StreamCallAccumulator()
+                received_chunk = False
+                try:
+                    stream = cast(Any, self.client.chat.completions.create(**request_params))
+                    for chunk in stream:
+                        received_chunk = True
+                        yield from accumulator.consume(chunk)
+                    break
+                except APIError as error:
+                    if not received_chunk and "stream_options" in request_params and _stream_usage_option_unsupported(error):
+                        request_params.pop("stream_options", None)
+                        logger.warning("[LLM] 当前供应商不支持流式 usage, 已降级为普通流式请求")
+                        continue
+                    raise
 
             response = accumulator.response(self.suppress_error)
             yield LLMCallStreamEvent(
@@ -1468,17 +1583,29 @@ class AsyncLLM:
                 self.omit_none_thinking_fields,
             ),
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if tools is not None:
             request_params["tools"] = tools
             request_params["tool_choice"] = tool_choice
 
-        accumulator = _StreamCallAccumulator()
         try:
-            stream = cast(Any, await self.client.chat.completions.create(**request_params))
-            async for chunk in stream:
-                for event in accumulator.consume(chunk):
-                    yield event
+            while True:
+                accumulator = _StreamCallAccumulator()
+                received_chunk = False
+                try:
+                    stream = cast(Any, await self.client.chat.completions.create(**request_params))
+                    async for chunk in stream:
+                        received_chunk = True
+                        for event in accumulator.consume(chunk):
+                            yield event
+                    break
+                except APIError as error:
+                    if not received_chunk and "stream_options" in request_params and _stream_usage_option_unsupported(error):
+                        request_params.pop("stream_options", None)
+                        logger.warning("[AsyncLLM] 当前供应商不支持流式 usage, 已降级为普通流式请求")
+                        continue
+                    raise
 
             response = accumulator.response(self.suppress_error)
             yield LLMCallStreamEvent(

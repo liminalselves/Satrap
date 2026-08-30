@@ -22,11 +22,12 @@ import os
 import string
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
 
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
+from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.log import logger
 from satrap.core.storage import (
@@ -122,11 +123,15 @@ class _Conversation:
     """未发送预加载会话的超时清理任务"""
     task: asyncio.Task[Any] | None = None
     """当前正在执行的 run task (None 表示空闲)"""
+    pending_model_config: LLMConfig | None = None
+    """当前轮次结束后需要应用的最新模型配置"""
     subscribers: set[asyncio.Queue[dict[str, Any]]] = field(
         default_factory=lambda: set()
     )
     """WS 订阅者队列集合"""
-    pending_user_inputs: dict[str, _PendingUserInput] = field(default_factory=dict)
+    pending_user_inputs: dict[str, _PendingUserInput] = field(
+        default_factory=lambda: dict[str, _PendingUserInput]()
+    )
     """等待前端回答的 ask_user 请求"""
 
 
@@ -353,26 +358,32 @@ class ChatService:
             return {"ok": False, "error": f"配置已存在: {name}"}
         try:
             thinking_levels = validate_thinking_levels(config.get("thinking_levels"))
-        except ValueError as e:
+            cfg = LLMConfig(
+                name=name,
+                model=config.get("model"),
+                base_url=config.get("base_url"),
+                api_key=config.get("api_key"),
+                temperature=config.get("temperature"),
+                top_p=config.get("top_p"),
+                max_tokens=config.get("max_tokens"),
+                context_window=config.get("context_window"),
+                history_ratio=config.get("history_ratio"),
+                context_strategy=config.get("context_strategy") or "sliding",
+                context_threshold=config.get("context_threshold", 0.8),
+                truncation_floor=config.get("truncation_floor", 0.4),
+                summary_keep_recent_turns=config.get("summary_keep_recent_turns", 6),
+                lock_api_key=bool(config.get("lock_api_key")),
+                thinking_field_name=config.get("thinking_field_name"),
+                thinking_fields=config.get("thinking_fields"),
+                thinking_levels=thinking_levels,
+                omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
+            )
+            resolve_context_policy(cfg)
+        except (TypeError, ValueError) as e:
             return {"ok": False, "error": str(e)}
-        cfg = LLMConfig(
-            name=name,
-            model=config.get("model"),
-            base_url=config.get("base_url"),
-            api_key=config.get("api_key"),
-            temperature=config.get("temperature"),
-            top_p=config.get("top_p"),
-            max_tokens=config.get("max_tokens"),
-            context_window=config.get("context_window"),
-            history_ratio=config.get("history_ratio"),
-            lock_api_key=bool(config.get("lock_api_key")),
-            thinking_field_name=config.get("thinking_field_name"),
-            thinking_fields=config.get("thinking_fields"),
-            thinking_levels=thinking_levels,
-            omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
-        )
         self._model_cfg.set_llm_config(cfg, name)
-        return {"ok": True}
+        refreshed = self._refresh_chat_model_runtimes(name, cfg)
+        return {"ok": True, **refreshed}
 
     def update_model(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
         """
@@ -398,6 +409,10 @@ class ChatService:
             "max_tokens",
             "context_window",
             "history_ratio",
+            "context_strategy",
+            "context_threshold",
+            "truncation_floor",
+            "summary_keep_recent_turns",
             "lock_api_key",
             "thinking_field_name",
             "thinking_fields",
@@ -415,8 +430,15 @@ class ChatService:
             del kwargs["api_key"]
         if not kwargs:
             return {"ok": False, "error": "没有可更新的字段"}
+        try:
+            current = self._model_cfg.get_llm_config(name)
+            candidate = dataclass_replace(current, **kwargs)
+            resolve_context_policy(candidate)
+        except (TypeError, ValueError) as e:
+            return {"ok": False, "error": str(e)}
         self._model_cfg.update_llm_config(name, **kwargs)
-        return {"ok": True}
+        refreshed = self._refresh_chat_model_runtimes(name, candidate)
+        return {"ok": True, **refreshed}
 
     def delete_model(self, name: str) -> dict[str, Any]:
         """
@@ -431,6 +453,64 @@ class ChatService:
         if not self._model_cfg.remove_llm_config(name):
             return {"ok": False, "error": f"配置不存在: {name}"}
         return {"ok": True}
+
+    def _apply_chat_model_runtime(self, conv: _Conversation, config: LLMConfig) -> None:
+        """
+        刷新一个 Chat 会话的 LLM 和上下文策略
+
+        参数:
+        - conv: Chat 会话运行时
+        - config: 最新 LLM 配置
+        """
+        llm = build_llm(config)
+        if conv.temperature is not None:
+            llm.set_parameters(temperature=conv.temperature)
+        conv.session.reload_llm(llm)
+        conv.session.apply_context_config(config)
+        conv.build_fingerprint = self._runtime_fingerprint(
+            conv.model,
+            system_prompt=conv.system_prompt,
+            project_id=conv.project_id,
+            temperature=conv.temperature,
+        )
+
+    def _refresh_chat_model_runtimes(self, model: str, config: LLMConfig) -> dict[str, int]:
+        """
+        热更新使用指定模型的 Chat 会话, 正在生成的会话延迟到本轮结束
+
+        参数:
+        - model: 模型配置名
+        - config: 最新 LLM 配置
+
+        返回:
+        - dict[str, int]: 立即刷新和延迟刷新的会话数量
+        """
+        refreshed = 0
+        deferred = 0
+        for conv in self._conversations.values():
+            if conv.model != model:
+                continue
+            if conv.task is not None and not conv.task.done():
+                conv.pending_model_config = config
+                deferred += 1
+                continue
+            self._apply_chat_model_runtime(conv, config)
+            refreshed += 1
+        return {"refreshed_conversations": refreshed, "deferred_conversations": deferred}
+
+    def _apply_pending_model_refresh(self, conv: _Conversation) -> None:
+        """
+        在当前生成结束后应用等待中的模型配置
+
+        参数:
+        - conv: Chat 会话运行时
+        """
+        config = conv.pending_model_config
+        if config is None:
+            return
+        conv.pending_model_config = None
+        self._apply_chat_model_runtime(conv, config)
+        logger.info(f"[聊天] 会话模型配置已在本轮结束后刷新: {conv.conversation_id}")
 
     def _runtime_fingerprint(
         self,
@@ -458,7 +538,7 @@ class ChatService:
             for spec in self._plugins.resolve_specs(PluginConfigManager())
             if spec.enabled
         ]
-        payload = {
+        payload: dict[str, Any] = {
             "model": model,
             "model_config": asdict(cfg),
             "temperature": temperature,
@@ -546,6 +626,7 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, **session_kwargs)
+        session.apply_context_config(cfg)
         self._apply_project(session, project)
         # 会话存储与项目工作区绑定需在插件安装前完成
 
@@ -1074,6 +1155,7 @@ class ChatService:
             session_kwargs["db_path"] = self._chat_db_path
 
         session = AsyncSimpleSession(conversation_id, llm, **session_kwargs)
+        session.apply_context_config(cfg)
         self._apply_project(session, project)
         conv = _Conversation(
             conversation_id=conversation_id,
@@ -1312,13 +1394,31 @@ class ChatService:
                 result = await conv.session.run(text, img_urls=img_urls, thinking=think)
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
-                completed = conv.recorder.end_turn(answer, context_messages=context_messages) or {}
-                self._broadcast(conv, {"type": MSG_TURN_DONE, "answer": answer, **completed})
+                context_stats = conv.session.get_context_stats()
+                completed = conv.recorder.end_turn(
+                    answer,
+                    context_messages=context_messages,
+                    context_stats=context_stats,
+                ) or {}
+                self._broadcast(
+                    conv,
+                    {"type": MSG_TURN_DONE, "answer": answer, "context_stats": context_stats, **completed},
+                )
             except Exception as e:
                 logger.error(f"[聊天] 会话 {conv.conversation_id} run 失败: {e}")
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
-                completed = conv.recorder.end_turn("", context_messages=context_messages) or {}
-                self._broadcast(conv, {"type": MSG_ERROR, "error": str(e), **completed})
+                context_stats = conv.session.get_context_stats()
+                completed = conv.recorder.end_turn(
+                    "",
+                    context_messages=context_messages,
+                    context_stats=context_stats,
+                ) or {}
+                self._broadcast(
+                    conv,
+                    {"type": MSG_ERROR, "error": str(e), "context_stats": context_stats, **completed},
+                )
+            finally:
+                self._apply_pending_model_refresh(conv)
 
     # ---------- 重试与分支 ----------
 
@@ -1488,11 +1588,13 @@ class ChatService:
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            parts = [
-                str(item.get("text") or "")
-                for item in content
-                if isinstance(item, dict) and item.get("type") == "text"
-            ]
+            parts: list[str] = []
+            for item in cast(list[Any], content):
+                if not isinstance(item, dict):
+                    continue
+                typed_item = cast(dict[str, Any], item)
+                if typed_item.get("type") == "text":
+                    parts.append(str(typed_item.get("text") or ""))
             return "\n".join(part for part in parts if part)
         return ""
 

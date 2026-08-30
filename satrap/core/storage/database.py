@@ -230,6 +230,12 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
                 "OR conversation_id LIKE ? ESCAPE '\\'",
                 (session_id, related_pattern),
             )
+        if "context_runtime_state" in tables:
+            connection.execute(
+                "DELETE FROM context_runtime_state WHERE conversation_id = ? "
+                "OR conversation_id LIKE ? ESCAPE '\\'",
+                (session_id, related_pattern),
+            )
         if "session_configs" in tables:
             connection.execute(
                 "DELETE FROM session_configs WHERE session_id = ?",

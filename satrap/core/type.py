@@ -27,12 +27,156 @@ def validate_thinking_levels(value: object) -> Optional[List[str]]:
     """
     if value is None:
         return None
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+    if not isinstance(value, list):
         raise ValueError("thinking_levels 必须是字符串列表")
-    invalid = [item for item in value if item not in THINKING_LEVEL_VALUES]
+    raw_levels = cast(List[object], value)
+    if not all(isinstance(item, str) for item in raw_levels):
+        raise ValueError("thinking_levels 必须是字符串列表")
+    levels = cast(List[str], raw_levels)
+    invalid = [item for item in levels if item not in THINKING_LEVEL_VALUES]
     if invalid:
         raise ValueError(f"不支持的思考强度: {', '.join(invalid)}")
-    return list(dict.fromkeys(value))
+    return list(dict.fromkeys(levels))
+
+
+@dataclass
+class TokenUsage:
+    """LLM 请求的 token 使用量"""
+    input_tokens: Optional[int] = None
+    """输入 token 数, 对应 prompt_tokens 或 input_tokens"""
+    output_tokens: Optional[int] = None
+    """输出 token 数, 对应 completion_tokens 或 output_tokens"""
+    total_tokens: Optional[int] = None
+    """总 token 数"""
+    cached_tokens: Optional[int] = None
+    """输入中命中供应商缓存的 token 数"""
+
+
+@dataclass(frozen=True)
+class ContextUsageSnapshot:
+    """ContextManager 当前预算和最近一次模型 usage 快照"""
+    history_tokens: int
+    """当前完整历史的本地 token 估算值"""
+    context_window_tokens: int
+    """模型允许的总上下文长度"""
+    reserved_output_tokens: int
+    """为模型输出预留的 token 长度"""
+    history_upper_tokens: int
+    """历史上下文硬上限"""
+    history_lower_tokens: int
+    """历史上下文压缩后的目标下限"""
+    last_output_tokens: Optional[int]
+    """上一次正式模型请求的输出 token 数"""
+    cache_hit_tokens: Optional[int]
+    """上一次正式模型请求命中的缓存 token 数"""
+    history_token_source: str
+    """历史 token 的本地估算来源"""
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为可直接序列化的字典
+
+        返回:
+        - Dict[str, Any]: 上下文 usage 快照
+        """
+        return {
+            "history_tokens": self.history_tokens,
+            "context_window_tokens": self.context_window_tokens,
+            "reserved_output_tokens": self.reserved_output_tokens,
+            "history_upper_tokens": self.history_upper_tokens,
+            "history_lower_tokens": self.history_lower_tokens,
+            "last_output_tokens": self.last_output_tokens,
+            "cache_hit_tokens": self.cache_hit_tokens,
+            "history_token_source": self.history_token_source,
+        }
+
+
+@dataclass
+class ModelContextRequestStats:
+    """一次正式模型请求的上下文准备和 API usage 统计"""
+    model: Optional[str]
+    strategy: str
+    compressed: bool
+    original_turns: int
+    prepared_turns: int
+    original_estimated_input_tokens: int
+    estimated_input_tokens: int
+    effective_input_tokens: int
+    preflight_token_source: str
+    history_budget: int
+    trigger_tokens: int
+    floor_tokens: int
+    api_input_tokens: Optional[int] = None
+    api_output_tokens: Optional[int] = None
+    api_total_tokens: Optional[int] = None
+    api_cached_tokens: Optional[int] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        转换为可直接写入 JSON 的字典
+
+        返回:
+        - Dict[str, Any]: 请求统计字典
+        """
+        return {
+            "model": self.model,
+            "strategy": self.strategy,
+            "compressed": self.compressed,
+            "original_turns": self.original_turns,
+            "prepared_turns": self.prepared_turns,
+            "original_estimated_input_tokens": self.original_estimated_input_tokens,
+            "estimated_input_tokens": self.estimated_input_tokens,
+            "effective_input_tokens": self.effective_input_tokens,
+            "preflight_token_source": self.preflight_token_source,
+            "history_budget": self.history_budget,
+            "trigger_tokens": self.trigger_tokens,
+            "floor_tokens": self.floor_tokens,
+            "api_input_tokens": self.api_input_tokens,
+            "api_output_tokens": self.api_output_tokens,
+            "api_total_tokens": self.api_total_tokens,
+            "api_cached_tokens": self.api_cached_tokens,
+        }
+
+
+@dataclass
+class ModelContextTurnStats:
+    """一轮会话内全部正式模型请求的上下文统计"""
+    requests: List[ModelContextRequestStats] = field(
+        default_factory=lambda: list[ModelContextRequestStats]()
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """
+        汇总并转换为可直接写入 JSON 的字典
+
+        返回:
+        - Dict[str, Any]: 轮次统计字典
+        """
+        if not self.requests:
+            return {}
+
+        def sum_usage(name: str) -> Optional[int]:
+            """
+            汇总存在的 API usage 字段
+
+            参数:
+            - name: ModelContextRequestStats 字段名
+
+            返回:
+            - Optional[int]: 汇总值, 所有请求均无该字段时为 None
+            """
+            values = [getattr(request, name) for request in self.requests]
+            known = [value for value in values if isinstance(value, int)]
+            return sum(known) if known else None
+
+        return {
+            "request_count": len(self.requests),
+            "last_request": self.requests[-1].to_dict(),
+            "total_api_input_tokens": sum_usage("api_input_tokens"),
+            "total_api_output_tokens": sum_usage("api_output_tokens"),
+            "total_api_tokens": sum_usage("api_total_tokens"),
+            "total_api_cached_tokens": sum_usage("api_cached_tokens"),
+        }
 
 
 @dataclass
@@ -46,6 +190,8 @@ class LLMCallResponse:
     """LLM 调用响应思考"""
     tool_calls: Optional[List[Dict[str, Any]]] = None
     """LLM 调用响应工具调用, 包含 name, id, arguments"""
+    usage: Optional[TokenUsage] = None
+    """API 返回的真实 token 使用量, 供应商未返回时为 None"""
 
     def __iter__(self) -> Iterator[Any]:
         """
@@ -134,6 +280,14 @@ class LLMConfig:
     """总上下文窗口, 与 CM max_context 同源"""
     history_ratio: Optional[float] = None
     """历史上下文比例, 输出预算 = context_window x (1 - history_ratio)"""
+    context_strategy: str = "sliding"
+    """上下文超限处理策略, 可选 sliding, mid_truncate 或 summarize"""
+    context_threshold: float = 0.8
+    """触发上下文处理的历史预算比例"""
+    truncation_floor: float = 0.4
+    """滑动窗口或截取策略处理后的目标历史预算比例"""
+    summary_keep_recent_turns: int = 6
+    """总结压缩时必须原样保留的最近对话轮数"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
     thinking_field_name: Optional[str] = None

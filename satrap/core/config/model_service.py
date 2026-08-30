@@ -1,14 +1,18 @@
 """模型配置共享领域服务"""
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Any, cast
 
+from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, validate_thinking_levels
 
 
-_CONFIG_CLASSES = {
+_CONFIG_CLASSES: dict[
+    ConfigTarget,
+    type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig],
+] = {
     "llm": LLMConfig,
     "embedding": EmbeddingConfig,
     "rerank": ReRankConfig,
@@ -59,7 +63,9 @@ class ModelConfigService:
         cleaned = self._validate_payload(normalized, payload, allow_masked_key=False)
         cleaned["name"] = config_name
         if normalized == "llm":
-            self.manager.set_llm_config(LLMConfig(**cleaned), name=config_name)
+            config = LLMConfig(**cleaned)
+            resolve_context_policy(config)
+            self.manager.set_llm_config(config, name=config_name)
         elif normalized == "embedding":
             self.manager.set_embedding_config(EmbeddingConfig(**cleaned), name=config_name)
         else:
@@ -79,6 +85,9 @@ class ModelConfigService:
         cleaned = self._validate_payload(normalized, payload, allow_masked_key=True)
         requested_name = cleaned.pop("name", config_name)
         new_name = self._validate_name(str(requested_name or ""))
+        if normalized == "llm":
+            current = self.manager.get_llm_config(config_name)
+            resolve_context_policy(replace(current, **cleaned))
         self.manager.update_named_config(
             normalized,
             config_name,

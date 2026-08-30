@@ -6,11 +6,19 @@
 """
 from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
 from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
-from satrap.core.utils.context import ContextManager, AsyncContextManager, _messages_domain
+from satrap.core.utils.context import AsyncContextManager, ContextManager, PreparedModelContext, _messages_domain
 from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from typing import Optional, Callable, Any, Awaitable, TypeVar, cast
-from satrap.core.type import LLMCallResponse, StateCheckpoint
+from typing import Optional, Callable, Any, Awaitable, TypeVar, cast, Literal
+from satrap.core.utils.context_policy import apply_context_policy
+from satrap.core.type import (
+    LLMCallResponse,
+    LLMConfig,
+    ModelContextRequestStats,
+    ModelContextTurnStats,
+    StateCheckpoint,
+    TokenUsage,
+)
 from satrap.core.state import StateStore
 from satrap.core.state.mutation import state_mutation_context
 import inspect, json, copy, uuid
@@ -27,6 +35,40 @@ if TYPE_CHECKING:
 
 _WorkflowT = TypeVar("_WorkflowT")
 """工作流类泛型, 用于 create 工厂与 await 工具"""
+
+
+def _build_context_request_stats(
+    prepared: PreparedModelContext,
+    usage: TokenUsage | None,
+) -> ModelContextRequestStats:
+    """
+    将上下文准备结果和 API usage 合并为一次请求统计
+
+    参数:
+    - prepared: 上下文准备结果
+    - usage: API 返回的真实 token 用量
+
+    返回:
+    - ModelContextRequestStats: 请求统计
+    """
+    return ModelContextRequestStats(
+        model=prepared.model,
+        strategy=prepared.strategy,
+        compressed=prepared.compressed,
+        original_turns=prepared.original_turns,
+        prepared_turns=prepared.prepared_turns,
+        original_estimated_input_tokens=prepared.original_estimated_input_tokens,
+        estimated_input_tokens=prepared.estimated_input_tokens,
+        effective_input_tokens=prepared.effective_input_tokens,
+        preflight_token_source=prepared.token_source,
+        history_budget=prepared.history_budget,
+        trigger_tokens=prepared.trigger_tokens,
+        floor_tokens=prepared.floor_tokens,
+        api_input_tokens=usage.input_tokens if usage is not None else None,
+        api_output_tokens=usage.output_tokens if usage is not None else None,
+        api_total_tokens=usage.total_tokens if usage is not None else None,
+        api_cached_tokens=usage.cached_tokens if usage is not None else None,
+    )
 
 class ModelWorkflowFramework:
     """模型工作流框架"""
@@ -101,6 +143,35 @@ class ModelWorkflowFramework:
             self.ctx.reset_system_prompt(system_prompt)
 
         self.content_callback = content_callback
+        self._context_turn_stats = ModelContextTurnStats()
+
+    def reset_context_stats(self) -> None:
+        """清空当前轮次的模型上下文统计"""
+        self._context_turn_stats = ModelContextTurnStats()
+
+    def get_context_stats(self) -> dict[str, Any] | None:
+        """
+        返回当前轮次的模型上下文统计
+
+        返回:
+        - dict[str, Any] | None: 没有模型请求时为 None
+        """
+        payload = self._context_turn_stats.to_dict()
+        return payload or None
+
+    def _record_context_request(
+        self,
+        prepared: PreparedModelContext,
+        usage: TokenUsage | None,
+    ) -> None:
+        """
+        记录一次正式模型请求
+
+        参数:
+        - prepared: 上下文准备结果
+        - usage: API 返回的真实 token 用量
+        """
+        self._context_turn_stats.requests.append(_build_context_request_stats(prepared, usage))
 
     def _content_callback(self, content: str):
         """
@@ -111,6 +182,41 @@ class ModelWorkflowFramework:
         """
         if self.content_callback and content:
             self.content_callback(content)
+
+    def _call_model(
+        self,
+        *,
+        pending_messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        thinking: str = "off",
+        img_urls: list[str] | None = None,
+    ) -> LLMCallResponse | Literal[False]:
+        """
+        准备上下文, 调用模型并记录真实 usage
+
+        参数:
+        - pending_messages: 尚未写入完整历史的本轮临时消息
+        - tools: 工具定义列表
+        - thinking: 思考强度
+        - img_urls: 图片 URL 列表
+
+        返回:
+        - LLMCallResponse | Literal[False]: 模型响应
+        """
+        prepared = self.ctx.prepare_model_context(
+            llm=self.llm,
+            pending_messages=pending_messages,
+            tools=tools,
+            img_urls=img_urls,
+        )
+        call_kwargs: dict[str, Any] = {"tools": tools, "img_urls": img_urls}
+        if thinking != "off":
+            call_kwargs["thinking"] = thinking
+        response = self.llm.call(prepared.messages, **call_kwargs)
+        if isinstance(response, LLMCallResponse):
+            self._record_context_request(prepared, response.usage)
+            self.ctx.record_model_usage(prepared, response.usage)
+        return response
 
     def agent_executor(self, model_response: LLMCallResponse,
         callback: bool = False, max_iterations: int = 10,
@@ -154,9 +260,8 @@ class ModelWorkflowFramework:
                 add_tools_call_flow(turn_messages, now_response.content, tool_messages, tool_results, now_response.thinking)
                 # 添加至本轮消息流
 
-                new_context = self.ctx.get_context() + turn_messages
-                new_response = self.llm.call(
-                    new_context,
+                new_response = self._call_model(
+                    pending_messages=turn_messages,
                     tools=self.tools_manager.get_tools_definitions(),
                     img_urls=img_urls,
                 )   # 调用模型
@@ -179,8 +284,7 @@ class ModelWorkflowFramework:
                     self.ctx.add_turn_messages(turn_messages)
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
                     self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
-                    final_context = self.ctx.get_context()
-                    final_response = self.llm.call(final_context, tools=[], img_urls=img_urls)
+                    final_response = self._call_model(tools=[], img_urls=img_urls)
 
                     if not final_response:
                         logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
@@ -264,6 +368,7 @@ class ModelWorkflowFramework:
         - system_messages: system消息列表
         """
         self.ctx._messages = copy.deepcopy(system_messages)
+        self.ctx._mark_dirty()
         self.ctx._sync()
 
     def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
@@ -280,10 +385,10 @@ class ModelWorkflowFramework:
         返回:
         - str: 完整执行一轮 Agent 流程, 返回最终模型输出
         """
+        self.reset_context_stats()
         self.ctx.add_user_message(user_input)
 
-        response = self.llm.call(
-            self.ctx.get_context(),
+        response = self._call_model(
             tools=self.tools_manager.get_tools_definitions(),
             img_urls=img_urls,
         )
@@ -300,7 +405,7 @@ class ModelWorkflowFramework:
 
     def _stream_call_response(
         self,
-        messages: list[dict[str, Any]],
+        pending_messages: list[dict[str, Any]] | None,
         tools: list[dict[str, Any]] | None,
         callback: bool,
         thinking: str,
@@ -310,7 +415,7 @@ class ModelWorkflowFramework:
         消费一次流式请求并返回完整响应
 
         参数:
-        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - pending_messages: 尚未写入完整历史的本轮临时消息
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
         - thinking: 是否要求模型进行思考, 默认为 False
@@ -319,8 +424,14 @@ class ModelWorkflowFramework:
         返回:
         - LLMCallResponse | bool: 消费一次流式请求并返回完整响应
         """
+        prepared = self.ctx.prepare_model_context(
+            llm=self.llm,
+            pending_messages=pending_messages,
+            tools=tools,
+            img_urls=img_urls,
+        )
         response: Any = None
-        for event in self.llm.stream_call(messages, tools=tools, thinking=thinking, img_urls=img_urls):
+        for event in self.llm.stream_call(prepared.messages, tools=tools, thinking=thinking, img_urls=img_urls):
             if callback and event.kind == "content_delta":
                 self._content_callback(event.delta)
 
@@ -337,6 +448,9 @@ class ModelWorkflowFramework:
                 response = event.response
 
         if isinstance(response, (LLMCallResponse, bool)):
+            if isinstance(response, LLMCallResponse):
+                self._record_context_request(prepared, response.usage)
+                self.ctx.record_model_usage(prepared, response.usage)
             return response
         return False
 
@@ -361,11 +475,12 @@ class ModelWorkflowFramework:
         返回:
         - 最终模型输出
         """
+        self.reset_context_stats()
         self.ctx.add_user_message(user_input)
         max_iterations = max(1, max_iterations)
 
         response = self._stream_call_response(
-            self.ctx.get_context(),
+            None,
             self.tools_manager.get_tools_definitions(),
             callback,
             thinking,
@@ -397,7 +512,7 @@ class ModelWorkflowFramework:
             )
 
             new_response = self._stream_call_response(
-                self.ctx.get_context() + turn_messages,
+                turn_messages,
                 self.tools_manager.get_tools_definitions(),
                 callback,
                 thinking,
@@ -413,7 +528,7 @@ class ModelWorkflowFramework:
                 self.ctx.add_turn_messages(turn_messages)
                 self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
                 final_response = self._stream_call_response(
-                    self.ctx.get_context(),
+                    None,
                     [],
                     callback,
                     thinking,
@@ -446,13 +561,13 @@ class ModelWorkflowFramework:
         - str: 使用临时上下文完整执行一轮 Agent 流程, 返回最终模型输出
         """
         system_messages = self._get_system_messages(self.ctx.get_context())
+        self.reset_context_stats()
         self._restore_context_keep_system(system_messages)
 
         try:
             self.ctx.add_user_message(user_input)
 
-            response = self.llm.call(
-                self.ctx.get_context(),
+            response = self._call_model(
                 tools=self.tools_manager.get_tools_definitions(),
                 img_urls=img_urls,
             )
@@ -554,6 +669,8 @@ class Session:
             self._state_store = StateStore(db_path=db_path)
         self._workflow_contexts: dict[str, ContextManager] = {}
         """工作流 ID -> 工作流上下文, 供会话级检查点聚合"""
+        self._context_config: LLMConfig | None = None
+        """当前会话使用的模型上下文配置"""
 
         self.session_ctx = ContextManager(session_id, db_path=db_path)
         """会话共享上下文"""
@@ -699,6 +816,17 @@ class Session:
         contexts.update(self._workflow_contexts)
         return contexts
 
+    def apply_context_config(self, config: LLMConfig) -> None:
+        """
+        将模型上下文配置应用到会话及全部工作流上下文
+
+        参数:
+        - config: LLM 配置
+        """
+        self._context_config = config
+        for context in self._all_contexts().values():
+            apply_context_policy(context, config)
+
     def _track_workflow_context(self, wf_id: str, ctx: ContextManager) -> None:
         """
         注册工作流上下文, 使其纳入会话级检查点聚合
@@ -710,6 +838,8 @@ class Session:
         if wf_id in self._workflow_contexts:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
         self._workflow_contexts[wf_id] = ctx
+        if self._context_config is not None:
+            apply_context_policy(ctx, self._context_config)
         if self._state_store is not None:
             if Path(str(ctx.db_path)).resolve() != Path(str(self._state_store.db_path)).resolve():
                 raise ValueError(
@@ -1001,6 +1131,35 @@ class AsyncModelWorkflowFramework:
         self.thinking_callback = thinking_callback
         self.system_prompt = system_prompt
         self._initialized = False
+        self._context_turn_stats = ModelContextTurnStats()
+
+    def reset_context_stats(self) -> None:
+        """清空当前轮次的模型上下文统计"""
+        self._context_turn_stats = ModelContextTurnStats()
+
+    def get_context_stats(self) -> dict[str, Any] | None:
+        """
+        返回当前轮次的模型上下文统计
+
+        返回:
+        - dict[str, Any] | None: 没有模型请求时为 None
+        """
+        payload = self._context_turn_stats.to_dict()
+        return payload or None
+
+    def _record_context_request(
+        self,
+        prepared: PreparedModelContext,
+        usage: TokenUsage | None,
+    ) -> None:
+        """
+        记录一次正式模型请求
+
+        参数:
+        - prepared: 上下文准备结果
+        - usage: API 返回的真实 token 用量
+        """
+        self._context_turn_stats.requests.append(_build_context_request_stats(prepared, usage))
 
     async def initialize(self):
         """初始化异步上下文与系统提示词"""
@@ -1036,6 +1195,30 @@ class AsyncModelWorkflowFramework:
         """
         if self.content_callback and content:
             await self.content_callback(content)
+
+    async def _call_model(
+        self,
+        *,
+        pending_messages: list[dict[str, Any]] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        thinking: str = "off",
+        img_urls: list[str] | None = None,
+    ) -> LLMCallResponse | Literal[False]:
+        """准备上下文, 异步调用模型并记录真实 usage"""
+        prepared = await self.ctx.prepare_model_context(
+            llm=self.llm,
+            pending_messages=pending_messages,
+            tools=tools,
+            img_urls=img_urls,
+        )
+        call_kwargs: dict[str, Any] = {"tools": tools, "img_urls": img_urls}
+        if thinking != "off":
+            call_kwargs["thinking"] = thinking
+        response = await self.llm.call(prepared.messages, **call_kwargs)
+        if isinstance(response, LLMCallResponse):
+            self._record_context_request(prepared, response.usage)
+            await self.ctx.record_model_usage(prepared, response.usage)
+        return response
 
     @staticmethod
     async def _await_if_needed(value: Awaitable[_WorkflowT] | _WorkflowT) -> _WorkflowT:
@@ -1085,9 +1268,8 @@ class AsyncModelWorkflowFramework:
                 add_tools_call_flow(turn_messages, now_response.content, tool_messages, tool_results, now_response.thinking)
                 # 添加至本轮消息流
 
-                new_context = self.ctx.get_context() + turn_messages
-                new_response = await self.llm.call(
-                    new_context,
+                new_response = await self._call_model(
+                    pending_messages=turn_messages,
                     tools=self.tools_manager.get_tools_definitions(),
                     img_urls=img_urls,
                 )   # 调用模型
@@ -1109,8 +1291,7 @@ class AsyncModelWorkflowFramework:
                     await self.ctx.add_turn_messages(turn_messages)
                     logger.warning("已达到最大工具调用迭代次数, 停止执行")
                     await self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
-                    final_context = self.ctx.get_context()
-                    final_response = await self.llm.call(final_context, tools=[], img_urls=img_urls)
+                    final_response = await self._call_model(tools=[], img_urls=img_urls)
 
                     if not final_response:
                         logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
@@ -1193,6 +1374,7 @@ class AsyncModelWorkflowFramework:
         - system_messages: system消息列表
         """
         self.ctx._messages = copy.deepcopy(system_messages)
+        self.ctx._mark_dirty()
         await self.ctx._sync()
 
     async def full_agent(self, user_input: str, callback: bool = True, max_iterations: int = 10,
@@ -1209,10 +1391,10 @@ class AsyncModelWorkflowFramework:
         返回:
         - str: 完整执行一轮异步 Agent 流程, 返回最终模型输出
         """
+        self.reset_context_stats()
         await self.ctx.add_user_message(user_input)
 
-        response = await self.llm.call(
-            self.ctx.get_context(),
+        response = await self._call_model(
             tools=self.tools_manager.get_tools_definitions(),
             img_urls=img_urls,
         )
@@ -1229,7 +1411,7 @@ class AsyncModelWorkflowFramework:
 
     async def _stream_call_response(
         self,
-        messages: list[dict[str, Any]],
+        pending_messages: list[dict[str, Any]] | None,
         tools: list[dict[str, Any]] | None,
         callback: bool,
         thinking: str,
@@ -1239,7 +1421,7 @@ class AsyncModelWorkflowFramework:
         消费一次异步流式请求并返回完整响应
 
         参数:
-        - messages: 消息列表, 格式 [{"role": "user", "content": "..."}]
+        - pending_messages: 尚未写入完整历史的本轮临时消息
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
         - thinking: 是否要求模型进行思考, 默认为 False
@@ -1248,8 +1430,14 @@ class AsyncModelWorkflowFramework:
         返回:
         - LLMCallResponse | bool: 模型调用响应, 或 False 表示失败
         """
+        prepared = await self.ctx.prepare_model_context(
+            llm=self.llm,
+            pending_messages=pending_messages,
+            tools=tools,
+            img_urls=img_urls,
+        )
         response: Any = None
-        async for event in self.llm.stream_call(messages, tools=tools, thinking=thinking, img_urls=img_urls):
+        async for event in self.llm.stream_call(prepared.messages, tools=tools, thinking=thinking, img_urls=img_urls):
             if callback and event.kind == "content_delta":
                 await self._content_callback(event.delta)
 
@@ -1266,6 +1454,9 @@ class AsyncModelWorkflowFramework:
                 response = event.response
 
         if isinstance(response, (LLMCallResponse, bool)):
+            if isinstance(response, LLMCallResponse):
+                self._record_context_request(prepared, response.usage)
+                await self.ctx.record_model_usage(prepared, response.usage)
             return response
         return False
 
@@ -1290,11 +1481,12 @@ class AsyncModelWorkflowFramework:
         返回:
         - 最终模型输出
         """
+        self.reset_context_stats()
         await self.ctx.add_user_message(user_input)
         max_iterations = max(1, max_iterations)
 
         response = await self._stream_call_response(
-            self.ctx.get_context(),
+            None,
             self.tools_manager.get_tools_definitions(),
             callback,
             thinking,
@@ -1326,7 +1518,7 @@ class AsyncModelWorkflowFramework:
             )
 
             new_response = await self._stream_call_response(
-                self.ctx.get_context() + turn_messages,
+                turn_messages,
                 self.tools_manager.get_tools_definitions(),
                 callback,
                 thinking,
@@ -1343,7 +1535,7 @@ class AsyncModelWorkflowFramework:
                 await self.ctx.add_turn_messages(turn_messages)
                 await self.ctx.add_user_message("已达到最大工具调用尝试次数，请基于已有信息给出最终答案。")
                 final_response = await self._stream_call_response(
-                    self.ctx.get_context(),
+                    None,
                     [],
                     callback,
                     thinking,
@@ -1376,13 +1568,13 @@ class AsyncModelWorkflowFramework:
         - str: 使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
         """
         system_messages = self._get_system_messages(self.ctx.get_context())
+        self.reset_context_stats()
         await self._restore_context_keep_system(system_messages)
 
         try:
             await self.ctx.add_user_message(user_input)
 
-            response = await self.llm.call(
-                self.ctx.get_context(),
+            response = await self._call_model(
                 tools=self.tools_manager.get_tools_definitions(),
                 img_urls=img_urls,
             )
@@ -1519,6 +1711,8 @@ class AsyncSession:
             self._state_store = StateStore(db_path=db_path)
         self._workflow_contexts: dict[str, AsyncContextManager] = {}
         """工作流 ID -> 工作流上下文, 供会话级检查点聚合"""
+        self._context_config: LLMConfig | None = None
+        """当前会话使用的模型上下文配置"""
 
         self.session_ctx = AsyncContextManager(session_id, db_path=db_path)
         self.session_id = session_id
@@ -1657,6 +1851,17 @@ class AsyncSession:
         contexts.update(self._workflow_contexts)
         return contexts
 
+    def apply_context_config(self, config: LLMConfig) -> None:
+        """
+        将模型上下文配置应用到会话及全部工作流上下文
+
+        参数:
+        - config: LLM 配置
+        """
+        self._context_config = config
+        for context in self._all_contexts().values():
+            apply_context_policy(context, config)
+
     def _track_workflow_context(self, wf_id: str, ctx: AsyncContextManager) -> None:
         """
         注册工作流上下文, 使其纳入会话级检查点聚合
@@ -1668,6 +1873,8 @@ class AsyncSession:
         if wf_id in self._workflow_contexts:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
         self._workflow_contexts[wf_id] = ctx
+        if self._context_config is not None:
+            apply_context_policy(ctx, self._context_config)
         if self._state_store is not None:
             if Path(str(ctx.db_path)).resolve() != Path(str(self._state_store.db_path)).resolve():
                 raise ValueError(

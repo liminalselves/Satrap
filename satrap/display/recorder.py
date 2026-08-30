@@ -227,6 +227,7 @@ class DisplayRecorder:
                 "active_variant",
                 "INTEGER NOT NULL DEFAULT 0",
             )
+            _ensure_column_locked(conn, "display_turns", "context_stats", "TEXT")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS display_tool_calls (
@@ -271,12 +272,13 @@ class DisplayRecorder:
                 "CREATE INDEX IF NOT EXISTS idx_turn_variant"
                 " ON display_turn_variants (turn_id, variant_index)"
             )
+            _ensure_column_locked(conn, "display_turn_variants", "context_stats", "TEXT")
             # 既有展示轮次按第 0 个回复版本登记
             conn.execute(
                 """
                 INSERT OR IGNORE INTO display_turn_variants
-                    (turn_id, variant_index, thinking, answer, segments, context_messages, created_at)
-                SELECT id, 0, thinking, answer, segments, NULL, created_at FROM display_turns
+                    (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)
+                SELECT id, 0, thinking, answer, segments, NULL, context_stats, created_at FROM display_turns
                 """
             )
             conn.execute(
@@ -375,6 +377,7 @@ class DisplayRecorder:
         fallback_answer: str = "",
         *,
         context_messages: list[dict[str, Any]] | None = None,
+        context_stats: dict[str, Any] | None = None,
     ) -> dict[str, int] | None:
         """
         run 后调用: 回填 thinking / answer / segments (answer 优先回调流拼接, 空则用 run 返回值兜底)
@@ -382,6 +385,7 @@ class DisplayRecorder:
         参数:
         - fallback_answer: 回退回答
         - context_messages: 本回复对应的模型上下文增量
+        - context_stats: 本回复对应的上下文与 token 统计
 
         返回:
         - dict[str, int] | None: 已完成轮次和回复版本标识
@@ -394,23 +398,25 @@ class DisplayRecorder:
         context_json = (
             json.dumps(context_messages, ensure_ascii=False) if context_messages is not None else None
         )
+        stats_json = json.dumps(context_stats, ensure_ascii=False) if context_stats else None
         with self._lock:
             conn = self._get_conn()
             conn.execute(
-                "UPDATE display_turns SET thinking = ?, answer = ?, segments = ?, active_variant = ?"
+                "UPDATE display_turns SET thinking = ?, answer = ?, segments = ?, context_stats = ?, active_variant = ?"
                 " WHERE id = ?",
-                (thinking, answer, segments_json, self._variant_index, self._turn_id),
+                (thinking, answer, segments_json, stats_json, self._variant_index, self._turn_id),
             )
             conn.execute(
                 """
                 INSERT INTO display_turn_variants
-                    (turn_id, variant_index, thinking, answer, segments, context_messages, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(turn_id, variant_index) DO UPDATE SET
                     thinking=excluded.thinking,
                     answer=excluded.answer,
                     segments=excluded.segments,
                     context_messages=excluded.context_messages,
+                    context_stats=excluded.context_stats,
                     created_at=excluded.created_at
                 """,
                 (
@@ -420,6 +426,7 @@ class DisplayRecorder:
                     answer,
                     segments_json,
                     context_json,
+                    stats_json,
                     time.time(),
                 ),
             )
@@ -549,7 +556,7 @@ class DisplayRecorder:
         """
         if self._turn_id is None:
             return
-        tool_data = {
+        tool_data: dict[str, Any] = {
             "seq": self._tool_seq,
             "name": str(event.get("name", "")),
             "arguments": _truncate_arguments(event.get("arguments")),
@@ -636,7 +643,7 @@ class DisplayRecorder:
         with self._lock:
             sql = (
                 "SELECT id, turn_index, user_input, thinking, answer, attachments, segments,"
-                " created_at, active_variant,"
+                " context_stats, created_at, active_variant,"
                 " (SELECT COUNT(*) FROM display_turn_variants v WHERE v.turn_id = display_turns.id)"
                 " FROM display_turns WHERE conversation_id = ? ORDER BY turn_index ASC"
             )
@@ -654,10 +661,11 @@ class DisplayRecorder:
                     "answer": r[4],
                     "attachments": json.loads(r[5]) if r[5] else None,
                     "segments": json.loads(r[6]) if r[6] else None,
-                    "created_at": r[7],
-                    "active_variant": int(r[8] or 0),
-                    "variant_count": int(r[9] or 0),
-                    "tool_calls": self._list_tool_calls_locked(conn, r[0], int(r[8] or 0)),
+                    "context_stats": json.loads(r[7]) if r[7] else None,
+                    "created_at": r[8],
+                    "active_variant": int(r[9] or 0),
+                    "variant_count": int(r[10] or 0),
+                    "tool_calls": self._list_tool_calls_locked(conn, r[0], int(r[9] or 0)),
                     "variants": self._list_variants_locked(conn, r[0]),
                 }
                 for r in rows
@@ -716,7 +724,7 @@ class DisplayRecorder:
         - list[dict[str, Any]]: 按版本索引排序的回复版本
         """
         rows = conn.execute(
-            "SELECT variant_index, thinking, answer, segments, created_at"
+            "SELECT variant_index, thinking, answer, segments, context_stats, created_at"
             " FROM display_turn_variants WHERE turn_id = ? ORDER BY variant_index ASC",
             (turn_id,),
         ).fetchall()
@@ -726,7 +734,8 @@ class DisplayRecorder:
                 "thinking": row[1],
                 "answer": row[2],
                 "segments": json.loads(row[3]) if row[3] else None,
-                "created_at": row[4],
+                "context_stats": json.loads(row[4]) if row[4] else None,
+                "created_at": row[5],
                 "tool_calls": cls._list_tool_calls_locked(conn, turn_id, int(row[0])),
             }
             for row in rows
@@ -807,7 +816,7 @@ class DisplayRecorder:
         with self._lock:
             conn = self._get_conn()
             row = conn.execute(
-                "SELECT t.id, v.thinking, v.answer, v.segments"
+                "SELECT t.id, v.thinking, v.answer, v.segments, v.context_stats"
                 " FROM display_turns t JOIN display_turn_variants v ON v.turn_id = t.id"
                 " WHERE t.conversation_id = ? AND t.turn_index = ? AND v.variant_index = ?",
                 (self.conversation_id, turn_index, variant_index),
@@ -815,9 +824,9 @@ class DisplayRecorder:
             if row is None:
                 return None
             conn.execute(
-                "UPDATE display_turns SET thinking = ?, answer = ?, segments = ?, active_variant = ?"
+                "UPDATE display_turns SET thinking = ?, answer = ?, segments = ?, context_stats = ?, active_variant = ?"
                 " WHERE id = ?",
-                (row[1], row[2], row[3], variant_index, row[0]),
+                (row[1], row[2], row[3], row[4], variant_index, row[0]),
             )
             conn.commit()
         return self.get_turn(turn_index)
@@ -928,7 +937,7 @@ class DisplayRecorder:
             conn = self._get_conn()
             rows = conn.execute(
                 "SELECT t.id, t.turn_index, t.user_input, t.thinking, t.answer, t.attachments,"
-                " t.segments, t.created_at, t.active_variant, v.context_messages"
+                " t.segments, t.context_stats, t.created_at, t.active_variant, v.context_messages"
                 " FROM display_turns t LEFT JOIN display_turn_variants v"
                 " ON v.turn_id = t.id AND v.variant_index = t.active_variant"
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
@@ -941,22 +950,22 @@ class DisplayRecorder:
                 cur = tconn.execute(
                     "INSERT INTO display_turns"
                     " (conversation_id, turn_index, user_input, thinking, answer, attachments,"
-                    " segments, created_at, active_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)",
-                    (target.conversation_id, r[1], r[2], r[3], r[4], r[5], r[6], r[7]),
+                    " segments, context_stats, created_at, active_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
+                    (target.conversation_id, r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]),
                 )
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
-                    " (turn_id, variant_index, thinking, answer, segments, context_messages, created_at)"
-                    " VALUES (?, 0, ?, ?, ?, ?, ?)",
-                    (new_turn_id, r[3], r[4], r[6], r[9], r[7]),
+                    " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)"
+                    " VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
+                    (new_turn_id, r[3], r[4], r[6], r[10], r[7], r[8]),
                 )
                 # 复制工具调用
                 tools = conn.execute(
                     "SELECT seq, name, arguments, success, call_id, created_at"
                     " FROM display_tool_calls WHERE turn_id = ? AND variant_index = ?"
                     " ORDER BY seq ASC",
-                    (r[0], r[8]),
+                    (r[0], r[9]),
                 ).fetchall()
                 for tool in tools:
                     tconn.execute(
@@ -1070,7 +1079,7 @@ def query_conversations(
                 GROUP BY conversation_id
                 """
             ).fetchall()
-        items = [
+        items: list[dict[str, Any]] = [
             {
                 "conversation_id": str(r[0]),
                 "turn_count": int(r[1] or 0),
@@ -1158,7 +1167,7 @@ def create_project(name: str, root_path: str, db_path: str | None = None) -> dic
     try:
         _ensure_project_schema_locked(conn)
         project_id = uuid.uuid4().hex
-        record = {
+        record: dict[str, Any] = {
             "project_id": project_id,
             "name": name.strip(),
             "root_path": root_path,

@@ -304,3 +304,4 @@ def test_reload_model_configs_refreshes_active_sessions(tmp_path: Path, monkeypa
     sm._model_cfg_mgr = mgr
     sm.reload_model_configs()
     fake_session.reload_llm.assert_called_once()
+    fake_session.apply_context_config.assert_called_once_with(mgr.get_llm_config.return_value)

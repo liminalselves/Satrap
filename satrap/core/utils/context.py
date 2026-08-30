@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
-from typing import List, Dict, Union, Optional, Any, cast, TYPE_CHECKING
+from typing import List, Dict, Union, Optional, Any, cast, TYPE_CHECKING, Literal
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
@@ -19,8 +19,9 @@ import asyncio
 import sqlite3
 import json
 import copy
-import re
 import threading
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 from satrap.core.log import logger
@@ -29,15 +30,221 @@ from types import TracebackType
 from satrap.core.state import StateStore
 from satrap.core.state.mutation import state_mutation_context
 from satrap.core.type import (
+    ContextUsageSnapshot,
     JsonRow,
     RestoreOptions,
     SnapshotDomain,
     StateCheckpoint,
     StateScope,
+    TokenUsage,
 )
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+
+
+TokenEstimateMethod = Literal["tokenizer", "experience"]
+ContextStrategy = Literal["sliding", "mid_truncate", "summarize"]
+_SUMMARY_PROMPT_VERSION = 1
+_MIN_SUMMARY_OUTPUT_TOKENS = 512
+_MAX_SUMMARY_OUTPUT_TOKENS = 2048
+_SUMMARY_RETRY_OUTPUT_TOKENS = 4096
+
+
+def _summary_output_budget(target_tokens: int) -> int:
+    """
+    返回不受主回复低额度影响的摘要输出预算
+
+    参数:
+    - target_tokens: 期望摘要长度
+
+    返回:
+    - int: 摘要模型调用的最大输出 token 数
+    """
+    return max(
+        _MIN_SUMMARY_OUTPUT_TOKENS,
+        min(_MAX_SUMMARY_OUTPUT_TOKENS, target_tokens),
+    )
+
+
+class ContextOverflowError(RuntimeError):
+    """保留项本身已超过上下文预算时抛出的异常"""
+
+
+@dataclass
+class PreparedModelContext:
+    """一次模型请求使用的派生上下文及计数元数据"""
+    messages: List[Dict[str, Any]]
+    """实际发送给模型的消息副本"""
+    estimated_input_tokens: int
+    """准备后请求的本地估算输入 token 数"""
+    effective_input_tokens: int
+    """应用历史 API 校准后的输入 token 数"""
+    original_estimated_input_tokens: int
+    """压缩前完整请求的本地估算输入 token 数"""
+    token_source: str
+    """计数来源, tokenizer, experience 或 api_calibrated"""
+    strategy: str
+    """本次采用的上下文策略"""
+    compressed: bool
+    """本次是否对模型视图执行了压缩"""
+    original_turns: int
+    """完整上下文轮数"""
+    prepared_turns: int
+    """模型视图中的轮数"""
+    history_budget: int
+    """本次请求使用的历史上下文预算"""
+    trigger_tokens: int
+    """本次请求触发上下文处理的 token 线"""
+    floor_tokens: int
+    """本次请求执行截取后的目标 token 线"""
+    model: Optional[str] = None
+    """本次请求的模型名, 用于隔离不同模型的 usage 校准"""
+
+
+@dataclass
+class _ContextRuntimeState:
+    """不属于完整消息历史的可重建运行时状态"""
+    summary: str = ""
+    covered_turn_count: int = 0
+    summary_model: Optional[str] = None
+    summary_prompt_version: int = _SUMMARY_PROMPT_VERSION
+    usage_model: Optional[str] = None
+    api_input_tokens: Optional[int] = None
+    estimated_input_tokens: Optional[int] = None
+    api_output_tokens: Optional[int] = None
+    api_total_tokens: Optional[int] = None
+    api_cached_tokens: Optional[int] = None
+
+
+def _estimate_text(text: str, method: TokenEstimateMethod) -> int:
+    """
+    使用指定方法估算文本 token 数
+
+    参数:
+    - text: 待估算文本
+    - method: tokenizer 或 experience
+
+    返回:
+    - int: 估算 token 数
+    """
+    if method == "tokenizer":
+        return tokenizer_estimate(text)
+    return experience_estimate(text)
+
+
+def _estimate_request_tokens(
+    messages: List[Dict[str, Any]],
+    method: TokenEstimateMethod,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    img_urls: Optional[List[str]] = None,
+) -> int:
+    """
+    估算实际请求中的消息, 工具定义和额外图片成本
+
+    参数:
+    - messages: 请求消息
+    - method: token 估算方法
+    - tools: 工具定义列表
+    - img_urls: 尚未写入消息内容的额外图片
+
+    返回:
+    - int: 请求输入 token 估算值
+    """
+    token_count = 0
+    for msg in messages:
+        content = msg.get("content", "")
+        image_count = estimate_content_image_count(content)
+        token_count += 4 + image_count * DEFAULT_IMAGE_TOKEN_COST
+        token_count += _estimate_text(content_text_projection(content), method)
+        metadata = {key: value for key, value in msg.items() if key != "content" and value is not None}
+        if metadata:
+            token_count += _estimate_text(json.dumps(metadata, ensure_ascii=False, sort_keys=True), method)
+
+    if tools:
+        token_count += _estimate_text(json.dumps(tools, ensure_ascii=False, sort_keys=True), method)
+    if img_urls:
+        token_count += len(img_urls) * DEFAULT_IMAGE_TOKEN_COST
+    return token_count
+
+
+def _llm_model_name(llm: object | None) -> Optional[str]:
+    """
+    获取 LLM 实例当前模型名
+
+    参数:
+    - llm: LLM 实例
+
+    返回:
+    - Optional[str]: 模型名
+    """
+    if llm is None:
+        return None
+    getter = getattr(llm, "get_model", None)
+    if callable(getter):
+        try:
+            value = getter()
+            if isinstance(value, str) and value:
+                return value
+        except (AttributeError, TypeError):
+            pass
+    value = getattr(llm, "model", None)
+    return value if isinstance(value, str) and value else None
+
+
+def _summary_lines(turns: List[List[Dict[str, Any]]]) -> List[str]:
+    """
+    将对话轮次投影为供总结模型读取的纯文本行
+
+    参数:
+    - turns: 待总结轮次
+
+    返回:
+    - List[str]: 纯文本消息行
+    """
+    lines: List[str] = []
+    for turn in turns:
+        for msg in turn:
+            role = str(msg.get("role", "unknown"))
+            text = content_text_projection(msg.get("content"))
+            metadata = {key: value for key, value in msg.items() if key not in {"role", "content"} and value is not None}
+            if metadata:
+                text = f"{text}\n附加数据: {json.dumps(metadata, ensure_ascii=False, sort_keys=True)}"
+            lines.append(f"{role}: {text or '[空消息]'}")
+    return lines
+
+
+def _split_summary_chunks(lines: List[str], token_budget: int) -> List[str]:
+    """
+    将超长待总结文本切成可逐段归并的块
+
+    参数:
+    - lines: 对话文本行
+    - token_budget: 每块的近似 token 预算
+
+    返回:
+    - List[str]: 文本块
+    """
+    budget = max(256, token_budget)
+    chunks: List[str] = []
+    current: List[str] = []
+    current_tokens = 0
+    for line in lines:
+        parts = [line]
+        if tokenizer_estimate(line) > budget:
+            chars_per_chunk = max(256, budget * 3)
+            parts = [line[index:index + chars_per_chunk] for index in range(0, len(line), chars_per_chunk)]
+        for part in parts:
+            part_tokens = tokenizer_estimate(part)
+            if current and current_tokens + part_tokens > budget:
+                chunks.append("\n".join(current))
+                current = []
+                current_tokens = 0
+            current.append(part)
+            current_tokens += part_tokens
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
 
 
 def _messages_domain() -> SnapshotDomain:
@@ -187,6 +394,7 @@ class ContextManager:
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         auto_checkpoint: bool = True,
+        summary_keep_recent_turns: int = 6,
     ):
         """
         初始化上下文管理器
@@ -204,6 +412,8 @@ class ContextManager:
         - exceed_process: 超过触发线时的处理方式, 默认 "sliding" (滑动窗口)
             - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在截断底线以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
+            - "summarize": 总结旧轮次并保留最近 summary_keep_recent_turns 轮原文
+        - summary_keep_recent_turns: 总结压缩时必须原样保留的最近轮数, 默认 6
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
         - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
@@ -235,18 +445,21 @@ class ContextManager:
         if self.state_store is not None:
             self.state_store.register_domain(_messages_domain())
 
-        self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
-        self._conn_lock = threading.Lock()   # 连接创建/释放互斥 (读写路径假定单线程使用)
+        self._messages: List[Dict[str, Any]] = []         # 内存中的消息缓存
+        self._runtime_state = _ContextRuntimeState()      # 可重建的总结与 usage 校准状态
+        self._runtime_state_dirty = False                 # 运行时状态待持久化标记
+        self._conn_lock = threading.Lock()                # 连接创建/释放互斥 (读写路径假定单线程使用)
         self._conn: Optional[sqlite3.Connection] = None   # 复用数据库连接 (惰性创建)
         self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self._init_db_table()   # 初始化数据库表结构
-        self.load_context()   # 加载数据
+        self.load_context()     # 加载数据
 
         self.max_context = max_context
         self.history_ratio = history_ratio
         self.context_threshold = context_threshold
         self.truncation_floor = truncation_floor
         self.exceed_process = exceed_process
+        self.summary_keep_recent_turns = max(0, summary_keep_recent_turns)
 
         self.history_budget = int(max_context * history_ratio)
         self.trigger_tokens = int(self.history_budget * context_threshold)
@@ -308,6 +521,28 @@ class ContextManager:
 
             cursor.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
 
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS context_runtime_state (
+                    conversation_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL DEFAULT '',
+                    covered_turn_count INTEGER NOT NULL DEFAULT 0,
+                    summary_model TEXT,
+                    summary_prompt_version INTEGER NOT NULL DEFAULT 1,
+                    usage_model TEXT,
+                    api_input_tokens INTEGER,
+                    estimated_input_tokens INTEGER,
+                    api_output_tokens INTEGER,
+                    api_total_tokens INTEGER,
+                    api_cached_tokens INTEGER,
+                    updated_at REAL NOT NULL
+                )
+            ''')
+
+            try:
+                cursor.execute("ALTER TABLE context_runtime_state ADD COLUMN api_cached_tokens INTEGER")
+            except sqlite3.OperationalError:
+                pass
+
             for col in ('content_json', 'tool_call_id', 'tool_calls', 'reasoning_content'):
                 try:
                     cursor.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
@@ -347,10 +582,108 @@ class ContextManager:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
             self._saved_count = len(rows)
+            self._load_runtime_state(conn)
         except Exception as e:
             logger.error(f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages: List[Dict[str, Any]] = []
             self._saved_count = 0
+
+    def _load_runtime_state(self, conn: sqlite3.Connection) -> None:
+        """
+        加载当前对话的总结缓存和 usage 校准状态
+
+        参数:
+        - conn: SQLite 连接
+        """
+        row = conn.execute(
+            "SELECT summary, covered_turn_count, summary_model, summary_prompt_version, "
+            "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+            "api_cached_tokens "
+            "FROM context_runtime_state WHERE conversation_id = ?",
+            (self.conversation_id,),
+        ).fetchone()
+        if row is None:
+            self._runtime_state = _ContextRuntimeState()
+            self._runtime_state_dirty = False
+            return
+        self._runtime_state = _ContextRuntimeState(
+            summary=str(row[0] or ""),
+            covered_turn_count=int(row[1] or 0),
+            summary_model=str(row[2]) if row[2] else None,
+            summary_prompt_version=int(row[3] or _SUMMARY_PROMPT_VERSION),
+            usage_model=str(row[4]) if row[4] else None,
+            api_input_tokens=int(row[5]) if row[5] is not None else None,
+            estimated_input_tokens=int(row[6]) if row[6] is not None else None,
+            api_output_tokens=int(row[7]) if row[7] is not None else None,
+            api_total_tokens=int(row[8]) if row[8] is not None else None,
+            api_cached_tokens=int(row[9]) if row[9] is not None else None,
+        )
+        self._runtime_state_dirty = False
+        conversation_turns = self._conversation_turns(self._messages)
+        if (
+            self._runtime_state.summary_prompt_version != _SUMMARY_PROMPT_VERSION
+            or self._runtime_state.covered_turn_count > len(conversation_turns)
+        ):
+            self._invalidate_summary(persist=True)
+
+    def _write_runtime_state(self, conn: sqlite3.Connection) -> None:
+        """
+        将运行时状态写入当前事务
+
+        参数:
+        - conn: SQLite 连接
+        """
+        state = self._runtime_state
+        conn.execute(
+            "INSERT INTO context_runtime_state "
+            "(conversation_id, summary, covered_turn_count, summary_model, summary_prompt_version, "
+            "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+            "api_cached_tokens, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(conversation_id) DO UPDATE SET "
+            "summary = excluded.summary, covered_turn_count = excluded.covered_turn_count, "
+            "summary_model = excluded.summary_model, summary_prompt_version = excluded.summary_prompt_version, "
+            "usage_model = excluded.usage_model, api_input_tokens = excluded.api_input_tokens, "
+            "estimated_input_tokens = excluded.estimated_input_tokens, api_output_tokens = excluded.api_output_tokens, "
+            "api_total_tokens = excluded.api_total_tokens, api_cached_tokens = excluded.api_cached_tokens, "
+            "updated_at = excluded.updated_at",
+            (
+                self.conversation_id,
+                state.summary,
+                state.covered_turn_count,
+                state.summary_model,
+                state.summary_prompt_version,
+                state.usage_model,
+                state.api_input_tokens,
+                state.estimated_input_tokens,
+                state.api_output_tokens,
+                state.api_total_tokens,
+                state.api_cached_tokens,
+                time.time(),
+            ),
+        )
+
+    def _save_runtime_state(self) -> None:
+        """持久化当前对话的总结缓存和 usage 校准状态"""
+        conn = self._get_conn()
+        self._write_runtime_state(conn)
+        conn.commit()
+        self._runtime_state_dirty = False
+
+    def _invalidate_summary(self, persist: bool = False) -> None:
+        """
+        清除因历史编辑而失效的总结缓存
+
+        参数:
+        - persist: 是否立即同步到数据库
+        """
+        self._runtime_state.summary = ""
+        self._runtime_state.covered_turn_count = 0
+        self._runtime_state.summary_model = None
+        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._runtime_state_dirty = True
+        if persist:
+            self._save_runtime_state()
 
     def save_context(self):
         """
@@ -389,9 +722,12 @@ class ContextManager:
                     "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                     data_to_insert
                 )
+            if self._runtime_state_dirty:
+                self._write_runtime_state(conn)
             conn.commit()
             # 提交成功后才推进已保存水位
             self._saved_count = len(self._messages)
+            self._runtime_state_dirty = False
 
         except Exception as e:
             logger.error(f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}")
@@ -401,6 +737,7 @@ class ContextManager:
     def _mark_dirty(self) -> None:
         """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
         self._saved_count = -1
+        self._invalidate_summary()
 
     # ================= 检查点支持 =================
 
@@ -489,6 +826,7 @@ class ContextManager:
         ):
             store.rollback(checkpoint_id)
         self.load_context()
+        self._invalidate_summary(persist=True)
 
     def retry(self, checkpoint_id: str) -> None:
         """
@@ -503,6 +841,7 @@ class ContextManager:
         ):
             store.retry(checkpoint_id)
         self.load_context()
+        self._invalidate_summary(persist=True)
 
     def fork(
         self,
@@ -541,6 +880,7 @@ class ContextManager:
             context_threshold=self.context_threshold,
             truncation_floor=self.truncation_floor,
             exceed_process=self.exceed_process,
+            summary_keep_recent_turns=self.summary_keep_recent_turns,
             state_store=store,
             auto_checkpoint=self.auto_checkpoint,
         )
@@ -554,7 +894,7 @@ class ContextManager:
         """
         return self._messages
 
-    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, Any]]:
+    def get_model_context(self, method: TokenEstimateMethod = "tokenizer") -> List[Dict[str, Any]]:
         """
         获取发送给模型的上下文 (保证在最大上下文长度内)
 
@@ -870,86 +1210,170 @@ class ContextManager:
         """
         return [msg for turn in turns for msg in turn]
 
-    _SUMMARY_BLOCK_RE = re.compile(r"<对话历史摘要>.*?</对话历史摘要>", re.DOTALL)
     _SUMMARY_PROMPT = (
         "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
         "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
     )
 
+    def _conversation_turns(self, messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """
+        返回不含开头 system 消息的完整对话轮次
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - List[List[Dict[str, Any]]]: 对话轮次
+        """
+        turns = self._group_messages_by_turns(messages)
+        if turns and all(msg.get("role") == "system" for msg in turns[0]):
+            turns.pop(0)
+        return turns
+
+    def _system_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        提取开头连续的 system 消息副本
+
+        参数:
+        - messages: 消息列表
+
+        返回:
+        - List[Dict[str, Any]]: system 消息副本
+        """
+        result: List[Dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            result.append(copy.deepcopy(message))
+        return result
+
+    def _summary_context(self, messages: List[Dict[str, Any]], keep_recent_turns: int) -> List[Dict[str, Any]]:
+        """
+        使用缓存摘要构建非破坏性的模型上下文
+
+        参数:
+        - messages: 完整消息及本轮临时消息
+        - keep_recent_turns: 原样保留的最近轮数
+
+        返回:
+        - List[Dict[str, Any]]: 摘要与最近轮次组成的模型视图
+        """
+        turns = self._conversation_turns(messages)
+        recent = turns[-keep_recent_turns:] if keep_recent_turns > 0 else []
+        result = self._system_messages(messages)
+        if self._runtime_state.summary:
+            result.append({
+                "role": "system",
+                "content": f"<对话历史摘要>\n{self._runtime_state.summary}\n</对话历史摘要>",
+            })
+        return result + self._flatten_turns(recent)
+
+    def _call_summary_llm(self, llm: LLM, text_chunks: List[str], prior_summary: str) -> str:
+        """
+        逐块调用同步 LLM 并滚动归并摘要
+
+        参数:
+        - llm: 用于总结的同步 LLM
+        - text_chunks: 待总结文本块
+        - prior_summary: 已有摘要
+
+        返回:
+        - str: 新摘要
+        """
+        summary = prior_summary
+        for chunk in text_chunks:
+            previous = f"\n\n已有摘要:\n{summary}" if summary else ""
+            prompt = f"{self._SUMMARY_PROMPT}{previous}\n\n新增对话:\n{chunk}"
+            result = llm.chat(
+                [{"role": "user", "content": prompt}],
+                thinking="off",
+                max_tokens=_summary_output_budget(self.floor_tokens // 2),
+            )
+            if not isinstance(result, str) or not result.strip():
+                logger.warning("[上下文管理] 摘要正文为空, 使用扩展输出预算重试")
+                result = llm.chat(
+                    [{"role": "user", "content": prompt}],
+                    thinking="off",
+                    max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                )
+            if not isinstance(result, str) or not result.strip():
+                raise RuntimeError("上下文总结模型未返回有效文本")
+            summary = result.strip()
+        return summary
+
+    def _tighten_summary(self, llm: LLM, target_tokens: int) -> None:
+        """
+        将缓存摘要进一步压缩到指定目标附近
+
+        参数:
+        - llm: 用于压缩的同步 LLM
+        - target_tokens: 摘要目标 token 数
+        """
+        prompt = (
+            f"请把以下对话摘要进一步压缩到约 {target_tokens} tokens 以内, "
+            "保留关键事实、决定和待办事项:\n\n"
+            f"{self._runtime_state.summary}"
+        )
+        result = llm.chat(
+            [{"role": "user", "content": prompt}],
+            thinking="off",
+            max_tokens=_summary_output_budget(target_tokens),
+        )
+        if not isinstance(result, str) or not result.strip():
+            logger.warning("[上下文管理] 二次压缩正文为空, 使用扩展输出预算重试")
+            result = llm.chat(
+                [{"role": "user", "content": prompt}],
+                thinking="off",
+                max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+            )
+        if not isinstance(result, str) or not result.strip():
+            raise RuntimeError("上下文摘要二次压缩未返回有效文本")
+        self._runtime_state.summary = result.strip()
+        self._save_runtime_state()
+
     def summarize_and_compress(self, llm: LLM, keep_recent_turns: int) -> str:
         """
-        将保留最近 keep_recent_turns 轮之前的所有对话总结, 删除原文, 总结置于 system prompt
-
-        多模态消息中的图片在总结前被投影为 [图片] 占位符(与 estimate_token 口径一致),
-        用于总结的 LLM 实例无需多模态能力
+        总结最近 keep_recent_turns 轮之前的对话并缓存, 不修改完整消息历史
 
         参数:
         - llm: 用于总结的 LLM 实例(调 chat 得字符串)
-        - keep_recent_turns: 保留最近的对话轮数(这些轮次不总结不删除)
+        - keep_recent_turns: 原样保留的最近对话轮数
 
         返回:
         - str: 总结文本; 对话轮次不足 keep_recent_turns 时返回空字符串(无可压缩)
         """
-        self._protect_before_edit()
-        turns = self._group_messages_by_turns(self._messages)
-        if not turns:
-            return ""
-
-        system_turn: List[Dict[str, Any]] = []
-        # 分离 system 轮次与对话轮次
-        if all(msg.get("role") == "system" for msg in turns[0]):
-            system_turn = turns.pop(0)
-
+        if keep_recent_turns < 0:
+            raise ValueError("keep_recent_turns 不能小于 0")
+        turns = self._conversation_turns(self._messages)
         if len(turns) <= keep_recent_turns:
             return ""   # 对话轮次不足, 无可压缩
 
-        to_compress = turns[:-keep_recent_turns]
-        to_keep = turns[-keep_recent_turns:]
+        target_covered = len(turns) - keep_recent_turns
+        state = self._runtime_state
+        if state.summary_prompt_version != _SUMMARY_PROMPT_VERSION or state.covered_turn_count > target_covered:
+            self._invalidate_summary()
+            state = self._runtime_state
 
-        lines: list[str] = []
-        # 多模态预处理: 图片投影为 [图片], 拼接为纯文本对话
-        for turn in to_compress:
-            for msg in turn:
-                role = msg.get("role", "unknown")
-                text = content_text_projection(msg.get("content"))
-                if text:
-                    lines.append(f"{role}: {text}")
-        dialogue_text = "\n".join(lines)
+        new_turns = turns[state.covered_turn_count:target_covered]
+        if not new_turns:
+            return state.summary
+        lines = _summary_lines(new_turns)
+        chunk_budget = max(1024, min(self.floor_tokens, self.history_budget // 2))
+        chunks = _split_summary_chunks(lines, chunk_budget)
+        summary = self._call_summary_llm(llm, chunks, state.summary)
 
-        summary = llm.chat([{"role": "user", "content": f"{self._SUMMARY_PROMPT}\n\n{dialogue_text}"}])
-        if not isinstance(summary, str):
-            summary = str(summary)
-
-        new_block = f"<对话历史摘要>\n{summary}\n</对话历史摘要>"
-        # 注入 system prompt: 已有摘要区块则合并为一段, 否则追加
-        if system_turn:
-            old_content = str(system_turn[0].get("content", ""))
-            existing = self._SUMMARY_BLOCK_RE.search(old_content)
-
-            if existing:
-                merged = llm.chat([{"role": "user", "content": (
-                    f"请将以下两段对话历史摘要合并为一段连贯的摘要, 保留所有关键信息:\n\n"
-                    f"{existing.group(0)}\n\n{new_block}"
-                )}])
-
-                if not isinstance(merged, str):
-                    merged = str(merged)
-                new_content = self._SUMMARY_BLOCK_RE.sub(
-                    f"<对话历史摘要>\n{merged}\n</对话历史摘要>", old_content
-                )
-            else:
-                new_content = f"{old_content}\n\n{new_block}" if old_content else new_block
-            system_turn[0]["content"] = new_content
-        else:
-            system_turn = [{"role": "system", "content": new_block}]
-
-        self._messages = self._flatten_turns([system_turn] + to_keep)
-        self._mark_dirty()
-        self._sync()
-        logger.info(f"[上下文管理] 总结压缩完成: 压缩 {len(to_compress)} 轮, 保留 {len(to_keep)} 轮, ID: {self.conversation_id}")
+        state.summary = summary
+        state.covered_turn_count = target_covered
+        state.summary_model = _llm_model_name(llm)
+        state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._save_runtime_state()
+        logger.info(
+            f"[上下文管理] 总结缓存更新完成: 覆盖 {target_covered} 轮, "
+            f"保留 {keep_recent_turns} 轮完整历史, ID: {self.conversation_id}"
+        )
         return summary
 
-    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
+    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: TokenEstimateMethod = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
 
@@ -960,23 +1384,195 @@ class ContextManager:
         返回:
         - int: token 数量
         """
-        token_count = 0
         if messages is None:
             messages = self._messages
-        for msg in messages:
-            content = msg.get("content", "")
-            token_count += 4   # 每个消息有 4 个固定 token
-            token_count += estimate_content_image_count(content) * DEFAULT_IMAGE_TOKEN_COST
-            text_content = content_text_projection(content)
-            if method == "tokenizer":
-                token_count += tokenizer_estimate(text_content)
-            elif method == "experience":
-                token_count += experience_estimate(text_content)
-            else:
-                token_count += experience_estimate(text_content)   # 默认使用经验法则
-        return token_count
+        return _estimate_request_tokens(messages, method)
 
-    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: str) -> List[Dict[str, Any]]:
+    def get_context_usage(
+        self,
+        method: TokenEstimateMethod = "tokenizer",
+    ) -> ContextUsageSnapshot:
+        """
+        返回当前历史预算和最近一次模型 usage 快照
+
+        参数:
+        - method: 当前完整历史的 token 估算方法
+
+        返回:
+        - ContextUsageSnapshot: 上下文预算与最近一次模型 usage
+        """
+        return ContextUsageSnapshot(
+            history_tokens=self.estimate_token(method=method),
+            context_window_tokens=self.max_context,
+            reserved_output_tokens=self.output_budget,
+            history_upper_tokens=self.history_budget,
+            history_lower_tokens=self.floor_tokens,
+            last_output_tokens=self._runtime_state.api_output_tokens,
+            cache_hit_tokens=self._runtime_state.api_cached_tokens,
+            history_token_source=method,
+        )
+
+    def estimate_request_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        method: TokenEstimateMethod = "tokenizer",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        img_urls: Optional[List[str]] = None,
+    ) -> int:
+        """
+        估算包含工具定义和图片的完整模型请求
+
+        参数:
+        - messages: 请求消息
+        - method: token 估算方法
+        - tools: 工具定义列表
+        - img_urls: 额外图片 URL
+
+        返回:
+        - int: 请求输入 token 估算值
+        """
+        return _estimate_request_tokens(messages, method, tools, img_urls)
+
+    def _calibration_factor(self, model: Optional[str]) -> float:
+        """
+        计算本地估算到同模型真实 API input usage 的校准系数
+
+        参数:
+        - model: 当前模型名
+
+        返回:
+        - float: 校准系数, 无可信 usage 时为 1
+        """
+        state = self._runtime_state
+        if (
+            state.api_input_tokens is None
+            or state.estimated_input_tokens is None
+            or state.estimated_input_tokens <= 0
+            or state.usage_model != model
+        ):
+            return 1.0
+        return max(0.1, min(10.0, state.api_input_tokens / state.estimated_input_tokens))
+
+    def prepare_model_context(
+        self,
+        *,
+        llm: Optional[LLM] = None,
+        pending_messages: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        img_urls: Optional[List[str]] = None,
+        method: TokenEstimateMethod = "tokenizer",
+        strategy: Optional[ContextStrategy] = None,
+        keep_recent_turns: Optional[int] = None,
+    ) -> PreparedModelContext:
+        """
+        为一次真实模型请求准备非破坏性上下文
+
+        参数:
+        - llm: 总结策略使用的 LLM, 同时用于识别校准模型
+        - pending_messages: 工具循环中尚未写入历史的临时消息
+        - tools: 本次请求携带的工具定义
+        - img_urls: 本次请求携带的额外图片
+        - method: 本地 token 估算方法
+        - strategy: 覆盖当前超限处理策略
+        - keep_recent_turns: 总结策略必须原样保留的最近轮数, 默认使用构造参数
+
+        返回:
+        - PreparedModelContext: 模型消息副本及 token 元数据
+        """
+        selected_strategy = strategy or cast(ContextStrategy, self.exceed_process)
+        if selected_strategy == "summary":
+            selected_strategy = "summarize"
+        recent_turns = self.summary_keep_recent_turns if keep_recent_turns is None else keep_recent_turns
+        if recent_turns < 0:
+            raise ValueError("keep_recent_turns 不能小于 0")
+        model = _llm_model_name(llm)
+        messages = copy.deepcopy(self._messages)
+        if pending_messages:
+            messages.extend(copy.deepcopy(pending_messages))
+        original_turns = len(self._conversation_turns(messages))
+        original_estimate = self.estimate_request_tokens(messages, method, tools, img_urls)
+        factor = self._calibration_factor(model)
+        original_effective = max(0, round(original_estimate * factor))
+        prepared_messages = messages
+
+        if original_effective > self.trigger_tokens:
+            local_floor = max(1, int(self.floor_tokens / factor))
+            if selected_strategy == "summarize":
+                if llm is None:
+                    raise ValueError("总结压缩策略需要传入 llm")
+                self.summarize_and_compress(llm, recent_turns)
+                prepared_messages = self._summary_context(messages, recent_turns)
+            elif selected_strategy == "sliding":
+                prepared_messages = self._apply_sliding_truncation(messages, local_floor, method)
+            elif selected_strategy == "mid_truncate":
+                prepared_messages = self._apply_mid_truncation(messages, local_floor, method)
+            else:
+                raise ValueError(f"未知上下文处理策略: {selected_strategy}")
+
+        prepared_estimate = self.estimate_request_tokens(prepared_messages, method, tools, img_urls)
+        prepared_effective = max(0, round(prepared_estimate * factor))
+        compressed = prepared_messages != messages
+        if (
+            prepared_effective > self.history_budget
+            and selected_strategy == "summarize"
+            and self._runtime_state.summary
+            and llm is not None
+        ):
+            turns = self._conversation_turns(messages)
+            recent = turns[-recent_turns:] if recent_turns > 0 else []
+            without_summary = self._system_messages(messages) + self._flatten_turns(recent)
+            fixed_estimate = self.estimate_request_tokens(without_summary, method, tools, img_urls)
+            fixed_effective = max(0, round(fixed_estimate * factor))
+            if fixed_effective <= self.history_budget:
+                target_tokens = max(64, int((self.history_budget - fixed_effective) / factor * 0.8))
+                self._tighten_summary(llm, target_tokens)
+                prepared_messages = self._summary_context(messages, recent_turns)
+                prepared_estimate = self.estimate_request_tokens(prepared_messages, method, tools, img_urls)
+                prepared_effective = max(0, round(prepared_estimate * factor))
+        if prepared_effective > self.history_budget:
+            raise ContextOverflowError(
+                f"保留内容仍超过历史上下文预算: {prepared_effective} > {self.history_budget}"
+            )
+        return PreparedModelContext(
+            messages=prepared_messages,
+            estimated_input_tokens=prepared_estimate,
+            effective_input_tokens=prepared_effective,
+            original_estimated_input_tokens=original_estimate,
+            token_source="api_calibrated" if factor != 1.0 else method,
+            strategy=selected_strategy,
+            compressed=compressed,
+            original_turns=original_turns,
+            prepared_turns=len(self._conversation_turns(prepared_messages)),
+            history_budget=self.history_budget,
+            trigger_tokens=self.trigger_tokens,
+            floor_tokens=self.floor_tokens,
+            model=model,
+        )
+
+    def record_model_usage(self, prepared: PreparedModelContext, usage: Optional[TokenUsage]) -> None:
+        """
+        保存已完成请求的真实 API usage, 供后续请求校准
+
+        参数:
+        - prepared: 本次请求的准备结果
+        - usage: API 返回的 token 使用量
+        """
+        if usage is None:
+            self._runtime_state.api_output_tokens = None
+            self._runtime_state.api_total_tokens = None
+            self._runtime_state.api_cached_tokens = None
+            self._save_runtime_state()
+            return
+        state = self._runtime_state
+        state.usage_model = prepared.model
+        state.api_input_tokens = usage.input_tokens
+        state.estimated_input_tokens = prepared.estimated_input_tokens
+        state.api_output_tokens = usage.output_tokens
+        state.api_total_tokens = usage.total_tokens
+        state.api_cached_tokens = usage.cached_tokens
+        self._save_runtime_state()
+
+    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: TokenEstimateMethod) -> List[Dict[str, Any]]:
         """
         滑动窗口截断: 保留系统消息, 从最早的对话轮次开始整轮删除, 直到 token 数不超过阈值
 
@@ -1008,7 +1604,38 @@ class ContextManager:
         result_turns = ([system_turn] if system_turn else []) + truncated_turns
         return self._flatten_turns(result_turns)
 
-    def _apply_truncation(self, messages: List[Dict[str, Any]], method: str = "tokenizer") -> List[Dict[str, Any]]:
+    def _apply_mid_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: TokenEstimateMethod) -> List[Dict[str, Any]]:
+        """
+        保留头尾并按整轮移除中间消息直到满足阈值
+
+        参数:
+        - messages: 原始消息列表
+        - threshold: 本地估算 token 上限
+        - method: token 估算方法
+
+        返回:
+        - List[Dict[str, Any]]: 截断后的消息副本
+        """
+        turns = self._group_messages_by_turns(messages)
+        system_turn = None
+        if turns and all(msg.get("role") == "system" for msg in turns[0]):
+            system_turn = turns.pop(0)
+        if len(turns) <= 4:
+            logger.debug(f"[上下文管理] 轮次过少, 中间截断退化为滑动窗口, ID: {self.conversation_id}")
+            return self._apply_sliding_truncation(messages, threshold, method)
+
+        def token_of_turn_list(turn_list: List[List[Dict[str, Any]]]) -> int:
+            return self.estimate_token(
+                self._flatten_turns(([system_turn] if system_turn else []) + turn_list),
+                method=method,
+            )
+
+        kept_turns = turns[:]
+        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:
+            del kept_turns[len(kept_turns) // 2]
+        return self._flatten_turns(([system_turn] if system_turn else []) + kept_turns)
+
+    def _apply_truncation(self, messages: List[Dict[str, Any]], method: TokenEstimateMethod = "tokenizer") -> List[Dict[str, Any]]:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
@@ -1037,23 +1664,7 @@ class ContextManager:
             return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
         elif self.exceed_process == "mid_truncate":   # 中间截断: 保留头部和尾部, 删除中间轮次
-
-            if len(turns) <= 4:
-                logger.debug(f"[上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
-                return self._apply_sliding_truncation(messages, self.floor_tokens, method)
-
-            def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
-                return self.estimate_token(self._flatten_turns(
-                    ([system_turn] if system_turn else []) + turn_list
-                ), method=method)
-
-            kept_turns = turns[:]   # 初始保留所有轮次  
-            while token_of_turn_list(kept_turns) > self.floor_tokens and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
-                mid = len(kept_turns) // 2   # 找到中间索引
-                del kept_turns[mid]   # 删除
-
-            result = ([system_turn] if system_turn else []) + kept_turns   # 合并保留的轮次
-            return self._flatten_turns(result)
+            return self._apply_mid_truncation(messages, self.floor_tokens, method)
 
         else:
             logger.error(f"[上下文管理] 未知截断策略 {self.exceed_process}, 返回原列表, ID: {self.conversation_id}")
@@ -1074,6 +1685,7 @@ class AsyncContextManager:
         state_store: Optional[StateStore] = None,
         enable_checkpoint: bool = False,
         auto_checkpoint: bool = True,
+        summary_keep_recent_turns: int = 6,
     ):
         """
         初始化异步上下文管理器
@@ -1093,6 +1705,8 @@ class AsyncContextManager:
         - exceed_process: 超过触发线时的处理方式, 默认 "sliding" (滑动窗口)
             - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在截断底线以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
+            - "summarize": 总结旧轮次并保留最近 summary_keep_recent_turns 轮原文
+        - summary_keep_recent_turns: 总结压缩时必须原样保留的最近轮数, 默认 6
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
         - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
@@ -1117,12 +1731,15 @@ class AsyncContextManager:
             self.state_store = StateStore(db_path=self.db_path)
 
         self._messages: List[Dict[str, Any]] = []   # 内存中的消息缓存
+        self._runtime_state = _ContextRuntimeState()   # 可重建的总结与 usage 校准状态
+        self._runtime_state_dirty = False              # 运行时状态待持久化标记
         self._saved_count = 0   # 已持久化到库的消息条数 (增量保存水位, -1 表示需全量重写)
         self.max_context = max_context   # 最大上下文长度
         self.history_ratio = history_ratio   # 历史上下文比例
         self.context_threshold = context_threshold   # 上下文阈值(占历史预算比例)
         self.truncation_floor = truncation_floor   # 上下文截断底线(占历史预算比例)
         self.exceed_process = exceed_process   # 超过触发线时的处理方式
+        self.summary_keep_recent_turns = max(0, summary_keep_recent_turns)   # 总结策略保留轮数
 
         self.history_budget = int(max_context * history_ratio)
         # 派生值: 滞回截断的触发线/底线/输出预算
@@ -1183,6 +1800,30 @@ class AsyncContextManager:
 
                 await conn.execute('''CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)''')
 
+                await conn.execute('''
+                    CREATE TABLE IF NOT EXISTS context_runtime_state (
+                        conversation_id TEXT PRIMARY KEY,
+                        summary TEXT NOT NULL DEFAULT '',
+                        covered_turn_count INTEGER NOT NULL DEFAULT 0,
+                        summary_model TEXT,
+                        summary_prompt_version INTEGER NOT NULL DEFAULT 1,
+                        usage_model TEXT,
+                        api_input_tokens INTEGER,
+                        estimated_input_tokens INTEGER,
+                        api_output_tokens INTEGER,
+                        api_total_tokens INTEGER,
+                        api_cached_tokens INTEGER,
+                        updated_at REAL NOT NULL
+                    )
+                ''')
+
+                try:
+                    await conn.execute(
+                        "ALTER TABLE context_runtime_state ADD COLUMN api_cached_tokens INTEGER"
+                    )
+                except aiosqlite.OperationalError:
+                    pass
+
                 for col in ('content_json', 'tool_call_id', 'tool_calls', 'reasoning_content'):
                     try:
                         await conn.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
@@ -1221,10 +1862,105 @@ class AsyncContextManager:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
             self._saved_count = len(rows)
+            await self._load_runtime_state()
         except Exception as e:
             logger.error(f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
             self._messages = []
             self._saved_count = 0
+
+    async def _load_runtime_state(self) -> None:
+        """加载当前对话的总结缓存和 usage 校准状态"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            cursor = await conn.execute(
+                "SELECT summary, covered_turn_count, summary_model, summary_prompt_version, "
+                "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+                "api_cached_tokens "
+                "FROM context_runtime_state WHERE conversation_id = ?",
+                (self.conversation_id,),
+            )
+            row = await cursor.fetchone()
+        if row is None:
+            self._runtime_state = _ContextRuntimeState()
+            self._runtime_state_dirty = False
+            return
+        self._runtime_state = _ContextRuntimeState(
+            summary=str(row[0] or ""),
+            covered_turn_count=int(row[1] or 0),
+            summary_model=str(row[2]) if row[2] else None,
+            summary_prompt_version=int(row[3] or _SUMMARY_PROMPT_VERSION),
+            usage_model=str(row[4]) if row[4] else None,
+            api_input_tokens=int(row[5]) if row[5] is not None else None,
+            estimated_input_tokens=int(row[6]) if row[6] is not None else None,
+            api_output_tokens=int(row[7]) if row[7] is not None else None,
+            api_total_tokens=int(row[8]) if row[8] is not None else None,
+            api_cached_tokens=int(row[9]) if row[9] is not None else None,
+        )
+        self._runtime_state_dirty = False
+        conversation_turns = self._conversation_turns(self._messages)
+        if (
+            self._runtime_state.summary_prompt_version != _SUMMARY_PROMPT_VERSION
+            or self._runtime_state.covered_turn_count > len(conversation_turns)
+        ):
+            await self._invalidate_summary(persist=True)
+
+    async def _write_runtime_state(self, conn: aiosqlite.Connection) -> None:
+        """
+        将运行时状态写入当前异步事务
+
+        参数:
+        - conn: aiosqlite 连接
+        """
+        state = self._runtime_state
+        await conn.execute(
+            "INSERT INTO context_runtime_state "
+            "(conversation_id, summary, covered_turn_count, summary_model, summary_prompt_version, "
+            "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+            "api_cached_tokens, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(conversation_id) DO UPDATE SET "
+            "summary = excluded.summary, covered_turn_count = excluded.covered_turn_count, "
+            "summary_model = excluded.summary_model, summary_prompt_version = excluded.summary_prompt_version, "
+            "usage_model = excluded.usage_model, api_input_tokens = excluded.api_input_tokens, "
+            "estimated_input_tokens = excluded.estimated_input_tokens, api_output_tokens = excluded.api_output_tokens, "
+            "api_total_tokens = excluded.api_total_tokens, api_cached_tokens = excluded.api_cached_tokens, "
+            "updated_at = excluded.updated_at",
+            (
+                self.conversation_id,
+                state.summary,
+                state.covered_turn_count,
+                state.summary_model,
+                state.summary_prompt_version,
+                state.usage_model,
+                state.api_input_tokens,
+                state.estimated_input_tokens,
+                state.api_output_tokens,
+                state.api_total_tokens,
+                state.api_cached_tokens,
+                time.time(),
+            ),
+        )
+
+    async def _save_runtime_state(self) -> None:
+        """持久化当前对话的总结缓存和 usage 校准状态"""
+        async with aiosqlite.connect(self.db_path) as conn:
+            await self._write_runtime_state(conn)
+            await conn.commit()
+        self._runtime_state_dirty = False
+
+    async def _invalidate_summary(self, persist: bool = False) -> None:
+        """
+        清除因历史编辑而失效的总结缓存
+
+        参数:
+        - persist: 是否立即同步到数据库
+        """
+        self._runtime_state.summary = ""
+        self._runtime_state.covered_turn_count = 0
+        self._runtime_state.summary_model = None
+        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._runtime_state_dirty = True
+        if persist:
+            await self._save_runtime_state()
 
     async def save_context(self):
         """
@@ -1262,9 +1998,12 @@ class AsyncContextManager:
                         "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", 
                         data_to_insert
                     )
+                if self._runtime_state_dirty:
+                    await self._write_runtime_state(conn)
                 await conn.commit()
                 # 提交成功后才推进已保存水位
                 self._saved_count = len(self._messages)
+                self._runtime_state_dirty = False
 
         except Exception as e:
             logger.error(f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}")
@@ -1273,6 +2012,11 @@ class AsyncContextManager:
     def _mark_dirty(self) -> None:
         """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
         self._saved_count = -1
+        self._runtime_state.summary = ""
+        self._runtime_state.covered_turn_count = 0
+        self._runtime_state.summary_model = None
+        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._runtime_state_dirty = True
 
     # ================= 检查点支持 =================
 
@@ -1363,6 +2107,7 @@ class AsyncContextManager:
         ):
             await asyncio.to_thread(store.rollback, checkpoint_id)
         await self.load_context()
+        await self._invalidate_summary(persist=True)
 
     async def retry(self, checkpoint_id: str) -> None:
         """
@@ -1377,6 +2122,7 @@ class AsyncContextManager:
         ):
             await asyncio.to_thread(store.retry, checkpoint_id)
         await self.load_context()
+        await self._invalidate_summary(persist=True)
 
     async def fork(
         self,
@@ -1415,6 +2161,7 @@ class AsyncContextManager:
             context_threshold=self.context_threshold,
             truncation_floor=self.truncation_floor,
             exceed_process=self.exceed_process,
+            summary_keep_recent_turns=self.summary_keep_recent_turns,
             state_store=store,
             auto_checkpoint=self.auto_checkpoint,
         )
@@ -1430,7 +2177,7 @@ class AsyncContextManager:
         """
         return self._messages
     
-    def get_model_context(self, method: str = "tokenizer") -> List[Dict[str, Any]]:
+    def get_model_context(self, method: TokenEstimateMethod = "tokenizer") -> List[Dict[str, Any]]:
         """
         获取发送给模型的上下文 (保证在最大上下文长度内)
 
@@ -1750,84 +2497,135 @@ class AsyncContextManager:
         """
         return [msg for turn in turns for msg in turn]
 
-    _SUMMARY_BLOCK_RE = re.compile(r"<对话历史摘要>.*?</对话历史摘要>", re.DOTALL)
     _SUMMARY_PROMPT = (
         "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
         "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
     )
 
-    async def summarize_and_compress(self, llm: AsyncLLM, keep_recent_turns: int) -> str:
-        """
-        将保留最近 keep_recent_turns 轮之前的所有对话总结, 删除原文, 总结置于 system prompt
+    def _conversation_turns(self, messages: List[Dict[str, Any]]) -> List[List[Dict[str, Any]]]:
+        """返回不含开头 system 消息的完整对话轮次"""
+        turns = self._group_messages_by_turns(messages)
+        if turns and all(msg.get("role") == "system" for msg in turns[0]):
+            turns.pop(0)
+        return turns
 
-        多模态消息中的图片在总结前被投影为 [图片] 占位符(与 estimate_token 口径一致),
-        用于总结的 LLM 实例无需多模态能力
+    def _system_messages(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """提取开头连续的 system 消息副本"""
+        result: List[Dict[str, Any]] = []
+        for message in messages:
+            if message.get("role") != "system":
+                break
+            result.append(copy.deepcopy(message))
+        return result
+
+    def _summary_context(self, messages: List[Dict[str, Any]], keep_recent_turns: int) -> List[Dict[str, Any]]:
+        """使用缓存摘要构建非破坏性的模型上下文"""
+        turns = self._conversation_turns(messages)
+        recent = turns[-keep_recent_turns:] if keep_recent_turns > 0 else []
+        result = self._system_messages(messages)
+        if self._runtime_state.summary:
+            result.append({
+                "role": "system",
+                "content": f"<对话历史摘要>\n{self._runtime_state.summary}\n</对话历史摘要>",
+            })
+        return result + self._flatten_turns(recent)
+
+    async def _call_summary_llm(self, llm: AsyncLLM, text_chunks: List[str], prior_summary: str) -> str:
+        """逐块调用异步 LLM 并滚动归并摘要"""
+        summary = prior_summary
+        for chunk in text_chunks:
+            previous = f"\n\n已有摘要:\n{summary}" if summary else ""
+            prompt = f"{self._SUMMARY_PROMPT}{previous}\n\n新增对话:\n{chunk}"
+            result = await llm.chat(
+                [{"role": "user", "content": prompt}],
+                thinking="off",
+                max_tokens=_summary_output_budget(self.floor_tokens // 2),
+            )
+            if not isinstance(result, str) or not result.strip():
+                logger.warning("[异步上下文管理] 摘要正文为空, 使用扩展输出预算重试")
+                result = await llm.chat(
+                    [{"role": "user", "content": prompt}],
+                    thinking="off",
+                    max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+                )
+            if not isinstance(result, str) or not result.strip():
+                raise RuntimeError("上下文总结模型未返回有效文本")
+            summary = result.strip()
+        return summary
+
+    async def _tighten_summary(self, llm: AsyncLLM, target_tokens: int) -> None:
+        """
+        将缓存摘要进一步压缩到指定目标附近
 
         参数:
-        - llm: 用于总结的 LLM 实例(调 chat 得字符串)
-        - keep_recent_turns: 保留最近的对话轮数(这些轮次不总结不删除)
+        - llm: 用于压缩的异步 LLM
+        - target_tokens: 摘要目标 token 数
+        """
+        prompt = (
+            f"请把以下对话摘要进一步压缩到约 {target_tokens} tokens 以内, "
+            "保留关键事实、决定和待办事项:\n\n"
+            f"{self._runtime_state.summary}"
+        )
+        result = await llm.chat(
+            [{"role": "user", "content": prompt}],
+            thinking="off",
+            max_tokens=_summary_output_budget(target_tokens),
+        )
+        if not isinstance(result, str) or not result.strip():
+            logger.warning("[异步上下文管理] 二次压缩正文为空, 使用扩展输出预算重试")
+            result = await llm.chat(
+                [{"role": "user", "content": prompt}],
+                thinking="off",
+                max_tokens=_SUMMARY_RETRY_OUTPUT_TOKENS,
+            )
+        if not isinstance(result, str) or not result.strip():
+            raise RuntimeError("上下文摘要二次压缩未返回有效文本")
+        self._runtime_state.summary = result.strip()
+        await self._save_runtime_state()
+
+    async def summarize_and_compress(self, llm: AsyncLLM, keep_recent_turns: int) -> str:
+        """
+        总结最近 keep_recent_turns 轮之前的对话并缓存, 不修改完整消息历史
+
+        参数:
+        - llm: 用于总结的异步 LLM 实例
+        - keep_recent_turns: 原样保留的最近对话轮数
 
         返回:
         - str: 总结文本; 对话轮次不足 keep_recent_turns 时返回空字符串(无可压缩)
         """
-        await self._protect_before_edit()
-        turns = self._group_messages_by_turns(self._messages)
-        if not turns:
-            return ""
-
-        system_turn: List[Dict[str, Any]] = []
-        # 分离 system 轮次与对话轮次
-        if all(msg.get("role") == "system" for msg in turns[0]):
-            system_turn = turns.pop(0)
-
+        if keep_recent_turns < 0:
+            raise ValueError("keep_recent_turns 不能小于 0")
+        turns = self._conversation_turns(self._messages)
         if len(turns) <= keep_recent_turns:
             return ""   # 对话轮次不足, 无可压缩
 
-        to_compress = turns[:-keep_recent_turns]
-        to_keep = turns[-keep_recent_turns:]
+        target_covered = len(turns) - keep_recent_turns
+        state = self._runtime_state
+        if state.summary_prompt_version != _SUMMARY_PROMPT_VERSION or state.covered_turn_count > target_covered:
+            await self._invalidate_summary()
+            state = self._runtime_state
+        new_turns = turns[state.covered_turn_count:target_covered]
+        if not new_turns:
+            return state.summary
 
-        lines: list[str] = []
-        # 多模态预处理: 图片投影为 [图片], 拼接为纯文本对话
-        for turn in to_compress:
-            for msg in turn:
-                role = msg.get("role", "unknown")
-                text = content_text_projection(msg.get("content"))
-                if text:
-                    lines.append(f"{role}: {text}")
-        dialogue_text = "\n".join(lines)
-
-        summary = await llm.chat([{"role": "user", "content": f"{self._SUMMARY_PROMPT}\n\n{dialogue_text}"}])
-        if not isinstance(summary, str):
-            summary = str(summary)
-
-        new_block = f"<对话历史摘要>\n{summary}\n</对话历史摘要>"
-        # 注入 system prompt: 已有摘要区块则合并为一段, 否则追加
-        if system_turn:
-            old_content = str(system_turn[0].get("content", ""))
-            existing = self._SUMMARY_BLOCK_RE.search(old_content)
-            if existing:
-                merged = await llm.chat([{"role": "user", "content": (
-                    f"请将以下两段对话历史摘要合并为一段连贯的摘要, 保留所有关键信息:\n\n"
-                    f"{existing.group(0)}\n\n{new_block}"
-                )}])
-                if not isinstance(merged, str):
-                    merged = str(merged)
-                new_content = self._SUMMARY_BLOCK_RE.sub(
-                    f"<对话历史摘要>\n{merged}\n</对话历史摘要>", old_content
-                )
-            else:
-                new_content = f"{old_content}\n\n{new_block}" if old_content else new_block
-            system_turn[0]["content"] = new_content
-        else:
-            system_turn = [{"role": "system", "content": new_block}]
-
-        self._messages = self._flatten_turns([system_turn] + to_keep)
-        self._mark_dirty()
-        await self._sync()
-        logger.info(f"[异步上下文管理] 总结压缩完成: 压缩 {len(to_compress)} 轮, 保留 {len(to_keep)} 轮, ID: {self.conversation_id}")
+        chunks = _split_summary_chunks(
+            _summary_lines(new_turns),
+            max(1024, min(self.floor_tokens, self.history_budget // 2)),
+        )
+        summary = await self._call_summary_llm(llm, chunks, state.summary)
+        state.summary = summary
+        state.covered_turn_count = target_covered
+        state.summary_model = _llm_model_name(llm)
+        state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        await self._save_runtime_state()
+        logger.info(
+            f"[异步上下文管理] 总结缓存更新完成: 覆盖 {target_covered} 轮, "
+            f"保留 {keep_recent_turns} 轮完整历史, ID: {self.conversation_id}"
+        )
         return summary
 
-    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: str = "tokenizer") -> int:
+    def estimate_token(self, messages: List[Dict[str, Any]] | None = None, method: TokenEstimateMethod = "tokenizer") -> int:
         """
         估计当前上下文中的 token 数量
 
@@ -1838,23 +2636,175 @@ class AsyncContextManager:
         返回:
         - int: token 数量
         """
-        token_count = 0
         if messages is None:
             messages = self._messages
-        for msg in messages:
-            content = msg.get("content", "")
-            token_count += 4   # 每个消息有 4 个固定 token
-            token_count += estimate_content_image_count(content) * DEFAULT_IMAGE_TOKEN_COST
-            text_content = content_text_projection(content)
-            if method == "tokenizer":
-                token_count += tokenizer_estimate(text_content)
-            elif method == "experience":
-                token_count += experience_estimate(text_content)
-            else:
-                token_count += experience_estimate(text_content)   # 默认使用经验法则
-        return token_count
+        return _estimate_request_tokens(messages, method)
 
-    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: str) -> List[Dict[str, Any]]:
+    def get_context_usage(
+        self,
+        method: TokenEstimateMethod = "tokenizer",
+    ) -> ContextUsageSnapshot:
+        """
+        返回当前历史预算和最近一次模型 usage 快照
+
+        参数:
+        - method: 当前完整历史的 token 估算方法
+
+        返回:
+        - ContextUsageSnapshot: 上下文预算与最近一次模型 usage
+        """
+        return ContextUsageSnapshot(
+            history_tokens=self.estimate_token(method=method),
+            context_window_tokens=self.max_context,
+            reserved_output_tokens=self.output_budget,
+            history_upper_tokens=self.history_budget,
+            history_lower_tokens=self.floor_tokens,
+            last_output_tokens=self._runtime_state.api_output_tokens,
+            cache_hit_tokens=self._runtime_state.api_cached_tokens,
+            history_token_source=method,
+        )
+
+    def estimate_request_tokens(
+        self,
+        messages: List[Dict[str, Any]],
+        method: TokenEstimateMethod = "tokenizer",
+        tools: Optional[List[Dict[str, Any]]] = None,
+        img_urls: Optional[List[str]] = None,
+    ) -> int:
+        """估算包含工具定义和图片的完整模型请求"""
+        return _estimate_request_tokens(messages, method, tools, img_urls)
+
+    def _calibration_factor(self, model: Optional[str]) -> float:
+        """计算本地估算到同模型真实 API input usage 的校准系数"""
+        state = self._runtime_state
+        if (
+            state.api_input_tokens is None
+            or state.estimated_input_tokens is None
+            or state.estimated_input_tokens <= 0
+            or state.usage_model != model
+        ):
+            return 1.0
+        return max(0.1, min(10.0, state.api_input_tokens / state.estimated_input_tokens))
+
+    def _prepare_mid_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: TokenEstimateMethod) -> List[Dict[str, Any]]:
+        """为异步准备流程执行非破坏性的中间截断"""
+        turns = self._group_messages_by_turns(messages)
+        system_turn = None
+        if turns and all(msg.get("role") == "system" for msg in turns[0]):
+            system_turn = turns.pop(0)
+        if len(turns) <= 4:
+            return self._apply_sliding_truncation(messages, threshold, method)
+
+        def token_of_turn_list(turn_list: List[List[Dict[str, Any]]]) -> int:
+            return self.estimate_token(
+                self._flatten_turns(([system_turn] if system_turn else []) + turn_list),
+                method=method,
+            )
+
+        kept_turns = turns[:]
+        while token_of_turn_list(kept_turns) > threshold and len(kept_turns) > 2:
+            del kept_turns[len(kept_turns) // 2]
+        return self._flatten_turns(([system_turn] if system_turn else []) + kept_turns)
+
+    async def prepare_model_context(
+        self,
+        *,
+        llm: Optional[AsyncLLM] = None,
+        pending_messages: Optional[List[Dict[str, Any]]] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        img_urls: Optional[List[str]] = None,
+        method: TokenEstimateMethod = "tokenizer",
+        strategy: Optional[ContextStrategy] = None,
+        keep_recent_turns: Optional[int] = None,
+    ) -> PreparedModelContext:
+        """为一次真实模型请求准备非破坏性上下文"""
+        selected_strategy = strategy or cast(ContextStrategy, self.exceed_process)
+        if selected_strategy == "summary":
+            selected_strategy = "summarize"
+        recent_turns = self.summary_keep_recent_turns if keep_recent_turns is None else keep_recent_turns
+        if recent_turns < 0:
+            raise ValueError("keep_recent_turns 不能小于 0")
+        model = _llm_model_name(llm)
+        messages = copy.deepcopy(self._messages)
+        if pending_messages:
+            messages.extend(copy.deepcopy(pending_messages))
+        original_turns = len(self._conversation_turns(messages))
+        original_estimate = self.estimate_request_tokens(messages, method, tools, img_urls)
+        factor = self._calibration_factor(model)
+        original_effective = max(0, round(original_estimate * factor))
+        prepared_messages = messages
+
+        if original_effective > self.trigger_tokens:
+            local_floor = max(1, int(self.floor_tokens / factor))
+            if selected_strategy == "summarize":
+                if llm is None:
+                    raise ValueError("总结压缩策略需要传入 llm")
+                await self.summarize_and_compress(llm, recent_turns)
+                prepared_messages = self._summary_context(messages, recent_turns)
+            elif selected_strategy == "sliding":
+                prepared_messages = self._apply_sliding_truncation(messages, local_floor, method)
+            elif selected_strategy == "mid_truncate":
+                prepared_messages = self._prepare_mid_truncation(messages, local_floor, method)
+            else:
+                raise ValueError(f"未知上下文处理策略: {selected_strategy}")
+
+        prepared_estimate = self.estimate_request_tokens(prepared_messages, method, tools, img_urls)
+        prepared_effective = max(0, round(prepared_estimate * factor))
+        if (
+            prepared_effective > self.history_budget
+            and selected_strategy == "summarize"
+            and self._runtime_state.summary
+            and llm is not None
+        ):
+            turns = self._conversation_turns(messages)
+            recent = turns[-recent_turns:] if recent_turns > 0 else []
+            without_summary = self._system_messages(messages) + self._flatten_turns(recent)
+            fixed_estimate = self.estimate_request_tokens(without_summary, method, tools, img_urls)
+            fixed_effective = max(0, round(fixed_estimate * factor))
+            if fixed_effective <= self.history_budget:
+                target_tokens = max(64, int((self.history_budget - fixed_effective) / factor * 0.8))
+                await self._tighten_summary(llm, target_tokens)
+                prepared_messages = self._summary_context(messages, recent_turns)
+                prepared_estimate = self.estimate_request_tokens(prepared_messages, method, tools, img_urls)
+                prepared_effective = max(0, round(prepared_estimate * factor))
+        if prepared_effective > self.history_budget:
+            raise ContextOverflowError(
+                f"保留内容仍超过历史上下文预算: {prepared_effective} > {self.history_budget}"
+            )
+        return PreparedModelContext(
+            messages=prepared_messages,
+            estimated_input_tokens=prepared_estimate,
+            effective_input_tokens=prepared_effective,
+            original_estimated_input_tokens=original_estimate,
+            token_source="api_calibrated" if factor != 1.0 else method,
+            strategy=selected_strategy,
+            compressed=prepared_messages != messages,
+            original_turns=original_turns,
+            prepared_turns=len(self._conversation_turns(prepared_messages)),
+            history_budget=self.history_budget,
+            trigger_tokens=self.trigger_tokens,
+            floor_tokens=self.floor_tokens,
+            model=model,
+        )
+
+    async def record_model_usage(self, prepared: PreparedModelContext, usage: Optional[TokenUsage]) -> None:
+        """保存已完成请求的真实 API usage, 供后续请求校准"""
+        if usage is None:
+            self._runtime_state.api_output_tokens = None
+            self._runtime_state.api_total_tokens = None
+            self._runtime_state.api_cached_tokens = None
+            await self._save_runtime_state()
+            return
+        state = self._runtime_state
+        state.usage_model = prepared.model
+        state.api_input_tokens = usage.input_tokens
+        state.estimated_input_tokens = prepared.estimated_input_tokens
+        state.api_output_tokens = usage.output_tokens
+        state.api_total_tokens = usage.total_tokens
+        state.api_cached_tokens = usage.cached_tokens
+        await self._save_runtime_state()
+
+    def _apply_sliding_truncation(self, messages: List[Dict[str, Any]], threshold: int, method: TokenEstimateMethod) -> List[Dict[str, Any]]:
         """
         滑动窗口截断: 保留系统消息, 从最早的对话轮次开始整轮删除, 直到 token 数不超过阈值
 
@@ -1886,7 +2836,7 @@ class AsyncContextManager:
         result_turns = ([system_turn] if system_turn else []) + truncated_turns
         return self._flatten_turns(result_turns)
 
-    def _apply_truncation(self, messages: List[Dict[str, Any]], method: str = "tokenizer") -> List[Dict[str, Any]]:
+    def _apply_truncation(self, messages: List[Dict[str, Any]], method: TokenEstimateMethod = "tokenizer") -> List[Dict[str, Any]]:
         """
         对消息列表应用截断策略, 返回截断后的新列表 (不修改原列表)
 
@@ -1915,23 +2865,20 @@ class AsyncContextManager:
             return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
         elif self.exceed_process == "mid_truncate":   # 中间截断: 保留头部和尾部, 删除中间轮次
-
             if len(turns) <= 4:
-                logger.debug(f"[异步上下文管理] 轮次过少，中间截断退化为滑动窗口, ID: {self.conversation_id}")
+                logger.debug(f"[异步上下文管理] 轮次过少, 中间截断退化为滑动窗口, ID: {self.conversation_id}")
                 return self._apply_sliding_truncation(messages, self.floor_tokens, method)
 
-            def token_of_turn_list(turn_list: list[list[dict[str, Any]]]):   # 计算需要删除多少 token
-                return self.estimate_token(self._flatten_turns(
-                    ([system_turn] if system_turn else []) + turn_list
-                ), method=method)
+            def token_of_turn_list(turn_list: List[List[Dict[str, Any]]]) -> int:
+                return self.estimate_token(
+                    self._flatten_turns(([system_turn] if system_turn else []) + turn_list),
+                    method=method,
+                )
 
-            kept_turns = turns[:]   # 初始保留所有轮次  
-            while token_of_turn_list(kept_turns) > self.floor_tokens and len(kept_turns) > 2:   # 从中间开始逐轮删除, 直到满足条件
-                mid = len(kept_turns) // 2   # 找到中间索引
-                del kept_turns[mid]   # 删除
-
-            result = ([system_turn] if system_turn else []) + kept_turns   # 合并保留的轮次
-            return self._flatten_turns(result)
+            kept_turns = turns[:]
+            while token_of_turn_list(kept_turns) > self.floor_tokens and len(kept_turns) > 2:
+                del kept_turns[len(kept_turns) // 2]
+            return self._flatten_turns(([system_turn] if system_turn else []) + kept_turns)
 
         else:
             logger.error(f"[异步上下文管理] 未知截断策略 {self.exceed_process}, 返回原列表, ID: {self.conversation_id}")

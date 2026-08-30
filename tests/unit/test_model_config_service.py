@@ -29,6 +29,12 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
             "thinking_fields": ["thinking.type", "reasoning_effort"],
             "thinking_levels": ["low", "high", "xhigh"],
             "omit_none_thinking_fields": True,
+            "context_window": 64000,
+            "history_ratio": 0.75,
+            "context_strategy": "summarize",
+            "context_threshold": 0.85,
+            "truncation_floor": 0.35,
+            "summary_keep_recent_turns": 4,
         },
     )
     listed = service.list_configs("llm")
@@ -39,6 +45,10 @@ def test_model_config_service_crud_and_masking(tmp_path: Path):
     assert listed["demo"]["thinking_fields"] == ["thinking.type", "reasoning_effort"]
     assert listed["demo"]["thinking_levels"] == ["low", "high", "xhigh"]
     assert listed["demo"]["omit_none_thinking_fields"] is True
+    assert listed["demo"]["context_strategy"] == "summarize"
+    assert listed["demo"]["context_threshold"] == 0.85
+    assert listed["demo"]["truncation_floor"] == 0.35
+    assert listed["demo"]["summary_keep_recent_turns"] == 4
 
     service.update(
         "llm",
@@ -73,6 +83,20 @@ def test_model_config_service_rejects_invalid_input(tmp_path: Path):
         service.create("llm", "demo", {"thinking_levels": ["extreme"]})
     with pytest.raises(ValueError, match="脱敏"):
         service.create("llm", "demo", {"api_key": "*****abcd"})
+    with pytest.raises(ValueError, match="context_strategy"):
+        service.create("llm", "demo", {"context_strategy": "unknown"})
+    with pytest.raises(ValueError, match="truncation_floor"):
+        service.create(
+            "llm",
+            "demo",
+            {"context_threshold": 0.4, "truncation_floor": 0.8},
+        )
+    with pytest.raises(ValueError, match="summary_keep_recent_turns"):
+        service.create("llm", "demo", {"summary_keep_recent_turns": -1})
+    with pytest.raises(ValueError, match="context_threshold"):
+        service.create("llm", "demo", {"context_threshold": "0.8"})
+    with pytest.raises(ValueError, match="context_window"):
+        service.create("llm", "demo", {"context_window": True})
 
 
 def test_model_config_service_rejects_rename_collision(tmp_path: Path):

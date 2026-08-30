@@ -26,6 +26,10 @@ export interface LLMConfig {
   max_tokens?: number;
   context_window?: number;
   history_ratio?: number;
+  context_strategy?: 'sliding' | 'mid_truncate' | 'summarize';
+  context_threshold?: number;
+  truncation_floor?: number;
+  summary_keep_recent_turns?: number;
   lock_api_key?: boolean;
   thinking_field_name?: string | null;
   thinking_fields?: string[];

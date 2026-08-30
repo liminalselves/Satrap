@@ -54,6 +54,15 @@ def _chunks() -> list[dict[str, Any]]:
             ]
         },
         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 21,
+                "completion_tokens": 8,
+                "total_tokens": 29,
+                "prompt_tokens_details": {"cached_tokens": 7},
+            },
+        },
     ]
 
 
@@ -123,6 +132,10 @@ def test_sync_stream_call_aggregates_tool_arguments():
     assert response.type == "tools_call"
     assert response.tool_calls is not None
     assert response.tool_calls[0]["arguments"] == {"expression": "2 + 3"}
+    assert response.usage is not None
+    assert response.usage.input_tokens == 21
+    assert response.usage.total_tokens == 29
+    assert response.usage.cached_tokens == 7
 
 
 @pytest.mark.asyncio
@@ -139,6 +152,8 @@ async def test_async_stream_call_aggregates_tool_arguments():
     assert isinstance(events[-1].response, LLMCallResponse)
     assert events[-1].response.tool_calls is not None
     assert events[-1].response.tool_calls[0]["arguments"] == {"expression": "2 + 3"}
+    assert events[-1].response.usage is not None
+    assert events[-1].response.usage.cached_tokens == 7
 
 
 class _CalculateTool(Tool):
