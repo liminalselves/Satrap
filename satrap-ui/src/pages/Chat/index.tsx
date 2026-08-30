@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -41,6 +41,12 @@ import {
 } from '@/api/chat';
 import { ChatHistoryManager } from './ChatHistoryManager';
 import {
+  applyStreamingDeltas,
+  enqueueStreamingDelta,
+  type LocalMessageSegment,
+  type StreamingDelta,
+} from './streaming';
+import {
   Plus,
   Send,
   Square,
@@ -77,6 +83,9 @@ import {
   HardDrive,
   Gauge,
 } from 'lucide-react';
+
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
+const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
 
 // 聊天设置
 interface ChatSettings {
@@ -138,12 +147,6 @@ const COLOR_TEXT_CLASS: Record<GlassColor, string> = {
 
 // 消息角色
 type MessageRole = 'user' | 'assistant';
-
-// 消息段类型 (按时间顺序排列, 前端本地格式)
-type LocalMessageSegment =
-  | { type: 'thinking'; content: string }
-  | { type: 'tool'; tool: ToolCall }
-  | { type: 'content'; content: string };
 
 interface LocalResponseVariant {
   variantIndex: number;
@@ -310,6 +313,15 @@ export function Chat() {
   const unsubscribeRef = useRef<(() => void) | null>(null);
   // 当前流式消息 id (assistant)
   const streamingMsgIdRef = useRef<string | null>(null);
+  // 当前会话和生成设置快照, 供稳定的消息操作回调读取
+  const activeIdRef = useRef('');
+  const activeRef = useRef<Conversation | undefined>(undefined);
+  const generatingRef = useRef(false);
+  const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
+  // 单帧内积累的流式增量和对应消息目标
+  const streamingDeltasRef = useRef<StreamingDelta[]>([]);
+  const streamingDeltaTargetRef = useRef<{ conversationId: string; messageId: string } | null>(null);
+  const streamingRafRef = useRef<number | null>(null);
   // 输入卡片独立反光
   const inputCardRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 120,
@@ -321,6 +333,10 @@ export function Chat() {
   );
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   conversationsRef.current = conversations;
+  activeIdRef.current = activeId;
+  activeRef.current = active;
+  generatingRef.current = generating;
+  settingsThinkRef.current = settings.think;
 
   const mergeHistoryItems = useCallback((items: ChatConversationItem[]) => {
     setConversations((current) => {
@@ -362,29 +378,87 @@ export function Chat() {
 
   // 更新当前流式消息
   const updateStreamingMessage = useCallback(
-    (updater: (m: ChatMessage) => ChatMessage) => {
+    (updater: (m: ChatMessage) => ChatMessage, conversationId = activeIdRef.current) => {
       const msgId = streamingMsgIdRef.current;
-      if (!msgId || !activeId) return;
-      updateConversation(activeId, (c) => ({
+      if (!msgId || !conversationId) return;
+      updateConversation(conversationId, (c) => ({
         ...c,
         messages: c.messages.map((m) => (m.id === msgId ? updater(m) : m)),
         updatedAt: Math.round(Date.now() / 1000),
       }));
     },
-    [activeId, updateConversation]
+    [updateConversation]
   );
+
+  const commitStreamingDeltas = useCallback(() => {
+    const deltas = streamingDeltasRef.current;
+    const target = streamingDeltaTargetRef.current;
+    streamingDeltasRef.current = [];
+    streamingDeltaTargetRef.current = null;
+    if (!target || deltas.length === 0) return;
+    updateConversation(target.conversationId, (conversation) => ({
+      ...conversation,
+      messages: conversation.messages.map((message) => (
+        message.id === target.messageId ? applyStreamingDeltas(message, deltas) : message
+      )),
+      updatedAt: Math.round(Date.now() / 1000),
+    }));
+  }, [updateConversation]);
+
+  const flushStreamingDeltas = useCallback(() => {
+    if (streamingRafRef.current !== null) {
+      cancelAnimationFrame(streamingRafRef.current);
+      streamingRafRef.current = null;
+    }
+    commitStreamingDeltas();
+  }, [commitStreamingDeltas]);
+
+  const queueStreamingDelta = useCallback((delta: StreamingDelta, conversationId = activeIdRef.current) => {
+    const target = {
+      conversationId,
+      messageId: streamingMsgIdRef.current ?? '',
+    };
+    if (!target.conversationId || !target.messageId) return;
+    const currentTarget = streamingDeltaTargetRef.current;
+    if (
+      currentTarget
+      && (
+        currentTarget.conversationId !== target.conversationId
+        || currentTarget.messageId !== target.messageId
+      )
+    ) {
+      flushStreamingDeltas();
+    }
+    streamingDeltaTargetRef.current = target;
+    enqueueStreamingDelta(streamingDeltasRef.current, delta);
+    if (streamingRafRef.current !== null) return;
+    streamingRafRef.current = requestAnimationFrame(() => {
+      streamingRafRef.current = null;
+      commitStreamingDeltas();
+    });
+  }, [commitStreamingDeltas, flushStreamingDeltas]);
+
+  useEffect(() => () => {
+    if (streamingRafRef.current !== null) {
+      cancelAnimationFrame(streamingRafRef.current);
+      streamingRafRef.current = null;
+    }
+    streamingDeltasRef.current = [];
+    streamingDeltaTargetRef.current = null;
+  }, []);
 
   // 处理 WS 事件
   const handleEvent = useCallback(
-    (event: ChatEvent) => {
+    (conversationId: string, event: ChatEvent) => {
       switch (event.type) {
         case 'turn_start':
+          flushStreamingDeltas();
           updateStreamingMessage((message) => ({
             ...message,
             turnIndex: event.turn_index,
             activeVariant: event.variant_index,
-          }));
-          updateConversation(activeId, (conversation) => {
+          }), conversationId);
+          updateConversation(conversationId, (conversation) => {
             const messages = [...conversation.messages];
             const assistantIndex = messages.findIndex(
               (message) => message.id === streamingMsgIdRef.current,
@@ -399,32 +473,13 @@ export function Chat() {
           });
           break;
         case 'thinking_delta':
-          updateStreamingMessage((m) => {
-            const segments = [...(m.segments ?? [])];
-            const last = segments[segments.length - 1];
-            // 追加到当前 thinking 段或新建段
-            if (last?.type === 'thinking') {
-              segments[segments.length - 1] = { ...last, content: last.content + event.delta };
-            } else {
-              segments.push({ type: 'thinking', content: event.delta });
-            }
-            return { ...m, thinking: (m.thinking ?? '') + event.delta, segments };
-          });
+          queueStreamingDelta({ type: 'thinking', delta: event.delta }, conversationId);
           break;
         case 'content_delta':
-          updateStreamingMessage((m) => {
-            const segments = [...(m.segments ?? [])];
-            const last = segments[segments.length - 1];
-            // 追加到当前 content 段或新建段
-            if (last?.type === 'content') {
-              segments[segments.length - 1] = { ...last, content: last.content + event.delta };
-            } else {
-              segments.push({ type: 'content', content: event.delta });
-            }
-            return { ...m, content: m.content + event.delta, segments };
-          });
+          queueStreamingDelta({ type: 'content', delta: event.delta }, conversationId);
           break;
         case 'tool_start':
+          flushStreamingDeltas();
           updateStreamingMessage((m) => {
             const newTool: ToolCall = {
               seq: (m.toolCalls ?? []).length,
@@ -440,9 +495,10 @@ export function Chat() {
               toolCalls: [...(m.toolCalls ?? []), newTool],
               segments,
             };
-          });
+          }, conversationId);
           break;
         case 'tool_end':
+          flushStreamingDeltas();
           updateStreamingMessage((m) => {
             const updatedTools = (m.toolCalls ?? []).map((t) =>
               t.call_id === event.call_id ? { ...t, success: event.success } : t
@@ -454,9 +510,10 @@ export function Chat() {
                 : seg
             );
             return { ...m, toolCalls: updatedTools, segments };
-          });
+          }, conversationId);
           break;
         case 'ask_user':
+          generatingRef.current = true;
           setGenerating(true);
           setPendingUserInputs((prev) => {
             const current = prev[event.conversation_id] ?? [];
@@ -478,7 +535,8 @@ export function Chat() {
             ),
           }));
           break;
-        case 'turn_done':
+        case 'turn_done': {
+          flushStreamingDeltas();
           updateStreamingMessage((message) => {
             const content = event.answer || message.content;
             const completedVariant: LocalResponseVariant = {
@@ -505,12 +563,15 @@ export function Chat() {
               variants,
               contextStats: event.context_stats,
             };
-          });
-          setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
+          }, conversationId);
+          setPendingUserInputs((prev) => ({ ...prev, [conversationId]: [] }));
           streamingMsgIdRef.current = null;
+          generatingRef.current = false;
           setGenerating(false);
           break;
-        case 'error':
+        }
+        case 'error': {
+          flushStreamingDeltas();
           updateStreamingMessage((m) => ({
             ...m,
             content: m.content + `\n\n[错误] ${event.error ?? event.message ?? '未知错误'}`,
@@ -519,16 +580,18 @@ export function Chat() {
             activeVariant: event.variant_index ?? m.activeVariant,
             variantCount: event.variant_count ?? m.variantCount,
             contextStats: event.context_stats ?? m.contextStats,
-          }));
-          setPendingUserInputs((prev) => ({ ...prev, [activeId]: [] }));
+          }), conversationId);
+          setPendingUserInputs((prev) => ({ ...prev, [conversationId]: [] }));
           streamingMsgIdRef.current = null;
+          generatingRef.current = false;
           setGenerating(false);
           break;
+        }
         case 'variant_selected':
           break;
       }
     },
-    [activeId, updateConversation, updateStreamingMessage]
+    [flushStreamingDeltas, queueStreamingDelta, updateConversation, updateStreamingMessage]
   );
 
   // 加载会话历史消息
@@ -584,7 +647,7 @@ export function Chat() {
   useEffect(() => {
     if (!activeId || activeId === '__draft__') return;
     unsubscribeRef.current?.();
-    unsubscribeRef.current = subscribeChat(activeId, handleEvent);
+    unsubscribeRef.current = subscribeChat(activeId, (event) => handleEvent(activeId, event));
     return () => {
       unsubscribeRef.current?.();
       unsubscribeRef.current = null;
@@ -997,6 +1060,7 @@ export function Chat() {
     }));
     setInput('');
     setPendingAttachments([]);
+    generatingRef.current = true;
     setGenerating(true);
     streamingMsgIdRef.current = assistantId;
 
@@ -1024,6 +1088,7 @@ export function Chat() {
           ),
         }));
         streamingMsgIdRef.current = null;
+        generatingRef.current = false;
         setGenerating(false);
         return;
       }
@@ -1059,6 +1124,7 @@ export function Chat() {
         ),
       }));
       streamingMsgIdRef.current = null;
+      generatingRef.current = false;
       setGenerating(false);
     }
   }, [input, active, generating, settings.think, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
@@ -1134,9 +1200,11 @@ export function Chat() {
 
   // Retry: 重试最后一轮
   const handleRetry = useCallback(async () => {
-    if (!active || active.id === '__draft__' || active.preloaded || generating) return;
-    const previousAssistant = active.messages[active.messages.length - 1];
+    const currentActive = activeRef.current;
+    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current) return;
+    const previousAssistant = currentActive.messages[currentActive.messages.length - 1];
     if (!previousAssistant || previousAssistant.role !== 'assistant') return;
+    flushStreamingDeltas();
     const preservedVariants = previousAssistant.variants?.length
       ? previousAssistant.variants
       : [{
@@ -1159,46 +1227,49 @@ export function Chat() {
       activeVariant: previousAssistant.activeVariant,
       variantCount: previousAssistant.variantCount ?? preservedVariants.length,
     };
-    updateConversation(active.id, (conversation) => ({
+    updateConversation(currentActive.id, (conversation) => ({
       ...conversation,
       messages: [...conversation.messages.slice(0, -1), assistantMsg],
       updatedAt: Math.round(Date.now() / 1000),
     }));
     streamingMsgIdRef.current = assistantId;
+    generatingRef.current = true;
     setGenerating(true);
     try {
-      const result = await chatApi.retry(active.id, settings.think);
+      const result = await chatApi.retry(currentActive.id, settingsThinkRef.current);
       if (result.ok) {
         updateStreamingMessage((message) => ({
           ...message,
           turnIndex: result.turn_index,
           activeVariant: result.variant_index,
-        }));
+        }), currentActive.id);
       } else {
         throw new Error(result.error || '重试失败');
       }
     } catch (err) {
       console.error('[Chat] 重试失败:', err);
-      updateConversation(active.id, (conversation) => ({
+      updateConversation(currentActive.id, (conversation) => ({
         ...conversation,
         messages: [...conversation.messages.slice(0, -1), previousAssistant],
       }));
       streamingMsgIdRef.current = null;
+      generatingRef.current = false;
       setGenerating(false);
       alert(`重试失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [active, generating, settings.think, updateConversation, updateStreamingMessage]);
+  }, [flushStreamingDeltas, updateConversation, updateStreamingMessage]);
 
   const handleSelectVariant = useCallback(async (turnIndex: number, variantIndex: number) => {
-    if (!active || active.id === '__draft__' || active.preloaded || generating) return;
+    const currentActive = activeRef.current;
+    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded || generatingRef.current) return;
     try {
-      const result = await chatApi.selectVariant(active.id, turnIndex, variantIndex);
+      const result = await chatApi.selectVariant(currentActive.id, turnIndex, variantIndex);
       const turn = result.turn;
       const selected = turn.variants.find(
         (variant) => variant.variant_index === turn.active_variant,
       );
       if (!selected) throw new Error('后端未返回选中的回复版本');
-      updateConversation(active.id, (conversation) => ({
+      updateConversation(currentActive.id, (conversation) => ({
         ...conversation,
         messages: conversation.messages.map((message) => (
           message.role === 'assistant' && message.turnIndex === turnIndex
@@ -1220,13 +1291,14 @@ export function Chat() {
       console.error('[Chat] 切换回复版本失败:', err);
       alert(`切换回复版本失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [active, generating, updateConversation]);
+  }, [updateConversation]);
 
   // Fork: 从指定轮次创建新会话
   const handleFork = useCallback(async (turnIndex: number) => {
-    if (!active || active.id === '__draft__' || active.preloaded) return;
+    const currentActive = activeRef.current;
+    if (!currentActive || currentActive.id === '__draft__' || currentActive.preloaded) return;
     try {
-      const result = await chatApi.fork(active.id, turnIndex);
+      const result = await chatApi.fork(currentActive.id, turnIndex);
       if (result.ok && result.conversation_id) {
         // 刷新会话列表并切换到新会话
         const { conversations: convList } = await chatApi.listConversations();
@@ -1244,7 +1316,7 @@ export function Chat() {
       console.error('[Chat] Fork 失败:', err);
       alert(`Fork 失败: ${err instanceof Error ? err.message : String(err)}`);
     }
-  }, [active]);
+  }, []);
 
   // 删除模型配置
   const handleDeleteModel = useCallback(async (name: string) => {
@@ -1307,23 +1379,26 @@ export function Chat() {
   }, [active, activePendingUserInput, answeringRequestId, input]);
 
   const handleStop = useCallback(async () => {
-    if (active) {
+    const currentActive = activeRef.current;
+    flushStreamingDeltas();
+    if (currentActive) {
       try {
-        await chatApi.cancel(active.id);
+        await chatApi.cancel(currentActive.id);
       } catch (err) {
         console.error('[Chat] 取消生成失败:', err);
       }
     }
+    generatingRef.current = false;
     setGenerating(false);
-    setPendingUserInputs((prev) => active ? { ...prev, [active.id]: [] } : prev);
+    setPendingUserInputs((prev) => currentActive ? { ...prev, [currentActive.id]: [] } : prev);
     streamingMsgIdRef.current = null;
-    if (active) {
-      updateConversation(active.id, (c) => ({
+    if (currentActive) {
+      updateConversation(currentActive.id, (c) => ({
         ...c,
         messages: c.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
       }));
     }
-  }, [active, updateConversation]);
+  }, [flushStreamingDeltas, updateConversation]);
 
   // 键盘发送: Enter 发送, Shift+Enter 换行
   const handleKeyDown = useCallback(
@@ -2990,8 +3065,21 @@ function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
   );
 }
 
+const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
+  return (
+    <div className="markdown-body">
+      <ReactMarkdown
+        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+});
+
 // 消息气泡(用户紫色 / 助手蓝色, 独立反光)
-function MessageBubble({
+const MessageBubble = memo(function MessageBubble({
   message,
   isLast,
   onRetry,
@@ -3008,8 +3096,11 @@ function MessageBubble({
   const reflectRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 90,
   });
-  const variants = [...(message.variants ?? [])].sort(
-    (left, right) => left.variantIndex - right.variantIndex,
+  const variants = useMemo(
+    () => [...(message.variants ?? [])].sort(
+      (left, right) => left.variantIndex - right.variantIndex,
+    ),
+    [message.variants],
   );
   const activeVariantPosition = Math.max(
     0,
@@ -3017,7 +3108,7 @@ function MessageBubble({
   );
 
   return (
-    <div className="flex gap-3 group">
+    <div className="chat-message-item flex gap-3 group">
       {/* 头像: 用户消息 order-2 在右, AI 消息 order-1 在左 */}
       <div
         className={cn(
@@ -3075,14 +3166,7 @@ function MessageBubble({
                           'glass-card-accent'
                         )}
                       >
-                        <div className="markdown-body">
-                          <ReactMarkdown
-                            remarkPlugins={[remarkGfm, remarkMath]}
-                            rehypePlugins={[rehypeKatex]}
-                          >
-                            {seg.content}
-                          </ReactMarkdown>
-                        </div>
+                        <MarkdownContent content={seg.content} />
                         {message.streaming && idx === message.segments!.length - 1 && (
                           <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
                         )}
@@ -3124,14 +3208,7 @@ function MessageBubble({
                   {isUser ? (
                     message.content
                   ) : (
-                    <div className="markdown-body">
-                      <ReactMarkdown
-                        remarkPlugins={[remarkGfm, remarkMath]}
-                        rehypePlugins={[rehypeKatex]}
-                      >
-                        {message.content}
-                      </ReactMarkdown>
-                    </div>
+                    <MarkdownContent content={message.content} />
                   )}
                   {message.streaming && (
                     <span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-accent animate-pulse" />
@@ -3202,10 +3279,10 @@ function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 // 思考流折叠块 (独立反光, 避免与气泡容器光效不对齐)
-function ThinkingBlock({ thinking }: { thinking: string }) {
+const ThinkingBlock = memo(function ThinkingBlock({ thinking }: { thinking: string }) {
   const reflectRef = useGlassReflect<HTMLDetailsElement>({
     reflectRange: 60,
   });
@@ -3220,7 +3297,7 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
       </div>
     </details>
   );
-}
+});
 
 // 模型编辑弹窗
 function ModelEditModal({

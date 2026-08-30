@@ -400,6 +400,12 @@
 }
 
 @layer components {
+  /* 屏幕外聊天消息保留布局尺寸但跳过绘制 */
+  .chat-message-item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 120px;
+  }
+
   /* ===== 基础玻璃效果 ===== */
   .glass {
     background: var(--glass-bg);

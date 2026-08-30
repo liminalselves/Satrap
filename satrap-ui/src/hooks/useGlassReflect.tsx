@@ -8,6 +8,14 @@ import {
   ReactNode,
   type RefCallback,
 } from 'react';
+import {
+  calculateReflectState,
+  copyReflectRect,
+  getPointerCellKey,
+  getReflectCellKeys,
+  REFLECT_SPATIAL_CELL_SIZE,
+  type ReflectRect,
+} from './glassReflectGeometry';
 
 /**
  * 全局玻璃反射管理器
@@ -18,6 +26,9 @@ interface GlassElement {
   element: HTMLElement;
   reflectRange: number;
   reflectSize: number;
+  rect: ReflectRect | null;
+  visible: boolean;
+  cellKeys: string[];
 }
 
 interface GlassReflectContextType {
@@ -32,57 +43,102 @@ const DEFAULT_REFLECT_RANGE = 150;   // 反光影响范围
 const DEFAULT_REFLECT_SIZE = 150;   // 反光光圈大小
 
 function updateReflectState(
-  element: HTMLElement,
+  item: GlassElement,
   mouseX: number,
   mouseY: number,
-  reflectRange: number,
-) {
-  const rect = element.getBoundingClientRect();
-  const x = mouseX - rect.left;
-  const y = mouseY - rect.top;
-  const closestX = Math.max(rect.left, Math.min(mouseX, rect.right));
-  const closestY = Math.max(rect.top, Math.min(mouseY, rect.bottom));
-  const distanceToEdge = Math.hypot(mouseX - closestX, mouseY - closestY);
-  const isInRange = distanceToEdge < reflectRange;
-  const isHovering = mouseX >= rect.left && mouseX <= rect.right
-    && mouseY >= rect.top && mouseY <= rect.bottom;
-
-  element.style.setProperty('--mouse-x', `${x}px`);
-  element.style.setProperty('--mouse-y', `${y}px`);
-  if (isHovering) {
-    element.classList.add('glass-hovering');
-    element.classList.remove('glass-nearby');
-  } else if (isInRange) {
-    element.classList.remove('glass-hovering');
-    element.classList.add('glass-nearby');
+): boolean {
+  if (!item.rect) return false;
+  const state = calculateReflectState(item.rect, mouseX, mouseY, item.reflectRange);
+  item.element.style.setProperty('--mouse-x', `${state.x}px`);
+  item.element.style.setProperty('--mouse-y', `${state.y}px`);
+  if (state.isHovering) {
+    item.element.classList.add('glass-hovering');
+    item.element.classList.remove('glass-nearby');
+  } else if (state.isInRange) {
+    item.element.classList.remove('glass-hovering');
+    item.element.classList.add('glass-nearby');
   } else {
-    element.classList.remove('glass-hovering', 'glass-nearby');
+    item.element.classList.remove('glass-hovering', 'glass-nearby');
   }
+  return state.isInRange;
 }
 
 export function GlassReflectProvider({ children }: { children: ReactNode }) {
   const elementsRef = useRef<Map<HTMLElement, GlassElement>>(new Map());
+  const spatialIndexRef = useRef<Map<string, Set<GlassElement>>>(new Map());
+  const activeElementsRef = useRef<Set<GlassElement>>(new Set());
+  const geometryDirtyAllRef = useRef(false);
   const mousePosRef = useRef<{ x: number; y: number }>({ x: -1000, y: -1000 });
   const rafRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
+  const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
 
-  // 更新所有元素的反射状态
-  const updateAllElements = useCallback(() => {
-    const { x: mouseX, y: mouseY } = mousePosRef.current;
-
-    elementsRef.current.forEach(({ element, reflectRange }) => {
-      updateReflectState(element, mouseX, mouseY, reflectRange);
-    });
+  const removeFromSpatialIndex = useCallback((item: GlassElement) => {
+    for (const key of item.cellKeys) {
+      const bucket = spatialIndexRef.current.get(key);
+      bucket?.delete(item);
+      if (bucket?.size === 0) spatialIndexRef.current.delete(key);
+    }
+    item.cellKeys = [];
   }, []);
 
-  // 节流更新
+  const updateSpatialIndex = useCallback((item: GlassElement, rect: ReflectRect) => {
+    removeFromSpatialIndex(item);
+    item.rect = rect;
+    if (!item.visible) return;
+    item.cellKeys = getReflectCellKeys(rect, item.reflectRange);
+    for (const key of item.cellKeys) {
+      let bucket = spatialIndexRef.current.get(key);
+      if (!bucket) {
+        bucket = new Set();
+        spatialIndexRef.current.set(key, bucket);
+      }
+      bucket.add(item);
+    }
+  }, [removeFromSpatialIndex]);
+
+  // 仅在布局发生变化时读取元素矩形并重建空间索引
+  const refreshGeometry = useCallback(() => {
+    if (!geometryDirtyAllRef.current) return;
+    geometryDirtyAllRef.current = false;
+    const targets = [...elementsRef.current.values()].filter((item) => item.visible);
+    for (const item of targets) {
+      if (!elementsRef.current.has(item.element)) continue;
+      updateSpatialIndex(item, copyReflectRect(item.element.getBoundingClientRect()));
+    }
+  }, [updateSpatialIndex]);
+
+  // 指针移动只查询缓存和当前空间分区, 不读取布局
+  const updatePointerElements = useCallback(() => {
+    const { x: mouseX, y: mouseY } = mousePosRef.current;
+    const candidates = spatialIndexRef.current.get(getPointerCellKey(mouseX, mouseY)) ?? new Set();
+    const nextActive = new Set<GlassElement>();
+    for (const item of candidates) {
+      if (item.visible && updateReflectState(item, mouseX, mouseY)) {
+        nextActive.add(item);
+      }
+    }
+    for (const item of activeElementsRef.current) {
+      if (!nextActive.has(item)) {
+        item.element.classList.remove('glass-hovering', 'glass-nearby');
+      }
+    }
+    activeElementsRef.current = nextActive;
+  }, []);
+
+  const runFrame = useCallback(() => {
+    refreshGeometry();
+    updatePointerElements();
+    rafRef.current = null;
+  }, [refreshGeometry, updatePointerElements]);
+
+  // 几何和指针更新共用一个动画帧调度器
   const scheduleUpdate = useCallback(() => {
-    if (rafRef.current) return;
+    if (rafRef.current !== null) return;
     rafRef.current = requestAnimationFrame(() => {
-      updateAllElements();
-      rafRef.current = null;
+      runFrame();
     });
-  }, [updateAllElements]);
+  }, [runFrame]);
 
   // 全局鼠标移动监听
   useEffect(() => {
@@ -96,7 +152,10 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       scheduleUpdate();
     };
 
-    const handleGeometryChange = () => scheduleUpdate();
+    const handleGeometryChange = () => {
+      geometryDirtyAllRef.current = true;
+      scheduleUpdate();
+    };
 
     document.addEventListener('pointermove', handlePointerMove);
     document.documentElement.addEventListener('pointerleave', handlePointerLeave);
@@ -112,15 +171,19 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('resize', handleGeometryChange);
       window.visualViewport?.removeEventListener('resize', handleGeometryChange);
       window.visualViewport?.removeEventListener('scroll', handleGeometryChange);
-      if (rafRef.current) {
+      if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
       }
     };
   }, [scheduleUpdate]);
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(() => scheduleUpdate());
+    const observer = new ResizeObserver(() => {
+      geometryDirtyAllRef.current = true;
+      scheduleUpdate();
+    });
     resizeObserverRef.current = observer;
     elementsRef.current.forEach(({ element }) => observer.observe(element));
     return () => {
@@ -128,6 +191,31 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       resizeObserverRef.current = null;
     };
   }, [scheduleUpdate]);
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        const item = elementsRef.current.get(entry.target as HTMLElement);
+        if (!item) continue;
+        item.visible = entry.isIntersecting;
+        if (item.visible) {
+          updateSpatialIndex(item, copyReflectRect(entry.boundingClientRect));
+        } else {
+          removeFromSpatialIndex(item);
+          activeElementsRef.current.delete(item);
+          item.element.classList.remove('glass-hovering', 'glass-nearby');
+        }
+      }
+      scheduleUpdate();
+    }, { rootMargin: `${REFLECT_SPATIAL_CELL_SIZE}px` });
+    intersectionObserverRef.current = observer;
+    elementsRef.current.forEach(({ element }) => observer.observe(element));
+    return () => {
+      observer.disconnect();
+      intersectionObserverRef.current = null;
+    };
+  }, [removeFromSpatialIndex, scheduleUpdate, updateSpatialIndex]);
 
   // 注册元素
   const register = useCallback((
@@ -138,18 +226,31 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       element,
       reflectRange: options?.reflectRange ?? DEFAULT_REFLECT_RANGE,
       reflectSize: options?.reflectSize ?? DEFAULT_REFLECT_SIZE,
+      rect: null,
+      visible: true,
+      cellKeys: [],
     });
     element.style.setProperty('--reflect-size', `${options?.reflectSize ?? DEFAULT_REFLECT_SIZE}px`);
     resizeObserverRef.current?.observe(element);
+    intersectionObserverRef.current?.observe(element);
+    geometryDirtyAllRef.current = true;
     scheduleUpdate();
   }, [scheduleUpdate]);
 
   // 注销元素
   const unregister = useCallback((element: HTMLElement) => {
+    const item = elementsRef.current.get(element);
     resizeObserverRef.current?.unobserve(element);
+    intersectionObserverRef.current?.unobserve(element);
+    if (item) {
+      activeElementsRef.current.delete(item);
+      removeFromSpatialIndex(item);
+    }
     elementsRef.current.delete(element);
     element.classList.remove('glass-hovering', 'glass-nearby');
-  }, []);
+    geometryDirtyAllRef.current = true;
+    scheduleUpdate();
+  }, [removeFromSpatialIndex, scheduleUpdate]);
 
   const contextValue = useMemo(
     () => ({ register, unregister }),
