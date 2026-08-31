@@ -300,7 +300,17 @@
     filter: blur(80px);
     opacity: 0.6;
     animation: fluidMove 30s ease-in-out infinite;
-    will-change: transform, border-radius;
+  }
+
+  .fluid-blob-1,
+  .fluid-blob-2,
+  .fluid-blob-3,
+  .fluid-blob-4 {
+    will-change: transform;
+  }
+
+  .background-animation-paused .fluid-blob {
+    animation-play-state: paused;
   }
 
   [data-theme="light"] .fluid-blob {
@@ -383,23 +393,18 @@
   @keyframes fluidMove {
     0%, 100% {
       transform: translate(0, 0) scale(1) rotate(0deg);
-      border-radius: 50%;
     }
     20% {
       transform: translate(8%, 12%) scale(1.15) rotate(8deg);
-      border-radius: 42% 58% 52% 48%;
     }
     40% {
       transform: translate(-5%, 8%) scale(0.92) rotate(-5deg);
-      border-radius: 58% 42% 45% 55%;
     }
     60% {
       transform: translate(12%, -8%) scale(1.08) rotate(3deg);
-      border-radius: 45% 55% 58% 42%;
     }
     80% {
       transform: translate(-8%, -5%) scale(0.95) rotate(-8deg);
-      border-radius: 52% 48% 42% 58%;
     }
   }
 }
@@ -493,6 +498,16 @@
   .glass-card.glass-nearby {
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06);
     transform: translateY(-1px);
+  }
+
+  /* 结构面板保留反光, 但不使用小磁片的悬浮位移和高亮 */
+  .glass-card.glass-card-static,
+  .glass-card.glass-card-static:hover,
+  .glass-card.glass-card-static.glass-hovering,
+  .glass-card.glass-card-static.glass-nearby {
+    background: var(--glass-bg);
+    box-shadow: var(--shadow-glass);
+    transform: none;
   }
 
   /* 无backdrop-filter的玻璃卡片 - 用于输入区等不需要透视背后内容的场景 */
@@ -1067,6 +1082,13 @@
 }
 
 @layer utilities {
+  /* transition-colors 不应截断磁片的位移, 阴影和透明度过渡 */
+  .glass-card.transition-colors {
+    transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
+  }
+
   .text-ellipsis {
     overflow: hidden;
     text-overflow: ellipsis;

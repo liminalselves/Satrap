@@ -1,4 +1,4 @@
-import { lazy, Suspense, type ReactElement } from 'react';
+import { lazy, Suspense, useEffect, type ReactElement } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
 
@@ -21,6 +21,18 @@ function lazyRoute(element: ReactElement) {
 }
 
 function App() {
+  useEffect(() => {
+    const syncBackgroundVisibility = () => {
+      document.documentElement.classList.toggle('background-animation-paused', document.hidden);
+    };
+    syncBackgroundVisibility();
+    document.addEventListener('visibilitychange', syncBackgroundVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', syncBackgroundVisibility);
+      document.documentElement.classList.remove('background-animation-paused');
+    };
+  }, []);
+
   return (
     <>
       {/* 柔和流体背景 - 8个球体 */}

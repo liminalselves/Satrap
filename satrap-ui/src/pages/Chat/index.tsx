@@ -1500,7 +1500,7 @@ export function Chat() {
 
       <div className="flex gap-4 flex-1 min-h-0">
       {/* 会话列表侧栏 */}
-      <Card className="w-72 shrink-0 flex flex-col p-0 overflow-hidden">
+      <Card className="glass-card-static w-72 shrink-0 flex flex-col p-0 overflow-hidden">
         <div className="p-3 border-b border-glass-border space-y-2">
           <div className="flex gap-2">
             <Button variant="primary" className="flex-1" onClick={() => handleNew()}>
@@ -1587,7 +1587,7 @@ export function Chat() {
       </Card>
 
       {/* 聊天主区 */}
-      <Card className="flex-1 flex flex-col p-0 overflow-hidden min-w-0">
+      <Card className="glass-card-static flex-1 flex flex-col p-0 overflow-hidden min-w-0">
         {/* 头部 */}
         <div className="flex items-center justify-between px-5 py-3 border-b border-glass-border">
           <div className="flex items-center gap-2 min-w-0">
