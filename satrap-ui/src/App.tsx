@@ -1,14 +1,24 @@
+import { lazy, Suspense, type ReactElement } from 'react';
 import { Routes, Route } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
-import { Dashboard } from '@/pages/Dashboard';
-import { Models } from '@/pages/Models';
-import { Sessions } from '@/pages/Sessions';
-import { Platforms } from '@/pages/Platforms';
-import { Logs } from '@/pages/Logs';
-import { Checkpoints } from '@/pages/Checkpoints';
-import { Users } from '@/pages/Users';
-import { Settings } from '@/pages/Settings';
-import { Chat } from '@/pages/Chat';
+
+const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })));
+const Models = lazy(() => import('@/pages/Models').then((module) => ({ default: module.Models })));
+const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
+const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
+const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
+const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
+const Users = lazy(() => import('@/pages/Users').then((module) => ({ default: module.Users })));
+const Settings = lazy(() => import('@/pages/Settings').then((module) => ({ default: module.Settings })));
+const Chat = lazy(() => import('@/pages/Chat').then((module) => ({ default: module.Chat })));
+
+function lazyRoute(element: ReactElement) {
+  return (
+    <Suspense fallback={<div className="min-h-[40vh]" aria-label="页面加载中" />}>
+      {element}
+    </Suspense>
+  );
+}
 
 function App() {
   return (
@@ -27,17 +37,17 @@ function App() {
       
       <Routes>
         {/* 聊天页: 完全独立整页, 不渲染管理面板布局 */}
-        <Route path="/chat" element={<Chat />} />
+        <Route path="/chat" element={lazyRoute(<Chat />)} />
 
         <Route element={<AppLayout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/models" element={<Models />} />
-          <Route path="/sessions" element={<Sessions />} />
-          <Route path="/platforms" element={<Platforms />} />
-          <Route path="/logs" element={<Logs />} />
-          <Route path="/checkpoints" element={<Checkpoints />} />
-          <Route path="/users" element={<Users />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/" element={lazyRoute(<Dashboard />)} />
+          <Route path="/models" element={lazyRoute(<Models />)} />
+          <Route path="/sessions" element={lazyRoute(<Sessions />)} />
+          <Route path="/platforms" element={lazyRoute(<Platforms />)} />
+          <Route path="/logs" element={lazyRoute(<Logs />)} />
+          <Route path="/checkpoints" element={lazyRoute(<Checkpoints />)} />
+          <Route path="/users" element={lazyRoute(<Users />)} />
+          <Route path="/settings" element={lazyRoute(<Settings />)} />
         </Route>
       </Routes>
     </>

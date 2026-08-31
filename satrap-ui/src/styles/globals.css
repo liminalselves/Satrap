@@ -238,14 +238,14 @@
       0 16px 48px rgba(0, 0, 0, 0.10);
     
     /* 动态背景颜色 - 亮色模式 - 加强版 */
-    --bg-gradient-1: rgba(150, 200, 255, 0.55);
-    --bg-gradient-2: rgba(200, 170, 240, 0.50);
-    --bg-gradient-3: rgba(160, 230, 230, 0.45);
-    --bg-gradient-4: rgba(255, 190, 220, 0.42);
-    --bg-gradient-5: rgba(255, 210, 170, 0.38);
-    --bg-gradient-6: rgba(170, 255, 200, 0.35);
-    --bg-gradient-7: rgba(220, 200, 255, 0.32);
-    --bg-gradient-8: rgba(255, 230, 200, 0.30);
+    --bg-gradient-1: rgba(92, 166, 245, 0.62);
+    --bg-gradient-2: rgba(166, 112, 224, 0.56);
+    --bg-gradient-3: rgba(79, 199, 204, 0.52);
+    --bg-gradient-4: rgba(238, 129, 184, 0.48);
+    --bg-gradient-5: rgba(244, 166, 91, 0.44);
+    --bg-gradient-6: rgba(91, 210, 139, 0.40);
+    --bg-gradient-7: rgba(157, 126, 231, 0.38);
+    --bg-gradient-8: rgba(239, 183, 105, 0.36);
     
     /* 亮色模式反光颜色 */
     --reflect-accent: rgba(0, 120, 212, 0.35);
@@ -301,6 +301,11 @@
     opacity: 0.6;
     animation: fluidMove 30s ease-in-out infinite;
     will-change: transform, border-radius;
+  }
+
+  [data-theme="light"] .fluid-blob {
+    filter: blur(80px) saturate(120%);
+    opacity: 0.7;
   }
 
   .fluid-blob-1 {

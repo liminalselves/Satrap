@@ -1,10 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import remarkMath from 'remark-math';
-import rehypeKatex from 'rehype-katex';
-import 'katex/dist/katex.min.css';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
@@ -18,6 +13,7 @@ import {
   THINKING_LEVEL_OPTIONS,
 } from '@/utils/constants';
 import { formatRelativeTime } from '@/utils/format';
+import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLimiter';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
 import { useBackendStore } from '@/stores/useBackendStore';
@@ -84,8 +80,7 @@ import {
   Gauge,
 } from 'lucide-react';
 
-const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath];
-const MARKDOWN_REHYPE_PLUGINS = [rehypeKatex];
+const LazyMarkdownContent = lazy(() => import('./MarkdownContent'));
 
 // 聊天设置
 interface ChatSettings {
@@ -321,7 +316,10 @@ export function Chat() {
   // 单帧内积累的流式增量和对应消息目标
   const streamingDeltasRef = useRef<StreamingDelta[]>([]);
   const streamingDeltaTargetRef = useRef<{ conversationId: string; messageId: string } | null>(null);
-  const streamingRafRef = useRef<number | null>(null);
+  const streamingFrameLimiter = useMemo(
+    () => createAnimationFrameLimiter({ maxFps: MAX_UI_FRAME_RATE }),
+    [],
+  );
   // 输入卡片独立反光
   const inputCardRef = useGlassReflect<HTMLDivElement>({
     reflectRange: 120,
@@ -406,12 +404,8 @@ export function Chat() {
   }, [updateConversation]);
 
   const flushStreamingDeltas = useCallback(() => {
-    if (streamingRafRef.current !== null) {
-      cancelAnimationFrame(streamingRafRef.current);
-      streamingRafRef.current = null;
-    }
-    commitStreamingDeltas();
-  }, [commitStreamingDeltas]);
+    streamingFrameLimiter.flush();
+  }, [streamingFrameLimiter]);
 
   const queueStreamingDelta = useCallback((delta: StreamingDelta, conversationId = activeIdRef.current) => {
     const target = {
@@ -431,21 +425,14 @@ export function Chat() {
     }
     streamingDeltaTargetRef.current = target;
     enqueueStreamingDelta(streamingDeltasRef.current, delta);
-    if (streamingRafRef.current !== null) return;
-    streamingRafRef.current = requestAnimationFrame(() => {
-      streamingRafRef.current = null;
-      commitStreamingDeltas();
-    });
-  }, [commitStreamingDeltas, flushStreamingDeltas]);
+    streamingFrameLimiter.schedule(commitStreamingDeltas);
+  }, [commitStreamingDeltas, flushStreamingDeltas, streamingFrameLimiter]);
 
   useEffect(() => () => {
-    if (streamingRafRef.current !== null) {
-      cancelAnimationFrame(streamingRafRef.current);
-      streamingRafRef.current = null;
-    }
+    streamingFrameLimiter.cancel();
     streamingDeltasRef.current = [];
     streamingDeltaTargetRef.current = null;
-  }, []);
+  }, [streamingFrameLimiter]);
 
   // 处理 WS 事件
   const handleEvent = useCallback(
@@ -2786,7 +2773,7 @@ function ChatHeader({
   });
 
   return (
-    <header ref={headerRef} className="glass-header flex items-center justify-between px-4 py-2.5 shrink-0">
+    <header ref={headerRef} className="glass-header m-0 flex items-center justify-between px-4 py-2.5 shrink-0">
       <div className="flex items-center gap-3">
         <button onClick={onBack} className="theme-toggle" title="返回管理面板">
           <ArrowLeft className="h-4 w-4 text-text-secondary" />
@@ -3067,14 +3054,9 @@ function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
 
 const MarkdownContent = memo(function MarkdownContent({ content }: { content: string }) {
   return (
-    <div className="markdown-body">
-      <ReactMarkdown
-        remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-        rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-      >
-        {content}
-      </ReactMarkdown>
-    </div>
+    <Suspense fallback={<div className="markdown-body whitespace-pre-wrap">{content}</div>}>
+      <LazyMarkdownContent content={content} />
+    </Suspense>
   );
 });
 

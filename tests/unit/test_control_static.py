@@ -46,7 +46,12 @@ class _BufferWriter:
         self.closed = True
 
 
-async def _request(path: str, method: str = "GET", body: bytes = b"") -> bytes:
+async def _request(
+    path: str,
+    method: str = "GET",
+    body: bytes = b"",
+    headers: dict[str, str] | None = None,
+) -> bytes:
     """
     直接调用控制服务连接处理器
 
@@ -54,15 +59,18 @@ async def _request(path: str, method: str = "GET", body: bytes = b"") -> bytes:
     - path: 请求路径
     - method: HTTP 方法
     - body: 请求体
+    - headers: 附加请求头
 
     返回:
     - bytes: 完整响应
     """
     reader = asyncio.StreamReader()
+    extra_headers = "".join(f"{key}: {value}\r\n" for key, value in (headers or {}).items())
     header = (
         f"{method} {path} HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
         f"Content-Length: {len(body)}\r\n"
+        f"{extra_headers}"
         "Connection: close\r\n\r\n"
     ).encode()
     reader.feed_data(header + body)
@@ -104,6 +112,39 @@ async def test_control_server_serves_react_without_backend(
     assert b"control-ui" in index_response
     assert b"200 OK" in route_response
     assert b"control-ui" in route_response
+
+
+@pytest.mark.asyncio
+async def test_control_server_forwards_static_compression_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    控制服务应向共享静态服务传递压缩协商请求头
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    static_dir = tmp_path / "dist"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    asset_path = assets_dir / "app-AbCd1234.js"
+    asset_path.write_bytes(b"plain-content")
+    Path(f"{asset_path}.br").write_bytes(b"brotli-content")
+    monkeypatch.setattr(
+        control_server,
+        "CONTROL_STATIC_UI",
+        SPAStaticService(static_dir, excluded_prefixes=("/status", "/config")),
+    )
+
+    response = await _request(
+        "/assets/app-AbCd1234.js",
+        headers={"Accept-Encoding": "br"},
+    )
+
+    assert b"Content-Encoding: br" in response
+    assert response.endswith(b"brotli-content")
 
 
 @pytest.mark.asyncio

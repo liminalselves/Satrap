@@ -128,18 +128,24 @@ class BackendHTTPServer(MiniHTTPServer):
 
     # ---------- 静态文件服务 ----------
 
-    async def _serve_static(self, writer: asyncio.StreamWriter, path: str) -> bool:
+    async def _serve_static(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        request_headers: dict[str, str] | None = None,
+    ) -> bool:
         """
         服务静态文件或 SPA 入口 (仅非 API 路径)
 
         参数:
         - writer: 流写入器
         - path: 路径
+        - request_headers: 小写键名的 HTTP 请求头
 
         返回:
         - bool: 服务静态文件或 SPA 入口 (仅非 API 路径)
         """
-        return await self._static_ui.serve(writer, path)
+        return await self._static_ui.serve(writer, path, request_headers)
 
     # ---------- WebSocket 端点分发 ----------
 

@@ -232,3 +232,8 @@ yarn-error.log*
 # Vite
 .vite/
 satrap-ui/dist/
+
+# Frontend benchmark transient results
+satrap-ui/benchmarks/results/latest.json
+satrap-ui/benchmarks/results/smoke.json
+satrap-ui/benchmarks/results/traces/

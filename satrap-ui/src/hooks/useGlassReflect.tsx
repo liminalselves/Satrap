@@ -16,6 +16,7 @@ import {
   REFLECT_SPATIAL_CELL_SIZE,
   type ReflectRect,
 } from './glassReflectGeometry';
+import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLimiter';
 
 /**
  * 全局玻璃反射管理器
@@ -69,9 +70,12 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
   const activeElementsRef = useRef<Set<GlassElement>>(new Set());
   const geometryDirtyAllRef = useRef(false);
   const mousePosRef = useRef<{ x: number; y: number }>({ x: -1000, y: -1000 });
-  const rafRef = useRef<number | null>(null);
   const resizeObserverRef = useRef<ResizeObserver | null>(null);
   const intersectionObserverRef = useRef<IntersectionObserver | null>(null);
+  const frameLimiter = useMemo(
+    () => createAnimationFrameLimiter({ maxFps: MAX_UI_FRAME_RATE }),
+    [],
+  );
 
   const removeFromSpatialIndex = useCallback((item: GlassElement) => {
     for (const key of item.cellKeys) {
@@ -129,16 +133,12 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
   const runFrame = useCallback(() => {
     refreshGeometry();
     updatePointerElements();
-    rafRef.current = null;
   }, [refreshGeometry, updatePointerElements]);
 
-  // 几何和指针更新共用一个动画帧调度器
+  // 几何和指针更新共用一个 90 FPS 动画帧调度器
   const scheduleUpdate = useCallback(() => {
-    if (rafRef.current !== null) return;
-    rafRef.current = requestAnimationFrame(() => {
-      runFrame();
-    });
-  }, [runFrame]);
+    frameLimiter.schedule(runFrame);
+  }, [frameLimiter, runFrame]);
 
   // 全局鼠标移动监听
   useEffect(() => {
@@ -171,12 +171,9 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('resize', handleGeometryChange);
       window.visualViewport?.removeEventListener('resize', handleGeometryChange);
       window.visualViewport?.removeEventListener('scroll', handleGeometryChange);
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current);
-        rafRef.current = null;
-      }
+      frameLimiter.cancel();
     };
-  }, [scheduleUpdate]);
+  }, [frameLimiter, scheduleUpdate]);
 
   useEffect(() => {
     if (typeof ResizeObserver === 'undefined') return;

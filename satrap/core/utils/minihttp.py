@@ -6,7 +6,7 @@
 
 - async _route(method, path, body) -> (status, dict): 普通 API 路由
 - async _ws_dispatch(path, reader, writer): WebSocket 端点分发 (未知端点自行关闭)
-- async _serve_static(writer, path) -> bool: 非 API 静态路径钩子, 返回 True 表示已处理
+- async _serve_static(writer, path, headers) -> bool: 非 API 静态路径钩子, 返回 True 表示已处理
 
 共享基础设施: 请求解析, CORS 预检, JSON 响应, WebSocket 握手与帧收发
 """
@@ -117,7 +117,8 @@ class MiniHTTPServer:
                 return
             # WebSocket 升级请求
 
-            if await self._serve_static(writer, path):
+            headers = self._parse_headers(raw_request)
+            if await self._serve_static(writer, path, headers):
                 return
             # 静态文件 / SPA 钩子 (子类覆写, 默认不处理)
 
@@ -314,13 +315,19 @@ class MiniHTTPServer:
         """
         await self._ws_close(writer, 1008, "unknown endpoint")
 
-    async def _serve_static(self, writer: asyncio.StreamWriter, path: str) -> bool:
+    async def _serve_static(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        request_headers: dict[str, str] | None = None,
+    ) -> bool:
         """
         静态文件 / SPA 钩子 (子类覆写), 返回 True 表示已处理
 
         参数:
         - writer: 流写入器
         - path: 路径
+        - request_headers: 小写键名的 HTTP 请求头
 
         返回:
         - bool:  True 表示已处理

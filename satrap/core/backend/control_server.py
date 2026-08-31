@@ -338,6 +338,25 @@ def _request_origin(raw_request: bytes) -> str:
     return "http://127.0.0.1:19871"
 
 
+def _request_headers(raw_request: bytes) -> dict[str, str]:
+    """
+    解析 HTTP 请求头
+
+    参数:
+    - raw_request: HTTP 请求头
+
+    返回:
+    - dict[str, str]: 小写键名的请求头
+    """
+    headers: dict[str, str] = {}
+    for raw_line in raw_request.split(b"\r\n")[1:]:
+        if b":" not in raw_line:
+            continue
+        key, value = raw_line.split(b":", 1)
+        headers[key.decode("utf-8").strip().lower()] = value.decode("utf-8").strip()
+    return headers
+
+
 def _model_config_service() -> ModelConfigService:
     """
     根据当前后端配置创建共享模型配置服务
@@ -1570,7 +1589,11 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 body = {"error": str(e)}
                 status = 400
         
-        elif method == "GET" and await CONTROL_STATIC_UI.serve(writer, raw_path):
+        elif method == "GET" and await CONTROL_STATIC_UI.serve(
+            writer,
+            raw_path,
+            _request_headers(raw_request),
+        ):
             await writer.drain()
             return
 
