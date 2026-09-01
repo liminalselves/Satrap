@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import { toast } from '@/components/ui/Toast';
+import { CopyButton } from '@/components/ui/CopyButton';
 import { cn } from '@/utils/cn';
 import {
   DEFAULT_THINKING_LEVELS,
@@ -36,6 +37,7 @@ import {
   type ToolCall,
 } from '@/api/chat';
 import { ChatHistoryManager } from './ChatHistoryManager';
+import { AskUserPanel, type PendingUserInput } from './AskUserPanel';
 import {
   applyStreamingDeltas,
   enqueueStreamingDelta,
@@ -180,11 +182,6 @@ interface ChatMessage {
   contextStats?: ContextTurnStats | null;
 }
 
-interface PendingUserInput {
-  requestId: string;
-  question: string;
-}
-
 // 一个会话
 interface Conversation {
   id: string;   // 后端 conversation_id
@@ -247,6 +244,7 @@ export function Chat() {
   const [search, setSearch] = useState('');
   const [generating, setGenerating] = useState(false);
   const [pendingUserInputs, setPendingUserInputs] = useState<Record<string, PendingUserInput[]>>({});
+  const [pendingUserAnswers, setPendingUserAnswers] = useState<Record<string, string>>({});
   const [answeringRequestId, setAnsweringRequestId] = useState<string | null>(null);
   // 聊天设置与设置弹窗 / 折叠面板
   const [settings, setSettings] = useState<ChatSettings>(() => ({
@@ -330,6 +328,9 @@ export function Chat() {
     [conversations, activeId]
   );
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
+  const activePendingUserAnswer = activePendingUserInput
+    ? pendingUserAnswers[activePendingUserInput.requestId] ?? ''
+    : '';
   conversationsRef.current = conversations;
   activeIdRef.current = activeId;
   activeRef.current = active;
@@ -509,7 +510,11 @@ export function Chat() {
               ...prev,
               [event.conversation_id]: [
                 ...current,
-                { requestId: event.request_id, question: event.question },
+                {
+                  requestId: event.request_id,
+                  question: event.question,
+                  options: event.options ?? [],
+                },
               ],
             };
           });
@@ -521,6 +526,11 @@ export function Chat() {
               (item) => item.requestId !== event.request_id
             ),
           }));
+          setPendingUserAnswers((prev) => {
+            const next = { ...prev };
+            delete next[event.request_id];
+            return next;
+          });
           break;
         case 'turn_done': {
           flushStreamingDeltas();
@@ -1345,25 +1355,29 @@ export function Chat() {
   }, []);
 
   // 停止生成 (调用后端取消 + 解除前端流式标记)
-  const handleAnswerUserInput = useCallback(async () => {
-    const answer = input.trim();
+  const handleAnswerUserInput = useCallback(async (answerValue: string) => {
+    const answer = answerValue.trim();
     if (!active || !activePendingUserInput || !answer || answeringRequestId) return;
     const requestId = activePendingUserInput.requestId;
     setAnsweringRequestId(requestId);
     try {
       await chatApi.answerAskUser(active.id, requestId, answer);
-      setInput('');
       setPendingUserInputs((prev) => ({
         ...prev,
         [active.id]: (prev[active.id] ?? []).filter((item) => item.requestId !== requestId),
       }));
+      setPendingUserAnswers((prev) => {
+        const next = { ...prev };
+        delete next[requestId];
+        return next;
+      });
     } catch (err) {
       console.error('[Chat] 提交工具回答失败:', err);
       alert(`提交回答失败: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setAnsweringRequestId(null);
     }
-  }, [active, activePendingUserInput, answeringRequestId, input]);
+  }, [active, activePendingUserInput, answeringRequestId]);
 
   const handleStop = useCallback(async () => {
     const currentActive = activeRef.current;
@@ -1377,7 +1391,15 @@ export function Chat() {
     }
     generatingRef.current = false;
     setGenerating(false);
-    setPendingUserInputs((prev) => currentActive ? { ...prev, [currentActive.id]: [] } : prev);
+    if (currentActive) {
+      const pendingIds = new Set(
+        (pendingUserInputs[currentActive.id] ?? []).map((item) => item.requestId),
+      );
+      setPendingUserAnswers((answers) => Object.fromEntries(
+        Object.entries(answers).filter(([requestId]) => !pendingIds.has(requestId)),
+      ));
+      setPendingUserInputs((prev) => ({ ...prev, [currentActive.id]: [] }));
+    }
     streamingMsgIdRef.current = null;
     if (currentActive) {
       updateConversation(currentActive.id, (c) => ({
@@ -1385,21 +1407,17 @@ export function Chat() {
         messages: c.messages.map((m) => (m.streaming ? { ...m, streaming: false } : m)),
       }));
     }
-  }, [flushStreamingDeltas, updateConversation]);
+  }, [flushStreamingDeltas, pendingUserInputs, updateConversation]);
 
   // 键盘发送: Enter 发送, Shift+Enter 换行
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
-        if (activePendingUserInput) {
-          void handleAnswerUserInput();
-        } else {
-          void handleSend();
-        }
+        if (!activePendingUserInput) void handleSend();
       }
     },
-    [activePendingUserInput, handleAnswerUserInput, handleSend]
+    [activePendingUserInput, handleSend]
   );
 
   // 切换插件聚合启停
@@ -1689,15 +1707,17 @@ export function Chat() {
               )}
 
               {activePendingUserInput && (
-                <div className="glass-card glass-card-accent rounded-xl px-4 py-3 mb-2">
-                  <div className="flex items-center gap-2 text-sm font-medium text-accent mb-1.5">
-                    <Wrench className="h-4 w-4" />
-                    工具正在等待你的回答
-                  </div>
-                  <p className="text-sm text-text-primary whitespace-pre-wrap">
-                    {activePendingUserInput.question}
-                  </p>
-                </div>
+                <AskUserPanel
+                  request={activePendingUserInput}
+                  answer={activePendingUserAnswer}
+                  queueLength={pendingUserInputs[activeId]?.length ?? 1}
+                  submitting={answeringRequestId === activePendingUserInput.requestId}
+                  onAnswerChange={(answer) => setPendingUserAnswers((prev) => ({
+                    ...prev,
+                    [activePendingUserInput.requestId]: answer,
+                  }))}
+                  onSubmit={(answer) => void handleAnswerUserInput(answer)}
+                />
               )}
 
               <div ref={inputCardRef} className="glass-card glass-card-accent rounded-xl p-3 flex items-end gap-2">
@@ -1726,8 +1746,9 @@ export function Chat() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={handleKeyDown}
                   placeholder={activePendingUserInput
-                    ? '输入对工具提问的回答, Enter 提交'
+                    ? '请先回答上方的工具问题'
                     : '输入消息, Enter 发送, Shift+Enter 换行'}
+                  disabled={Boolean(activePendingUserInput)}
                   rows={1}
                   className="flex-1 min-w-0 bg-transparent border-0 outline-none resize-none text-sm text-text-primary placeholder:text-text-tertiary py-2 max-h-[200px]"
                 />
@@ -1738,28 +1759,11 @@ export function Chat() {
                   onClick={() => setOptionsOpen((v) => !v)}
                   className={cn('shrink-0 mb-0.5', optionsOpen && 'text-accent')}
                   title={optionsOpen ? '收起选项' : '展开选项'}
+                  disabled={Boolean(activePendingUserInput)}
                 >
                   <ChevronDown className={cn('h-4 w-4 transition-transform', optionsOpen && 'rotate-180')} />
                 </Button>
-                {activePendingUserInput ? (
-                  <>
-                    <Button
-                      variant="primary"
-                      size="sm"
-                      onClick={() => void handleAnswerUserInput()}
-                      disabled={!input.trim() || answeringRequestId === activePendingUserInput.requestId}
-                      className="shrink-0 mb-0.5"
-                      title="提交回答"
-                    >
-                      {answeringRequestId === activePendingUserInput.requestId
-                        ? <Loader2 className="h-4 w-4 animate-spin" />
-                        : <Send className="h-4 w-4" />}
-                    </Button>
-                    <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
-                      <Square className="h-4 w-4" />
-                    </Button>
-                  </>
-                ) : generating ? (
+                {generating ? (
                   <Button variant="danger" size="sm" onClick={handleStop} className="shrink-0 mb-0.5">
                     <Square className="h-4 w-4" />
                   </Button>
@@ -3025,6 +3029,10 @@ function formatTokenCount(value: number | null | undefined): string {
   return typeof value === 'number' ? value.toLocaleString() : '未知';
 }
 
+function formatTokenCountWithUnit(value: number | null | undefined): string {
+  return typeof value === 'number' ? `${value.toLocaleString()} Token` : '未知';
+}
+
 function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
   const last = stats.last_request;
   const displayInput = last.api_input_tokens ?? last.effective_input_tokens;
@@ -3041,6 +3049,8 @@ function ContextStatsPanel({ stats }: { stats: ContextTurnStats }) {
         <span>API 输入: {formatTokenCount(last.api_input_tokens)}</span>
         <span>API 输出: {formatTokenCount(last.api_output_tokens)}</span>
         <span>本轮总量: {formatTokenCount(stats.total_api_tokens)}</span>
+        <span>末次缓存命中: {formatTokenCountWithUnit(last.api_cached_tokens)}</span>
+        <span>本轮累计缓存命中: {formatTokenCountWithUnit(stats.total_api_cached_tokens)}</span>
         <span>模型请求: {stats.request_count}</span>
         <span>完整历史: {last.original_turns} 轮</span>
         <span>实际发送: {last.prepared_turns} 轮</span>
@@ -3207,9 +3217,34 @@ const MessageBubble = memo(function MessageBubble({
           {/* 操作按钮 (hover 显示) */}
           {!message.streaming && (
             <div className={cn(
-              'flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity',
+              'chat-message-actions flex items-center gap-1 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity',
               isUser && 'justify-end'
             )}>
+              {message.content && (
+                <CopyButton
+                  text={message.content}
+                  title="复制消息"
+                  className="p-1 transition-colors"
+                />
+              )}
+              {onFork && message.turnIndex !== undefined && (
+                <button
+                  onClick={() => onFork(message.turnIndex!)}
+                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
+                  title="从这里分支"
+                >
+                  <GitFork className="h-3.5 w-3.5" />
+                </button>
+              )}
+              {!isUser && isLast && onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
+                  title="重试"
+                >
+                  <RotateCcw className="h-3.5 w-3.5" />
+                </button>
+              )}
               {!isUser && isLast && onSelectVariant && message.turnIndex !== undefined && variants.length > 1 && (
                 <div className="flex items-center gap-0.5 px-1 text-xs text-text-tertiary">
                   <button
@@ -3236,24 +3271,6 @@ const MessageBubble = memo(function MessageBubble({
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
                 </div>
-              )}
-              {!isUser && isLast && onRetry && (
-                <button
-                  onClick={onRetry}
-                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
-                  title="重试"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </button>
-              )}
-              {onFork && message.turnIndex !== undefined && (
-                <button
-                  onClick={() => onFork(message.turnIndex!)}
-                  className="p-1 rounded text-text-tertiary hover:text-accent transition-colors"
-                  title="从这里分支"
-                >
-                  <GitFork className="h-3.5 w-3.5" />
-                </button>
               )}
             </div>
           )}

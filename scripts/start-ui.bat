@@ -6,13 +6,6 @@ title Satrap UI Dev Server
 set "SCRIPT_DIR=%~dp0"
 set "PROJECT_ROOT=%SCRIPT_DIR%.."
 
-:: 清理残留进程, 隐藏启动控制服务与聊天服务, 并完成健康检查
-powershell -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start-background-services.ps1" -ProjectRoot "%PROJECT_ROOT%"
-if errorlevel 1 (
-    echo Failed to start Satrap background services
-    exit /b 1
-)
-
 cd /d "%PROJECT_ROOT%\satrap-ui"
 
 echo Starting Satrap UI development server...
@@ -25,8 +18,15 @@ if not exist "node_modules" (
     echo.
 )
 
+:: 后台服务并行清理和预热, 不阻塞 Vite 开始监听
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%start-background-services.ps1" -ProjectRoot "%PROJECT_ROOT%" -Detach -StopFrontend
+if errorlevel 1 (
+    echo Failed to launch Satrap background service startup
+    exit /b 1
+)
+
 :: 启动开发服务器
 echo Starting Vite dev server at http://localhost:5173
 echo Press Ctrl+C to stop
 echo.
-call npm run dev
+call npm run dev -- --strictPort

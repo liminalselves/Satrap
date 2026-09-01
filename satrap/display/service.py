@@ -90,6 +90,7 @@ class _PendingUserInput:
 
     request_id: str
     question: str
+    options: tuple[str, ...]
     future: asyncio.Future[str]
 
 
@@ -220,31 +221,47 @@ class ChatService:
                     "conversation_id": conversation_id,
                     "request_id": pending.request_id,
                     "question": pending.question,
+                    "options": list(pending.options),
                     "ts": time.time(),
                 })
         else:
             self._orphan_queues.setdefault(conversation_id, set()).add(q)
         return q
 
-    async def _request_user_input(self, conv: _Conversation, question: str) -> str:
+    async def _request_user_input(
+        self,
+        conv: _Conversation,
+        question: str,
+        options: list[str] | None = None,
+    ) -> str:
         """
         向 Chat 前端发出问题并等待回答
 
         参数:
         - conv: 会话运行时
         - question: 问题内容
+        - options: 推荐回答选项
 
         返回:
         - str: 用户回答
         """
         request_id = uuid.uuid4().hex
         future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-        pending = _PendingUserInput(request_id=request_id, question=question, future=future)
+        normalized_options = tuple(dict.fromkeys(
+            option.strip() for option in options or [] if isinstance(option, str) and option.strip()
+        ))
+        pending = _PendingUserInput(
+            request_id=request_id,
+            question=question,
+            options=normalized_options,
+            future=future,
+        )
         conv.pending_user_inputs[request_id] = pending
         self._broadcast(conv, {
             "type": MSG_ASK_USER,
             "request_id": request_id,
             "question": question,
+            "options": list(normalized_options),
         })
         logger.info(f"[聊天] 会话 {conv.conversation_id} 等待用户回答: {request_id}")
         try:
@@ -646,9 +663,9 @@ class ChatService:
         )
         self._conversations[conversation_id] = conv
 
-        async def user_input_provider(question: str) -> str:
+        async def user_input_provider(question: str, options: list[str] | None = None) -> str:
             """把插件用户询问桥接到 Chat 前端"""
-            return await self._request_user_input(conv, question)
+            return await self._request_user_input(conv, question, options)
 
         session.user_input_provider = user_input_provider
 
@@ -1167,9 +1184,9 @@ class ChatService:
         )
         self._conversations[conversation_id] = conv
 
-        async def user_input_provider(question: str) -> str:
+        async def user_input_provider(question: str, options: list[str] | None = None) -> str:
             """把插件用户询问桥接到 Chat 前端"""
-            return await self._request_user_input(conv, question)
+            return await self._request_user_input(conv, question, options)
 
         session.user_input_provider = user_input_provider
 

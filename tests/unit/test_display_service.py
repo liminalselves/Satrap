@@ -336,7 +336,7 @@ def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
             *,
             thinking: str = "off",
         ) -> str:
-            answer = provider("请选择: 1. 继续  2. 取消")
+            answer = provider("请选择", ["继续", "取消"])
             if isinstance(answer, str):
                 return answer
             return await answer
@@ -347,13 +347,15 @@ def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
         assert turn_start["type"] == "turn_start"
         event = await asyncio.wait_for(queue.get(), timeout=1)
         assert event["type"] == "ask_user"
-        assert event["question"] == "请选择: 1. 继续  2. 取消"
+        assert event["question"] == "请选择"
+        assert event["options"] == ["继续", "取消"]
         request_id = event["request_id"]
 
         replay_queue = svc.subscribe(cid)
         replay = replay_queue.get_nowait()
         assert replay["type"] == "ask_user"
         assert replay["request_id"] == request_id
+        assert replay["options"] == ["继续", "取消"]
 
         assert svc.answer_user_input(cid, request_id, "1") == {"ok": True}
         assert conv.task is not None

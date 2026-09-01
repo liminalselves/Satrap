@@ -3,7 +3,9 @@
 
 param(
     [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
-    [switch]$StopOnly
+    [switch]$StopOnly,
+    [switch]$Detach,
+    [switch]$StopFrontend
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,6 +18,54 @@ $env:PYTHONUTF8 = "1"
 
 $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
 $DataDir = Join-Path $ProjectRoot ".satrap"
+
+if ($Detach) {
+    if ($StopFrontend) {
+        $frontendPort = 5173
+        $activePorts = @(
+            [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+                Select-Object -ExpandProperty Port -Unique
+        )
+        if ($activePorts -contains $frontendPort) {
+            $frontendRootPattern = [Regex]::Escape((Join-Path $ProjectRoot "satrap-ui"))
+            $frontendOwnerIds = @(
+                Get-NetTCPConnection -LocalPort $frontendPort -State Listen -ErrorAction SilentlyContinue |
+                    Select-Object -ExpandProperty OwningProcess -Unique
+            )
+            foreach ($ownerId in $frontendOwnerIds) {
+                $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+                $isSatrapVite = $null -ne $owner -and
+                    $owner.Name -eq "node.exe" -and
+                    $owner.CommandLine -match $frontendRootPattern -and
+                    $owner.CommandLine -match "(?i)[\\/]vite[\\/]bin[\\/]vite\.js"
+                if ($isSatrapVite) {
+                    Stop-Process -Id $ownerId -Force -ErrorAction Stop
+                }
+            }
+        }
+    }
+
+    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
+    $stdoutPath = Join-Path $DataDir "background-services.stdout.log"
+    $stderrPath = Join-Path $DataDir "background-services.stderr.log"
+    $argumentList = @(
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "`"$PSCommandPath`"",
+        "-ProjectRoot",
+        "`"$ProjectRoot`""
+    )
+    Start-Process `
+        -FilePath "powershell.exe" `
+        -ArgumentList $argumentList `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $stdoutPath `
+        -RedirectStandardError $stderrPath | Out-Null
+    return
+}
+
 $Services = @(
     [PSCustomObject]@{
         Name = "控制服务"
@@ -47,15 +97,11 @@ function Test-ModuleCommandLine {
     return $CommandLine -match "(?i)(?:^|\s)-m\s+$escapedModule(?:\s|$)"
 }
 
-function Get-ModuleProcesses {
-    param([string]$Module)
-
+function Get-PythonProcesses {
     return @(
-        Get-CimInstance Win32_Process -ErrorAction Stop |
-            Where-Object {
-                $_.Name -match "(?i)^(?:python(?:w|\d+(?:\.\d+)?)?|py)\.exe$" -and
-                (Test-ModuleCommandLine -CommandLine $_.CommandLine -Module $Module)
-            }
+        Get-CimInstance Win32_Process `
+            -Filter "Name LIKE 'python%.exe' OR Name = 'py.exe'" `
+            -ErrorAction Stop
     )
 }
 
@@ -69,12 +115,19 @@ function Get-PortOwnerIds {
 }
 
 function Stop-ServiceInstance {
-    param([PSCustomObject]$Service)
+    param(
+        [PSCustomObject]$Service,
+        [object[]]$PythonProcesses,
+        [int[]]$PortOwnerIds
+    )
 
-    $moduleProcesses = @(Get-ModuleProcesses -Module $Service.Module)
+    $moduleProcesses = @(
+        $PythonProcesses | Where-Object {
+            Test-ModuleCommandLine -CommandLine $_.CommandLine -Module $Service.Module
+        }
+    )
     $moduleProcessIds = @($moduleProcesses | Select-Object -ExpandProperty ProcessId)
-    $portOwnerIds = @(Get-PortOwnerIds -Port $Service.Port)
-    $ownsPort = @($portOwnerIds | Where-Object { $moduleProcessIds -contains $_ }).Count -gt 0
+    $ownsPort = @($PortOwnerIds | Where-Object { $moduleProcessIds -contains $_ }).Count -gt 0
 
     if ($ownsPort -and $Service.StopBackend) {
         try {
@@ -88,28 +141,9 @@ function Stop-ServiceInstance {
         try {
             Invoke-RestMethod -Uri "http://127.0.0.1:$($Service.Port)/shutdown" -Method Post -TimeoutSec 2 | Out-Null
         } catch {}
-        Start-Sleep -Milliseconds 700
     }
 
-    foreach ($process in @(Get-ModuleProcesses -Module $Service.Module)) {
-        Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
-        Write-Host "  已停止$($Service.Name), PID $($process.ProcessId)" -ForegroundColor DarkGray
-    }
-
-    Start-Sleep -Milliseconds 300
-    $remainingOwnerIds = @(Get-PortOwnerIds -Port $Service.Port)
-    if ($remainingOwnerIds.Count -eq 0) {
-        return
-    }
-
-    foreach ($ownerId in $remainingOwnerIds) {
-        $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
-        $ownerDescription = "PID $ownerId"
-        if ($null -ne $owner) {
-            $ownerDescription = "$($owner.Name), PID $ownerId"
-        }
-        throw "$($Service.Name)端口 $($Service.Port) 被其他进程占用: $ownerDescription"
-    }
+    return $moduleProcesses
 }
 
 function Wait-ServiceHealth {
@@ -135,8 +169,63 @@ function Wait-ServiceHealth {
 }
 
 function Stop-BackgroundServices {
+    $pythonProcesses = @(Get-PythonProcesses)
+    $listeningConnections = @(
+        Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+            Where-Object { $Services.Port -contains $_.LocalPort }
+    )
+    $serviceProcesses = @{}
+
     foreach ($service in $Services) {
-        Stop-ServiceInstance -Service $service
+        $portOwnerIds = @(
+            $listeningConnections |
+                Where-Object { $_.LocalPort -eq $service.Port } |
+                Select-Object -ExpandProperty OwningProcess -Unique
+        )
+        $serviceProcesses[$service.Module] = @(
+            Stop-ServiceInstance `
+                -Service $service `
+                -PythonProcesses $pythonProcesses `
+                -PortOwnerIds $portOwnerIds
+        )
+    }
+
+    if (@($serviceProcesses.Values | ForEach-Object { $_ }).Count -gt 0) {
+        Start-Sleep -Milliseconds 700
+    }
+
+    foreach ($service in $Services) {
+        foreach ($process in $serviceProcesses[$service.Module]) {
+            if ($null -eq (Get-Process -Id $process.ProcessId -ErrorAction SilentlyContinue)) {
+                continue
+            }
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            Write-Host "  已停止$($service.Name), PID $($process.ProcessId)" -ForegroundColor DarkGray
+        }
+    }
+
+    if (@($serviceProcesses.Values | ForEach-Object { $_ }).Count -gt 0) {
+        Start-Sleep -Milliseconds 300
+    }
+
+    $activePorts = @(
+        [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().GetActiveTcpListeners() |
+            Select-Object -ExpandProperty Port -Unique
+    )
+    foreach ($service in $Services) {
+        if ($activePorts -notcontains $service.Port) {
+            continue
+        }
+        $remainingOwnerIds = @(Get-PortOwnerIds -Port $service.Port)
+        $ownerDescriptions = foreach ($ownerId in $remainingOwnerIds) {
+            $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerId" -ErrorAction SilentlyContinue
+            if ($null -eq $owner) {
+                "PID $ownerId"
+            } else {
+                "$($owner.Name), PID $ownerId"
+            }
+        }
+        throw "$($service.Name)端口 $($service.Port) 被其他进程占用: $($ownerDescriptions -join ', ')"
     }
 
     Remove-Item -LiteralPath (Join-Path $DataDir "control_server.pid") -Force -ErrorAction SilentlyContinue
@@ -153,6 +242,7 @@ try {
 
     $pythonPath = (Get-Command python.exe -ErrorAction Stop).Source
     $startedProcesses = @()
+    $startedServices = @()
 
     foreach ($service in $Services) {
         Write-Host "正在隐藏启动$($service.Name)..." -ForegroundColor Cyan
@@ -163,8 +253,15 @@ try {
             -WindowStyle Hidden `
             -PassThru
         $startedProcesses += $process
-        Wait-ServiceHealth -Service $service -Process $process
-        Write-Host "  $($service.Name)已就绪, PID $($process.Id), 端口 $($service.Port)" -ForegroundColor Green
+        $startedServices += [PSCustomObject]@{
+            Service = $service
+            Process = $process
+        }
+    }
+
+    foreach ($started in $startedServices) {
+        Wait-ServiceHealth -Service $started.Service -Process $started.Process
+        Write-Host "  $($started.Service.Name)已就绪, PID $($started.Process.Id), 端口 $($started.Service.Port)" -ForegroundColor Green
     }
 } catch {
     Write-Host "后台服务启动失败: $($_.Exception.Message)" -ForegroundColor Red

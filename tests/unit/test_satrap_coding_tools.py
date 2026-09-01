@@ -381,6 +381,17 @@ def test_ask_user_tool(tmp_path: Any):
     assert "1. 方案A" in captured[0] and "2. 方案B" in captured[0]
     assert "用户回复: 2" in out
 
+    structured: list[tuple[str, list[str] | None]] = []
+
+    def structured_provider(question: str, options: list[str] | None = None) -> str:
+        structured.append((question, options))
+        return "方案B"
+
+    session.user_input_provider = structured_provider
+    out = tools["ask_user"].execute("继续吗?", ["方案A", "方案B"])
+    assert structured == [("继续吗?", ["方案A", "方案B"])]
+    assert "用户回复: 方案B" in out
+
 
 # ================= memory 工具 =================
 
@@ -548,6 +559,17 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
 
     out = await tools["ask_user"].execute("继续?")
     assert "用户回复: y" in out
+
+    structured: list[tuple[str, list[str] | None]] = []
+
+    async def structured_provider(question: str, options: list[str] | None = None) -> str:
+        structured.append((question, options))
+        return "继续"
+
+    session.user_input_provider = structured_provider
+    out = await tools["ask_user"].execute("下一步?", ["继续", "停止"])
+    assert structured == [("下一步?", ["继续", "停止"])]
+    assert "用户回复: 继续" in out
 
     out = await tools["shell"].execute("echo async-ok")
     assert "async-ok" in out

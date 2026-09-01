@@ -52,6 +52,7 @@ export interface ContextRequestStats {
   api_input_tokens?: number | null;
   api_output_tokens?: number | null;
   api_total_tokens?: number | null;
+  api_cached_tokens?: number | null;
 }
 
 export interface ContextTurnStats {
@@ -60,6 +61,7 @@ export interface ContextTurnStats {
   total_api_input_tokens?: number | null;
   total_api_output_tokens?: number | null;
   total_api_tokens?: number | null;
+  total_api_cached_tokens?: number | null;
 }
 
 // 对话轮次 (对齐 display_turns)
@@ -258,7 +260,7 @@ export type ChatEvent =
   | { type: 'content_delta'; delta: string }
   | { type: 'tool_start'; name: string; arguments: unknown; call_id: string }
   | { type: 'tool_end'; name: string; call_id: string; success: boolean }
-  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string }
+  | { type: 'ask_user'; conversation_id: string; request_id: string; question: string; options?: string[] }
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
   | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }

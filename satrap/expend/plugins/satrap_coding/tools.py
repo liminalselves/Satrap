@@ -15,6 +15,7 @@ satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 import shutil
@@ -124,12 +125,8 @@ def _ask_user_sync(
     provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
-    text = question
-    if options:
-        numbered = "  ".join(f"{i}. {opt}" for i, opt in enumerate(options, 1))
-        text += f" 可选: {numbered}"
     try:
-        return str(provider(text))
+        return str(_call_user_input_provider(provider, question, options))
     except Exception as e:
         logger.warning(f"[satrap_coding] 用户输入通道异常: {e}")
         return None
@@ -154,18 +151,43 @@ async def _ask_user_async(
     provider = safe_getattr_callable(session, "user_input_provider")
     if provider is None:
         return None
-    text = question
-    if options:
-        numbered = "  ".join(f"{i}. {opt}" for i, opt in enumerate(options, 1))
-        text += f" 可选: {numbered}"
     try:
-        answer = provider(text)
+        answer = _call_user_input_provider(provider, question, options)
         if hasattr(answer, "__await__"):
             answer = await answer
         return str(answer)
     except Exception as e:
         logger.warning(f"[satrap_coding] 用户输入通道异常: {e}")
         return None
+
+
+def _call_user_input_provider(
+    provider: Callable[..., Any],
+    question: str,
+    options: list[str] | None,
+) -> Any:
+    """
+    调用用户输入通道, 新通道结构化传递选项, 旧通道保留拼接文本
+
+    参数:
+    - provider: 用户输入回调
+    - question: 问题内容
+    - options: 选项集合
+
+    返回:
+    - Any: Provider 返回值
+    """
+    normalized_options = [str(option).strip() for option in options or [] if str(option).strip()]
+    if normalized_options:
+        try:
+            inspect.signature(provider).bind(question, normalized_options)
+        except (TypeError, ValueError):
+            numbered = "  ".join(
+                f"{index}. {option}" for index, option in enumerate(normalized_options, 1)
+            )
+            return provider(f"{question} 可选: {numbered}")
+        return provider(question, normalized_options)
+    return provider(question)
 
 
 def _approve_sync(

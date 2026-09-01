@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "generated_at": "2026-08-31T13:32:02.460Z",
+    "generated_at": "2026-08-31T14:34:33.705Z",
     "platform": "win32 10.0.26200 x64",
     "cpu": "Intel(R) Core(TM) Ultra 9 386H",
     "logical_cpus": 16,
@@ -19,93 +19,93 @@
       "label": "仪表盘浅色静置",
       "runs": [
         {
-          "duration_ms": 5000.507,
-          "average_fps": 163.239,
-          "p95_frame_ms": 8.6,
-          "longest_frame_ms": 20.7,
-          "dropped_frames": 1,
-          "frame_samples": 816,
+          "duration_ms": 5013.183,
+          "average_fps": 211.345,
+          "p95_frame_ms": 8.4,
+          "longest_frame_ms": 16.4,
+          "dropped_frames": 0,
+          "frame_samples": 1060,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.018,
-          "js_heap_peak_mb": 5.244,
-          "js_heap_end_mb": 5.244,
-          "task_ms": 1157.433,
-          "script_ms": 23.325,
+          "js_heap_start_mb": 5.026,
+          "js_heap_peak_mb": 5.268,
+          "js_heap_end_mb": 5.268,
+          "task_ms": 510.799,
+          "script_ms": 31.797,
           "layout_ms": 0,
-          "recalc_style_ms": 122.228
+          "recalc_style_ms": 110.117
         },
         {
-          "duration_ms": 5005.5,
-          "average_fps": 152.118,
-          "p95_frame_ms": 12.4,
-          "longest_frame_ms": 29.1,
-          "dropped_frames": 1,
-          "frame_samples": 761,
+          "duration_ms": 5002.18,
+          "average_fps": 225.665,
+          "p95_frame_ms": 8.2,
+          "longest_frame_ms": 12.6,
+          "dropped_frames": 0,
+          "frame_samples": 1129,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.002,
-          "js_heap_peak_mb": 5.224,
-          "js_heap_end_mb": 5.224,
-          "task_ms": 1086.848,
-          "script_ms": 19.774,
+          "js_heap_start_mb": 5.023,
+          "js_heap_peak_mb": 5.258,
+          "js_heap_end_mb": 5.258,
+          "task_ms": 513.229,
+          "script_ms": 30.917,
           "layout_ms": 0,
-          "recalc_style_ms": 113.114
+          "recalc_style_ms": 112.351
         },
         {
-          "duration_ms": 5008.999,
-          "average_fps": 157.843,
-          "p95_frame_ms": 12.3,
-          "longest_frame_ms": 24.9,
-          "dropped_frames": 1,
-          "frame_samples": 791,
+          "duration_ms": 5012.504,
+          "average_fps": 221.899,
+          "p95_frame_ms": 8.3,
+          "longest_frame_ms": 16.5,
+          "dropped_frames": 0,
+          "frame_samples": 1112,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.078,
-          "js_heap_peak_mb": 5.306,
-          "js_heap_end_mb": 5.306,
-          "task_ms": 1071.712,
-          "script_ms": 21.521,
+          "js_heap_start_mb": 5.009,
+          "js_heap_peak_mb": 5.252,
+          "js_heap_end_mb": 5.252,
+          "task_ms": 488.075,
+          "script_ms": 31.711,
           "layout_ms": 0,
-          "recalc_style_ms": 112.203
+          "recalc_style_ms": 109.125
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 5005.5,
-          "p95": 5008.999,
-          "worst": 5008.999
+          "median": 5012.504,
+          "p95": 5013.183,
+          "worst": 5013.183
         },
         "average_fps": {
-          "median": 157.843,
-          "p95": 163.239,
-          "worst": 163.239
+          "median": 221.899,
+          "p95": 225.665,
+          "worst": 225.665
         },
         "p95_frame_ms": {
-          "median": 12.3,
-          "p95": 12.4,
-          "worst": 12.4
+          "median": 8.3,
+          "p95": 8.4,
+          "worst": 8.4
         },
         "longest_frame_ms": {
-          "median": 24.9,
-          "p95": 29.1,
-          "worst": 29.1
+          "median": 16.4,
+          "p95": 16.5,
+          "worst": 16.5
         },
         "dropped_frames": {
-          "median": 1,
-          "p95": 1,
-          "worst": 1
+          "median": 0,
+          "p95": 0,
+          "worst": 0
         },
         "frame_samples": {
-          "median": 791,
-          "p95": 816,
-          "worst": 816
+          "median": 1112,
+          "p95": 1129,
+          "worst": 1129
         },
         "long_tasks": {
           "median": 0,
@@ -128,29 +128,29 @@
           "worst": 186
         },
         "js_heap_start_mb": {
-          "median": 5.018,
-          "p95": 5.078,
-          "worst": 5.078
+          "median": 5.023,
+          "p95": 5.026,
+          "worst": 5.026
         },
         "js_heap_peak_mb": {
-          "median": 5.244,
-          "p95": 5.306,
-          "worst": 5.306
+          "median": 5.258,
+          "p95": 5.268,
+          "worst": 5.268
         },
         "js_heap_end_mb": {
-          "median": 5.244,
-          "p95": 5.306,
-          "worst": 5.306
+          "median": 5.258,
+          "p95": 5.268,
+          "worst": 5.268
         },
         "task_ms": {
-          "median": 1086.848,
-          "p95": 1157.433,
-          "worst": 1157.433
+          "median": 510.799,
+          "p95": 513.229,
+          "worst": 513.229
         },
         "script_ms": {
-          "median": 21.521,
-          "p95": 23.325,
-          "worst": 23.325
+          "median": 31.711,
+          "p95": 31.797,
+          "worst": 31.797
         },
         "layout_ms": {
           "median": 0,
@@ -158,9 +158,9 @@
           "worst": 0
         },
         "recalc_style_ms": {
-          "median": 113.114,
-          "p95": 122.228,
-          "worst": 122.228
+          "median": 110.117,
+          "p95": 112.351,
+          "worst": 112.351
         }
       }
     },
@@ -169,93 +169,93 @@
       "label": "仪表盘深色静置",
       "runs": [
         {
-          "duration_ms": 5000.462,
-          "average_fps": 145.357,
-          "p95_frame_ms": 12.5,
-          "longest_frame_ms": 25.1,
-          "dropped_frames": 2,
-          "frame_samples": 726,
+          "duration_ms": 5010.674,
+          "average_fps": 220.311,
+          "p95_frame_ms": 8.3,
+          "longest_frame_ms": 16.6,
+          "dropped_frames": 0,
+          "frame_samples": 1104,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 194,
-          "js_heap_start_mb": 5.017,
-          "js_heap_peak_mb": 5.246,
-          "js_heap_end_mb": 5.246,
-          "task_ms": 648.603,
-          "script_ms": 20.513,
+          "js_heap_start_mb": 5.004,
+          "js_heap_peak_mb": 5.245,
+          "js_heap_end_mb": 5.245,
+          "task_ms": 476.173,
+          "script_ms": 31.71,
           "layout_ms": 0,
-          "recalc_style_ms": 102.576
+          "recalc_style_ms": 104.831
         },
         {
-          "duration_ms": 5002.22,
-          "average_fps": 145.68,
-          "p95_frame_ms": 12.5,
-          "longest_frame_ms": 20.8,
-          "dropped_frames": 1,
-          "frame_samples": 727,
+          "duration_ms": 5008.046,
+          "average_fps": 195.358,
+          "p95_frame_ms": 8.4,
+          "longest_frame_ms": 16.6,
+          "dropped_frames": 0,
+          "frame_samples": 979,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 194,
-          "js_heap_start_mb": 5.029,
-          "js_heap_peak_mb": 5.254,
-          "js_heap_end_mb": 5.254,
-          "task_ms": 663.652,
-          "script_ms": 22.39,
+          "js_heap_start_mb": 5.06,
+          "js_heap_peak_mb": 5.292,
+          "js_heap_end_mb": 5.292,
+          "task_ms": 510.511,
+          "script_ms": 32.241,
           "layout_ms": 0,
-          "recalc_style_ms": 105.605
+          "recalc_style_ms": 110.236
         },
         {
-          "duration_ms": 5005.432,
-          "average_fps": 139,
-          "p95_frame_ms": 12.5,
-          "longest_frame_ms": 29.1,
-          "dropped_frames": 2,
-          "frame_samples": 696,
+          "duration_ms": 5000.36,
+          "average_fps": 153.314,
+          "p95_frame_ms": 12.6,
+          "longest_frame_ms": 21,
+          "dropped_frames": 3,
+          "frame_samples": 767,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 0,
           "dom_nodes": 194,
-          "js_heap_start_mb": 5.058,
-          "js_heap_peak_mb": 5.288,
-          "js_heap_end_mb": 5.288,
-          "task_ms": 656.644,
-          "script_ms": 23.479,
+          "js_heap_start_mb": 5.019,
+          "js_heap_peak_mb": 5.248,
+          "js_heap_end_mb": 5.248,
+          "task_ms": 371.189,
+          "script_ms": 24.467,
           "layout_ms": 0,
-          "recalc_style_ms": 102.871
+          "recalc_style_ms": 81.099
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 5002.22,
-          "p95": 5005.432,
-          "worst": 5005.432
+          "median": 5008.046,
+          "p95": 5010.674,
+          "worst": 5010.674
         },
         "average_fps": {
-          "median": 145.357,
-          "p95": 145.68,
-          "worst": 145.68
+          "median": 195.358,
+          "p95": 220.311,
+          "worst": 220.311
         },
         "p95_frame_ms": {
-          "median": 12.5,
-          "p95": 12.5,
-          "worst": 12.5
+          "median": 8.4,
+          "p95": 12.6,
+          "worst": 12.6
         },
         "longest_frame_ms": {
-          "median": 25.1,
-          "p95": 29.1,
-          "worst": 29.1
+          "median": 16.6,
+          "p95": 21,
+          "worst": 21
         },
         "dropped_frames": {
-          "median": 2,
-          "p95": 2,
-          "worst": 2
+          "median": 0,
+          "p95": 3,
+          "worst": 3
         },
         "frame_samples": {
-          "median": 726,
-          "p95": 727,
-          "worst": 727
+          "median": 979,
+          "p95": 1104,
+          "worst": 1104
         },
         "long_tasks": {
           "median": 0,
@@ -278,29 +278,29 @@
           "worst": 194
         },
         "js_heap_start_mb": {
-          "median": 5.029,
-          "p95": 5.058,
-          "worst": 5.058
+          "median": 5.019,
+          "p95": 5.06,
+          "worst": 5.06
         },
         "js_heap_peak_mb": {
-          "median": 5.254,
-          "p95": 5.288,
-          "worst": 5.288
+          "median": 5.248,
+          "p95": 5.292,
+          "worst": 5.292
         },
         "js_heap_end_mb": {
-          "median": 5.254,
-          "p95": 5.288,
-          "worst": 5.288
+          "median": 5.248,
+          "p95": 5.292,
+          "worst": 5.292
         },
         "task_ms": {
-          "median": 656.644,
-          "p95": 663.652,
-          "worst": 663.652
+          "median": 476.173,
+          "p95": 510.511,
+          "worst": 510.511
         },
         "script_ms": {
-          "median": 22.39,
-          "p95": 23.479,
-          "worst": 23.479
+          "median": 31.71,
+          "p95": 32.241,
+          "worst": 32.241
         },
         "layout_ms": {
           "median": 0,
@@ -308,9 +308,9 @@
           "worst": 0
         },
         "recalc_style_ms": {
-          "median": 102.871,
-          "p95": 105.605,
-          "worst": 105.605
+          "median": 104.831,
+          "p95": 110.236,
+          "worst": 110.236
         }
       }
     },
@@ -319,96 +319,96 @@
       "label": "玻璃卡片指针移动",
       "runs": [
         {
-          "duration_ms": 1296.845,
-          "average_fps": 114.25,
+          "duration_ms": 1377.429,
+          "average_fps": 106.197,
           "p95_frame_ms": 12.6,
-          "longest_frame_ms": 41.7,
+          "longest_frame_ms": 33.4,
           "dropped_frames": 1,
-          "frame_samples": 148,
+          "frame_samples": 146,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 712,
+          "renderer_mutations": 751,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.044,
-          "js_heap_peak_mb": 5.387,
-          "js_heap_end_mb": 5.387,
-          "task_ms": 362.426,
-          "script_ms": 17.042,
+          "js_heap_start_mb": 5.049,
+          "js_heap_peak_mb": 5.399,
+          "js_heap_end_mb": 5.399,
+          "task_ms": 275.486,
+          "script_ms": 19.434,
           "layout_ms": 0,
-          "recalc_style_ms": 89.697,
+          "recalc_style_ms": 93.622,
           "pointer_events_requested": 480
         },
         {
-          "duration_ms": 1214.264,
-          "average_fps": 125.426,
-          "p95_frame_ms": 12.5,
-          "longest_frame_ms": 33.2,
-          "dropped_frames": 1,
-          "frame_samples": 151,
+          "duration_ms": 1679.614,
+          "average_fps": 85.394,
+          "p95_frame_ms": 16.7,
+          "longest_frame_ms": 54,
+          "dropped_frames": 2,
+          "frame_samples": 143,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 650,
+          "renderer_mutations": 819,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.053,
-          "js_heap_peak_mb": 5.39,
-          "js_heap_end_mb": 5.39,
-          "task_ms": 294.199,
-          "script_ms": 17.932,
+          "js_heap_start_mb": 5.022,
+          "js_heap_peak_mb": 5.385,
+          "js_heap_end_mb": 5.385,
+          "task_ms": 292.638,
+          "script_ms": 21.772,
           "layout_ms": 0,
-          "recalc_style_ms": 95.269,
+          "recalc_style_ms": 94.688,
           "pointer_events_requested": 480
         },
         {
-          "duration_ms": 1223.328,
-          "average_fps": 114.323,
+          "duration_ms": 1361.385,
+          "average_fps": 108.247,
           "p95_frame_ms": 12.6,
-          "longest_frame_ms": 29.2,
-          "dropped_frames": 3,
-          "frame_samples": 140,
+          "longest_frame_ms": 45.8,
+          "dropped_frames": 1,
+          "frame_samples": 147,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 667,
+          "renderer_mutations": 716,
           "dom_nodes": 186,
-          "js_heap_start_mb": 5.037,
-          "js_heap_peak_mb": 5.375,
-          "js_heap_end_mb": 5.375,
-          "task_ms": 304.949,
-          "script_ms": 16.809,
+          "js_heap_start_mb": 4.998,
+          "js_heap_peak_mb": 5.342,
+          "js_heap_end_mb": 5.342,
+          "task_ms": 288.237,
+          "script_ms": 20.38,
           "layout_ms": 0,
-          "recalc_style_ms": 87.247,
+          "recalc_style_ms": 95.751,
           "pointer_events_requested": 480
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 1223.328,
-          "p95": 1296.845,
-          "worst": 1296.845
+          "median": 1377.429,
+          "p95": 1679.614,
+          "worst": 1679.614
         },
         "average_fps": {
-          "median": 114.323,
-          "p95": 125.426,
-          "worst": 125.426
+          "median": 106.197,
+          "p95": 108.247,
+          "worst": 108.247
         },
         "p95_frame_ms": {
           "median": 12.6,
-          "p95": 12.6,
-          "worst": 12.6
+          "p95": 16.7,
+          "worst": 16.7
         },
         "longest_frame_ms": {
-          "median": 33.2,
-          "p95": 41.7,
-          "worst": 41.7
+          "median": 45.8,
+          "p95": 54,
+          "worst": 54
         },
         "dropped_frames": {
           "median": 1,
-          "p95": 3,
-          "worst": 3
+          "p95": 2,
+          "worst": 2
         },
         "frame_samples": {
-          "median": 148,
-          "p95": 151,
-          "worst": 151
+          "median": 146,
+          "p95": 147,
+          "worst": 147
         },
         "long_tasks": {
           "median": 0,
@@ -421,9 +421,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 667,
-          "p95": 712,
-          "worst": 712
+          "median": 751,
+          "p95": 819,
+          "worst": 819
         },
         "dom_nodes": {
           "median": 186,
@@ -431,29 +431,29 @@
           "worst": 186
         },
         "js_heap_start_mb": {
-          "median": 5.044,
-          "p95": 5.053,
-          "worst": 5.053
+          "median": 5.022,
+          "p95": 5.049,
+          "worst": 5.049
         },
         "js_heap_peak_mb": {
-          "median": 5.387,
-          "p95": 5.39,
-          "worst": 5.39
+          "median": 5.385,
+          "p95": 5.399,
+          "worst": 5.399
         },
         "js_heap_end_mb": {
-          "median": 5.387,
-          "p95": 5.39,
-          "worst": 5.39
+          "median": 5.385,
+          "p95": 5.399,
+          "worst": 5.399
         },
         "task_ms": {
-          "median": 304.949,
-          "p95": 362.426,
-          "worst": 362.426
+          "median": 288.237,
+          "p95": 292.638,
+          "worst": 292.638
         },
         "script_ms": {
-          "median": 17.042,
-          "p95": 17.932,
-          "worst": 17.932
+          "median": 20.38,
+          "p95": 21.772,
+          "worst": 21.772
         },
         "layout_ms": {
           "median": 0,
@@ -461,9 +461,9 @@
           "worst": 0
         },
         "recalc_style_ms": {
-          "median": 89.697,
-          "p95": 95.269,
-          "worst": 95.269
+          "median": 94.688,
+          "p95": 95.751,
+          "worst": 95.751
         },
         "pointer_events_requested": {
           "median": 480,
@@ -477,96 +477,96 @@
       "label": "Chat 100 条消息滚动",
       "runs": [
         {
-          "duration_ms": 2278.048,
-          "average_fps": 97.789,
-          "p95_frame_ms": 16.5,
-          "longest_frame_ms": 54.1,
-          "dropped_frames": 4,
-          "frame_samples": 222,
+          "duration_ms": 2309.177,
+          "average_fps": 70.194,
+          "p95_frame_ms": 20.8,
+          "longest_frame_ms": 66.7,
+          "dropped_frames": 12,
+          "frame_samples": 162,
           "long_tasks": 0,
           "long_task_total_ms": 0,
           "renderer_mutations": 801,
           "dom_nodes": 3098,
-          "js_heap_start_mb": 10.515,
-          "js_heap_peak_mb": 11.715,
-          "js_heap_end_mb": 9.612,
-          "task_ms": 1117.489,
-          "script_ms": 72.003,
-          "layout_ms": 25.291,
-          "recalc_style_ms": 94.279,
+          "js_heap_start_mb": 10.986,
+          "js_heap_peak_mb": 11.821,
+          "js_heap_end_mb": 9.421,
+          "task_ms": 868.287,
+          "script_ms": 59.06,
+          "layout_ms": 25.983,
+          "recalc_style_ms": 81.641,
           "history_messages": 100
         },
         {
-          "duration_ms": 2285.827,
-          "average_fps": 91.284,
-          "p95_frame_ms": 16.6,
-          "longest_frame_ms": 66.7,
-          "dropped_frames": 4,
-          "frame_samples": 208,
+          "duration_ms": 2283.478,
+          "average_fps": 70.603,
+          "p95_frame_ms": 20.8,
+          "longest_frame_ms": 54.2,
+          "dropped_frames": 11,
+          "frame_samples": 160,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 784,
+          "renderer_mutations": 790,
           "dom_nodes": 3098,
-          "js_heap_start_mb": 8.506,
-          "js_heap_peak_mb": 11.666,
-          "js_heap_end_mb": 9.968,
-          "task_ms": 1041.637,
-          "script_ms": 58.531,
-          "layout_ms": 24.259,
-          "recalc_style_ms": 95.065,
+          "js_heap_start_mb": 8.184,
+          "js_heap_peak_mb": 11.729,
+          "js_heap_end_mb": 9.674,
+          "task_ms": 831.851,
+          "script_ms": 58.591,
+          "layout_ms": 23.914,
+          "recalc_style_ms": 77.584,
           "history_messages": 100
         },
         {
-          "duration_ms": 2295.244,
-          "average_fps": 85.678,
-          "p95_frame_ms": 16.7,
-          "longest_frame_ms": 37.5,
-          "dropped_frames": 5,
-          "frame_samples": 197,
+          "duration_ms": 2295.398,
+          "average_fps": 73.626,
+          "p95_frame_ms": 16.8,
+          "longest_frame_ms": 53.9,
+          "dropped_frames": 6,
+          "frame_samples": 169,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 812,
+          "renderer_mutations": 827,
           "dom_nodes": 3098,
-          "js_heap_start_mb": 8.318,
-          "js_heap_peak_mb": 11.778,
-          "js_heap_end_mb": 9.891,
-          "task_ms": 980.909,
-          "script_ms": 59.21,
-          "layout_ms": 25.802,
-          "recalc_style_ms": 92.352,
+          "js_heap_start_mb": 11.112,
+          "js_heap_peak_mb": 11.691,
+          "js_heap_end_mb": 9.798,
+          "task_ms": 880.875,
+          "script_ms": 59.228,
+          "layout_ms": 24.578,
+          "recalc_style_ms": 77.752,
           "history_messages": 100
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 2285.827,
-          "p95": 2295.244,
-          "worst": 2295.244
+          "median": 2295.398,
+          "p95": 2309.177,
+          "worst": 2309.177
         },
         "average_fps": {
-          "median": 91.284,
-          "p95": 97.789,
-          "worst": 97.789
+          "median": 70.603,
+          "p95": 73.626,
+          "worst": 73.626
         },
         "p95_frame_ms": {
-          "median": 16.6,
-          "p95": 16.7,
-          "worst": 16.7
+          "median": 20.8,
+          "p95": 20.8,
+          "worst": 20.8
         },
         "longest_frame_ms": {
-          "median": 54.1,
+          "median": 54.2,
           "p95": 66.7,
           "worst": 66.7
         },
         "dropped_frames": {
-          "median": 4,
-          "p95": 5,
-          "worst": 5
+          "median": 11,
+          "p95": 12,
+          "worst": 12
         },
         "frame_samples": {
-          "median": 208,
-          "p95": 222,
-          "worst": 222
+          "median": 162,
+          "p95": 169,
+          "worst": 169
         },
         "long_tasks": {
           "median": 0,
@@ -580,8 +580,8 @@
         },
         "renderer_mutations": {
           "median": 801,
-          "p95": 812,
-          "worst": 812
+          "p95": 827,
+          "worst": 827
         },
         "dom_nodes": {
           "median": 3098,
@@ -589,39 +589,39 @@
           "worst": 3098
         },
         "js_heap_start_mb": {
-          "median": 8.506,
-          "p95": 10.515,
-          "worst": 10.515
+          "median": 10.986,
+          "p95": 11.112,
+          "worst": 11.112
         },
         "js_heap_peak_mb": {
-          "median": 11.715,
-          "p95": 11.778,
-          "worst": 11.778
+          "median": 11.729,
+          "p95": 11.821,
+          "worst": 11.821
         },
         "js_heap_end_mb": {
-          "median": 9.891,
-          "p95": 9.968,
-          "worst": 9.968
+          "median": 9.674,
+          "p95": 9.798,
+          "worst": 9.798
         },
         "task_ms": {
-          "median": 1041.637,
-          "p95": 1117.489,
-          "worst": 1117.489
+          "median": 868.287,
+          "p95": 880.875,
+          "worst": 880.875
         },
         "script_ms": {
-          "median": 59.21,
-          "p95": 72.003,
-          "worst": 72.003
+          "median": 59.06,
+          "p95": 59.228,
+          "worst": 59.228
         },
         "layout_ms": {
-          "median": 25.291,
-          "p95": 25.802,
-          "worst": 25.802
+          "median": 24.578,
+          "p95": 25.983,
+          "worst": 25.983
         },
         "recalc_style_ms": {
-          "median": 94.279,
-          "p95": 95.065,
-          "worst": 95.065
+          "median": 77.752,
+          "p95": 81.641,
+          "worst": 81.641
         },
         "history_messages": {
           "median": 100,
@@ -635,96 +635,96 @@
       "label": "Chat 500 条消息滚动",
       "runs": [
         {
-          "duration_ms": 2319.639,
-          "average_fps": 88.515,
-          "p95_frame_ms": 20.7,
-          "longest_frame_ms": 29.3,
-          "dropped_frames": 12,
-          "frame_samples": 205,
+          "duration_ms": 2288.563,
+          "average_fps": 61.118,
+          "p95_frame_ms": 21,
+          "longest_frame_ms": 62.5,
+          "dropped_frames": 6,
+          "frame_samples": 139,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 1237,
+          "renderer_mutations": 1143,
           "dom_nodes": 10738,
-          "js_heap_start_mb": 12.12,
-          "js_heap_peak_mb": 17.591,
-          "js_heap_end_mb": 17.591,
-          "task_ms": 1556.057,
-          "script_ms": 63.664,
-          "layout_ms": 81.595,
-          "recalc_style_ms": 120.582,
+          "js_heap_start_mb": 11.699,
+          "js_heap_peak_mb": 16.717,
+          "js_heap_end_mb": 16.717,
+          "task_ms": 1125.696,
+          "script_ms": 57.381,
+          "layout_ms": 72.908,
+          "recalc_style_ms": 84.235,
           "history_messages": 500
         },
         {
-          "duration_ms": 2324.198,
-          "average_fps": 87.492,
-          "p95_frame_ms": 20.7,
-          "longest_frame_ms": 33.5,
-          "dropped_frames": 15,
-          "frame_samples": 203,
-          "long_tasks": 0,
-          "long_task_total_ms": 0,
-          "renderer_mutations": 1297,
-          "dom_nodes": 10738,
-          "js_heap_start_mb": 11.837,
-          "js_heap_peak_mb": 17.341,
-          "js_heap_end_mb": 17.341,
-          "task_ms": 1485.903,
-          "script_ms": 61.794,
-          "layout_ms": 79.999,
-          "recalc_style_ms": 123.762,
-          "history_messages": 500
-        },
-        {
-          "duration_ms": 2278.45,
-          "average_fps": 89.086,
-          "p95_frame_ms": 16.8,
-          "longest_frame_ms": 66.6,
+          "duration_ms": 2296.41,
+          "average_fps": 52.47,
+          "p95_frame_ms": 29.1,
+          "longest_frame_ms": 87.3,
           "dropped_frames": 8,
-          "frame_samples": 203,
+          "frame_samples": 120,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 1213,
+          "renderer_mutations": 955,
           "dom_nodes": 10738,
-          "js_heap_start_mb": 12.119,
-          "js_heap_peak_mb": 17.316,
-          "js_heap_end_mb": 17.316,
-          "task_ms": 1452.914,
-          "script_ms": 56.628,
-          "layout_ms": 77.846,
-          "recalc_style_ms": 122.673,
+          "js_heap_start_mb": 13.555,
+          "js_heap_peak_mb": 18.136,
+          "js_heap_end_mb": 18.136,
+          "task_ms": 897.213,
+          "script_ms": 43.93,
+          "layout_ms": 56.647,
+          "recalc_style_ms": 58.36,
+          "history_messages": 500
+        },
+        {
+          "duration_ms": 2283.812,
+          "average_fps": 51.345,
+          "p95_frame_ms": 25.1,
+          "longest_frame_ms": 75.1,
+          "dropped_frames": 1,
+          "frame_samples": 117,
+          "long_tasks": 0,
+          "long_task_total_ms": 0,
+          "renderer_mutations": 886,
+          "dom_nodes": 10738,
+          "js_heap_start_mb": 11.682,
+          "js_heap_peak_mb": 16.056,
+          "js_heap_end_mb": 16.056,
+          "task_ms": 865.866,
+          "script_ms": 42.448,
+          "layout_ms": 54.348,
+          "recalc_style_ms": 57.661,
           "history_messages": 500
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 2319.639,
-          "p95": 2324.198,
-          "worst": 2324.198
+          "median": 2288.563,
+          "p95": 2296.41,
+          "worst": 2296.41
         },
         "average_fps": {
-          "median": 88.515,
-          "p95": 89.086,
-          "worst": 89.086
+          "median": 52.47,
+          "p95": 61.118,
+          "worst": 61.118
         },
         "p95_frame_ms": {
-          "median": 20.7,
-          "p95": 20.7,
-          "worst": 20.7
+          "median": 25.1,
+          "p95": 29.1,
+          "worst": 29.1
         },
         "longest_frame_ms": {
-          "median": 33.5,
-          "p95": 66.6,
-          "worst": 66.6
+          "median": 75.1,
+          "p95": 87.3,
+          "worst": 87.3
         },
         "dropped_frames": {
-          "median": 12,
-          "p95": 15,
-          "worst": 15
+          "median": 6,
+          "p95": 8,
+          "worst": 8
         },
         "frame_samples": {
-          "median": 203,
-          "p95": 205,
-          "worst": 205
+          "median": 120,
+          "p95": 139,
+          "worst": 139
         },
         "long_tasks": {
           "median": 0,
@@ -737,9 +737,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 1237,
-          "p95": 1297,
-          "worst": 1297
+          "median": 955,
+          "p95": 1143,
+          "worst": 1143
         },
         "dom_nodes": {
           "median": 10738,
@@ -747,39 +747,39 @@
           "worst": 10738
         },
         "js_heap_start_mb": {
-          "median": 12.119,
-          "p95": 12.12,
-          "worst": 12.12
+          "median": 11.699,
+          "p95": 13.555,
+          "worst": 13.555
         },
         "js_heap_peak_mb": {
-          "median": 17.341,
-          "p95": 17.591,
-          "worst": 17.591
+          "median": 16.717,
+          "p95": 18.136,
+          "worst": 18.136
         },
         "js_heap_end_mb": {
-          "median": 17.341,
-          "p95": 17.591,
-          "worst": 17.591
+          "median": 16.717,
+          "p95": 18.136,
+          "worst": 18.136
         },
         "task_ms": {
-          "median": 1485.903,
-          "p95": 1556.057,
-          "worst": 1556.057
+          "median": 897.213,
+          "p95": 1125.696,
+          "worst": 1125.696
         },
         "script_ms": {
-          "median": 61.794,
-          "p95": 63.664,
-          "worst": 63.664
+          "median": 43.93,
+          "p95": 57.381,
+          "worst": 57.381
         },
         "layout_ms": {
-          "median": 79.999,
-          "p95": 81.595,
-          "worst": 81.595
+          "median": 56.647,
+          "p95": 72.908,
+          "worst": 72.908
         },
         "recalc_style_ms": {
-          "median": 122.673,
-          "p95": 123.762,
-          "worst": 123.762
+          "median": 58.36,
+          "p95": 84.235,
+          "worst": 84.235
         },
         "history_messages": {
           "median": 500,
@@ -793,96 +793,96 @@
       "label": "Chat 1000 条消息滚动",
       "runs": [
         {
-          "duration_ms": 2340.107,
-          "average_fps": 82.433,
-          "p95_frame_ms": 16.7,
-          "longest_frame_ms": 24.9,
-          "dropped_frames": 2,
-          "frame_samples": 193,
+          "duration_ms": 2326.278,
+          "average_fps": 39.939,
+          "p95_frame_ms": 41.6,
+          "longest_frame_ms": 70.8,
+          "dropped_frames": 9,
+          "frame_samples": 95,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 1351,
+          "renderer_mutations": 512,
           "dom_nodes": 20288,
-          "js_heap_start_mb": 24.143,
-          "js_heap_peak_mb": 29.344,
-          "js_heap_end_mb": 18.404,
-          "task_ms": 2161.078,
-          "script_ms": 65.405,
-          "layout_ms": 137.802,
-          "recalc_style_ms": 137.005,
+          "js_heap_start_mb": 16.929,
+          "js_heap_peak_mb": 21.005,
+          "js_heap_end_mb": 21.005,
+          "task_ms": 974.724,
+          "script_ms": 36.737,
+          "layout_ms": 92.942,
+          "recalc_style_ms": 52.502,
           "history_messages": 1000
         },
         {
-          "duration_ms": 2338.526,
-          "average_fps": 80.735,
-          "p95_frame_ms": 20.8,
-          "longest_frame_ms": 24.8,
-          "dropped_frames": 12,
-          "frame_samples": 189,
+          "duration_ms": 2303.681,
+          "average_fps": 45.564,
+          "p95_frame_ms": 29.3,
+          "longest_frame_ms": 79.2,
+          "dropped_frames": 5,
+          "frame_samples": 108,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 1304,
+          "renderer_mutations": 545,
           "dom_nodes": 20288,
-          "js_heap_start_mb": 25.368,
-          "js_heap_peak_mb": 29.899,
-          "js_heap_end_mb": 19.316,
-          "task_ms": 2173.338,
-          "script_ms": 64.819,
-          "layout_ms": 145.526,
-          "recalc_style_ms": 140.843,
+          "js_heap_start_mb": 16.845,
+          "js_heap_peak_mb": 21.015,
+          "js_heap_end_mb": 21.015,
+          "task_ms": 983.002,
+          "script_ms": 37.925,
+          "layout_ms": 92.557,
+          "recalc_style_ms": 53.026,
           "history_messages": 1000
         },
         {
-          "duration_ms": 2370.972,
-          "average_fps": 73.033,
-          "p95_frame_ms": 20.9,
-          "longest_frame_ms": 28.9,
-          "dropped_frames": 16,
-          "frame_samples": 174,
+          "duration_ms": 2369.821,
+          "average_fps": 54.619,
+          "p95_frame_ms": 24.9,
+          "longest_frame_ms": 58.3,
+          "dropped_frames": 6,
+          "frame_samples": 129,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 1167,
+          "renderer_mutations": 906,
           "dom_nodes": 20288,
-          "js_heap_start_mb": 16.175,
-          "js_heap_peak_mb": 22.606,
-          "js_heap_end_mb": 22.606,
-          "task_ms": 2223.541,
-          "script_ms": 61.685,
-          "layout_ms": 134.014,
-          "recalc_style_ms": 246.412,
+          "js_heap_start_mb": 16.622,
+          "js_heap_peak_mb": 22.056,
+          "js_heap_end_mb": 22.056,
+          "task_ms": 1317.791,
+          "script_ms": 48.486,
+          "layout_ms": 114.649,
+          "recalc_style_ms": 67.089,
           "history_messages": 1000
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 2340.107,
-          "p95": 2370.972,
-          "worst": 2370.972
+          "median": 2326.278,
+          "p95": 2369.821,
+          "worst": 2369.821
         },
         "average_fps": {
-          "median": 80.735,
-          "p95": 82.433,
-          "worst": 82.433
+          "median": 45.564,
+          "p95": 54.619,
+          "worst": 54.619
         },
         "p95_frame_ms": {
-          "median": 20.8,
-          "p95": 20.9,
-          "worst": 20.9
+          "median": 29.3,
+          "p95": 41.6,
+          "worst": 41.6
         },
         "longest_frame_ms": {
-          "median": 24.9,
-          "p95": 28.9,
-          "worst": 28.9
+          "median": 70.8,
+          "p95": 79.2,
+          "worst": 79.2
         },
         "dropped_frames": {
-          "median": 12,
-          "p95": 16,
-          "worst": 16
+          "median": 6,
+          "p95": 9,
+          "worst": 9
         },
         "frame_samples": {
-          "median": 189,
-          "p95": 193,
-          "worst": 193
+          "median": 108,
+          "p95": 129,
+          "worst": 129
         },
         "long_tasks": {
           "median": 0,
@@ -895,9 +895,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 1304,
-          "p95": 1351,
-          "worst": 1351
+          "median": 545,
+          "p95": 906,
+          "worst": 906
         },
         "dom_nodes": {
           "median": 20288,
@@ -905,39 +905,39 @@
           "worst": 20288
         },
         "js_heap_start_mb": {
-          "median": 24.143,
-          "p95": 25.368,
-          "worst": 25.368
+          "median": 16.845,
+          "p95": 16.929,
+          "worst": 16.929
         },
         "js_heap_peak_mb": {
-          "median": 29.344,
-          "p95": 29.899,
-          "worst": 29.899
+          "median": 21.015,
+          "p95": 22.056,
+          "worst": 22.056
         },
         "js_heap_end_mb": {
-          "median": 19.316,
-          "p95": 22.606,
-          "worst": 22.606
+          "median": 21.015,
+          "p95": 22.056,
+          "worst": 22.056
         },
         "task_ms": {
-          "median": 2173.338,
-          "p95": 2223.541,
-          "worst": 2223.541
+          "median": 983.002,
+          "p95": 1317.791,
+          "worst": 1317.791
         },
         "script_ms": {
-          "median": 64.819,
-          "p95": 65.405,
-          "worst": 65.405
+          "median": 37.925,
+          "p95": 48.486,
+          "worst": 48.486
         },
         "layout_ms": {
-          "median": 137.802,
-          "p95": 145.526,
-          "worst": 145.526
+          "median": 92.942,
+          "p95": 114.649,
+          "worst": 114.649
         },
         "recalc_style_ms": {
-          "median": 140.843,
-          "p95": 246.412,
-          "worst": 246.412
+          "median": 53.026,
+          "p95": 67.089,
+          "worst": 67.089
         },
         "history_messages": {
           "median": 1000,
@@ -951,105 +951,105 @@
       "label": "Chat 1000 个流式增量",
       "runs": [
         {
-          "duration_ms": 761.603,
-          "average_fps": 79.576,
-          "p95_frame_ms": 16.7,
-          "longest_frame_ms": 50,
-          "dropped_frames": 3,
-          "frame_samples": 60,
+          "duration_ms": 786.133,
+          "average_fps": 54.201,
+          "p95_frame_ms": 25,
+          "longest_frame_ms": 58.2,
+          "dropped_frames": 2,
+          "frame_samples": 42,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 200,
+          "renderer_mutations": 231,
           "dom_nodes": 1608,
-          "js_heap_start_mb": 9.732,
-          "js_heap_peak_mb": 11.922,
-          "js_heap_end_mb": 8.073,
-          "task_ms": 291.777,
-          "script_ms": 28.454,
-          "layout_ms": 2.18,
-          "recalc_style_ms": 26.925,
+          "js_heap_start_mb": 9.592,
+          "js_heap_peak_mb": 13.764,
+          "js_heap_end_mb": 11.399,
+          "task_ms": 267.979,
+          "script_ms": 34.507,
+          "layout_ms": 3.252,
+          "recalc_style_ms": 23.926,
           "stream_deltas": 1000,
-          "first_content_ms": 29.99,
+          "first_content_ms": 45.705,
           "rendered_stream_chars": 1000,
           "stream_integrity": 1
         },
         {
-          "duration_ms": 836.428,
-          "average_fps": 97.216,
-          "p95_frame_ms": 12.7,
-          "longest_frame_ms": 33.5,
+          "duration_ms": 744.121,
+          "average_fps": 50.457,
+          "p95_frame_ms": 29.1,
+          "longest_frame_ms": 70.8,
           "dropped_frames": 2,
-          "frame_samples": 81,
+          "frame_samples": 37,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 212,
+          "renderer_mutations": 160,
           "dom_nodes": 1608,
-          "js_heap_start_mb": 9.665,
-          "js_heap_peak_mb": 12.316,
-          "js_heap_end_mb": 8.105,
-          "task_ms": 358.146,
-          "script_ms": 46.045,
-          "layout_ms": 3.455,
-          "recalc_style_ms": 34.525,
+          "js_heap_start_mb": 9.678,
+          "js_heap_peak_mb": 12.475,
+          "js_heap_end_mb": 11.063,
+          "task_ms": 236.529,
+          "script_ms": 29.848,
+          "layout_ms": 2.556,
+          "recalc_style_ms": 17.186,
           "stream_deltas": 1000,
-          "first_content_ms": 38.883,
+          "first_content_ms": 30.405,
           "rendered_stream_chars": 1000,
           "stream_integrity": 1
         },
         {
-          "duration_ms": 776.09,
-          "average_fps": 93.722,
-          "p95_frame_ms": 16.6,
-          "longest_frame_ms": 29.1,
+          "duration_ms": 757.462,
+          "average_fps": 58.321,
+          "p95_frame_ms": 24.9,
+          "longest_frame_ms": 70.7,
           "dropped_frames": 2,
-          "frame_samples": 73,
+          "frame_samples": 43,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 235,
+          "renderer_mutations": 177,
           "dom_nodes": 1608,
-          "js_heap_start_mb": 10.527,
-          "js_heap_peak_mb": 11.646,
-          "js_heap_end_mb": 8.171,
-          "task_ms": 313.616,
-          "script_ms": 30.887,
-          "layout_ms": 2.599,
-          "recalc_style_ms": 32.119,
+          "js_heap_start_mb": 10.459,
+          "js_heap_peak_mb": 11.926,
+          "js_heap_end_mb": 11.792,
+          "task_ms": 256.466,
+          "script_ms": 31.869,
+          "layout_ms": 2.48,
+          "recalc_style_ms": 20.916,
           "stream_deltas": 1000,
-          "first_content_ms": 43.555,
+          "first_content_ms": 26.932,
           "rendered_stream_chars": 1000,
           "stream_integrity": 1
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 776.09,
-          "p95": 836.428,
-          "worst": 836.428
+          "median": 757.462,
+          "p95": 786.133,
+          "worst": 786.133
         },
         "average_fps": {
-          "median": 93.722,
-          "p95": 97.216,
-          "worst": 97.216
+          "median": 54.201,
+          "p95": 58.321,
+          "worst": 58.321
         },
         "p95_frame_ms": {
-          "median": 16.6,
-          "p95": 16.7,
-          "worst": 16.7
+          "median": 25,
+          "p95": 29.1,
+          "worst": 29.1
         },
         "longest_frame_ms": {
-          "median": 33.5,
-          "p95": 50,
-          "worst": 50
+          "median": 70.7,
+          "p95": 70.8,
+          "worst": 70.8
         },
         "dropped_frames": {
           "median": 2,
-          "p95": 3,
-          "worst": 3
+          "p95": 2,
+          "worst": 2
         },
         "frame_samples": {
-          "median": 73,
-          "p95": 81,
-          "worst": 81
+          "median": 42,
+          "p95": 43,
+          "worst": 43
         },
         "long_tasks": {
           "median": 0,
@@ -1062,9 +1062,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 212,
-          "p95": 235,
-          "worst": 235
+          "median": 177,
+          "p95": 231,
+          "worst": 231
         },
         "dom_nodes": {
           "median": 1608,
@@ -1072,39 +1072,39 @@
           "worst": 1608
         },
         "js_heap_start_mb": {
-          "median": 9.732,
-          "p95": 10.527,
-          "worst": 10.527
+          "median": 9.678,
+          "p95": 10.459,
+          "worst": 10.459
         },
         "js_heap_peak_mb": {
-          "median": 11.922,
-          "p95": 12.316,
-          "worst": 12.316
+          "median": 12.475,
+          "p95": 13.764,
+          "worst": 13.764
         },
         "js_heap_end_mb": {
-          "median": 8.105,
-          "p95": 8.171,
-          "worst": 8.171
+          "median": 11.399,
+          "p95": 11.792,
+          "worst": 11.792
         },
         "task_ms": {
-          "median": 313.616,
-          "p95": 358.146,
-          "worst": 358.146
+          "median": 256.466,
+          "p95": 267.979,
+          "worst": 267.979
         },
         "script_ms": {
-          "median": 30.887,
-          "p95": 46.045,
-          "worst": 46.045
+          "median": 31.869,
+          "p95": 34.507,
+          "worst": 34.507
         },
         "layout_ms": {
-          "median": 2.599,
-          "p95": 3.455,
-          "worst": 3.455
+          "median": 2.556,
+          "p95": 3.252,
+          "worst": 3.252
         },
         "recalc_style_ms": {
-          "median": 32.119,
-          "p95": 34.525,
-          "worst": 34.525
+          "median": 20.916,
+          "p95": 23.926,
+          "worst": 23.926
         },
         "stream_deltas": {
           "median": 1000,
@@ -1112,9 +1112,9 @@
           "worst": 1000
         },
         "first_content_ms": {
-          "median": 38.883,
-          "p95": 43.555,
-          "worst": 43.555
+          "median": 30.405,
+          "p95": 45.705,
+          "worst": 45.705
         },
         "rendered_stream_chars": {
           "median": 1000,
@@ -1133,105 +1133,105 @@
       "label": "Chat 5000 个流式增量",
       "runs": [
         {
-          "duration_ms": 1457.904,
-          "average_fps": 66.029,
-          "p95_frame_ms": 50,
-          "longest_frame_ms": 91.7,
-          "dropped_frames": 11,
-          "frame_samples": 96,
-          "long_tasks": 0,
-          "long_task_total_ms": 0,
-          "renderer_mutations": 380,
-          "dom_nodes": 1608,
-          "js_heap_start_mb": 9.777,
-          "js_heap_peak_mb": 14.665,
-          "js_heap_end_mb": 9.593,
-          "task_ms": 690.206,
-          "script_ms": 50.724,
-          "layout_ms": 5.732,
-          "recalc_style_ms": 43.659,
-          "stream_deltas": 5000,
-          "first_content_ms": 28.88,
-          "rendered_stream_chars": 5000,
-          "stream_integrity": 1
-        },
-        {
-          "duration_ms": 1384.691,
-          "average_fps": 85.103,
-          "p95_frame_ms": 24.9,
-          "longest_frame_ms": 100,
+          "duration_ms": 1576.357,
+          "average_fps": 67.853,
+          "p95_frame_ms": 29.4,
+          "longest_frame_ms": 104.1,
           "dropped_frames": 7,
-          "frame_samples": 117,
+          "frame_samples": 106,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 358,
+          "renderer_mutations": 357,
           "dom_nodes": 1608,
-          "js_heap_start_mb": 9.719,
-          "js_heap_peak_mb": 14.513,
-          "js_heap_end_mb": 9.618,
-          "task_ms": 589.518,
-          "script_ms": 52.484,
-          "layout_ms": 6.328,
-          "recalc_style_ms": 47.206,
+          "js_heap_start_mb": 10.462,
+          "js_heap_peak_mb": 15.896,
+          "js_heap_end_mb": 9.684,
+          "task_ms": 735.536,
+          "script_ms": 66.968,
+          "layout_ms": 5.86,
+          "recalc_style_ms": 43.985,
           "stream_deltas": 5000,
-          "first_content_ms": 41.506,
+          "first_content_ms": 39.354,
           "rendered_stream_chars": 5000,
           "stream_integrity": 1
         },
         {
-          "duration_ms": 1411.373,
-          "average_fps": 85.682,
-          "p95_frame_ms": 16.7,
-          "longest_frame_ms": 91.8,
-          "dropped_frames": 3,
-          "frame_samples": 121,
+          "duration_ms": 1345.364,
+          "average_fps": 91.416,
+          "p95_frame_ms": 16.8,
+          "longest_frame_ms": 70.8,
+          "dropped_frames": 6,
+          "frame_samples": 123,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 343,
+          "renderer_mutations": 375,
           "dom_nodes": 1608,
-          "js_heap_start_mb": 9.78,
-          "js_heap_peak_mb": 15.188,
-          "js_heap_end_mb": 9.635,
-          "task_ms": 613.198,
-          "script_ms": 55.124,
-          "layout_ms": 7,
-          "recalc_style_ms": 51.569,
+          "js_heap_start_mb": 9.782,
+          "js_heap_peak_mb": 14.564,
+          "js_heap_end_mb": 9.734,
+          "task_ms": 532.361,
+          "script_ms": 48.894,
+          "layout_ms": 5.378,
+          "recalc_style_ms": 42.843,
           "stream_deltas": 5000,
-          "first_content_ms": 36.296,
+          "first_content_ms": 40.647,
+          "rendered_stream_chars": 5000,
+          "stream_integrity": 1
+        },
+        {
+          "duration_ms": 1347.05,
+          "average_fps": 92.724,
+          "p95_frame_ms": 16.8,
+          "longest_frame_ms": 112.6,
+          "dropped_frames": 4,
+          "frame_samples": 124,
+          "long_tasks": 0,
+          "long_task_total_ms": 0,
+          "renderer_mutations": 409,
+          "dom_nodes": 1608,
+          "js_heap_start_mb": 9.825,
+          "js_heap_peak_mb": 14.629,
+          "js_heap_end_mb": 9.855,
+          "task_ms": 557.152,
+          "script_ms": 57.364,
+          "layout_ms": 6.065,
+          "recalc_style_ms": 46.06,
+          "stream_deltas": 5000,
+          "first_content_ms": 27.202,
           "rendered_stream_chars": 5000,
           "stream_integrity": 1
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 1411.373,
-          "p95": 1457.904,
-          "worst": 1457.904
+          "median": 1347.05,
+          "p95": 1576.357,
+          "worst": 1576.357
         },
         "average_fps": {
-          "median": 85.103,
-          "p95": 85.682,
-          "worst": 85.682
+          "median": 91.416,
+          "p95": 92.724,
+          "worst": 92.724
         },
         "p95_frame_ms": {
-          "median": 24.9,
-          "p95": 50,
-          "worst": 50
+          "median": 16.8,
+          "p95": 29.4,
+          "worst": 29.4
         },
         "longest_frame_ms": {
-          "median": 91.8,
-          "p95": 100,
-          "worst": 100
+          "median": 104.1,
+          "p95": 112.6,
+          "worst": 112.6
         },
         "dropped_frames": {
-          "median": 7,
-          "p95": 11,
-          "worst": 11
+          "median": 6,
+          "p95": 7,
+          "worst": 7
         },
         "frame_samples": {
-          "median": 117,
-          "p95": 121,
-          "worst": 121
+          "median": 123,
+          "p95": 124,
+          "worst": 124
         },
         "long_tasks": {
           "median": 0,
@@ -1244,9 +1244,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 358,
-          "p95": 380,
-          "worst": 380
+          "median": 375,
+          "p95": 409,
+          "worst": 409
         },
         "dom_nodes": {
           "median": 1608,
@@ -1254,39 +1254,39 @@
           "worst": 1608
         },
         "js_heap_start_mb": {
-          "median": 9.777,
-          "p95": 9.78,
-          "worst": 9.78
+          "median": 9.825,
+          "p95": 10.462,
+          "worst": 10.462
         },
         "js_heap_peak_mb": {
-          "median": 14.665,
-          "p95": 15.188,
-          "worst": 15.188
+          "median": 14.629,
+          "p95": 15.896,
+          "worst": 15.896
         },
         "js_heap_end_mb": {
-          "median": 9.618,
-          "p95": 9.635,
-          "worst": 9.635
+          "median": 9.734,
+          "p95": 9.855,
+          "worst": 9.855
         },
         "task_ms": {
-          "median": 613.198,
-          "p95": 690.206,
-          "worst": 690.206
+          "median": 557.152,
+          "p95": 735.536,
+          "worst": 735.536
         },
         "script_ms": {
-          "median": 52.484,
-          "p95": 55.124,
-          "worst": 55.124
+          "median": 57.364,
+          "p95": 66.968,
+          "worst": 66.968
         },
         "layout_ms": {
-          "median": 6.328,
-          "p95": 7,
-          "worst": 7
+          "median": 5.86,
+          "p95": 6.065,
+          "worst": 6.065
         },
         "recalc_style_ms": {
-          "median": 47.206,
-          "p95": 51.569,
-          "worst": 51.569
+          "median": 43.985,
+          "p95": 46.06,
+          "worst": 46.06
         },
         "stream_deltas": {
           "median": 5000,
@@ -1294,9 +1294,9 @@
           "worst": 5000
         },
         "first_content_ms": {
-          "median": 36.296,
-          "p95": 41.506,
-          "worst": 41.506
+          "median": 39.354,
+          "p95": 40.647,
+          "worst": 40.647
         },
         "rendered_stream_chars": {
           "median": 5000,
@@ -1315,96 +1315,96 @@
       "label": "Chat 常用交互",
       "runs": [
         {
-          "duration_ms": 1037.201,
-          "average_fps": 65.391,
-          "p95_frame_ms": 37.4,
-          "longest_frame_ms": 45.9,
-          "dropped_frames": 15,
-          "frame_samples": 67,
+          "duration_ms": 1055.045,
+          "average_fps": 89.201,
+          "p95_frame_ms": 33.3,
+          "longest_frame_ms": 50,
+          "dropped_frames": 16,
+          "frame_samples": 94,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 170,
+          "renderer_mutations": 176,
           "dom_nodes": 3098,
-          "js_heap_start_mb": 8.549,
-          "js_heap_peak_mb": 11.188,
-          "js_heap_end_mb": 8.804,
-          "task_ms": 685.707,
-          "script_ms": 30.49,
-          "layout_ms": 10.237,
-          "recalc_style_ms": 239.868,
+          "js_heap_start_mb": 8.353,
+          "js_heap_peak_mb": 10.736,
+          "js_heap_end_mb": 9.071,
+          "task_ms": 634.29,
+          "script_ms": 30.595,
+          "layout_ms": 12.485,
+          "recalc_style_ms": 216.898,
           "interaction_steps": 6
         },
         {
-          "duration_ms": 991.909,
-          "average_fps": 76.289,
-          "p95_frame_ms": 29.3,
-          "longest_frame_ms": 62.5,
+          "duration_ms": 945.935,
+          "average_fps": 92.661,
+          "p95_frame_ms": 29.2,
+          "longest_frame_ms": 41.7,
+          "dropped_frames": 11,
+          "frame_samples": 88,
+          "long_tasks": 0,
+          "long_task_total_ms": 0,
+          "renderer_mutations": 165,
+          "dom_nodes": 3098,
+          "js_heap_start_mb": 8.411,
+          "js_heap_peak_mb": 11.257,
+          "js_heap_end_mb": 8.71,
+          "task_ms": 547.243,
+          "script_ms": 29.164,
+          "layout_ms": 9.06,
+          "recalc_style_ms": 170.112,
+          "interaction_steps": 6
+        },
+        {
+          "duration_ms": 962.48,
+          "average_fps": 104.957,
+          "p95_frame_ms": 25.1,
+          "longest_frame_ms": 41.6,
           "dropped_frames": 9,
-          "frame_samples": 75,
+          "frame_samples": 101,
           "long_tasks": 0,
           "long_task_total_ms": 0,
-          "renderer_mutations": 187,
+          "renderer_mutations": 176,
           "dom_nodes": 3098,
-          "js_heap_start_mb": 8.647,
-          "js_heap_peak_mb": 11.48,
-          "js_heap_end_mb": 11.48,
-          "task_ms": 619.395,
-          "script_ms": 31.941,
-          "layout_ms": 9.526,
-          "recalc_style_ms": 167.553,
-          "interaction_steps": 6
-        },
-        {
-          "duration_ms": 1025.317,
-          "average_fps": 63.433,
-          "p95_frame_ms": 37.5,
-          "longest_frame_ms": 54.1,
-          "dropped_frames": 12,
-          "frame_samples": 65,
-          "long_tasks": 0,
-          "long_task_total_ms": 0,
-          "renderer_mutations": 237,
-          "dom_nodes": 3098,
-          "js_heap_start_mb": 8.182,
-          "js_heap_peak_mb": 12.189,
-          "js_heap_end_mb": 11.113,
-          "task_ms": 630.559,
-          "script_ms": 33.025,
-          "layout_ms": 11.43,
-          "recalc_style_ms": 171.667,
+          "js_heap_start_mb": 8.292,
+          "js_heap_peak_mb": 11.023,
+          "js_heap_end_mb": 11.023,
+          "task_ms": 507.377,
+          "script_ms": 30.372,
+          "layout_ms": 11.379,
+          "recalc_style_ms": 142.782,
           "interaction_steps": 6
         }
       ],
       "summary": {
         "duration_ms": {
-          "median": 1025.317,
-          "p95": 1037.201,
-          "worst": 1037.201
+          "median": 962.48,
+          "p95": 1055.045,
+          "worst": 1055.045
         },
         "average_fps": {
-          "median": 65.391,
-          "p95": 76.289,
-          "worst": 76.289
+          "median": 92.661,
+          "p95": 104.957,
+          "worst": 104.957
         },
         "p95_frame_ms": {
-          "median": 37.4,
-          "p95": 37.5,
-          "worst": 37.5
+          "median": 29.2,
+          "p95": 33.3,
+          "worst": 33.3
         },
         "longest_frame_ms": {
-          "median": 54.1,
-          "p95": 62.5,
-          "worst": 62.5
+          "median": 41.7,
+          "p95": 50,
+          "worst": 50
         },
         "dropped_frames": {
-          "median": 12,
-          "p95": 15,
-          "worst": 15
+          "median": 11,
+          "p95": 16,
+          "worst": 16
         },
         "frame_samples": {
-          "median": 67,
-          "p95": 75,
-          "worst": 75
+          "median": 94,
+          "p95": 101,
+          "worst": 101
         },
         "long_tasks": {
           "median": 0,
@@ -1417,9 +1417,9 @@
           "worst": 0
         },
         "renderer_mutations": {
-          "median": 187,
-          "p95": 237,
-          "worst": 237
+          "median": 176,
+          "p95": 176,
+          "worst": 176
         },
         "dom_nodes": {
           "median": 3098,
@@ -1427,39 +1427,39 @@
           "worst": 3098
         },
         "js_heap_start_mb": {
-          "median": 8.549,
-          "p95": 8.647,
-          "worst": 8.647
+          "median": 8.353,
+          "p95": 8.411,
+          "worst": 8.411
         },
         "js_heap_peak_mb": {
-          "median": 11.48,
-          "p95": 12.189,
-          "worst": 12.189
+          "median": 11.023,
+          "p95": 11.257,
+          "worst": 11.257
         },
         "js_heap_end_mb": {
-          "median": 11.113,
-          "p95": 11.48,
-          "worst": 11.48
+          "median": 9.071,
+          "p95": 11.023,
+          "worst": 11.023
         },
         "task_ms": {
-          "median": 630.559,
-          "p95": 685.707,
-          "worst": 685.707
+          "median": 547.243,
+          "p95": 634.29,
+          "worst": 634.29
         },
         "script_ms": {
-          "median": 31.941,
-          "p95": 33.025,
-          "worst": 33.025
+          "median": 30.372,
+          "p95": 30.595,
+          "worst": 30.595
         },
         "layout_ms": {
-          "median": 10.237,
-          "p95": 11.43,
-          "worst": 11.43
+          "median": 11.379,
+          "p95": 12.485,
+          "worst": 12.485
         },
         "recalc_style_ms": {
-          "median": 171.667,
-          "p95": 239.868,
-          "worst": 239.868
+          "median": 170.112,
+          "p95": 216.898,
+          "worst": 216.898
         },
         "interaction_steps": {
           "median": 6,

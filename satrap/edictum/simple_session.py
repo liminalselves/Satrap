@@ -46,6 +46,9 @@ from satrap.edictum.plugin import (
 )
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload
 
+SyncUserInputProvider = Callable[..., str]
+AsyncUserInputProvider = Callable[..., str | Awaitable[str]]
+
 class HandlerResult:
     """
     before_user_send 第三态返回: 短路指令 (文本均为 str, 与 run() -> str 契约对齐)
@@ -573,7 +576,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         self._skills_manager: SkillsManager | None = None
         self._mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
         """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
-        self.user_input_provider: Callable[[str], str] | None = None
+        self.user_input_provider: SyncUserInputProvider | None = None
         """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
         self.stream = stream
         if tools:
@@ -1410,7 +1413,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         self._init_lock = asyncio.Lock()
         self._run_lock = asyncio.Lock()
         """run 串行化锁: 同一会话不支持并发 run (第二个 run 排队等待)"""
-        self.user_input_provider: Callable[[str], str | Awaitable[str]] | None = None
+        self.user_input_provider: AsyncUserInputProvider | None = None
         """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
         self.stream = stream
 

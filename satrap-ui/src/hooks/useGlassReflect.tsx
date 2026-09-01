@@ -30,6 +30,9 @@ interface GlassElement {
   rect: ReflectRect | null;
   visible: boolean;
   cellKeys: string[];
+  visualState: 'idle' | 'nearby' | 'hovering';
+  lastReflectX: number | null;
+  lastReflectY: number | null;
 }
 
 interface GlassReflectContextType {
@@ -43,24 +46,39 @@ const GlassReflectContext = createContext<GlassReflectContextType | null>(null);
 const DEFAULT_REFLECT_RANGE = 150;   // 反光影响范围
 const DEFAULT_REFLECT_SIZE = 150;   // 反光光圈大小
 
-function updateReflectState(
+function clearReflectState(item: GlassElement): void {
+  if (item.visualState === 'idle') return;
+  item.element.classList.remove('glass-hovering', 'glass-nearby');
+  item.visualState = 'idle';
+}
+
+export function updateReflectState(
   item: GlassElement,
   mouseX: number,
   mouseY: number,
 ): boolean {
   if (!item.rect) return false;
   const state = calculateReflectState(item.rect, mouseX, mouseY, item.reflectRange);
-  item.element.style.setProperty('--mouse-x', `${state.x}px`);
-  item.element.style.setProperty('--mouse-y', `${state.y}px`);
-  if (state.isHovering) {
+  if (state.isInRange && state.x !== item.lastReflectX) {
+    item.element.style.setProperty('--mouse-x', `${state.x}px`);
+    item.lastReflectX = state.x;
+  }
+  if (state.isInRange && state.y !== item.lastReflectY) {
+    item.element.style.setProperty('--mouse-y', `${state.y}px`);
+    item.lastReflectY = state.y;
+  }
+  const visualState = state.isHovering ? 'hovering' : state.isInRange ? 'nearby' : 'idle';
+  if (visualState === item.visualState) return state.isInRange;
+  if (visualState === 'hovering') {
     item.element.classList.add('glass-hovering');
     item.element.classList.remove('glass-nearby');
-  } else if (state.isInRange) {
+  } else if (visualState === 'nearby') {
     item.element.classList.remove('glass-hovering');
     item.element.classList.add('glass-nearby');
   } else {
     item.element.classList.remove('glass-hovering', 'glass-nearby');
   }
+  item.visualState = visualState;
   return state.isInRange;
 }
 
@@ -124,7 +142,7 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
     }
     for (const item of activeElementsRef.current) {
       if (!nextActive.has(item)) {
-        item.element.classList.remove('glass-hovering', 'glass-nearby');
+        clearReflectState(item);
       }
     }
     activeElementsRef.current = nextActive;
@@ -201,7 +219,7 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
         } else {
           removeFromSpatialIndex(item);
           activeElementsRef.current.delete(item);
-          item.element.classList.remove('glass-hovering', 'glass-nearby');
+          clearReflectState(item);
         }
       }
       scheduleUpdate();
@@ -226,6 +244,9 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
       rect: null,
       visible: true,
       cellKeys: [],
+      visualState: 'idle',
+      lastReflectX: null,
+      lastReflectY: null,
     });
     element.style.setProperty('--reflect-size', `${options?.reflectSize ?? DEFAULT_REFLECT_SIZE}px`);
     resizeObserverRef.current?.observe(element);
@@ -242,9 +263,11 @@ export function GlassReflectProvider({ children }: { children: ReactNode }) {
     if (item) {
       activeElementsRef.current.delete(item);
       removeFromSpatialIndex(item);
+      clearReflectState(item);
+    } else {
+      element.classList.remove('glass-hovering', 'glass-nearby');
     }
     elementsRef.current.delete(element);
-    element.classList.remove('glass-hovering', 'glass-nearby');
     geometryDirtyAllRef.current = true;
     scheduleUpdate();
   }, [removeFromSpatialIndex, scheduleUpdate]);

@@ -447,7 +447,9 @@
     box-shadow: var(--shadow-glass);
     position: relative;
     overflow: hidden;
-    transition: all 200ms ease;
+    transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
     /* 反光效果变量 */
     --reflect-color: var(--reflect-default);
   }
@@ -706,7 +708,9 @@
     font-weight: 500;
     color: var(--color-text-secondary);
     border-radius: var(--radius-md);
-    transition: all 200ms ease;
+    transition-property: color, background-color, opacity, box-shadow, transform;
+    transition-duration: 200ms;
+    transition-timing-function: ease;
     cursor: pointer;
     position: relative;
     overflow: hidden;
@@ -848,7 +852,9 @@
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--glass-border);
     color: var(--color-text-primary);
-    transition: all 150ms ease;
+    transition-property: color, background-color, border-color, opacity, box-shadow, transform;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
     cursor: pointer;
     position: relative;
     overflow: hidden;
@@ -921,7 +927,9 @@
     -webkit-backdrop-filter: blur(12px);
     border: 1px solid var(--glass-border);
     color: var(--color-text-primary);
-    transition: all 150ms ease;
+    transition-property: color, background-color, border-color, box-shadow;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
   }
 
   .glass-input::placeholder {
@@ -1073,7 +1081,9 @@
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
     cursor: pointer;
-    transition: all 150ms ease;
+    transition-property: color, background-color, border-color, box-shadow, transform;
+    transition-duration: 150ms;
+    transition-timing-function: ease;
   }
 
   .theme-toggle:hover {
@@ -1245,6 +1255,53 @@
   border: 1px solid var(--glass-border);
   border-radius: 8px;
   overflow-x: auto;
+}
+.markdown-code-block {
+  position: relative;
+  margin: 0.75em 0;
+}
+.markdown-code-block > pre {
+  margin: 0;
+  padding-right: 2.75rem;
+}
+.copy-action-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.copy-action-button::before {
+  content: '';
+  width: 0.875rem;
+  height: 0.875rem;
+  background-color: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/svg%3E") center / contain no-repeat;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect width='14' height='14' x='8' y='8' rx='2' ry='2'/%3E%3Cpath d='M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+.copy-action-button[data-copy-state='copied'] {
+  color: var(--color-success);
+}
+.copy-action-button[data-copy-state='copied']::before {
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m20 6-11 11-5-5'/%3E%3C/svg%3E");
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m20 6-11 11-5-5'/%3E%3C/svg%3E");
+}
+.markdown-code-copy {
+  position: absolute;
+  z-index: 1;
+  top: 0.45rem;
+  right: 0.45rem;
+  opacity: 0;
+  background: var(--glass-bg-hover);
+  border: 1px solid var(--glass-border);
+  transition: color 150ms ease, background-color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+.markdown-code-block:hover .markdown-code-copy,
+.markdown-code-copy:focus-visible,
+.markdown-code-copy[data-copy-state='copied'] {
+  opacity: 1;
+}
+@media (hover: none) {
+  .markdown-code-copy { opacity: 0.8; }
+  .chat-message-actions { opacity: 1; }
 }
 .markdown-body pre code {
   background: transparent;
