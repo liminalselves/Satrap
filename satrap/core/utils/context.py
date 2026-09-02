@@ -379,6 +379,39 @@ def _load_message_content(content: str | None, content_json: str | None) -> Any:
     return content
 
 
+def _load_tool_calls(
+    raw_tool_calls: str | None,
+    conversation_id: str,
+    row_index: int,
+) -> list[object] | None:
+    """
+    逐行加载工具调用, 损坏数据只影响当前字段
+
+    参数:
+    - raw_tool_calls: 数据库中的工具调用 JSON
+    - conversation_id: 对话 ID
+    - row_index: 消息行序号
+
+    返回:
+    - list[object] | None: 有效工具调用列表, 无效时返回 None
+    """
+    if raw_tool_calls is None:
+        return None
+    try:
+        parsed = json.loads(raw_tool_calls)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        logger.warning(
+            f"[上下文管理器] 忽略损坏的工具调用字段, 对话ID: {conversation_id}, 行号: {row_index}"
+        )
+        return None
+    if not isinstance(parsed, list):
+        logger.warning(
+            f"[上下文管理器] 忽略非列表工具调用字段, 对话ID: {conversation_id}, 行号: {row_index}"
+        )
+        return None
+    return cast(list[object], parsed)
+
+
 class ContextManager:
     """对话上下文管理器"""
     def __init__(
@@ -482,7 +515,7 @@ class ContextManager:
         with self._conn_lock:
             if self._conn is None:
                 Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-                self._conn = sqlite3.connect(self.db_path)
+                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         return self._conn
 
     def close(self):
@@ -572,12 +605,13 @@ class ContextManager:
             rows = cursor.fetchall()
 
             self._messages: List[Dict[str, Any]] = []
-            for row in rows:
+            for row_index, row in enumerate(rows, start=1):
                 msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
                     msg["tool_call_id"] = row[3]
-                if row[4] is not None:
-                    msg["tool_calls"] = json.loads(row[4])
+                tool_calls = _load_tool_calls(row[4], self.conversation_id, row_index)
+                if tool_calls is not None:
+                    msg["tool_calls"] = tool_calls
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)
@@ -1852,12 +1886,13 @@ class AsyncContextManager:
                 rows = list(await cursor.fetchall())
 
             self._messages: List[Dict[str, Any]] = []
-            for row in rows:
+            for row_index, row in enumerate(rows, start=1):
                 msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
                 if row[3] is not None:
                     msg["tool_call_id"] = row[3]
-                if row[4] is not None:
-                    msg["tool_calls"] = json.loads(row[4])
+                tool_calls = _load_tool_calls(row[4], self.conversation_id, row_index)
+                if tool_calls is not None:
+                    msg["tool_calls"] = tool_calls
                 if row[5] is not None:
                     msg["reasoning_content"] = row[5]
                 self._messages.append(msg)

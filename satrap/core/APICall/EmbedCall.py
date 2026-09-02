@@ -75,6 +75,7 @@ class Embedding:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         max_batch_size: int = 100,
         timeout: int = 60,
     ):
@@ -90,11 +91,15 @@ class Embedding:
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 False 而非空列表
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - max_batch_size: 单次 API 调用最大处理的文本数量, 默认 100
         - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key if lock_api_key else "api key locked"
-        self.base_url = normalize_openai_base_url(base_url)
+        self.base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
         self.model = model
         self.dimensions = dimensions
         self.encoding_format = encoding_format
@@ -261,6 +266,7 @@ class AsyncEmbedding:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         max_batch_size: int = 100,
         timeout: int = 60,
     ):
@@ -276,11 +282,15 @@ class AsyncEmbedding:
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 False 而非空列表
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - max_batch_size: 单次 API 调用最大处理的文本数量, 默认 100
         - timeout: 请求超时时间(秒), 默认 60
         """
         self.api_key = api_key if lock_api_key else "api key locked"
-        self.base_url = normalize_openai_base_url(base_url)
+        self.base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
         self.model = model
         self.dimensions = dimensions
         self.encoding_format = encoding_format

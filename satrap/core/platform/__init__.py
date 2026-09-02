@@ -674,13 +674,44 @@ class EventDispatcher:
         self.scheduler = scheduler
 
     async def dispatch_loop(self) -> None:
-        """主循环: 从所有适配器队列中拉取事件并处理"""
+        """为每个平台启动阻塞队列工作器, 平台内保序且平台间并发"""
+        workers = [
+            asyncio.create_task(
+                self._adapter_dispatch_loop(adapter),
+                name=f"platform-dispatch-{adapter.config.id}",
+            )
+            for adapter in self.manager._adapters.values()
+        ]
+        if not workers:
+            logger.warning("[EventDispatcher] 没有可分发的平台适配器")
+            await asyncio.Future[None]()
+            return
+        try:
+            await asyncio.gather(*workers)
+        finally:
+            for worker in workers:
+                worker.cancel()
+            await asyncio.gather(*workers, return_exceptions=True)
+
+    async def _adapter_dispatch_loop(self, adapter: PlatformAdapter) -> None:
+        """
+        阻塞等待单个平台队列并按入队顺序处理
+
+        参数:
+        - adapter: 提供独立事件队列的平台适配器
+        """
         while True:
-            for adapter in self.manager._adapters.values():
-                while not adapter._event_queue.empty():
-                    event = adapter._event_queue.get_nowait()
-                    await self._process_event(event)
-            await asyncio.sleep(0.01)
+            event = await adapter._event_queue.get()
+            try:
+                await self._process_event(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.error(
+                    f"[EventDispatcher] 平台 {adapter.config.id} 事件处理失败: {type(error).__name__}"
+                )
+            finally:
+                adapter._event_queue.task_done()
 
     async def _process_event(self, event: MessageEvent) -> None:
         """

@@ -11,9 +11,11 @@ base_take 插件工具集: search / fetch_page / code_sandbox / read_document / 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from pathlib import Path
 from typing import Any, cast
+from typing import Awaitable, Callable
 
 from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.core.utils.paths import get_project_root
@@ -37,6 +39,104 @@ SessionType = SimpleSession | AsyncSimpleSession
 
 DEFAULT_SANDBOX_ROOT = get_project_root() / ".satrap" / "sandbox"
 """默认沙箱根目录 (全局唯一, 与 coding 插件共享)"""
+
+
+def _call_user_input_provider(
+    provider: Callable[..., object],
+    question: str,
+    options: list[str],
+) -> object:
+    """
+    兼容新旧用户输入通道, 优先结构化传递选项
+
+    参数:
+    - provider: 动态用户输入回调
+    - question: 提示问题
+    - options: 可选回答列表
+
+    返回:
+    - 用户输入回调的同步结果或可等待结果
+    """
+    try:
+        inspect.signature(provider).bind(question, options)
+    except (TypeError, ValueError):
+        numbered = "  ".join(f"{index}. {option}" for index, option in enumerate(options, 1))
+        return provider(f"{question} 可选: {numbered}")
+    return provider(question, options)
+
+
+def _execution_approved(answer: object) -> bool:
+    """
+    判断代码执行授权回答是否明确同意
+
+    参数:
+    - answer: 用户输入通道返回的动态回答
+
+    返回:
+    - 回答明确同意执行时返回 True
+    """
+    return str(answer).strip().lower() in ("y", "yes", "允许", "批准")
+
+
+def _make_sync_execution_authorizer(session: SimpleSession):
+    """
+    构造同步代码执行授权器, 无输入通道时保持拒绝
+
+    参数:
+    - session: 提供同步用户输入通道的会话
+
+    返回:
+    - 接收执行说明并返回授权决定的同步回调
+    """
+    def authorize(description: str) -> bool:
+        """
+        请求用户确认单次代码执行
+
+        参数:
+        - description: 本次执行操作说明
+
+        返回:
+        - 用户明确批准时返回 True
+        """
+        provider = safe_getattr_callable(session, "user_input_provider")
+        if provider is None:
+            return False
+        question = f"代码沙箱仅限制工作目录, 代码仍可访问系统资源. 是否允许{description}?"
+        return _execution_approved(_call_user_input_provider(provider, question, ["允许", "拒绝"]))
+
+    return authorize
+
+
+def _make_async_execution_authorizer(session: AsyncSimpleSession):
+    """
+    构造异步代码执行授权器, 无输入通道时保持拒绝
+
+    参数:
+    - session: 提供异步用户输入通道的会话
+
+    返回:
+    - 接收执行说明并返回授权决定的异步回调
+    """
+    async def authorize(description: str) -> bool:
+        """
+        异步请求用户确认单次代码执行
+
+        参数:
+        - description: 本次执行操作说明
+
+        返回:
+        - 用户明确批准时返回 True
+        """
+        provider = safe_getattr_callable(session, "user_input_provider")
+        if provider is None:
+            return False
+        question = f"代码沙箱仅限制工作目录, 代码仍可访问系统资源. 是否允许{description}?"
+        answer = _call_user_input_provider(provider, question, ["允许", "拒绝"])
+        if inspect.isawaitable(answer):
+            answer = await cast(Awaitable[object], answer)
+        return _execution_approved(answer)
+
+    return authorize
 
 
 # ================= read_document 工具 =================
@@ -149,10 +249,13 @@ class ReadDocumentTool(Tool):
         except ValueError as e:
             return f"错误: {e}"
         try:
-            text = extract_text(abs_path)
+            limit = max(1, min(1_000_000, int(max_length)))
+        except (TypeError, ValueError, OverflowError):
+            return "错误: max_length 必须是整数"
+        try:
+            text = extract_text(abs_path, max_length=limit + 1)
         except ValueError as e:
             return f"错误: {e}"
-        limit = max(1, int(max_length))
         if len(text) > limit:
             return text[:limit] + f"\n... (已截断, 共 {len(text)} 字符)"
         return text or "(文档为空)"
@@ -198,10 +301,13 @@ class AsyncReadDocumentTool(AsyncTool):
         except ValueError as e:
             return f"错误: {e}"
         try:
-            text = await asyncio.to_thread(extract_text, abs_path)
+            limit = max(1, min(1_000_000, int(max_length)))
+        except (TypeError, ValueError, OverflowError):
+            return "错误: max_length 必须是整数"
+        try:
+            text = await asyncio.to_thread(extract_text, abs_path, max_length=limit + 1)
         except ValueError as e:
             return f"错误: {e}"
-        limit = max(1, int(max_length))
         if len(text) > limit:
             return text[:limit] + f"\n... (已截断, 共 {len(text)} 字符)"
         return text or "(文档为空)"
@@ -528,7 +634,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
         tools: list[Any] = [
             AsyncSearchTool(timeout=timeout),
             AsyncFetchPageTool(timeout=timeout),
-            AsyncCodeSandboxTool(sandbox),
+            AsyncCodeSandboxTool(sandbox, _make_async_execution_authorizer(session)),
             AsyncReadDocumentTool(workspace_root),
             AsyncAddMemoryTool(store),
             AsyncUpdateMemoryTool(store),
@@ -539,7 +645,7 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
         tools = [
             SearchTool(timeout=timeout),
             FetchPageTool(timeout=timeout),
-            CodeSandboxTool(sandbox),
+            CodeSandboxTool(sandbox, _make_sync_execution_authorizer(session)),
             ReadDocumentTool(workspace_root),
             AddMemoryTool(store),
             UpdateMemoryTool(store),

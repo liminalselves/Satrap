@@ -109,6 +109,8 @@ class Mem0Memory:
         self._summaries: Dict[str, str] = {}
         # 运行时内存: 会话摘要与近期历史
         self._histories: Dict[str, List[Dict[str, str]]] = {}
+        self._summary_tasks: dict[str, asyncio.Task[None]] = {}
+        self._closed = False
 
         logger.info(f"[Mem0] 初始化完成, persist_path={persist_path}")
 
@@ -133,6 +135,8 @@ class Mem0Memory:
         返回:
         - List[str]: 处理一轮对话, 提取候选记忆并执行更新
         """
+        if self._closed:
+            raise RuntimeError("Mem0Memory 已关闭")
         collection = self._col(user_id)
         await asyncio.to_thread(self.vector_db.create_collection, collection)
         self._push_history(user_id, user_message, assistant_message)
@@ -148,9 +152,19 @@ class Mem0Memory:
             if memory_id:
                 affected_ids.append(memory_id)
 
-        asyncio.create_task(self._refresh_summary(user_id))
+        self._schedule_summary_refresh(user_id)
         # 3) 异步刷新会话摘要
         return affected_ids
+
+    async def close(self) -> None:
+        """取消并等待全部后台摘要任务"""
+        self._closed = True
+        tasks = list(self._summary_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._summary_tasks.clear()
 
     async def search(
         self,
@@ -584,3 +598,53 @@ class Mem0Memory:
         if response and isinstance(response, str):
             self._summaries[user_id] = response.strip()
             logger.debug(f"[Mem0] 摘要已刷新, user_id={user_id}")
+
+    def _schedule_summary_refresh(self, user_id: str) -> None:
+        """
+        合并同一用户的摘要刷新任务并保存强引用
+
+        参数:
+        - user_id: 用户 ID
+        """
+        previous = self._summary_tasks.get(user_id)
+        if previous is not None and not previous.done():
+            previous.cancel()
+        task = asyncio.create_task(self._refresh_summary_guarded(user_id))
+        self._summary_tasks[user_id] = task
+        task.add_done_callback(
+            lambda completed, target_user=user_id: self._finish_summary_task(
+                target_user,
+                completed,
+            )
+        )
+
+    async def _refresh_summary_guarded(self, user_id: str) -> None:
+        """
+        隔离摘要刷新异常, 防止未处理任务异常泄漏到事件循环
+
+        参数:
+        - user_id: 用户 ID
+        """
+        try:
+            await self._refresh_summary(user_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception as error:
+            logger.warning(f"[Mem0] 摘要刷新失败, user_id={user_id}, 错误={error}")
+
+    def _finish_summary_task(
+        self,
+        user_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """
+        清理已结束的摘要任务引用
+
+        参数:
+        - user_id: 用户 ID
+        - task: 已结束的任务
+        """
+        if self._summary_tasks.get(user_id) is task:
+            self._summary_tasks.pop(user_id, None)
+        if not task.cancelled():
+            task.result()

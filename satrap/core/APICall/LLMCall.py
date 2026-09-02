@@ -16,6 +16,33 @@ import re
 from satrap.core.log import logger
 
 
+def _response_content_text(content: object) -> str:
+    """
+    将字符串或多模态响应内容规范化为纯文本
+
+    参数:
+    - content: 字符串或供应商返回的动态多模态内容
+
+    返回:
+    - 规范化后的文本; 内容结构不受支持时返回空字符串
+    """
+    if isinstance(content, str):
+        return content.strip()
+    if not isinstance(content, list):
+        return ""
+
+    text_parts: list[str] = []
+    for part in cast(list[object], content):
+        text: object | None = None
+        if isinstance(part, dict):
+            text = cast(dict[object, object], part).get("text")
+        else:
+            text = safe_getattr(part, "text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    return "\n".join(text_parts).strip()
+
+
 
 def _extract_thinking_from_message(
     message: Union[Any, Dict[str, Any]],
@@ -133,7 +160,7 @@ def parse_chat_response(
         if content is None:
             return ""
 
-        return content.strip()
+        return _response_content_text(content)
 
     # Step.4 异常处理
     except Exception as e:
@@ -188,11 +215,11 @@ def parse_call_response(
         if not message:
             return LLMCallResponse(type="message", content="")
 
-        content = safe_getattr_str(message, "content")
-        if not content and isinstance(message, dict):
+        content = safe_getattr(message, "content")
+        if content is None and isinstance(message, dict):
             message = cast(Dict[str, Any], message)
             content = message.get("content", "")
-        text_content = content.strip() if content else ""
+        text_content = _response_content_text(content)
         # 提取文本内容
 
         reasoning = _extract_thinking_from_message(message, api_response)
@@ -644,6 +671,7 @@ class LLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         thinking_field_name: Optional[str] = "reasoning_content",
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: bool = False,
@@ -662,13 +690,17 @@ class LLM:
         - suppress_error: 是否抑制异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
-        self.base_url = normalize_openai_base_url(base_url)
+        self.base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -1170,6 +1202,7 @@ class AsyncLLM:
         suppress_error: bool = True,
         return_false: bool = False,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         thinking_field_name: Optional[str] = "reasoning_content",
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: bool = False,
@@ -1188,13 +1221,17 @@ class AsyncLLM:
         - suppress_error: 是否抑制 API 调用中的异常, 默认 True
         - return_false: 启用时发生错误返回 false 而非空字符串
         - lock_api_key: 是否锁定 API Key 的获取以防止泄露, 默认 True
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - thinking_field_name: 思考字段名称, 默认 "reasoning_content"
         - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
-        self.base_url = normalize_openai_base_url(base_url)
+        self.base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
         self.temperature = temperature
         self.top_p = top_p
         self.max_tokens = max_tokens
@@ -1270,7 +1307,7 @@ class AsyncLLM:
             if not self.suppress_error:
                 raise e
             logger.error(err_msg)
-            return ""
+            return "" if not self.return_false else False
 
         except Exception as e:
             # Step.5 其他未知异常处理 (如网络连接失败)
@@ -1738,6 +1775,7 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
         "base_url": safe_getattr_str(cfg, "base_url"),
         "model": safe_getattr_str(cfg, "model"),
         "lock_api_key": safe_getattr(cfg, "lock_api_key", True),
+        "allow_insecure_base_url": safe_getattr(cfg, "allow_insecure_base_url", False),
     }
     # 可选字段: 仅非 None 时透传, 避免覆盖 LLM 类默认值 (temperature=0 也需保留)
     temperature = safe_getattr(cfg, "temperature")

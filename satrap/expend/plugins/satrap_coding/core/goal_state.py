@@ -250,6 +250,6 @@ class GoalState:
             lines.append("进度:")
             lines.extend(
                 f"  {i}. [{'x' if t.get('done') else ' '}] {t.get('text', '')}"
-                for i, t in enumerate(todos)
+                for i, t in enumerate(todos, start=1)
             )
         return "\n".join(lines)

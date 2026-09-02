@@ -4,13 +4,71 @@ from satrap.core.APICall.EmbedCall import Embedding, AsyncEmbedding
 from satrap.core.utils.text_utils import TextSplitter
 from satrap.core.database import DataBase
 import asyncio, aiofiles, os, traceback
+from types import TracebackType
 from typing import Any
+from typing import Protocol, cast
 
 from satrap.core.log import logger
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 
 _LOCAL_INDEX_ROOT = default_storage_layout.platform_root(LOCAL_PLATFORM_ID) / "indexes"
+
+
+class _AsyncTextReader(Protocol):
+    """声明异步文本文件读取接口"""
+
+    async def read(self) -> str:
+        """读取全部文本内容"""
+        ...
+
+
+class _AsyncFileContext(Protocol):
+    """声明异步文件上下文管理接口"""
+
+    async def __aenter__(self) -> _AsyncTextReader:
+        """进入异步文件上下文"""
+        ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        exc_traceback: TracebackType | None,
+    ) -> bool | None:
+        """
+        退出异步文件上下文
+
+        参数:
+        - exc_type: 异常类型
+        - exc_value: 异常实例
+        - exc_traceback: 异常回溯
+
+        返回:
+        - 是否抑制异常
+        """
+        ...
+
+
+class _AiofilesModule(Protocol):
+    """声明 aiofiles 打开文本文件的最小接口"""
+
+    def open(self, file: str, mode: str, *, encoding: str) -> _AsyncFileContext:
+        """
+        打开异步文本文件
+
+        参数:
+        - file: 文件路径
+        - mode: 打开模式
+        - encoding: 文本编码
+
+        返回:
+        - 异步文件上下文
+        """
+        ...
+
+
+_aiofiles = cast(_AiofilesModule, aiofiles)
 
 class LiteVectorRAG:
     """基于 LiteVector 的 RAG 实现"""
@@ -319,7 +377,7 @@ class LiteVectorRAG:
 
             logger.info(f"开始读取文件: {file_path}")
 
-            async with aiofiles.open(file_path, 'r', encoding='utf-8') as file:
+            async with _aiofiles.open(file_path, 'r', encoding='utf-8') as file:
                 content = await file.read()   # 异步读取文件内容
 
             if not content.strip():
@@ -328,7 +386,7 @@ class LiteVectorRAG:
 
             logger.info(f"成功读取文件，内容长度: {len(content)} 字符")
 
-            documents = [content]   # 将内容分割成文档
+            documents: list[str] = [content]   # 将内容分割成文档
             text_splitter = TextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,

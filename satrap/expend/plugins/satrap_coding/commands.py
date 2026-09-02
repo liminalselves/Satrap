@@ -72,7 +72,9 @@ def _cmd_goal_impl(state: dict[str, Any], session: SessionType, args: list[str])
             index = int(args[1])
         except (IndexError, ValueError):
             return "用法: /goal todo-done <序号>"
-        return f"子任务 {index} 已标记完成" if goals.complete_todo(sid, index) else f"子任务序号无效: {index}"
+        if index < 1:
+            return f"子任务序号无效: {index}"
+        return f"子任务 {index} 已标记完成" if goals.complete_todo(sid, index - 1) else f"子任务序号无效: {index}"
     text = _parse_args(args)
     if not text:
         return "用法: /goal <目标描述> 设置持续目标; /goal status 查看; /goal done 完成; /goal clear 清除; /goal todo <子任务>"

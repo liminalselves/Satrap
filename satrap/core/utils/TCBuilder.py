@@ -12,7 +12,21 @@ import json
 from satrap.core.log import logger
 
 
-def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[str, Any]:
+_SENSITIVE_ARGUMENT_NAMES = {
+    "access_token",
+    "api_key",
+    "api_secret",
+    "authorization",
+    "credential",
+    "password",
+    "private_key",
+    "secret",
+    "token",
+}
+"""工具参数日志中必须脱敏的字段名"""
+
+
+def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[str, object]:
     """
     创建工具错误结果
 
@@ -22,7 +36,7 @@ def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[st
     - error_type: 错误类型
 
     返回:
-    - Dict[str, Any]: 创建工具错误结果
+    - Dict[str, object]: 创建工具错误结果
     """
     return {
         "error": message,
@@ -32,7 +46,7 @@ def _create_tool_error(tool_name: str, message: str, error_type: str) -> Dict[st
     }
 
 
-def _safe_json_dumps(data: Any) -> str:
+def _safe_json_dumps(data: object) -> str:
     """
     安全序列化工具参数
 
@@ -48,7 +62,38 @@ def _safe_json_dumps(data: Any) -> str:
         return json.dumps(str(data), ensure_ascii=False)
 
 
-def _summarize_arguments(arguments: Any, max_length: int = 500) -> str:
+def _redact_argument_value(value: object, depth: int = 0) -> object:
+    """
+    递归脱敏工具参数中的凭据字段并限制递归深度
+
+    参数:
+    - value: 原始参数值
+    - depth: 当前递归深度
+
+    返回:
+    - object: 可安全写入日志的参数副本
+    """
+    if depth >= 4:
+        return "<省略>"
+    if isinstance(value, dict):
+        output: dict[str, object] = {}
+        for raw_key, item in cast(dict[object, object], value).items():
+            key = str(raw_key)
+            normalized = key.strip().lower().replace("-", "_")
+            if normalized in _SENSITIVE_ARGUMENT_NAMES or normalized.endswith(("_token", "_password", "_secret", "_api_key")):
+                output[key] = "********"
+            else:
+                output[key] = _redact_argument_value(item, depth + 1)
+        return output
+    if isinstance(value, (list, tuple)):
+        sequence = cast(list[object] | tuple[object, ...], value)
+        return [_redact_argument_value(item, depth + 1) for item in sequence]
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return f"<{type(value).__name__}>"
+
+
+def _summarize_arguments(arguments: object, max_length: int = 500) -> str:
     """
     生成日志用参数摘要
 
@@ -59,10 +104,35 @@ def _summarize_arguments(arguments: Any, max_length: int = 500) -> str:
     返回:
     - str: 生成日志用参数摘要
     """
-    summary = _safe_json_dumps(arguments)
+    summary = _safe_json_dumps(_redact_argument_value(arguments))
     if len(summary) <= max_length:
         return summary
     return summary[:max_length] + "..."
+
+
+def _tool_execution_error(tool_name: str, error: Exception, arguments: object, *, async_: bool = False) -> Dict[str, object]:
+    """
+    记录工具异常详情并构造不含异常文本的安全返回值
+
+    参数:
+    - tool_name: 工具名称
+    - error: 捕获的异常
+    - arguments: 工具调用参数
+    - async_: 是否为异步工具
+
+    返回:
+    - Dict[str, object]: 安全的结构化工具错误
+    """
+    mode = "异步工具" if async_ else "工具"
+    args_summary = _summarize_arguments(arguments)
+    logger.error(
+        f"[执行{mode}] 工具 {tool_name} 执行出错: {type(error).__name__}: {error}, 参数: {args_summary}"
+    )
+    return _create_tool_error(
+        tool_name,
+        f"工具执行失败: {type(error).__name__}",
+        "execution_error",
+    )
 
 def create_tool_defined(
     tool_name: str,
@@ -578,9 +648,7 @@ class ToolsManager:
             logger.debug(f"[执行工具] 工具 {tool_name} 执行成功")
             return result
         except Exception as e:
-            args_summary = _summarize_arguments(arguments)
-            logger.error(f"[执行工具] 工具 {tool_name} 执行出错: {str(e)}, 参数: {args_summary}")
-            return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
+            return _tool_execution_error(tool_name, e, arguments)
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
@@ -640,7 +708,7 @@ class ToolsManager:
             "type": "function",
             "function": {
                 "name": tool_name,
-                "arguments": _safe_json_dumps(arguments)
+                "arguments": _safe_json_dumps(cast(object, arguments))
             }
         }
 
@@ -871,9 +939,7 @@ class AsyncToolsManager:
             logger.debug(f"[执行异步工具] 工具 {tool_name} 执行成功")
             return result
         except Exception as e:
-            args_summary = _summarize_arguments(arguments)
-            logger.error(f"[执行异步工具] 工具 {tool_name} 执行出错: {str(e)}, 参数: {args_summary}")
-            return _create_tool_error(tool_name, f"工具执行异常: {str(e)}", "execution_error")
+            return _tool_execution_error(tool_name, e, arguments, async_=True)
 
     @staticmethod
     def get_call_info(call_info: Dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
@@ -933,7 +999,7 @@ class AsyncToolsManager:
             "type": "function",
             "function": {
                 "name": tool_name,
-                "arguments": _safe_json_dumps(arguments)
+                "arguments": _safe_json_dumps(cast(object, arguments))
             }
         }
 

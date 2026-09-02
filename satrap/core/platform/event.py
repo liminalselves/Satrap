@@ -909,6 +909,11 @@ class MessageEvent:
             match = re.search(pattern, buffer)
             if not match:
                 break
+            if match.start() == match.end():
+                logger.warning(
+                    f"[MessageEvent.process_buffer] 正则匹配空串, 已停止处理: pattern={pattern.pattern!r}"
+                )
+                break
             matched_text = match.group()
             await self.send(MessageChain.from_text(matched_text))
             buffer = buffer[match.end():]
