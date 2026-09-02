@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import random
 import tempfile
@@ -10,6 +11,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from types import TracebackType
 from typing import Any, NoReturn, ParamSpec, TypeVar, cast
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import aiohttp
 import websockets
@@ -17,6 +19,13 @@ import websockets
 from satrap.core.log import logger
 from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
 from satrap.core.type import safe_getattr_str
+from satrap.core.utils.outbound import (
+    UnsafeOutboundURLError,
+    normalize_hostname,
+    same_origin,
+    validate_outbound_http_url,
+    validate_outbound_redirect,
+)
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -26,6 +35,37 @@ API_MAX_RETRIES = 5
 """Misskey API 最大重试次数"""
 HTTP_OK = 200
 """Misskey API 成功状态码"""
+
+
+class _SecretRedactionFilter(logging.Filter):
+    """从第三方 WebSocket 日志中移除访问令牌"""
+
+    def __init__(self, *secrets: str) -> None:
+        """
+        初始化日志脱敏过滤器
+
+        参数:
+        - secrets: 需要替换的明文或编码后密钥
+        """
+        super().__init__()
+        self._secrets = tuple(secret for secret in secrets if secret)
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """
+        格式化并脱敏当前日志记录
+
+        参数:
+        - record: 第三方 WebSocket 日志记录
+
+        返回:
+        - 始终返回 True, 允许脱敏后的记录继续传播
+        """
+        message = record.getMessage()
+        for secret in self._secrets:
+            message = message.replace(secret, "[REDACTED]")
+        record.msg = message
+        record.args = ()
+        return True
 
 
 
@@ -68,6 +108,13 @@ class StreamingClient:
         self.channels: dict[str, str] = {}
         self.desired_channels: dict[str, dict[str, Any] | None] = {}
         self._running = False
+        self._websocket_logger = logging.getLogger(
+            f"satrap.misskey.websocket.{id(self)}"
+        )
+        encoded_token = urlencode({"i": access_token}).partition("=")[2]
+        self._websocket_logger.addFilter(
+            _SecretRedactionFilter(access_token, encoded_token)
+        )
 
     async def connect(self) -> bool:
         """
@@ -77,31 +124,48 @@ class StreamingClient:
         - bool: 连接 Misskey streaming 端点
         """
         try:
-            ws_url = self.instance_url.replace("https://", "wss://").replace("http://", "ws://")
-            ws_url += f"/streaming?i={self.access_token}"
+            parsed = urlsplit(self.instance_url)
+            ws_scheme = "wss" if parsed.scheme.lower() == "https" else "ws"
+            ws_url = urlunsplit((
+                ws_scheme,
+                parsed.netloc,
+                parsed.path.rstrip("/") + "/streaming",
+                urlencode({"i": self.access_token}),
+                "",
+            ))
             self.websocket = await websockets.connect(
                 ws_url,
                 ping_interval=30,
                 ping_timeout=10,
+                logger=self._websocket_logger,
             )
             self.is_connected = True
             self._running = True
+            self.channels.clear()
             for channel_type, params in list(self.desired_channels.items()):
                 await self.subscribe_channel(channel_type, params)
             logger.info("[Misskey WebSocket] 已连接")
             return True
         except Exception as e:
             self.is_connected = False
-            logger.error(f"[Misskey WebSocket] 连接失败: {e}")
+            logger.error(f"[Misskey WebSocket] 连接失败: {type(e).__name__}")
             return False
 
-    async def disconnect(self) -> None:
-        """断开 WebSocket 连接"""
+    async def disconnect(self, *, clear_subscriptions: bool = True) -> None:
+        """
+        断开 WebSocket 连接, 显式断开默认清除订阅意图
+
+        参数:
+        - clear_subscriptions: 是否同时清除重连所需的订阅意图, 默认 True
+        """
         self._running = False
         if self.websocket:
             await self.websocket.close()
             self.websocket = None
         self.is_connected = False
+        self.channels.clear()
+        if clear_subscriptions:
+            self.desired_channels.clear()
         logger.info("[Misskey WebSocket] 连接已断开")
 
     async def subscribe_channel(
@@ -184,7 +248,7 @@ class StreamingClient:
         finally:
             self.is_connected = False
             try:
-                await self.disconnect()
+                await self.disconnect(clear_subscriptions=False)
             except Exception:
                 pass
 
@@ -653,20 +717,42 @@ class MisskeyAPI:
         返回:
         - bytes: 下载远程文件字节
         """
+        instance_host = urlsplit(self.instance_url).hostname
+        trusted_hosts = (
+            (normalize_hostname(instance_host),)
+            if instance_host is not None
+            else ()
+        )
+        current_url = validate_outbound_http_url(url, trusted_hosts=trusted_hosts)
+        if not ssl_verify and not same_origin(current_url, self.instance_url):
+            raise UnsafeOutboundURLError("不安全 TLS 仅允许用于已配置的 Misskey 实例")
         timeout = aiohttp.ClientTimeout(total=self.download_timeout)
         connector = None if ssl_verify else aiohttp.TCPConnector(ssl=False)
         session_cm = aiohttp.ClientSession(connector=connector, timeout=timeout)
         async with session_cm as session:
-            async with session.get(url) as response:
-                response.raise_for_status()
-                chunks: list[bytes] = []
-                total = 0
-                async for chunk in response.content.iter_chunked(self.chunk_size):
-                    total += len(chunk)
-                    if self.max_download_bytes is not None and total > self.max_download_bytes:
-                        raise APIError("Downloaded file exceeds max_download_bytes")
-                    chunks.append(chunk)
-                return b"".join(chunks)
+            for _ in range(6):
+                async with session.get(current_url, allow_redirects=False) as response:
+                    if 300 <= response.status < 400:
+                        current_url = validate_outbound_redirect(
+                            current_url,
+                            response.headers.get("Location", ""),
+                            trusted_hosts=trusted_hosts,
+                        )
+                        if not ssl_verify and not same_origin(current_url, self.instance_url):
+                            raise UnsafeOutboundURLError(
+                                "不安全 TLS 下载不得重定向到其他来源"
+                            )
+                        continue
+                    response.raise_for_status()
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.content.iter_chunked(self.chunk_size):
+                        total += len(chunk)
+                        if self.max_download_bytes is not None and total > self.max_download_bytes:
+                            raise APIError("Downloaded file exceeds max_download_bytes")
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+        raise APIError("下载重定向次数超过限制")
 
     async def upload_and_find_file(
         self,
@@ -693,8 +779,12 @@ class MisskeyAPI:
             try:
                 data = await self._download_bytes(url, ssl_verify=True)
             except Exception:
-                if not self.allow_insecure_downloads:
+                if (
+                    not self.allow_insecure_downloads
+                    or not same_origin(url, self.instance_url)
+                ):
                     raise
+                logger.warning("[Misskey API] 为已配置实例启用不安全 TLS 下载回退")
                 data = await self._download_bytes(url, ssl_verify=False)
 
             suffix = os.path.splitext(name or url.split("?", 1)[0])[1]
@@ -709,7 +799,7 @@ class MisskeyAPI:
                 except OSError:
                     pass
         except Exception as e:
-            logger.error(f"[Misskey API] URL 文件上传失败: {e}")
+            logger.error(f"[Misskey API] URL 文件上传失败: {type(e).__name__}")
             return None
 
     async def send_message_with_media(

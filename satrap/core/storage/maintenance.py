@@ -88,6 +88,56 @@ class StorageMaintenanceService:
             for key, item in cast(dict[object, Any], value).items()
         }
 
+    def _resolve_archive_path(self, platform_id: str, archive_id: str) -> Path:
+        """
+        解析并校验单个会话回收包路径
+
+        参数:
+        - platform_id: 平台实例 ID
+        - archive_id: 回收包 ID
+
+        返回:
+        - Path: 位于平台回收目录内的真实路径
+        """
+        normalized_id = archive_id.strip()
+        if (
+            not normalized_id
+            or normalized_id != archive_id
+            or normalized_id in {".", ".."}
+            or Path(normalized_id).name != normalized_id
+            or "/" in normalized_id
+            or "\\" in normalized_id
+        ):
+            raise ValueError("非法回收包路径")
+        trash_root = (self.layout.trash_root(platform_id) / "sessions").resolve()
+        candidate = trash_root / normalized_id
+        if candidate.is_symlink():
+            raise ValueError("拒绝使用符号链接回收包")
+        target = candidate.resolve()
+        if target.parent != trash_root:
+            raise ValueError("非法回收包路径")
+        return target
+
+    @staticmethod
+    def _resolve_archive_member(archive: Path, name: str) -> Path:
+        """
+        解析回收包固定成员并拒绝符号链接逃逸
+
+        参数:
+        - archive: 已验证的回收包目录
+        - name: 服务端定义的固定成员名
+
+        返回:
+        - Path: 位于回收包内的真实成员路径
+        """
+        member = archive / name
+        if member.is_symlink():
+            raise ValueError(f"拒绝使用符号链接回收包成员: {name}")
+        resolved = member.resolve()
+        if resolved.parent != archive:
+            raise ValueError(f"非法回收包成员路径: {name}")
+        return resolved
+
     def _audit_item(
         self,
         *,
@@ -507,24 +557,33 @@ class StorageMaintenanceService:
         返回:
         - dict[str, Any]: 恢复结果
         """
-        archive = self.layout.trash_root(platform_id) / "sessions" / archive_id
-        manifest = self._read_json(archive / "manifest.json")
-        if manifest is None or str(manifest.get("platform_id", "")) != platform_id:
+        archive = self._resolve_archive_path(platform_id, archive_id)
+        if not archive.is_dir():
+            raise ValueError("回收包不存在或身份不匹配")
+        manifest_path = self._resolve_archive_member(archive, "manifest.json")
+        manifest = self._read_json(manifest_path)
+        if (
+            manifest is None
+            or str(manifest.get("platform_id", "")) != platform_id
+            or str(manifest.get("archive_id", "")) != archive_id
+        ):
             raise ValueError("回收包不存在或身份不匹配")
         session_id = str(manifest.get("session_id", "")).strip()
         if not session_id:
             raise ValueError("回收包缺少 session_id")
-        records_path = archive / "records.json"
-        if not records_path.exists():
+        records_path = self._resolve_archive_member(archive, "records.json")
+        if not records_path.is_file():
             raise ValueError("回收包数据库记录无效")
         records = self._read_json_records(records_path)
         destination = self.layout.session_root(platform_id, session_id)
-        files_root = archive / "files"
+        files_root = self._resolve_archive_member(archive, "files")
         moved_files = False
         if destination.exists() or destination.is_symlink():
             raise ValueError(f"会话目录已存在: {session_id}")
         try:
             if files_root.exists():
+                if not files_root.is_dir():
+                    raise ValueError("回收包文件目录无效")
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(files_root), str(destination))
                 moved_files = True
@@ -557,16 +616,10 @@ class StorageMaintenanceService:
         返回:
         - bool: 是否删除
         """
-        trash_root = (self.layout.trash_root(platform_id) / "sessions").resolve()
-        target = (trash_root / archive_id).resolve()
-        if target.parent != trash_root:
-            raise ValueError("非法回收包路径")
+        target = self._resolve_archive_path(platform_id, archive_id)
         if not target.exists() and not target.is_symlink():
             return False
-        if target.is_symlink():
-            target.unlink()
-        else:
-            shutil.rmtree(target)
+        shutil.rmtree(target)
         return True
 
     def purge_archives(

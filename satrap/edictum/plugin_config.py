@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -28,6 +29,9 @@ CONFIG_DIR = Path(".satrap") / "plugin_config"
 
 _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select")
 """支持的配置字段类型"""
+
+_PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
+"""插件配置文件使用的稳定名称格式"""
 
 
 @dataclass
@@ -134,7 +138,22 @@ class PluginConfigManager:
         self._dir = Path(config_dir) if config_dir is not None else CONFIG_DIR
 
     def _global_path(self, name: str) -> Path:
-        return self._dir / f"{name}.json"
+        """
+        校验插件名称并返回配置目录内的真实路径
+
+        参数:
+        - name: 插件稳定名称
+
+        返回:
+        - Path: 严格位于全局配置目录内的 JSON 路径
+        """
+        if _PLUGIN_NAME_RE.fullmatch(name) is None:
+            raise ValueError(f"非法插件名称: {name}")
+        root = self._dir.resolve()
+        path = (root / f"{name}.json").resolve()
+        if path.parent != root:
+            raise ValueError(f"非法插件配置路径: {name}")
+        return path
 
     def load_global(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
         """

@@ -3,8 +3,26 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
+
+
+_RESTORABLE_TABLES = frozenset({
+    "session_configs",
+    "conversation_meta",
+    "display_turns",
+    "display_turn_variants",
+    "display_tool_calls",
+    "chat_history",
+    "state_scopes",
+    "state_checkpoints",
+    "state_snapshots",
+    "memories",
+    "context_sessions",
+    "user_info",
+})
+"""允许从会话归档恢复的数据库表"""
 
 
 def _related_scope_pattern(session_id: str) -> str:
@@ -29,6 +47,51 @@ def _table_names(connection: sqlite3.Connection) -> set[str]:
             "SELECT name FROM sqlite_master WHERE type='table'"
         ).fetchall()
     }
+
+
+def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
+    """
+    返回允许恢复表的实际列名
+
+    参数:
+    - connection: SQLite 连接
+    - table: 已通过服务端白名单校验的表名
+
+    返回:
+    - set[str]: 数据库架构中存在的列名
+    """
+    if table not in _RESTORABLE_TABLES:
+        raise ValueError(f"归档包含不允许恢复的表: {table}")
+    return {
+        str(row[1])
+        for row in connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+    }
+
+
+def _validated_restore_columns(
+    table: str,
+    row: Mapping[str, object],
+    available_columns: set[str],
+) -> list[str]:
+    """
+    校验归档行的列名并保持原始字段顺序
+
+    参数:
+    - table: 目标表名
+    - row: 归档中的单行记录
+    - available_columns: 目标表的实际列名
+
+    返回:
+    - list[str]: 可以安全用于 INSERT 的列名
+    """
+    columns = list(row)
+    if not columns:
+        raise ValueError(f"归档表 {table} 包含空记录")
+    unknown_columns = set(columns) - available_columns
+    if unknown_columns:
+        names = ", ".join(sorted(unknown_columns))
+        raise ValueError(f"归档表 {table} 包含未知列: {names}")
+    return columns
 
 
 def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, list[dict[str, Any]]]:
@@ -127,6 +190,13 @@ def restore_session_domain(
     with sqlite3.connect(str(database_path)) as connection:
         connection.row_factory = sqlite3.Row
         tables = _table_names(connection)
+        schemas: dict[str, set[str]] = {}
+        for table in records:
+            if table not in _RESTORABLE_TABLES:
+                raise ValueError(f"归档包含不允许恢复的表: {table}")
+            if table not in tables:
+                raise ValueError(f"目标数据库缺少归档表: {table}")
+            schemas[table] = _table_columns(connection, table)
         identity_checks = {
             "session_configs": ("session_id", session_id),
             "conversation_meta": ("conversation_id", session_id),
@@ -143,10 +213,10 @@ def restore_session_domain(
         try:
             connection.execute("BEGIN")
             for table, rows in records.items():
-                if table not in tables or table == "user_info":
+                if table == "user_info":
                     continue
                 for row in rows:
-                    columns = list(row)
+                    columns = _validated_restore_columns(table, row, schemas[table])
                     placeholders = ",".join("?" for _ in columns)
                     connection.execute(
                         f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
@@ -154,13 +224,17 @@ def restore_session_domain(
                     )
             if "user_info" in tables:
                 for row in records.get("user_info", []):
+                    columns = _validated_restore_columns(
+                        "user_info",
+                        row,
+                        schemas["user_info"],
+                    )
                     user_id = str(row.get("user_id", ""))
                     current = connection.execute(
                         "SELECT user_session FROM user_info WHERE user_id = ?",
                         (user_id,),
                     ).fetchone()
                     if current is None:
-                        columns = list(row)
                         placeholders = ",".join("?" for _ in columns)
                         connection.execute(
                             f"INSERT INTO user_info ({','.join(columns)}) VALUES ({placeholders})",

@@ -5,6 +5,7 @@
 统一处理模型配置, 返回数量与排序结果解析
 """
 from typing import List, Dict, Any, Optional, Union, Literal, cast
+from typing import Protocol
 from satrap.core.utils import normalize_openai_base_url
 import requests
 import aiohttp
@@ -12,6 +13,30 @@ import asyncio
 import json
 
 from satrap.core.log import logger
+
+
+class _JSONResponse(Protocol):
+    """声明同步重排请求实际依赖的最小响应接口"""
+
+    status_code: int
+
+    def json(self) -> object:
+        """返回解码后的 JSON 数据"""
+        ...
+
+
+class _RequestsClient(Protocol):
+    """声明同步重排请求实际依赖的最小客户端接口"""
+
+    def post(self, url: str, **kwargs: object) -> _JSONResponse:
+        """
+        发送 POST 请求
+
+        参数:
+        - url: 请求地址
+        - kwargs: 传递给请求客户端的动态参数
+        """
+        ...
 
 def parse_rerank_result(
     api_response: Optional[Dict[str, Any]],
@@ -103,6 +128,7 @@ class ReRank:
         top_k: int = 5,
         min_score: float = 0.0,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         timeout: int = 60,
     ):
         """
@@ -115,10 +141,16 @@ class ReRank:
         - top_k: 返回的文档数量 (默认 5)
         - min_score: 最小相关性分数阈值 (默认 0.0)
         - lock_api_key: 是否锁定 API 密钥 (默认 True)
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - timeout: 请求超时时间(秒), 默认 60
         """
-        self.api_key = api_key
-        self.base_url = normalize_openai_base_url(base_url) + "/rerank"
+        self._api_key = api_key
+        self.api_key = api_key if not lock_api_key else "api key locked"
+        normalized_base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
+        self.base_url = normalized_base_url + "/rerank"
         self.model = model
         self.top_k = top_k
         self.min_score = min_score
@@ -158,17 +190,27 @@ class ReRank:
                 "return_documents": True,
             }   # 构建请求体
 
-            response = requests.post(
+            response = cast(_RequestsClient, requests).post(
                 self.base_url,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {self._api_key}",
                     "Content-Type": "application/json"
                 },
                 json=request,
                 timeout=self.timeout,
             )   # 发送 POST 请求
 
-            api_response = response.json()   # 解析 JSON 响应
+            if not 200 <= response.status_code < 300:
+                logger.error(f"[ReRank] 重排接口返回 HTTP {response.status_code}")
+                return []
+
+            raw_response = response.json()   # 解析 JSON 响应
+            if not isinstance(raw_response, dict):
+                raise ValueError("重排接口响应不是 JSON 对象")
+            api_response = {
+                str(key): value
+                for key, value in cast(dict[object, object], raw_response).items()
+            }
 
         except requests.exceptions.Timeout:
             logger.error("[ReRank] 重排接口请求请求超时")
@@ -204,7 +246,7 @@ class ReRank:
         返回:
         - str: 当前 ReRank 实例的 API Key
         """
-        return self.api_key if not self.lock_api_key else "api key locked"
+        return self.api_key
 
     def get_base_url(self) -> str:
         """
@@ -274,6 +316,7 @@ class AsyncReRank:
         top_k: int = 5,
         min_score: float = 0.0,
         lock_api_key: bool = True,
+        allow_insecure_base_url: bool = False,
         timeout: int = 60,
     ):
         """
@@ -286,10 +329,16 @@ class AsyncReRank:
         - top_k: 返回的文档数量 (默认 5)
         - min_score: 最小相关性分数阈值 (默认 0.0)
         - lock_api_key: 是否锁定 API Key (默认 True)
+        - allow_insecure_base_url: 是否显式允许非回环 HTTP API 地址
         - timeout: 请求超时时间(秒), 默认 60
         """
-        self.api_key = api_key
-        self.base_url = base_url + "/rerank"
+        self._api_key = api_key
+        self.api_key = api_key if not lock_api_key else "api key locked"
+        normalized_base_url = normalize_openai_base_url(
+            base_url,
+            allow_insecure=allow_insecure_base_url,
+        )
+        self.base_url = normalized_base_url + "/rerank"
         self.model = model
         self.top_k = top_k
         self.min_score = min_score
@@ -333,13 +382,22 @@ class AsyncReRank:
                 async with session.post(
                     self.base_url,
                     headers={
-                        "Authorization": f"Bearer {self.api_key}",
+                        "Authorization": f"Bearer {self._api_key}",
                         "Content-Type": "application/json"
                     },
                     json=request,
                     timeout=aiohttp.ClientTimeout(total=self.timeout),
                 ) as response:
-                    api_response = await response.json()   # 解析 JSON 响应
+                    if not 200 <= response.status < 300:
+                        logger.error(f"[AsyncReRank] 重排接口返回 HTTP {response.status}")
+                        return []
+                    raw_response: object = await response.json()   # 解析 JSON 响应
+                    if not isinstance(raw_response, dict):
+                        raise ValueError("重排接口响应不是 JSON 对象")
+                    api_response = {
+                        str(key): value
+                        for key, value in cast(dict[object, object], raw_response).items()
+                    }
 
         except asyncio.TimeoutError:
             logger.error("[AsyncReRank] 重排接口请求超时")
@@ -375,7 +433,7 @@ class AsyncReRank:
         返回:
         - str: 当前 AsyncReRank 实例的 API Key
         """
-        return self.api_key if not self.lock_api_key else "api key locked"
+        return self.api_key
 
     def get_base_url(self) -> str:
         """

@@ -10,6 +10,7 @@ import asyncio
 import base64
 import json
 import os
+import re
 import uuid
 from enum import Enum
 from pathlib import Path
@@ -24,6 +25,23 @@ from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 _SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"
 _callback_api_base: str = ""
+
+
+def _safe_download_filename(display_name: str | None) -> str:
+    """
+    生成不含外部输入路径片段的服务端文件名
+
+    参数:
+    - display_name: 外部提供的显示文件名, 可为 None
+
+    返回:
+    - 仅保留安全扩展名的随机服务端文件名
+    """
+    basename = (display_name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    suffix = Path(basename).suffix
+    if not re.fullmatch(r"\.[A-Za-z0-9]{1,10}", suffix):
+        suffix = ""
+    return f"fileseg_{uuid.uuid4().hex}{suffix.lower()}"
 
 
 def get_satrap_temp_path() -> str:
@@ -921,12 +939,11 @@ class File(BaseMessageComponent):
         """下载文件到 Satrap 临时目录"""
         if not self.url:
             raise ValueError("Download failed: No URL provided in File component.")
-        if self.name:
-            stem, suffix = os.path.splitext(self.name)
-            filename = f"fileseg_{stem}_{uuid.uuid4().hex[:8]}{suffix}"
-        else:
-            filename = f"fileseg_{uuid.uuid4().hex}"
-        self.file_ = await download_file(self.url, os.path.join(get_satrap_temp_path(), filename))
+        temp_root = Path(get_satrap_temp_path()).resolve()
+        target = (temp_root / _safe_download_filename(self.name)).resolve()
+        if not target.is_relative_to(temp_root):
+            raise ValueError("文件下载目标越出临时目录")
+        self.file_ = await download_file(self.url, str(target))
 
     async def register_to_file_service(self) -> str:
         """

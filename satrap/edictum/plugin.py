@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
+from typing import Protocol
 
 import yaml
 
@@ -55,6 +56,25 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+
+
+class _YamlLoader(Protocol):
+    """声明插件加载只依赖的 YAML 解析接口"""
+
+    def safe_load(self, stream: object) -> object:
+        """
+        解析 YAML 文本流
+
+        参数:
+        - stream: YAML 文本流
+
+        返回:
+        - 解析后的动态结构
+        """
+        ...
+
+
+_yaml_loader = cast(_YamlLoader, yaml)
 
 PLUGINS_PRESET_DIR = Path(__file__).resolve().parents[1] / "expend" / "plugins"
 """官方预设插件目录 (satrap/expend/plugins), 只读基线"""
@@ -76,7 +96,7 @@ def load_plugin_meta(plugin_dir: Path) -> dict[str, Any]:
     if not meta_path.is_file():
         raise ValueError(f"插件目录缺少 meta.yaml: {plugin_dir}")
     with open(meta_path, encoding="utf-8") as f:
-        raw = yaml.safe_load(f)
+        raw = _yaml_loader.safe_load(f)
     if not isinstance(raw, dict):
         raise ValueError(f"插件 meta.yaml 格式错误: {meta_path}")
     return {str(k): v for k, v in cast(dict[str, Any], raw).items()}

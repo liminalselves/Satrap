@@ -290,6 +290,8 @@ class LLMConfig:
     """总结压缩时必须原样保留的最近对话轮数"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
+    allow_insecure_base_url: bool = False
+    """是否显式允许非回环 HTTP API 地址"""
     thinking_field_name: Optional[str] = None
     """思考内容的字段名称"""
     thinking_fields: Optional[List[str]] = None
@@ -316,6 +318,8 @@ class EmbeddingConfig:
     """Embedding 最大批量大小"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
+    allow_insecure_base_url: bool = False
+    """是否显式允许非回环 HTTP API 地址"""
 
 @dataclass
 class ReRankConfig:
@@ -334,6 +338,8 @@ class ReRankConfig:
     """ReRank 返回最小分数"""
     lock_api_key: bool = True
     """是否锁定 API 密钥的获取以防止泄露"""
+    allow_insecure_base_url: bool = False
+    """是否显式允许非回环 HTTP API 地址"""
 
 @dataclass
 class SessionConfig:

@@ -1,8 +1,10 @@
 """Satrap 核心通用工具函数导出入口"""
 from typing import Any, overload
+from ipaddress import ip_address
 import json
 import ast
 import re
+from urllib.parse import urlsplit
 
 from satrap.core.log import logger
 
@@ -73,17 +75,22 @@ def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
 
 
 @overload
-def normalize_openai_base_url(base_url: None) -> None: ...
+def normalize_openai_base_url(base_url: None, *, allow_insecure: bool = False) -> None: ...
 
 @overload
-def normalize_openai_base_url(base_url: str) -> str: ...
+def normalize_openai_base_url(base_url: str, *, allow_insecure: bool = False) -> str: ...
 
-def normalize_openai_base_url(base_url: str | None) -> str | None:
+def normalize_openai_base_url(
+    base_url: str | None,
+    *,
+    allow_insecure: bool = False,
+) -> str | None:
     """
     归一化 OpenAI 兼容客户端 base_url
 
     参数:
     - base_url: API 服务地址
+    - allow_insecure: 是否显式允许非回环 HTTP 地址
 
     返回:
     - str | None: 归一化 OpenAI 兼容客户端 base_url
@@ -92,6 +99,19 @@ def normalize_openai_base_url(base_url: str | None) -> str | None:
         return base_url
 
     cleaned = base_url.strip().rstrip("/")
+    parsed = urlsplit(cleaned)
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("API base_url 仅支持 http 或 https 协议")
+    if not parsed.hostname:
+        raise ValueError("API base_url 缺少有效主机名")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("API base_url 不允许包含用户名或密码")
+    if parsed.fragment:
+        raise ValueError("API base_url 不允许包含 URL 片段")
+    if scheme == "http" and not allow_insecure and not _is_loopback_api_host(parsed.hostname):
+        raise ValueError("非回环 API base_url 必须使用 https, 或显式启用 allow_insecure")
+
     suffixes = ("/chat/completions", "/completions", "/responses")
     for suffix in suffixes:
         if cleaned.endswith(suffix):
@@ -99,3 +119,22 @@ def normalize_openai_base_url(base_url: str | None) -> str | None:
             break
 
     return cleaned or base_url
+
+
+def _is_loopback_api_host(host: str) -> bool:
+    """
+    判断 API 主机是否为本机回环地址
+
+    参数:
+    - host: 主机名或 IP 地址
+
+    返回:
+    - bool: 是否为回环地址
+    """
+    normalized = host.strip().lower().rstrip(".")
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        return ip_address(normalized).is_loopback
+    except ValueError:
+        return False
