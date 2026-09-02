@@ -1,5 +1,8 @@
-import axios, { AxiosInstance, AxiosError } from 'axios';
+import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { getApiBaseUrl } from '@/utils/constants';
+import { establishApiSession } from '@/api/auth';
+
+type RetriableRequestConfig = InternalAxiosRequestConfig & { _satrapAuthRetry?: boolean };
 
 export class ApiError extends Error {
   constructor(
@@ -18,6 +21,7 @@ class ApiClient {
   constructor() {
     this.client = axios.create({
       timeout: 10000,
+      withCredentials: true,
       headers: {
         'Content-Type': 'application/json',
       },
@@ -34,7 +38,13 @@ class ApiClient {
   private setupInterceptors() {
     this.client.interceptors.response.use(
       (response) => response.data,
-      (error: AxiosError<{ error?: string }>) => {
+      async (error: AxiosError<{ error?: string }>) => {
+        const config = error.config as RetriableRequestConfig | undefined;
+        if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
+          config._satrapAuthRetry = true;
+          await establishApiSession(getApiBaseUrl());
+          return this.client.request(config);
+        }
         const message = error.response?.data?.error || error.message;
         const status = error.response?.status;
         return Promise.reject(new ApiError(message, status));

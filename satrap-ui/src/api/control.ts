@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { getControlApiUrl } from '@/utils/constants';
+import { establishApiSession } from '@/api/auth';
 import type {
   DiscoveredSessionClass,
   EdictumSessionConfig,
@@ -24,6 +25,7 @@ import type {
 // 后端控制 API 客户端(独立于主后端)
 const controlClient = axios.create({
   timeout: 30000,
+  withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -33,6 +35,19 @@ controlClient.interceptors.request.use((config) => {
   config.baseURL = getControlApiUrl();
   return config;
 });
+
+controlClient.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const config = error.config as typeof error.config & { _satrapAuthRetry?: boolean };
+    if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
+      config._satrapAuthRetry = true;
+      await establishApiSession(getControlApiUrl());
+      return controlClient.request(config);
+    }
+    return Promise.reject(error);
+  },
+);
 
 export interface BackendStatus {
   running: boolean;

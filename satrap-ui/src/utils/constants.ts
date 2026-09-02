@@ -18,6 +18,20 @@ const DEFAULT_RUNTIME_CONFIG: RuntimeServiceConfig = {
 
 let runtimeConfig = { ...DEFAULT_RUNTIME_CONFIG };
 
+function alignLoopbackHost(serviceUrl: string, pageOrigin: string): string {
+  try {
+    const service = new URL(serviceUrl);
+    const page = new URL(pageOrigin);
+    const loopback = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+    if (loopback.has(service.hostname) && loopback.has(page.hostname)) {
+      service.hostname = page.hostname;
+    }
+    return service.origin;
+  } catch {
+    return serviceUrl;
+  }
+}
+
 export function resolveRuntimeConfig(
   discovered: Partial<RuntimeServiceConfig> | null,
   pageOrigin: string,
@@ -27,9 +41,15 @@ export function resolveRuntimeConfig(
     ? discovered.control_api || pageOrigin || DEFAULT_RUNTIME_CONFIG.control_api
     : DEFAULT_RUNTIME_CONFIG.control_api;
   return {
-    backend_api: overrides.backend || discovered?.backend_api || DEFAULT_RUNTIME_CONFIG.backend_api,
-    control_api: overrides.control || controlApi,
-    chat_api: overrides.chat || discovered?.chat_api || DEFAULT_RUNTIME_CONFIG.chat_api,
+    backend_api: alignLoopbackHost(
+      overrides.backend || discovered?.backend_api || DEFAULT_RUNTIME_CONFIG.backend_api,
+      pageOrigin,
+    ),
+    control_api: alignLoopbackHost(overrides.control || controlApi, pageOrigin),
+    chat_api: alignLoopbackHost(
+      overrides.chat || discovered?.chat_api || DEFAULT_RUNTIME_CONFIG.chat_api,
+      pageOrigin,
+    ),
   };
 }
 

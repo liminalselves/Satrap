@@ -269,11 +269,18 @@ export type ChatEvent =
 // ==================== HTTP 请求 ====================
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const resp = await fetch(`${getChatApiUrl()}${path}`, {
+  const send = () => fetch(`${getChatApiUrl()}${path}`, {
     method,
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
+  let resp = await send();
+  if (resp.status === 401) {
+    const { establishApiSession } = await import('@/api/auth');
+    await establishApiSession(getChatApiUrl());
+    resp = await send();
+  }
   const data = (await resp.json()) as T & { error?: string };
   if (!resp.ok) {
     throw new Error(data.error || `请求失败: ${resp.status}`);
