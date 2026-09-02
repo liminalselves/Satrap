@@ -19,10 +19,10 @@ from typing import Any
 import pytest
 
 from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.framework.Base import Session
+from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.state import StateStore
 from satrap.core.type import StateScope
-from satrap.core.utils.context import ContextManager
+from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 class _MiniSession(Session):
@@ -328,6 +328,9 @@ def test_clear_memory_uses_session_db(tmp_path: Path):
 
     session.clear_memory()
 
+    assert session.wf_ctx.get_context() == []
+    assert session.session_ctx.get_context() == []
+
     conn = sqlite3.connect(db)
     try:
         rows = conn.execute(
@@ -337,6 +340,53 @@ def test_clear_memory_uses_session_db(tmp_path: Path):
     finally:
         conn.close()
     assert rows[0] == 0
+
+
+def test_clear_memory_clears_untracked_workflow_id(tmp_path: Path) -> None:
+    """
+    clear_memory 通过 wf_list 清理未显式注册的工作流上下文
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    db_path = str(tmp_path / "untracked.db")
+    session = Session("s-untracked", db_path=db_path)
+    workflow_id = session.workflow_id_assign("edge")
+    workflow_context = ContextManager(workflow_id, db_path=db_path)
+    workflow_context.add_user_message("待清理消息")
+    workflow_context.close()
+
+    session.clear_memory()
+
+    reloaded = ContextManager(workflow_id, db_path=db_path)
+    try:
+        assert reloaded.get_context() == []
+    finally:
+        reloaded.close()
+        session.session_ctx.close()
+
+
+@pytest.mark.asyncio
+async def test_async_clear_memory_clears_untracked_workflow_id(tmp_path: Path) -> None:
+    """
+    异步 clear_memory 通过 wf_list 清理未显式注册的工作流上下文
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    db_path = str(tmp_path / "async-untracked.db")
+    session = AsyncSession("s-async-untracked", db_path=db_path)
+    await session.initialize()
+    workflow_id = session.workflow_id_assign("edge")
+    workflow_context = AsyncContextManager(workflow_id, db_path=db_path)
+    await workflow_context.initialize()
+    await workflow_context.add_user_message("待清理消息")
+
+    await session.clear_memory()
+
+    reloaded = AsyncContextManager(workflow_id, db_path=db_path)
+    await reloaded.initialize()
+    assert reloaded.get_context() == []
 
 
 # ---------- L6: BackendConfig 字符串布尔解析 ----------

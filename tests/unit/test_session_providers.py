@@ -180,6 +180,20 @@ def test_session_config_store_migrates_legacy_provider_column(tmp_path: Path) ->
     assert loaded.provider_name == "session_class"
 
 
+def test_session_config_store_connection_scope_closes_connection(tmp_path: Path) -> None:
+    """
+    数据库连接离开事务作用域后立即关闭
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    store = SessionConfigStore(tmp_path / "sessions.db")
+    with store._connection() as connection:
+        assert connection.execute("SELECT 1").fetchone() is not None
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        connection.execute("SELECT 1")
+
+
 def test_user_call_resolves_same_name_by_explicit_provider(tmp_path: Path) -> None:
     """UserCall 应按显式 Provider 解析同名定义"""
     manager = SessionManager(default_session_type="assistant", db_path=tmp_path / "sessions.db")

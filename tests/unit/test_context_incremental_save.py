@@ -110,6 +110,63 @@ def test_incremental_append_then_reload_roundtrip(tmp_path: Path):
     assert contents == expected
 
 
+def test_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path):
+    """
+    损坏的单行 tool_calls 只丢弃该字段, 其余历史完整加载
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    db = str(tmp_path / "chat_history.db")
+    ctx = ContextManager("conv-corrupt", db_path=db)
+    ctx.add_user_message("第一条")
+    ctx.add_bot_message("第二条")
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE chat_history SET tool_calls = ? WHERE conversation_id = ? AND content = ?",
+            ("{broken", "conv-corrupt", "第一条"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    loaded = ContextManager("conv-corrupt", db_path=db)
+    assert [message["content"] for message in loaded.get_context()] == ["第一条", "第二条"]
+    assert "tool_calls" not in loaded.get_context()[0]
+
+
+@pytest.mark.asyncio
+async def test_async_corrupt_tool_calls_does_not_discard_other_messages(tmp_path: Path):
+    """
+    异步加载遇到损坏 tool_calls 时保留完整消息历史
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    db = str(tmp_path / "chat_history.db")
+    ctx = AsyncContextManager("conv-corrupt-a", db_path=db)
+    await ctx.initialize()
+    await ctx.add_user_message("第一条")
+    await ctx.add_bot_message("第二条")
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "UPDATE chat_history SET tool_calls = ? WHERE conversation_id = ? AND content = ?",
+            ("not-json", "conv-corrupt-a", "第二条"),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    loaded = AsyncContextManager("conv-corrupt-a", db_path=db)
+    await loaded.initialize()
+    assert [message["content"] for message in loaded.get_context()] == ["第一条", "第二条"]
+    assert "tool_calls" not in loaded.get_context()[1]
+
+
 def test_reset_system_prompt_triggers_full_rewrite(tmp_path: Path):
     """
     编辑操作 (reset_system_prompt) 走全量重写, 库内容与内存一致

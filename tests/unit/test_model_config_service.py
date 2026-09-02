@@ -116,3 +116,23 @@ def test_model_config_service_rejects_rename_collision(tmp_path: Path):
 
     assert manager.get_embedding_config("first").model == "first-model"
     assert manager.get_embedding_config("second").model == "second-model"
+
+
+def test_masking_does_not_depend_on_lock_api_key(tmp_path: Path) -> None:
+    """
+    展示接口即使允许运行时更新 API Key 也必须始终脱敏
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    service.create("llm", "unlocked", {
+        "model": "demo",
+        "api_key": "unlocked-secret-key",
+        "lock_api_key": False,
+    })
+
+    listed = service.list_configs("llm")
+    assert listed["unlocked"]["api_key"] != "unlocked-secret-key"
+    assert listed["unlocked"]["api_key"].endswith("-key")

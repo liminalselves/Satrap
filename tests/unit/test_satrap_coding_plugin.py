@@ -14,6 +14,19 @@ from satrap.expend.plugins.satrap_coding import tools as tools_mod
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"
 
 
+def _approve(_: str) -> str:
+    """
+    批准测试中的交互请求
+
+    参数:
+    - _: 未使用的提示文本
+
+    返回:
+    - 固定批准回答
+    """
+    return "y"
+
+
 class _FakeLLM(LLM):
     """记录调用参数的同步 fake LLM"""
 
@@ -138,10 +151,14 @@ def test_goal_todo(session: SimpleSession):
     session.cmd_handler.process_message("/goal 写插件")
     result, _ = session.cmd_handler.process_message("/goal todo 写权限引擎")
     assert "子任务已添加" in str(result)
-    result, _ = session.cmd_handler.process_message("/goal todo-done 0")
+    session.cmd_handler.process_message("/goal todo 写测试")
+    invalid, _ = session.cmd_handler.process_message("/goal todo-done 0")
+    assert "序号无效" in str(invalid)
+    result, _ = session.cmd_handler.process_message("/goal todo-done 1")
     assert "已标记完成" in str(result)
     result, _ = session.cmd_handler.process_message("/goal status")
-    assert "[x]" in str(result)
+    assert "1. [x] 写权限引擎" in str(result)
+    assert "2. [ ] 写测试" in str(result)
 
 
 def test_plan_mode_blocks_writes(session: SimpleSession):
@@ -154,7 +171,7 @@ def test_plan_mode_blocks_writes(session: SimpleSession):
     write_tool = session.tools_manager.tools["write_file"]
     target = tools_mod.WORKSPACE_ROOT / "x.txt"
 
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _approve
     session.run("占位")   # 触发一次完整流程
     # 直接写可通过 (用户批准)
     assert "已写入" in write_tool.execute(str(target), "hi")

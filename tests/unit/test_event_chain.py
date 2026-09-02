@@ -323,6 +323,18 @@ async def test_event_process_buffer(monkeypatch: pytest.MonkeyPatch):
     assert getattr(adapter.sent[0][1].components[0], "text", "") == "【A】"
 
 
+@pytest.mark.asyncio
+async def test_event_process_buffer_stops_on_zero_width_match():
+    """可匹配空串的正则不会发送空消息或进入死循环"""
+    adapter = _RecorderAdapter()
+    event = _make_event(adapter)
+
+    rest = await event.process_buffer("tail", re.compile(r".*?"))
+
+    assert rest == "tail"
+    assert adapter.sent == []
+
+
 def test_event_should_call_llm_flag():
     """call_llm 开关读写"""
     adapter = _RecorderAdapter()

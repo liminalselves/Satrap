@@ -2,9 +2,31 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from typing import TypedDict, cast
 
 import pytest
 from pathlib import Path
+
+
+class _PlatformSettings(TypedDict):
+    """测试配置中的平台凭据字段"""
+
+    api_token: str
+    base_url: str
+
+
+class _PlatformDocument(TypedDict):
+    """测试配置中的平台条目"""
+
+    id: str
+    settings: _PlatformSettings
+
+
+class _ConfigDocument(TypedDict):
+    """凭据脱敏测试使用的配置文档"""
+
+    max_tokens: int
+    platforms: list[_PlatformDocument]
 
 from satrap.core.config.document import (
     config_exists,
@@ -13,8 +35,10 @@ from satrap.core.config.document import (
     delete_platform,
     find_config_path,
     load_config_document,
+    merge_masked_secrets,
     parse_platforms_text,
     parse_raw_config,
+    redact_config_document,
     save_config_document,
     upsert_platform,
     update_common_fields,
@@ -285,6 +309,43 @@ def test_platform_upsert_rejects_duplicate_id():
         assert "已存在" in str(e)
     else:
         raise AssertionError("应拒绝重复平台 id")
+
+
+def test_config_secret_redaction_and_masked_value_preservation() -> None:
+    """配置凭据读取时脱敏, 掩码回写时保留原值, 空字符串可明确清空"""
+    current: _ConfigDocument = {
+        "max_tokens": 4096,
+        "platforms": [{
+            "id": "misskey",
+            "settings": {"api_token": "real-token", "base_url": "https://old.example"},
+        }],
+    }
+    redacted = redact_config_document(current)
+    assert isinstance(redacted, dict)
+    redacted_config = cast(_ConfigDocument, redacted)
+    assert redacted_config["max_tokens"] == 4096
+    assert redacted_config["platforms"][0]["settings"]["api_token"] == "********"
+
+    submitted: _ConfigDocument = {
+        "max_tokens": 8192,
+        "platforms": [{
+            "id": "misskey",
+            "settings": {"api_token": "********", "base_url": "https://new.example"},
+        }],
+    }
+    merged = merge_masked_secrets(current, submitted)
+    assert isinstance(merged, dict)
+    merged_config = cast(_ConfigDocument, merged)
+    assert merged_config["platforms"][0]["settings"]["api_token"] == "real-token"
+    assert merged_config["platforms"][0]["settings"]["base_url"] == "https://new.example"
+
+    cleared_payload: dict[str, object] = {
+        "platforms": [{"id": "misskey", "settings": {"api_token": ""}}],
+    }
+    cleared = merge_masked_secrets(current, cleared_payload)
+    assert isinstance(cleared, dict)
+    cleared_config = cast(_ConfigDocument, cleared)
+    assert cleared_config["platforms"][0]["settings"]["api_token"] == ""
 
 
 def test_save_config_document_validates_platforms(tmp_path: Path):

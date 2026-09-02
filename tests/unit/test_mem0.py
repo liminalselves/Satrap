@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -118,3 +119,55 @@ async def test_mem0_update_preserves_memory_id_and_replaces_content(tmp_path: Pa
     memories = await memory.get_all(user_id="u2")
     assert len(memories) == 1
     assert "喝茶" in memories[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_mem0_summary_tasks_are_coalesced_and_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    同一用户只保留最新摘要任务, 关闭时取消并回收任务
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    memory = Mem0Memory(
+        llm=FakeLLM(),   # type: ignore[arg-type]
+        embedding=FakeEmbedding(),   # type: ignore[arg-type]
+        persist_path=str(tmp_path / "mem0-tasks.db"),
+    )
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def blocked_refresh(_user_id: str) -> None:
+        """等待取消以模拟仍在执行的摘要请求"""
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    monkeypatch.setattr(memory, "_refresh_summary", blocked_refresh)
+    memory._schedule_summary_refresh("u1")
+    first = memory._summary_tasks["u1"]
+    await started.wait()
+
+    started.clear()
+    memory._schedule_summary_refresh("u1")
+    second = memory._summary_tasks["u1"]
+    await started.wait()
+    await asyncio.sleep(0)
+
+    assert first is not second
+    assert first.cancelled() is True
+    assert cancelled.is_set() is True
+
+    await memory.close()
+
+    assert second.cancelled() is True
+    assert memory._summary_tasks == {}
+    with pytest.raises(RuntimeError, match="已关闭"):
+        await memory.add("new", "reply", user_id="u1")

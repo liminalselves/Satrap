@@ -125,6 +125,22 @@ async def test_rate_limiter_allows_burst_then_blocks():
 
 
 @pytest.mark.asyncio
+async def test_rate_limiter_zero_rate_disables_limiting():
+    """rate 非正数按禁用限流处理, 不发生除零"""
+    limiter = RateLimiter(rate=0, burst=0)
+    assert await limiter.check("key") == (True, 0.0)
+
+
+@pytest.mark.asyncio
+async def test_rate_limiter_bucket_count_is_bounded():
+    """大量独立 key 不会让桶表超过配置上限"""
+    limiter = RateLimiter(rate=1, burst=1, max_buckets=3, idle_ttl=3600)
+    for index in range(10):
+        await limiter.check(f"key-{index}")
+    assert len(limiter._buckets) == 3
+
+
+@pytest.mark.asyncio
 async def test_rate_limiter_keys_are_independent():
     """不同 key 的桶互不影响"""
     rl = RateLimiter(rate=1.0, burst=1)

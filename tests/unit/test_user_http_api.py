@@ -136,3 +136,21 @@ async def test_user_api_error_paths(tmp_path: Path):
     status, data = await _route(server, "GET", "/api/user/unknown")
     # 未知路由仍 404
     assert status == 404
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", ["0", "-1", "1001", "invalid"])
+async def test_user_list_rejects_invalid_limit(tmp_path: Path, limit: str):
+    """
+    用户列表拒绝越界或非整数 limit, 避免负数绕过分页限制
+
+    参数:
+    - tmp_path: 临时目录
+    - limit: 参数化非法分页上限
+    """
+    server = _make_server(str(tmp_path / "users.db"))
+
+    status, data = await _route(server, "GET", f"/api/users?limit={limit}")
+
+    assert status == 400
+    assert "limit" in data["error"] or "invalid" in data["error"]

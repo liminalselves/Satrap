@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import asyncio
+from email.message import Message
+import io
 import json
+import urllib.error
 import urllib.parse
 from pathlib import Path
-from typing import cast
+from typing import NoReturn, cast
 
 import pytest
 
@@ -51,6 +54,7 @@ async def _request(
     method: str = "GET",
     body: bytes = b"",
     headers: dict[str, str] | None = None,
+    authenticated: bool = True,
 ) -> bytes:
     """
     直接调用控制服务连接处理器
@@ -60,12 +64,16 @@ async def _request(
     - method: HTTP 方法
     - body: 请求体
     - headers: 附加请求头
+    - authenticated: 是否附加测试 Bearer 令牌
 
     返回:
     - bytes: 完整响应
     """
     reader = asyncio.StreamReader()
-    extra_headers = "".join(f"{key}: {value}\r\n" for key, value in (headers or {}).items())
+    request_headers = dict(headers or {})
+    if authenticated:
+        request_headers.setdefault("Authorization", f"Bearer {control_server._CONTROL_AUTH.token}")
+    extra_headers = "".join(f"{key}: {value}\r\n" for key, value in request_headers.items())
     header = (
         f"{method} {path} HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
@@ -82,6 +90,111 @@ async def _request(
     )
     assert writer.closed is True
     return bytes(writer.data)
+
+
+@pytest.mark.asyncio
+async def test_control_api_requires_authentication() -> None:
+    """控制服务管理 API 缺少令牌时返回 401"""
+    response = await _request("/status", authenticated=False)
+    assert b"401 Error" in response
+    assert b"unauthorized" in response
+
+
+@pytest.mark.asyncio
+async def test_control_api_rejects_untrusted_origin() -> None:
+    """控制服务拒绝非白名单浏览器来源且不返回通配 CORS"""
+    response = await _request(
+        "/status",
+        headers={"Origin": "https://evil.example"},
+    )
+    assert b"403 Error" in response
+    assert b"Access-Control-Allow-Origin: *" not in response
+
+
+@pytest.mark.asyncio
+async def test_control_api_rejects_oversized_json_body() -> None:
+    """控制服务应在读取超限 JSON 请求体前返回 413"""
+    reader = asyncio.StreamReader()
+    header = (
+        "PUT /config HTTP/1.1\r\n"
+        "Host: 127.0.0.1\r\n"
+        f"Authorization: Bearer {control_server._CONTROL_AUTH.token}\r\n"
+        f"Content-Length: {control_server.CONTROL_MAX_BODY_BYTES + 1}\r\n\r\n"
+    ).encode("utf-8")
+    reader.feed_data(header)
+    reader.feed_eof()
+    writer = _BufferWriter()
+
+    await control_server._handle_request(reader, cast(asyncio.StreamWriter, writer))
+
+    assert b"413 Error" in writer.data
+    assert b"request body too large" in writer.data
+
+
+@pytest.mark.asyncio
+async def test_control_server_rejects_connections_over_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    控制服务达到连接上限时应返回 503 且不扰动现有计数
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    monkeypatch.setattr(
+        control_server,
+        "_CONTROL_ACTIVE_CONNECTIONS",
+        control_server.CONTROL_MAX_CONNECTIONS,
+    )
+    response = await _request("/status")
+    assert b"503 Error" in response
+    assert b"service unavailable" in response
+
+
+@pytest.mark.asyncio
+async def test_control_config_redacts_and_preserves_platform_secrets(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    控制配置接口不返回明文凭据, 掩码回写不覆盖真实令牌
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "platforms": [{
+            "id": "misskey-main",
+            "type": "misskey",
+            "settings": {
+                "api_token": "real-platform-token",
+                "base_url": "https://old.example",
+            },
+        }],
+    }), encoding="utf-8")
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+
+    fetched = await _request("/config")
+    assert b"real-platform-token" not in fetched
+    assert b"********" in fetched
+
+    payload = json.dumps({
+        "platforms": [{
+            "id": "misskey-main",
+            "type": "misskey",
+            "settings": {
+                "api_token": "********",
+                "base_url": "https://new.example",
+            },
+        }],
+    }).encode("utf-8")
+    saved = await _request("/config", "PUT", payload)
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert b"real-platform-token" not in saved
+    assert persisted["platforms"][0]["settings"]["api_token"] == "real-platform-token"
+    assert persisted["platforms"][0]["settings"]["base_url"] == "https://new.example"
 
 
 @pytest.mark.asyncio
@@ -203,6 +316,130 @@ async def test_control_ui_config_uses_saved_backend_address(
     assert b'"chat_api": "http://127.0.0.1:19872"' in response
 
 
+def test_backend_runtime_record_round_trip_and_legacy_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    后端 PID 文件应保存完整身份并拒绝旧版裸 PID
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    runtime_file = tmp_path / "backend.pid"
+    monkeypatch.setattr(control_server, "BACKEND_PID_FILE", runtime_file)
+    record = control_server.BackendRuntimeRecord(1234, "runtime-token", "127.0.0.1", 29970)
+
+    control_server._write_backend_runtime(record)
+
+    assert control_server._read_backend_runtime() == record
+    assert control_server._runtime_matches(
+        record,
+        {"pid": 1234, "runtime_id": "runtime-token"},
+    )
+    assert not control_server._runtime_matches(
+        record,
+        {"pid": 1234, "runtime_id": "other-token"},
+    )
+
+    runtime_file.write_text("1234", encoding="utf-8")
+    assert control_server._read_backend_runtime() is None
+
+
+def test_cleanup_backend_uses_configured_endpoint_and_rejects_stale_pid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    清理后端应使用配置端口且不得终止身份不匹配的 PID
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("api:\n  host: 127.0.0.1\n  port: 29970\n", encoding="utf-8")
+    runtime_file = tmp_path / "backend.pid"
+    monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(control_server, "BACKEND_PID_FILE", runtime_file)
+    monkeypatch.setattr(control_server, "_backend_process", None)
+    control_server._write_backend_runtime(
+        control_server.BackendRuntimeRecord(4321, "expected", "127.0.0.1", 29970)
+    )
+    killed: list[int] = []
+    requested_urls: list[str] = []
+
+    def fake_health(*_args: object) -> dict[str, object]:
+        """返回与 PID 文件不匹配的运行时身份"""
+        return {"running": True, "pid": 4321, "runtime_id": "different"}
+
+    def process_running(_pid: int) -> bool:
+        """模拟 PID 对应进程仍然存活"""
+        return True
+
+    def record_kill(pid: int, _signal: int) -> None:
+        """记录可能发生的进程终止调用"""
+        killed.append(pid)
+
+    def record_request(url: str, method: str = "GET") -> str:
+        """记录控制服务尝试访问的后端 URL"""
+        requested_urls.append(url)
+        return method
+
+    def fail_urlopen(*_args: object, **_kwargs: object) -> NoReturn:
+        """模拟后端关闭接口不可达"""
+        raise OSError("offline")
+
+    monkeypatch.setattr(control_server, "_check_backend_health", fake_health)
+    monkeypatch.setattr(control_server, "_is_process_running", process_running)
+    monkeypatch.setattr(control_server.os, "kill", record_kill)
+    monkeypatch.setattr(control_server, "_authenticated_request", record_request)
+    monkeypatch.setattr(control_server.urllib.request, "urlopen", fail_urlopen)
+
+    control_server._cleanup_backend()
+
+    assert requested_urls == ["http://127.0.0.1:29970/api/shutdown"]
+    assert killed == []
+    assert runtime_file.exists() is False
+
+
+def test_backend_health_keeps_identity_from_degraded_http_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    健康端点返回 503 时控制服务仍应解析运行时身份
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    response_body = json.dumps({
+        "running": True,
+        "healthy": False,
+        "pid": 1234,
+        "runtime_id": "runtime-token",
+    }).encode("utf-8")
+
+    def degraded_response(*_args: object, **_kwargs: object) -> NoReturn:
+        """模拟包含 JSON 健康信息的 503 响应"""
+        raise urllib.error.HTTPError(
+            "http://127.0.0.1:29970/api/health",
+            503,
+            "Service Unavailable",
+            Message(),
+            io.BytesIO(response_body),
+        )
+
+    monkeypatch.setattr(control_server.urllib.request, "urlopen", degraded_response)
+
+    health = control_server._check_backend_health("127.0.0.1", 29970)
+
+    assert health["running"] is True
+    assert health["healthy"] is False
+    assert health["pid"] == 1234
+    assert health["runtime_id"] == "runtime-token"
+
+
 @pytest.mark.asyncio
 async def test_control_server_manages_models_while_backend_is_stopped(
     tmp_path: Path,
@@ -262,12 +499,18 @@ async def test_control_server_manages_session_classes_while_backend_is_stopped(
     - monkeypatch: pytest monkeypatch 夹具
     """
     session_class_path = tmp_path / "session-classes.json"
+    session_scan_path = tmp_path / "sessions"
+    session_scan_path.mkdir()
+    (session_scan_path / "future.py").write_text(
+        "raise RuntimeError('不应在冷配置阶段导入')\n",
+        encoding="utf-8",
+    )
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
                 "session_class_config_path": str(session_class_path),
-                "session_scan_paths": [str(tmp_path / "sessions")],
+                "session_scan_paths": [str(session_scan_path)],
                 "platforms": [],
             }
         ),
@@ -278,7 +521,7 @@ async def test_control_server_manages_session_classes_while_backend_is_stopped(
     created = await _request(
         "/config/session-classes",
         "POST",
-        b'{"name":"cold","class_path":"missing.future.FutureSession","is_async":true,"params":{"model_name":"default"}}',
+        b'{"name":"cold","class_path":"sessions.future.FutureSession","is_async":true,"params":{"model_name":"default"}}',
     )
     listed = await _request("/config/session-classes")
     renamed = await _request(
@@ -293,7 +536,7 @@ async def test_control_server_manages_session_classes_while_backend_is_stopped(
     fetched = await _request("/config/session-classes/cold-renamed")
 
     assert b'"ok": true' in created
-    assert b'"missing.future.FutureSession"' in listed
+    assert b'"sessions.future.FutureSession"' in listed
     assert b'"ok": true' in renamed
     assert b'"ok": true' in disabled
     assert b'"enabled": false' in fetched
@@ -467,12 +710,19 @@ async def test_control_server_cold_manages_session_instances(
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
     """
+    session_scan_path = tmp_path / "sessions"
+    session_scan_path.mkdir()
+    (session_scan_path / "future.py").write_text(
+        "raise RuntimeError('不应在冷配置阶段导入')\n",
+        encoding="utf-8",
+    )
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
                 {
                     "data_root": str(tmp_path / "data"),
                     "session_class_config_path": str(tmp_path / "session-classes.json"),
+                    "session_scan_paths": [str(session_scan_path)],
                     "edictum_config_path": str(tmp_path / "edictum.json"),
                     "platforms": [],
             }
@@ -489,7 +739,7 @@ async def test_control_server_cold_manages_session_instances(
         json.dumps(
             {
                 "name": "cold",
-                "class_path": "missing.future.FutureSession",
+                "class_path": "sessions.future.FutureSession",
                 "params": {
                     "model_name": "default",
                     "sandbox_dir": str(sandbox_root),

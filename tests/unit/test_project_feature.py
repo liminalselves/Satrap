@@ -13,7 +13,7 @@ import asyncio
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -36,6 +36,23 @@ from satrap.display.recorder import (
 from satrap.display.service import ChatService
 from satrap.expend.plugins.base_take.tools import AddMemoryTool
 from satrap.expend.tools.memory_store import MemoryStore
+
+
+def _created_project_id(result: dict[str, object]) -> str:
+    """
+    提取服务创建结果中的项目 ID
+
+    参数:
+    - result: 项目创建结果
+
+    返回:
+    - 已创建项目的字符串 ID
+    """
+    assert result["ok"] is True
+    project = cast(dict[str, object], result["project"])
+    project_id = project["project_id"]
+    assert isinstance(project_id, str)
+    return project_id
 
 
 # ================= 数据层: projects CRUD =================
@@ -254,7 +271,7 @@ class _FakeModelConfig:
 
     def get_llm_config(self, name: str = "default") -> Any:
         from satrap.core.type import LLMConfig
-        return LLMConfig(name=name, model="m", api_key="k", base_url="http://x")
+        return LLMConfig(name=name, model="m", api_key="k", base_url="https://x")
 
 
 def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
@@ -279,6 +296,8 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
+        workspace_roots=[tmp_path],
+        denied_workspace_roots=[tmp_path / ".satrap"],
     )
 
 
@@ -299,7 +318,7 @@ def test_service_project_crud_validation(tmp_path: Path, monkeypatch: Any):
 
     result = svc.create_project("工作区", str(tmp_path))
     assert result["ok"] is True
-    pid = result["project"]["project_id"]
+    pid = _created_project_id(result)
     assert [p["project_id"] for p in svc.list_projects()] == [pid]
     assert svc.delete_project(pid)["ok"] is True
     assert svc.list_projects() == []
@@ -317,7 +336,7 @@ def test_service_create_conversation_with_project(tmp_path: Path, monkeypatch: A
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "proj_ws"
     ws.mkdir()
-    pid = svc.create_project("绑定", str(ws))["project"]["project_id"]
+    pid = _created_project_id(svc.create_project("绑定", str(ws)))
 
     async def _run() -> tuple[str, str]:
         cid = await svc.create_conversation(model="default", project_id=pid)
@@ -369,8 +388,8 @@ def test_service_set_conversation_project_rebind(tmp_path: Path, monkeypatch: An
     ws_b = tmp_path / "ws_b"
     ws_a.mkdir()
     ws_b.mkdir()
-    pid_a = svc.create_project("A", str(ws_a))["project"]["project_id"]
-    pid_b = svc.create_project("B", str(ws_b))["project"]["project_id"]
+    pid_a = _created_project_id(svc.create_project("A", str(ws_a)))
+    pid_b = _created_project_id(svc.create_project("B", str(ws_b)))
 
     cid = asyncio.run(svc.create_conversation(model="default"))
 
@@ -410,7 +429,7 @@ def test_service_delete_project_unbinds_active(tmp_path: Path, monkeypatch: Any)
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_del"
     ws.mkdir()
-    pid = svc.create_project("待删", str(ws))["project"]["project_id"]
+    pid = _created_project_id(svc.create_project("待删", str(ws)))
     cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
 
     conv = svc.get_conversation(cid)
@@ -435,7 +454,7 @@ def test_service_resume_conversation_rebinds_project(tmp_path: Path, monkeypatch
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_resume"
     ws.mkdir()
-    pid = svc.create_project("恢复", str(ws))["project"]["project_id"]
+    pid = _created_project_id(svc.create_project("恢复", str(ws)))
     cid = asyncio.run(svc.create_conversation(model="default", project_id=pid))
 
     svc._conversations.clear()
@@ -457,7 +476,7 @@ def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
     svc = _make_service(tmp_path, monkeypatch)
     ws = tmp_path / "ws_upload"
     ws.mkdir()
-    pid = svc.create_project("上传", str(ws))["project"]["project_id"]
+    pid = _created_project_id(svc.create_project("上传", str(ws)))
 
     async def _run() -> tuple[str, str]:
         return (
@@ -485,64 +504,107 @@ def test_service_upload_project_scoped(tmp_path: Path, monkeypatch: Any):
 # ================= 目录浏览 (新建项目选择工作区) =================
 
 
-def test_browse_directories_lists_dirs_only(tmp_path: Path):
+def test_browse_directories_lists_dirs_only(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     只列子目录不列文件, 按名排序 (忽略大小写), parent 指向父目录
 
     参数:
     - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
     """
     (tmp_path / "beta").mkdir()
     (tmp_path / "Alpha").mkdir()
     (tmp_path / "beta" / "sub").mkdir()
     (tmp_path / "file.txt").write_text("x", encoding="utf-8")
 
-    result = ChatService.browse_directories(str(tmp_path))
+    service = _make_service(tmp_path, monkeypatch)
+    result = service.browse_directories(str(tmp_path))
     assert result["ok"] is True
     assert result["path"] == str(tmp_path.resolve())
-    assert [d["name"] for d in result["dirs"]] == ["Alpha", "beta"]
-    assert result["parent"] == str(tmp_path.resolve().parent)
+    dirs = cast(list[dict[str, str]], result["dirs"])
+    assert [directory["name"] for directory in dirs] == ["Alpha", "beta", "data"]
+    assert result["parent"] == ""
 
 
-def test_browse_directories_invalid_path(tmp_path: Path):
+def test_browse_directories_invalid_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
     路径不存在/不是目录 -> ok=False
 
     参数:
     - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
     """
-    ghost = ChatService.browse_directories(str(tmp_path / "ghost"))
-    assert ghost["ok"] is False and "不存在" in ghost["error"]
+    service = _make_service(tmp_path, monkeypatch)
+    ghost = service.browse_directories(str(tmp_path / "ghost"))
+    assert ghost["ok"] is False and "不存在" in str(ghost["error"])
     fpath = tmp_path / "f.txt"
     fpath.write_text("x", encoding="utf-8")
-    not_dir = ChatService.browse_directories(str(fpath))
+    not_dir = service.browse_directories(str(fpath))
     assert not_dir["ok"] is False
 
 
-def test_browse_directories_root_and_empty(tmp_path: Path):
+def test_browse_directories_root_and_empty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """
-    空 path 返回根视图 (Windows 盘符 / POSIX 主目录); 根层级 parent 语义正确
+    空 path 只返回配置的工作区根目录
 
     参数:
     - tmp_path: tmp路径
+    - monkeypatch: pytest monkeypatch 夹具
     """
-    import os
-
-    empty = ChatService.browse_directories("")
+    service = _make_service(tmp_path, monkeypatch)
+    empty = service.browse_directories("")
     assert empty["ok"] is True
-    if os.name == "nt":
-        assert empty["path"] == "" and empty["parent"] is None
-        # Windows: 盘符视图, 无上一级
-        assert all(d["path"].endswith(":\\") for d in empty["dirs"])
-        assert len(empty["dirs"]) > 0
-        # 盘符根的上一级 = 盘符视图 (空串)
-        drive_root = ChatService.browse_directories(empty["dirs"][0]["path"])
-        assert drive_root["ok"] is True and drive_root["parent"] == ""
-    else:
-        assert empty["path"] == str(Path.home())
-        # POSIX: 落到用户主目录; 文件系统根无上一级
-        root = ChatService.browse_directories("/")
-        assert root["ok"] is True and root["parent"] is None
+    assert empty["path"] == "" and empty["parent"] is None
+    assert empty["dirs"] == [{"name": tmp_path.name, "path": str(tmp_path.resolve())}]
+
+
+def test_project_and_browse_reject_paths_outside_workspace_roots(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    项目创建和目录浏览均不得越出服务端允许根目录
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    service = _make_service(tmp_path, monkeypatch)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir(exist_ok=True)
+
+    created = service.create_project("越界", str(outside))
+    browsed = service.browse_directories(str(outside))
+
+    assert created["ok"] is False and "越出" in str(created["error"])
+    assert browsed["ok"] is False and "越出" in str(browsed["error"])
+
+
+def test_project_and_browse_reject_satrap_data_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    项目创建和目录浏览均拒绝 .satrap 本身及其子目录
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    protected = tmp_path / ".satrap"
+    nested = protected / "data"
+    nested.mkdir(parents=True)
+    (protected / "api-token").write_text("secret", encoding="utf-8")
+    service = _make_service(tmp_path, monkeypatch)
+
+    assert service.create_project("敏感目录", str(protected))["ok"] is False
+    assert service.create_project("敏感子目录", str(nested))["ok"] is False
+    assert service.browse_directories(str(protected))["ok"] is False
+
+    root = service.browse_directories(str(tmp_path))
+    assert root["ok"] is True
+    root_dirs = cast(list[dict[str, str]], root["dirs"])
+    assert ".satrap" not in {item["name"] for item in root_dirs}
 
 
 # ================= satrap_coding: 工作区按会话解析 =================

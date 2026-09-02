@@ -12,7 +12,13 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
-from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformAdapterRegistry, PlatformConfig
+from satrap.core.platform import (
+    EventDispatcher,
+    PlatformAdapter,
+    PlatformAdapterManager,
+    PlatformAdapterRegistry,
+    PlatformConfig,
+)
 from satrap.core.platform.event import MessageEvent, PlatformMetadata
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
@@ -96,6 +102,47 @@ def test_same_adapter_type_can_register_multiple_instances():
     assert first is not None
     assert second is not None
     assert mgr.list_adapters() == ["dummy1", "dummy2"]
+
+
+@pytest.mark.asyncio
+async def test_event_dispatcher_processes_platforms_concurrently():
+    """一个平台的慢事件不会阻塞另一个平台, 同平台仍由单工作器保序"""
+    registry = PlatformAdapterRegistry()
+    registry.register("dummy", _DummyAdapter)
+    manager = PlatformAdapterManager(registry=registry)
+    first = manager.add_adapter(PlatformConfig(id="first", type="dummy"))
+    second = manager.add_adapter(PlatformConfig(id="second", type="dummy"))
+    assert first is not None and second is not None
+
+    first_started = asyncio.Event()
+    second_done = asyncio.Event()
+    release_first = asyncio.Event()
+
+    class _Scheduler:
+        async def execute(self, event: MessageEvent) -> None:
+            """
+            按平台标识控制测试事件时序
+
+            参数:
+            - event: 待调度平台事件
+            """
+            if event.platform_meta.id == "first":
+                first_started.set()
+                await release_first.wait()
+            else:
+                second_done.set()
+
+    dispatcher = EventDispatcher(manager, _Scheduler())   # type: ignore[arg-type]
+    task = asyncio.create_task(dispatcher.dispatch_loop())
+    await first._event_queue.put(_message_event("first"))
+    await first_started.wait()
+    await second._event_queue.put(_message_event("second"))
+    await asyncio.wait_for(second_done.wait(), timeout=1)
+    release_first.set()
+    await first._event_queue.join()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
 
 @pytest.mark.asyncio

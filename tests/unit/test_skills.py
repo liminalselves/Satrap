@@ -135,7 +135,11 @@ def test_scan_loads_folder_skill_with_meta_and_tools(tmp_path: Path):
         tools_py=TOOLS_PY,
         meta="author: tester\nversion: 1.2.0\n",
     )
-    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    manager = SkillsManager(
+        skills_dir=str(tmp_path),
+        include_preset=False,
+        trusted_code_roots=[tmp_path],
+    )
     found = manager.scan()
 
     assert len(found) == 1
@@ -176,7 +180,11 @@ class AutoTool(Tool):
         return "ok"
 """
     _write_folder_skill(tmp_path, name="auto_skill", tools_py=tools_py)
-    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    manager = SkillsManager(
+        skills_dir=str(tmp_path),
+        include_preset=False,
+        trusted_code_roots=[tmp_path],
+    )
     skill = manager.scan()[0]
     assert skill.tools and skill.tools[0].get_tool_name() == "auto_collect"
     assert "auto_collect" in skill.tool_names
@@ -184,7 +192,11 @@ class AutoTool(Tool):
 
 def test_activate_registers_bundled_tools(tmp_path: Path):
     _write_folder_skill(tmp_path, name="demo", tools_py=TOOLS_PY)
-    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    manager = SkillsManager(
+        skills_dir=str(tmp_path),
+        include_preset=False,
+        trusted_code_roots=[tmp_path],
+    )
     manager.scan()
     wf = _make_sync_workflow(tmp_path)
 
@@ -197,7 +209,11 @@ def test_activate_registers_bundled_tools(tmp_path: Path):
 
 async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_path: Path):
     _write_folder_skill(tmp_path, name="mcp_skill", tools_py=MCP_TOOLS_PY)
-    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    manager = SkillsManager(
+        skills_dir=str(tmp_path),
+        include_preset=False,
+        trusted_code_roots=[tmp_path],
+    )
     manager.scan()
     skill = manager.get_skill("coding-agent")
     assert skill is not None
@@ -218,6 +234,26 @@ async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_pat
     assert await manager.deactivate_async("coding-agent", wf) is True   # type: ignore[arg-type]
     assert client.closed is True
     assert "<skill:coding-agent>" not in wf.ctx.get_context()[0]["content"]
+
+
+def test_scan_skips_untrusted_tools_code(tmp_path: Path):
+    """
+    用户技能目录默认只加载指令, 不执行其中的 tools.py
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    marker = tmp_path / "executed.txt"
+    tools_py = f"from pathlib import Path\nPath({str(marker)!r}).write_text('executed', encoding='utf-8')\n"
+    _write_folder_skill(tmp_path, name="untrusted", tools_py=tools_py)
+
+    manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
+    skill = manager.scan()[0]
+
+    assert skill.instructions
+    assert skill.tools == []
+    assert skill.mcp_clients == []
+    assert not marker.exists()
 
 
 def test_preset_dir_points_to_expend_skills():

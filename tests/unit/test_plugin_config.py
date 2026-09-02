@@ -158,6 +158,23 @@ def test_load_global_missing_file(tmp_path: Path):
     assert mgr.load_global("ghost", _schema()) == {"sandbox_root": "", "timeout": 10}
 
 
+@pytest.mark.parametrize("name", ["../outside", "..\\outside", "C:/outside", "..", "bad/name"])
+def test_plugin_config_rejects_path_like_names(tmp_path: Path, name: str):
+    """
+    插件名称不得把配置读写路径带出配置目录
+
+    参数:
+    - tmp_path: 临时目录
+    - name: 含路径语义的恶意插件名称
+    """
+    config_dir = tmp_path / "config"
+    mgr = PluginConfigManager(config_dir)
+
+    with pytest.raises(ValueError, match="非法插件名称"):
+        mgr.save_global(name, _schema(), {"timeout": 20})
+    assert not (tmp_path / "outside.json").exists()
+
+
 # ---------- install_plugin 注入 ----------
 
 def _make_plugin(tmp_path: Path) -> Path:

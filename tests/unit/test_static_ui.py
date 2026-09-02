@@ -102,7 +102,20 @@ async def test_spa_static_service_uses_stable_javascript_mime(
     assets_dir = static_dir / "assets"
     assets_dir.mkdir(parents=True)
     (assets_dir / "app-AbCd1234.js").write_text("export {}", encoding="utf-8")
-    monkeypatch.setattr("satrap.core.backend.static_ui.mimetypes.guess_type", lambda _: ("text/plain", None))
+
+    def guess_text_type(_: str) -> tuple[str, None]:
+        """
+        模拟不可靠的系统 MIME 映射
+
+        参数:
+        - _: 未使用的文件路径
+
+        返回:
+        - 固定 text/plain 类型且无内容编码
+        """
+        return "text/plain", None
+
+    monkeypatch.setattr("satrap.core.backend.static_ui.mimetypes.guess_type", guess_text_type)
     writer = _BufferWriter()
 
     assert await SPAStaticService(static_dir).serve(
@@ -184,6 +197,34 @@ async def test_spa_static_service_rejects_api_and_directory_traversal(tmp_path: 
     assert await service.serve(cast(asyncio.StreamWriter, traversal_writer), "/%2e%2e/secret.txt") is True
     assert b"404 Error" in traversal_writer.data
     assert b"secret" not in traversal_writer.data
+
+
+@pytest.mark.asyncio
+async def test_spa_static_service_rejects_hidden_files_and_source_maps(tmp_path: Path):
+    """
+    公开静态服务不得暴露隐藏文件或 source map
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    static_dir = tmp_path / "dist"
+    assets_dir = static_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (static_dir / ".env").write_text("SECRET=value", encoding="utf-8")
+    (assets_dir / "app.js.map").write_text('{"sources":[]}', encoding="utf-8")
+    service = SPAStaticService(static_dir)
+
+    hidden_writer = _BufferWriter()
+    source_map_writer = _BufferWriter()
+    assert await service.serve(cast(asyncio.StreamWriter, hidden_writer), "/.env") is True
+    assert await service.serve(
+        cast(asyncio.StreamWriter, source_map_writer),
+        "/assets/app.js.map",
+    ) is True
+    assert b"404 Error" in hidden_writer.data
+    assert b"SECRET=value" not in hidden_writer.data
+    assert b"404 Error" in source_map_writer.data
+    assert b"sources" not in source_map_writer.data
 
 
 @pytest.mark.asyncio

@@ -288,17 +288,13 @@ def test_reload_model_configs_refreshes_active_sessions(tmp_path: Path, monkeypa
     _register_active_session(sm, "s-1")
 
     fake_session = MagicMock()
-    fake_entry = SimpleNamespace(
-        session=fake_session,
-        session_type="echo",
-        created_at=time.time(),
-        last_used=time.time(),
-    )
-    monkeypatch.setattr(sm.pool, "list_entries", lambda: {"s-1": fake_entry})
+    fake_entry = sm.pool.get("s-1")
+    assert fake_entry is not None
+    fake_entry.session = fake_session
 
     mgr = MagicMock()
     mgr.get_llm_config.return_value = SimpleNamespace(
-        api_key="key", base_url="http://x", model="m",
+        api_key="key", base_url="https://x", model="m",
         temperature=0.5, max_tokens=1024,
     )
     sm._model_cfg_mgr = mgr

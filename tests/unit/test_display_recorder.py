@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -149,6 +150,76 @@ def test_recorder_turn_and_tool_calls(tmp_path: Any):
     assert t["answer"] == "最终回复"
     assert t["tool_calls"][0]["success"] is True
     assert t["tool_calls"][0]["name"] == "list_dir"
+
+
+def test_copy_turns_uses_consistent_source_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    复制等待目标锁时源会话删除不得造成工具调用缺失
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    class BlockingLock:
+        """在进入目标临界区前提供确定性并发控制"""
+
+        def __init__(self) -> None:
+            """初始化进入和放行事件"""
+            self.entered = threading.Event()
+            self.release = threading.Event()
+
+        def __enter__(self) -> BlockingLock:
+            """记录锁请求并等待测试放行"""
+            self.entered.set()
+            if not self.release.wait(timeout=2):
+                raise TimeoutError("等待目标锁放行超时")
+            return self
+
+        def __exit__(
+            self,
+            exc_type: type[BaseException] | None,
+            exc_value: BaseException | None,
+            traceback: object,
+        ) -> None:
+            """
+            退出测试锁
+
+            参数:
+            - exc_type: 异常类型
+            - exc_value: 异常实例
+            - traceback: 回溯对象
+            """
+
+    db_path = str(tmp_path / "copy.db")
+    source = DisplayRecorder(db_path, "source")
+    target = DisplayRecorder(db_path, "target")
+    source.start_turn("问题")
+    source.on_tool_start({"name": "shell", "arguments": {}, "call_id": "call-1"})
+    source.on_tool_end({"call_id": "call-1", "success": True})
+    source.end_turn("回答")
+    blocking_lock = BlockingLock()
+    monkeypatch.setattr(target, "_lock", blocking_lock)
+    copied_counts: list[int] = []
+
+    worker = threading.Thread(
+        target=lambda: copied_counts.append(source.copy_turns_to(target, 1))
+    )
+    worker.start()
+    assert blocking_lock.entered.wait(timeout=1)
+    source.delete_conversation()
+    blocking_lock.release.set()
+    worker.join(timeout=2)
+
+    assert worker.is_alive() is False
+    assert copied_counts == [1]
+    copied_turns = target.list_turns()
+    assert len(copied_turns) == 1
+    assert [tool["name"] for tool in copied_turns[0]["tool_calls"]] == ["shell"]
+    source.close()
+    target.close()
 
 
 def test_recorder_answer_fallback(tmp_path: Any):

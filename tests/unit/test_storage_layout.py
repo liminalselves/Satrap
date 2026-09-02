@@ -3,6 +3,8 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from satrap.core.storage import (
     StorageLayout,
     StorageMaintenanceService,
@@ -10,6 +12,7 @@ from satrap.core.storage import (
     delete_session_domain_rows,
     storage_key,
 )
+from satrap.core.storage.database import restore_session_domain
 
 
 def test_storage_key_is_stable_and_collision_resistant():
@@ -255,6 +258,80 @@ def test_recoverable_session_archive_roundtrip(tmp_path: Path):
         assert connection.execute("SELECT user_input FROM display_turns").fetchone()[0] == "hello"
         assert connection.execute("SELECT name FROM display_tool_calls").fetchone()[0] == "search"
         assert connection.execute("SELECT answer FROM display_turn_variants").fetchone()[0] == "world"
+
+
+def test_restore_session_domain_rejects_unknown_archive_columns(tmp_path: Path):
+    """
+    恢复归档时应拒绝不属于目标架构的列名
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    database = tmp_path / "platform.db"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE session_configs (session_id TEXT PRIMARY KEY, session_config TEXT)"
+        )
+
+    records = {
+        "session_configs": [{
+            "session_id": "malicious",
+            "session_config) VALUES ('x'); DROP TABLE session_configs; --": "payload",
+        }],
+    }
+    with pytest.raises(ValueError, match="未知列"):
+        restore_session_domain(database, "malicious", records)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'session_configs'"
+        ).fetchone() is not None
+        assert connection.execute("SELECT COUNT(*) FROM session_configs").fetchone()[0] == 0
+
+
+def test_restore_archive_rejects_path_traversal(tmp_path: Path):
+    """
+    恢复回收包时不得读取或删除回收目录外的路径
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    layout = StorageLayout(tmp_path / "data")
+    service = StorageMaintenanceService(layout)
+    sessions_root = layout.trash_root("chat") / "sessions"
+    outside = sessions_root.parent / "outside"
+    outside.mkdir(parents=True)
+    (outside / "marker.txt").write_text("keep", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="非法回收包路径"):
+        service.restore_archive("chat", "../outside")
+    with pytest.raises(ValueError, match="非法回收包路径"):
+        service.restore_archive("chat", str(outside.resolve()))
+
+    assert (outside / "marker.txt").read_text(encoding="utf-8") == "keep"
+
+
+def test_restore_archive_rejects_symlink_package(tmp_path: Path):
+    """
+    恢复回收包时不得跟随指向回收目录外的符号链接
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    layout = StorageLayout(tmp_path / "data")
+    service = StorageMaintenanceService(layout)
+    sessions_root = layout.trash_root("chat") / "sessions"
+    sessions_root.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    archive_link = sessions_root / "linked"
+    try:
+        archive_link.symlink_to(outside, target_is_directory=True)
+    except OSError as error:
+        pytest.skip(f"当前环境无法创建目录符号链接: {error}")
+
+    with pytest.raises(ValueError, match="符号链接回收包"):
+        service.restore_archive("chat", "linked")
 
 
 def test_storage_maintenance_batch_purges_selected_and_expired_archives(tmp_path: Path):

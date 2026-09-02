@@ -95,6 +95,27 @@ class TestClassifyCommand:
         assert classify_command("sc query")[0] == RiskLevel.READ
         assert classify_command("sc stop svc")[0] == RiskLevel.HIGH
 
+    def test_reg_fine_grained(self):
+        """reg 仅允许 query 作为只读操作"""
+        assert classify_command(r"reg query HKCU\Software")[0] == RiskLevel.READ
+        assert classify_command(r"reg add HKCU\Software\Satrap /v x /d y")[0] == RiskLevel.HIGH
+        assert classify_command(r"reg delete HKCU\Software\Satrap /f")[0] == RiskLevel.HIGH
+
+    def test_nested_shell_and_encoded_command(self):
+        """包装器递归分类并拒绝不可审计的编码 PowerShell 载荷"""
+        assert classify_command(r"cmd /c reg add HKCU\Software\Satrap /v x /d y")[0] == RiskLevel.HIGH
+        assert classify_command(
+            r'powershell -NoProfile -Command "reg add HKCU\Software\Satrap /v x /d y"'
+        )[0] == RiskLevel.HIGH
+        assert classify_command("powershell -EncodedCommand ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
+        assert classify_command("pwsh -enc ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
+        assert classify_command("powershell -e ZQBjAGgAbwAgAGgAaQA=")[0] == RiskLevel.FORBIDDEN
+
+    def test_remove_item_parameter_order(self):
+        """Remove-Item 的路径和递归参数顺序不能绕过禁止规则"""
+        assert classify_command(r"Remove-Item -Path C:\temp\x -Recurse -Force")[0] == RiskLevel.FORBIDDEN
+        assert classify_command(r"Remove-Item -Recurse -Path C:\temp\x -Force")[0] == RiskLevel.FORBIDDEN
+
     def test_redirect_upgrades_read(self):
         """只读命令带重定向符 = 写文件, 升级为 WRITE"""
         assert classify_command("echo hi > f.txt")[0] == RiskLevel.WRITE
@@ -201,7 +222,7 @@ class TestPermissionEngine:
 
     def test_auto_agent_judge(self, engine: PermissionEngine):
         """
-        auto-agent 策略按 judge 判定 allow/deny/ask
+        auto-agent 只允许模型拒绝或转人工
 
         参数:
         - engine: 执行引擎
@@ -214,7 +235,7 @@ class TestPermissionEngine:
         def judge_deny(operation: str, risk: RiskLevel, description: str) -> str:
             return "deny"
 
-        assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_allow) == PermissionDecision.ALLOW
+        assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_allow) == PermissionDecision.ASK
         assert engine.evaluate("file_write", RiskLevel.WRITE, judge=judge_deny) == PermissionDecision.DENY
 
         def judge_maybe(operation: str, risk: RiskLevel, description: str) -> str:
@@ -243,7 +264,7 @@ class TestPermissionEngine:
 
         assert await engine.evaluate_async(
             "file_write", RiskLevel.WRITE, judge=async_judge,
-        ) == PermissionDecision.ALLOW
+        ) == PermissionDecision.ASK
         assert await engine.evaluate_async(
             "file_write", RiskLevel.WRITE, judge=lambda op, risk, desc: "deny",
         ) == PermissionDecision.DENY

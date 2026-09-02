@@ -158,7 +158,7 @@ class _FakeModelConfig:
 
     def get_llm_config(self, name: str = "default") -> Any:
         from satrap.core.type import LLMConfig
-        return LLMConfig(name=name, model="m", api_key="k", base_url="http://x")
+        return LLMConfig(name=name, model="m", api_key="k", base_url="https://x")
 
 
 def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
@@ -252,7 +252,7 @@ def test_service_model_policy_hot_update_defers_running_conversation(tmp_path: P
     """
     manager = ModelConfigManager(storage_path=tmp_path / "models.json")
     manager.set_llm_config(
-        LLMConfig(name="default", model="m", api_key="k", base_url="http://x"),
+        LLMConfig(name="default", model="m", api_key="k", base_url="https://x"),
         "default",
     )
     def build_fake_llm(_config: LLMConfig) -> _FakeAsyncLLM:
@@ -528,7 +528,7 @@ def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: P
                 name=name,
                 model="m",
                 api_key="k",
-                base_url="http://x",
+                base_url="https://x",
                 temperature=self.temperature,
             )
 

@@ -1,7 +1,9 @@
 """satrap_coding 插件工具层单元测试 (get_tools 工厂 / 文件 / ask_user / shell)"""
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Iterator
+from typing import Callable, cast
 
 import pytest
 
@@ -10,6 +12,31 @@ from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.plugins.satrap_coding import tools as tools_mod
 from satrap.expend.plugins.satrap_coding.tools import get_tools
+
+
+def _reply(value: str) -> Callable[[str], str]:
+    """
+    创建忽略提示文本并返回固定答案的输入函数
+
+    参数:
+    - value: 固定回答
+
+    返回:
+    - 忽略提示并返回固定回答的输入函数
+    """
+    def answer(_: str) -> str:
+        """
+        返回固定答案
+
+        参数:
+        - _: 未使用的提示文本
+
+        返回:
+        - 外层函数提供的固定回答
+        """
+        return value
+
+    return answer
 
 
 class _FakeAsyncLLM(AsyncLLM):
@@ -184,6 +211,41 @@ def test_file_tools_read_list_glob_grep(tmp_path: Any, workspace: Any):
     assert "demo.py:2:" in out
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "expected"),
+    [
+        ({"offset": "bad"}, "offset 必须是整数"),
+        ({"offset": -1}, "offset 必须在"),
+        ({"limit": 0}, "limit 必须在"),
+        ({"limit": 2001}, "limit 必须在"),
+    ],
+)
+def test_read_file_rejects_invalid_pagination(
+    tmp_path: Path,
+    workspace: Path,
+    kwargs: dict[str, object],
+    expected: str,
+):
+    """
+    read_file 对错误类型和越界分页参数返回稳定错误
+
+    参数:
+    - tmp_path: 临时目录
+    - workspace: 隔离工作区
+    - kwargs: 参数化分页参数
+    - expected: 预期错误文本
+    """
+    session = _make_session(tmp_path)
+    tools = _install_tools(session)
+    target = workspace / "page.txt"
+    target.write_text("line\n", encoding="utf-8")
+
+    execute = cast(Callable[..., str], tools["read_file"].execute)
+    out = execute(str(target), **kwargs)
+
+    assert expected in out
+
+
 def test_glob_cannot_escape_workspace(tmp_path: Any, workspace: Any):
     """
     L3: glob 的 ../ 模式不能枚举工作区外文件
@@ -202,6 +264,32 @@ def test_glob_cannot_escape_workspace(tmp_path: Any, workspace: Any):
     assert "outside.txt" not in out   # ../ 越界结果被过滤
     out = tools["glob_files"].execute("*.txt")
     assert "inside.txt" in out   # 工作区内正常匹配
+
+
+@pytest.mark.asyncio
+async def test_grep_does_not_follow_symlink_outside_workspace(tmp_path: Path, workspace: Path):
+    """
+    同步和异步 grep 均不得读取工作区外的符号链接目标
+
+    参数:
+    - tmp_path: 临时目录
+    - workspace: 工作区
+    """
+    outside = workspace.parent / "outside-secret.txt"
+    outside.write_text("external-secret", encoding="utf-8")
+    link = workspace / "linked-secret.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError as error:
+        pytest.skip(f"当前环境无法创建文件符号链接: {error}")
+
+    sync_session = _make_session(tmp_path)
+    sync_tools = _install_tools(sync_session)
+    assert "external-secret" not in sync_tools["grep_files"].execute("external-secret")
+
+    async_session = await _make_async_session(tmp_path)
+    async_tools = await _async_tools(async_session)
+    assert "external-secret" not in await async_tools["grep_files"].execute("external-secret")
 
 
 def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
@@ -228,6 +316,8 @@ def test_file_tools_path_boundary_and_protection(tmp_path: Any, workspace: Any):
     assert "受保护" in out
     out = tools["read_file"].execute(".satrap/config.yaml")
     assert "受保护" in out or "拒绝" in out
+    out = tools["read_file"].execute("api-token")
+    assert "受保护" in out or "不存在" in out
 
 
 def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
@@ -246,23 +336,23 @@ def test_write_file_requires_approval(tmp_path: Any, workspace: Any):
     assert "需要用户批准" in out
     assert not target.exists()
 
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     # y 仅批准本次: 写入成功, 但下次同类操作仍需询问
     out = tools["write_file"].execute(str(target), "hello")
     assert "已写入" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    session.user_input_provider = lambda q: "n"
+    session.user_input_provider = _reply("n")
     # 第二次写仍需批准, 用户拒绝则拦截
     out = tools["write_file"].execute(str(target), "again", append=True)
     assert "拒绝了" in out or "拒绝" in out
     assert target.read_text(encoding="utf-8") == "hello"
 
-    session.user_input_provider = lambda q: "all"
+    session.user_input_provider = _reply("all")
     # all = 本会话全部放行, 后续写不再询问
     out = tools["write_file"].execute(str(target), "again", append=True)
     assert "已追加" in out
-    session.user_input_provider = lambda q: "n"
+    session.user_input_provider = _reply("n")
     out = tools["write_file"].execute(str(target), "third", append=True)
     assert "已追加" in out
     assert target.read_text(encoding="utf-8") == "helloagainthird"
@@ -277,7 +367,7 @@ def test_edit_file_tool(tmp_path: Any, workspace: Any):
     - workspace: 工作区
     """
     session = _make_session(tmp_path)
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     tools = _install_tools(session)
     target = workspace / "edit.txt"
     target.write_text("aaa bbb aaa", encoding="utf-8")
@@ -299,7 +389,7 @@ def test_search_replace_tool(tmp_path: Any, workspace: Any):
     - workspace: 工作区
     """
     session = _make_session(tmp_path)
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     tools = _install_tools(session)
     target = workspace / "sr.txt"
     target.write_text("x a x b x a", encoding="utf-8")
@@ -349,6 +439,8 @@ def test_todo_write_tool(tmp_path: Any):
 
     out = todo.execute("done", index=9)
     assert "序号无效" in out
+    out = todo.execute("done", index="bad")
+    assert "序号无效" in out
     out = todo.execute("clear")
     assert "已清空" in out
     out = todo.execute("list")
@@ -371,12 +463,26 @@ def test_ask_user_tool(tmp_path: Any):
     out = tools["ask_user"].execute("继续吗?")
     assert "需要用户回复" in out
 
-    session.user_input_provider = lambda q: "继续"
+    session.user_input_provider = _reply("继续")
     out = tools["ask_user"].execute("继续吗?")
     assert "继续" in out
 
     captured: list[str] = []
-    session.user_input_provider = lambda q: captured.append(q) or "2"
+
+    def capture_prompt(prompt: str) -> str:
+        """
+        记录用户提示并返回选项
+
+        参数:
+        - prompt: 用户提示文本
+
+        返回:
+        - 固定选项序号
+        """
+        captured.append(prompt)
+        return "2"
+
+    session.user_input_provider = capture_prompt
     out = tools["ask_user"].execute("继续吗?", ["方案A", "方案B"])
     assert "1. 方案A" in captured[0] and "2. 方案B" in captured[0]
     assert "用户回复: 2" in out
@@ -401,7 +507,7 @@ def test_ask_user_tool(tmp_path: Any):
 
 def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     """
-    shell: 只读直接执行, 工作区内写免审批, 工作区外路径审批, 黑名单拒绝
+    shell: 工作区只读直接执行, 所有写操作和工作区外读取均审批, 黑名单拒绝
 
     参数:
     - tmp_path: tmp路径
@@ -417,9 +523,37 @@ def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     assert "hello" in out
 
     out = tools["shell"].execute("echo written > f.txt")
-    # 写命令仅在工作区内活动 (无工作区外绝对路径): 免审批直接执行
+    assert "需要用户批准" in out
+    assert not (tmp_path / "workspace" / "f.txt").exists()
+
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    out = tools["shell"].execute(f'type "{outside}"')
+    assert "需要用户批准" in out
+    out = tools["shell"].execute("type ../outside.txt")
+    assert "需要用户批准" in out
+    out = tools["shell"].execute(r"type C:/Users/example/.ssh/id_rsa")
+    assert "需要用户批准" in out
+    out = tools["shell"].execute(r"type %USERPROFILE%\.ssh\id_rsa")
+    assert "需要用户批准" in out
+
+    out = tools["shell"].execute(r"type a\..\..\secret.txt")
+    assert "需要用户批准" in out
+    out = tools["shell"].execute(r'powershell -Command "type C:\Windows\win.ini"')
+    assert "需要用户批准" in out
+    out = tools["shell"].execute(r"type \Windows\win.ini")
+    assert "需要用户批准" in out
+
+    out = tools["shell"].execute("powershell -e ZQBjAGgAbwAgAHgA")
+    assert "黑名单" in out
+
+    out = tools["shell"].execute("cmd /c dir")
     assert "需要用户批准" not in out
-    assert (tmp_path / "workspace" / "f.txt").is_file()
+    out = tools["shell"].execute("cd ..")
+    assert "需要用户批准" not in out
+
+    out = tools["shell"].execute("git push")
+    assert "需要用户批准" in out
 
     out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
     # 引用工作区外绝对路径 (UNC, 不在任何盘符下): 走审批 (无输入通道时拒绝)
@@ -428,12 +562,46 @@ def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     out = tools["shell"].execute("rm -rf /")
     assert "黑名单" in out
 
-    session.user_input_provider = lambda q: "y"
-    # 工作区外路径经用户批准后走执行流程 (源不存在仅验证流程, 无副作用)
+    session.user_input_provider = _reply("y")
+    out = tools["shell"].execute("echo written > f.txt")
+    assert "需要用户批准" not in out
+    assert (tmp_path / "workspace" / "f.txt").is_file()
     out = tools["shell"].execute("copy \\\\server\\share\\a.txt \\\\server\\share\\b.txt")
     assert "需要用户批准" not in out
+    # 工作区外路径经用户批准后走执行流程, 源不存在仅验证流程且无副作用
     out = tools["shell"].execute("echo written", shell="cmd")
     assert "written" in out
+
+
+@pytest.mark.parametrize(
+    ("timeout", "expected"),
+    [
+        ("bad", "timeout 必须是整数"),
+        (0, "timeout 必须在"),
+        (3601, "timeout 必须在"),
+    ],
+)
+def test_shell_rejects_invalid_timeout(
+    tmp_path: Path,
+    workspace: Path,
+    timeout: int | str,
+    expected: str,
+) -> None:
+    """
+    shell 对错误类型和越界超时返回稳定错误
+
+    参数:
+    - tmp_path: 临时目录
+    - workspace: 隔离工作区
+    - timeout: 待验证的超时参数
+    - expected: 预期错误文本
+    """
+    session = _make_session(tmp_path)
+    tools = _install_tools(session)
+
+    output = tools["shell"].execute("echo never-runs", timeout=timeout)
+
+    assert expected in output
 
 
 # ================= subagent 测试 =================
@@ -456,6 +624,35 @@ def test_subagent_tool_constructs(tmp_path: Any):
     agent = _CodingSubAgent(session.llm, session.tools_manager, "你是子代理", ["read_file"])
     assert agent.tools_manager.tools.keys() == {"read_file"}
     assert agent.context_id.startswith("coding_sub_")
+
+
+@pytest.mark.parametrize(
+    ("max_turns", "expected"),
+    [
+        ("bad", "max_turns 必须是整数"),
+        (0, "max_turns 必须在"),
+        (101, "max_turns 必须在"),
+    ],
+)
+def test_subagent_rejects_invalid_max_turns(
+    tmp_path: Path,
+    max_turns: int | str,
+    expected: str,
+) -> None:
+    """
+    子代理对错误类型和越界轮数返回稳定错误
+
+    参数:
+    - tmp_path: 临时目录
+    - max_turns: 待验证的最大轮数
+    - expected: 预期错误文本
+    """
+    session = _make_session(tmp_path)
+    tools = _install_tools(session)
+
+    output = tools["subagent"].execute("never-runs", max_turns=max_turns)
+
+    assert expected in output
 
 
 # ================= 异步工具执行 =================
@@ -494,7 +691,7 @@ async def test_async_file_tools(tmp_path: Any, workspace: Any):
     - workspace: 工作区
     """
     session = await _make_async_session(tmp_path)
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -502,6 +699,8 @@ async def test_async_file_tools(tmp_path: Any, workspace: Any):
     assert "已写入" in out
     out = await tools["read_file"].execute(str(target))
     assert "hello" in out
+    assert "offset 必须是整数" in await tools["read_file"].execute(str(target), offset="bad")
+    assert "limit 必须在" in await tools["read_file"].execute(str(target), limit=0)
 
     out = await tools["edit_file"].execute(str(target), "hello", "world")
     assert "已编辑" in out
@@ -527,7 +726,7 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
     - workspace: 工作区
     """
     session = await _make_async_session(tmp_path)
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     tools = await _async_tools(session)
 
     target = workspace / "a.txt"
@@ -542,6 +741,8 @@ async def test_async_search_replace_and_todo(tmp_path: Any, workspace: Any):
     assert "任务已添加" in out
     out = await tools["todo_write"].execute("list")
     assert "异步任务" in out
+    out = await tools["todo_write"].execute("done", index="bad")
+    assert "序号无效" in out
 
 
 @pytest.mark.asyncio
@@ -554,7 +755,7 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     - workspace: 工作区
     """
     session = await _make_async_session(tmp_path)
-    session.user_input_provider = lambda q: "y"
+    session.user_input_provider = _reply("y")
     tools = await _async_tools(session)
 
     out = await tools["ask_user"].execute("继续?")
@@ -575,3 +776,29 @@ async def test_async_ask_shell(tmp_path: Any, workspace: Any):
     assert "async-ok" in out
     out = await tools["shell"].execute("rm -rf /")
     assert "黑名单" in out
+
+    session.user_input_provider = None
+    out = await tools["shell"].execute("git push")
+    assert "需要用户批准" in out
+    out = await tools["shell"].execute("type ../outside.txt")
+    assert "需要用户批准" in out
+
+
+@pytest.mark.asyncio
+async def test_async_shell_and_subagent_reject_invalid_integer_arguments(
+    tmp_path: Path,
+) -> None:
+    """
+    异步 shell 和子代理在执行前拒绝非法整数参数
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    session = await _make_async_session(tmp_path)
+    tools = await _async_tools(session)
+
+    timeout_error = await tools["shell"].execute("echo never-runs", timeout="bad")
+    turns_error = await tools["subagent"].execute("never-runs", max_turns="bad")
+
+    assert "timeout 必须是整数" in timeout_error
+    assert "max_turns 必须是整数" in turns_error

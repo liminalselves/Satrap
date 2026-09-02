@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Iterator
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 
@@ -378,6 +379,34 @@ def test_extract_text_missing(tmp_path: Path):
         extract_text(tmp_path / "ghost.txt")
 
 
+def test_extract_text_enforces_file_and_output_limits(tmp_path: Path):
+    """
+    文本读取在解析前限制文件大小, 并在解析中限制输出长度
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    path = tmp_path / "large.txt"
+    path.write_text("abcdefghij", encoding="utf-8")
+    assert extract_text(path, max_length=4) == "abcd"
+    with pytest.raises(ValueError, match="文件过大"):
+        extract_text(path, max_file_size=4)
+
+
+def test_extract_text_rejects_extreme_zip_expansion(tmp_path: Path):
+    """
+    OOXML 在交给解析器前拒绝异常展开大小
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    path = tmp_path / "bomb.docx"
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("word/document.xml", "x" * 10_000)
+    with pytest.raises(ValueError, match="展开后过大"):
+        extract_text(path, max_expanded_size=100)
+
+
 def test_read_document_tool(session: SimpleSession, tmp_path: Path):
     """
     read_document 工具: 工作区内解析 + 越界拒绝
@@ -390,6 +419,7 @@ def test_read_document_tool(session: SimpleSession, tmp_path: Path):
     (workspace / "note.txt").write_text("工作区笔记", encoding="utf-8")
     tool = session._wf.tools_manager.tools["read_document"]
     assert "工作区笔记" in tool.execute(path="note.txt")
+    assert tool.execute(path="note.txt", max_length="bad") == "错误: max_length 必须是整数"
     # 越界拒绝
     result = tool.execute(path="../outside.txt")
     assert "越出工作区" in result or "错误" in result

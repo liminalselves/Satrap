@@ -2,7 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
+from satrap.core.utils.TCBuilder import (
+    AsyncTool,
+    AsyncToolsManager,
+    Tool,
+    ToolsManager,
+    _summarize_arguments,
+)
 
 
 class CountingTool(Tool):
@@ -186,8 +192,22 @@ def test_tools_manager_catches_tool_exceptions_as_structured_errors():
     assert result["ok"] is False
     assert result["error_type"] == "execution_error"
     assert result["tool_name"] == "raising"
-    assert "boom 3" in result["error"]
+    assert result["error"] == "工具执行失败: RuntimeError"
+    assert "boom 3" not in result["error"]
     assert tool.calls == 1
+
+
+def test_tool_argument_log_summary_redacts_nested_credentials() -> None:
+    """工具异常日志参数摘要不得包含凭据原值"""
+    summary = _summarize_arguments({
+        "api_key": "secret-key",
+        "nested": {"access-token": "secret-token", "path": "demo.txt"},
+    })
+
+    assert "secret-key" not in summary
+    assert "secret-token" not in summary
+    assert summary.count("********") == 2
+    assert "demo.txt" in summary
 
 
 def test_execute_tool_call_handles_malformed_call_info_without_raising():
@@ -231,7 +251,8 @@ async def test_async_tools_manager_returns_structured_errors_and_catches_excepti
     assert exception_result["ok"] is False
     assert exception_result["error_type"] == "execution_error"
     assert exception_result["tool_name"] == "async_raising"
-    assert "async boom 7" in exception_result["error"]
+    assert exception_result["error"] == "工具执行失败: RuntimeError"
+    assert "async boom 7" not in exception_result["error"]
     assert raising_tool.calls == 1
 
     tool_message, tool_result = await manager.execute_tool_call(

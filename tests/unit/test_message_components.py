@@ -2,8 +2,6 @@ import base64
 from pathlib import Path
 import os
 from pathlib import Path
-from typing import Any
-
 import pytest
 from pathlib import Path
 
@@ -110,6 +108,65 @@ async def test_file_get_file_local_and_async_guard(tmp_path: Path):
     url_file = File(name="demo.txt", url="https://example.com/demo.txt")
     assert await url_file.get_file(allow_return_url=True) == "https://example.com/demo.txt"
     assert url_file.file == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "expected_suffix"),
+    [
+        ("../../escape.py", ".py"),
+        (r"..\..\escape.EXE", ".exe"),
+        ("report.tar.gz", ".gz"),
+        ("payload.超长危险扩展名", ""),
+    ],
+)
+async def test_file_download_uses_server_generated_safe_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    expected_suffix: str,
+) -> None:
+    """
+    外部文件名仅用于展示, 不能影响临时目录内的落盘路径
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    - name: 参数化外部文件名
+    - expected_suffix: 预期保留的安全扩展名
+    """
+    from satrap.core.components import message as message_mod
+
+    temp_root = tmp_path / "temp"
+    temp_root.mkdir()
+    captured: list[Path] = []
+
+    async def fake_download(url: str, path: str) -> str:
+        """
+        记录下载目标而不发起网络请求
+
+        参数:
+        - url: 模拟下载地址
+        - path: 服务端生成的目标路径
+
+        返回:
+        - 原样返回目标路径
+        """
+        captured.append(Path(path))
+        return path
+
+    monkeypatch.setattr(message_mod, "get_satrap_temp_path", lambda: str(temp_root))
+    monkeypatch.setattr(message_mod, "download_file", fake_download)
+
+    file_seg = File(name=name, url="https://example.com/file")
+    result = await file_seg.get_file()
+    target = Path(result)
+    assert target.parent == temp_root.resolve()
+    assert target.name.startswith("fileseg_")
+    assert target.suffix == expected_suffix
+    assert "escape" not in target.name
+    assert captured == [target]
+    assert file_seg.name == name
 
 
 @pytest.mark.asyncio

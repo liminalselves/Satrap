@@ -188,6 +188,20 @@ def test_normalize_openai_base_url_for_toolkit_endpoint():
     assert normalize_openai_base_url("https://api.siliconflow.cn/v1/chat/completions") == "https://api.siliconflow.cn/v1"
 
 
+def test_normalize_openai_base_url_enforces_transport_security() -> None:
+    """远程 API 默认要求 HTTPS, 回环 HTTP 和显式例外仍可使用"""
+    assert normalize_openai_base_url("http://127.0.0.1:11434/v1") == "http://127.0.0.1:11434/v1"
+    assert normalize_openai_base_url("http://localhost:11434/v1") == "http://localhost:11434/v1"
+    assert normalize_openai_base_url("http://model.internal/v1", allow_insecure=True) == "http://model.internal/v1"
+
+    with pytest.raises(ValueError, match="必须使用 https"):
+        normalize_openai_base_url("http://model.internal/v1")
+    with pytest.raises(ValueError, match="仅支持 http 或 https"):
+        normalize_openai_base_url("ftp://model.internal/v1")
+    with pytest.raises(ValueError, match="用户名或密码"):
+        normalize_openai_base_url("https://user:secret@model.example/v1")
+
+
 @pytest.mark.integration
 @pytest.mark.requires_api
 def test_real_toolkit_vision_call_when_available():

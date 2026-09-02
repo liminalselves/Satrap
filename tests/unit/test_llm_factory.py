@@ -18,9 +18,13 @@ from satrap.core.type import LLMConfig
 
 
 def _cfg(**kw: Any) -> LLMConfig:
-    base: dict[str, Any] = dict(name="m", model="mod", base_url="http://x/v1", api_key="k")
-    base.update(kw)
-    return LLMConfig(**base)
+    return LLMConfig(
+        name=kw.pop("name", "m"),
+        model=kw.pop("model", "mod"),
+        base_url=kw.pop("base_url", "https://x/v1"),
+        api_key=kw.pop("api_key", "k"),
+        **kw,
+    )
 
 
 def test_maps_all_fields():
@@ -75,7 +79,7 @@ def test_async_variant():
 
 def test_simple_namespace_substitute():
     """缺字段替身 (SimpleNamespace) 也能构造, 用 LLM 默认值"""
-    ns = SimpleNamespace(api_key="k", base_url="http://x", model="m")
+    ns = SimpleNamespace(api_key="k", base_url="https://x", model="m")
     llm = build_llm_from_config(ns)   # type: ignore[arg-type]
     assert isinstance(llm, LLM)
     assert llm.max_tokens == 4096

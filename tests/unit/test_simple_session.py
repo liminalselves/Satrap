@@ -3060,6 +3060,61 @@ async def test_async_run_serialized(tmp_path: Path):
     assert order == ["enter", "exit", "a_done", "enter", "exit", "b_done"]
 
 
+def test_sync_run_serialized_across_threads(tmp_path: Path):
+    """
+    同步 run 在多线程调用时按会话串行执行
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    order: list[str] = []
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _GateLLM(_FakeLLM):
+        def call(self, *args: object, **kwargs: object) -> LLMCallResponse:   # noqa: ARG002
+            """
+            阻塞模型调用以验证线程串行化
+
+            参数:
+            - args: 未使用的位置参数
+            - kwargs: 未使用的关键字参数
+
+            返回:
+            - 预设模型响应
+            """
+            order.append("enter")
+            entered.set()
+            release.wait(timeout=2)
+            order.append("exit")
+            return self.response
+
+    session = SimpleSession(
+        "conv-sync-lock", _GateLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+    )
+
+    def run(value: str) -> None:
+        """
+        执行一轮会话并记录完成顺序
+
+        参数:
+        - value: 当前线程输入
+        """
+        session.run(value)
+        order.append(f"{value}_done")
+
+    first = threading.Thread(target=run, args=("a",))
+    second = threading.Thread(target=run, args=("b",))
+    first.start()
+    assert entered.wait(timeout=2)
+    second.start()
+    assert "b_done" not in order
+    release.set()
+    first.join(timeout=3)
+    second.join(timeout=3)
+    assert order == ["enter", "exit", "a_done", "enter", "exit", "b_done"]
+
+
 @pytest.mark.asyncio
 async def test_async_concurrent_remove_and_run(tmp_path: Path):
     """

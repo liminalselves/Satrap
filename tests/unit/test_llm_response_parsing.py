@@ -1,9 +1,13 @@
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from openai import APIError
 from openai.types.chat.chat_completion import ChatCompletion
 
-from satrap.core.APICall.LLMCall import parse_call_response
+from satrap.core.APICall.LLMCall import AsyncLLM, parse_call_response, parse_chat_response
 
 
 def _build_completion(
@@ -49,6 +53,20 @@ def test_parse_call_response_supports_sdk_message_object():
 
     assert parsed.type == "message"
     assert parsed.content == "模型回复"
+
+
+def test_response_parsers_support_multimodal_content_parts():
+    """字典与对象形式的多模态 content 均只拼接文本片段"""
+    response: dict[str, object] = {
+        "choices": [{"message": {"content": [
+            {"type": "text", "text": "第一段"},
+            {"type": "image_url", "image_url": {"url": "https://example.test/a.png"}},
+            SimpleNamespace(type="text", text="第二段"),
+        ]}}],
+    }
+
+    assert parse_chat_response(response) == "第一段\n第二段"
+    assert parse_call_response(response).content == "第一段\n第二段"
 
 
 def test_parse_call_response_supports_sdk_tool_call_objects():
@@ -152,3 +170,22 @@ def test_parse_call_response_extracts_cache_hit_aliases(
 
     assert parsed.usage is not None
     assert parsed.usage.cached_tokens == expected
+
+
+@pytest.mark.asyncio
+async def test_async_llm_api_error_honors_return_false() -> None:
+    """APIError 被抑制时应遵守 return_false 返回契约"""
+    llm = AsyncLLM(
+        api_key="test-key",
+        model="test-model",
+        suppress_error=True,
+        return_false=True,
+    )
+    request = httpx.Request("POST", "https://example.test/chat")
+    llm.client.chat.completions.create = AsyncMock(   # type: ignore[method-assign]
+        side_effect=APIError("boom", request, body=None)
+    )
+
+    result = await llm.chat([{"role": "user", "content": "hello"}])
+
+    assert result is False

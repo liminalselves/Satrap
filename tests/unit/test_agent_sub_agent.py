@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+import threading
+import time
+from typing import Any, cast
 
 import pytest
 
@@ -105,6 +107,95 @@ class _FakeLLM:
         return LLMCallResponse(type="message", content=f"fake reply #{self.call_count}")
 
 
+class _SlowLLM:
+    """持续阻塞的同步 LLM 替身"""
+
+    def call(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        img_urls: list[str] | None = None,
+    ) -> LLMCallResponse | bool:
+        """
+        阻塞足够长时间以触发子进程硬超时
+
+        参数:
+        - messages: 对话消息
+        - tools: 可选工具定义
+        - img_urls: 可选图片 URL
+
+        返回:
+        - 不应在测试超时前返回的模型响应
+        """
+        time.sleep(10)
+        return LLMCallResponse(type="message", content="late")
+
+
+class _ToolCallingLLM:
+    """先请求工具再返回最终结果的同步 LLM 替身"""
+
+    def __init__(self) -> None:
+        """初始化调用计数"""
+        self.call_count = 0
+
+    def call(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        img_urls: list[str] | None = None,
+    ) -> LLMCallResponse | bool:
+        """
+        首次调用请求 echo 工具, 后续调用返回最终结果
+
+        参数:
+        - messages: 对话消息
+        - tools: 可选工具定义
+        - img_urls: 可选图片 URL
+
+        返回:
+        - 工具调用或最终模型响应
+        """
+        self.call_count += 1
+        if self.call_count == 1:
+            return LLMCallResponse(
+                type="tools_call",
+                content="",
+                tool_calls=[{
+                    "name": "echo",
+                    "id": "call-proxy",
+                    "arguments": {"text": "from child"},
+                }],
+            )
+        return LLMCallResponse(type="message", content="proxy complete")
+
+
+class _RecordingToolsManager(_FakeToolsManager):
+    """记录父进程工具调用次数的工具管理器"""
+
+    def __init__(self) -> None:
+        """初始化调用计数"""
+        self.call_count = 0
+
+    def execute_tool_call(
+        self,
+        call_info: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """
+        记录并执行工具调用
+
+        参数:
+        - call_info: 工具调用信息
+
+        返回:
+        - 工具消息与工具结果
+        """
+        self.call_count += 1
+        arguments = call_info.get("arguments", {})
+        parsed_arguments = cast(dict[str, object], arguments) if isinstance(arguments, dict) else {}
+        result = _FakeTool().execute(text=str(parsed_arguments.get("text", "")))
+        return ToolsManager.create_call_message(call_info), result
+
+
 class _FakeAsyncLLM:
     def __init__(self):
         self.call_count = 0
@@ -150,6 +241,13 @@ def test_sub_agent_handles_empty_task_list():
     assert result == "未收到任何子任务"
 
 
+def test_sub_agent_rejects_excessive_task_count():
+    """同步子代理拒绝超过固定上限的批量任务"""
+    agent = SubAgent(_FakeLLM(), _FakeToolsManager())   # type: ignore[arg-type]
+    result = agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
+    assert "不能超过 16" in result
+
+
 def test_sub_agent_handles_malformed_json():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
@@ -170,6 +268,51 @@ def test_sub_agent_preserves_task_order():
     second_pos = result.index("second")
     third_pos = result.index("third")
     assert first_pos < second_pos < third_pos
+
+
+def test_sub_agent_hard_timeout_terminates_worker_process() -> None:
+    """同步子代理超时后应终止工作进程并及时返回"""
+    agent = SubAgent(
+        cast(LLM, _SlowLLM()),
+        cast(ToolsManager, _FakeToolsManager()),
+        task_timeout=0.5,
+        max_workers=1,
+    )
+    started_at = time.monotonic()
+
+    result = agent.execute('["slow task"]')
+
+    assert time.monotonic() - started_at < 3
+    assert "超过 0.5 秒" in result
+
+
+def test_sub_agent_does_not_serialize_tools_manager_runtime_state() -> None:
+    """进程隔离只传递工具定义, 不要求真实工具管理器可序列化"""
+    tools_manager = _FakeToolsManager()
+    setattr(tools_manager, "runtime_lock", threading.Lock())
+    agent = SubAgent(
+        cast(LLM, _FakeLLM()),
+        cast(ToolsManager, tools_manager),
+    )
+
+    result = agent.execute('["task"]')
+
+    assert "子代理1执行任务" in result
+    assert "fake reply" in result
+
+
+def test_sub_agent_forwards_tool_calls_to_parent_manager() -> None:
+    """隔离子进程应把真实工具执行转发回父进程"""
+    tools_manager = _RecordingToolsManager()
+    agent = SubAgent(
+        cast(LLM, _ToolCallingLLM()),
+        cast(ToolsManager, tools_manager),
+    )
+
+    result = agent.execute('["use tool"]')
+
+    assert tools_manager.call_count == 1
+    assert "proxy complete" in result
 
 
 # ================================================================
@@ -204,6 +347,14 @@ async def test_async_sub_agent_parses_single_string():
 async def test_async_sub_agent_empty_list():
     result = await _run_async_sub_agent("[]")
     assert result == "未收到任何子任务"
+
+
+@pytest.mark.asyncio
+async def test_async_sub_agent_rejects_excessive_task_count():
+    """异步子代理拒绝超过固定上限的批量任务"""
+    agent = AsyncSubAgent(_FakeAsyncLLM(), _FakeToolsManager())   # type: ignore[arg-type]
+    result = await agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
+    assert "不能超过 16" in result
 
 
 @pytest.mark.asyncio
