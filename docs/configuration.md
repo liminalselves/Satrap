@@ -60,6 +60,7 @@ Copy-Item config.example.yaml config.yaml
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录 |
+| `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
 | `platforms` | `[]` | 平台适配器实例配置 |
 
 ## 模型配置
@@ -95,6 +96,9 @@ satrap model remove llm default
 | `max_tokens` | 最大输出 token (未配置 `context_window` 时生效) |
 | `context_window` | 总上下文窗口, 与 `ContextManager.max_context` 同源 |
 | `history_ratio` | 历史上下文比例, 输出预算 = `context_window × (1 - history_ratio)` |
+| `allow_insecure_base_url` | 是否允许非回环地址使用明文 HTTP, 默认 `false`; 仅限已知可信的内网兼容服务 |
+
+`base_url` 默认要求 HTTPS; `localhost`、`*.localhost` 与回环 IP 可继续使用 HTTP 进行本地开发。远程明文 HTTP 必须显式设置 `allow_insecure_base_url=true`。
 
 `context_window` 与 `history_ratio` 同时配置时, `SessionManager` 会:
 
@@ -131,6 +135,12 @@ satrap session disable assistant
 satrap session enable assistant
 ```
 
+`class_path` 只允许指向 Satrap 内置模块或 `session_scan_paths` 扫描目录中的模块。管理接口保存冷配置时不会导入类, 实际加载时还会再次核对模块来源和源码路径。
+
+## 技能代码信任边界
+
+技能目录中的 `skill.md` 和 `meta.yaml` 作为数据读取, 但 `tools.py` 属于可执行 Python 代码。默认仅执行 Satrap 官方预设技能中的 `tools.py`; 用户技能目录中的 `tools.py` 会被跳过。仅当应用所有者已审核代码时, 才可通过 `SkillsManager(trusted_code_roots=[...])` 显式加入可信代码根。
+
 ## 环境变量
 
 `ConfigLoader.merge_env()` 支持这些覆盖项:
@@ -145,3 +155,9 @@ satrap session enable assistant
 | `SATRAP_LLM_TIMEOUT` | `llm_timeout` |
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。
+
+管理 HTTP/WS 服务始终启用共享令牌鉴权。回环监听时首次启动会生成 `.satrap/api-token`, CLI 和开发脚本会自动读取该文件。浏览器管理界面由回环客户端和白名单 Origin 引导建立 HttpOnly 会话, Cookie 使用服务端保存且可撤销的随机会话 ID, 不包含 API token, 默认 8 小时过期。该引导流程信任本机进程与白名单前端; 如需关闭无 Bearer token 的回环引导, 设置 `SATRAP_LOOPBACK_BOOTSTRAP=0`。绑定 `0.0.0.0`、局域网地址或其他非回环地址时必须显式设置至少 32 个字符的 `SATRAP_API_TOKEN`, 否则服务拒绝启动。
+
+跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/api-token` 提交到版本库或写入前端构建变量。
+
+内置 HTTP 服务默认限制 256 个并发连接和 64 个 WebSocket 连接。WebSocket 每 30 秒发送 ping, 连续 5 分钟未收到客户端帧时主动关闭; 客户端单帧上限为 64 KiB。前端静态产物可在鉴权前访问以支持登录引导, 因此构建目录仅应包含公开文件; 服务会拒绝隐藏文件和 source map。
