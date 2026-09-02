@@ -54,6 +54,7 @@ class ConfigLoader:
             "error_feedback": cfg.error_feedback,
             "session_classes": dict(cfg.session_classes),
             "session_scan_paths": list(cfg.session_scan_paths),
+            "workspace_roots": list(cfg.workspace_roots),
             "api": {
                 "host": cfg.api_host,
                 "port": cfg.api_port,
@@ -112,10 +113,13 @@ class ConfigLoader:
         path = ConfigLoader.default_config_path(cwd)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dumped = yaml.safe_dump(
-                ConfigLoader.default_config_document(),
-                allow_unicode=True,
-                sort_keys=False,
+            dumped = cast(
+                object,
+                yaml.safe_dump(   # pyright: ignore[reportUnknownMemberType]
+                    ConfigLoader.default_config_document(),
+                    allow_unicode=True,
+                    sort_keys=False,
+                ),
             )
             text = dumped if isinstance(dumped, str) else ""
         except ImportError:
@@ -144,7 +148,10 @@ class ConfigLoader:
 
         try:
             with path.open("r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
+                data: object = cast(
+                    object,
+                    yaml.safe_load(f),   # pyright: ignore[reportUnknownMemberType]
+                )
             if not isinstance(data, dict):
                 raise ValueError("YAML 根节点必须是字典")
             return BackendConfig.from_dict(cast(dict[str, Any], data))

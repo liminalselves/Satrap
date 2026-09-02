@@ -167,8 +167,7 @@ class ModelConfigManager:
         - Dict[str, Any]: 脱敏配置字典
         """
         cfg = dict(payload)
-        if cfg.get("lock_api_key", True):
-            cfg["api_key"] = self._safe_key(cfg.get("api_key"))
+        cfg["api_key"] = self._safe_key(cfg.get("api_key"))
         return cfg
 
     def _to_payload_locked(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Dict[str, Any]]]:

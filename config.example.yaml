@@ -19,6 +19,8 @@ llm_timeout: 120.0                    # LLM 调用超时, 单位秒
 error_feedback: true                  # 出错或限流时是否通知用户
 
 # --- HTTP API ---
+# 回环监听会自动生成 .satrap/api-token, CLI 和管理前端会自动使用
+# 绑定非回环地址时必须显式设置至少 32 字符的 SATRAP_API_TOKEN
 api:
   host: 127.0.0.1
   port: 19870
@@ -33,6 +35,11 @@ session_classes:
 # 管理面板和 CLI 可以扫描这些目录下的 .py 文件, 发现继承 Session/AsyncSession 的类
 session_scan_paths:
   - .satrap/session
+
+# --- Chat 项目工作区根目录 ---
+# 目录浏览和项目绑定只能使用这些根目录及其子目录
+workspace_roots:
+  - .
 
 # --- 平台适配器配置 ---
 platforms:

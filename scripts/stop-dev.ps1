@@ -2,17 +2,31 @@
 # 停止全部 Satrap 相关服务
 
 $ErrorActionPreference = "SilentlyContinue"
+$utf8 = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 
 # 项目根目录 (脚本位于 scripts 子目录)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $DataDir = Join-Path $ProjectRoot ".satrap"
+$token = $env:SATRAP_API_TOKEN
+if ([string]::IsNullOrWhiteSpace($token)) {
+    $tokenPath = Join-Path $DataDir "api-token"
+    if (Test-Path -LiteralPath $tokenPath) {
+        $token = (Get-Content -Raw -Encoding UTF8 -LiteralPath $tokenPath).Trim()
+    }
+}
+$authHeaders = if ([string]::IsNullOrWhiteSpace($token)) { @{} } else { @{ Authorization = "Bearer $token" } }
 
 Write-Host "Stopping Satrap services..." -ForegroundColor Yellow
 
 # 通过控制服务 API 停止
 try {
-    Invoke-RestMethod -Uri "http://127.0.0.1:19871/shutdown" -Method Post -TimeoutSec 2 | Out-Null
+    Invoke-RestMethod -Uri "http://127.0.0.1:19871/shutdown" -Method Post -Headers $authHeaders -TimeoutSec 2 | Out-Null
     Write-Host "  Control server received stop command" -ForegroundColor Gray
 } catch {
     Write-Host "  Control server not running or unreachable" -ForegroundColor Gray

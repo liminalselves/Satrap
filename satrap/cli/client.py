@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from satrap.core.server_auth import load_or_create_api_token
+
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendConfig
 
@@ -70,16 +72,23 @@ class DaemonInfo:
 class DaemonClient:
     """HTTP 客户端, 与后端 daemon 通信"""
 
-    def __init__(self, daemon: DaemonInfo | None = None, timeout: float = 5):
+    def __init__(
+        self,
+        daemon: DaemonInfo | None = None,
+        timeout: float = 5,
+        token: str | None = None,
+    ):
         """
         初始化 DaemonClient
 
         参数:
         - daemon: daemon 输入值
         - timeout: 超时时间
+        - token: API Bearer 令牌, 未提供时读取共享运行时令牌
         """
         self.daemon = daemon or DaemonInfo.detect()
         self.timeout = timeout
+        self.token = token or load_or_create_api_token()
 
     def is_alive(self) -> bool:
         """
@@ -306,6 +315,7 @@ class DaemonClient:
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(url, data=data, method=method)
         req.add_header("Content-Type", "application/json")
+        req.add_header("Authorization", f"Bearer {self.token}")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return json.loads(resp.read().decode())

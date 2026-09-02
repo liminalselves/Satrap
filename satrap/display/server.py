@@ -48,6 +48,7 @@ from typing import Any, cast
 from urllib.parse import unquote
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.config.loader import ConfigLoader
 from satrap.core.log import logger
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.display.plugins import ChatPluginRegistry
@@ -75,7 +76,12 @@ class ChatHTTPServer(MiniHTTPServer):
         - host: 监听地址
         - port: 监听端口
         """
-        super().__init__(host=host, port=port, log_errors=True)
+        super().__init__(
+            host=host,
+            port=port,
+            log_errors=True,
+            session_namespace="chat",
+        )
         self.service = service
 
     async def start(self) -> None:
@@ -220,14 +226,17 @@ class ChatHTTPServer(MiniHTTPServer):
 
         if method == "POST" and clean == "/api/chat/history/delete":
             try:
-                payload = json.loads(body or b"{}")
+                parsed_payload: object = json.loads(body or b"{}")
+                if not isinstance(parsed_payload, dict):
+                    raise ValueError("请求体必须是 JSON 对象")
+                payload = cast(dict[str, object], parsed_payload)
                 raw_ids = payload.get("conversation_ids", [])
                 raw_filters = payload.get("filters", {})
                 if not isinstance(raw_ids, list) or not isinstance(raw_filters, dict):
                     raise ValueError("conversation_ids 必须是数组且 filters 必须是对象")
                 return 200, await svc.delete_conversations(
                     mode=str(payload.get("mode") or "selected"),
-                    conversation_ids=[str(item) for item in raw_ids],
+                    conversation_ids=[str(item) for item in cast(list[object], raw_ids)],
                     filters=dict(cast(dict[str, Any], raw_filters)),
                     force=bool(payload.get("force", False)),
                 )
@@ -487,7 +496,12 @@ class ChatHTTPServer(MiniHTTPServer):
 async def _run(host: str, port: int) -> None:
     model_cfg = ModelConfigManager()
     plugins = ChatPluginRegistry()
-    service = ChatService(model_cfg, plugins)
+    backend_config = ConfigLoader.autodetect()
+    service = ChatService(
+        model_cfg,
+        plugins,
+        workspace_roots=backend_config.workspace_roots,
+    )
     server = ChatHTTPServer(service, host=host, port=port)
     await server.start()
     print(f"Satrap 聊天服务已启动: http://{host}:{port} (按 Ctrl+C 停止)")

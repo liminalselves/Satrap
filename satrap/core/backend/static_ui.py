@@ -23,7 +23,6 @@ _MIME_TYPE_OVERRIDES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript",
     ".json": "application/json",
-    ".map": "application/json",
     ".mjs": "text/javascript",
     ".svg": "image/svg+xml",
     ".wasm": "application/wasm",
@@ -111,7 +110,12 @@ class SPAStaticService:
         返回:
         - Path | None: 位于静态目录内的路径, 越界时返回 None
         """
-        candidate = (self.static_dir / route_path.lstrip("/")).resolve()
+        relative_path = Path(route_path.lstrip("/"))
+        if any(part.startswith(".") for part in relative_path.parts):
+            return None
+        if relative_path.suffix.lower() == ".map":
+            return None
+        candidate = (self.static_dir / relative_path).resolve()
         try:
             candidate.relative_to(self.static_dir)
         except ValueError:

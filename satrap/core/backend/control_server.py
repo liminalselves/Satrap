@@ -19,9 +19,11 @@ import ctypes
 import dataclasses
 import json
 import os
+import secrets
 import signal
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, cast
 import urllib.error
@@ -35,6 +37,8 @@ from satrap.core.config.document import (
     delete_platform,
     find_config_path,
     load_config_document,
+    merge_masked_secrets,
+    redact_config_document,
     save_config_document,
     upsert_platform,
     validate_config_document,
@@ -59,6 +63,15 @@ from satrap.core.storage import (
     StorageLayout,
     StorageMaintenanceService,
 )
+from satrap.core.server_auth import ServerAuth
+from satrap.core.utils.minihttp import (
+    DEFAULT_BODY_TIMEOUT,
+    DEFAULT_HEADER_TIMEOUT,
+    HTTPRequestError,
+    MAX_HEADER_BYTES,
+    read_request_body,
+    read_request_headers,
+)
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.config import EdictumConfigManager
@@ -75,6 +88,16 @@ CONTROL_PID_FILE = DATA_DIR / "control_server.pid"
 # PID 文件路径
 BACKEND_PID_FILE = DATA_DIR / "backend.pid"
 
+
+@dataclasses.dataclass(frozen=True)
+class BackendRuntimeRecord:
+    """控制服务写入的后端进程身份记录"""
+
+    pid: int
+    runtime_id: str
+    host: str
+    port: int
+
 _backend_process: subprocess.Popen | None = None
 # 后端进程
 
@@ -82,11 +105,23 @@ CONFIG_PATH = find_config_path(PROJECT_ROOT)
 # 配置文件路径
 
 CORS_HEADERS = {
-    "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
 }
 # CORS 头
+
+_CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control")
+"""控制服务共享鉴权策略"""
+
+CONTROL_MAX_BODY_BYTES = 1024 * 1024
+"""控制服务 JSON 请求体最大字节数"""
+
+CONTROL_MAX_CONNECTIONS = 256
+"""控制服务最大并发连接数"""
+
+_CONTROL_ACTIVE_CONNECTIONS = 0
+"""控制服务当前并发连接数"""
 
 CONTROL_STATIC_UI = SPAStaticService(
     DEFAULT_STATIC_DIR,
@@ -133,6 +168,113 @@ def _read_pid_file(pid_file: Path) -> int | None:
     except Exception:
         pass
     return None
+
+
+def _write_backend_runtime(record: BackendRuntimeRecord) -> None:
+    """
+    写入可验证的后端进程身份记录
+
+    参数:
+    - record: 后端运行时身份
+    """
+    try:
+        BACKEND_PID_FILE.write_text(
+            json.dumps(dataclasses.asdict(record), ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _read_backend_runtime() -> BackendRuntimeRecord | None:
+    """
+    读取结构化后端进程身份记录
+
+    返回:
+    - 有效结构化记录; 旧版整数 PID 或损坏内容返回 None
+    """
+    try:
+        raw_payload: object = json.loads(BACKEND_PID_FILE.read_text(encoding="utf-8"))
+        if not isinstance(raw_payload, dict):
+            return None
+        payload = cast(dict[str, object], raw_payload)
+        raw_pid = payload.get("pid", 0)
+        raw_port = payload.get("port", 0)
+        if not isinstance(raw_pid, (int, str)) or not isinstance(raw_port, (int, str)):
+            return None
+        runtime_id = str(payload.get("runtime_id", "")).strip()
+        host = str(payload.get("host", "")).strip()
+        pid = int(raw_pid)
+        port = int(raw_port)
+        if pid <= 0 or not runtime_id or not host or not 1 <= port <= 65535:
+            return None
+        return BackendRuntimeRecord(pid, runtime_id, host, port)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _configured_backend_address() -> tuple[str, int]:
+    """
+    从当前配置读取后端绑定地址
+
+    返回:
+    - 后端主机与端口, 配置无效时使用默认地址
+    """
+    try:
+        document = load_config_document(CONFIG_PATH)
+        raw_api: object = document.get("api", {})
+        api = cast(dict[str, object], raw_api) if isinstance(raw_api, dict) else {}
+        raw_host = api.get("host", document.get("api_host", "127.0.0.1"))
+        raw_port = api.get("port", document.get("api_port", 19870))
+        if not isinstance(raw_port, (int, str)):
+            raise ValueError("后端端口无效")
+        host = str(raw_host).strip()
+        port = int(raw_port)
+        if not host or not 1 <= port <= 65535:
+            raise ValueError("后端地址无效")
+        return host, port
+    except (OSError, TypeError, ValueError):
+        return "127.0.0.1", 19870
+
+
+def _connect_host(host: str) -> str:
+    """
+    把通配绑定地址转换为本机可连接地址
+
+    参数:
+    - host: 后端绑定主机
+
+    返回:
+    - 可供控制服务连接的主机地址
+    """
+    if host == "0.0.0.0":
+        return "127.0.0.1"
+    if host == "::":
+        return "::1"
+    return host
+
+
+def _runtime_matches(record: BackendRuntimeRecord, health: Mapping[str, object]) -> bool:
+    """
+    校验健康响应与 PID 文件是否属于同一运行时
+
+    参数:
+    - record: PID 文件中的运行时身份
+    - health: 后端健康响应
+
+    返回:
+    - PID 与随机运行时 ID 均一致时返回 True
+    """
+    try:
+        raw_pid = health.get("pid", 0)
+        if not isinstance(raw_pid, (int, str)):
+            return False
+        return (
+            int(raw_pid) == record.pid
+            and str(health.get("runtime_id", "")) == record.runtime_id
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _remove_pid_file(pid_file: Path) -> None:
@@ -193,7 +335,7 @@ def _check_single_instance() -> bool:
     if _is_process_running(old_pid):
         try:
             url = "http://127.0.0.1:19871/status"
-            with urllib.request.urlopen(url, timeout=1) as response:
+            with urllib.request.urlopen(_authenticated_request(url), timeout=1) as response:
                 if response.status == 200:
                     return False   # 已有实例在运行
         except Exception:
@@ -208,17 +350,24 @@ def _check_single_instance() -> bool:
 def _cleanup_backend() -> None:
     """清理后端进程"""
     global _backend_process
-    
+
+    host, port = _configured_backend_address()
+    record = _read_backend_runtime()
+    recorded_health: dict[str, Any] = {}
+    if record is not None:
+        recorded_health = _check_backend_health(record.host, record.port)
+
     try:
-        req = urllib.request.Request(
-            "http://127.0.0.1:19870/api/shutdown",
+        connect_host = _connect_host(host)
+        req = _authenticated_request(
+            f"http://{connect_host}:{port}/api/shutdown",
             method="POST",
         )
         urllib.request.urlopen(req, timeout=2)
     except Exception:
         pass
     # 尝试通过 API 停止
-    
+
     if _backend_process is not None:
         try:
             _backend_process.terminate()
@@ -230,18 +379,18 @@ def _cleanup_backend() -> None:
                 pass
         _backend_process = None
     # 终止我们启动的进程
-    
-    backend_pid = _read_pid_file(BACKEND_PID_FILE)
-    # 通过 PID 文件终止
-    if backend_pid and _is_process_running(backend_pid):
+
+    if (
+        record is not None
+        and _runtime_matches(record, recorded_health)
+        and _is_process_running(record.pid)
+    ):
         try:
-            if sys.platform == "win32":
-                os.kill(backend_pid, signal.SIGTERM)
-            else:
-                os.kill(backend_pid, signal.SIGTERM)
+            os.kill(record.pid, signal.SIGTERM)
         except Exception:
             pass
-    
+    # 仅在健康响应证明身份一致时终止 PID 文件指向的进程
+
     _remove_pid_file(BACKEND_PID_FILE)
 
 
@@ -272,21 +421,32 @@ def _get_backend_cmd(host: str = "127.0.0.1", port: int = 19870) -> list[str]:
     ]
 
 
-def _check_backend_health(host: str = "127.0.0.1", port: int = 19870) -> dict[str, Any]:
+def _check_backend_health(host: str | None = None, port: int | None = None) -> dict[str, Any]:
     """
     检查后端健康状态
 
     参数:
-    - host: 主机
-    - port: 端口
+    - host: 可选主机, 未提供时读取当前配置
+    - port: 可选端口, 未提供时读取当前配置
 
     返回:
     - dict[str, Any]: 检查结果
     """
     try:
-        url = f"http://{host}:{port}/api/health"
-        with urllib.request.urlopen(url, timeout=2) as response:
+        configured_host, configured_port = _configured_backend_address()
+        target_host = _connect_host(host or configured_host)
+        target_port = port or configured_port
+        url = f"http://{target_host}:{target_port}/api/health"
+        with urllib.request.urlopen(_authenticated_request(url), timeout=2) as response:
             return json.loads(response.read().decode())
+    except urllib.error.HTTPError as error:
+        try:
+            payload: object = json.loads(error.read().decode("utf-8"))
+            if isinstance(payload, dict):
+                return cast(dict[str, Any], payload)
+        except (TypeError, ValueError, UnicodeDecodeError):
+            pass
+        return {"running": False, "error": f"HTTP {error.code}"}
     except urllib.error.URLError:
         return {"running": False}
     except Exception as e:
@@ -307,14 +467,14 @@ async def _read_json_body(
     返回:
     - dict[str, Any]: JSON 对象
     """
-    content_length: int | None = None
-    for raw_line in raw_request.split(b"\r\n")[1:]:
-        if raw_line.lower().startswith(b"content-length:"):
-            content_length = int(raw_line.split(b":", 1)[1].strip())
-            break
-    if content_length is None or content_length <= 0:
-        raise ValueError("缺少请求体")
-    payload: object = json.loads((await reader.readexactly(content_length)).decode("utf-8"))
+    body = await read_request_body(
+        reader,
+        raw_request,
+        max_bytes=CONTROL_MAX_BODY_BYTES,
+        timeout=DEFAULT_BODY_TIMEOUT,
+        required=True,
+    )
+    payload: object = json.loads(body.decode("utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("请求体必须是 JSON 对象")
     return dict(cast(dict[str, Any], payload))
@@ -355,6 +515,74 @@ def _request_headers(raw_request: bytes) -> dict[str, str]:
         key, value = raw_line.split(b":", 1)
         headers[key.decode("utf-8").strip().lower()] = value.decode("utf-8").strip()
     return headers
+
+
+async def _send_control_json(
+    writer: asyncio.StreamWriter,
+    status: int,
+    body: Mapping[str, object],
+    origin: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
+    """
+    发送控制服务 JSON 响应并按请求来源附加精确 CORS 头
+
+    参数:
+    - writer: 流写入器
+    - status: HTTP 状态码
+    - body: JSON 响应对象
+    - origin: 请求来源
+    - extra_headers: 额外响应头
+    """
+    response_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    status_text = "OK" if status == 200 else "Error"
+    headers = {**_CONTROL_AUTH.cors_headers(origin), **(extra_headers or {})}
+    response = (
+        f"HTTP/1.1 {status} {status_text}\r\n"
+        "Content-Type: application/json\r\n"
+        f"Content-Length: {len(response_body)}\r\n"
+    )
+    response += "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+    writer.write((response + "\r\n").encode("utf-8") + response_body)
+    await writer.drain()
+
+
+def _authenticated_request(url: str, method: str = "GET") -> urllib.request.Request:
+    """
+    构造携带共享 Bearer 令牌的内部管理请求
+
+    参数:
+    - url: 内部管理接口地址
+    - method: HTTP 方法, 默认 GET
+
+    返回:
+    - 携带共享 Bearer 令牌的请求对象
+    """
+    request = urllib.request.Request(url, method=method)
+    request.add_header("Authorization", f"Bearer {_CONTROL_AUTH.token}")
+    return request
+
+
+def _is_control_api_path(path: str) -> bool:
+    """
+    判断路径是否属于控制服务管理 API
+
+    参数:
+    - path: 已解析的 HTTP 路径
+
+    返回:
+    - 路径属于控制 API 时返回 True
+    """
+    return path.startswith((
+        "/status",
+        "/start",
+        "/stop",
+        "/restart",
+        "/shutdown",
+        "/config",
+        "/chat/history",
+        "/storage",
+    ))
 
 
 def _model_config_service() -> ModelConfigService:
@@ -520,7 +748,8 @@ def _configured_platform_ids(config_data: dict[str, Any] | None = None) -> list[
 def _check_chat_health() -> bool:
     """检查独立 Chat 服务是否正在运行"""
     try:
-        with urllib.request.urlopen("http://127.0.0.1:19872/api/chat/health", timeout=0.4) as response:
+        request = _authenticated_request("http://127.0.0.1:19872/api/chat/health")
+        with urllib.request.urlopen(request, timeout=0.4) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
         return False
@@ -755,28 +984,87 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
     - reader: 流读取器
     - writer: 流写入器
     """
-    global _backend_process
-    
+    global _backend_process, _CONTROL_ACTIVE_CONNECTIONS
+    origin: str | None = None
+
+    if _CONTROL_ACTIVE_CONNECTIONS >= CONTROL_MAX_CONNECTIONS:
+        await _send_control_json(writer, 503, {"error": "service unavailable"})
+        writer.close()
+        return
+
+    _CONTROL_ACTIVE_CONNECTIONS += 1
     try:
-        raw_request = await reader.readuntil(b"\r\n\r\n")
+        raw_request = await read_request_headers(
+            reader,
+            max_bytes=MAX_HEADER_BYTES,
+            timeout=DEFAULT_HEADER_TIMEOUT,
+        )
         first_line = raw_request.split(b"\r\n")[0].decode()
         parts = first_line.split(" ")
         method = parts[0]
         raw_path = parts[1] if len(parts) > 1 else "/"
         path = urllib.parse.urlsplit(raw_path).path
-        
+        headers = _request_headers(raw_request)
+        origin = headers.get("origin")
+
+        if not _CONTROL_AUTH.origin_allowed(origin):
+            await _send_control_json(writer, 403, {"error": "origin not allowed"})
+            return
+
         if method == "OPTIONS":
             response = "HTTP/1.1 204 No Content\r\n"
-            for k, v in CORS_HEADERS.items():
+            response_headers = {**CORS_HEADERS, **_CONTROL_AUTH.cors_headers(origin)}
+            for k, v in response_headers.items():
                 response += f"{k}: {v}\r\n"
             response += "\r\n"
             writer.write(response.encode())
             await writer.drain()
             return
         # CORS 预检
-        
+
+        if method == "POST" and path == "/auth/session":
+            peer = writer.get_extra_info("peername")
+            peer_host = str(peer[0]) if isinstance(peer, tuple) and peer else ""
+            if not _CONTROL_AUTH.can_bootstrap(peer_host, origin, headers):
+                await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+                return
+            await _send_control_json(
+                writer,
+                200,
+                {"ok": True},
+                origin,
+                {"Set-Cookie": _CONTROL_AUTH.session_cookie()},
+            )
+            return
+
+        if method == "POST" and path == "/auth/logout":
+            if not _CONTROL_AUTH.cookie_authorized(headers):
+                await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+                return
+            _CONTROL_AUTH.revoke_cookie(headers)
+            await _send_control_json(
+                writer,
+                200,
+                {"ok": True},
+                origin,
+                {"Set-Cookie": _CONTROL_AUTH.expired_session_cookie()},
+            )
+            return
+
+        if method == "GET" and not _is_control_api_path(path) and path != "/ui-config.json" and await CONTROL_STATIC_UI.serve(
+            writer,
+            raw_path,
+            headers,
+        ):
+            await writer.drain()
+            return
+
+        if _is_control_api_path(path) and not _CONTROL_AUTH.authorized(headers):
+            await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
+            return
+
         status = 200
-        body: dict[str, Any] = {}
+        body: dict[str, object] = {}
         
         if method == "GET" and path == "/ui-config.json":
             try:
@@ -936,17 +1224,26 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             elif _backend_process is not None and _backend_process.poll() is None:
                 body = {"ok": True, "message": "后端正在启动中"}
             else:
-                old_backend_pid = _read_pid_file(BACKEND_PID_FILE)
-                # 检查是否有其他后端进程
-                if old_backend_pid and _is_process_running(old_backend_pid):
+                old_runtime = _read_backend_runtime()
+                if old_runtime is not None:
+                    old_health = _check_backend_health(old_runtime.host, old_runtime.port)
+                else:
+                    old_health = {}
+                if (
+                    old_runtime is not None
+                    and _runtime_matches(old_runtime, old_health)
+                    and _is_process_running(old_runtime.pid)
+                ):
                     try:
-                        os.kill(old_backend_pid, signal.SIGTERM)
+                        os.kill(old_runtime.pid, signal.SIGTERM)
                         await asyncio.sleep(1)
                     except Exception:
                         pass
-                    # 尝试终止旧进程
+                # 只清理身份可验证的旧后端进程
                 
-                cmd = _get_backend_cmd()
+                backend_host, backend_port = _configured_backend_address()
+                runtime_id = secrets.token_urlsafe(24)
+                cmd = _get_backend_cmd(backend_host, backend_port)
                 # 启动后端
                 
                 startupinfo = None
@@ -960,13 +1257,21 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                     _backend_process = subprocess.Popen(
                         cmd,
                         cwd=str(PROJECT_ROOT),
+                        env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         startupinfo=startupinfo,
                         creationflags=creationflags,
                     )
                     
-                    _write_pid_file(BACKEND_PID_FILE, _backend_process.pid)
+                    _write_backend_runtime(
+                        BackendRuntimeRecord(
+                            _backend_process.pid,
+                            runtime_id,
+                            _connect_host(backend_host),
+                            backend_port,
+                        )
+                    )
                     # 记录后端 PID
                     
                     for _ in range(30):   # 最多等待 15 秒
@@ -991,7 +1296,9 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             _cleanup_backend()
             await asyncio.sleep(1)
             
-            cmd = _get_backend_cmd()
+            backend_host, backend_port = _configured_backend_address()
+            runtime_id = secrets.token_urlsafe(24)
+            cmd = _get_backend_cmd(backend_host, backend_port)
             # 启动
             startupinfo = None
             creationflags = 0
@@ -1004,12 +1311,20 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 _backend_process = subprocess.Popen(
                     cmd,
                     cwd=str(PROJECT_ROOT),
+                    env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     startupinfo=startupinfo,
                     creationflags=creationflags,
                 )
-                _write_pid_file(BACKEND_PID_FILE, _backend_process.pid)
+                _write_backend_runtime(
+                    BackendRuntimeRecord(
+                        _backend_process.pid,
+                        runtime_id,
+                        _connect_host(backend_host),
+                        backend_port,
+                    )
+                )
                 body = {"ok": True, "message": "后端重启中"}
             except Exception as e:
                 body = {"ok": False, "error": str(e)}
@@ -1023,7 +1338,8 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             response = f"HTTP/1.1 {status} OK\r\n"
             response += "Content-Type: application/json\r\n"
             response += f"Content-Length: {len(response_body)}\r\n"
-            for k, v in CORS_HEADERS.items():
+            response_headers = {**CORS_HEADERS, **_CONTROL_AUTH.cors_headers(origin)}
+            for k, v in response_headers.items():
                 response += f"{k}: {v}\r\n"
             response += "\r\n"
             
@@ -1040,7 +1356,7 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 config_data = load_config_document(CONFIG_PATH)
                 body = {
                     "ok": True,
-                    "config": config_data,
+                    "config": redact_config_document(config_data),
                     "path": str(CONFIG_PATH),
                     "exists": CONFIG_PATH.exists(),
                 }
@@ -1050,11 +1366,14 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
         
         elif method == "PUT" and path == "/config":
             try:
-                config_data = save_config_document(CONFIG_PATH, await _read_json_body(reader, raw_request))
+                current_config = load_config_document(CONFIG_PATH)
+                submitted_config = await _read_json_body(reader, raw_request)
+                merged_config = merge_masked_secrets(current_config, submitted_config)
+                config_data = save_config_document(CONFIG_PATH, merged_config)
                 body = {
                     "ok": True,
                     "message": "配置已保存",
-                    "config": config_data,
+                    "config": redact_config_document(config_data),
                     "path": str(CONFIG_PATH),
                     "exists": True,
                 }
@@ -1068,7 +1387,7 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 body = {
                     "ok": True,
                     "message": "默认配置已创建",
-                    "config": config_data,
+                    "config": redact_config_document(config_data),
                     "path": str(CONFIG_PATH),
                     "exists": True,
                 }
@@ -1079,7 +1398,7 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
         elif method == "POST" and path == "/config/validate":
             try:
                 config_data = validate_config_document(await _read_json_body(reader, raw_request))
-                body = {"ok": True, "config": config_data}
+                body = {"ok": True, "config": redact_config_document(config_data)}
             except (json.JSONDecodeError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
@@ -1088,7 +1407,11 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             try:
                 config_data = load_config_document(CONFIG_PATH)
                 platforms = validate_platforms(config_data.get("platforms", []))
-                body = {"ok": True, "platforms": platforms, "exists": CONFIG_PATH.exists()}
+                body = {
+                    "ok": True,
+                    "platforms": redact_config_document(platforms),
+                    "exists": CONFIG_PATH.exists(),
+                }
             except (OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
@@ -1097,9 +1420,14 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             try:
                 payload = await _read_json_body(reader, raw_request)
                 config_data = load_config_document(CONFIG_PATH)
-                config_data["platforms"] = upsert_platform(config_data.get("platforms", []), payload)
+                safe_payload = merge_masked_secrets({}, payload)
+                config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
                 saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已创建"}
+                body = {
+                    "ok": True,
+                    "platforms": redact_config_document(saved_config["platforms"]),
+                    "message": "平台已创建",
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
@@ -1109,13 +1437,23 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 original_id = urllib.parse.unquote(path.removeprefix("/config/platforms/"))
                 payload = await _read_json_body(reader, raw_request)
                 config_data = load_config_document(CONFIG_PATH)
+                current_platforms = validate_platforms(config_data.get("platforms", []))
+                current_platform = next(
+                    (item for item in current_platforms if item["id"] == original_id),
+                    {},
+                )
+                safe_payload = merge_masked_secrets(current_platform, payload)
                 config_data["platforms"] = upsert_platform(
-                    config_data.get("platforms", []),
-                    payload,
+                    current_platforms,
+                    safe_payload,
                     original_id=original_id,
                 )
                 saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已更新"}
+                body = {
+                    "ok": True,
+                    "platforms": redact_config_document(saved_config["platforms"]),
+                    "message": "平台已更新",
+                }
             except (json.JSONDecodeError, OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
@@ -1126,7 +1464,11 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
                 config_data = load_config_document(CONFIG_PATH)
                 config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
                 saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {"ok": True, "platforms": saved_config["platforms"], "message": "平台已删除"}
+                body = {
+                    "ok": True,
+                    "platforms": redact_config_document(saved_config["platforms"]),
+                    "message": "平台已删除",
+                }
             except (OSError, ValueError) as e:
                 body = {"ok": False, "error": str(e)}
                 status = 400
@@ -1617,30 +1959,14 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
         # 接口: GET /config/session/discovery - 冷扫描会话类
         # 接口: POST /config/session/discovery/directories - 冷创建会话扫描目录
         
-        response_body = json.dumps(body).encode()
-        # 发送响应
-        response = f"HTTP/1.1 {status} OK\r\n"
-        response += "Content-Type: application/json\r\n"
-        response += f"Content-Length: {len(response_body)}\r\n"
-        for k, v in CORS_HEADERS.items():
-            response += f"{k}: {v}\r\n"
-        response += "\r\n"
+        await _send_control_json(writer, status, body, origin)
         
-        writer.write(response.encode() + response_body)
-        await writer.drain()
-        
-    except Exception as e:
-        error_body = json.dumps({"error": str(e)}).encode()
-        # 发送错误响应
-        response = f"HTTP/1.1 500 Internal Server Error\r\n"
-        response += "Content-Type: application/json\r\n"
-        response += f"Content-Length: {len(error_body)}\r\n"
-        for k, v in CORS_HEADERS.items():
-            response += f"{k}: {v}\r\n"
-        response += "\r\n"
-        writer.write(response.encode() + error_body)
-        await writer.drain()
+    except HTTPRequestError as error:
+        await _send_control_json(writer, error.status, {"error": error.message}, origin)
+    except Exception:
+        await _send_control_json(writer, 500, {"error": "internal server error"}, origin)
     finally:
+        _CONTROL_ACTIVE_CONNECTIONS -= 1
         writer.close()
 
 
@@ -1652,6 +1978,9 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     - host: 主机
     - port: 端口
     """
+    global _CONTROL_AUTH
+    _CONTROL_AUTH = ServerAuth.create(host, port, session_namespace="control")
+
     # 检查单实例
     if not _check_single_instance():
         print("Control server is already running")
@@ -1668,7 +1997,12 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
         signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     # 注册信号处理
     
-    server = await asyncio.start_server(_handle_request, host, port)
+    server = await asyncio.start_server(
+        _handle_request,
+        host,
+        port,
+        limit=MAX_HEADER_BYTES + 4,
+    )
     print(f"Backend control server running at http://{host}:{port}")
     print("Endpoints:")
     print("  GET  /status   - Get backend status")

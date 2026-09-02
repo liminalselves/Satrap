@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any, cast
@@ -11,6 +12,130 @@ import yaml
 
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
+
+
+MASKED_SECRET = "********"
+_SECRET_FIELD_NAMES = {
+    "access_token",
+    "api_key",
+    "api_secret",
+    "api_token",
+    "authorization",
+    "bot_token",
+    "credential",
+    "misskey_token",
+    "password",
+    "passwd",
+    "private_key",
+    "secret",
+    "token",
+}
+
+
+def is_secret_field(name: str) -> bool:
+    """
+    按字段名识别配置凭据, 避免把 max_tokens 等普通字段误判为密钥
+
+    参数:
+    - name: 配置字段名
+
+    返回:
+    - 字段用于保存凭据时返回 True
+    """
+    normalized = name.strip().lower().replace("-", "_")
+    return normalized in _SECRET_FIELD_NAMES or normalized.endswith((
+        "_access_token",
+        "_api_key",
+        "_api_secret",
+        "_api_token",
+        "_credential",
+        "_password",
+        "_private_key",
+        "_secret",
+        "_token",
+    ))
+
+
+def is_masked_secret(value: object) -> bool:
+    """
+    判断字符串是否为服务端返回的脱敏占位值
+
+    参数:
+    - value: 待检查配置值
+
+    返回:
+    - 值符合脱敏占位格式时返回 True
+    """
+    return isinstance(value, str) and re.fullmatch(r"\*{4,}[^*]*", value) is not None
+
+
+def redact_config_document(data: object) -> object:
+    """
+    递归复制配置并对所有已知凭据字段脱敏
+
+    参数:
+    - data: 任意配置文档节点
+
+    返回:
+    - 保持原有容器形态且凭据已脱敏的副本
+    """
+    if isinstance(data, dict):
+        output: dict[str, object] = {}
+        for raw_key, value in cast(dict[object, object], data).items():
+            key = str(raw_key)
+            if is_secret_field(key) and value not in (None, ""):
+                output[key] = MASKED_SECRET
+            else:
+                output[key] = redact_config_document(value)
+        return output
+    if isinstance(data, list):
+        return [redact_config_document(item) for item in cast(list[object], data)]
+    return data
+
+
+def merge_masked_secrets(existing: object, submitted: object, field_name: str = "") -> object:
+    """
+    把提交数据中的脱敏占位值替换为已有密钥, 其他值按用户输入保存
+
+    参数:
+    - existing: 当前持久化配置节点
+    - submitted: 用户提交的配置节点
+    - field_name: 当前节点字段名, 根节点默认为空字符串
+
+    返回:
+    - 保留被遮罩凭据并合并其他提交值后的配置节点
+    """
+    if is_secret_field(field_name) and is_masked_secret(submitted):
+        if existing is None or is_masked_secret(existing):
+            raise ValueError(f"字段 {field_name} 缺少可保留的原始凭据")
+        return existing
+    if isinstance(submitted, dict):
+        existing_dict = cast(dict[str, object], existing) if isinstance(existing, dict) else {}
+        return {
+            str(key): merge_masked_secrets(existing_dict.get(str(key)), value, str(key))
+            for key, value in cast(dict[object, object], submitted).items()
+        }
+    if isinstance(submitted, list):
+        existing_list = cast(list[object], existing) if isinstance(existing, list) else []
+        existing_by_id: dict[str, object] = {}
+        for item in existing_list:
+            if not isinstance(item, dict):
+                continue
+            item_dict = cast(dict[object, object], item)
+            item_id = item_dict.get("id")
+            if item_id is not None:
+                existing_by_id[str(item_id)] = item
+        merged: list[object] = []
+        for index, item in enumerate(cast(list[object], submitted)):
+            previous = existing_list[index] if index < len(existing_list) else None
+            if isinstance(item, dict):
+                item_dict = cast(dict[object, object], item)
+                item_id = item_dict.get("id")
+                if item_id is not None:
+                    previous = existing_by_id.get(str(item_id), previous)
+            merged.append(merge_masked_secrets(previous, cast(object, item), field_name))
+        return merged
+    return submitted
 
 
 def find_config_path(cwd: str | Path | None = None) -> Path:

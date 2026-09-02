@@ -119,7 +119,12 @@ class BackendHTTPServer(MiniHTTPServer):
         - port: 监听端口
         - static_dir: 前端静态文件目录
         """
-        super().__init__(host=host, port=port, log_errors=False)
+        super().__init__(
+            host=host,
+            port=port,
+            log_errors=False,
+            session_namespace="backend",
+        )
         self.backend = backend
         self._static_ui = SPAStaticService(
             static_dir or STATIC_DIR,
@@ -285,7 +290,8 @@ class BackendHTTPServer(MiniHTTPServer):
         # 接口: GET /ui-config.json
 
         if method == "GET" and path == "/api/health":
-            return 200, await backend.health()
+            health = await backend.health()
+            return (200 if health.get("healthy", False) else 503), health
         # 接口: GET /api/health
 
         if method == "POST" and path == "/api/config/reload":
@@ -934,6 +940,8 @@ class BackendHTTPServer(MiniHTTPServer):
                     if user_id:
                         return 200, user_api.get_user(user_db, user_id)
                     limit = int(self._query_param(path, "limit") or "200")
+                    if not 1 <= limit <= 1000:
+                        return 400, {"error": "limit 必须在 1 到 1000 之间"}
                     return 200, user_api.list_users(user_db, limit=limit)
                 if method == "GET" and path.startswith("/api/user/sessions"):
                     user_id = self._query_param(path, "user_id")

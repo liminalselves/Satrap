@@ -19,6 +19,20 @@ $env:PYTHONUTF8 = "1"
 $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
 $DataDir = Join-Path $ProjectRoot ".satrap"
 
+function Get-SatrapAuthHeaders {
+    $token = $env:SATRAP_API_TOKEN
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $tokenPath = Join-Path $DataDir "api-token"
+        if (Test-Path -LiteralPath $tokenPath) {
+            $token = (Get-Content -Raw -Encoding UTF8 -LiteralPath $tokenPath).Trim()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return @{}
+    }
+    return @{ Authorization = "Bearer $token" }
+}
+
 if ($Detach) {
     if ($StopFrontend) {
         $frontendPort = 5173
@@ -131,7 +145,7 @@ function Stop-ServiceInstance {
 
     if ($ownsPort -and $Service.StopBackend) {
         try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:19871/stop" -Method Post -TimeoutSec 5 | Out-Null
+            Invoke-RestMethod -Uri "http://127.0.0.1:19871/stop" -Method Post -Headers (Get-SatrapAuthHeaders) -TimeoutSec 5 | Out-Null
         } catch {
             Write-Host "  $($Service.Name)未能通过接口停止平台后端, 将继续清理服务进程" -ForegroundColor DarkYellow
         }
@@ -139,7 +153,7 @@ function Stop-ServiceInstance {
 
     if ($ownsPort) {
         try {
-            Invoke-RestMethod -Uri "http://127.0.0.1:$($Service.Port)/shutdown" -Method Post -TimeoutSec 2 | Out-Null
+            Invoke-RestMethod -Uri "http://127.0.0.1:$($Service.Port)/shutdown" -Method Post -Headers (Get-SatrapAuthHeaders) -TimeoutSec 2 | Out-Null
         } catch {}
     }
 
@@ -158,7 +172,7 @@ function Wait-ServiceHealth {
         }
 
         try {
-            Invoke-RestMethod -Uri $Service.HealthUrl -Method Get -TimeoutSec 5 | Out-Null
+            Invoke-RestMethod -Uri $Service.HealthUrl -Method Get -Headers (Get-SatrapAuthHeaders) -TimeoutSec 5 | Out-Null
             return
         } catch {
             Start-Sleep -Milliseconds 500

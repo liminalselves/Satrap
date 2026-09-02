@@ -6,11 +6,31 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$utf8 = [Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$env:PYTHONIOENCODING = "utf-8"
+$env:PYTHONUTF8 = "1"
 
 # 项目根目录 (脚本位于 scripts 子目录)
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $ProjectRoot = Split-Path -Parent $ScriptDir
 $DataDir = Join-Path $ProjectRoot ".satrap"
+
+function Get-SatrapAuthHeaders {
+    $token = $env:SATRAP_API_TOKEN
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        $tokenPath = Join-Path $DataDir "api-token"
+        if (Test-Path -LiteralPath $tokenPath) {
+            $token = (Get-Content -Raw -Encoding UTF8 -LiteralPath $tokenPath).Trim()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($token)) {
+        return @{}
+    }
+    return @{ Authorization = "Bearer $token" }
+}
 
 # 确保数据目录存在
 if (-not (Test-Path $DataDir)) {
@@ -34,7 +54,7 @@ function Stop-SatrapServices {
     
     # 通过控制服务 API 停止
     try {
-        Invoke-RestMethod -Uri "http://127.0.0.1:19871/shutdown" -Method Post -TimeoutSec 2 | Out-Null
+        Invoke-RestMethod -Uri "http://127.0.0.1:19871/shutdown" -Method Post -Headers (Get-SatrapAuthHeaders) -TimeoutSec 2 | Out-Null
     } catch {}
     
     Start-Sleep -Milliseconds 500
@@ -109,7 +129,15 @@ Set-Location '$frontendDir'
 `$cleanup = {
     Write-Host "`nStopping backend service..." -ForegroundColor Yellow
     try {
-        Invoke-RestMethod -Uri 'http://127.0.0.1:19871/stop' -Method Post -TimeoutSec 2 | Out-Null
+        `$token = `$env:SATRAP_API_TOKEN
+        if ([string]::IsNullOrWhiteSpace(`$token)) {
+            `$tokenPath = Join-Path '$DataDir' 'api-token'
+            if (Test-Path -LiteralPath `$tokenPath) {
+                `$token = (Get-Content -Raw -Encoding UTF8 -LiteralPath `$tokenPath).Trim()
+            }
+        }
+        `$headers = if ([string]::IsNullOrWhiteSpace(`$token)) { @{} } else { @{ Authorization = "Bearer `$token" } }
+        Invoke-RestMethod -Uri 'http://127.0.0.1:19871/stop' -Method Post -Headers `$headers -TimeoutSec 2 | Out-Null
         Write-Host "Backend stopped" -ForegroundColor Green
     } catch {}
 }

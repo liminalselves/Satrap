@@ -7,6 +7,8 @@ Satrap 后端服务组件的统一编排器
 from __future__ import annotations
 
 import asyncio
+import os
+import secrets
 import signal
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -68,6 +70,8 @@ class BackendConfig:
     session_classes: Dict[str, str] = field(default_factory=dict[str, str])
     # Session 类注册 (name -> class_path)
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
+    workspace_roots: List[str] = field(default_factory=lambda: ["."])
+    # Chat 项目允许浏览和绑定的工作区根目录
 
     api_host: str = "127.0.0.1"
     # HTTP API 配置
@@ -129,6 +133,7 @@ class BackendConfig:
             error_feedback=cls._as_bool(data.get("error_feedback", True)),
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
+            workspace_roots=list(data.get("workspace_roots", ["."])),
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
@@ -178,8 +183,14 @@ class BackendManager:
 
         self._http_server: BackendHTTPServer | None = None
         self._dispatch_task: asyncio.Task[Any] | None = None
+        self._dispatch_state = "stopped"
+        self._dispatch_last_error: str | None = None
+        self._dispatch_restart_count = 0
+        self._dispatch_restart_base_delay = 1.0
+        self._dispatch_restart_max_delay = 30.0
         self._shutdown_event: asyncio.Event | None = None
         self._running = False
+        self._runtime_id = os.environ.get("SATRAP_BACKEND_RUNTIME_ID") or secrets.token_urlsafe(24)
 
     # ---------- 属性访问 ----------
 
@@ -417,7 +428,7 @@ class BackendManager:
             self._edictum_cfg.reload()
         edictum_results = await self.reconcile_edictum_runtime_async()
         for session_manager, _ in self._platform_runtimes.values():
-            session_manager.reload_model_configs()
+            await session_manager.reload_model_configs_async()
         logger.info("[BackendManager] 配置已重载")
         return {
             "ok": all(item.get("ok", False) for item in edictum_results),
@@ -583,6 +594,7 @@ class BackendManager:
     async def stop(self):
         """优雅关闭: 逆序停止"""
         self._running = False
+        self._dispatch_state = "stopping"
 
         if self._http_server:
             await self._http_server.stop()
@@ -593,6 +605,7 @@ class BackendManager:
                 await self._dispatch_task
             except (asyncio.CancelledError, Exception):
                 pass
+        self._dispatch_state = "stopped"
 
         if self._adapter_mgr:
             try:
@@ -640,8 +653,15 @@ class BackendManager:
                         ),
                     }
 
+        dispatch_task_running = self._dispatch_task is not None and not self._dispatch_task.done()
+        dispatch_healthy = self._dispatcher is None or (
+            self._dispatch_state == "running" and dispatch_task_running
+        )
         return {
             "running": self._running,
+            "healthy": self._running and dispatch_healthy,
+            "pid": os.getpid(),
+            "runtime_id": self._runtime_id,
             "model_config": self._model_cfg is not None,
             "session_class_config": self._session_cls_cfg is not None,
             "edictum_config": self._edictum_cfg is not None,
@@ -650,6 +670,12 @@ class BackendManager:
             "pipeline": self._scheduler is not None,
             "adapters": adapters,
             "platform_count": len(self._adapter_mgr.list_adapters()) if self._adapter_mgr else 0,
+            "dispatch": {
+                "status": self._dispatch_state,
+                "healthy": dispatch_healthy,
+                "restart_count": self._dispatch_restart_count,
+                "last_error": self._dispatch_last_error,
+            },
         }
 
     # ---------- 内部初始化 ----------
@@ -898,8 +924,9 @@ class BackendManager:
                 manager=self._adapter_mgr,
                 scheduler=self._scheduler,
             )
-            self._dispatch_task = asyncio.create_task(self._dispatch_loop())
             self._running = True
+            self._dispatch_state = "running"
+            self._dispatch_task = asyncio.create_task(self._dispatch_loop())
             logger.info("[BackendManager] EventDispatcher 已启动")
         # 启动事件分发
 
@@ -913,12 +940,29 @@ class BackendManager:
         await self._http_server.start()
         logger.info(f"[BackendManager] HTTP API 服务: http://{self.config.api_host}:{self.config.api_port}")
 
-    async def _dispatch_loop(self):
-        """包装 EventDispatcher.dispatch_loop() 以便异常捕获"""
-        try:
-            if self._dispatcher:
+    async def _dispatch_loop(self) -> None:
+        """监督事件分发循环并在异常退出后自动重启"""
+        restart_delay = self._dispatch_restart_base_delay
+        while self._running and self._dispatcher is not None:
+            self._dispatch_state = "running"
+            try:
                 await self._dispatcher.dispatch_loop()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"[BackendManager] 事件分发循环异常: {e}")
+                if not self._running:
+                    break
+                raise RuntimeError("事件分发循环意外退出")
+            except asyncio.CancelledError:
+                self._dispatch_state = "stopped"
+                raise
+            except Exception as error:
+                self._dispatch_last_error = str(error)
+                self._dispatch_restart_count += 1
+                self._dispatch_state = "restarting"
+                logger.error(
+                    f"[BackendManager] 事件分发循环异常, 将在 {restart_delay:.1f} 秒后重启: {error}"
+                )
+                await asyncio.sleep(restart_delay)
+                restart_delay = min(
+                    restart_delay * 2,
+                    self._dispatch_restart_max_delay,
+                )
+        self._dispatch_state = "stopped"
