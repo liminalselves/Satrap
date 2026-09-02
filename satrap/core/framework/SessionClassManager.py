@@ -7,15 +7,20 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import inspect
 import json
 import os
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional, Type, cast
 
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.core.framework.session_discovery import ensure_session_scan_paths
+from satrap.core.framework.session_discovery import (
+    build_session_module_catalog,
+    ensure_session_scan_paths,
+)
 from satrap.core.log import logger
 from satrap.core.utils.paths import get_data_dir
 
@@ -53,6 +58,7 @@ class SessionClassConfigManager:
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self.session_scan_paths = list(session_scan_paths or [".satrap/session"])
         ensure_session_scan_paths(self.session_scan_paths)
+        self._builtin_package_root = Path(__file__).resolve().parents[2]
 
         self._configs: Dict[str, Dict[str, Any]] = {}
         self._class_cache: Dict[str, Type[Session] | Type[AsyncSession]] = {}
@@ -146,8 +152,59 @@ class SessionClassConfigManager:
         return template
 
     # ---------- class 导入 ----------
-    @staticmethod
-    def _load_class(class_path: str) -> Type[Session] | Type[AsyncSession]:
+    def _trusted_module_source(self, class_path: str) -> tuple[str, str, Path]:
+        """
+        校验类路径是否属于内置包或已配置的会话扫描目录
+
+        参数:
+        - class_path: 类路径
+
+        返回:
+        - tuple[str, str, Path]: 模块名, 类名和可信源码路径
+        """
+        try:
+            module_path, class_name = class_path.rsplit(".", 1)
+        except ValueError as e:
+            raise ValueError("class_path 必须是完整类路径") from e
+        if not module_path or not class_name:
+            raise ValueError("class_path 必须是完整类路径")
+
+        catalog = build_session_module_catalog(self.session_scan_paths)
+        expected_source = catalog.get(module_path)
+        is_builtin = expected_source is None and module_path.startswith("satrap.")
+        if is_builtin:
+            try:
+                spec = importlib.util.find_spec(module_path)
+            except (ImportError, AttributeError, ValueError) as e:
+                raise ValueError(f"无法解析内置会话模块: {module_path}") from e
+            origin = spec.origin if spec is not None else None
+            if not origin:
+                raise ValueError(f"无法解析内置会话模块: {module_path}")
+            expected_source = Path(origin).resolve()
+            if not expected_source.is_relative_to(self._builtin_package_root):
+                raise ValueError(f"会话类模块不在可信代码根中: {module_path}")
+        if expected_source is None:
+            raise ValueError(f"会话类模块不在可信代码根中: {module_path}")
+
+        loaded_module = sys.modules.get(module_path)
+        loaded_source = getattr(loaded_module, "__file__", None)
+        if loaded_module is not None and (
+            not loaded_source or Path(loaded_source).resolve() != expected_source
+        ):
+            raise ValueError(f"已加载的会话类模块来源与可信代码根不一致: {module_path}")
+
+        if not is_builtin:
+            parent_name, _, _ = module_path.rpartition(".")
+            loaded_parent = sys.modules.get(parent_name) if parent_name else None
+            parent_paths = getattr(loaded_parent, "__path__", None)
+            if loaded_parent is not None and (
+                parent_paths is None
+                or not any(Path(path).resolve() == expected_source.parent for path in parent_paths)
+            ):
+                raise ValueError(f"已加载的会话模块包来源与可信代码根不一致: {parent_name}")
+        return module_path, class_name, expected_source
+
+    def _load_class(self, class_path: str) -> Type[Session] | Type[AsyncSession]:
         """
         动态导入 class
 
@@ -157,12 +214,17 @@ class SessionClassConfigManager:
         返回:
         - Type[Session] | Type[AsyncSession]: 动态导入 class
         """
+        module_path, class_name, expected_source = self._trusted_module_source(class_path)
         try:
-            module_path, class_name = class_path.rsplit(".", 1)
             module = importlib.import_module(module_path)
             cls = getattr(module, class_name)   # 动态类加载, 类名运行时决定, 保留裸 getattr
             if not inspect.isclass(cls) or not issubclass(cls, (Session, AsyncSession)):
                 raise ValueError(f"{class_path} 不是 Session/AsyncSession 子类")
+            if cls.__module__ != module_path:
+                raise ValueError(f"{class_path} 不是模块内声明的会话类")
+            source = inspect.getsourcefile(cls)
+            if source is None or Path(source).resolve() != expected_source:
+                raise ValueError(f"{class_path} 的源码不在可信代码根中")
             return cls
         except (ImportError, AttributeError, ValueError) as e:
             raise ValueError(f"导入 class 失败: {class_path}, 错误: {e}") from e
@@ -333,6 +395,7 @@ class SessionClassConfigManager:
             key = self._normalize_name(name)
             if key in self._configs:
                 raise ValueError(f"会话类配置名称已存在: {key}")
+            self._trusted_module_source(class_path)
             self._configs[key] = {
                 "class_path": class_path,
                 "is_async": is_async,
@@ -622,6 +685,7 @@ class SessionClassConfigManager:
             entry["params"] = dict(entry.get("params", {}))
             original_class_path = str(entry.get("class_path", ""))
             if class_path is not None:
+                self._trusted_module_source(class_path)
                 entry["class_path"] = class_path
             if is_async is not None:
                 entry["is_async"] = is_async

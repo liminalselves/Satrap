@@ -8,6 +8,7 @@ satrap_coding 命令闸门: shell 命令风险分级
 from __future__ import annotations
 
 import re
+import shlex
 
 from satrap.core.log import logger
 
@@ -28,7 +29,7 @@ _READ_COMMANDS = {
     "get-command", "gcm", "get-alias", "gal",
     # cmd 命令
     "tree", "attrib", "vol", "ipconfig", "netstat", "ping", "tasklist",
-    "systeminfo", "reg",   # reg query 只读, 其他高危 (细粒度见下)
+    "systeminfo",
 }
 
 _WRITE_COMMANDS = {
@@ -53,7 +54,7 @@ _HIGH_COMMANDS = {
     "stop-computer", "regedit", "sc",   # 服务控制
     "setx", "reset", "takeown", "icacls", "cacls", "attrib",   # attrib 只读时其实无害, 保守
     "git",   # push/reset/clean 等破坏性 (细粒度见下)
-    "net",   # user/group 管理
+    "net", "reg",   # 注册表仅 reg query 降级为只读
 }
 
 _FORBIDDEN_PATTERNS = [
@@ -197,10 +198,21 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
         if pattern.search(text):
             return RiskLevel.FORBIDDEN, False
 
-    tokens = [t for t in text.split() if t]
+    tokens = _tokenize_segment(text)
     if not tokens:
         return RiskLevel.READ, False
-    head = tokens[0].lower().strip('"').strip("'")
+    head = _normalize_token(tokens[0]).lower()
+
+    nested = _classify_nested_shell(head, tokens)
+    if nested is not None:
+        return nested
+
+    if head in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+        if _has_encoded_command(tokens[1:]):
+            return RiskLevel.FORBIDDEN, False
+
+    if head in {"remove-item", "ri"} and _is_recursive_absolute_delete(tokens[1:]):
+        return RiskLevel.FORBIDDEN, False
 
     if head in _ENV_MODIFY_SUBCOMMANDS:
         if _is_env_modify(tokens):
@@ -210,6 +222,8 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
         if head == "git":
             return _classify_git(tokens[1:]), False
         if head == "sc" and len(tokens) > 1 and tokens[1].lower() in ("query", "queryex"):
+            return RiskLevel.READ, False
+        if head == "reg" and len(tokens) > 1 and _normalize_token(tokens[1]).lower() == "query":
             return RiskLevel.READ, False
         return RiskLevel.HIGH, False
     if head in _WRITE_COMMANDS:
@@ -222,6 +236,113 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
         return RiskLevel.READ, False
     logger.debug(f"[satrap_coding] 未匹配命令表, 保守归 WRITE: {head}")
     return RiskLevel.WRITE, False
+
+
+def _tokenize_segment(text: str) -> list[str]:
+    """
+    将单段 shell 文本拆分为近似参数列表
+
+    参数:
+    - text: 不含顶层命令分隔符的 shell 文本
+
+    返回:
+    - 参数列表; 引号不完整或语法无法解析时回退到空白分割结果
+    """
+    try:
+        return [token for token in shlex.split(text, posix=False) if token]
+    except ValueError:
+        return [token for token in text.split() if token]
+
+
+def _normalize_token(token: str) -> str:
+    """
+    去除参数外围成对引号
+
+    参数:
+    - token: 原始 shell 参数
+
+    返回:
+    - 去除一层成对引号后的参数
+    """
+    value = token.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        return value[1:-1]
+    return value
+
+
+def _has_encoded_command(arguments: list[str]) -> bool:
+    """
+    判断 PowerShell 参数是否使用 EncodedCommand
+
+    参数:
+    - arguments: PowerShell 命令参数
+
+    返回:
+    - 如果命中 EncodedCommand 或其常用缩写则返回 True
+    """
+    full_name = "encodedcommand"
+    for argument in arguments:
+        name = _normalize_token(argument).lstrip("-/").lower()
+        if len(name) >= 1 and full_name.startswith(name):
+            return True
+    return False
+
+
+def _classify_nested_shell(
+    head: str,
+    tokens: list[str],
+) -> tuple[RiskLevel, bool] | None:
+    """
+    递归分类 cmd 与 PowerShell 包装器中的内层命令
+
+    参数:
+    - head: 已归一化的首个命令参数
+    - tokens: 当前命令的完整参数列表
+
+    返回:
+    - 内层命令的分类结果; 当前命令不是可解析包装器时返回 None
+    """
+    normalized = [_normalize_token(token) for token in tokens]
+    if head in {"cmd", "cmd.exe"}:
+        for index, token in enumerate(normalized[1:], start=1):
+            if token.lower() in {"/c", "/k"} and index + 1 < len(normalized):
+                return classify_command(" ".join(normalized[index + 1:]))
+        return None
+
+    if head not in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
+        return None
+    if _has_encoded_command(tokens[1:]):
+        return RiskLevel.FORBIDDEN, False
+    full_name = "command"
+    for index, token in enumerate(normalized[1:], start=1):
+        option = token.lstrip("-/").lower()
+        if len(option) >= 1 and full_name.startswith(option) and index + 1 < len(normalized):
+            return classify_command(" ".join(normalized[index + 1:]))
+    return None
+
+
+def _is_recursive_absolute_delete(arguments: list[str]) -> bool:
+    """
+    判断 Remove-Item 是否递归删除绝对路径
+
+    参数:
+    - arguments: Remove-Item 参数
+
+    返回:
+    - 同时包含递归参数和绝对路径时返回 True
+    """
+    normalized = [_normalize_token(argument) for argument in arguments]
+    has_recursive = any(
+        argument.lower() in {"-recurse", "-r", "-rf"}
+        for argument in normalized
+    )
+    has_absolute = any(
+        re.match(r"^[a-zA-Z]:[\\/]", argument) is not None
+        or argument.startswith("\\\\")
+        or argument.startswith("/")
+        for argument in normalized
+    )
+    return has_recursive and has_absolute
 
 
 def _is_env_modify(tokens: list[str]) -> bool:

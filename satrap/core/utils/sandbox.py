@@ -1,4 +1,5 @@
 """受限代码执行环境与沙箱路径安全检查"""
+from pathlib import Path
 from typing import Dict, Any
 import subprocess
 import shutil
@@ -9,16 +10,18 @@ from satrap.core.log import logger
 
 class CodeSandbox:
     """代码沙箱执行器, 在指定目录和 Python 环境中运行代码"""
-    def __init__(self, sandbox_path: str, env: str):
+    def __init__(self, sandbox_path: str, env: str, execution_timeout: float = 30.0):
         """
         初始化沙箱
 
         参数:
         - sandbox_path: 沙箱根目录 (绝对或相对路径)
         - env: Python 解释器路径 (例如 '/usr/bin/python3' 或虚拟环境中的 python)
+        - execution_timeout: 单次代码执行超时秒数
         """
-        self.sandbox_path = os.path.abspath(sandbox_path)
+        self.sandbox_path = str(Path(sandbox_path).resolve())
         self.python_executable = env
+        self.execution_timeout = max(0.1, float(execution_timeout))
         # 确保沙箱目录存在
 
         os.makedirs(self.sandbox_path, exist_ok=True)
@@ -33,15 +36,14 @@ class CodeSandbox:
         返回:
         - str: 安全地将路径连接到沙箱根目录, 防止路径遍历攻击
         """
-        abs_path = os.path.abspath(os.path.join(self.sandbox_path, *paths))
-        real_sandbox = os.path.realpath(self.sandbox_path)
-        real_target = os.path.realpath(abs_path)
-
-        if not real_target.startswith(real_sandbox + os.sep) and real_target != real_sandbox:
-            return self.sandbox_path   # 默认返回沙箱根目录
-        # 如果目标路径不在沙箱内, 回退到沙箱根目录
-
-        return abs_path
+        root = Path(self.sandbox_path).resolve()
+        target = Path(paths[0]) if paths else Path()
+        for part in paths[1:]:
+            target /= part
+        candidate = target.resolve() if target.is_absolute() else (root / target).resolve()
+        if not candidate.is_relative_to(root):
+            raise ValueError(f"路径越出沙箱范围: {target}")
+        return str(candidate)
 
     def _run_python(self, args: list[str], cwd: str | None = None) -> Dict[str, Any]:
         """
@@ -60,12 +62,20 @@ class CodeSandbox:
                 cwd=cwd or self.sandbox_path,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
+                timeout=self.execution_timeout,
             )
             return {
                 'stdout': result.stdout,
                 'stderr': result.stderr,
                 'returncode': result.returncode
+            }
+        except subprocess.TimeoutExpired:
+            logger.warning(f"[代码沙箱] 执行超时: {self.execution_timeout} 秒")
+            return {
+                'stdout': '',
+                'stderr': f"执行超时: 超过 {self.execution_timeout} 秒",
+                'returncode': -4,
             }
         except FileNotFoundError:
             logger.error(f"[代码沙箱] Python 解释器未找到: {self.python_executable}")
@@ -121,7 +131,7 @@ class CodeSandbox:
         - code: 要保存的代码字符串
         - path: 相对于沙箱根目录的文件路径
         """
-        abs_path = os.path.join(self.sandbox_path, path)
+        abs_path = self._safe_join(path)
         os.makedirs(os.path.dirname(abs_path), exist_ok=True)   # 确保父目录存在
         with open(abs_path, 'w', encoding='utf-8') as f:
             f.write(code)
@@ -134,10 +144,12 @@ class CodeSandbox:
         - path: 相对于沙箱根目录的文件路径
         """
         abs_path = self._safe_join(path)
+        if Path(abs_path) == Path(self.sandbox_path):
+            raise PermissionError("禁止删除沙箱根目录")
         if not os.path.exists(abs_path):
-            logger.error(f"[代码沙箱] 删除文件不存在: {abs_path}")
+            raise FileNotFoundError(f"删除文件不存在: {abs_path}")
         if os.path.isdir(abs_path):
-            logger.error(f"[代码沙箱] 路径是目录, 请使用删除目录的方法: {abs_path}")
+            raise IsADirectoryError(f"路径是目录, 请使用删除目录的方法: {abs_path}")
         os.remove(abs_path)
 
     def delete_directory(self, path: str, recursive: bool = True) -> None:
@@ -148,11 +160,23 @@ class CodeSandbox:
         - path: 相对于沙箱根目录的目录路径
         - recursive: 是否递归删除非空目录, 如果为 False, 只能删除空目录; 为 True 则删除整个目录树
         """
+        raw_path = Path(path)
+        raw_target = raw_path if raw_path.is_absolute() else Path(self.sandbox_path) / raw_path
+        raw_target = Path(os.path.abspath(raw_target))
+        root = Path(self.sandbox_path)
+        if not raw_target.is_relative_to(root):
+            raise ValueError(f"路径越出沙箱范围: {path}")
+        if raw_target == root:
+            raise PermissionError("禁止删除沙箱根目录")
+        if raw_target.is_symlink():
+            raw_target.unlink()
+            return
+
         abs_path = self._safe_join(path)
         if not os.path.exists(abs_path):
-            logger.error(f"[代码沙箱] 删除目录不存在: {abs_path}")
+            raise FileNotFoundError(f"删除目录不存在: {abs_path}")
         if not os.path.isdir(abs_path):
-            logger.error(f"[代码沙箱] 删除路径不是目录: {abs_path}")
+            raise NotADirectoryError(f"删除路径不是目录: {abs_path}")
 
         if recursive:
             shutil.rmtree(abs_path)
@@ -175,7 +199,7 @@ class CodeSandbox:
         if subdir:   # 确定要遍历的绝对路径
             search_path = self._safe_join(subdir)
             if not os.path.isdir(search_path):
-                logger.error(f"[代码沙箱] 列出文件子目录不是目录: {search_path}")
+                raise NotADirectoryError(f"列出文件子目录不是目录: {search_path}")
         else:
             search_path = self.sandbox_path
 

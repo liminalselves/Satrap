@@ -3,7 +3,7 @@ satrap_coding 权限引擎: 风险分级 x 审批策略 x 规则记忆 + 持久�
 
 策略三档 (set_mode):
 - user:      默认, 高风险操作逐条询问用户 (工具层走用户输入通道)
-- auto-agent: 独立审批判断 (注入 judge 函数, 只读判断不执行), 拒绝/不确定转人工
+- auto-agent: 模型仅可拒绝或转人工, 不构成写类操作的授权主体
 - full:      用户已授予全部权限, 直接放行
 
 规则优先级: L3 黑名单 > plan mode 写操作 > 持久规则 > 会话内记忆化规则 > 策略
@@ -129,7 +129,15 @@ class PermissionEngine:
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.rules_file)
 
-    def _append_log(self, operation: str, risk: RiskLevel, description: str, decision: PermissionDecision, mode: str) -> None:
+    def _append_log(
+        self,
+        operation: str,
+        risk: RiskLevel,
+        description: str,
+        decision: PermissionDecision,
+        mode: str,
+        model_verdict: str | None = None,
+    ) -> None:
         """
         追加审批日志 (审计)
 
@@ -139,6 +147,7 @@ class PermissionEngine:
         - description: 说明文本
         - decision: 决策
         - mode: 模式
+        - model_verdict: auto-agent 返回的原始判断, 未调用模型时为 None
         """
         try:
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -150,6 +159,8 @@ class PermissionEngine:
                 "decision": decision.name,
                 "mode": mode,
             }
+            if model_verdict is not None:
+                entry["model_verdict"] = model_verdict[:100]
             with open(self.log_file, "a", encoding="utf-8") as f:
                 f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         except OSError as e:
@@ -259,6 +270,19 @@ class PermissionEngine:
         """
         self.plan_mode = bool(enabled)
 
+    def is_plan_mode_block(self, operation: str, risk: RiskLevel | int) -> bool:
+        """
+        判断操作是否因计划模式的工作区写入限制而被拒绝
+
+        参数:
+        - operation: 操作类型
+        - risk: 操作风险级别
+
+        返回:
+        - 计划模式应阻止该操作时返回 True
+        """
+        return self.plan_mode and operation in _WRITE_OPERATIONS and RiskLevel(risk) > RiskLevel.READ
+
     # ---------- 评估 ----------
 
     def evaluate(
@@ -285,15 +309,23 @@ class PermissionEngine:
         - PermissionDecision: 同步评估操作是否放行
         """
         risk = RiskLevel(risk)
+        model_verdict: str | None = None
         with self._lock:
             decision = self._evaluate_core(operation, risk)
             if decision == PermissionDecision.ASK and self.mode == "auto-agent":
                 if judge is None:
                     decision = PermissionDecision.ASK
                 else:
-                    verdict = judge(operation, risk, description)
-                    decision = self._verdict_to_decision(verdict)
-            self._append_log(operation, risk, description, decision, self.mode)
+                    model_verdict = judge(operation, risk, description)
+                    decision = self._verdict_to_decision(model_verdict)
+            self._append_log(
+                operation,
+                risk,
+                description,
+                decision,
+                self.mode,
+                model_verdict,
+            )
             return decision
 
     async def evaluate_async(
@@ -319,6 +351,7 @@ class PermissionEngine:
         - PermissionDecision:  awaitable)
         """
         risk = RiskLevel(risk)
+        model_verdict: str | None = None
         with self._lock:
             decision = self._evaluate_core(operation, risk)
         if decision == PermissionDecision.ASK and self.mode == "auto-agent":
@@ -328,8 +361,16 @@ class PermissionEngine:
                 verdict = judge(operation, risk, description)
                 if hasattr(verdict, "__await__"):
                     verdict = await verdict
-                decision = self._verdict_to_decision(str(verdict))
-        self._append_log(operation, risk, description, decision, self.mode)
+                model_verdict = str(verdict)
+                decision = self._verdict_to_decision(model_verdict)
+        self._append_log(
+            operation,
+            risk,
+            description,
+            decision,
+            self.mode,
+            model_verdict,
+        )
         return decision
 
     def _evaluate_core(self, operation: str, risk: RiskLevel) -> PermissionDecision:
@@ -361,17 +402,15 @@ class PermissionEngine:
     @staticmethod
     def _verdict_to_decision(verdict: str) -> PermissionDecision:
         """
-        审批 agent 判定文本 -> 决策
+        将审批模型判断收窄为拒绝或人工确认
 
         参数:
         - verdict: verdict 输入值
 
         返回:
-        - PermissionDecision: 审批 agent 判定文本 -> 决策
+        - PermissionDecision: deny 返回拒绝, 其他内容均返回人工确认
         """
         text = verdict.strip().lower()
-        if text.startswith("allow"):
-            return PermissionDecision.ALLOW
         if text.startswith("deny"):
             return PermissionDecision.DENY
         return PermissionDecision.ASK

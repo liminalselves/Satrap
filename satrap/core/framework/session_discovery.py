@@ -157,6 +157,32 @@ def ensure_session_scan_paths(paths: list[str] | tuple[str, ...] | None = None) 
     return normalized
 
 
+def build_session_module_catalog(
+    paths: list[str] | tuple[str, ...] | None = None,
+) -> dict[str, Path]:
+    """
+    构建会话扫描目录中的可导入模块目录, 不执行任何模块代码
+
+    参数:
+    - paths: 路径列表
+
+    返回:
+    - dict[str, Path]: 模块名到已解析源码路径的映射
+    """
+    catalog: dict[str, Path] = {}
+    for scan_path in normalize_scan_paths(paths):
+        if not scan_path.is_dir():
+            continue
+        for file_path in sorted(scan_path.glob("*.py")):
+            if _should_skip_file(file_path):
+                continue
+            resolved = file_path.resolve()
+            if not resolved.is_relative_to(scan_path):
+                continue
+            catalog[_module_name_for_file(scan_path, resolved)] = resolved
+    return catalog
+
+
 def create_default_session_dir(paths: list[str] | tuple[str, ...] | None = None) -> Path:
     """
     创建默认 Session 扫描目录

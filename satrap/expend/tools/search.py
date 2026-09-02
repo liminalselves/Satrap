@@ -2,10 +2,17 @@
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from bs4 import BeautifulSoup
 from typing import Any, cast
+from typing import Protocol
 import requests
 import aiohttp
 import random
 import json
+
+from satrap.core.utils.outbound import (
+    UnsafeOutboundURLError,
+    validate_outbound_http_url,
+    validate_outbound_redirect,
+)
 
 
 USER_AGENTS = [
@@ -20,6 +27,65 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:89.0) Gecko/20100101 Firefox/89.0",
     "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:88.0) Gecko/20100101 Firefox/88.0",
 ]
+
+
+class _RequestsResponse(Protocol):
+    """搜索工具依赖的 requests 响应最小接口"""
+
+    text: str
+    apparent_encoding: str | None
+    encoding: str
+    status_code: int
+    headers: dict[str, str]
+    is_redirect: bool
+
+    def raise_for_status(self) -> None:
+        """在 HTTP 状态异常时抛出 requests 异常"""
+        ...
+
+
+class _RequestsGet(Protocol):
+    """requests.get 的可检查调用接口"""
+
+    def __call__(
+        self,
+        url: str,
+        *,
+        params: dict[str, object] | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: int,
+        allow_redirects: bool = True,
+    ) -> _RequestsResponse:
+        """
+        发起同步 HTTP GET 请求
+
+        参数:
+        - url: 请求 URL
+        - params: 查询参数
+        - headers: 请求头
+        - timeout: 超时秒数
+        - allow_redirects: 是否自动跟随重定向
+
+        返回:
+        - _RequestsResponse: 可检查的响应接口
+        """
+        ...
+
+
+_requests_get = cast(_RequestsGet, requests.get)   # pyright: ignore[reportUnknownMemberType]
+"""在 requests 动态类型边界处收窄同步 GET 接口"""
+
+
+class _TitleElement(Protocol):
+    """声明页面标题节点所需的最小接口"""
+
+    string: str | None
+
+
+class _TitleSoup(Protocol):
+    """声明页面标题提取所需的最小接口"""
+
+    title: _TitleElement | None
 
 class SearchTool(Tool):
     """搜索爬虫工具"""
@@ -105,8 +171,13 @@ class SearchTool(Tool):
         max_results = min(max_results, 20)   # 限制最大条数
         for base_url in self.base_urls:
             try:
-                url = f"{base_url}/search?q={query}&count={max_results}"
-                resp = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
+                url = f"{base_url}/search"
+                resp = _requests_get(
+                    url,
+                    params={"q": query, "count": max_results},
+                    headers=self._get_headers(),
+                    timeout=self.timeout,
+                )
                 resp.raise_for_status()
                 resp.encoding = "utf-8"
                 results = self._parse_result(resp.text, max_results)
@@ -182,8 +253,13 @@ class AsyncSearchTool(AsyncTool):
         async with aiohttp.ClientSession() as session:
             for base_url in self.base_urls:
                 try:
-                    url = f"{base_url}/search?q={query}&count={max_results}"
-                    async with session.get(url, headers=self._get_headers(), timeout=self.timeout) as resp:
+                    url = f"{base_url}/search"
+                    async with session.get(
+                        url,
+                        params={"q": query, "count": max_results},
+                        headers=self._get_headers(),
+                        timeout=self.timeout,
+                    ) as resp:
                         if resp.status != 200:
                             continue
                         html = await resp.text(encoding="utf-8")
@@ -259,21 +335,37 @@ class FetchPageTool(Tool):
         - str: JSON字符串
         """
         try:
-            resp = requests.get(url, headers=self._get_headers(), timeout=self.timeout)
+            current_url = validate_outbound_http_url(url)
+            for _ in range(6):
+                resp = _requests_get(
+                    current_url,
+                    headers=self._get_headers(),
+                    timeout=self.timeout,
+                    allow_redirects=False,
+                )
+                if resp.is_redirect:
+                    current_url = validate_outbound_redirect(
+                        current_url,
+                        resp.headers.get("Location", ""),
+                    )
+                    continue
+                break
+            else:
+                raise UnsafeOutboundURLError("重定向次数超过限制")
             resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
 
-            soup = cast(Any, BeautifulSoup(resp.text, "html.parser"))
-            # 提取标题
+            soup = cast(_TitleSoup, BeautifulSoup(resp.text, "html.parser"))
             title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
+            # 提取页面标题, 缺失时使用稳定占位值
 
             text = self._extract_text(resp.text)
-            # 提取正文文本
+            # 提取正文文本并移除页面结构噪音
             if len(text) > max_length:
                 text = text[:max_length] + "...(内容已截断)"
 
-            result: dict[str, Any] = {
-                "url": url,
+            result: dict[str, object] = {
+                "url": current_url,
                 "title": title,
                 "content": text,
                 "status_code": resp.status_code
@@ -339,31 +431,49 @@ class AsyncFetchPageTool(AsyncTool):
         """
         async with aiohttp.ClientSession() as session:
             try:
-                async with session.get(url, headers=self._get_headers(), timeout=self.timeout) as resp:
-                    if resp.status != 200:
-                        return json.dumps({
-                            "error": f"HTTP {resp.status}",
-                            "url": url
-                        }, ensure_ascii=False)
+                current_url = validate_outbound_http_url(url)
+                for _ in range(6):
+                    response = session.get(
+                        current_url,
+                        headers=self._get_headers(),
+                        timeout=self.timeout,
+                        allow_redirects=False,
+                    )
+                    async with response as resp:
+                        if 300 <= resp.status < 400:
+                            current_url = validate_outbound_redirect(
+                                current_url,
+                                resp.headers.get("Location", ""),
+                            )
+                            continue
+                        if resp.status != 200:
+                            return json.dumps({
+                                "error": f"HTTP {resp.status}",
+                                "url": current_url
+                            }, ensure_ascii=False)
 
-                    html = await resp.text(encoding="utf-8", errors="replace")
+                        html = await resp.text(encoding="utf-8", errors="replace")
 
-                    soup = cast(Any, BeautifulSoup(html, "html.parser"))
-                    # 提取标题
-                    title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
+                        soup = cast(_TitleSoup, BeautifulSoup(html, "html.parser"))
+                        title = soup.title.string.strip() if soup.title and soup.title.string else "无标题"
+                        # 提取页面标题, 缺失时使用稳定占位值
 
-                    text = self._extract_text(html)
-                    # 提取正文
-                    if len(text) > max_length:
-                        text = text[:max_length] + "...(内容已截断)"
+                        text = self._extract_text(html)
+                        # 提取正文文本并移除页面结构噪音
+                        if len(text) > max_length:
+                            text = text[:max_length] + "...(内容已截断)"
 
-                    result: dict[str, Any] = {
-                        "url": url,
-                        "title": title,
-                        "content": text,
-                        "status_code": resp.status
-                    }
-                    return json.dumps(result, ensure_ascii=False, indent=2)
+                        result: dict[str, object] = {
+                            "url": current_url,
+                            "title": title,
+                            "content": text,
+                            "status_code": resp.status
+                        }
+                        return json.dumps(result, ensure_ascii=False, indent=2)
+                return json.dumps({
+                    "error": "重定向次数超过限制",
+                    "url": current_url,
+                }, ensure_ascii=False)
 
             except aiohttp.ClientError as e:
                 return json.dumps({

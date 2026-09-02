@@ -36,7 +36,7 @@ tools:
 <技能指令正文...>
 ```
 
-`tools.py` (可选) 约定:
+`tools.py` (可选) 仅在官方预设目录或显式传入的可信代码根中执行, 约定:
 - `get_tools()`: 返回工具实例列表 (构造函数需要参数的场景)
 - `get_mcp_clients()`: 返回 MCPClient 实例列表 (激活时自动连接并注册)
 - 未定义 get_tools 时, 模块内定义的 Tool / AsyncTool 子类会被自动实例化并收集
@@ -62,9 +62,31 @@ import importlib.util
 import inspect
 import os
 import re
+from collections.abc import Iterable
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Protocol
 
 import yaml
+
+
+class _YamlLoader(Protocol):
+    """声明技能加载只依赖的 YAML 解析接口"""
+
+    def safe_load(self, stream: object) -> object:
+        """
+        解析 YAML 文本或文本流
+
+        参数:
+        - stream: YAML 文本或文本流
+
+        返回:
+        - 解析后的动态结构
+        """
+        ...
+
+
+_yaml_loader = cast(_YamlLoader, yaml)
 
 from satrap.core.log import logger
 from satrap.core.type import safe_getattr, safe_getattr_callable, safe_getattr_dict
@@ -193,7 +215,7 @@ def _parse_front_matter(text: str) -> tuple[dict[str, Any], str]:
     if not match:
         return {}, text
     try:
-        meta: object = yaml.safe_load(match.group(1)) or {}
+        meta: object = _yaml_loader.safe_load(match.group(1)) or {}
         if not isinstance(meta, dict):
             meta = {}
         else:
@@ -271,17 +293,26 @@ def _load_skill_tools(tools_path: str) -> Tuple[List[Any], List[Any]]:
 class SkillsManager:
     """技能管理器; 负责扫描, 加载技能, 并将其装配到 workflow"""
 
-    def __init__(self, skills_dir: Optional[str] = None, include_preset: bool = True):
+    def __init__(
+        self,
+        skills_dir: Optional[str] = None,
+        include_preset: bool = True,
+        trusted_code_roots: Iterable[str | Path] | None = None,
+    ):
         """
         参数:
         - skills_dir: 用户技能扫描目录, 默认 ".satrap/skills" (None 时使用默认值)
         - include_preset: 是否同时扫描官方预设目录 (satrap/expend/skills), 默认 True
+        - trusted_code_roots: 允许执行 tools.py 的额外可信代码根
 
         扫描时官方预设目录在前, 用户目录在后; 同名技能无 satrap-skill-id 时官方优先,
         携带不同 id 的同名技能共存不冲突
         """
         self.skills_dir = skills_dir or DEFAULT_USER_SKILLS_DIR
         self.include_preset = include_preset
+        roots = [Path(SKILLS_PRESET_DIR).resolve()]
+        roots.extend(Path(root).resolve() for root in (trusted_code_roots or ()))
+        self._trusted_code_roots = tuple(dict.fromkeys(roots))
         self.skills: Dict[str, Skill] = {}
         self._active: Dict[int, str] = {}   # workflow id -> skill name, 防止重复注入
         self._active_mcp: Dict[int, List[Any]] = {}   # workflow id -> 已连接的 MCP 客户端
@@ -297,7 +328,28 @@ class SkillsManager:
         返回:
         - bool: 技能是否来自官方预设目录
         """
-        return bool(skill.source and skill.source.startswith(SKILLS_PRESET_DIR))
+        if not skill.source:
+            return False
+        try:
+            return Path(skill.source).resolve().is_relative_to(Path(SKILLS_PRESET_DIR).resolve())
+        except OSError:
+            return False
+
+    def _is_trusted_code_file(self, file_path: str | Path) -> bool:
+        """
+        判断可执行技能代码是否位于可信代码根内
+
+        参数:
+        - file_path: 待校验的代码文件
+
+        返回:
+        - bool: 是否允许执行
+        """
+        try:
+            resolved = Path(file_path).resolve(strict=True)
+        except OSError:
+            return False
+        return any(resolved.is_relative_to(root) for root in self._trusted_code_roots)
 
     def _register_skill(self, skill: Skill) -> None:
         """
@@ -383,7 +435,7 @@ class SkillsManager:
         if os.path.isfile(meta_path):
             try:
                 with open(meta_path, "r", encoding="utf-8") as f:
-                    meta: Any = yaml.safe_load(f) or {}
+                    meta: object = _yaml_loader.safe_load(f) or {}
                 if isinstance(meta, dict):
                     skill.meta.update(cast(dict[str, Any], meta))
             except Exception as e:
@@ -391,13 +443,16 @@ class SkillsManager:
 
         tools_path = os.path.join(skill_dir, "tools.py")
         if os.path.isfile(tools_path):
-            tools, mcp_clients = _load_skill_tools(tools_path)
-            skill.tools = tools
-            skill.mcp_clients = mcp_clients
-            for tool in tools:
-                name = tool.get_tool_name()
-                if name not in skill.tool_names:
-                    skill.tool_names.append(name)
+            if self._is_trusted_code_file(tools_path):
+                tools, mcp_clients = _load_skill_tools(tools_path)
+                skill.tools = tools
+                skill.mcp_clients = mcp_clients
+                for tool in tools:
+                    name = tool.get_tool_name()
+                    if name not in skill.tool_names:
+                        skill.tool_names.append(name)
+            else:
+                logger.warning(f"[技能管理] 已跳过非可信目录中的 tools.py: {tools_path}")
         # satrap-skill-id: 技能身份识别符 (同名技能区分)
         raw_id = str(skill.meta.get("satrap-skill-id") or "").strip()
         if raw_id:

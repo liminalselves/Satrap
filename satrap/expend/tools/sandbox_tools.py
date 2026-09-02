@@ -1,6 +1,7 @@
 """代码沙箱的同步与异步执行工具封装"""
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.utils.sandbox import CodeSandbox
+from collections.abc import Awaitable, Callable
 from typing import Dict, Any, Optional
 import re, asyncio
 
@@ -24,14 +25,19 @@ def extract_code(response: str) -> str:
     else:   # 如果没有代码块标记, 直接使用返回内容
         return response.strip()
 
+SyncExecutionAuthorizer = Callable[[str], bool]
+AsyncExecutionAuthorizer = Callable[[str], bool | Awaitable[bool]]
+
+
 class CodeSandboxTool(Tool):
     """代码沙箱工具, 封装对 CodeSandbox 的各种操作"""
-    def __init__(self, sandbox: CodeSandbox):
+    def __init__(self, sandbox: CodeSandbox, execution_authorizer: SyncExecutionAuthorizer | None = None):
         """
         初始化 CodeSandboxTool
 
         参数:
         - sandbox: 沙箱实例
+        - execution_authorizer: 代码执行授权回调, 未配置时拒绝执行
         """
         super().__init__(
             tool_name="code_sandbox",
@@ -43,6 +49,21 @@ class CodeSandboxTool(Tool):
             }
         )
         self.sandbox = sandbox
+        self.execution_authorizer = execution_authorizer
+
+    def _authorize_execution(self, description: str) -> bool:
+        """
+        执行高风险代码前请求明确授权, 未配置授权通道时默认拒绝
+
+        参数:
+        - description: 本次代码执行说明
+
+        返回:
+        - 授权回调明确批准时返回 True
+        """
+        if self.execution_authorizer is None:
+            return False
+        return bool(self.execution_authorizer(description))
 
     def execute(self, operation: str, code: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -63,6 +84,8 @@ class CodeSandboxTool(Tool):
             if operation == "run":
                 if code is None:
                     return {"error": "操作 'run' 需要提供 code 参数"}
+                if not self._authorize_execution(f"执行 Python 代码: {code}"):
+                    return {"error": "代码执行需要用户明确批准, 当前请求已拒绝"}
 
                 result = self.sandbox.run(code)
                 return {
@@ -75,6 +98,8 @@ class CodeSandboxTool(Tool):
             elif operation == "run_file":
                 if path is None:
                     return {"error": "操作 'run_file' 需要提供 path 参数"}
+                if not self._authorize_execution(f"执行沙箱文件: {path}"):
+                    return {"error": "代码执行需要用户明确批准, 当前请求已拒绝"}
                 result = self.sandbox.run_file(path)
                 return {
                     "operation": "run_file",
@@ -128,12 +153,13 @@ class CodeSandboxTool(Tool):
 
 class AsyncCodeSandboxTool(AsyncTool):
     """异步代码沙箱工具, 封装对 CodeSandbox 的各种异步操作"""
-    def __init__(self, sandbox: CodeSandbox):
+    def __init__(self, sandbox: CodeSandbox, execution_authorizer: AsyncExecutionAuthorizer | None = None):
         """
         初始化 AsyncCodeSandboxTool
 
         参数:
         - sandbox: 沙箱实例
+        - execution_authorizer: 代码执行授权回调, 未配置时拒绝执行
         """
         super().__init__(
             tool_name="code_sandbox",
@@ -145,6 +171,24 @@ class AsyncCodeSandboxTool(AsyncTool):
             }
         )
         self.sandbox = sandbox
+        self.execution_authorizer = execution_authorizer
+
+    async def _authorize_execution(self, description: str) -> bool:
+        """
+        异步执行高风险代码前请求明确授权, 未配置授权通道时默认拒绝
+
+        参数:
+        - description: 本次代码执行说明
+
+        返回:
+        - 授权回调明确批准时返回 True
+        """
+        if self.execution_authorizer is None:
+            return False
+        decision = self.execution_authorizer(description)
+        if isinstance(decision, Awaitable):
+            decision = await decision
+        return bool(decision)
 
     async def execute(self, operation: str, code: Optional[str] = None, path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -166,6 +210,8 @@ class AsyncCodeSandboxTool(AsyncTool):
             if operation == "run":
                 if code is None:
                     return {"error": "操作 'run' 需要提供 code 参数"}
+                if not await self._authorize_execution(f"执行 Python 代码: {code}"):
+                    return {"error": "代码执行需要用户明确批准, 当前请求已拒绝"}
                 # 同步 run 方法转为异步执行
                 result = await asyncio.to_thread(self.sandbox.run, code)
                 return {
@@ -178,6 +224,8 @@ class AsyncCodeSandboxTool(AsyncTool):
             elif operation == "run_file":
                 if path is None:
                     return {"error": "操作 'run_file' 需要提供 path 参数"}
+                if not await self._authorize_execution(f"执行沙箱文件: {path}"):
+                    return {"error": "代码执行需要用户明确批准, 当前请求已拒绝"}
                 result = await asyncio.to_thread(self.sandbox.run_file, path)
                 return {
                     "operation": "run_file",
