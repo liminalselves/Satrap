@@ -18,13 +18,12 @@ import asyncio
 import copy
 import hashlib
 import json
-import os
-import string
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from pathlib import Path
 from typing import Any, Awaitable, Callable, cast
+from typing import Iterable
 
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.core.utils.context_policy import resolve_context_policy
@@ -39,6 +38,7 @@ from satrap.core.storage import (
     delete_session_domain_rows,
 )
 from satrap.core.type import CommandAction, LLMConfig, validate_thinking_levels
+from satrap.core.utils.paths import get_data_dir, get_project_root
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.recorder import (
     DisplayRecorder,
@@ -154,6 +154,8 @@ class ChatService:
         platform_id: str = CHAT_PLATFORM_ID,
         preload_ttl_seconds: float = 300.0,
         ask_user_timeout_seconds: float = 300.0,
+        workspace_roots: Iterable[str | Path] | None = None,
+        denied_workspace_roots: Iterable[str | Path] | None = None,
     ) -> None:
         """
         初始化 ChatService
@@ -167,6 +169,8 @@ class ChatService:
         - platform_id: Chat 存储平台实例 ID
         - preload_ttl_seconds: 未发送预加载会话的内存保留时间
         - ask_user_timeout_seconds: ask_user 等待前端回答的超时时间
+        - workspace_roots: 项目目录允许浏览和绑定的根目录
+        - denied_workspace_roots: 额外禁止绑定和浏览的目录根
         """
         self._model_cfg = model_config
         self._plugins = plugins
@@ -178,6 +182,25 @@ class ChatService:
         self._display_db_path = display_db_path or platform_db
         self._preload_ttl_seconds = max(float(preload_ttl_seconds), 1.0)
         self._ask_user_timeout_seconds = max(float(ask_user_timeout_seconds), 1.0)
+        configured_roots = list(workspace_roots or [get_project_root()])
+        resolved_roots: list[Path] = []
+        for raw_root in configured_roots:
+            root = Path(raw_root).expanduser().resolve()
+            if not root.is_dir():
+                raise ValueError(f"工作区根目录不存在或不是目录: {raw_root}")
+            if root not in resolved_roots:
+                resolved_roots.append(root)
+        if not resolved_roots:
+            raise ValueError("至少需要配置一个工作区根目录")
+        self._workspace_roots = tuple(resolved_roots)
+        denied_roots = [get_data_dir().resolve()]
+        for raw_root in denied_workspace_roots or []:
+            denied_root = Path(raw_root).expanduser().resolve()
+            if denied_root not in denied_roots:
+                denied_roots.append(denied_root)
+        self._denied_workspace_roots = tuple(denied_roots)
+        if any(self._is_workspace_denied(root) for root in self._workspace_roots):
+            raise ValueError("工作区根目录不能位于受保护的 .satrap 数据目录内")
         self._conversations: dict[str, _Conversation] = {}
         self._orphan_queues: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
         """订阅时会话不在内存的孤儿队列, _resume_conversation 完成后挂入"""
@@ -390,6 +413,7 @@ class ChatService:
                 truncation_floor=config.get("truncation_floor", 0.4),
                 summary_keep_recent_turns=config.get("summary_keep_recent_turns", 6),
                 lock_api_key=bool(config.get("lock_api_key")),
+                allow_insecure_base_url=bool(config.get("allow_insecure_base_url")),
                 thinking_field_name=config.get("thinking_field_name"),
                 thinking_fields=config.get("thinking_fields"),
                 thinking_levels=thinking_levels,
@@ -431,6 +455,7 @@ class ChatService:
             "truncation_floor",
             "summary_keep_recent_turns",
             "lock_api_key",
+            "allow_insecure_base_url",
             "thinking_field_name",
             "thinking_fields",
             "thinking_levels",
@@ -1706,11 +1731,14 @@ class ChatService:
             project_id=project_id,
         )
         session_root = self._storage.ensure_session(scope)
-        workspace_root = (
-            Path(str(project["root_path"])).resolve()
-            if project is not None
-            else session_root / "sandbox"
-        )
+        if project is not None:
+            try:
+                workspace_root = self._resolve_workspace_directory(str(project["root_path"]))
+            except ValueError as error:
+                logger.warning(f"[聊天] 项目工作区越出允许根目录, 回落会话沙箱: {error}")
+                workspace_root = session_root / "sandbox"
+        else:
+            workspace_root = session_root / "sandbox"
         # 鸭子属性注入, 插件在安装和调用时解析当前会话作用域
         setattr(session, "coding_workspace_root", str(workspace_root))
         setattr(session, "coding_session_root", str(session_root))
@@ -1722,23 +1750,24 @@ class ChatService:
         setattr(session, "coding_memory_db", str(self._storage.platform_db(self._platform_id)))
         setattr(session, "coding_memory_scope", f"session:{session.session_id}")
 
-    def create_project(self, name: str, root_path: str) -> dict[str, Any]:
+    def create_project(self, name: str, root_path: str) -> dict[str, object]:
         """
-        创建项目 (绑定工作区文件夹, 任意绝对路径; 校验存在且是目录)
+        创建项目并把工作区限制在服务端配置的允许根目录
 
         参数:
         - name: 名称
         - root_path: 根目录路径
 
         返回:
-        - dict[str, Any]: 创建项目 (绑定工作区文件夹, 任意绝对路径; 校验存在且是目录)
+        - dict[str, object]: 创建结果, 路径越出允许根目录时返回错误
         """
         name = name.strip()
         if not name:
             return {"ok": False, "error": "项目名称不能为空"}
-        p = Path(root_path.strip()).expanduser().resolve()
-        if not p.is_dir():
-            return {"ok": False, "error": f"路径不存在或不是目录: {root_path}"}
+        try:
+            p = self._resolve_workspace_directory(root_path)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
         project = db_create_project(name, str(p), db_path=self._display_db_path)
         logger.info(f"[聊天] 项目已创建: {name} -> {p}")
         return {"ok": True, "project": project}
@@ -1817,35 +1846,68 @@ class ChatService:
             return None
         return db_get_project(str(pid), db_path=self._display_db_path)
 
-    @staticmethod
-    def browse_directories(path: str = "") -> dict[str, Any]:
+    def _resolve_workspace_directory(self, path: str) -> Path:
+        """
+        解析项目目录并限制在配置的工作区根内
+
+        参数:
+        - path: 待校验目录路径
+
+        返回:
+        - Path: 位于允许根目录内的真实目录
+        """
+        candidate = Path(path.strip()).expanduser().resolve()
+        if not candidate.is_dir():
+            raise ValueError(f"路径不存在或不是目录: {path}")
+        if self._is_workspace_denied(candidate):
+            raise ValueError("路径位于受保护的 .satrap 数据目录内")
+        if not any(
+            candidate == root or candidate.is_relative_to(root)
+            for root in self._workspace_roots
+        ):
+            raise ValueError(f"路径越出允许的工作区根目录: {path}")
+        return candidate
+
+    def _is_workspace_denied(self, path: Path) -> bool:
+        """
+        判断路径是否位于系统或额外配置的拒绝根内
+
+        参数:
+        - path: 已解析的候选路径
+
+        返回:
+        - 路径等于拒绝根或位于其下时返回 True
+        """
+        resolved = path.resolve()
+        return any(
+            resolved == denied or resolved.is_relative_to(denied)
+            for denied in self._denied_workspace_roots
+        )
+
+    def browse_directories(self, path: str = "") -> dict[str, object]:
         """
         浏览服务器目录 (只列子目录, 供前端新建项目时选择工作区文件夹)
 
         参数:
         - path: 路径
 
-        - path 为空: Windows 返回盘符视图 (dirs = 各盘符, parent=None), POSIX 落到用户主目录
-        - 根层级: Windows 盘符根的 parent 为 "" (回盘符视图), POSIX 根的 parent 为 None
+        - path 为空: 返回服务端显式配置的工作区根目录
+        - 根层级: parent 为空字符串, 返回根目录选择视图
         - 权限不足/异常子目录跳过; 只列目录不列文件, 按名排序 (忽略大小写), 上限 500 条
 
         返回:
-        - dict[str, Any]: 浏览服务器目录 (只列子目录, 供前端新建项目时选择工作区文件夹)
+        - dict[str, object]: 目录浏览结果
         """
         if not path.strip():
-            if os.name == "nt":
-                drives = [
-                    {"name": f"{d}:\\", "path": f"{d}:\\"}
-                    for d in string.ascii_uppercase
-                    if Path(f"{d}:\\").is_dir()
-                ]
-                return {"ok": True, "path": "", "parent": None, "dirs": drives}
-            p = Path.home()
-        else:
-            p = Path(path.strip()).expanduser()
-            if not p.is_dir():
-                return {"ok": False, "error": f"路径不存在或不是目录: {path}"}
-            p = p.resolve()
+            roots = [
+                {"name": root.name or str(root), "path": str(root)}
+                for root in self._workspace_roots
+            ]
+            return {"ok": True, "path": "", "parent": None, "dirs": roots}
+        try:
+            p = self._resolve_workspace_directory(path)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
 
         dirs: list[dict[str, str]] = []
         try:
@@ -1856,15 +1918,22 @@ class ChatService:
             if len(dirs) >= 500:
                 break
             try:
-                if child.is_dir():
-                    dirs.append({"name": child.name, "path": str(child)})
+                resolved_child = child.resolve()
+                if (
+                    resolved_child.is_dir()
+                    and not self._is_workspace_denied(resolved_child)
+                    and any(
+                        resolved_child == root or resolved_child.is_relative_to(root)
+                        for root in self._workspace_roots
+                    )
+                ):
+                    dirs.append({"name": child.name, "path": str(resolved_child)})
             except OSError:
                 continue
 
         parent: str | None
-        if p.parent == p:
-            parent = "" if os.name == "nt" else None
-            # 根层级: Windows 盘符根回到盘符视图 (空 path), POSIX 根无上一级
+        if p in self._workspace_roots:
+            parent = ""
         else:
             parent = str(p.parent)
         return {"ok": True, "path": str(p), "parent": parent, "dirs": dirs}

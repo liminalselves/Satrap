@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import contextmanager
 import inspect
 import json
 import secrets
@@ -78,6 +79,10 @@ class SessionEntry:
     """串行化同步会话运行和运行时配置更新"""
     async_operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     """串行化异步会话运行和运行时配置更新"""
+    active_calls: int = 0
+    """正在使用此条目的调用数量"""
+    retiring: bool = False
+    """条目是否已进入淘汰流程"""
 
 
 @dataclass
@@ -94,6 +99,10 @@ class SessionMetadata:
     """会话最近使用时间戳"""
     message_count: int
     """会话已处理消息数量"""
+
+
+class SessionPoolCapacityError(RuntimeError):
+    """会话池达到硬容量上限且没有可淘汰条目"""
 
 
 class SessionRegistry:
@@ -175,6 +184,16 @@ class SessionConfigStore:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @contextmanager
+    def _connection(self):
+        """创建事务连接并确保离开作用域时关闭"""
+        conn = self._connect()
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
     def _init_table(self):
         """
         初始化会话配置表
@@ -182,7 +201,7 @@ class SessionConfigStore:
         确保数据库表存在, 并创建必要的索引
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS session_configs (
@@ -248,7 +267,7 @@ class SessionConfigStore:
             raise ValueError("session_id 不能为空")
 
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     INSERT INTO session_configs
@@ -285,7 +304,7 @@ class SessionConfigStore:
         - Optional[SessionConfig]: 获取
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 row = conn.execute(
                     "SELECT * FROM session_configs WHERE session_id=?", (session_id,)
                 ).fetchone()
@@ -304,7 +323,7 @@ class SessionConfigStore:
         - List[SessionConfig]: 列出持久化的会话配置 (按最后使用时间倒序)
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 rows = conn.execute(
                     """
                     SELECT * FROM session_configs
@@ -323,7 +342,7 @@ class SessionConfigStore:
         - session_id: 会话 ID
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute("DELETE FROM session_configs WHERE session_id=?", (session_id,))
                 conn.commit()
 
@@ -343,7 +362,7 @@ class SessionConfigStore:
         - List[str]: 引用该定义的会话 ID
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 rows = conn.execute(
                     """
                     SELECT session_id FROM session_configs
@@ -374,7 +393,7 @@ class SessionConfigStore:
         if not new_name.strip():
             raise ValueError("新定义名称不能为空")
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 rows = conn.execute(
                     """
                     SELECT session_id FROM session_configs
@@ -405,7 +424,7 @@ class SessionConfigStore:
         - List[str]: 符合条件的全部会话 ID
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 rows = conn.execute(
                     "SELECT session_id FROM session_configs WHERE message_count=?",
                     (int(message_count),),
@@ -422,7 +441,7 @@ class SessionConfigStore:
         - message_count: 消息计数
         """
         with self._lock:
-            with self._connect() as conn:
+            with self._connection() as conn:
                 conn.execute(
                     """
                     UPDATE session_configs
@@ -466,6 +485,44 @@ class SessionPool:
                 entry.last_used = time.time()
             return entry
 
+    def acquire(
+        self,
+        session_id: str,
+        expected: SessionEntry | None = None,
+    ) -> SessionEntry | None:
+        """
+        获取会话使用租约
+
+        参数:
+        - session_id: 会话 ID
+        - expected: 可选的预期条目, 用于阻止替换后的旧条目被误用
+
+        返回:
+        - 可用会话条目; 条目不存在, 已替换或正在淘汰时返回 None
+        """
+        with self._lock:
+            entry = self._sessions.get(session_id)
+            if entry is None or entry.retiring:
+                return None
+            if expected is not None and entry is not expected:
+                return None
+            entry.active_calls += 1
+            entry.last_used = time.time()
+            return entry
+
+    def release(self, entry: SessionEntry) -> None:
+        """
+        释放会话使用租约
+
+        参数:
+        - entry: 已获取租约的会话条目
+        """
+        with self._lock:
+            if entry.active_calls <= 0:
+                raise RuntimeError("会话使用租约计数失衡")
+            entry.active_calls -= 1
+            entry.last_used = time.time()
+
     def put(
         self,
         session_id: str,
@@ -496,6 +553,10 @@ class SessionPool:
             evicted: Optional[tuple[str, SessionEntry]] = None
             if len(self._sessions) >= self.max_size:
                 evicted = self._evict_one_locked()
+                if evicted is None:
+                    raise SessionPoolCapacityError(
+                        f"会话池已满且所有条目均在使用: max_size={self.max_size}"
+                    )
 
             self._sessions[session_id] = SessionEntry(
                 session=session,
@@ -505,18 +566,82 @@ class SessionPool:
             )
             return evicted
 
-    def remove(self, session_id: str) -> Optional[SessionEntry]:
+    def replace(
+        self,
+        session_id: str,
+        expected: SessionEntry,
+        replacement: SessionEntry,
+    ) -> bool:
+        """
+        仅在当前条目仍匹配时原子替换会话
+
+        参数:
+        - session_id: 会话 ID
+        - expected: 预期被替换的旧条目
+        - replacement: 新会话条目
+
+        返回:
+        - 成功替换返回 True; 当前条目已变化时返回 False
+        """
+        with self._lock:
+            current = self._sessions.get(session_id)
+            if current is None or current is not expected:
+                return False
+            if current.active_calls > 0 or current.retiring:
+                return False
+            current.session = replacement.session
+            current.session_type = replacement.session_type
+            current.created_at = replacement.created_at
+            current.last_used = replacement.last_used
+            return True
+
+    def remove(
+        self,
+        session_id: str,
+        expected: SessionEntry | None = None,
+    ) -> Optional[SessionEntry]:
         """
         从池中移除会话条目
 
         参数:
         - session_id: 会话 ID
+        - expected: 可选的预期条目, 用于阻止并发替换后的新条目被误删
 
         返回:
-        - 移除的会话条目 (如果存在) 或 None
+        - 匹配并移除的会话条目; 条目不存在或与 expected 不匹配时返回 None
         """
         with self._lock:
-            return self._sessions.pop(session_id, None)
+            entry = self._sessions.get(session_id)
+            if entry is None or (expected is not None and entry is not expected):
+                return None
+            removed = self._sessions.pop(session_id)
+            removed.retiring = True
+            return removed
+
+    def remove_if_idle(
+        self,
+        session_id: str,
+        expected: SessionEntry | None = None,
+    ) -> Optional[SessionEntry]:
+        """
+        仅在没有活动租约时移除会话条目
+
+        参数:
+        - session_id: 会话 ID
+        - expected: 可选的预期条目, 用于阻止并发替换后的新条目被误删
+
+        返回:
+        - 空闲且匹配时返回被移除条目; 条目忙碌、不存在或已替换时返回 None
+        """
+        with self._lock:
+            entry = self._sessions.get(session_id)
+            if entry is None or (expected is not None and entry is not expected):
+                return None
+            if entry.active_calls > 0 or entry.retiring:
+                return None
+            removed = self._sessions.pop(session_id)
+            removed.retiring = True
+            return removed
 
     def list_entries(self) -> Dict[str, SessionEntry]:
         """
@@ -542,25 +667,39 @@ class SessionPool:
             now = time.time()
             timeout = self.idle_timeout if max_idle_seconds is None else max_idle_seconds
             idle_ids = [
-                sid for sid, entry in self._sessions.items() if (now - entry.last_used) > timeout
+                sid
+                for sid, entry in self._sessions.items()
+                if entry.active_calls == 0
+                and not entry.retiring
+                and (now - entry.last_used) > timeout
             ]
 
             removed: List[tuple[str, SessionEntry]] = []
             for sid in idle_ids:
                 entry = self._sessions.pop(sid, None)
                 if entry:
+                    entry.retiring = True
                     removed.append((sid, entry))
             return removed
 
-    def _evict_one_locked(self) -> tuple[str, SessionEntry]:
+    def _evict_one_locked(self) -> tuple[str, SessionEntry] | None:
         """
         从池中移除最旧会话
 
         返回:
-        - 移除的会话条目 (会话 ID -> SessionEntry)
+        - 移除的会话条目; 所有条目均在使用时返回 None
         """
-        oldest_id = min(self._sessions.keys(), key=lambda sid: self._sessions[sid].last_used)
-        return oldest_id, self._sessions.pop(oldest_id)
+        candidates = {
+            session_id: entry
+            for session_id, entry in self._sessions.items()
+            if entry.active_calls == 0 and not entry.retiring
+        }
+        if not candidates:
+            return None
+        oldest_id = min(candidates, key=lambda sid: candidates[sid].last_used)
+        entry = self._sessions.pop(oldest_id)
+        entry.retiring = True
+        return oldest_id, entry
 
 
 class SessionManager:
@@ -615,6 +754,7 @@ class SessionManager:
             else default_storage_layout
         )
         self._async_lock = asyncio.Lock()
+        self._entry_creation_lock = threading.RLock()
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
@@ -888,10 +1028,8 @@ class SessionManager:
         返回:
         - bool: 会话是否已成功处于活跃状态
         """
-        if self.pool.get(session_id) is not None:
-            return True
         config = self.store.get(session_id)
-        return bool(config and self._create_entry(config) is not None)
+        return bool(config and self._get_or_create_entry(config) is not None)
 
     async def activate_session_async(self, session_id: str) -> bool:
         """
@@ -903,12 +1041,10 @@ class SessionManager:
         返回:
         - bool: 会话及其 Provider 生命周期是否准备完成
         """
-        entry = self.pool.get(session_id)
-        if entry is None:
-            config = self.store.get(session_id)
-            if config is None:
-                return False
-            entry = self._create_entry(config)
+        config = self.store.get(session_id)
+        if config is None:
+            return False
+        entry = await self._get_or_create_entry_async(config)
         if entry is None:
             return False
         try:
@@ -916,7 +1052,7 @@ class SessionManager:
                 await self._prepare_session_async(entry.session)
             return True
         except Exception as error:
-            removed = self.pool.remove(session_id)
+            removed = self.pool.remove(session_id, expected=entry)
             if removed is not None:
                 await self._release_session_memory_async(removed.session)
             logger.error(f"[SessionManager] 激活会话失败: {session_id}, {error}")
@@ -993,7 +1129,16 @@ class SessionManager:
                     "error": str(error),
                 }
 
-            self.pool.put(session_id, candidate.session, candidate.session_type)
+            if not self.pool.replace(session_id, entry, candidate):
+                await self._release_session_memory_async(candidate.session)
+                return {
+                    "ok": False,
+                    "action": "restart",
+                    "session_id": session_id,
+                    "platform_id": self.platform_id,
+                    "old_runtime_preserved": True,
+                    "error": "会话运行时已变化",
+                }
             await self._release_session_memory_async(old_session)
             logger.info(f"[SessionManager] 会话已热重启: {session_id}")
             return {
@@ -1131,25 +1276,26 @@ class SessionManager:
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
 
-            entry = self.pool.get(session_id)
+            entry = self._acquire_or_create_entry(session_cfg)
             if entry is None:
-                entry = self._create_entry(session_cfg)
-                if entry is None:
-                    logger.error(f"[SessionManager] handle_call 失败：会话创建失败，session_id={session_id}")
-                    return ""
-
-            if isinstance(entry.session, AsyncSession):
-                logger.error(
-                    f"[SessionManager] handle_call 失败：session_id={session_id} 对应异步会话类 "
-                    f"{type(entry.session).__name__}，请使用 handle_call_async"
-                )
+                logger.error(f"[SessionManager] handle_call 失败：会话创建失败，session_id={session_id}")
                 return ""
 
-            with entry.sync_operation_lock:
-                if self.pool.list_entries().get(session_id) is not entry:
+            try:
+                if isinstance(entry.session, AsyncSession):
+                    logger.error(
+                        f"[SessionManager] handle_call 失败：session_id={session_id} 对应异步会话类 "
+                        f"{type(entry.session).__name__}，请使用 handle_call_async"
+                    )
                     return ""
-                response = self._invoke_sync_session(entry.session, user_call)
-            self._sync_runtime_to_store(session_id, entry.session)
+
+                with entry.sync_operation_lock:
+                    if self.pool.list_entries().get(session_id) is not entry:
+                        return ""
+                    response = self._invoke_sync_session(entry.session, user_call)
+                    self._sync_runtime_to_store(session_id, entry.session)
+            finally:
+                self.pool.release(entry)
             self.cleanup_idle_sessions()
             return "" if response is None else str(response)
         except Exception as e:
@@ -1171,25 +1317,26 @@ class SessionManager:
             session_id = session_cfg.session_id or ""
             user_call.session_id = session_id
 
-            async with self._async_lock:
-                entry = self.pool.get(session_id)
-                if entry is None:
-                    entry = self._create_entry(session_cfg)
-
+            entry = await self._acquire_or_create_entry_async(session_cfg)
             if entry is None:
                 logger.error(f"[SessionManager] handle_call_async 失败：会话创建失败，session_id={session_id}")
                 return ""
 
-            async with entry.async_operation_lock:
-                if self.pool.list_entries().get(session_id) is not entry:
-                    return ""
-                await self._prepare_session_async(entry.session)
+            try:
+                async with entry.async_operation_lock:
+                    if self.pool.list_entries().get(session_id) is not entry:
+                        return ""
+                    await self._prepare_session_async(entry.session)
 
-                if isinstance(entry.session, AsyncSession):
-                    response = await self._invoke_async_session(entry.session, user_call)
-                else:
-                    with entry.sync_operation_lock:
-                        response = self._invoke_sync_session(entry.session, user_call)
+                    if isinstance(entry.session, AsyncSession):
+                        response = await self._invoke_async_session(entry.session, user_call)
+                    else:
+                        with entry.sync_operation_lock:
+                            response = self._invoke_sync_session(entry.session, user_call)
+
+                    self._sync_runtime_to_store(session_id, entry.session)
+            finally:
+                self.pool.release(entry)
 
             if isinstance(response, CommandAction):   # 当需要切换会话时
                 user_call.session_id = response.target_session_id
@@ -1199,10 +1346,7 @@ class SessionManager:
                     logger.error(f"[SessionManager] handle_call_async 失败：切换会话时无法获取新 session_id，原 session_id={session_id}")
                     return f"切换失败：无法获取新会话 ID"
 
-                async with self._async_lock:
-                    new_entry = self.pool.get(new_id)
-                    if new_entry is None:
-                        new_entry = self._create_entry(new_cfg)
+                new_entry = await self._get_or_create_entry_async(new_cfg)
 
                 if new_entry is None:
                     return f"切换失败：无法创建会话 {new_id}"
@@ -1235,7 +1379,6 @@ class SessionManager:
                 await self.cleanup_idle_sessions_async()
                 return "" if response is None else str(response)   # 切换时返回
 
-            self._sync_runtime_to_store(session_id, entry.session)
             await self.cleanup_idle_sessions_async()
             return "" if response is None else str(response)   # 正常返回
 
@@ -1243,55 +1386,46 @@ class SessionManager:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
 
-    def reload_model_configs(self):
-        """重载所有活跃会话的 LLM 实例, 使模型配置变更即时生效"""
+    def reload_model_configs(self) -> None:
+        """同步重载活跃同步会话的 LLM 实例"""
         model_cfg_mgr = self._model_cfg_mgr
         if not model_cfg_mgr:
             logger.warning("[SessionManager] reload_model_configs 跳过：无 ModelConfigManager")
             return
 
         for session_id, entry in self.pool.list_entries().items():
-            session = entry.session
-            session_cfg = self.store.get(session_id)
-            if session_cfg is None:
-                continue
-            cfg_params = session_cfg.session_config or {}
-            session_type = session_cfg.session_type_name or entry.session_type
-            provider_name = session_cfg.provider_name or SESSION_CLASS_PROVIDER
-            definition = None
-            try:
-                resolved = self.provider_registry.resolve_definition(
-                    session_type,
-                    provider_name,
+            if isinstance(entry.session, AsyncSession):
+                logger.warning(
+                    f"[SessionManager] 同步模型重载跳过异步会话: {session_id}"
                 )
-                definition = resolved[1] if resolved is not None else None
-            except Exception:
-                pass
-            model_name_key = definition.model_key if definition is not None else "model_name"
-            model_name = cfg_params.get(model_name_key)
-            if not model_name and definition is not None:
-                model_name = definition.params.get(model_name_key)
-            if not model_name:
-                model_name = "default"
-            llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
-            if not llm_cfg or not llm_cfg.api_key:
                 continue
+            prepared = self._prepare_model_reload(session_id, entry)
+            if prepared is None:
+                continue
+            new_llm, llm_cfg = prepared
+            with entry.sync_operation_lock:
+                if self.pool.list_entries().get(session_id) is entry:
+                    self._apply_model_reload(session_id, entry.session, new_llm, llm_cfg)
 
-            new_llm = build_llm_from_config(llm_cfg, async_=isinstance(session, AsyncSession))
+    async def reload_model_configs_async(self) -> None:
+        """异步重载所有活跃会话的 LLM 实例"""
+        if self._model_cfg_mgr is None:
+            logger.warning("[SessionManager] reload_model_configs_async 跳过：无 ModelConfigManager")
+            return
 
-            session.reload_llm(new_llm)   # type: ignore[arg-type] session 为 Session|AsyncSession, 运行时由 isinstance 分支保证匹配
-            self._apply_session_context_config(session, llm_cfg)
-
-            for attr in ('_wf', 'wf', 'workflow', '_workflow', 'main_wf'):
-                wf = safe_getattr(session, attr)
-                if wf is None:
+        for session_id, entry in self.pool.list_entries().items():
+            prepared = self._prepare_model_reload(session_id, entry)
+            if prepared is None:
+                continue
+            new_llm, llm_cfg = prepared
+            async with entry.async_operation_lock:
+                if self.pool.list_entries().get(session_id) is not entry:
                     continue
-                if hasattr(wf, 'reset_llm'):
-                    wf.reset_llm(new_llm)
-                elif hasattr(wf, 'llm'):
-                    wf.llm = new_llm
-
-            logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
+                if isinstance(entry.session, AsyncSession):
+                    self._apply_model_reload(session_id, entry.session, new_llm, llm_cfg)
+                else:
+                    with entry.sync_operation_lock:
+                        self._apply_model_reload(session_id, entry.session, new_llm, llm_cfg)
 
     async def reconcile_edictum_plugins_async(
         self,
@@ -1599,8 +1733,8 @@ class SessionManager:
         try:
             removed = self.pool.collect_idle(max_idle_seconds=max_idle_seconds)
             for session_id, entry in removed:
-                self._release_session_memory(entry.session)
                 self._sync_runtime_to_store(session_id, entry.session)
+                self._release_session_memory(entry.session)
                 logger.info(f"[SessionManager] 已清理闲置会话：{session_id}")
         except Exception as e:
             logger.error(f"[SessionManager] cleanup_idle_sessions 失败：{e}")
@@ -1615,55 +1749,86 @@ class SessionManager:
         try:
             removed = self.pool.collect_idle(max_idle_seconds=max_idle_seconds)
             for session_id, entry in removed:
-                await self._release_session_memory_async(entry.session)
                 self._sync_runtime_to_store(session_id, entry.session)
+                await self._release_session_memory_async(entry.session)
                 logger.info(f"[SessionManager] 已清理闲置会话：{session_id}")
         except Exception as e:
             logger.error(f"[SessionManager] cleanup_idle_sessions_async 失败：{e}")
 
-    def remove_session(self, session_id: str, remove_config: bool = False):
+    def remove_session(self, session_id: str, remove_config: bool = False) -> bool:
         """
         移除活跃会话 (同步)
 
         参数:
         - session_id: 会话 ID
         - remove_config: 为 False 时仅移除内存活跃实例; 为 True 时同时删除 SQL 中的配置
+
+        返回:
+        - 会话空闲并成功移除时返回 True; 会话正在执行或处理失败时返回 False
         """
         try:
-            entry = self.pool.remove(session_id)
-            if entry:
-                self._sync_runtime_to_store(session_id, entry.session)
-                self._release_session_memory(entry.session)
+            entry = self.pool.get(session_id)
+            if entry is not None:
+                removed = self.pool.remove_if_idle(session_id, expected=entry)
+                if removed is None:
+                    logger.warning(f"[SessionManager] 会话正在执行, 同步删除已跳过: {session_id}")
+                    return False
+                self._sync_runtime_to_store(session_id, removed.session)
+                self._release_session_memory(removed.session)
             if remove_config:
                 StorageMaintenanceService(self.storage_layout).archive_session(
                     self.platform_id,
                     session_id,
                     database_path=self.store.db_path,
                 )
+            return True
         except Exception as e:
             logger.error(f"[SessionManager] remove_session 失败：session_id={session_id}, 错误={e}")
+            return False
 
-    async def remove_session_async(self, session_id: str, remove_config: bool = False):
+    async def remove_session_async(self, session_id: str, remove_config: bool = False) -> bool:
         """
         移除活跃会话 (异步)
 
         参数:
         - session_id: 会话 ID
         - remove_config: 为 False 时仅移除内存活跃实例; 为 True 时同时删除 SQL 中的配置
+
+        返回:
+        - 会话成功移除时返回 True; 并发替换导致目标不再匹配或处理失败时返回 False
         """
         try:
-            entry = self.pool.remove(session_id)
-            if entry:
-                self._sync_runtime_to_store(session_id, entry.session)
-                await self._release_session_memory_async(entry.session)
+            entry = self.pool.get(session_id)
+            if entry is not None:
+                async with entry.async_operation_lock:
+                    if isinstance(entry.session, AsyncSession):
+                        removed = self.pool.remove(session_id, expected=entry)
+                        if removed is not None:
+                            self._sync_runtime_to_store(session_id, removed.session)
+                    else:
+                        with entry.sync_operation_lock:
+                            removed = self.pool.remove(session_id, expected=entry)
+                            if removed is not None:
+                                self._sync_runtime_to_store(session_id, removed.session)
+                    if removed is None:
+                        current = self.pool.list_entries().get(session_id)
+                        if current is not None:
+                            logger.warning(
+                                f"[SessionManager] 会话已被并发替换, 异步删除已跳过: {session_id}"
+                            )
+                            return False
+                    else:
+                        await self._release_session_memory_async(removed.session)
             if remove_config:
                 StorageMaintenanceService(self.storage_layout).archive_session(
                     self.platform_id,
                     session_id,
                     database_path=self.store.db_path,
                 )
+            return True
         except Exception as e:
             logger.error(f"[SessionManager] remove_session_async 失败：session_id={session_id}, 错误={e}")
+            return False
 
     async def delete_sessions_async(self, session_ids: List[str]) -> List[str]:
         """
@@ -1920,14 +2085,21 @@ class SessionManager:
 
         try:
             evicted = self.pool.put(session_id, session, session_type)
+        except SessionPoolCapacityError as e:
+            self._release_session_memory(session)
+            logger.warning(
+                f"[SessionManager] 会话池容量已满: session_id={session_id}, 错误={e}"
+            )
+            return None
         except Exception as e:
+            self._release_session_memory(session)
             logger.error(f"[SessionManager] 放入会话池失败：session_id={session_id}, 错误={e}")
             return None
 
         if evicted:
             evicted_id, evicted_entry = evicted
-            self._release_session_memory(evicted_entry.session)
             self._sync_runtime_to_store(evicted_id, evicted_entry.session)
+            self._release_session_memory(evicted_entry.session)
             logger.info(f"[SessionManager] 已按 LRU 淘汰会话：{evicted_id}")
 
         entry = self.pool.get(session_id)
@@ -1935,6 +2107,137 @@ class SessionManager:
             logger.error(f"[SessionManager] 创建会话条目失败：session_id={session_id}")
             return None
         return entry
+
+    def _get_or_create_entry(self, session_cfg: SessionConfig) -> SessionEntry | None:
+        """
+        原子获取或创建会话条目
+
+        参数:
+        - session_cfg: 会话配置
+
+        返回:
+        - 活跃会话条目; 创建失败时返回 None
+        """
+        session_id = session_cfg.session_id or ""
+        with self._entry_creation_lock:
+            entry = self.pool.get(session_id)
+            if entry is None:
+                entry = self._create_entry(session_cfg)
+            return entry
+
+    def _acquire_or_create_entry(self, session_cfg: SessionConfig) -> SessionEntry | None:
+        """
+        原子获取或创建会话条目并取得使用租约
+
+        参数:
+        - session_cfg: 会话配置
+
+        返回:
+        - 已取得租约的会话条目; 创建失败时返回 None
+        """
+        session_id = session_cfg.session_id or ""
+        with self._entry_creation_lock:
+            entry = self.pool.acquire(session_id)
+            if entry is not None:
+                return entry
+            created = self._create_entry(session_cfg)
+            if created is None:
+                return None
+            return self.pool.acquire(session_id, expected=created)
+
+    async def _get_or_create_entry_async(
+        self,
+        session_cfg: SessionConfig,
+    ) -> SessionEntry | None:
+        """
+        在线程工作器中获取或创建会话条目
+
+        参数:
+        - session_cfg: 会话配置
+
+        返回:
+        - 活跃会话条目; 创建失败时返回 None
+        """
+        return await asyncio.to_thread(self._get_or_create_entry, session_cfg)
+
+    async def _acquire_or_create_entry_async(
+        self,
+        session_cfg: SessionConfig,
+    ) -> SessionEntry | None:
+        """
+        在线程工作器中获取或创建会话条目并取得使用租约
+
+        参数:
+        - session_cfg: 会话配置
+
+        返回:
+        - 已取得租约的会话条目; 创建失败时返回 None
+        """
+        return await asyncio.to_thread(self._acquire_or_create_entry, session_cfg)
+
+    def _prepare_model_reload(
+        self,
+        session_id: str,
+        entry: SessionEntry,
+    ) -> tuple[LLM | AsyncLLM, LLMConfig] | None:
+        """
+        构建会话热重载所需的新模型实例
+
+        参数:
+        - session_id: 会话 ID
+        - entry: 当前会话条目
+
+        返回:
+        - 新模型实例与配置; 配置不可用时返回 None
+        """
+        model_cfg_mgr = self._model_cfg_mgr
+        session_cfg = self.store.get(session_id)
+        if model_cfg_mgr is None or session_cfg is None:
+            return None
+        cfg_params = session_cfg.session_config or {}
+        session_type = session_cfg.session_type_name or entry.session_type
+        provider_name = session_cfg.provider_name or SESSION_CLASS_PROVIDER
+        resolved = self.provider_registry.resolve_definition(session_type, provider_name)
+        definition = resolved[1] if resolved is not None else None
+        model_name_key = definition.model_key if definition is not None else "model_name"
+        model_name = cfg_params.get(model_name_key)
+        if not model_name and definition is not None:
+            model_name = definition.params.get(model_name_key)
+        llm_cfg = model_cfg_mgr.get_llm_config(name=model_name or "default")
+        if not llm_cfg or not llm_cfg.api_key:
+            return None
+        new_llm = build_llm_from_config(
+            llm_cfg,
+            async_=isinstance(entry.session, AsyncSession),
+        )
+        return new_llm, llm_cfg
+
+    def _apply_model_reload(
+        self,
+        session_id: str,
+        session: Session | AsyncSession,
+        new_llm: LLM | AsyncLLM,
+        llm_cfg: LLMConfig,
+    ) -> None:
+        """
+        把已构建的模型实例应用到当前会话
+
+        参数:
+        - session_id: 会话 ID
+        - session: 当前会话实例
+        - new_llm: 新模型实例
+        - llm_cfg: 新模型配置
+        """
+        session.reload_llm(new_llm)   # type: ignore[arg-type] 同步与异步模型类型由会话类型决定
+        self._apply_session_context_config(session, llm_cfg)
+        for attr in ("_wf", "wf", "workflow", "_workflow", "main_wf"):
+            workflow = safe_getattr(session, attr)
+            reset_llm = safe_getattr_callable(workflow, "reset_llm")
+            if reset_llm is not None:
+                reset_llm(new_llm)
+            elif workflow is not None and hasattr(workflow, "llm"):
+                workflow.llm = new_llm
+        logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     def _persist_config(self, config: SessionConfig) -> None:
         """

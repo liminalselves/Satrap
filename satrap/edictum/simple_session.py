@@ -578,6 +578,8 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         """插件 MCP 连接: 连接名 -> (客户端, 同步适配器列表) (同步版经后台事件循环桥接)"""
         self.user_input_provider: SyncUserInputProvider | None = None
         """用户输入通道: 供 ask_user / 审批询问使用 (CLI 或 Web 前端均可注入)"""
+        self._run_lock = threading.RLock()
+        """同一同步会话的 run 串行锁"""
         self.stream = stream
         if tools:
             for tool in tools:
@@ -637,6 +639,34 @@ class SimpleSession(Session, _HandlerRegistryMixin):
     # ---------- 调用入口 ----------
 
     def run(
+        self,
+        user_input: str,
+        img_urls: list[str] | None = None,
+        *,
+        thinking: str = "off",
+        max_iterations: int = 10,
+    ) -> str | CommandAction:
+        """
+        串行执行一轮同步 Agent 流程
+
+        参数:
+        - user_input: 用户输入
+        - img_urls: 附加图片 URL 列表, 默认 None
+        - thinking: 思考模式, 默认 off
+        - max_iterations: 最大工具迭代次数, 默认 10
+
+        返回:
+        - 最终模型文本或命令动作
+        """
+        with self._run_lock:
+            return self._run_once(
+                user_input,
+                img_urls,
+                thinking=thinking,
+                max_iterations=max_iterations,
+            )
+
+    def _run_once(
         self,
         user_input: str,
         img_urls: list[str] | None = None,

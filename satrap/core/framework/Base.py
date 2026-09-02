@@ -1035,10 +1035,22 @@ class Session:
     def clear_memory(self):
         """清除会话内存"""
         try:
-            self.session_ctx.del_context()
-            for wf_id in self.wf_list:
-                wf_ctx = ContextManager(wf_id, db_path=self.session_ctx.db_path)
-                wf_ctx.del_context()
+            contexts = self._all_contexts()
+            for context in contexts.values():
+                context.del_context()
+
+            tracked_ids = {context.conversation_id for context in contexts.values()}
+            for workflow_id in self.wf_list:
+                if workflow_id in tracked_ids:
+                    continue
+                workflow_context = ContextManager(
+                    workflow_id,
+                    db_path=self.session_ctx.db_path,
+                )
+                try:
+                    workflow_context.del_context()
+                finally:
+                    workflow_context.close()
 
             logger.info("[会话管理器] 清除工作流上下文完成")
 
@@ -2066,12 +2078,21 @@ class AsyncSession:
         """清除会话内存"""
         try:
             await self.initialize()
-            await self.session_ctx.del_context()
-            for wf_id in self.wf_list:
-                wf_ctx = AsyncContextManager(wf_id, db_path=self.session_ctx.db_path)
-                await wf_ctx.initialize()
-                await wf_ctx.del_context()
-                logger.info(f"[会话管理器] 清除工作流上下文完成, 工作流ID: {wf_id}")
+            contexts = self._all_contexts()
+            for context in contexts.values():
+                await context.initialize()
+                await context.del_context()
+            tracked_ids = {context.conversation_id for context in contexts.values()}
+            for workflow_id in self.wf_list:
+                if workflow_id in tracked_ids:
+                    continue
+                workflow_context = AsyncContextManager(
+                    workflow_id,
+                    db_path=self.session_ctx.db_path,
+                )
+                await workflow_context.initialize()
+                await workflow_context.del_context()
+            logger.info("[会话管理器] 清除工作流上下文完成")
 
         except Exception as e:
             logger.error(f"[会话管理器] 清除会话上下文错误: {e}")

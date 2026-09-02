@@ -943,30 +943,53 @@ class DisplayRecorder:
                 " WHERE t.conversation_id = ? AND t.turn_index < ? ORDER BY t.turn_index ASC",
                 (self.conversation_id, up_to_index),
             ).fetchall()
+            snapshot = [
+                (
+                    row,
+                    conn.execute(
+                        "SELECT seq, name, arguments, success, call_id, created_at"
+                        " FROM display_tool_calls WHERE turn_id = ? AND variant_index = ?"
+                        " ORDER BY seq ASC",
+                        (row[0], row[9]),
+                    ).fetchall(),
+                )
+                for row in rows
+            ]
         count = 0
-        for r in rows:
-            with target._lock:
-                tconn = target._get_conn()
+        with target._lock:
+            tconn = target._get_conn()
+            for row, tools in snapshot:
                 cur = tconn.execute(
                     "INSERT INTO display_turns"
                     " (conversation_id, turn_index, user_input, thinking, answer, attachments,"
                     " segments, context_stats, created_at, active_variant) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)",
-                    (target.conversation_id, r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8]),
+                    (
+                        target.conversation_id,
+                        row[1],
+                        row[2],
+                        row[3],
+                        row[4],
+                        row[5],
+                        row[6],
+                        row[7],
+                        row[8],
+                    ),
                 )
                 new_turn_id = int(cur.lastrowid or 0)
                 tconn.execute(
                     "INSERT INTO display_turn_variants"
                     " (turn_id, variant_index, thinking, answer, segments, context_messages, context_stats, created_at)"
                     " VALUES (?, 0, ?, ?, ?, ?, ?, ?)",
-                    (new_turn_id, r[3], r[4], r[6], r[10], r[7], r[8]),
+                    (
+                        new_turn_id,
+                        row[3],
+                        row[4],
+                        row[6],
+                        row[10],
+                        row[7],
+                        row[8],
+                    ),
                 )
-                # 复制工具调用
-                tools = conn.execute(
-                    "SELECT seq, name, arguments, success, call_id, created_at"
-                    " FROM display_tool_calls WHERE turn_id = ? AND variant_index = ?"
-                    " ORDER BY seq ASC",
-                    (r[0], r[9]),
-                ).fetchall()
                 for tool in tools:
                     tconn.execute(
                         "INSERT INTO display_tool_calls"
@@ -975,10 +998,12 @@ class DisplayRecorder:
                         (new_turn_id, tool[0], tool[1], tool[2], tool[3], tool[4], tool[5]),
                     )
                 tconn.commit()
-            count += 1
-        # 同步 target 的 turn_index 计数器
-        if count > 0:
-            target._next_turn_index = rows[-1][1] + 1
+                count += 1
+            if count > 0:
+                target._next_turn_index = max(
+                    target._next_turn_index,
+                    snapshot[-1][0][1] + 1,
+                )
         return count
 
 

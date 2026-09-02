@@ -952,8 +952,8 @@ class UserManager:
         返回:
         - str: 按用户维度路由消息到 SessionManager
         """
-        with self._lock:
-            try:
+        try:
+            with self._lock:
                 if self.get_or_create_user(user_id=user_id) is None:
                     logger.warning(
                         f"[UserManager] route_call 拒绝: 用户不存在且 auto_create=False, user_id={user_id}"
@@ -964,8 +964,7 @@ class UserManager:
                     session_ids = self.get_user_session_ids(user_id=user_id)
                     if session_ids:
                         user_call.session_id = session_ids[0]
-
-                return self.sm.handle_call(user_call)
-            except Exception as e:
-                logger.error(f"[UserManager] route_call 失败: user_id={user_id}, 错误={e}")
-                return ""
+            return self.sm.handle_call(user_call)
+        except Exception as e:
+            logger.error(f"[UserManager] route_call 失败: user_id={user_id}, 错误={e}")
+            return ""
