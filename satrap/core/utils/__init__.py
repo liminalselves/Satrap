@@ -1,5 +1,5 @@
 """Satrap 核心通用工具函数导出入口"""
-from typing import Any, overload
+from typing import Any, cast, overload
 from ipaddress import ip_address
 import json
 import ast
@@ -35,6 +35,24 @@ def _repair_json_value(value: str) -> str:
     return re.sub(r'"', lambda m: '\\"', value)   # 剩余裸引号 -> 转义
 
 
+def _as_argument_dict(value: object) -> dict[str, Any]:
+    """
+    将解析结果收窄为工具调用要求的字符串键字典
+
+    参数:
+    - value: JSON 或 Python 字面量解析结果
+
+    返回:
+    - dict[str, Any]: 合法参数字典, 非字典或含非字符串键时返回空字典
+    """
+    if not isinstance(value, dict):
+        return {}
+    candidate = cast(dict[object, object], value)
+    if not all(isinstance(key, str) for key in candidate):
+        return {}
+    return cast(dict[str, Any], candidate)
+
+
 def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
     """
     容错解析参数字符串, 返回 dict
@@ -49,7 +67,8 @@ def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
         return arg_str
 
     try:   # 尝试标准 JSON 解析
-        return json.loads(arg_str)
+        parsed: object = json.loads(arg_str)
+        return _as_argument_dict(parsed)
     except json.JSONDecodeError:
         pass
 
@@ -59,14 +78,15 @@ def safe_parse_arguments(arg_str: str | dict[str, Any]) -> dict[str, Any]:
             return match.group(1) + _repair_json_value(match.group(2)) + match.group(3)
 
         repaired = re.sub(pattern, fix_value, arg_str, flags=re.DOTALL)
-        return json.loads(repaired)
-    except Exception:
+        parsed = json.loads(repaired)
+        return _as_argument_dict(parsed)
+    except json.JSONDecodeError:
         pass
 
     try:   # 尝试 ast.literal_eval
-
-        return ast.literal_eval(arg_str)
-    except:
+        parsed = ast.literal_eval(arg_str)
+        return _as_argument_dict(parsed)
+    except (SyntaxError, ValueError):
         pass
 
     logger.error(f"[安全解析] 无法解析参数: {arg_str[:200]}...")

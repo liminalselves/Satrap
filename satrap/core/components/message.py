@@ -16,11 +16,11 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, cast
 
-import aiohttp
 from pydantic import BaseModel, ConfigDict, Field
 
 from satrap.core.log import logger
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
+from satrap.core.utils.outbound import DEFAULT_MAX_DOWNLOAD_BYTES, safe_async_get
 
 
 _SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"
@@ -90,25 +90,32 @@ def file_to_base64(path: str) -> str:
         return base64.b64encode(f.read()).decode("utf-8")
 
 
-async def download_file(url: str, path: str) -> str:
+async def download_file(
+    url: str,
+    path: str,
+    *,
+    max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+) -> str:
     """
     异步下载文件到指定路径
 
     参数:
     - url: URL
     - path: 路径
+    - max_download_bytes: 最大允许下载字节数, 默认 32 MiB
 
     返回:
     - str: 异步下载文件到指定路径
     """
     os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            resp.raise_for_status()
-            with open(path, "wb") as f:
-                async for chunk in resp.content.iter_chunked(1024 * 64):
-                    f.write(chunk)
+    response = await safe_async_get(
+        url,
+        timeout=120,
+        max_response_bytes=max_download_bytes,
+    )
+    response.raise_for_status()
+    with open(path, "wb") as f:
+        f.write(response.content)
     return os.path.abspath(path)
 
 

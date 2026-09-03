@@ -176,7 +176,7 @@ class MisskeyAdapter(PlatformAdapter):
                         await streaming.subscribe_channel("messagingIndex")
                     await streaming.listen()
             except Exception as e:
-                logger.error(f"[MisskeyAdapter] WebSocket 异常: {e}")
+                logger.error(f"[MisskeyAdapter] WebSocket 异常: {type(e).__name__}")
 
             if self._running:
                 sleep_time = backoff_delay + random.uniform(0, 1.0)

@@ -20,11 +20,11 @@ from satrap.core.log import logger
 from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
 from satrap.core.type import safe_getattr_str
 from satrap.core.utils.outbound import (
+    DEFAULT_MAX_DOWNLOAD_BYTES,
     UnsafeOutboundURLError,
     normalize_hostname,
+    safe_async_get,
     same_origin,
-    validate_outbound_http_url,
-    validate_outbound_redirect,
 )
 
 _P = ParamSpec("_P")
@@ -244,7 +244,7 @@ class StreamingClient:
                 except Exception as e:
                     logger.error(f"[Misskey WebSocket] 处理消息失败: {e}")
         except Exception as e:
-            logger.warning(f"[Misskey WebSocket] 监听中断: {e}")
+            logger.warning(f"[Misskey WebSocket] 监听中断: {type(e).__name__}")
         finally:
             self.is_connected = False
             try:
@@ -368,14 +368,18 @@ class MisskeyAPI:
         - allow_insecure_downloads: 是否允许不安全的下载, 默认 False
         - download_timeout: 下载超时时间, 默认 15 秒
         - chunk_size: 下载分块大小, 默认 64KB
-        - max_download_bytes: 最大下载字节数, 可选
+        - max_download_bytes: 最大下载字节数, 默认 32 MiB
         """
         self.instance_url = instance_url.rstrip("/")
         self.access_token = access_token
         self.allow_insecure_downloads = allow_insecure_downloads
         self.download_timeout = download_timeout
         self.chunk_size = chunk_size
-        self.max_download_bytes = int(max_download_bytes) if max_download_bytes is not None else None
+        self.max_download_bytes = (
+            int(max_download_bytes)
+            if max_download_bytes is not None
+            else DEFAULT_MAX_DOWNLOAD_BYTES
+        )
         self._session: aiohttp.ClientSession | None = None
         self.streaming: StreamingClient | None = None
 
@@ -723,36 +727,19 @@ class MisskeyAPI:
             if instance_host is not None
             else ()
         )
-        current_url = validate_outbound_http_url(url, trusted_hosts=trusted_hosts)
-        if not ssl_verify and not same_origin(current_url, self.instance_url):
+        if not ssl_verify and not same_origin(url, self.instance_url):
             raise UnsafeOutboundURLError("不安全 TLS 仅允许用于已配置的 Misskey 实例")
-        timeout = aiohttp.ClientTimeout(total=self.download_timeout)
-        connector = None if ssl_verify else aiohttp.TCPConnector(ssl=False)
-        session_cm = aiohttp.ClientSession(connector=connector, timeout=timeout)
-        async with session_cm as session:
-            for _ in range(6):
-                async with session.get(current_url, allow_redirects=False) as response:
-                    if 300 <= response.status < 400:
-                        current_url = validate_outbound_redirect(
-                            current_url,
-                            response.headers.get("Location", ""),
-                            trusted_hosts=trusted_hosts,
-                        )
-                        if not ssl_verify and not same_origin(current_url, self.instance_url):
-                            raise UnsafeOutboundURLError(
-                                "不安全 TLS 下载不得重定向到其他来源"
-                            )
-                        continue
-                    response.raise_for_status()
-                    chunks: list[bytes] = []
-                    total = 0
-                    async for chunk in response.content.iter_chunked(self.chunk_size):
-                        total += len(chunk)
-                        if self.max_download_bytes is not None and total > self.max_download_bytes:
-                            raise APIError("Downloaded file exceeds max_download_bytes")
-                        chunks.append(chunk)
-                    return b"".join(chunks)
-        raise APIError("下载重定向次数超过限制")
+        response = await safe_async_get(
+            url,
+            timeout=self.download_timeout,
+            max_response_bytes=self.max_download_bytes,
+            trusted_hosts=trusted_hosts,
+            max_redirects=5,
+            ssl_verify=ssl_verify,
+            restrict_redirects_to_origin=not ssl_verify,
+        )
+        response.raise_for_status()
+        return response.content
 
     async def upload_and_find_file(
         self,
