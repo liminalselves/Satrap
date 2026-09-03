@@ -28,11 +28,14 @@ Host 头与 TLS SNI/证书校验保留原始主机名, 重定向逐跳重新校�
 pyright 门禁 (`.pyrightcfg`) **0 errors, 1 warning** (新代码 `utils/__init__.py:48`
 `reportUnknownVariableType`, `dict` 迭代键类型未收窄, 可顺手清理)。
 
-遗留小项 (不阻塞):
-- `download_file` 无 `trusted_hosts` 通道: 私网 OneBot 客户端 (如 go-cqhttp 本地文件 URL)
-  会被 fail-closed 拒绝 — 若部署依赖内网文件源, 需要加配置化可信主机入口
-- 新 `safe_*_get` 固定地址行为与 `safe_parse_arguments` 非 dict 归一暂无专项测试
-  (现有 `test_outbound_security.py` 覆盖兼容包装 API)
+遗留小项 (均已于 2026-09-03 补齐):
+- ~~`download_file` 无 `trusted_hosts` 通道~~ → 已加: 显式 `trusted_hosts` 参数 +
+  `SATRAP_TRUSTED_DOWNLOAD_HOSTS` 环境变量缺省 (逗号分隔, 规范化比较);
+  私网 OneBot 部署配置该变量即可恢复内网文件下载
+- ~~`safe_*_get` 与 parser 归一缺专项测试~~ → 已补 22 项: 回环真实服务器端到端
+  (fail-closed 拒绝/trusted 下载/逐跳重定向/私网重定向拦截/循环上限/CL 与流式双限流/
+  固定解析器错配拒绝) + `download_file` env 与显式参数 + parser 归一 8 例
+  (`test_outbound_security.py`, `test_safe_parse_arguments.py`)
 
 发布待办 (非安全问题): 本地 main 领先 origin/main 22 个提交未推送, 本轮修复亦未提交。
 

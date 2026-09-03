@@ -3,12 +3,23 @@ from __future__ import annotations
 
 import json
 import socket
-from typing import NoReturn, Protocol
+import threading
+from collections.abc import Iterator
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import NoReturn, Protocol, cast
 
 import pytest
 
+from satrap.core.components.message import download_file
 from satrap.core.utils.outbound import (
+    OutboundResponseTooLargeError,
+    ResolvedOutboundTarget,
+    TRUSTED_DOWNLOAD_HOSTS_ENV_NAME,
     UnsafeOutboundURLError,
+    _PinnedResolver,
+    safe_async_get,
+    safe_sync_get,
     validate_outbound_http_url,
     validate_outbound_redirect,
 )
@@ -184,3 +195,197 @@ def test_search_uses_structured_query_parameters(monkeypatch: pytest.MonkeyPatch
     assert result[0]["title"] == "title"
     assert captured["url"] == "https://cn.bing.com/search"
     assert captured["params"] == {"q": "a&count=999", "count": 5}
+
+
+# ---------- safe_sync_get / safe_async_get 固定地址行为 ----------
+
+_TRUST_LOOPBACK = ("127.0.0.1",)
+
+
+class _OutboundHandler(BaseHTTPRequestHandler):
+    """回环测试服务器的固定路由处理器"""
+
+    def log_message(self, format: str, *args: object) -> None:
+        """静默请求日志"""
+
+    def do_GET(self) -> None:
+        """按固定路由响应, 覆盖正文/重定向/超限三类行为"""
+        if self.path == "/ok":
+            self._respond(200, b"hello-outbound")
+        elif self.path == "/big":
+            self._respond(200, b"x" * (64 * 1024))
+        elif self.path == "/stream-big":
+            self.send_response(200)   # HTTP/1.0 关闭定界, 无 Content-Length
+            self.end_headers()
+            self.wfile.write(b"y" * (64 * 1024))
+        elif self.path == "/redirect":
+            self._redirect("/ok")
+        elif self.path == "/redirect-private":
+            self._redirect("http://169.254.169.254/latest/meta-data")
+        elif self.path == "/redirect-loop":
+            self._redirect("/redirect-loop")
+        else:
+            self._respond(404, b"not found")
+
+    def _respond(self, status: int, body: bytes) -> None:
+        """
+        发送带 Content-Length 的响应
+
+        参数:
+        - status: HTTP 状态码
+        - body: 响应正文
+        """
+        self.send_response(status)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _redirect(self, location: str) -> None:
+        """
+        发送 302 重定向
+
+        参数:
+        - location: Location 响应头
+        """
+        self.send_response(302)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+
+@pytest.fixture()
+def local_server() -> Iterator[str]:
+    """启动回环测试服务器并返回 base URL (端口随机)"""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _OutboundHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        _, port = cast("tuple[str, int]", server.server_address)
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_safe_sync_get_rejects_private_target_without_trust(local_server: str) -> None:
+    """未配置可信主机时回环地址应在连接前被拒绝"""
+    with pytest.raises(UnsafeOutboundURLError):
+        safe_sync_get(f"{local_server}/ok")
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_rejects_private_target_without_trust(local_server: str) -> None:
+    """未配置可信主机时回环地址应在连接前被拒绝 (异步)"""
+    with pytest.raises(UnsafeOutboundURLError):
+        await safe_async_get(f"{local_server}/ok")
+
+
+def test_safe_sync_get_downloads_from_trusted_loopback(local_server: str) -> None:
+    """可信回环主机应完成固定地址下载"""
+    response = safe_sync_get(f"{local_server}/ok", trusted_hosts=_TRUST_LOOPBACK)
+    assert response.status_code == 200
+    assert response.content == b"hello-outbound"
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_downloads_from_trusted_loopback(local_server: str) -> None:
+    """可信回环主机应完成固定地址下载 (异步)"""
+    response = await safe_async_get(f"{local_server}/ok", trusted_hosts=_TRUST_LOOPBACK)
+    assert response.status_code == 200
+    assert response.content == b"hello-outbound"
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_follows_redirect_with_per_hop_validation(local_server: str) -> None:
+    """同主机重定向应逐跳校验后跟随"""
+    response = await safe_async_get(f"{local_server}/redirect", trusted_hosts=_TRUST_LOOPBACK)
+    assert response.status_code == 200
+    assert response.content == b"hello-outbound"
+    assert response.url.endswith("/ok")
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_blocks_redirect_to_private_address(local_server: str) -> None:
+    """重定向到非公网地址应在该跳被拒绝"""
+    with pytest.raises(UnsafeOutboundURLError):
+        await safe_async_get(f"{local_server}/redirect-private", trusted_hosts=_TRUST_LOOPBACK)
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_enforces_redirect_limit(local_server: str) -> None:
+    """循环重定向应触发次数上限"""
+    with pytest.raises(UnsafeOutboundURLError, match="重定向次数超过限制"):
+        await safe_async_get(f"{local_server}/redirect-loop", trusted_hosts=_TRUST_LOOPBACK, max_redirects=3)
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_enforces_byte_limit(local_server: str) -> None:
+    """Content-Length 超限应在读取前拒绝"""
+    with pytest.raises(OutboundResponseTooLargeError):
+        await safe_async_get(
+            f"{local_server}/big", trusted_hosts=_TRUST_LOOPBACK, max_response_bytes=1024
+        )
+
+
+@pytest.mark.asyncio
+async def test_safe_async_get_enforces_streaming_byte_limit(local_server: str) -> None:
+    """无 Content-Length 的响应应由流式计数拦截"""
+    with pytest.raises(OutboundResponseTooLargeError):
+        await safe_async_get(
+            f"{local_server}/stream-big", trusted_hosts=_TRUST_LOOPBACK, max_response_bytes=1024
+        )
+
+
+def test_safe_sync_get_enforces_streaming_byte_limit(local_server: str) -> None:
+    """无 Content-Length 的响应应由限量读取拦截 (同步)"""
+    with pytest.raises(OutboundResponseTooLargeError):
+        safe_sync_get(
+            f"{local_server}/stream-big", trusted_hosts=_TRUST_LOOPBACK, max_response_bytes=1024
+        )
+
+
+@pytest.mark.asyncio
+async def test_pinned_resolver_only_returns_validated_addresses() -> None:
+    """固定解析器应拒绝错配主机且仅返回校验地址"""
+    target = ResolvedOutboundTarget(
+        url="http://example.com",
+        hostname="example.com",
+        port=80,
+        addresses=((socket.AF_INET, "93.184.216.34"),),
+    )
+    resolver = _PinnedResolver(target)
+    with pytest.raises(OSError):
+        await resolver.resolve("evil.example.com", 80)
+    results = await resolver.resolve("example.com", 80)
+    assert [item["host"] for item in results] == ["93.184.216.34"]
+
+
+@pytest.mark.asyncio
+async def test_download_file_uses_env_trusted_hosts(
+    local_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """download_file 默认读取 SATRAP_TRUSTED_DOWNLOAD_HOSTS 环境变量"""
+    monkeypatch.delenv(TRUSTED_DOWNLOAD_HOSTS_ENV_NAME, raising=False)
+    target = tmp_path / "file.bin"
+    with pytest.raises(UnsafeOutboundURLError):
+        await download_file(f"{local_server}/ok", str(target))
+
+    monkeypatch.setenv(TRUSTED_DOWNLOAD_HOSTS_ENV_NAME, "127.0.0.1")
+    saved = await download_file(f"{local_server}/ok", str(target))
+    assert Path(saved).read_bytes() == b"hello-outbound"
+
+
+@pytest.mark.asyncio
+async def test_download_file_accepts_explicit_trusted_hosts(
+    local_server: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """download_file 显式 trusted_hosts 应覆盖环境变量缺省"""
+    monkeypatch.delenv(TRUSTED_DOWNLOAD_HOSTS_ENV_NAME, raising=False)
+    target = tmp_path / "file.bin"
+    saved = await download_file(f"{local_server}/ok", str(target), trusted_hosts=["127.0.0.1"])
+    assert Path(saved).read_bytes() == b"hello-outbound"

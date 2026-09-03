@@ -12,6 +12,7 @@ import json
 import os
 import re
 import uuid
+from collections.abc import Iterable
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, cast
@@ -20,7 +21,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from satrap.core.log import logger
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
-from satrap.core.utils.outbound import DEFAULT_MAX_DOWNLOAD_BYTES, safe_async_get
+from satrap.core.utils.outbound import (
+    DEFAULT_MAX_DOWNLOAD_BYTES,
+    safe_async_get,
+    trusted_hosts_from_env,
+)
 
 
 _SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"
@@ -95,6 +100,7 @@ async def download_file(
     path: str,
     *,
     max_download_bytes: int = DEFAULT_MAX_DOWNLOAD_BYTES,
+    trusted_hosts: Iterable[str] | None = None,
 ) -> str:
     """
     异步下载文件到指定路径
@@ -103,6 +109,8 @@ async def download_file(
     - url: URL
     - path: 路径
     - max_download_bytes: 最大允许下载字节数, 默认 32 MiB
+    - trusted_hosts: 允许访问私网地址的可信主机; None 时读取
+      SATRAP_TRUSTED_DOWNLOAD_HOSTS 环境变量 (如内网 OneBot 客户端地址)
 
     返回:
     - str: 异步下载文件到指定路径
@@ -112,6 +120,7 @@ async def download_file(
         url,
         timeout=120,
         max_response_bytes=max_download_bytes,
+        trusted_hosts=trusted_hosts_from_env() if trusted_hosts is None else trusted_hosts,
     )
     response.raise_for_status()
     with open(path, "wb") as f:

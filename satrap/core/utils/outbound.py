@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import http.client
 import ipaddress
+import os
 import socket
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -25,6 +26,9 @@ DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 
 DEFAULT_MAX_DOWNLOAD_BYTES = 32 * 1024 * 1024
 """媒体与文件下载的默认最大字节数"""
+
+TRUSTED_DOWNLOAD_HOSTS_ENV_NAME = "SATRAP_TRUSTED_DOWNLOAD_HOSTS"
+"""允许文件下载访问私网地址的可信主机环境变量 (逗号分隔)"""
 
 _REDIRECT_STATUSES = {
     HTTPStatus.MOVED_PERMANENTLY,
@@ -106,6 +110,22 @@ def normalize_hostname(hostname: str) -> str:
     - str: 小写且移除结尾根标签的主机名
     """
     return hostname.rstrip(".").lower()
+
+
+def trusted_hosts_from_env(env_name: str = TRUSTED_DOWNLOAD_HOSTS_ENV_NAME) -> tuple[str, ...]:
+    """
+    从环境变量读取逗号分隔的下载可信主机列表
+
+    参数:
+    - env_name: 环境变量名, 默认 SATRAP_TRUSTED_DOWNLOAD_HOSTS
+
+    返回:
+    - tuple[str, ...]: 规范化后的可信主机名, 未配置时为空元组
+    """
+    configured = os.getenv(env_name, "")
+    return tuple(
+        normalize_hostname(item.strip()) for item in configured.split(",") if item.strip()
+    )
 
 
 def _resolve_addresses(hostname: str, port: int) -> tuple[tuple[socket.AddressFamily, str], ...]:
