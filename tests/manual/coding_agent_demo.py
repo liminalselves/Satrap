@@ -108,7 +108,7 @@ def build_workflow(cfg: DemoConfig, content_callback: Optional[Callable[[str], N
 
 def run_once(cfg: DemoConfig, message: str) -> str:
     wf = build_workflow(cfg)   # 单次运行不需要回调
-    return wf(message)   # type: ignore  # 忽略返回值类型检查错误
+    return wf(message)
 
 
 def run_repl(cfg: DemoConfig):

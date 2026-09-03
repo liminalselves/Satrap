@@ -205,7 +205,7 @@ class SessionClassProvider:
             else:
                 kwargs.update({key: value for key, value in payload.items() if key in accepted and key not in kwargs})
             inject_checkpoint_defaults(kwargs)
-            return session_class(**kwargs)   # type: ignore[misc]
+            return session_class(**kwargs)
 
         kwargs = {}
         if "session_id" in accepted:
@@ -218,7 +218,7 @@ class SessionClassProvider:
 
         if not kwargs and session_config.session_id:
             try:
-                return session_class(session_config.session_id)   # type: ignore[misc]
+                return session_class(session_config.session_id)
             except Exception:
                 pass
-        return session_class(**kwargs)   # type: ignore[misc]
+        return session_class(**kwargs)

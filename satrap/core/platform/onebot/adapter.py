@@ -27,7 +27,7 @@ class _MissingCQHttp:
 try:
     from aiocqhttp import CQHttp
 except ImportError:   # pragma: no cover - 在安装依赖后走真实分支
-    CQHttp = _MissingCQHttp   # type: ignore
+    CQHttp = _MissingCQHttp
 
 
 @register_platform_adapter("aiocqhttp")

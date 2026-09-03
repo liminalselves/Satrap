@@ -177,7 +177,7 @@ def test_tools_manager_returns_structured_errors_without_executing_invalid_calls
     assert invalid_args_result["error_type"] == "invalid_arguments"
     assert tool.calls == 0
 
-    none_args_result = manager.execute_tool("counting", None)   # type: ignore[arg-type]
+    none_args_result = manager.execute_tool("counting", None)
     assert none_args_result["error_type"] == "execution_error"
     assert tool.calls == 0
 

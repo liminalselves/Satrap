@@ -182,7 +182,7 @@ async def test_async_llm_api_error_honors_return_false() -> None:
         return_false=True,
     )
     request = httpx.Request("POST", "https://example.test/chat")
-    llm.client.chat.completions.create = AsyncMock(   # type: ignore[method-assign]
+    llm.client.chat.completions.create = AsyncMock(
         side_effect=APIError("boom", request, body=None)
     )
 

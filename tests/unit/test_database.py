@@ -122,7 +122,7 @@ def test_lite_vector_add_auto_creates_collection(tmp_path: Path):
     - tmp_path: tmp路径
     """
     db = LiteVectorDB(persist_path=str(tmp_path / "vec"))
-    added = db.add_to_collection("auto", ["x"], [[1.0, 0.0]], None)   # type: ignore[arg-type]
+    added = db.add_to_collection("auto", ["x"], [[1.0, 0.0]], None)
     assert added == 1
     assert db.get_collection_names() == ["auto"]
 

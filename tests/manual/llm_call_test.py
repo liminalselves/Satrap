@@ -20,7 +20,7 @@ def main():
     {"role": "system", "content": system_prompt},
     {"role": "user", "content": user_prompt}
     ]
-    response = bot.call(messages=message)   # type: ignore
+    response = bot.call(messages=message)
     print("同步调用结果:", response)
 
 if __name__ == "__main__":

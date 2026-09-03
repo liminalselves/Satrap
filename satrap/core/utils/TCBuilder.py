@@ -270,7 +270,7 @@ class Tool:
         """
         if not self.assert_tool():
             return {}
-        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore
+        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore[reportArgumentType]
 
     def get_tool_name(self) -> str:
         """
@@ -413,7 +413,7 @@ class AsyncTool:
         """
         if not self.assert_tool():
             return {}
-        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore
+        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore[reportArgumentType]
 
     def get_tool_name(self) -> str:
         """

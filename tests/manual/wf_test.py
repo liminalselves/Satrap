@@ -66,7 +66,7 @@ class WeatherWorkflow(ModelWorkflowFramework):
         # Step.4 获取最终回答(最后一条 assistant 消息的内容)
         for msg in reversed(final_context):
             if msg.get("role") == "assistant":
-                return msg.get("content", "")   # type: ignore
+                return msg.get("content", "")   # type: ignore[reportReturnType]
         return "未找到模型回复"
 
 # ========== 3. 主程序 ==========

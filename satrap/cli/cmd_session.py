@@ -101,7 +101,7 @@ def cmd_session_list(args: argparse.Namespace):
             sys.exit(1)
         configs = data
     else:
-        configs = mgr.list_configs()   # type: ignore
+        configs = mgr.list_configs()   # type: ignore[reportOptionalMemberAccess]
 
     if not configs:
         print("没有已注册的会话类")
@@ -131,7 +131,7 @@ def cmd_session_enable(args: argparse.Namespace):
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.enable(args.name)   # type: ignore
+            mgr.enable(args.name)   # type: ignore[reportOptionalMemberAccess]
         print(f"已启用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -152,7 +152,7 @@ def cmd_session_disable(args: argparse.Namespace):
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.disable(args.name)   # type: ignore
+            mgr.disable(args.name)   # type: ignore[reportOptionalMemberAccess]
         print(f"已停用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -248,7 +248,7 @@ def cmd_session_config_set(args: argparse.Namespace):
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.set_config(args.name, params)   # type: ignore
+                mgr.set_config(args.name, params)   # type: ignore[reportOptionalMemberAccess]
         else:
             kv: dict[str, str] = {}
             for group in args.set:
@@ -269,7 +269,7 @@ def cmd_session_config_set(args: argparse.Namespace):
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.update_config(args.name, **kv)   # type: ignore
+                mgr.update_config(args.name, **kv)   # type: ignore[reportOptionalMemberAccess]
         print(f"已更新配置: {args.name}")
     except ValueError as e:
         print(f"配置失败: {e}")
@@ -284,7 +284,7 @@ def cmd_session_config_show(args: argparse.Namespace):
     - args: 命令参数
     """
     client, mgr = _client_or_fallback(args)
-    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)   # type: ignore
+    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)   # type: ignore[reportOptionalMemberAccess]
     if isinstance(cfg, dict) and "error" in cfg:
         print(f"查询失败: {cfg['error']}")
         sys.exit(1)

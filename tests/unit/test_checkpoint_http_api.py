@@ -24,7 +24,7 @@ def _make_server(db_path: str) -> BackendHTTPServer:
 async def _route(
     server: BackendHTTPServer, method: str, path: str, body: bytes = b""
 ) -> tuple[int, dict[str, Any]]:
-    return await server._route(method, path, body)   # type: ignore[arg-type]
+    return await server._route(method, path, body)
 
 
 @pytest.mark.asyncio

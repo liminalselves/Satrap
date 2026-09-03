@@ -70,7 +70,7 @@ class LiteVectorDB:
             try:
                 with open(index_file, 'rb') as f:
                     data: Any = msgpack.unpack(f, raw=False)   # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-                    self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore
+                    self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore[reportUnknownArgumentType]
                 logger.info(f"从磁盘加载 {len(self.collections)} 个集合")
                 self._precompute_norms()   # 预计算向量模长
 

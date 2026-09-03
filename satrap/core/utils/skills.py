@@ -688,7 +688,7 @@ class SkillsManager:
         for tool in skill.tools:
             name = tool.get_tool_name()
             if name not in safe_getattr_dict(tools_manager, "tools"):
-                tools_manager.register_tool(tool)   # type: ignore
+                tools_manager.register_tool(tool)   # type: ignore[reportArgumentType]
                 registered += 1
 
         return registered

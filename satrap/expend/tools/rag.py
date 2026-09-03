@@ -110,7 +110,7 @@ class LiteVectorRAG:
 
         self.embeddings = Embedding(
             model=embed_model,
-            api_key=api_key,   # type: ignore
+            api_key=api_key,
             base_url=base_url,
         )   # 初始化嵌入模型
 
@@ -154,7 +154,7 @@ class LiteVectorRAG:
             results = await asyncio.to_thread(
                 self.vector_db.search,
                 self.default_vectorstore_name,
-                query_vector,   # type: ignore
+                query_vector,   # type: ignore[reportArgumentType]
                 k,
                 threshold,
             )   # 搜索相似文档
@@ -227,7 +227,7 @@ class LiteVectorRAG:
                     self.vector_db.add_to_collection,
                     collection_name,
                     batch,
-                    batch_vectors,   # type: ignore
+                    batch_vectors,   # type: ignore[reportArgumentType]
                     [{} for _ in batch]   # 空元数据
                 )   # 添加到向量数据库
 
@@ -417,7 +417,7 @@ class LiteVectorRAG:
                     self.vector_db.add_to_collection,
                     collection_name,
                     batch_texts,
-                    batch_vectors,   # type: ignore
+                    batch_vectors,   # type: ignore[reportArgumentType]
                     [{} for _ in batch]   # 空元数据
                 )   # 添加到向量数据库
                 
@@ -504,7 +504,7 @@ class LiteVectorRAG:
                             self.vector_db.add_to_collection,
                             collection_name,
                             batch_texts,
-                            batch_vectors,   # type: ignore
+                            batch_vectors,   # type: ignore[reportArgumentType]
                             [{} for _ in batch]   # 空元数据
                         )   # 添加到向量数据库
                         
@@ -527,7 +527,7 @@ class LiteVectorRAG:
                     results = await asyncio.to_thread(
                         self.vector_db.search,
                         collection_name,
-                        query_vector,   # type: ignore
+                        query_vector,   # type: ignore[reportArgumentType]
                         K,
                         threshold,
                     )   # 搜索相似文档

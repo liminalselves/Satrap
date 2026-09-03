@@ -103,7 +103,7 @@ class SessionClassDiscoveryService:
                             class_name=cls.__name__,
                             class_path=f"{cls.__module__}.{cls.__qualname__}",
                             is_async=issubclass(cls, AsyncSession),
-                            init_params=_generate_template(_detect_params(cls)),   # type: ignore[arg-type] _is_declared_session_class 已保证为 Session/AsyncSession 子类
+                            init_params=_generate_template(_detect_params(cls)),
                         )
                     )
         return discovered

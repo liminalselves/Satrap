@@ -744,7 +744,7 @@ class LLM:
             # Step.1 同步调用 API
             response = self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore
+                messages=messages,   # type: ignore[reportArgumentType]
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -806,7 +806,7 @@ class LLM:
             # Step.1 同步流式调用 API
             stream = cast(Any, self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore
+                messages=messages,   # type: ignore[reportArgumentType]
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -899,7 +899,7 @@ class LLM:
                 # Step.2 同步调用 API
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -969,7 +969,7 @@ class LLM:
             if tools is not None:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -978,14 +978,14 @@ class LLM:
                         self.thinking_fields,
                         self.omit_none_thinking_fields,
                     ),
-                    tools=tools,   # type: ignore
-                    tool_choice=tool_choice,   # type: ignore
+                    tools=tools,   # type: ignore[reportArgumentType]
+                    tool_choice=tool_choice,   # type: ignore[reportArgumentType]
                 )   # 发起网络请求
 
             else:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1280,7 +1280,7 @@ class AsyncLLM:
             # Step.2 异步调用 OpenAI 接口
             response = await self.client.chat.completions.create(
                 model=use_model,
-                messages=messages,   # type: ignore
+                messages=messages,   # type: ignore[reportArgumentType]
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -1350,7 +1350,7 @@ class AsyncLLM:
             # Step.1 异步流式调用 API
             stream = cast(Any, await self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore
+                messages=messages,   # type: ignore[reportArgumentType]
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -1444,7 +1444,7 @@ class AsyncLLM:
                 # Step.2 异步调用 API
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1514,7 +1514,7 @@ class AsyncLLM:
             if tools is not None:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1523,14 +1523,14 @@ class AsyncLLM:
                         self.thinking_fields,
                         self.omit_none_thinking_fields,
                     ),
-                    tools=tools,   # type: ignore
-                    tool_choice=tool_choice,   # type: ignore
+                    tools=tools,   # type: ignore[reportArgumentType]
+                    tool_choice=tool_choice,   # type: ignore[reportArgumentType]
                 )   # 发起异步网络请求
 
             else:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore
+                    messages=processed_messages,   # type: ignore[reportArgumentType]
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,

@@ -110,7 +110,7 @@ class MessageChain:
         返回:
         - MessageChain: 从纯文本快速构造消息链
         """
-        return cls([BaseMessageComponent(type=PlatformComponentType.Plain, text=text)])   # type: ignore
+        return cls([BaseMessageComponent(type=PlatformComponentType.Plain, text=text)])
 
     @property
     def components(self) -> list[BaseMessageComponent]:
@@ -214,7 +214,7 @@ class MessageEventResult:
         返回:
         - MessageEventResult: 设置纯文本回复
         """
-        self.chain = [BaseMessageComponent(type=PlatformComponentType.Plain, text=text)]   # type: ignore
+        self.chain = [BaseMessageComponent(type=PlatformComponentType.Plain, text=text)]
         return self
 
     def url_image(self, url: str) -> MessageEventResult:
@@ -227,7 +227,7 @@ class MessageEventResult:
         返回:
         - MessageEventResult: 设置网络图片回复
         """
-        self.chain = [BaseMessageComponent(type=PlatformComponentType.Image, url=url)]   # type: ignore
+        self.chain = [BaseMessageComponent(type=PlatformComponentType.Image, url=url)]
         return self
 
     def file_image(self, path: str) -> MessageEventResult:
@@ -240,7 +240,7 @@ class MessageEventResult:
         返回:
         - MessageEventResult: 设置本地图片文件回复
         """
-        self.chain = [BaseMessageComponent(type=PlatformComponentType.Image, file=path)]   # type: ignore
+        self.chain = [BaseMessageComponent(type=PlatformComponentType.Image, file=path)]
         return self
 
     def stop_event(self) -> MessageEventResult:

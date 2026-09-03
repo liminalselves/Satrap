@@ -981,7 +981,7 @@ class ContextManager:
                 {
                     "role": "assistant",
                     "content": message,
-                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,
                     "tool_calls": tools_calls,
                 }
             )
@@ -990,7 +990,7 @@ class ContextManager:
                 {
                     "role": "assistant", 
                     "content": message,
-                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,
                 }
             )
 
@@ -1056,7 +1056,7 @@ class ContextManager:
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
-                msg["content"] = message + separator + msg["content"]   # type: ignore
+                msg["content"] = message + separator + msg["content"]
                 # 在开头拼接新内容
                 break
         else:
@@ -1077,7 +1077,7 @@ class ContextManager:
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
-                msg["content"] = msg["content"] + separator + message   # type: ignore
+                msg["content"] = msg["content"] + separator + message
                 # 在结尾拼接新内容
                 break
         else:
@@ -2265,7 +2265,7 @@ class AsyncContextManager:
                 {
                     "role": "assistant",
                     "content": message,
-                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,
                     "tool_calls": tools_calls,
                 }
             )
@@ -2274,7 +2274,7 @@ class AsyncContextManager:
                 {
                     "role": "assistant", 
                     "content": message,
-                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,   # type: ignore
+                    "reasoning_content": reasoning if reasoning is not None and reasoning != "" and not ignore_think else None,
                 }
             )
 
@@ -2339,7 +2339,7 @@ class AsyncContextManager:
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
-                msg["content"] = message + separator + msg["content"]   # type: ignore
+                msg["content"] = message + separator + msg["content"]
                 # 在开头拼接新内容
                 break
         else:
@@ -2361,7 +2361,7 @@ class AsyncContextManager:
         # 查找第一条系统消息
         for msg in self._messages:
             if msg.get("role") == "system":
-                msg["content"] = msg["content"] + separator + message   # type: ignore
+                msg["content"] = msg["content"] + separator + message
                 # 在结尾拼接新内容
                 break
         else:
@@ -2945,7 +2945,7 @@ def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: li
             {
                 "role": "assistant",
                 "content": message,
-                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,   # type: ignore
+                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,
                 "tool_calls": tools_calls,
             }
         )
@@ -2954,7 +2954,7 @@ def add_bot_message(context: list[dict[str, Any]], message: str, tools_calls: li
             {
                 "role": "assistant", 
                 "content": message,
-                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,   # type: ignore
+                "reasoning_content": reasoning if reasoning is not None and reasoning != "" else None,
             }
         )
 

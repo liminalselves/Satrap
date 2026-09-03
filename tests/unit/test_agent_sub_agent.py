@@ -437,7 +437,7 @@ def test_sub_agent_model_forward_returns_string():
 async def test_async_sub_agent_model_forward_returns_string():
     llm = _FakeAsyncLLM()
     tools_manager = _FakeToolsManager()
-    model = await AsyncSubAgentModel.create(llm, "test-async-id", tools_manager)   # type: ignore[arg-type]
+    model = await AsyncSubAgentModel.create(llm, "test-async-id", tools_manager)
     result = await model.forward("some async task")
     assert isinstance(result, str)
     assert len(result) > 0
