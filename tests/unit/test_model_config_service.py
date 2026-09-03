@@ -7,6 +7,7 @@ import pytest
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.model_service import ModelConfigService
+from satrap.core.type import LLMConfig
 
 
 def test_model_config_service_crud_and_masking(tmp_path: Path):
@@ -136,3 +137,18 @@ def test_masking_does_not_depend_on_lock_api_key(tmp_path: Path) -> None:
     listed = service.list_configs("llm")
     assert listed["unlocked"]["api_key"] != "unlocked-secret-key"
     assert listed["unlocked"]["api_key"].endswith("-key")
+
+
+def test_dump_uses_storage_key_as_config_name(tmp_path: Path):
+    """
+    序列化输出的 name 字段恒为存储键 (写入时已强制对齐)
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    manager.set_llm_config(LLMConfig(name="original", model="gpt-demo"), name="alias")
+
+    listed = manager.list_llm_configs(mask_api_key=False)
+
+    assert listed["alias"]["name"] == "alias"

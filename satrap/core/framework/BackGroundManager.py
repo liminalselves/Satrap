@@ -184,7 +184,6 @@ class ModelConfigManager:
             output: Dict[str, Dict[str, Any]] = {}
             for name, cfg in source.items():
                 payload = asdict(cfg)
-                payload["name"] = payload.get("name") or name
                 output[name] = self._mask_payload(payload) if mask_api_key else payload
             return output
 

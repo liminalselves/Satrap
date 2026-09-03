@@ -406,10 +406,16 @@ class SessionClassConfigManager:
                 "params": dict(params or {}),
             }
             self._save_locked()
-            created = self.get_config(key)
-            if created is None:
-                raise ValueError(f"会话类配置创建失败: {key}")
-            return created
+            entry = self._configs[key]
+            return {
+                "class_path": entry["class_path"],
+                "is_async": entry["is_async"],
+                "enabled": entry["enabled"],
+                "context_key": entry["context_key"],
+                "model_key": entry["model_key"],
+                "description": entry["description"],
+                "params": dict(entry["params"]),
+            }
 
     # ---------- 查询 ----------
     def get_config(self, name: str) -> Optional[Dict[str, Any]]:

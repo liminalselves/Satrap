@@ -79,7 +79,7 @@ def _parse_integer_argument(
     """
     if isinstance(value, bool):
         return None, f"错误: {name} 必须是整数"
-    if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+    if not isinstance(value, (str, int, float)):
         return None, f"{name} 必须是整数"
     try:
         parsed = int(value)

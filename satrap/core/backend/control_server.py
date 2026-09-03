@@ -1930,14 +1930,6 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
                 body = {"error": str(e)}
                 status = 400
-        
-        elif method == "GET" and await CONTROL_STATIC_UI.serve(
-            writer,
-            raw_path,
-            _request_headers(raw_request),
-        ):
-            await writer.drain()
-            return
 
         else:
             status = 404

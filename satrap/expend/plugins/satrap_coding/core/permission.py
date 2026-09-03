@@ -312,12 +312,9 @@ class PermissionEngine:
         model_verdict: str | None = None
         with self._lock:
             decision = self._evaluate_core(operation, risk)
-            if decision == PermissionDecision.ASK and self.mode == "auto-agent":
-                if judge is None:
-                    decision = PermissionDecision.ASK
-                else:
-                    model_verdict = judge(operation, risk, description)
-                    decision = self._verdict_to_decision(model_verdict)
+            if decision == PermissionDecision.ASK and self.mode == "auto-agent" and judge is not None:
+                model_verdict = judge(operation, risk, description)
+                decision = self._verdict_to_decision(model_verdict)
             self._append_log(
                 operation,
                 risk,

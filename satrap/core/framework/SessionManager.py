@@ -676,10 +676,9 @@ class SessionPool:
 
             removed: List[tuple[str, SessionEntry]] = []
             for sid in idle_ids:
-                entry = self._sessions.pop(sid, None)
-                if entry:
-                    entry.retiring = True
-                    removed.append((sid, entry))
+                entry = self._sessions.pop(sid)
+                entry.retiring = True
+                removed.append((sid, entry))
             return removed
 
     def _evict_one_locked(self) -> tuple[str, SessionEntry] | None:
@@ -1356,7 +1355,7 @@ class SessionManager:
 
                 user_mgr = self._user_mgr
                 # 更新 context_sessions 路由, 使下一条消息能路由到新会话
-                if user_mgr and new_id:
+                if user_mgr:
                     parts = new_id.split(":")
                     if len(parts) >= 4:
                         user_mgr.update_context_session(

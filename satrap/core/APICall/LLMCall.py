@@ -140,7 +140,7 @@ def parse_chat_response(
             choices = api_response.get("choices", [])
         # 尝试通过属性或字典键获取 choices 列表行
 
-        if not choices or len(choices) == 0:
+        if not choices:
             logger.warning("[响应处理] LLM 接口响应中 'choices' 列表为空")
             return ""
 
@@ -198,7 +198,7 @@ def parse_call_response(
             api_response = cast(Dict[str, Any], api_response)
             choices = api_response.get("choices", [])
 
-        if not choices or len(choices) == 0:
+        if not choices:
             logger.warning("LLM 接口响应中 'choices' 列表为空")
             return LLMCallResponse(type="message", content="")
 
@@ -231,7 +231,7 @@ def parse_call_response(
             message = cast(Dict[str, Any], message)
             tool_calls = message.get("tool_calls", [])
 
-        if tool_calls and len(tool_calls) > 0:
+        if tool_calls:
             tool_calls_list: list[dict[str, Any]] = []
             
             for tool_call in tool_calls:   # 遍历所有工具调用
@@ -261,17 +261,13 @@ def parse_call_response(
                         args_str = function_data.get("arguments", "{}")
                         # 提取参数字符串并解析  
     
-                    try:   # 确保参数是字符串后再进行 JSON 解析
-                        if isinstance(args_str, str):
-                            args_dict = safe_parse_arguments(args_str)
-                        elif isinstance(args_str, dict):
-                            args_dict = cast(dict[str, Any], args_str)
-                        else:
-                            args_dict = cast(dict[str, Any], {})
-
-                    except json.JSONDecodeError:
-                        logger.error(f"[响应处理] 工具调用参数 JSON 解析失败: {args_str}")
-                        args_dict = {}
+                    # 确保参数是字符串后再进行 JSON 解析
+                    if isinstance(args_str, str):
+                        args_dict = safe_parse_arguments(args_str)
+                    elif isinstance(args_str, dict):
+                        args_dict = cast(dict[str, Any], args_str)
+                    else:
+                        args_dict = cast(dict[str, Any], {})
 
                     call_info: dict[str, Any] = {"name": func_name, "id": call_id, "arguments": args_dict}
                     tool_calls_list.append(call_info)

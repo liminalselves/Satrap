@@ -853,3 +853,33 @@ async def test_control_server_creates_and_scans_session_directory_while_backend_
     )
     assert b"400" in rejected.split(b"\r\n", 1)[0]
     assert not (tmp_path / "outside").exists()
+
+
+@pytest.mark.asyncio
+async def test_control_unmatched_api_get_returns_404_without_spa(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """
+    未匹配的 API 前缀 GET 应返回 404 JSON 而非 SPA 入口
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    static_dir = tmp_path / "dist"
+    static_dir.mkdir()
+    (static_dir / "index.html").write_text("control-ui", encoding="utf-8")
+    monkeypatch.setattr(
+        control_server,
+        "CONTROL_STATIC_UI",
+        SPAStaticService(static_dir, excluded_prefixes=("/status", "/config")),
+    )
+
+    storage_response = await _request("/storage/foo")
+    history_response = await _request("/chat/history/unknown")
+
+    assert b"404" in storage_response.split(b"\r\n", 1)[0]
+    assert b"control-ui" not in storage_response
+    assert b"404" in history_response.split(b"\r\n", 1)[0]
+    assert b"control-ui" not in history_response

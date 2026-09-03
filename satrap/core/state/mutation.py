@@ -40,16 +40,12 @@ def state_mutation_context(*, source: str, reason: str = "") -> Generator[Mutati
     返回:
     - Generator[MutationContext, None, None]: 在作用域内提供状态变更审计上下文
     """
-    token: Token[Optional[MutationContext]] = _MUTATION_CONTEXT.set(
-        MutationContext(
-            source=source.strip() or "manual",
-            reason=reason.strip(),
-            change_set_id=uuid.uuid4().hex,
-        )
+    context = MutationContext(
+        source=source.strip() or "manual",
+        reason=reason.strip(),
+        change_set_id=uuid.uuid4().hex,
     )
-    context = current_mutation_context()
-    if context is None:
-        raise RuntimeError("状态变更上下文初始化失败")
+    token: Token[Optional[MutationContext]] = _MUTATION_CONTEXT.set(context)
     try:
         yield context
     finally:

@@ -484,7 +484,7 @@ class PlatformAdapterRegistry:
         - Optional[Type[PlatformAdapter]]: 适配器类
         """
         key = (adapter_type or "").strip().lower()
-        return self._mapping.get((adapter_type or "").strip().lower())
+        return self._mapping.get(key)
 
     def list_types(self) -> List[str]:
         """

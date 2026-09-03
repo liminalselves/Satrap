@@ -131,3 +131,39 @@ def test_session_class_config_rejects_untrusted_module_without_import(tmp_path: 
         service.create({"name": "evil", "class_path": "evil_session.EvilSession"})
 
     assert not marker.exists()
+
+
+def test_register_config_entry_returns_independent_params_copy(tmp_path: Path):
+    """
+    冷注册应返回独立副本, 入参与返回值的后续修改均不影响存储
+
+    参数:
+    - tmp_path: 临时目录
+    """
+    storage_path = tmp_path / "session-classes.json"
+    scan_path = tmp_path / "trusted_sessions"
+    scan_path.mkdir()
+    (scan_path / "future.py").write_text("raise RuntimeError('不应在冷配置阶段导入')\n", encoding="utf-8")
+    manager = SessionClassConfigManager(
+        storage_path=storage_path,
+        session_scan_paths=[str(scan_path)],
+    )
+
+    source_params = {"model_name": "default"}
+    created = manager.register_config_entry(
+        "copy-check",
+        "trusted_sessions.future.FutureSession",
+        params=source_params,
+    )
+
+    source_params["model_name"] = "mutated"
+    created["params"]["model_name"] = "mutated"
+
+    stored = manager.get_config("copy-check")
+    assert stored is not None
+    assert stored["params"] == {"model_name": "default"}
+
+    stored["params"]["model_name"] = "mutated"
+    reloaded = manager.get_config("copy-check")
+    assert reloaded is not None
+    assert reloaded["params"] == {"model_name": "default"}
