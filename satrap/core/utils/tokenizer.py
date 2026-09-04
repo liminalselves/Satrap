@@ -1,11 +1,10 @@
 """基于 splintr 的模型文本分词与令牌计数工具"""
-from splintr import Tokenizer   # pyright: ignore[reportUnknownVariableType]
+from splintr import Tokenizer
 import math
-from typing import Any
 
 
-tokenizer: Any = Tokenizer.from_pretrained("deepseek_v3")   # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-# splintr 无类型声明, 用 Any 承载第三方对象
+tokenizer = Tokenizer.from_pretrained("deepseek_v3")
+# splintr 无类型声明, 类型由仓库 typings/splintr 本地存根提供
 
 
 def tokenizer_estimate(text: str) -> int:

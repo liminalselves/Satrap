@@ -154,7 +154,7 @@ class LiteVectorRAG:
             results = await asyncio.to_thread(
                 self.vector_db.search,
                 self.default_vectorstore_name,
-                query_vector,   # type: ignore[reportArgumentType]
+                query_vector,
                 k,
                 threshold,
             )   # 搜索相似文档
@@ -227,7 +227,7 @@ class LiteVectorRAG:
                     self.vector_db.add_to_collection,
                     collection_name,
                     batch,
-                    batch_vectors,   # type: ignore[reportArgumentType]
+                    batch_vectors,
                     [{} for _ in batch]   # 空元数据
                 )   # 添加到向量数据库
 
@@ -413,14 +413,18 @@ class LiteVectorRAG:
                     self.embeddings.embed, batch_texts
                 )   # 批量生成向量
 
+                if not batch_vectors:
+                    logger.error(f"批次 {i//batch_size + 1} 生成空向量")
+                    continue
+
                 await asyncio.to_thread(
                     self.vector_db.add_to_collection,
                     collection_name,
                     batch_texts,
-                    batch_vectors,   # type: ignore[reportArgumentType]
+                    batch_vectors,
                     [{} for _ in batch]   # 空元数据
                 )   # 添加到向量数据库
-                
+
                 added_count += len(batch)
                 logger.debug(f"添加批次 {i//batch_size + 1}: {len(batch)} 个文档块")
             
@@ -500,11 +504,15 @@ class LiteVectorRAG:
                             self.embeddings.embed, batch_texts
                         )   # 批量生成向量
 
+                        if not batch_vectors:
+                            logger.error(f"批次 {i//batch_size + 1} 生成空向量")
+                            continue
+
                         await asyncio.to_thread(
                             self.vector_db.add_to_collection,
                             collection_name,
                             batch_texts,
-                            batch_vectors,   # type: ignore[reportArgumentType]
+                            batch_vectors,
                             [{} for _ in batch]   # 空元数据
                         )   # 添加到向量数据库
                         
@@ -524,10 +532,14 @@ class LiteVectorRAG:
                         self.embeddings.embed, query.strip()
                     )   # 生成查询向量
 
+                    if not query_vector:
+                        logger.error("查询向量为空")
+                        return documents_list, scores_list
+
                     results = await asyncio.to_thread(
                         self.vector_db.search,
                         collection_name,
-                        query_vector,   # type: ignore[reportArgumentType]
+                        query_vector,
                         K,
                         threshold,
                     )   # 搜索相似文档

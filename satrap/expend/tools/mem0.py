@@ -194,7 +194,7 @@ class Mem0Memory:
         results = await asyncio.to_thread(
             self.vector_db.search,
             collection,
-            query_vec,   # type: ignore[reportArgumentType]
+            query_vec,
             k,
             self.threshold,
         )
@@ -376,7 +376,7 @@ class Mem0Memory:
         similar = await asyncio.to_thread(
             self.vector_db.search,
             collection,
-            fact_vec,   # type: ignore[reportArgumentType]
+            fact_vec,
             self.top_k,
             self.threshold,
         )
@@ -415,7 +415,7 @@ class Mem0Memory:
                 self.vector_db.add_to_collection,
                 collection,
                 [fact],
-                [fact_vec],   # type: ignore[reportArgumentType]
+                [fact_vec],
                 [meta],
             )
             logger.info(f"[Mem0] ADD | {fact[:50]}")
@@ -427,7 +427,7 @@ class Mem0Memory:
             new_content = str(data.get("new_content", fact)).strip() or fact
             if not memory_id:
                 logger.warning("[Mem0] UPDATE 缺少 memory_id, 回退 ADD")
-                return await self._add_raw(collection, fact, fact_vec, user_id, now)   # type: ignore[reportArgumentType]
+                return await self._add_raw(collection, fact, fact_vec, user_id, now)
 
             deleted = await asyncio.to_thread(self._delete_by_id, user_id, memory_id)
             if not deleted:
@@ -447,7 +447,7 @@ class Mem0Memory:
                 self.vector_db.add_to_collection,
                 collection,
                 [new_content],
-                [new_vec],   # type: ignore[reportArgumentType]
+                [new_vec],
                 [meta],
             )
             logger.info(f"[Mem0] UPDATE | {memory_id[:8]} -> {new_content[:50]}")

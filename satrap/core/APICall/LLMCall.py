@@ -4,16 +4,60 @@
 提供兼容 OpenAI 接口的同步, 异步, 流式和非流式调用,
 统一处理多模态消息, 思考内容, 工具调用与响应事件
 """
-from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, cast
+from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, Iterable, cast
 from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, TokenUsage, safe_getattr, safe_getattr_str, safe_getattr_list
 from satrap.core.utils.vision import normalize_chat_messages
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam, ChatCompletionToolChoiceOptionParam
 from openai.types.chat.chat_completion import ChatCompletion
 from openai import OpenAI, AsyncOpenAI, APIError
 import json
 import re
 
 from satrap.core.log import logger
+
+
+def _as_message_params(messages: Iterable[Dict[str, Any]]) -> Iterable[ChatCompletionMessageParam]:
+    """
+    将项目消息列表转换为 SDK 的 messages 参数类型
+
+    项目消息是 SDK ChatCompletionMessageParam 的结构超集
+    (含 reasoning_content, thinking 等自定义键, 运行时由兼容 API 透传),
+    无法在类型层声明等价, 边界断言集中在此函数
+
+    参数:
+    - messages: 项目内部消息列表
+
+    返回:
+    - Iterable[ChatCompletionMessageParam]: 可直接传入 SDK create() 的 messages 参数
+    """
+    return cast(Iterable[ChatCompletionMessageParam], messages)
+
+
+def _as_tool_params(tools: List[Dict[str, Any]]) -> Iterable[ChatCompletionToolUnionParam]:
+    """
+    将项目工具定义列表转换为 SDK 的 tools 参数类型
+
+    参数:
+    - tools: 项目内部工具定义列表
+
+    返回:
+    - Iterable[ChatCompletionToolUnionParam]: 可直接传入 SDK create() 的 tools 参数
+    """
+    return cast(Iterable[ChatCompletionToolUnionParam], tools)
+
+
+def _as_tool_choice_param(tool_choice: str) -> ChatCompletionToolChoiceOptionParam:
+    """
+    将工具选择配置转换为 SDK 的 tool_choice 参数类型
+
+    参数:
+    - tool_choice: 工具选择配置字符串
+
+    返回:
+    - ChatCompletionToolChoiceOptionParam: 可直接传入 SDK create() 的 tool_choice 参数
+    """
+    return cast(ChatCompletionToolChoiceOptionParam, tool_choice)
 
 
 def _response_content_text(content: object) -> str:
@@ -744,7 +788,7 @@ class LLM:
             # Step.1 同步调用 API
             response = self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore[reportArgumentType]
+                messages=_as_message_params(messages),
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -806,7 +850,7 @@ class LLM:
             # Step.1 同步流式调用 API
             stream = cast(Any, self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore[reportArgumentType]
+                messages=_as_message_params(messages),
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -899,7 +943,7 @@ class LLM:
                 # Step.2 同步调用 API
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -969,7 +1013,7 @@ class LLM:
             if tools is not None:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -978,14 +1022,14 @@ class LLM:
                         self.thinking_fields,
                         self.omit_none_thinking_fields,
                     ),
-                    tools=tools,   # type: ignore[reportArgumentType]
-                    tool_choice=tool_choice,   # type: ignore[reportArgumentType]
+                    tools=_as_tool_params(tools),
+                    tool_choice=_as_tool_choice_param(tool_choice),
                 )   # 发起网络请求
 
             else:
                 response = self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1280,7 +1324,7 @@ class AsyncLLM:
             # Step.2 异步调用 OpenAI 接口
             response = await self.client.chat.completions.create(
                 model=use_model,
-                messages=messages,   # type: ignore[reportArgumentType]
+                messages=_as_message_params(messages),
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -1350,7 +1394,7 @@ class AsyncLLM:
             # Step.1 异步流式调用 API
             stream = cast(Any, await self.client.chat.completions.create(
                 model=target_model,
-                messages=messages,   # type: ignore[reportArgumentType]
+                messages=_as_message_params(messages),
                 temperature=use_temp,
                 top_p=use_top_p,
                 max_tokens=use_max_tokens,
@@ -1444,7 +1488,7 @@ class AsyncLLM:
                 # Step.2 异步调用 API
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1514,7 +1558,7 @@ class AsyncLLM:
             if tools is not None:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,
@@ -1523,14 +1567,14 @@ class AsyncLLM:
                         self.thinking_fields,
                         self.omit_none_thinking_fields,
                     ),
-                    tools=tools,   # type: ignore[reportArgumentType]
-                    tool_choice=tool_choice,   # type: ignore[reportArgumentType]
+                    tools=_as_tool_params(tools),
+                    tool_choice=_as_tool_choice_param(tool_choice),
                 )   # 发起异步网络请求
 
             else:
                 response = await self.client.chat.completions.create(
                     model=target_model,
-                    messages=processed_messages,   # type: ignore[reportArgumentType]
+                    messages=_as_message_params(processed_messages),
                     temperature=use_temp,
                     top_p=use_top_p,
                     max_tokens=use_max_tokens,

@@ -688,7 +688,11 @@ class SkillsManager:
         for tool in skill.tools:
             name = tool.get_tool_name()
             if name not in safe_getattr_dict(tools_manager, "tools"):
-                tools_manager.register_tool(tool)   # type: ignore[reportArgumentType]
+                # 工具与工具管理器按同步/异步配对提供, 注册行为与配对无关
+                if isinstance(tools_manager, AsyncToolsManager):
+                    tools_manager.register_tool(cast(AsyncTool, tool))
+                else:
+                    tools_manager.register_tool(cast(Tool, tool))
                 registered += 1
 
         return registered

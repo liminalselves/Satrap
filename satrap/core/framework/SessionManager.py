@@ -2227,7 +2227,11 @@ class SessionManager:
         - new_llm: 新模型实例
         - llm_cfg: 新模型配置
         """
-        session.reload_llm(new_llm)   # type: ignore[arg-type] 同步与异步模型类型由会话类型决定
+        # 同步与异步模型类型由会话类型决定, reload_llm 恒被调用
+        if isinstance(session, AsyncSession):
+            session.reload_llm(cast(AsyncLLM, new_llm))
+        else:
+            session.reload_llm(cast(LLM, new_llm))
         self._apply_session_context_config(session, llm_cfg)
         for attr in ("_wf", "wf", "workflow", "_workflow", "main_wf"):
             workflow = safe_getattr(session, attr)

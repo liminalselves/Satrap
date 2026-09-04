@@ -4,7 +4,7 @@
 提供单条和批量文本的同步与异步向量化接口,
 统一处理模型配置, 输入校验与嵌入响应提取
 """
-from typing import List, Dict, Any, Optional, Union, Literal, cast
+from typing import List, Dict, Any, Optional, Union, Literal, cast, overload
 from satrap.core.utils import normalize_openai_base_url
 from openai import OpenAI, AsyncOpenAI, APIError
 
@@ -109,6 +109,22 @@ class Embedding:
 
         self.client = OpenAI(api_key=api_key, base_url=self.base_url, timeout=timeout)
 
+    @overload
+    def embed(
+        self,
+        texts: str,
+        model: Optional[str] = None,
+        dimensions: Optional[int] = None,
+        encoding_format: Optional[str] = None,
+    ) -> List[float] | Literal[False]: ...
+    @overload
+    def embed(
+        self,
+        texts: List[str],
+        model: Optional[str] = None,
+        dimensions: Optional[int] = None,
+        encoding_format: Optional[str] = None,
+    ) -> List[List[float]] | Literal[False]: ...
     def embed(
         self,
         texts: Union[str, List[str]],
@@ -305,13 +321,29 @@ class AsyncEmbedding:
             timeout=timeout,
         )   # 初始化异步 OpenAI 客户端
 
+    @overload
+    async def embed(
+        self,
+        texts: str,
+        model: Optional[str] = None,
+        dimensions: Optional[int] = None,
+        encoding_format: Optional[str] = None,
+    ) -> List[float] | Literal[False]: ...
+    @overload
+    async def embed(
+        self,
+        texts: List[str],
+        model: Optional[str] = None,
+        dimensions: Optional[int] = None,
+        encoding_format: Optional[str] = None,
+    ) -> List[List[float]] | Literal[False]: ...
     async def embed(
         self,
         texts: Union[str, List[str]],
         model: Optional[str] = None,
         dimensions: Optional[int] = None,
         encoding_format: Optional[str] = None,
-    ) -> Union[List[float], List[List[float]], bool]:
+    ) -> List[float] | List[List[float]] | Literal[False]:
         """
         异步生成文本嵌入向量
 
@@ -387,7 +419,7 @@ class AsyncEmbedding:
         # Step.6 根据输入格式返回
         return all_embeddings[0] if is_single else all_embeddings
 
-    def _empty_return(self, is_single: bool) -> Union[List[float], List[List[float]], bool]:
+    def _empty_return(self, is_single: bool) -> List[float] | List[List[float]] | Literal[False]:
         """
         根据 return_false 配置返回适当的空值
 
@@ -395,7 +427,7 @@ class AsyncEmbedding:
         - is_single: 输入是否为单个值
 
         返回:
-        - Union[List[float], List[List[float]], bool]: 根据 return_false 配置返回适当的空值
+        - List[float] | List[List[float]] | Literal[False]: 根据 return_false 配置返回适当的空值
         """
         if self.return_false:
             return False

@@ -8,9 +8,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, cast
 
-import yaml
-
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.config.loader import ConfigLoader
 
 
@@ -180,10 +179,7 @@ def load_config_document(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
         return {}
-    data = cast(
-        object,
-        yaml.safe_load(config_path.read_text(encoding="utf-8")),   # pyright: ignore[reportUnknownMemberType]
-    )
+    data = safe_yaml_load(config_path.read_text(encoding="utf-8"))
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -219,7 +215,7 @@ def parse_raw_config(path: str | Path, text: str) -> dict[str, Any]:
     if Path(path).suffix.lower() == ".json":
         data: object = json.loads(text)
     else:
-        data = cast(object, yaml.safe_load(text))   # pyright: ignore[reportUnknownMemberType]
+        data = safe_yaml_load(text)
     return validate_config_document(data)
 
 
@@ -238,7 +234,7 @@ def parse_platforms_text(text: str) -> list[dict[str, Any]]:
     try:
         data: object = json.loads(text)
     except json.JSONDecodeError:
-        data = cast(object, yaml.safe_load(text))   # pyright: ignore[reportUnknownMemberType]
+        data = safe_yaml_load(text)
     return validate_platforms(data)
 
 
@@ -325,14 +321,7 @@ def save_config_document(path: str | Path, data: object) -> dict[str, Any]:
     if config_path.suffix.lower() == ".json":
         dumped_value = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     else:
-        yaml_value = yaml.safe_dump(   # pyright: ignore[reportUnknownMemberType]
-            normalized,
-            allow_unicode=True,
-            sort_keys=False,
-        )
-        if not isinstance(yaml_value, str):
-            raise ValueError("配置序列化失败")
-        dumped_value = yaml_value
+        dumped_value = safe_yaml_dump(normalized)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     file_descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{config_path.name}.",

@@ -1,5 +1,5 @@
 """基于 SQLite 的轻量向量数据库实现"""
-from typing import List, Dict, Any, cast
+from typing import List, Dict, Any, BinaryIO, cast
 import faiss as _faiss
 import numpy as np
 import msgpack
@@ -9,6 +9,34 @@ import os
 import re
 
 from satrap.core.log import logger
+
+
+def _msgpack_unpack(file_obj: BinaryIO) -> dict[str, Any]:
+    """
+    解包 msgpack 索引文件, 断言顶层为字典
+
+    msgpack 库无类型标注, 边界断言集中在此函数
+
+    参数:
+    - file_obj: 二进制文件对象
+
+    返回:
+    - dict[str, Any]: 解包出的索引数据
+    """
+    return cast(dict[str, Any], cast(Any, msgpack).unpack(file_obj, raw=False))
+
+
+def _msgpack_pack(data: dict[str, Any], file_obj: BinaryIO) -> None:
+    """
+    将索引数据打包写入 msgpack 文件
+
+    msgpack 库无类型标注, 边界断言集中在此函数
+
+    参数:
+    - data: 待写入的索引数据
+    - file_obj: 二进制文件对象
+    """
+    cast(Any, msgpack).pack(data, file_obj)
 
 
 class LiteVectorDB:
@@ -69,8 +97,8 @@ class LiteVectorDB:
         if os.path.exists(index_file):   # 使用 msgpack 格式
             try:
                 with open(index_file, 'rb') as f:
-                    data: Any = msgpack.unpack(f, raw=False)   # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType]
-                    self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)   # type: ignore[reportUnknownArgumentType]
+                    data = _msgpack_unpack(f)
+                    self.collections: dict[str, dict[str, Any]] = self._to_tensor_format(data)
                 logger.info(f"从磁盘加载 {len(self.collections)} 个集合")
                 self._precompute_norms()   # 预计算向量模长
 
@@ -88,7 +116,7 @@ class LiteVectorDB:
         try:
             with open(index_file_msgpack, 'wb') as f:
                 data = self._to_memory_format(self.collections)
-                msgpack.pack(data, f)   # pyright: ignore[reportUnknownMemberType]
+                _msgpack_pack(data, f)
 
         except Exception as e:
             logger.error(f"保存数据失败: {e}")
@@ -544,7 +572,10 @@ class DataBase:
                     "INSERT INTO documents(collection_name, document, metadata) VALUES (?, ?, ?)",
                     (name, doc, meta_json)
                 )
-                ids.append(cursor.lastrowid)   # type: ignore[arg-type] sqlite3 插入后 lastrowid 恒有值
+                # sqlite3 插入后 lastrowid 恒有值, None 分支仅为类型守卫
+                row_id = cursor.lastrowid
+                if row_id is not None:
+                    ids.append(row_id)
             conn.commit()
 
         ids_np = np.array(ids, dtype=np.int64)

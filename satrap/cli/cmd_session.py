@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
+from satrap.cli.client import DaemonClient
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
@@ -51,22 +52,22 @@ def _init_mgr(args: argparse.Namespace) -> SessionClassConfigManager:
     )
 
 
-def _client_or_fallback(args: argparse.Namespace):
+def _client_or_fallback(args: argparse.Namespace) -> DaemonClient | SessionClassConfigManager:
     """
-    尝试 HTTP 连接, 失败时返回 (None, offline_mgr)
+    尝试 HTTP 连接, 不可用时回退到离线配置管理器
 
     参数:
-    - args: 额外位置参数
+    - args: 命令参数
 
     返回:
-    - 尝试 HTTP 连接, 失败时返回 (None, offline_mgr)
+    - DaemonClient | SessionClassConfigManager: 在线时返回守护进程客户端, 否则返回离线配置管理器
     """
     client = daemon_client_from_args(args)
     if client.is_alive() and not offline_requested(args):
-        return client, None
+        return client
     if offline_requested(args):
         ensure_offline_allowed(args, "修改会话类配置")
-    return None, _init_mgr(args)
+    return _init_mgr(args)
 
 
 def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
@@ -93,15 +94,15 @@ def cmd_session_list(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
-    if client:
-        data = client.list_session_classes()
+    node = _client_or_fallback(args)
+    if isinstance(node, DaemonClient):
+        data = node.list_session_classes()
         if "error" in data:
             print(f"错误: {data['error']}")
             sys.exit(1)
         configs = data
     else:
-        configs = mgr.list_configs()   # type: ignore[reportOptionalMemberAccess]
+        configs = node.list_configs()
 
     if not configs:
         print("没有已注册的会话类")
@@ -124,14 +125,14 @@ def cmd_session_enable(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
+    node = _client_or_fallback(args)
     try:
-        if client:
-            result = client.enable_session_class(args.name)
+        if isinstance(node, DaemonClient):
+            result = node.enable_session_class(args.name)
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.enable(args.name)   # type: ignore[reportOptionalMemberAccess]
+            node.enable(args.name)
         print(f"已启用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -145,14 +146,14 @@ def cmd_session_disable(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
+    node = _client_or_fallback(args)
     try:
-        if client:
-            result = client.disable_session_class(args.name)
+        if isinstance(node, DaemonClient):
+            result = node.disable_session_class(args.name)
             if "error" in result:
                 raise ValueError(result["error"])
         else:
-            mgr.disable(args.name)   # type: ignore[reportOptionalMemberAccess]
+            node.disable(args.name)
         print(f"已停用: {args.name}")
     except ValueError as e:
         print(f"错误: {e}")
@@ -214,15 +215,15 @@ def cmd_session_unregister(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
-    if client:
-        result = client.unregister_session_class(args.name)
+    node = _client_or_fallback(args)
+    if isinstance(node, DaemonClient):
+        result = node.unregister_session_class(args.name)
         if "error" in result:
             print(f"注销失败: {result['error']}")
             sys.exit(1)
         print(f"已注销: {args.name}")
         return
-    if mgr and mgr.remove_config(args.name):
+    if node.remove_config(args.name):
         print(f"已注销: {args.name}")
         return
     print(f"未找到: {args.name}")
@@ -236,19 +237,19 @@ def cmd_session_config_set(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
+    node = _client_or_fallback(args)
     try:
         if args.from_json:
             params = json.loads(args.from_json)
             if not isinstance(params, dict):
                 raise ValueError("--from-json 必须是 JSON 对象")
             params = cast(dict[str, Any], params)
-            if client:
-                result = client.set_session_class_params(args.name, params)
+            if isinstance(node, DaemonClient):
+                result = node.set_session_class_params(args.name, params)
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.set_config(args.name, params)   # type: ignore[reportOptionalMemberAccess]
+                node.set_config(args.name, params)
         else:
             kv: dict[str, str] = {}
             for group in args.set:
@@ -259,17 +260,17 @@ def cmd_session_config_set(args: argparse.Namespace):
                         sys.exit(1)
                     key, val = item.split("=", 1)
                     kv[key.strip()] = val.strip()
-            if client:
-                current = client.get_session_class(args.name)
+            if isinstance(node, DaemonClient):
+                current = node.get_session_class(args.name)
                 if "error" in current:
                     raise ValueError(current["error"])
                 params = dict(current.get("params", {}))
                 params.update(kv)
-                result = client.set_session_class_params(args.name, params)
+                result = node.set_session_class_params(args.name, params)
                 if "error" in result:
                     raise ValueError(result["error"])
             else:
-                mgr.update_config(args.name, **kv)   # type: ignore[reportOptionalMemberAccess]
+                node.update_config(args.name, **kv)
         print(f"已更新配置: {args.name}")
     except ValueError as e:
         print(f"配置失败: {e}")
@@ -283,8 +284,11 @@ def cmd_session_config_show(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    client, mgr = _client_or_fallback(args)
-    cfg = client.get_session_class(args.name) if client else mgr.get_config(args.name)   # type: ignore[reportOptionalMemberAccess]
+    node = _client_or_fallback(args)
+    if isinstance(node, DaemonClient):
+        cfg = node.get_session_class(args.name)
+    else:
+        cfg = node.get_config(args.name)
     if isinstance(cfg, dict) and "error" in cfg:
         print(f"查询失败: {cfg['error']}")
         sys.exit(1)

@@ -11,9 +11,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, cast
 
-import yaml
-
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.log import logger
 
 
@@ -113,15 +112,7 @@ class ConfigLoader:
         path = ConfigLoader.default_config_path(cwd)
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
-            dumped = cast(
-                object,
-                yaml.safe_dump(   # pyright: ignore[reportUnknownMemberType]
-                    ConfigLoader.default_config_document(),
-                    allow_unicode=True,
-                    sort_keys=False,
-                ),
-            )
-            text = dumped if isinstance(dumped, str) else ""
+            text = safe_yaml_dump(ConfigLoader.default_config_document())
         except ImportError:
             text = ""
         if not text:
@@ -148,10 +139,7 @@ class ConfigLoader:
 
         try:
             with path.open("r", encoding="utf-8") as f:
-                data: object = cast(
-                    object,
-                    yaml.safe_load(f),   # pyright: ignore[reportUnknownMemberType]
-                )
+                data: object = safe_yaml_load(f)
             if not isinstance(data, dict):
                 raise ValueError("YAML 根节点必须是字典")
             return BackendConfig.from_dict(cast(dict[str, Any], data))

@@ -270,7 +270,12 @@ class Tool:
         """
         if not self.assert_tool():
             return {}
-        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore[reportArgumentType]
+        tool_name = self.tool_name
+        description = self.description
+        params_dict = self.params_dict
+        if tool_name is None or description is None or params_dict is None:
+            return {}   # 工具定义不完整时保持既有空字典契约
+        return create_tool_defined(tool_name, description, params_dict)
 
     def get_tool_name(self) -> str:
         """
@@ -413,7 +418,12 @@ class AsyncTool:
         """
         if not self.assert_tool():
             return {}
-        return create_tool_defined(self.tool_name, self.description, self.params_dict)   # type: ignore[reportArgumentType]
+        tool_name = self.tool_name
+        description = self.description
+        params_dict = self.params_dict
+        if tool_name is None or description is None or params_dict is None:
+            return {}   # 工具定义不完整时保持既有空字典契约
+        return create_tool_defined(tool_name, description, params_dict)
 
     def get_tool_name(self) -> str:
         """
