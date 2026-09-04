@@ -98,7 +98,7 @@ class BackendRuntimeRecord:
     host: str
     port: int
 
-_backend_process: subprocess.Popen | None = None
+_backend_process: subprocess.Popen[bytes] | None = None
 # 后端进程
 
 CONFIG_PATH = find_config_path(PROJECT_ROOT)
@@ -974,7 +974,961 @@ def _resolve_session_scan_paths(paths: list[str]) -> list[str]:
     return resolved
 
 
-async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制路由集中维护, 运行时分支明确
+ControlResponse = tuple[int, Mapping[str, object]]
+
+
+@dataclasses.dataclass(frozen=True)
+class _RouteContext:
+    """控制路由处理器上下文: 同时携带解析路径 (urlsplit) 与原始路径 (含 query)"""
+
+    method: str
+    path: str
+    raw_path: str
+    reader: asyncio.StreamReader
+    raw_request: bytes
+
+
+async def _route_ui_config_status(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    ui-config 与后端状态区段: GET /ui-config.json, GET /status
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/ui-config.json":
+        try:
+            config_data = load_config_document(CONFIG_PATH)
+            raw_api_config: object = config_data.get("api", {})
+            api_config = (
+                cast(dict[str, object], raw_api_config)
+                if isinstance(raw_api_config, dict)
+                else {}
+            )
+            raw_host = api_config.get("host", "127.0.0.1")
+            raw_port = api_config.get("port", 19870)
+            backend_host = raw_host if isinstance(raw_host, str) else "127.0.0.1"
+            backend_port = int(raw_port) if isinstance(raw_port, (int, str)) else 19870
+            return 200, build_ui_config(
+                backend_host=backend_host,
+                backend_port=backend_port,
+                control_api=_request_origin(ctx.raw_request),
+            )
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/status":
+        health = _check_backend_health()
+        return 200, {
+            "running": health.get("running", False),
+            "managed": _backend_process is not None and _backend_process.poll() is None,
+            "health": health,
+        }
+
+    return None
+
+
+async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    chat 历史冷管理区段: 查询/删除/回收站列表/恢复/清除
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/chat/history":
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            raw_days = str(query.get("older_than_days", [""])[0]).strip()
+            return 200, await asyncio.to_thread(
+                _cold_chat_history_query,
+                search=str(query.get("search", [""])[0]),
+                project_id=str(query.get("project_id", [""])[0]) or None,
+                model=str(query.get("model", [""])[0]),
+                turn_count=str(query.get("turn_count", ["all"])[0]),
+                older_than_days=float(raw_days) if raw_days else None,
+                page=int(query.get("page", ["1"])[0]),
+                page_size=int(query.get("page_size", ["50"])[0]),
+            )
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/chat/history/delete":
+        try:
+            _require_chat_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            raw_ids = payload.get("conversation_ids", [])
+            raw_filters = payload.get("filters", {})
+            if not isinstance(raw_ids, list) or not isinstance(raw_filters, dict):
+                raise ValueError("conversation_ids 必须是数组且 filters 必须是对象")
+            targets = _cold_chat_history_targets(
+                str(payload.get("mode") or "selected"),
+                [str(item) for item in cast(list[object], raw_ids)],
+                dict(cast(dict[str, Any], raw_filters)),
+            )
+            service = StorageMaintenanceService(_configured_storage_layout())
+            results: list[dict[str, Any]] = []
+            for conversation_id in targets:
+                try:
+                    archived = await asyncio.to_thread(
+                        service.archive_session,
+                        CHAT_PLATFORM_ID,
+                        conversation_id,
+                    )
+                    results.append({
+                        "ok": True,
+                        "conversation_id": conversation_id,
+                        "archive_id": archived["archive_id"],
+                    })
+                except Exception as error:
+                    results.append({
+                        "ok": False,
+                        "conversation_id": conversation_id,
+                        "error": str(error),
+                    })
+            return 200, {
+                "ok": all(item.get("ok", False) for item in results),
+                "deleted_count": sum(1 for item in results if item.get("ok", False)),
+                "results": results,
+            }
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/chat/history/trash":
+        try:
+            items = await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).list_archives,
+                CHAT_PLATFORM_ID,
+            )
+            return 200, {
+                "items": items,
+                "total": len(items),
+                "storage_size_bytes": sum(int(item["size_bytes"]) for item in items),
+                "mode": "cold",
+            }
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/chat/history/trash/restore":
+        try:
+            _require_chat_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            archive_id = str(payload.get("archive_id") or "").strip()
+            if not archive_id:
+                raise ValueError("archive_id 不能为空")
+            return 200, await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).restore_archive,
+                CHAT_PLATFORM_ID,
+                archive_id,
+            )
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/chat/history/trash/purge":
+        try:
+            _require_chat_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            archive_id = str(payload.get("archive_id") or "").strip()
+            if not archive_id:
+                raise ValueError("archive_id 不能为空")
+            return 200, {
+                "ok": await asyncio.to_thread(
+                    StorageMaintenanceService(_configured_storage_layout()).purge_archive,
+                    CHAT_PLATFORM_ID,
+                    archive_id,
+                ),
+                "archive_id": archive_id,
+            }
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    生命周期区段: POST /start, /stop, /restart (直接维护 _backend_process)
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    global _backend_process
+    if ctx.method == "POST" and ctx.path == "/start":
+        health = _check_backend_health()
+        # 检查是否已在运行
+        if health.get("running"):
+            return 200, {"ok": True, "message": "后端已在运行中"}
+        if _backend_process is not None and _backend_process.poll() is None:
+            return 200, {"ok": True, "message": "后端正在启动中"}
+        old_runtime = _read_backend_runtime()
+        if old_runtime is not None:
+            old_health = _check_backend_health(old_runtime.host, old_runtime.port)
+        else:
+            old_health = {}
+        if (
+            old_runtime is not None
+            and _runtime_matches(old_runtime, old_health)
+            and _is_process_running(old_runtime.pid)
+        ):
+            try:
+                os.kill(old_runtime.pid, signal.SIGTERM)
+                await asyncio.sleep(1)
+            except Exception:
+                pass
+        # 只清理身份可验证的旧后端进程
+
+        backend_host, backend_port = _configured_backend_address()
+        runtime_id = secrets.token_urlsafe(24)
+        cmd = _get_backend_cmd(backend_host, backend_port)
+        # 启动后端
+
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        try:
+            _backend_process = subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+
+            _write_backend_runtime(
+                BackendRuntimeRecord(
+                    _backend_process.pid,
+                    runtime_id,
+                    _connect_host(backend_host),
+                    backend_port,
+                )
+            )
+            # 记录后端 PID
+
+            for _ in range(30):   # 最多等待 15 秒
+                await asyncio.sleep(0.5)
+                health = _check_backend_health()
+                if health.get("running"):
+                    return 200, {"ok": True, "message": "后端已启动"}
+            return 200, {"ok": True, "message": "后端启动中，请稍候..."}
+            # 等待后端就绪
+
+        except Exception as e:
+            return 500, {"ok": False, "error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/stop":
+        _cleanup_backend()
+        return 200, {"ok": True, "message": "后端已停止"}
+
+    if ctx.method == "POST" and ctx.path == "/restart":
+        _cleanup_backend()
+        await asyncio.sleep(1)
+
+        backend_host, backend_port = _configured_backend_address()
+        runtime_id = secrets.token_urlsafe(24)
+        cmd = _get_backend_cmd(backend_host, backend_port)
+        # 启动
+        startupinfo = None
+        creationflags = 0
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = subprocess.CREATE_NO_WINDOW
+
+        try:
+            _backend_process = subprocess.Popen(
+                cmd,
+                cwd=str(PROJECT_ROOT),
+                env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+            _write_backend_runtime(
+                BackendRuntimeRecord(
+                    _backend_process.pid,
+                    runtime_id,
+                    _connect_host(backend_host),
+                    backend_port,
+                )
+            )
+            return 200, {"ok": True, "message": "后端重启中"}
+        except Exception as e:
+            return 500, {"ok": False, "error": str(e)}
+
+    return None
+
+
+async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    配置文档与平台区段: /config, /config/default, /config/validate, /config/platforms
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config":
+        try:
+            config_data = load_config_document(CONFIG_PATH)
+            return 200, {
+                "ok": True,
+                "config": redact_config_document(config_data),
+                "path": str(CONFIG_PATH),
+                "exists": CONFIG_PATH.exists(),
+            }
+        except (OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "PUT" and ctx.path == "/config":
+        try:
+            current_config = load_config_document(CONFIG_PATH)
+            submitted_config = await _read_json_body(ctx.reader, ctx.raw_request)
+            merged_config = merge_masked_secrets(current_config, submitted_config)
+            config_data = save_config_document(CONFIG_PATH, merged_config)
+            return 200, {
+                "ok": True,
+                "message": "配置已保存",
+                "config": redact_config_document(config_data),
+                "path": str(CONFIG_PATH),
+                "exists": True,
+            }
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/default":
+        try:
+            config_data = create_default_config(CONFIG_PATH)
+            return 200, {
+                "ok": True,
+                "message": "默认配置已创建",
+                "config": redact_config_document(config_data),
+                "path": str(CONFIG_PATH),
+                "exists": True,
+            }
+        except (OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/validate":
+        try:
+            config_data = validate_config_document(await _read_json_body(ctx.reader, ctx.raw_request))
+            return 200, {"ok": True, "config": redact_config_document(config_data)}
+        except (json.JSONDecodeError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/config/platforms":
+        try:
+            config_data = load_config_document(CONFIG_PATH)
+            platforms = validate_platforms(config_data.get("platforms", []))
+            return 200, {
+                "ok": True,
+                "platforms": redact_config_document(platforms),
+                "exists": CONFIG_PATH.exists(),
+            }
+        except (OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/platforms":
+        try:
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            config_data = load_config_document(CONFIG_PATH)
+            safe_payload = merge_masked_secrets({}, payload)
+            config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
+            saved_config = save_config_document(CONFIG_PATH, config_data)
+            return 200, {
+                "ok": True,
+                "platforms": redact_config_document(saved_config["platforms"]),
+                "message": "平台已创建",
+            }
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "PUT" and ctx.path.startswith("/config/platforms/"):
+        try:
+            original_id = urllib.parse.unquote(ctx.path.removeprefix("/config/platforms/"))
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            config_data = load_config_document(CONFIG_PATH)
+            current_platforms = validate_platforms(config_data.get("platforms", []))
+            current_platform = next(
+                (item for item in current_platforms if item["id"] == original_id),
+                cast(dict[str, Any], {}),
+            )
+            safe_payload = merge_masked_secrets(current_platform, payload)
+            config_data["platforms"] = upsert_platform(
+                current_platforms,
+                safe_payload,
+                original_id=original_id,
+            )
+            saved_config = save_config_document(CONFIG_PATH, config_data)
+            return 200, {
+                "ok": True,
+                "platforms": redact_config_document(saved_config["platforms"]),
+                "message": "平台已更新",
+            }
+        except (json.JSONDecodeError, OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    if ctx.method == "DELETE" and ctx.path.startswith("/config/platforms/"):
+        try:
+            platform_id = urllib.parse.unquote(ctx.path.removeprefix("/config/platforms/"))
+            config_data = load_config_document(CONFIG_PATH)
+            config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
+            saved_config = save_config_document(CONFIG_PATH, config_data)
+            return 200, {
+                "ok": True,
+                "platforms": redact_config_document(saved_config["platforms"]),
+                "message": "平台已删除",
+            }
+        except (OSError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+
+    return None
+
+
+async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    模型配置区段: GET /config/models 与 /config/models/{type}/{name} 前缀
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config/models":
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            model_type = str(query.get("type", ["llm"])[0])
+            return 200, _model_config_service().list_configs(model_type)
+        except (OSError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.path.startswith("/config/models/"):
+        parts = ctx.path.removeprefix("/config/models/").split("/", 1)
+        if len(parts) != 2:
+            return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        model_type = urllib.parse.unquote(parts[0])
+        name = urllib.parse.unquote(parts[1])
+        try:
+            service = _model_config_service()
+            if ctx.method == "POST":
+                service.create(model_type, name, await _read_json_body(ctx.reader, ctx.raw_request))
+                return 200, {"ok": True}
+            if ctx.method == "PATCH":
+                service.update(model_type, name, await _read_json_body(ctx.reader, ctx.raw_request))
+                return 200, {"ok": True}
+            if ctx.method == "DELETE":
+                if service.delete(model_type, name):
+                    return 200, {"ok": True}
+                return 404, {"error": "not found"}
+            return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_session_class_collection_get(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    会话类集合读取区段: GET /config/session-classes
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config/session-classes":
+        try:
+            return 200, _session_class_config_service().list_configs()
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    存储维护区段: /storage/audit, /storage/cleanup, /storage/trash 系列
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/storage/audit":
+        try:
+            config_data = load_config_document(CONFIG_PATH)
+            configured_platforms = {
+                CHAT_PLATFORM_ID,
+                *_configured_platform_ids(config_data),
+            }
+            items = await asyncio.to_thread(
+                StorageMaintenanceService(
+                    _configured_storage_layout(config_data)
+                ).scan,
+                configured_platforms,
+            )
+            return 200, {
+                "items": [item.to_dict() for item in items],
+                "summary": {
+                    "count": len(items),
+                    "size_bytes": sum(item.size_bytes for item in items),
+                },
+            }
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/storage/cleanup":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            raw_ids = payload.get("item_ids", [])
+            if not isinstance(raw_ids, list):
+                raise ValueError("item_ids 必须是数组")
+            results = await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).cleanup,
+                [str(item) for item in cast(list[object], raw_ids)],
+            )
+            return 200, {
+                "ok": all(item.get("ok", False) for item in results),
+                "results": results,
+            }
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/storage/trash/restore":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            return 200, await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).restore_archive,
+                str(payload.get("platform_id", "")).strip(),
+                str(payload.get("archive_id", "")).strip(),
+            )
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/storage/trash/purge":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            deleted = await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).purge_archive,
+                str(payload.get("platform_id", "")).strip(),
+                str(payload.get("archive_id", "")).strip(),
+            )
+            return 200, {"ok": deleted}
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/storage/trash/purge-batch":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            raw_refs = payload.get("archive_refs")
+            if raw_refs is not None and not isinstance(raw_refs, list):
+                raise ValueError("archive_refs 必须是数组")
+            archive_refs = [
+                dict(cast(dict[str, str], item))
+                for item in cast(list[object], raw_refs or [])
+                if isinstance(item, dict)
+            ]
+            raw_days = payload.get("older_than_days")
+            results = await asyncio.to_thread(
+                StorageMaintenanceService(_configured_storage_layout()).purge_archives,
+                archive_refs=archive_refs,
+                older_than_days=(float(raw_days) if raw_days is not None else None),
+                platform_id=str(payload.get("platform_id", "")).strip() or None,
+            )
+            return 200, {
+                "ok": all(item.get("ok", False) for item in results),
+                "results": results,
+            }
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    Edictum 元数据与集合读取区段: types/plugins/sessions 的 GET
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config/edictum/types":
+        try:
+            return 200, {"types": _edictum_config_service().list_types()}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/config/edictum/plugins":
+        try:
+            return 200, {"plugins": _edictum_config_service().list_plugins()}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "GET" and ctx.path == "/config/edictum/sessions":
+        try:
+            return 200, _edictum_config_service().list_configs()
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    会话实例冷管理区段: 集合 GET/POST, bulk-delete 与前缀单项 DELETE
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config/session-instances":
+        try:
+            sessions: list[dict[str, Any]] = []
+            for platform_id in _configured_platform_ids():
+                sessions.extend(_session_instance_config_service(platform_id).list_instances())
+            sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
+            return 200, {"sessions": sessions}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/session-instances":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            raw_params: object = payload.get("params", {})
+            if not isinstance(raw_params, dict):
+                raise ValueError("params 必须是对象")
+            adapter_id = str(payload.get("adapter_id", "")).strip()
+            platform_id = str(payload.get("platform_id", "")).strip() or adapter_id or LOCAL_PLATFORM_ID
+            if platform_id not in _configured_platform_ids():
+                raise ValueError(f"未知平台实例: {platform_id}")
+            extra_params = dict(cast(dict[str, Any], raw_params))
+            if adapter_id:
+                extra_params["adapter_id"] = adapter_id
+            created = _session_instance_config_service(platform_id).create_instance(
+                str(payload.get("session_provider") or payload.get("provider_name") or SESSION_CLASS_PROVIDER),
+                str(payload.get("session_type") or payload.get("class_name") or ""),
+                session_id=str(payload.get("session_id", "")).strip() or None,
+                llm_name=str(payload.get("llm_name", "")).strip() or None,
+                extra_params=extra_params,
+            )
+            serialized = dataclasses.asdict(created)
+            serialized["platform_id"] = platform_id
+            serialized["active"] = False
+            serialized["runtime"] = {}
+            return 200, {"ok": True, "session": serialized}
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/session-instances/bulk-delete":
+        try:
+            _require_backend_stopped()
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            mode = str(payload.get("mode", "selected")).strip()
+            platform_ids = _configured_platform_ids()
+            targets: dict[str, list[str]] = {}
+            if mode == "selected":
+                raw_refs: object = payload.get("session_refs", [])
+                if not isinstance(raw_refs, list):
+                    raise ValueError("session_refs 必须是数组")
+                for raw_ref in cast(list[object], raw_refs):
+                    if not isinstance(raw_ref, dict):
+                        raise ValueError("session_refs 的每一项必须是对象")
+                    ref = cast(dict[str, Any], raw_ref)
+                    platform_id = str(ref.get("platform_id", "")).strip()
+                    session_id = str(ref.get("session_id", "")).strip()
+                    if platform_id not in platform_ids:
+                        raise ValueError(f"未知平台实例: {platform_id}")
+                    if session_id:
+                        targets.setdefault(platform_id, []).append(session_id)
+                if not any(targets.values()):
+                    raise ValueError("至少选择一个会话实例")
+            elif mode in {"empty", "single"}:
+                targets = {platform_id: [] for platform_id in platform_ids}
+            else:
+                raise ValueError(f"未知批量删除模式: {mode}")
+            deleted_refs: list[dict[str, str]] = []
+            for platform_id, session_ids in targets.items():
+                deleted = _session_instance_config_service(platform_id).delete_by_mode(
+                    mode,
+                    session_ids,
+                )
+                deleted_refs.extend(
+                    {"platform_id": platform_id, "session_id": session_id}
+                    for session_id in deleted
+                )
+            return 200, {
+                "ok": True,
+                "deleted_count": len(deleted_refs),
+                "deleted_ids": [item["session_id"] for item in deleted_refs],
+                "deleted_refs": deleted_refs,
+            }
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.path.startswith("/config/session-instances/"):
+        session_id = urllib.parse.unquote(ctx.path.removeprefix("/config/session-instances/")).strip()
+        try:
+            if ctx.method != "DELETE":
+                return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+            if not session_id:
+                return 400, {"error": "session_id 不能为空"}
+            _require_backend_stopped()
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            platform_id = str(query.get("platform_id", [""])[0]).strip()
+            if platform_id not in _configured_platform_ids():
+                raise ValueError(f"未知平台实例: {platform_id}")
+            deleted = _session_instance_config_service(platform_id).delete_instances([session_id])
+            if deleted:
+                return 200, {
+                    "ok": True,
+                    "deleted_count": 1,
+                    "deleted_ids": deleted,
+                    "deleted_refs": [{"platform_id": platform_id, "session_id": session_id}],
+                }
+            return 404, {"error": "会话实例不存在"}
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    Edictum 变更与详情区段: 集合 POST 与前缀 GET/PATCH/动作 POST/DELETE
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "POST" and ctx.path == "/config/edictum/sessions":
+        try:
+            created = _edictum_config_service().create(
+                await _read_json_body(ctx.reader, ctx.raw_request)
+            )
+            return 200, {"ok": True, "config": created}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.path.startswith("/config/edictum/sessions/"):
+        suffix = ctx.path.removeprefix("/config/edictum/sessions/")
+        action = ""
+        if suffix.endswith("/enable"):
+            suffix = suffix.removesuffix("/enable")
+            action = "enable"
+        elif suffix.endswith("/disable"):
+            suffix = suffix.removesuffix("/disable")
+            action = "disable"
+        name = urllib.parse.unquote(suffix)
+        try:
+            service = _edictum_config_service()
+            if ctx.method == "GET" and not action:
+                config_entry = service.get(name)
+                if config_entry is None:
+                    return 404, {"error": "not found"}
+                return 200, config_entry
+            if ctx.method == "PATCH" and not action:
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                previous = service.get(name)
+                final_name, updated = service.update(name, payload)
+                migrated_refs: list[dict[str, str]] = []
+                if final_name != name:
+                    try:
+                        migrated_refs = _rename_edictum_config_references(
+                            name,
+                            final_name,
+                        )
+                    except Exception:
+                        if previous is not None:
+                            service.update(final_name, {**previous, "name": name})
+                        raise
+                return 200, {
+                    "ok": True,
+                    "name": final_name,
+                    "config": updated,
+                    "migrated_refs": migrated_refs,
+                }
+            if ctx.method == "POST" and action:
+                updated = service.set_enabled(name, action == "enable")
+                return 200, {"ok": True, "config": updated}
+            if ctx.method == "DELETE" and not action:
+                references = _edictum_config_references(name)
+                if references:
+                    return 409, {
+                        "error": f"Edictum 配置仍被 {len(references)} 个会话实例引用",
+                        "references": references,
+                    }
+                if service.delete(name):
+                    return 200, {"ok": True}
+                return 404, {"error": "not found"}
+            return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_session_class_collection_post(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    会话类集合创建区段: POST /config/session-classes
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "POST" and ctx.path == "/config/session-classes":
+        try:
+            created = _session_class_config_service().create(
+                await _read_json_body(ctx.reader, ctx.raw_request)
+            )
+            return 200, {"ok": True, "config": created}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_discovery(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    会话类发现区段: GET /config/session/discovery 与 POST 扫描目录创建
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "GET" and ctx.path == "/config/session/discovery":
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            requested_paths = [item for item in query.get("path", []) if item.strip()]
+            configured_paths = _configured_session_scan_paths()
+            if any(item not in configured_paths for item in requested_paths):
+                raise ValueError("只能扫描配置中的 Session 目录")
+            scan_paths = requested_paths or configured_paths
+            resolved_configured_paths = _resolve_session_scan_paths(configured_paths)
+            resolved_scan_paths = _resolve_session_scan_paths(scan_paths)
+            results = [
+                item.to_dict()
+                for item in SessionClassDiscoveryService(
+                    resolved_configured_paths
+                ).discover(resolved_scan_paths)
+            ]
+            return 200, {"paths": configured_paths, "results": results}
+        except (ImportError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    if ctx.method == "POST" and ctx.path == "/config/session/discovery/directories":
+        try:
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            requested_path = str(payload.get("path", "")).strip()
+            configured_paths = _configured_session_scan_paths()
+            if requested_path and requested_path not in configured_paths:
+                raise ValueError("只能创建配置中的 Session 扫描目录")
+            target_paths = [requested_path] if requested_path else configured_paths
+            target = create_default_session_dir(_resolve_session_scan_paths(target_paths))
+            return 200, {"ok": True, "path": str(target)}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _route_session_class_details(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    会话类详情区段: /config/session-classes/ 前缀的 GET/PATCH/动作 POST/DELETE
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.path.startswith("/config/session-classes/"):
+        suffix = ctx.path.removeprefix("/config/session-classes/")
+        action = ""
+        if suffix.endswith("/enable"):
+            suffix = suffix.removesuffix("/enable")
+            action = "enable"
+        elif suffix.endswith("/disable"):
+            suffix = suffix.removesuffix("/disable")
+            action = "disable"
+        name = urllib.parse.unquote(suffix)
+        try:
+            service = _session_class_config_service()
+            if ctx.method == "GET" and not action:
+                config_entry = service.get(name)
+                if config_entry is None:
+                    return 404, {"error": "not found"}
+                return 200, config_entry
+            if ctx.method == "PATCH" and not action:
+                updated = service.update(name, await _read_json_body(ctx.reader, ctx.raw_request))
+                return 200, {"ok": True, "config": updated}
+            if ctx.method == "POST" and action:
+                updated = service.set_enabled(name, action == "enable")
+                return 200, {"ok": True, "config": updated}
+            if ctx.method == "DELETE" and not action:
+                if service.delete(name):
+                    return 200, {"ok": True}
+                return 404, {"error": "not found"}
+            return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
+    return None
+
+
+async def _handle_request(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter
 ) -> None:
     """
@@ -984,7 +1938,7 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
     - reader: 流读取器
     - writer: 流写入器
     """
-    global _backend_process, _CONTROL_ACTIVE_CONNECTIONS
+    global _CONTROL_ACTIVE_CONNECTIONS
     origin: str | None = None
 
     if _CONTROL_ACTIVE_CONNECTIONS >= CONTROL_MAX_CONNECTIONS:
@@ -1023,7 +1977,7 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
         # CORS 预检
 
         if method == "POST" and path == "/auth/session":
-            peer = writer.get_extra_info("peername")
+            peer: tuple[object, ...] | None = writer.get_extra_info("peername")
             peer_host = str(peer[0]) if isinstance(peer, tuple) and peer else ""
             if not _CONTROL_AUTH.can_bootstrap(peer_host, origin, headers):
                 await _send_control_json(writer, 401, {"error": "unauthorized"}, origin)
@@ -1064,275 +2018,11 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             return
 
         status = 200
-        body: dict[str, object] = {}
-        
-        if method == "GET" and path == "/ui-config.json":
-            try:
-                config_data = load_config_document(CONFIG_PATH)
-                raw_api_config: object = config_data.get("api", {})
-                api_config = (
-                    cast(dict[str, object], raw_api_config)
-                    if isinstance(raw_api_config, dict)
-                    else {}
-                )
-                raw_host = api_config.get("host", "127.0.0.1")
-                raw_port = api_config.get("port", 19870)
-                backend_host = raw_host if isinstance(raw_host, str) else "127.0.0.1"
-                backend_port = int(raw_port) if isinstance(raw_port, (int, str)) else 19870
-                body = build_ui_config(
-                    backend_host=backend_host,
-                    backend_port=backend_port,
-                    control_api=_request_origin(raw_request),
-                )
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
+        body: Mapping[str, object] = {}
 
-        elif method == "GET" and path == "/status":
-            health = _check_backend_health()
-            body = {
-                "running": health.get("running", False),
-                "managed": _backend_process is not None and _backend_process.poll() is None,
-                "health": health,
-            }
-
-        elif method == "GET" and path == "/chat/history":
-            try:
-                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
-                raw_days = str(query.get("older_than_days", [""])[0]).strip()
-                body = await asyncio.to_thread(
-                    _cold_chat_history_query,
-                    search=str(query.get("search", [""])[0]),
-                    project_id=str(query.get("project_id", [""])[0]) or None,
-                    model=str(query.get("model", [""])[0]),
-                    turn_count=str(query.get("turn_count", ["all"])[0]),
-                    older_than_days=float(raw_days) if raw_days else None,
-                    page=int(query.get("page", ["1"])[0]),
-                    page_size=int(query.get("page_size", ["50"])[0]),
-                )
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/chat/history/delete":
-            try:
-                _require_chat_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                raw_ids = payload.get("conversation_ids", [])
-                raw_filters = payload.get("filters", {})
-                if not isinstance(raw_ids, list) or not isinstance(raw_filters, dict):
-                    raise ValueError("conversation_ids 必须是数组且 filters 必须是对象")
-                targets = _cold_chat_history_targets(
-                    str(payload.get("mode") or "selected"),
-                    [str(item) for item in raw_ids],
-                    dict(cast(dict[str, Any], raw_filters)),
-                )
-                service = StorageMaintenanceService(_configured_storage_layout())
-                results: list[dict[str, Any]] = []
-                for conversation_id in targets:
-                    try:
-                        archived = await asyncio.to_thread(
-                            service.archive_session,
-                            CHAT_PLATFORM_ID,
-                            conversation_id,
-                        )
-                        results.append({
-                            "ok": True,
-                            "conversation_id": conversation_id,
-                            "archive_id": archived["archive_id"],
-                        })
-                    except Exception as error:
-                        results.append({
-                            "ok": False,
-                            "conversation_id": conversation_id,
-                            "error": str(error),
-                        })
-                body = {
-                    "ok": all(item.get("ok", False) for item in results),
-                    "deleted_count": sum(1 for item in results if item.get("ok", False)),
-                    "results": results,
-                }
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/chat/history/trash":
-            try:
-                items = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).list_archives,
-                    CHAT_PLATFORM_ID,
-                )
-                body = {
-                    "items": items,
-                    "total": len(items),
-                    "storage_size_bytes": sum(int(item["size_bytes"]) for item in items),
-                    "mode": "cold",
-                }
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/chat/history/trash/restore":
-            try:
-                _require_chat_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                archive_id = str(payload.get("archive_id") or "").strip()
-                if not archive_id:
-                    raise ValueError("archive_id 不能为空")
-                body = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).restore_archive,
-                    CHAT_PLATFORM_ID,
-                    archive_id,
-                )
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/chat/history/trash/purge":
-            try:
-                _require_chat_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                archive_id = str(payload.get("archive_id") or "").strip()
-                if not archive_id:
-                    raise ValueError("archive_id 不能为空")
-                body = {
-                    "ok": await asyncio.to_thread(
-                        StorageMaintenanceService(_configured_storage_layout()).purge_archive,
-                        CHAT_PLATFORM_ID,
-                        archive_id,
-                    ),
-                    "archive_id": archive_id,
-                }
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-        
-        elif method == "POST" and path == "/start":
-            health = _check_backend_health()
-            # 检查是否已在运行
-            if health.get("running"):
-                body = {"ok": True, "message": "后端已在运行中"}
-            elif _backend_process is not None and _backend_process.poll() is None:
-                body = {"ok": True, "message": "后端正在启动中"}
-            else:
-                old_runtime = _read_backend_runtime()
-                if old_runtime is not None:
-                    old_health = _check_backend_health(old_runtime.host, old_runtime.port)
-                else:
-                    old_health = {}
-                if (
-                    old_runtime is not None
-                    and _runtime_matches(old_runtime, old_health)
-                    and _is_process_running(old_runtime.pid)
-                ):
-                    try:
-                        os.kill(old_runtime.pid, signal.SIGTERM)
-                        await asyncio.sleep(1)
-                    except Exception:
-                        pass
-                # 只清理身份可验证的旧后端进程
-                
-                backend_host, backend_port = _configured_backend_address()
-                runtime_id = secrets.token_urlsafe(24)
-                cmd = _get_backend_cmd(backend_host, backend_port)
-                # 启动后端
-                
-                startupinfo = None
-                creationflags = 0
-                if sys.platform == "win32":
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    creationflags = subprocess.CREATE_NO_WINDOW
-                
-                try:
-                    _backend_process = subprocess.Popen(
-                        cmd,
-                        cwd=str(PROJECT_ROOT),
-                        env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        startupinfo=startupinfo,
-                        creationflags=creationflags,
-                    )
-                    
-                    _write_backend_runtime(
-                        BackendRuntimeRecord(
-                            _backend_process.pid,
-                            runtime_id,
-                            _connect_host(backend_host),
-                            backend_port,
-                        )
-                    )
-                    # 记录后端 PID
-                    
-                    for _ in range(30):   # 最多等待 15 秒
-                        await asyncio.sleep(0.5)
-                        health = _check_backend_health()
-                        if health.get("running"):
-                            body = {"ok": True, "message": "后端已启动"}
-                            break
-                    else:
-                        body = {"ok": True, "message": "后端启动中，请稍候..."}
-                    # 等待后端就绪
-                        
-                except Exception as e:
-                    body = {"ok": False, "error": str(e)}
-                    status = 500
-        
-        elif method == "POST" and path == "/stop":
-            _cleanup_backend()
-            body = {"ok": True, "message": "后端已停止"}
-        
-        elif method == "POST" and path == "/restart":
-            _cleanup_backend()
-            await asyncio.sleep(1)
-            
-            backend_host, backend_port = _configured_backend_address()
-            runtime_id = secrets.token_urlsafe(24)
-            cmd = _get_backend_cmd(backend_host, backend_port)
-            # 启动
-            startupinfo = None
-            creationflags = 0
-            if sys.platform == "win32":
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                creationflags = subprocess.CREATE_NO_WINDOW
-            
-            try:
-                _backend_process = subprocess.Popen(
-                    cmd,
-                    cwd=str(PROJECT_ROOT),
-                    env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    startupinfo=startupinfo,
-                    creationflags=creationflags,
-                )
-                _write_backend_runtime(
-                    BackendRuntimeRecord(
-                        _backend_process.pid,
-                        runtime_id,
-                        _connect_host(backend_host),
-                        backend_port,
-                    )
-                )
-                body = {"ok": True, "message": "后端重启中"}
-            except Exception as e:
-                body = {"ok": False, "error": str(e)}
-                status = 500
-        
-        elif method == "POST" and path == "/shutdown":
+        if method == "POST" and path == "/shutdown":
             body = {"ok": True, "message": "控制服务即将停止"}
-            
+
             response_body = json.dumps(body).encode()
             # 发送响应后再停止
             response = f"HTTP/1.1 {status} OK\r\n"
@@ -1342,595 +2032,35 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
             for k, v in response_headers.items():
                 response += f"{k}: {v}\r\n"
             response += "\r\n"
-            
+
             writer.write(response.encode() + response_body)
             await writer.drain()
             writer.close()
-            
+
             asyncio.get_event_loop().call_later(0.5, lambda: os._exit(0))
             # 延迟停止
             return
-        
-        elif method == "GET" and path == "/config":
-            try:
-                config_data = load_config_document(CONFIG_PATH)
-                body = {
-                    "ok": True,
-                    "config": redact_config_document(config_data),
-                    "path": str(CONFIG_PATH),
-                    "exists": CONFIG_PATH.exists(),
-                }
-            except (OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-        
-        elif method == "PUT" and path == "/config":
-            try:
-                current_config = load_config_document(CONFIG_PATH)
-                submitted_config = await _read_json_body(reader, raw_request)
-                merged_config = merge_masked_secrets(current_config, submitted_config)
-                config_data = save_config_document(CONFIG_PATH, merged_config)
-                body = {
-                    "ok": True,
-                    "message": "配置已保存",
-                    "config": redact_config_document(config_data),
-                    "path": str(CONFIG_PATH),
-                    "exists": True,
-                }
-            except (json.JSONDecodeError, OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
 
-        elif method == "POST" and path == "/config/default":
-            try:
-                config_data = create_default_config(CONFIG_PATH)
-                body = {
-                    "ok": True,
-                    "message": "默认配置已创建",
-                    "config": redact_config_document(config_data),
-                    "path": str(CONFIG_PATH),
-                    "exists": True,
-                }
-            except (OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/validate":
-            try:
-                config_data = validate_config_document(await _read_json_body(reader, raw_request))
-                body = {"ok": True, "config": redact_config_document(config_data)}
-            except (json.JSONDecodeError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/platforms":
-            try:
-                config_data = load_config_document(CONFIG_PATH)
-                platforms = validate_platforms(config_data.get("platforms", []))
-                body = {
-                    "ok": True,
-                    "platforms": redact_config_document(platforms),
-                    "exists": CONFIG_PATH.exists(),
-                }
-            except (OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/platforms":
-            try:
-                payload = await _read_json_body(reader, raw_request)
-                config_data = load_config_document(CONFIG_PATH)
-                safe_payload = merge_masked_secrets({}, payload)
-                config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
-                saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {
-                    "ok": True,
-                    "platforms": redact_config_document(saved_config["platforms"]),
-                    "message": "平台已创建",
-                }
-            except (json.JSONDecodeError, OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "PUT" and path.startswith("/config/platforms/"):
-            try:
-                original_id = urllib.parse.unquote(path.removeprefix("/config/platforms/"))
-                payload = await _read_json_body(reader, raw_request)
-                config_data = load_config_document(CONFIG_PATH)
-                current_platforms = validate_platforms(config_data.get("platforms", []))
-                current_platform = next(
-                    (item for item in current_platforms if item["id"] == original_id),
-                    {},
-                )
-                safe_payload = merge_masked_secrets(current_platform, payload)
-                config_data["platforms"] = upsert_platform(
-                    current_platforms,
-                    safe_payload,
-                    original_id=original_id,
-                )
-                saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {
-                    "ok": True,
-                    "platforms": redact_config_document(saved_config["platforms"]),
-                    "message": "平台已更新",
-                }
-            except (json.JSONDecodeError, OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "DELETE" and path.startswith("/config/platforms/"):
-            try:
-                platform_id = urllib.parse.unquote(path.removeprefix("/config/platforms/"))
-                config_data = load_config_document(CONFIG_PATH)
-                config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
-                saved_config = save_config_document(CONFIG_PATH, config_data)
-                body = {
-                    "ok": True,
-                    "platforms": redact_config_document(saved_config["platforms"]),
-                    "message": "平台已删除",
-                }
-            except (OSError, ValueError) as e:
-                body = {"ok": False, "error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/models":
-            try:
-                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
-                model_type = str(query.get("type", ["llm"])[0])
-                body = _model_config_service().list_configs(model_type)
-            except (OSError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif path.startswith("/config/models/"):
-            parts = path.removeprefix("/config/models/").split("/", 1)
-            if len(parts) != 2:
-                body = {"error": f"not found: {method} {path}"}
-                status = 404
-            else:
-                model_type = urllib.parse.unquote(parts[0])
-                name = urllib.parse.unquote(parts[1])
-                try:
-                    service = _model_config_service()
-                    if method == "POST":
-                        service.create(model_type, name, await _read_json_body(reader, raw_request))
-                        body = {"ok": True}
-                    elif method == "PATCH":
-                        service.update(model_type, name, await _read_json_body(reader, raw_request))
-                        body = {"ok": True}
-                    elif method == "DELETE":
-                        if service.delete(model_type, name):
-                            body = {"ok": True}
-                        else:
-                            body = {"error": "not found"}
-                            status = 404
-                    else:
-                        body = {"error": f"not found: {method} {path}"}
-                        status = 404
-                except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                    body = {"error": str(e)}
-                    status = 400
-
-        elif method == "GET" and path == "/config/session-classes":
-            try:
-                body = _session_class_config_service().list_configs()
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/storage/audit":
-            try:
-                config_data = load_config_document(CONFIG_PATH)
-                configured_platforms = {
-                    CHAT_PLATFORM_ID,
-                    *_configured_platform_ids(config_data),
-                }
-                items = await asyncio.to_thread(
-                    StorageMaintenanceService(
-                        _configured_storage_layout(config_data)
-                    ).scan,
-                    configured_platforms,
-                )
-                body = {
-                    "items": [item.to_dict() for item in items],
-                    "summary": {
-                        "count": len(items),
-                        "size_bytes": sum(item.size_bytes for item in items),
-                    },
-                }
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/storage/cleanup":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                raw_ids = payload.get("item_ids", [])
-                if not isinstance(raw_ids, list):
-                    raise ValueError("item_ids 必须是数组")
-                results = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).cleanup,
-                    [str(item) for item in raw_ids],
-                )
-                body = {
-                    "ok": all(item.get("ok", False) for item in results),
-                    "results": results,
-                }
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/storage/trash/restore":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                body = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).restore_archive,
-                    str(payload.get("platform_id", "")).strip(),
-                    str(payload.get("archive_id", "")).strip(),
-                )
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/storage/trash/purge":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                deleted = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).purge_archive,
-                    str(payload.get("platform_id", "")).strip(),
-                    str(payload.get("archive_id", "")).strip(),
-                )
-                body = {"ok": deleted}
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/storage/trash/purge-batch":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                raw_refs = payload.get("archive_refs")
-                if raw_refs is not None and not isinstance(raw_refs, list):
-                    raise ValueError("archive_refs 必须是数组")
-                archive_refs = [
-                    dict(cast(dict[str, str], item))
-                    for item in raw_refs or []
-                    if isinstance(item, dict)
-                ]
-                raw_days = payload.get("older_than_days")
-                results = await asyncio.to_thread(
-                    StorageMaintenanceService(_configured_storage_layout()).purge_archives,
-                    archive_refs=archive_refs,
-                    older_than_days=(float(raw_days) if raw_days is not None else None),
-                    platform_id=str(payload.get("platform_id", "")).strip() or None,
-                )
-                body = {
-                    "ok": all(item.get("ok", False) for item in results),
-                    "results": results,
-                }
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError, json.JSONDecodeError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/edictum/types":
-            try:
-                body = {"types": _edictum_config_service().list_types()}
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/edictum/plugins":
-            try:
-                body = {"plugins": _edictum_config_service().list_plugins()}
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/edictum/sessions":
-            try:
-                body = _edictum_config_service().list_configs()
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/session-instances":
-            try:
-                sessions: list[dict[str, Any]] = []
-                for platform_id in _configured_platform_ids():
-                    sessions.extend(_session_instance_config_service(platform_id).list_instances())
-                sessions.sort(key=lambda item: float(item.get("last_used_at") or 0), reverse=True)
-                body = {"sessions": sessions}
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/session-instances":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                raw_params: object = payload.get("params", {})
-                if not isinstance(raw_params, dict):
-                    raise ValueError("params 必须是对象")
-                adapter_id = str(payload.get("adapter_id", "")).strip()
-                platform_id = str(payload.get("platform_id", "")).strip() or adapter_id or LOCAL_PLATFORM_ID
-                if platform_id not in _configured_platform_ids():
-                    raise ValueError(f"未知平台实例: {platform_id}")
-                extra_params = dict(cast(dict[str, Any], raw_params))
-                if adapter_id:
-                    extra_params["adapter_id"] = adapter_id
-                created = _session_instance_config_service(platform_id).create_instance(
-                    str(payload.get("session_provider") or payload.get("provider_name") or SESSION_CLASS_PROVIDER),
-                    str(payload.get("session_type") or payload.get("class_name") or ""),
-                    session_id=str(payload.get("session_id", "")).strip() or None,
-                    llm_name=str(payload.get("llm_name", "")).strip() or None,
-                    extra_params=extra_params,
-                )
-                serialized = dataclasses.asdict(created)
-                serialized["platform_id"] = platform_id
-                serialized["active"] = False
-                serialized["runtime"] = {}
-                body = {"ok": True, "session": serialized}
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/session-instances/bulk-delete":
-            try:
-                _require_backend_stopped()
-                payload = await _read_json_body(reader, raw_request)
-                mode = str(payload.get("mode", "selected")).strip()
-                platform_ids = _configured_platform_ids()
-                targets: dict[str, list[str]] = {}
-                if mode == "selected":
-                    raw_refs: object = payload.get("session_refs", [])
-                    if not isinstance(raw_refs, list):
-                        raise ValueError("session_refs 必须是数组")
-                    for raw_ref in cast(list[object], raw_refs):
-                        if not isinstance(raw_ref, dict):
-                            raise ValueError("session_refs 的每一项必须是对象")
-                        ref = cast(dict[str, Any], raw_ref)
-                        platform_id = str(ref.get("platform_id", "")).strip()
-                        session_id = str(ref.get("session_id", "")).strip()
-                        if platform_id not in platform_ids:
-                            raise ValueError(f"未知平台实例: {platform_id}")
-                        if session_id:
-                            targets.setdefault(platform_id, []).append(session_id)
-                    if not any(targets.values()):
-                        raise ValueError("至少选择一个会话实例")
-                elif mode in {"empty", "single"}:
-                    targets = {platform_id: [] for platform_id in platform_ids}
-                else:
-                    raise ValueError(f"未知批量删除模式: {mode}")
-                deleted_refs: list[dict[str, str]] = []
-                for platform_id, session_ids in targets.items():
-                    deleted = _session_instance_config_service(platform_id).delete_by_mode(
-                        mode,
-                        session_ids,
-                    )
-                    deleted_refs.extend(
-                        {"platform_id": platform_id, "session_id": session_id}
-                        for session_id in deleted
-                    )
-                body = {
-                    "ok": True,
-                    "deleted_count": len(deleted_refs),
-                    "deleted_ids": [item["session_id"] for item in deleted_refs],
-                    "deleted_refs": deleted_refs,
-                }
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif path.startswith("/config/session-instances/"):
-            session_id = urllib.parse.unquote(path.removeprefix("/config/session-instances/")).strip()
-            try:
-                if method != "DELETE":
-                    body = {"error": f"not found: {method} {path}"}
-                    status = 404
-                elif not session_id:
-                    body = {"error": "session_id 不能为空"}
-                    status = 400
-                else:
-                    _require_backend_stopped()
-                    query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
-                    platform_id = str(query.get("platform_id", [""])[0]).strip()
-                    if platform_id not in _configured_platform_ids():
-                        raise ValueError(f"未知平台实例: {platform_id}")
-                    deleted = _session_instance_config_service(platform_id).delete_instances([session_id])
-                    if deleted:
-                        body = {
-                            "ok": True,
-                            "deleted_count": 1,
-                            "deleted_ids": deleted,
-                            "deleted_refs": [{"platform_id": platform_id, "session_id": session_id}],
-                        }
-                    else:
-                        body = {"error": "会话实例不存在"}
-                        status = 404
-            except RuntimeError as e:
-                body = {"error": str(e)}
-                status = 409
-            except (OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/edictum/sessions":
-            try:
-                created = _edictum_config_service().create(
-                    await _read_json_body(reader, raw_request)
-                )
-                body = {"ok": True, "config": created}
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif path.startswith("/config/edictum/sessions/"):
-            suffix = path.removeprefix("/config/edictum/sessions/")
-            action = ""
-            if suffix.endswith("/enable"):
-                suffix = suffix.removesuffix("/enable")
-                action = "enable"
-            elif suffix.endswith("/disable"):
-                suffix = suffix.removesuffix("/disable")
-                action = "disable"
-            name = urllib.parse.unquote(suffix)
-            try:
-                service = _edictum_config_service()
-                if method == "GET" and not action:
-                    config_entry = service.get(name)
-                    if config_entry is None:
-                        body = {"error": "not found"}
-                        status = 404
-                    else:
-                        body = config_entry
-                elif method == "PATCH" and not action:
-                    payload = await _read_json_body(reader, raw_request)
-                    previous = service.get(name)
-                    final_name, updated = service.update(name, payload)
-                    migrated_refs: list[dict[str, str]] = []
-                    if final_name != name:
-                        try:
-                            migrated_refs = _rename_edictum_config_references(
-                                name,
-                                final_name,
-                            )
-                        except Exception:
-                            if previous is not None:
-                                service.update(final_name, {**previous, "name": name})
-                            raise
-                    body = {
-                        "ok": True,
-                        "name": final_name,
-                        "config": updated,
-                        "migrated_refs": migrated_refs,
-                    }
-                elif method == "POST" and action:
-                    updated = service.set_enabled(name, action == "enable")
-                    body = {"ok": True, "config": updated}
-                elif method == "DELETE" and not action:
-                    references = _edictum_config_references(name)
-                    if references:
-                        body = {
-                            "error": f"Edictum 配置仍被 {len(references)} 个会话实例引用",
-                            "references": references,
-                        }
-                        status = 409
-                    elif service.delete(name):
-                        body = {"ok": True}
-                    else:
-                        body = {"error": "not found"}
-                        status = 404
-                else:
-                    body = {"error": f"not found: {method} {path}"}
-                    status = 404
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/session-classes":
-            try:
-                created = _session_class_config_service().create(
-                    await _read_json_body(reader, raw_request)
-                )
-                body = {"ok": True, "config": created}
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "GET" and path == "/config/session/discovery":
-            try:
-                query = urllib.parse.parse_qs(urllib.parse.urlsplit(raw_path).query)
-                requested_paths = [item for item in query.get("path", []) if item.strip()]
-                configured_paths = _configured_session_scan_paths()
-                if any(item not in configured_paths for item in requested_paths):
-                    raise ValueError("只能扫描配置中的 Session 目录")
-                scan_paths = requested_paths or configured_paths
-                resolved_configured_paths = _resolve_session_scan_paths(configured_paths)
-                resolved_scan_paths = _resolve_session_scan_paths(scan_paths)
-                results = [
-                    item.to_dict()
-                    for item in SessionClassDiscoveryService(
-                        resolved_configured_paths
-                    ).discover(resolved_scan_paths)
-                ]
-                body = {"paths": configured_paths, "results": results}
-            except (ImportError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif method == "POST" and path == "/config/session/discovery/directories":
-            try:
-                payload = await _read_json_body(reader, raw_request)
-                requested_path = str(payload.get("path", "")).strip()
-                configured_paths = _configured_session_scan_paths()
-                if requested_path and requested_path not in configured_paths:
-                    raise ValueError("只能创建配置中的 Session 扫描目录")
-                target_paths = [requested_path] if requested_path else configured_paths
-                target = create_default_session_dir(_resolve_session_scan_paths(target_paths))
-                body = {"ok": True, "path": str(target)}
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
-        elif path.startswith("/config/session-classes/"):
-            suffix = path.removeprefix("/config/session-classes/")
-            action = ""
-            if suffix.endswith("/enable"):
-                suffix = suffix.removesuffix("/enable")
-                action = "enable"
-            elif suffix.endswith("/disable"):
-                suffix = suffix.removesuffix("/disable")
-                action = "disable"
-            name = urllib.parse.unquote(suffix)
-            try:
-                service = _session_class_config_service()
-                if method == "GET" and not action:
-                    config_entry = service.get(name)
-                    if config_entry is None:
-                        body = {"error": "not found"}
-                        status = 404
-                    else:
-                        body = config_entry
-                elif method == "PATCH" and not action:
-                    updated = service.update(name, await _read_json_body(reader, raw_request))
-                    body = {"ok": True, "config": updated}
-                elif method == "POST" and action:
-                    updated = service.set_enabled(name, action == "enable")
-                    body = {"ok": True, "config": updated}
-                elif method == "DELETE" and not action:
-                    if service.delete(name):
-                        body = {"ok": True}
-                    else:
-                        body = {"error": "not found"}
-                        status = 404
-                else:
-                    body = {"error": f"not found: {method} {path}"}
-                    status = 404
-            except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
-                body = {"error": str(e)}
-                status = 400
-
+        route_context = _RouteContext(method, path, raw_path, reader, raw_request)
+        for route_handler in (
+            _route_ui_config_status,
+            _route_chat_history,
+            _route_lifecycle,
+            _route_config_document,
+            _route_models,
+            _route_session_class_collection_get,
+            _route_storage,
+            _route_edictum_metadata,
+            _route_session_instances,
+            _route_edictum_mutations,
+            _route_session_class_collection_post,
+            _route_discovery,
+            _route_session_class_details,
+        ):
+            route_response = await route_handler(route_context)
+            if route_response is not None:
+                status, body = route_response
+                break
         else:
             status = 404
             body = {"error": "not found"}
@@ -1950,9 +2080,9 @@ async def _handle_request(   # pyright: ignore[reportGeneralTypeIssues] 控制�
         # 接口: GET/POST/DELETE /config/session-instances - 冷管理持久化会话实例
         # 接口: GET /config/session/discovery - 冷扫描会话类
         # 接口: POST /config/session/discovery/directories - 冷创建会话扫描目录
-        
+
         await _send_control_json(writer, status, body, origin)
-        
+
     except HTTPRequestError as error:
         await _send_control_json(writer, error.status, {"error": error.message}, origin)
     except Exception:
