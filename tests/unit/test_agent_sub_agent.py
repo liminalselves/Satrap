@@ -1,17 +1,19 @@
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from collections.abc import Callable
 import threading
-import time
-from typing import Any, cast
-
+from pathlib import Path
 import pytest
+from typing import Any, cast
+import queue
+import json
+import time
 
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
 from satrap.expend.tools.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
+import satrap.expend.tools.agent as agent_module
+from satrap.core.type import LLMCallResponse
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -36,6 +38,175 @@ def _as_tools_manager(fake: Any) -> ToolsManager:
 def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
     """AsyncToolsManager 替身类型边界: 替身实现工具查询调用面, cast 集中在此工厂"""
     return cast(AsyncToolsManager, fake)
+
+
+class _ThreadProcess:
+    """使用线程承载 worker 的测试进程替身"""
+
+    def __init__(
+        self,
+        target: Callable[..., None],
+        args: tuple[object, ...],
+    ) -> None:
+        """
+        初始化线程承载的 worker
+
+        参数:
+        - target: worker 入口
+        - args: worker 参数
+        """
+        self._thread = threading.Thread(target=target, args=args, daemon=True)
+
+    def start(self) -> None:
+        """启动 worker 线程"""
+        self._thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        """
+        等待 worker 线程结束
+
+        参数:
+        - timeout: 最大等待秒数
+        """
+        self._thread.join(timeout)
+
+    def is_alive(self) -> bool:
+        """
+        检查 worker 线程是否仍在运行
+
+        返回:
+        - worker 线程是否仍在运行
+        """
+        return self._thread.is_alive()
+
+    def terminate(self) -> None:
+        """禁止普通逻辑测试误用无法模拟的进程终止能力"""
+        raise AssertionError("线程进程替身不支持 terminate")
+
+    def kill(self) -> None:
+        """禁止普通逻辑测试误用无法模拟的进程强杀能力"""
+        raise AssertionError("线程进程替身不支持 kill")
+
+
+class _ThreadConnection:
+    """使用队列模拟独立生命周期的双向 Pipe 端点"""
+
+    def __init__(
+        self,
+        incoming: queue.Queue[object],
+        outgoing: queue.Queue[object],
+    ) -> None:
+        """
+        初始化队列连接端点
+
+        参数:
+        - incoming: 当前端点的接收队列
+        - outgoing: 对端的接收队列
+        """
+        self._incoming = incoming
+        self._outgoing = outgoing
+
+    def send(self, value: object) -> None:
+        """
+        向对端发送消息
+
+        参数:
+        - value: 待发送消息
+        """
+        self._outgoing.put(value)
+
+    def recv(self) -> object:
+        """
+        接收对端消息
+
+        返回:
+        - 对端发送的消息
+        """
+        return self._incoming.get()
+
+    def poll(self) -> bool:
+        """
+        检查是否存在待接收消息
+
+        返回:
+        - 是否存在待接收消息
+        """
+        return not self._incoming.empty()
+
+    def close(self) -> None:
+        """关闭当前测试端点副本而不影响线程持有的端点"""
+
+
+class _ThreadProcessContext:
+    """提供队列 Pipe 和线程 Process 的测试上下文"""
+
+    def Pipe(self, duplex: bool = True) -> tuple[_ThreadConnection, _ThreadConnection]:
+        """
+        创建双向队列管道
+
+        参数:
+        - duplex: 是否创建双向管道
+
+        返回:
+        - 管道两端的连接对象
+        """
+        assert duplex is True
+        parent_incoming: queue.Queue[object] = queue.Queue()
+        child_incoming: queue.Queue[object] = queue.Queue()
+        return (
+            _ThreadConnection(parent_incoming, child_incoming),
+            _ThreadConnection(child_incoming, parent_incoming),
+        )
+
+    def Process(
+        self,
+        *,
+        target: Callable[..., None],
+        args: tuple[object, ...],
+    ) -> _ThreadProcess:
+        """
+        创建线程承载的测试进程
+
+        参数:
+        - target: worker 入口
+        - args: worker 参数
+
+        返回:
+        - 测试进程替身
+        """
+        return _ThreadProcess(target, args)
+
+
+class _ThreadMultiprocessing:
+    """替换 agent 模块使用的 multiprocessing 入口"""
+
+    def __init__(self) -> None:
+        """初始化线程进程上下文"""
+        self._context = _ThreadProcessContext()
+
+    def get_context(self, method: str) -> _ThreadProcessContext:
+        """
+        获取线程进程上下文
+
+        参数:
+        - method: 生产代码请求的进程启动方式
+
+        返回:
+        - 线程进程上下文
+        """
+        assert method == "spawn"
+        return self._context
+
+
+@pytest.fixture
+def threaded_sub_agent_process_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    将同步子代理切换到线程承载的测试进程上下文
+
+    参数:
+    - monkeypatch: pytest 属性替换工具
+    """
+    monkeypatch.setattr(agent_module, "multiprocessing", _ThreadMultiprocessing())
 
 
 def _load_deepseek_config() -> dict[str, str]:
@@ -230,7 +401,9 @@ class _FakeAsyncLLM:
 # ================================================================
 
 
-def test_sub_agent_parses_json_array_task():
+def test_sub_agent_parses_json_array_task(
+    threaded_sub_agent_process_context: None,
+) -> None:
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
     agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
@@ -242,7 +415,9 @@ def test_sub_agent_parses_json_array_task():
     assert "task two" in result
 
 
-def test_sub_agent_parses_single_string_task():
+def test_sub_agent_parses_single_string_task(
+    threaded_sub_agent_process_context: None,
+) -> None:
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
     agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
@@ -268,7 +443,9 @@ def test_sub_agent_rejects_excessive_task_count():
     assert "不能超过 16" in result
 
 
-def test_sub_agent_handles_malformed_json():
+def test_sub_agent_handles_malformed_json(
+    threaded_sub_agent_process_context: None,
+) -> None:
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
     agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
@@ -278,7 +455,9 @@ def test_sub_agent_handles_malformed_json():
     assert "{bad json}" in result
 
 
-def test_sub_agent_preserves_task_order():
+def test_sub_agent_preserves_task_order(
+    threaded_sub_agent_process_context: None,
+) -> None:
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
     agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
