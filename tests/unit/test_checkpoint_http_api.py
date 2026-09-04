@@ -8,17 +8,19 @@ import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.utils.context import ContextManager
 
 
 def _make_server(db_path: str) -> BackendHTTPServer:
+    # BackendManager 替身: 仅暴露 checkpoint_db_path, 边界断言集中在本工厂
     fake = SimpleNamespace(checkpoint_db_path=db_path)
-    return BackendHTTPServer(fake)   # type: ignore[arg-type]
+    return BackendHTTPServer(cast(BackendManager, fake))
 
 
 async def _route(

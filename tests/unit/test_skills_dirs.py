@@ -12,7 +12,6 @@
 - 同名不同 id 顺序激活, 注入标记互不干扰, 停用不误伤
 """
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -23,6 +22,14 @@ from satrap.core.utils.skills import (
 )
 from satrap.core.utils.TCBuilder import ToolsManager
 from satrap.core.utils.context import ContextManager
+
+
+class _SyncStubWorkflow:
+    """同步轻量工作流替身: 结构满足 SkillWorkflowProtocol"""
+
+    def __init__(self, ctx: ContextManager, tools_manager: ToolsManager) -> None:
+        self.ctx = ctx
+        self.tools_manager = tools_manager
 
 USER_SAME_NAME_MD = """---
 name: web-research
@@ -127,14 +134,14 @@ def test_same_name_sequential_activate_no_cross_strip(tmp_path: Path):
     mgr.scan()
 
     wf = _make_workflow(tmp_path)
-    assert mgr.activate("web-research", wf) is True   # type: ignore[arg-type]   # 官方版本
-    assert mgr.activate("user-web", wf) is True   # type: ignore[arg-type]   # 用户版本 (同名, 不应被跳过)
+    assert mgr.activate("web-research", wf) is True   # 官方版本
+    assert mgr.activate("user-web", wf) is True   # 用户版本 (同名, 不应被跳过)
 
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:web-research>" in system_text
     assert "<skill:user-web>" in system_text
 
-    assert mgr.deactivate("user-web", wf) is True   # type: ignore[arg-type]
+    assert mgr.deactivate("user-web", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:user-web>" not in system_text
     assert "<skill:web-research>" in system_text   # 官方版本未被误伤
@@ -186,7 +193,7 @@ def _make_workflow(tmp_path: Path):
         "skill-id-test", db_path=str(tmp_path / "id.db"), keep_in_memory=True
     )
     tools_manager = ToolsManager()
-    return SimpleNamespace(ctx=ctx, tools_manager=tools_manager)
+    return _SyncStubWorkflow(ctx=ctx, tools_manager=tools_manager)
 
 
 def test_activate_by_skill_id(tmp_path: Path):
@@ -202,9 +209,9 @@ def test_activate_by_skill_id(tmp_path: Path):
     mgr.scan()
 
     wf = _make_workflow(tmp_path)
-    assert mgr.activate("my-web-research", wf) is True   # type: ignore[arg-type]
+    assert mgr.activate("my-web-research", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:my-web-research>" in system_text
 
-    assert mgr.deactivate("my-web-research", wf) is True   # type: ignore[arg-type]
+    assert mgr.deactivate("my-web-research", wf) is True
     assert "<skill:my-web-research>" not in wf.ctx.get_context()[0]["content"]

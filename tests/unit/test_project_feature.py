@@ -17,7 +17,8 @@ from typing import Any, cast
 
 import pytest
 
-from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.storage import StorageLayout
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.display import service as service_mod
@@ -291,7 +292,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     return ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        cast(ModelConfigManager, _FakeModelConfig()),
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -644,7 +645,7 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
             pass
 
     def _session(sid: str, ws: Path | None) -> SimpleSession:
-        s = SimpleSession(sid, _StubLLM(), db_path=str(tmp_path / f"{sid}.db"), enable_checkpoint=False)   # type: ignore[arg-type]
+        s = SimpleSession(sid, cast(LLM, _StubLLM()), db_path=str(tmp_path / f"{sid}.db"), enable_checkpoint=False)
         if ws is not None:
             setattr(s, "coding_workspace_root", str(ws))
             # 鸭子属性: 与 ChatService._apply_project 同款注入方式

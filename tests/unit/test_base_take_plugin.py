@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator, Protocol, cast
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -14,6 +14,19 @@ from satrap.expend.plugins.base_take.core.docread import extract_text
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "base_take"
 CODING_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"
+
+
+class _ReportlabCanvas(Protocol):
+    """reportlab Canvas 的最小调用面 (可选依赖, 无类型声明)"""
+
+    def drawString(self, x: float, y: float, text: str) -> None: ...
+    def save(self) -> None: ...
+
+
+class _ReportlabCanvasModule(Protocol):
+    """reportlab.pdfgen.canvas 模块的最小调用面"""
+
+    Canvas: Callable[[str], _ReportlabCanvas]
 
 
 class _FakeLLM(LLM):
@@ -315,10 +328,10 @@ def test_extract_text_pdf(tmp_path: Path):
     参数:
     - tmp_path: tmp路径
     """
-    pytest.importorskip("reportlab")
-    from reportlab.pdfgen import canvas   # type: ignore[reportMissingModuleSource] 可选依赖, 未安装时上面 importorskip 跳过
+    # reportlab 为可选依赖, 未安装时 importorskip 跳过; 调用面以下方 Protocol 静态声明
+    canvas_mod = cast(_ReportlabCanvasModule, pytest.importorskip("reportlab.pdfgen.canvas"))
     f = tmp_path / "t.pdf"
-    c = canvas.Canvas(str(f))
+    c = canvas_mod.Canvas(str(f))
     c.drawString(100, 750, "Hello PDF")
     c.save()
     text = extract_text(f)

@@ -66,8 +66,9 @@ def test_session_class_config_service_cold_crud_and_reload(tmp_path: Path):
 
     assert updated["description"] == "已重命名"
     assert service.get("cold") is None
-    assert service.get("renamed") is not None
-    assert service.get("renamed")["enabled"] is False   # type: ignore[index]
+    renamed_cfg = service.get("renamed")
+    assert renamed_cfg is not None
+    assert renamed_cfg["enabled"] is False
 
     reloaded = SessionClassConfigService(
         SessionClassConfigManager(
@@ -75,8 +76,9 @@ def test_session_class_config_service_cold_crud_and_reload(tmp_path: Path):
             session_scan_paths=[str(scan_path)],
         )
     )
-    assert reloaded.get("renamed") is not None
-    assert reloaded.get("renamed")["class_path"] == "trusted_sessions.future.ProviderSession"   # type: ignore[index]
+    reloaded_cfg = reloaded.get("renamed")
+    assert reloaded_cfg is not None
+    assert reloaded_cfg["class_path"] == "trusted_sessions.future.ProviderSession"
     assert reloaded.delete("renamed") is True
     assert reloaded.list_configs() == {}
 
@@ -101,8 +103,12 @@ def test_session_class_config_service_rejects_invalid_and_conflicting_input(tmp_
     with pytest.raises(ValueError, match="params 必须是对象"):
         service.create({"name": "bad", "class_path": "example.Bad", "params": []})
 
-    assert service.get("first")["class_path"] == "satrap.core.framework.Base.Session"   # type: ignore[index]
-    assert service.get("second")["class_path"] == "satrap.core.framework.Base.AsyncSession"   # type: ignore[index]
+    first_cfg = service.get("first")
+    assert first_cfg is not None
+    assert first_cfg["class_path"] == "satrap.core.framework.Base.Session"
+    second_cfg = service.get("second")
+    assert second_cfg is not None
+    assert second_cfg["class_path"] == "satrap.core.framework.Base.AsyncSession"
 
 
 def test_session_class_config_rejects_untrusted_module_without_import(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

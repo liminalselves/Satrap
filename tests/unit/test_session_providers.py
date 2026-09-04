@@ -4,10 +4,11 @@ import importlib
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.APICall.LLMCall import LLM
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
@@ -25,6 +26,11 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.simple_session import AsyncSimpleSession
+
+
+def _placeholder_llm() -> LLM:
+    """占位 LLM: 被测 Provider 不触发真实模型调用, cast 集中在此工厂"""
+    return cast(LLM, object())
 
 
 class _CapturingSession(Session):
@@ -235,7 +241,7 @@ def test_edictum_provider_creates_registered_factory_session(tmp_path: Path) -> 
         session_config={"marker": "instance"},
     )
 
-    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    created = provider.create_session(config, llm=_placeholder_llm())
 
     assert isinstance(created, _CapturingSession)
     assert created.session_id == "edictum-1"
@@ -281,7 +287,7 @@ def test_edictum_provider_manages_sync_plugin_lifecycle(tmp_path: Path) -> None:
         provider_name="edictum",
     )
 
-    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    created = provider.create_session(config, llm=_placeholder_llm())
     provider.prepare_session(created)
     metadata = provider.get_runtime_metadata(created)
 
@@ -344,7 +350,7 @@ async def test_edictum_provider_manages_async_plugin_lifecycle(tmp_path: Path) -
         provider_name="edictum",
     )
 
-    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    created = provider.create_session(config, llm=_placeholder_llm())
     await provider.prepare_session_async(created)
     assert isinstance(created, _AsyncPluginSession)
     assert created.installed == ["session_commands"]
@@ -378,7 +384,7 @@ def test_default_edictum_type_loads_platform_command_plugin(tmp_path: Path) -> N
         provider_name="edictum",
     )
 
-    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    created = provider.create_session(config, llm=_placeholder_llm())
     provider.prepare_session(created)
     assert isinstance(created, Session)
     help_result = created.run("/help")
@@ -428,7 +434,7 @@ async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
         provider_name="edictum",
     )
 
-    created = provider.create_session(config, llm=object())   # type: ignore[arg-type]
+    created = provider.create_session(config, llm=_placeholder_llm())
     await provider.prepare_session_async(created)
     assert isinstance(created, AsyncSimpleSession)
     plugin = next(item for item in created.list_plugins() if item.name == "session_commands")
@@ -566,7 +572,9 @@ async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     assert new_entry.session is not old_session
     assert isinstance(new_entry.session, _CapturingAsyncSession)
     assert new_entry.session.marker == "after"
-    assert manager.get_session_config("onebot-session").session_config == {}   # type: ignore[union-attr]
+    onebot_cfg = manager.get_session_config("onebot-session")
+    assert onebot_cfg is not None
+    assert onebot_cfg.session_config == {}
 
     config_manager.update(
         "onebot-assistant",

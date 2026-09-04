@@ -11,15 +11,21 @@ from __future__ import annotations
 import asyncio
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
+
+
+def _as_session_manager(fake: Any) -> SessionManager:
+    """SessionManager 替身类型边界: 替身实现 handle_call_async/class_cfg_mgr 调用面, cast 集中在此工厂"""
+    return cast(SessionManager, fake)
 
 
 class _RecorderAdapter(PlatformAdapter):
@@ -189,7 +195,7 @@ async def test_rate_limiter_refills_after_time(monkeypatch: pytest.MonkeyPatch):
 async def test_preprocessor_drop_event():
     """preprocessor 返回 False 丢弃事件"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
     sched.add_preprocessor(lambda e: False)
 
     adapter = _RecorderAdapter()
@@ -201,12 +207,12 @@ async def test_preprocessor_drop_event():
 async def test_preprocessor_async_and_full_success_path():
     """异步 preprocessor 通过后, 全链路: 回复通过 event.send 发出"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     async def ok(event: MessageEvent) -> bool:
         return True
 
-    sched.add_preprocessor(ok)   # type: ignore[arg-type]
+    sched.add_preprocessor(ok)
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -223,7 +229,7 @@ async def test_rate_limited_sends_feedback():
     """限流时发送频率反馈 (error_feedback=True)"""
     rl = RateLimiter(rate=1.0, burst=0)
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm, rate_limiter=rl, error_feedback=True)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm), rate_limiter=rl, error_feedback=True)
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -236,7 +242,7 @@ async def test_rate_limited_sends_feedback():
 async def test_group_message_without_wake_dropped():
     """群消息无唤醒词/艾特时丢弃"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     adapter = _RecorderAdapter()
     await sched.execute(
@@ -249,7 +255,7 @@ async def test_group_message_without_wake_dropped():
 async def test_group_message_with_wake_passes():
     """群消息带唤醒标记时放行"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     adapter = _RecorderAdapter()
     event = _message_event(adapter, msg_type=PlatformMessageType.GROUP_MESSAGE)
@@ -261,7 +267,7 @@ async def test_group_message_with_wake_passes():
 @pytest.mark.asyncio
 async def test_permission_denied_drops():
     """权限检查拒绝时丢弃事件"""
-    sched = _DenyScheduler(_FakeSessionManager())   # type: ignore[arg-type]
+    sched = _DenyScheduler(_as_session_manager(_FakeSessionManager()))
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -272,7 +278,7 @@ async def test_permission_denied_drops():
 async def test_empty_message_dropped():
     """空消息丢弃"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter, message_str=""))
@@ -283,7 +289,7 @@ async def test_empty_message_dropped():
 async def test_llm_timeout_sends_feedback():
     """LLM 调用超时发送超时反馈"""
     sm = _FakeSessionManager(response="", delay=5)
-    sched = PipelineScheduler(sm, llm_timeout=0.05, error_feedback=True)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm), llm_timeout=0.05, error_feedback=True)
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -294,7 +300,7 @@ async def test_llm_timeout_sends_feedback():
 @pytest.mark.asyncio
 async def test_execute_error_sends_feedback():
     """管线异常时发送兜底反馈"""
-    sched = PipelineScheduler(_BoomSessionManager(), error_feedback=True)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(_BoomSessionManager()), error_feedback=True)
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -311,7 +317,7 @@ async def test_temporary_files_cleaned(tmp_path: Path):
     - tmp_path: tmp路径
     """
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     adapter = _RecorderAdapter()
     event = _message_event(adapter)
@@ -324,10 +330,15 @@ async def test_temporary_files_cleaned(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_execute_resolves_session_via_user_manager():
-    """配置 UserManager 时通过 resolve_session 解析目标会话"""
+async def test_execute_resolves_session_via_user_manager(monkeypatch: pytest.MonkeyPatch):
+    """
+    配置 UserManager 时通过 resolve_session 解析目标会话
+
+    参数:
+    - monkeypatch: pytest monkeypatch 夹具
+    """
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
 
     class _FakeUserManager:
         def __init__(self):
@@ -340,7 +351,7 @@ async def test_execute_resolves_session_via_user_manager():
             return f"{platform}:{user_id}:sid"
 
     fake_um = _FakeUserManager()
-    sched.user_manager = fake_um   # type: ignore[assignment]
+    monkeypatch.setattr(sched, "user_manager", fake_um)
 
     adapter = _RecorderAdapter()
     await sched.execute(_message_event(adapter))
@@ -351,7 +362,7 @@ async def test_execute_resolves_session_via_user_manager():
 def test_resolve_route_adapter_no_requested_uses_source():
     """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
     sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
@@ -363,7 +374,7 @@ def test_resolve_route_adapter_no_requested_uses_source():
 def test_resolve_route_adapter_requested_missing_falls_back():
     """会话类中的旧 adapter_id 不应覆盖实际事件来源"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("ghost"))
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
     sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
@@ -375,7 +386,7 @@ def test_resolve_route_adapter_requested_missing_falls_back():
 def test_resolve_route_adapter_requested_exists():
     """存在同名 adapter_id 参数时仍应绑定事件来源适配器"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("rec1"))
-    sched = PipelineScheduler(sm)   # type: ignore[arg-type]
+    sched = PipelineScheduler(_as_session_manager(sm))
     sched.set_adapter_ids({"rec1", "rec2"})
 
     adapter = _RecorderAdapter()

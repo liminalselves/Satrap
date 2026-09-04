@@ -92,6 +92,26 @@ from satrap.core.log import logger
 from satrap.core.type import safe_getattr, safe_getattr_callable, safe_getattr_dict
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
 from satrap.core.utils.TCBuilder import AsyncTool, Tool, ToolsManager, AsyncToolsManager, create_tool_defined
+from satrap.core.utils.context import AsyncContextManager, ContextManager
+
+
+class SkillWorkflowProtocol(Protocol):
+    """
+    技能装配所需的最小工作流接口
+
+    生产中的 ModelWorkflowFramework / AsyncModelWorkflowFramework 结构满足本接口,
+    测试中的轻量替身 (如 SimpleNamespace) 亦可直接装配
+    """
+
+    @property
+    def ctx(self) -> Union[ContextManager, AsyncContextManager]:
+        """上下文管理器 (同步或异步)"""
+        ...
+
+    @property
+    def tools_manager(self) -> Union[ToolsManager, AsyncToolsManager, None]:
+        """工具管理器 (同步或异步), 可为 None"""
+        ...
 
 SKILLS_PRESET_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
@@ -532,7 +552,7 @@ class SkillsManager:
 
     # ================= 装配到 workflow =================
 
-    def activate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
+    def activate(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
         """
         将技能装配进 workflow: 指令注入系统提示词 + 注册自带工具 + 启用关联工具 (同步版)
 
@@ -563,7 +583,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill.name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
-    async def activate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
+    async def activate_async(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
         """
         将技能装配进 workflow (异步版): 额外自动连接并注册技能自带的 MCP 客户端
 
@@ -605,7 +625,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill.name} 已激活 (启用工具 {enabled}/{len(skill.tool_names)})")
         return True
 
-    def deactivate(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
+    def deactivate(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
         """
         取消技能激活: 从系统提示词剥离指令块 + 禁用关联工具 (同步版)
 
@@ -632,7 +652,7 @@ class SkillsManager:
         logger.info(f"[技能管理] 技能 {skill.name} 已取消激活")
         return True
 
-    async def deactivate_async(self, skill_name: str, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]) -> bool:
+    async def deactivate_async(self, skill_name: str, workflow: SkillWorkflowProtocol) -> bool:
         """
         取消技能激活 (异步版): 额外关闭技能自带的 MCP 客户端连接
 
@@ -669,7 +689,7 @@ class SkillsManager:
 
     # ================= 内部方法 =================
 
-    def _register_bundled_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], skill: Skill) -> int:
+    def _register_bundled_tools(self, workflow: SkillWorkflowProtocol, skill: Skill) -> int:
         """
         注册技能自带的工具实例 (已注册的同名工具跳过), 返回新注册数
 
@@ -697,7 +717,7 @@ class SkillsManager:
 
         return registered
 
-    def _apply_tools(self, workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], tool_names: List[str], enable: bool) -> int:
+    def _apply_tools(self, workflow: SkillWorkflowProtocol, tool_names: List[str], enable: bool) -> int:
         """
         启用或禁用关联工具, 返回实际生效的工具数
 
@@ -725,7 +745,7 @@ class SkillsManager:
         return applied
 
     @staticmethod
-    def _strip_from_system(workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework], skill_name: str):
+    def _strip_from_system(workflow: SkillWorkflowProtocol, skill_name: str):
         """
         从系统提示词中剥离 <skill:name>...</skill:name> 指令块
 
@@ -743,7 +763,7 @@ class SkillsManager:
                 msg["content"] = pattern.sub("", content)
 
     @staticmethod
-    def _sync_context(workflow: Union[ModelWorkflowFramework, AsyncModelWorkflowFramework]):
+    def _sync_context(workflow: SkillWorkflowProtocol):
         """
         触发上下文落库, 返回 _sync() 的结果 (异步管理器返回协程)
 

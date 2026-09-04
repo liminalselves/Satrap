@@ -1,14 +1,36 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pathlib import Path
 
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
 from satrap.core.type import LLMCallResponse
 from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.utils.TCBuilder import AsyncToolsManager, ToolsManager
+
+
+def _as_llm(fake: Any) -> LLM:
+    """同步 LLM 替身类型边界: 替身实现 LLM.call 调用面, cast 集中在此工厂"""
+    return cast(LLM, fake)
+
+
+def _as_async_llm(fake: Any) -> AsyncLLM:
+    """异步 LLM 替身类型边界: 替身实现 AsyncLLM.call 调用面, cast 集中在此工厂"""
+    return cast(AsyncLLM, fake)
+
+
+def _as_tools_manager(fake: Any) -> ToolsManager:
+    """同步工具管理器替身类型边界: 替身实现 ToolsManager 调用面, cast 集中在此工厂"""
+    return cast(ToolsManager, fake)
+
+
+def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
+    """异步工具管理器替身类型边界: 替身实现 AsyncToolsManager 调用面, cast 集中在此工厂"""
+    return cast(AsyncToolsManager, fake)
 
 
 class _FakeTools:
@@ -59,9 +81,9 @@ class _FailingAsyncLLM:
 def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
     llm = _FakeLLM()
     wf = ModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_llm(llm),
         context_id="full-agent-sync",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_tools_manager(_FakeTools()),
     )
     wf.ctx = ContextManager("full-agent-sync", db_path=str(tmp_path / "sync.db"))
 
@@ -79,9 +101,9 @@ def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
             return ([{"role": "assistant", "content": "自定义回复"}], True)
 
     wf = _Workflow(
-        llm=_FakeLLM(),   # type: ignore[arg-type]
+        llm=_as_llm(_FakeLLM()),
         context_id="full-agent-options",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_tools_manager(_FakeTools()),
     )
     wf.ctx = ContextManager("full-agent-options", db_path=str(tmp_path / "options.db"))
 
@@ -95,9 +117,9 @@ def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
 async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
     llm = _FakeAsyncLLM()
     wf = AsyncModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_async_llm(llm),
         context_id="full-agent-async",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_async_tools_manager(_FakeTools()),
     )
     wf.ctx = AsyncContextManager("full-agent-async", db_path=str(tmp_path / "async.db"))
     await wf.ctx.initialize()
@@ -112,9 +134,9 @@ async def test_async_model_workflow_full_agent_runs_complete_agent_flow(tmp_path
 def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
     llm = _FakeLLM()
     wf = ModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_llm(llm),
         context_id="tools-agent-sync",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_tools_manager(_FakeTools()),
     )
     wf.ctx = ContextManager("tools-agent-sync", db_path=str(tmp_path / "tools-sync.db"))
     wf.ctx.reset_system_prompt("系统提示")
@@ -140,9 +162,9 @@ def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(
             return ([{"role": "assistant", "content": "临时回复"}], True)
 
     wf = _Workflow(
-        llm=_FakeLLM(),   # type: ignore[arg-type]
+        llm=_as_llm(_FakeLLM()),
         context_id="tools-agent-options",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_tools_manager(_FakeTools()),
     )
     wf.ctx = ContextManager("tools-agent-options", db_path=str(tmp_path / "tools-options.db"))
     wf.ctx.add_user_message("历史消息")
@@ -157,9 +179,9 @@ def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(
 def test_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
     llm = _FailingLLM()
     wf = ModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_llm(llm),
         context_id="tools-agent-fail",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_tools_manager(_FakeTools()),
     )
     wf.ctx = ContextManager("tools-agent-fail", db_path=str(tmp_path / "tools-fail.db"))
     wf.ctx.reset_system_prompt("系统提示")
@@ -186,9 +208,9 @@ def test_context_manager_del_context_keeps_only_system_messages(tmp_path: Path):
 async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
     llm = _FakeAsyncLLM()
     wf = AsyncModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_async_llm(llm),
         context_id="tools-agent-async",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_async_tools_manager(_FakeTools()),
     )
     wf.ctx = AsyncContextManager("tools-agent-async", db_path=str(tmp_path / "tools-async.db"))
     await wf.ctx.initialize()
@@ -217,9 +239,9 @@ async def test_async_model_workflow_tools_agent_clears_without_system_and_preser
             return ([{"role": "assistant", "content": "异步临时回复"}], True)
 
     wf = _Workflow(
-        llm=_FakeAsyncLLM(),   # type: ignore[arg-type]
+        llm=_as_async_llm(_FakeAsyncLLM()),
         context_id="tools-agent-async-options",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_async_tools_manager(_FakeTools()),
     )
     wf.ctx = AsyncContextManager("tools-agent-async-options", db_path=str(tmp_path / "tools-async-options.db"))
     await wf.ctx.initialize()
@@ -236,9 +258,9 @@ async def test_async_model_workflow_tools_agent_clears_without_system_and_preser
 async def test_async_model_workflow_tools_agent_cleans_context_after_model_failure(tmp_path: Path):
     llm = _FailingAsyncLLM()
     wf = AsyncModelWorkflowFramework(
-        llm=llm,   # type: ignore[arg-type]
+        llm=_as_async_llm(llm),
         context_id="tools-agent-async-fail",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_async_tools_manager(_FakeTools()),
     )
     wf.ctx = AsyncContextManager("tools-agent-async-fail", db_path=str(tmp_path / "tools-async-fail.db"))
     await wf.ctx.initialize()
@@ -272,9 +294,9 @@ async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path
             return ([{"role": "assistant", "content": "异步自定义回复"}], True)
 
     wf = _Workflow(
-        llm=_FakeAsyncLLM(),   # type: ignore[arg-type]
+        llm=_as_async_llm(_FakeAsyncLLM()),
         context_id="full-agent-async-options",
-        tools_manager=_FakeTools(),   # type: ignore[arg-type]
+        tools_manager=_as_async_tools_manager(_FakeTools()),
     )
     wf.ctx = AsyncContextManager("full-agent-async-options", db_path=str(tmp_path / "async-options.db"))
     await wf.ctx.initialize()

@@ -785,7 +785,9 @@ async def test_control_server_cold_manages_session_instances(
     assert not sandbox_path.exists()
     refreshed = control_server._session_instance_config_service("local")
     assert refreshed.store.get("cold-1") is None
-    assert refreshed.user_store.get("user-1").user_session == []   # type: ignore[union-attr]
+    refreshed_user = refreshed.user_store.get("user-1")
+    assert refreshed_user is not None
+    assert refreshed_user.user_session == []
     assert refreshed.user_store.get_context_session("user-1", "onebot", "cold") is None
 
 

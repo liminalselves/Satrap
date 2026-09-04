@@ -1,8 +1,9 @@
 import json
 import logging
 from types import TracebackType
-from typing import Any
+from typing import Any, cast
 
+import aiohttp
 import pytest
 from pathlib import Path
 
@@ -13,6 +14,11 @@ from satrap.core.platform.misskey.client import (
     MisskeyAPI,
     StreamingClient,
 )
+
+
+def _fake_response(status: int) -> aiohttp.ClientResponse:
+    """FakeResponse 替身类型边界: 替身实现 status/json/text 调用面, cast 集中在此工厂"""
+    return cast(aiohttp.ClientResponse, FakeResponse(status=status))
 
 
 class FakeResponse:
@@ -90,20 +96,20 @@ async def test_status_error_mapping():
     api = MisskeyAPI("https://misskey.example", "token")
 
     with pytest.raises(AuthenticationError):
-        await api._process_response(FakeResponse(status=401), "i")   # type: ignore[arg-type]
+        await api._process_response(_fake_response(401), "i")
     with pytest.raises(APIRateLimitError):
-        await api._process_response(FakeResponse(status=429), "i")   # type: ignore[arg-type]
+        await api._process_response(_fake_response(429), "i")
     with pytest.raises(APIError):
-        await api._process_response(FakeResponse(status=400), "i")   # type: ignore[arg-type]
+        await api._process_response(_fake_response(400), "i")
 
 
 @pytest.mark.asyncio
-async def test_upload_file_uses_drive_create(tmp_path: Path):
+async def test_upload_file_uses_drive_create(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
     api = MisskeyAPI("https://misskey.example", "token")
     fake_session = FakeSession()
-    api._session = fake_session   # type: ignore[assignment]
+    monkeypatch.setattr(api, "_session", fake_session)
 
     result = await api.upload_file(str(path), name="demo.txt", folder_id="folder-1")
 

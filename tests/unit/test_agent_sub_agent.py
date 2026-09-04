@@ -18,6 +18,26 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 TOOLKIT_PATH = PROJECT_ROOT / ".toolkit" / "apikey.txt"
 
 
+def _as_llm(fake: Any) -> LLM:
+    """LLM 替身类型边界: 替身实现 LLM.call 调用面, cast 集中在此工厂"""
+    return cast(LLM, fake)
+
+
+def _as_async_llm(fake: Any) -> AsyncLLM:
+    """AsyncLLM 替身类型边界: 替身实现 AsyncLLM.call 调用面, cast 集中在此工厂"""
+    return cast(AsyncLLM, fake)
+
+
+def _as_tools_manager(fake: Any) -> ToolsManager:
+    """ToolsManager 替身类型边界: 替身实现工具查询调用面, cast 集中在此工厂"""
+    return cast(ToolsManager, fake)
+
+
+def _as_async_tools_manager(fake: Any) -> AsyncToolsManager:
+    """AsyncToolsManager 替身类型边界: 替身实现工具查询调用面, cast 集中在此工厂"""
+    return cast(AsyncToolsManager, fake)
+
+
 def _load_deepseek_config() -> dict[str, str]:
     """
     解析 .toolkit/apikey.txt 并返回 DeepSeek 配置块
@@ -213,7 +233,7 @@ class _FakeAsyncLLM:
 def test_sub_agent_parses_json_array_task():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
 
     result = agent.execute('["task one", "task two"]')
     assert "子代理1执行任务" in result
@@ -225,7 +245,7 @@ def test_sub_agent_parses_json_array_task():
 def test_sub_agent_parses_single_string_task():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
 
     result = agent.execute("single task description")
     assert "子代理1执行任务" in result
@@ -235,7 +255,7 @@ def test_sub_agent_parses_single_string_task():
 def test_sub_agent_handles_empty_task_list():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
 
     result = agent.execute("[]")
     assert result == "未收到任何子任务"
@@ -243,7 +263,7 @@ def test_sub_agent_handles_empty_task_list():
 
 def test_sub_agent_rejects_excessive_task_count():
     """同步子代理拒绝超过固定上限的批量任务"""
-    agent = SubAgent(_FakeLLM(), _FakeToolsManager())   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(_FakeLLM()), _as_tools_manager(_FakeToolsManager()))
     result = agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
     assert "不能超过 16" in result
 
@@ -251,7 +271,7 @@ def test_sub_agent_rejects_excessive_task_count():
 def test_sub_agent_handles_malformed_json():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
 
     result = agent.execute("{bad json}")
     assert "子代理1执行任务" in result
@@ -261,7 +281,7 @@ def test_sub_agent_handles_malformed_json():
 def test_sub_agent_preserves_task_order():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    agent = SubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = SubAgent(_as_llm(llm), _as_tools_manager(tools_manager))
 
     result = agent.execute('["first", "second", "third"]')
     first_pos = result.index("first")
@@ -323,7 +343,7 @@ def test_sub_agent_forwards_tool_calls_to_parent_manager() -> None:
 async def _run_async_sub_agent(task_input: str) -> str:
     llm = _FakeAsyncLLM()
     tools_manager = _FakeToolsManager()
-    agent = AsyncSubAgent(llm, tools_manager)   # type: ignore[arg-type]
+    agent = AsyncSubAgent(_as_async_llm(llm), _as_async_tools_manager(tools_manager))
     return await agent.execute(task_input)
 
 
@@ -352,7 +372,7 @@ async def test_async_sub_agent_empty_list():
 @pytest.mark.asyncio
 async def test_async_sub_agent_rejects_excessive_task_count():
     """异步子代理拒绝超过固定上限的批量任务"""
-    agent = AsyncSubAgent(_FakeAsyncLLM(), _FakeToolsManager())   # type: ignore[arg-type]
+    agent = AsyncSubAgent(_as_async_llm(_FakeAsyncLLM()), _as_async_tools_manager(_FakeToolsManager()))
     result = await agent.execute(json.dumps([f"task-{index}" for index in range(17)]))
     assert "不能超过 16" in result
 
@@ -427,7 +447,7 @@ async def test_async_sub_agent_parallelism_with_deepseek():
 def test_sub_agent_model_forward_returns_string():
     llm = _FakeLLM()
     tools_manager = _FakeToolsManager()
-    model = SubAgentModel(llm, "test-id", tools_manager)   # type: ignore[arg-type]
+    model = SubAgentModel(_as_llm(llm), "test-id", _as_tools_manager(tools_manager))
     result = model.forward("some task")
     assert isinstance(result, str)
     assert len(result) > 0

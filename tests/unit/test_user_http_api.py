@@ -7,10 +7,11 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 
 
@@ -19,7 +20,8 @@ def _make_server(db_path: str) -> BackendHTTPServer:
         checkpoint_db_path=db_path,
         config=SimpleNamespace(user_db_path=db_path),
     )
-    return BackendHTTPServer(fake)   # type: ignore[arg-type]
+    # BackendManager 替身: 仅暴露 checkpoint_db_path 与 config.user_db_path, 边界断言集中在本工厂
+    return BackendHTTPServer(cast(BackendManager, fake))
 
 
 async def _route(

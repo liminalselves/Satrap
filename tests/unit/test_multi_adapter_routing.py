@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -132,7 +132,7 @@ async def test_event_dispatcher_processes_platforms_concurrently():
             else:
                 second_done.set()
 
-    dispatcher = EventDispatcher(manager, _Scheduler())   # type: ignore[arg-type]
+    dispatcher = EventDispatcher(manager, cast(PipelineScheduler, _Scheduler()))
     task = asyncio.create_task(dispatcher.dispatch_loop())
     await first._event_queue.put(_message_event("first"))
     await first_started.wait()

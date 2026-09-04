@@ -1,6 +1,6 @@
 import os
 import json
-from typing import Optional, Callable, List, Dict, Any
+from typing import Optional, Callable, List, Dict, Any, cast
 
 from satrap.core.APICall.LLMCall import LLM   # 之前的 LLM 类
 from satrap.core.utils.TCBuilder import Tool, ToolsManager   # 之前的工具基类和管理器
@@ -66,7 +66,7 @@ class WeatherWorkflow(ModelWorkflowFramework):
         # Step.4 获取最终回答(最后一条 assistant 消息的内容)
         for msg in reversed(final_context):
             if msg.get("role") == "assistant":
-                return msg.get("content", "")   # type: ignore[reportReturnType]
+                return cast(str, msg.get("content", ""))
         return "未找到模型回复"
 
 # ========== 3. 主程序 ==========

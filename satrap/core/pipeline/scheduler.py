@@ -54,16 +54,16 @@ class PipelineScheduler:
         self.llm_timeout = llm_timeout
         self.error_feedback = error_feedback
         self.user_manager = user_manager
-        self.preprocessors: List[Callable[[MessageEvent], bool]] = []
+        self.preprocessors: List[Callable[[MessageEvent], Awaitable[bool] | bool]] = []
         self.adapter_ids: set[str] = set()
         self.platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
 
-    def add_preprocessor(self, fn: Callable[[MessageEvent], bool]):
+    def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
         """
         添加预处理器, 在 stage 1a 前依次调用; 返回 False 则丢弃事件
 
         参数:
-        - fn: 待调用函数
+        - fn: 待调用函数, 支持同步或异步 (返回值经 _await_if_needed 统一处理)
         """
         self.preprocessors.append(fn)
 

@@ -4,7 +4,7 @@ import base64
 import os
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -112,7 +112,8 @@ class _FakeAsyncCompletions:
 
 def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm = LLM.__new__(LLM)
-    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake_completions))   # type: ignore[assignment] 测试替身, 非真实 OpenAI 客户端
+    # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
+    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake_completions)))
     llm.model = "mock"
     llm.temperature = 0.7
     llm.top_p = 0.95
@@ -146,7 +147,8 @@ def test_llm_call_appends_images_to_last_user_message():
 async def test_async_llm_call_appends_images_to_last_user_message():
     fake = _FakeAsyncCompletions()
     llm = AsyncLLM.__new__(AsyncLLM)
-    llm.client = SimpleNamespace(chat=SimpleNamespace(completions=fake))   # type: ignore[assignment] 测试替身, 非真实 OpenAI 客户端
+    # 测试替身非真实 OpenAI 客户端, 边界断言集中在构造点
+    llm.client = cast(Any, SimpleNamespace(chat=SimpleNamespace(completions=fake)))
     llm.model = "mock"
     llm.temperature = 0.7
     llm.top_p = 0.95

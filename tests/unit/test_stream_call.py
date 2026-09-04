@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, Iterator, TypeVar
+from typing import Any, Iterator, TypeVar, cast
 
 import pytest
 from pathlib import Path
@@ -102,9 +102,20 @@ class _AsyncClient:
 _LLM = TypeVar("_LLM", LLM, AsyncLLM)
 
 
+def _as_llm(fake: Any) -> LLM:
+    """LLM 替身类型边界: 替身实现 LLM 流式调用面, cast 集中在此工厂"""
+    return cast(LLM, fake)
+
+
+def _as_async_llm(fake: Any) -> AsyncLLM:
+    """AsyncLLM 替身类型边界: 替身实现 AsyncLLM 流式调用面, cast 集中在此工厂"""
+    return cast(AsyncLLM, fake)
+
+
 def _make_llm(cls: type[_LLM], client: object) -> _LLM:
     llm = cls.__new__(cls)
-    llm.client = client   # type: ignore[assignment] 测试替身, 非真实 OpenAI 客户端
+    # 测试替身非真实 OpenAI 客户端, 边界断言集中在工厂内
+    llm.client = cast(Any, client)
     llm.model = "deepseek-v4-flash"
     llm.temperature = 0.2
     llm.top_p = 0.95
@@ -211,7 +222,7 @@ def test_stream_full_agent_executes_tool_and_continues(
     tools = ToolsManager()
     tools.register_tool(_CalculateTool())
     agent = ModelWorkflowFramework(
-        llm=_AgentLLM(),   # type: ignore[arg-type]
+        llm=_as_llm(_AgentLLM()),
         context_id="stream-agent-test",
         tools_manager=tools,
     )
@@ -231,7 +242,7 @@ def test_stream_tools_agent_keeps_only_system_context(
     tools = ToolsManager()
     tools.register_tool(_CalculateTool())
     agent = ModelWorkflowFramework(
-        llm=_AgentLLM(),   # type: ignore[arg-type]
+        llm=_as_llm(_AgentLLM()),
         context_id="stream-tools-agent-test",
         tools_manager=tools,
     )
@@ -265,7 +276,7 @@ def test_stream_full_agent_separates_thinking_callback(
     content: list[str] = []
     thinking: list[str] = []
     agent = ModelWorkflowFramework(
-        llm=_ThinkingAgentLLM(),   # type: ignore[arg-type]
+        llm=_as_llm(_ThinkingAgentLLM()),
         context_id="stream-thinking-test",
         content_callback=content.append,
         return_thinking=True,
@@ -306,7 +317,7 @@ async def test_async_stream_full_agent_separates_thinking_callback(
         thinking.append(value)
 
     agent = AsyncModelWorkflowFramework(
-        llm=_AsyncThinkingAgentLLM(),   # type: ignore[arg-type]
+        llm=_as_async_llm(_AsyncThinkingAgentLLM()),
         context_id="async-stream-thinking-test",
         content_callback=content_callback,
         return_thinking=True,
@@ -355,7 +366,7 @@ async def test_async_stream_tools_agent_keeps_only_system_context(
     tools = AsyncToolsManager()
     tools.register_tool(_AsyncCalculateTool())
     agent = AsyncModelWorkflowFramework(
-        llm=_AsyncToolAgentLLM(),   # type: ignore[arg-type]
+        llm=_as_async_llm(_AsyncToolAgentLLM()),
         tools_manager=tools,
         context_id="async-stream-tools-agent-test",
     )

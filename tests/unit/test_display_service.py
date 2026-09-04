@@ -161,6 +161,11 @@ class _FakeModelConfig:
         return LLMConfig(name=name, model="m", api_key="k", base_url="https://x")
 
 
+def _as_model_config(fake: Any) -> ModelConfigManager:
+    """ModelConfigManager 替身类型边界: 替身实现配置查询调用面, cast 集中在此工厂"""
+    return cast(ModelConfigManager, fake)
+
+
 def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
     """
     构造 ChatService, build_llm 替换为 fake
@@ -178,7 +183,7 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     return ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -478,7 +483,7 @@ def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, mon
 
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -539,7 +544,7 @@ def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: P
     model_config = _MutableModelConfig()
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     svc = ChatService(
-        model_config,   # type: ignore[arg-type]
+        _as_model_config(model_config),
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -593,7 +598,7 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
     registry = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     registry.set_enabled("plug", True)
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         registry,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -817,7 +822,7 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -863,7 +868,7 @@ def test_service_retry_with_think(tmp_path: Path, monkeypatch: Any):
     monkeypatch.setattr(service_mod, "build_llm", _fake_build_llm)
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -923,7 +928,7 @@ def test_service_retry_preserves_variants_and_switches_context(tmp_path: Path, m
 
     monkeypatch.setattr(service_mod, "build_llm", build_variant_llm)
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),
@@ -973,7 +978,7 @@ def test_service_fork_copies_display_and_model_context(tmp_path: Path, monkeypat
 
     monkeypatch.setattr(service_mod, "build_llm", build_fake_llm)
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        _as_model_config(_FakeModelConfig()),
         ChatPluginRegistry(state_path=tmp_path / "plugins.json"),
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),

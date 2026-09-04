@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from satrap.core.utils.TCBuilder import (
@@ -173,7 +175,7 @@ def test_tools_manager_returns_structured_errors_without_executing_invalid_calls
     invalid_name_result = manager.execute_tool("", {})
     assert invalid_name_result["error_type"] == "invalid_tool_call"
 
-    invalid_args_result = manager.execute_tool("counting", "not a dict")   # type: ignore[arg-type]
+    invalid_args_result = manager.execute_tool("counting", cast(Any, "not a dict"))
     assert invalid_args_result["error_type"] == "invalid_arguments"
     assert tool.calls == 0
 
@@ -214,7 +216,7 @@ def test_execute_tool_call_handles_malformed_call_info_without_raising():
     manager = ToolsManager()
     manager.register_tool(CountingTool())
 
-    tool_message, tool_result = manager.execute_tool_call("bad call")   # type: ignore[arg-type]
+    tool_message, tool_result = manager.execute_tool_call(cast(Any, "bad call"))
     assert tool_message["id"] == ""
     assert tool_message["function"]["name"] == ""
     assert tool_result["error_type"] == "invalid_tool_call"
@@ -243,7 +245,7 @@ async def test_async_tools_manager_returns_structured_errors_and_catches_excepti
     missing_result = await manager.execute_tool("missing", {})
     assert missing_result["error_type"] == "not_found"
 
-    invalid_args_result = await manager.execute_tool("async_counting", "not a dict")   # type: ignore[arg-type]
+    invalid_args_result = await manager.execute_tool("async_counting", cast(Any, "not a dict"))
     assert invalid_args_result["error_type"] == "invalid_arguments"
     assert counting_tool.calls == 0
 

@@ -62,10 +62,10 @@ def test_sync_history_without_user_manager_returns_empty_message():
     assert cmd_history(session) == "暂无其他对话"
 
 
-def test_sync_new_command_creates_action_and_binds_user():
+def test_sync_new_command_creates_action_and_binds_user(monkeypatch: pytest.MonkeyPatch):
     session = Session("chat:misskey:user1:old")
     user_manager = FakeUserManager(["chat:misskey:user1:old"])
-    session._user_manager = user_manager   # type: ignore[assignment]
+    monkeypatch.setattr(session, "_user_manager", user_manager)
 
     result = cmd_new(session)
 
@@ -78,10 +78,12 @@ def test_sync_new_command_creates_action_and_binds_user():
     assert user_manager.bound == [("user1", result.target_session_id)]
 
 
-def test_sync_switch_validates_bound_contexts():
+def test_sync_switch_validates_bound_contexts(monkeypatch: pytest.MonkeyPatch):
     session = Session("chat:misskey:user1")
-    session._user_manager = FakeUserManager(   # type: ignore[assignment]
-        ["chat:misskey:user1", "chat:misskey:user1:next"],
+    monkeypatch.setattr(
+        session,
+        "_user_manager",
+        FakeUserManager(["chat:misskey:user1", "chat:misskey:user1:next"]),
     )
 
     assert cmd_switch(session, "chat:misskey:user1:missing") == (
@@ -99,12 +101,12 @@ def test_about_command_returns_configured_text():
 
 
 @pytest.mark.asyncio
-async def test_async_commands_match_sync_command_contract():
+async def test_async_commands_match_sync_command_contract(monkeypatch: pytest.MonkeyPatch):
     session = AsyncSession("chat:misskey:user1:old")
     user_manager = FakeUserManager(
         ["chat:misskey:user1:old", "chat:misskey:user1:next"],
     )
-    session._user_manager = user_manager   # type: ignore[assignment]
+    monkeypatch.setattr(session, "_user_manager", user_manager)
 
     history = await cmd_history_async(session)
     new_action = await cmd_new_async(session)
@@ -134,7 +136,7 @@ async def test_async_pre_registered_command_is_preserved():
     assert await session.cmd_process("/about") == ("pre", True)
 
 
-def test_platform_session_commands_plugin_builds_bound_sync_commands():
+def test_platform_session_commands_plugin_builds_bound_sync_commands(monkeypatch: pytest.MonkeyPatch):
     """平台命令插件应以当前会话为作用域构建同步命令"""
     plugin_dir = (
         Path(__file__).resolve().parents[2]
@@ -144,7 +146,7 @@ def test_platform_session_commands_plugin_builds_bound_sync_commands():
         / "session_commands"
     )
     session = Session("onebot-edictum:onebot-platform:user1:old")
-    session._user_manager = FakeUserManager([session.session_id])   # type: ignore[assignment]
+    monkeypatch.setattr(session, "_user_manager", FakeUserManager([session.session_id]))
 
     sync_commands, async_commands = collect_commands(
         plugin_dir,

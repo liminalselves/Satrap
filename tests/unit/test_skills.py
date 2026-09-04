@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 from pathlib import Path
 
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.skills import Skill, SkillsManager, SkillTool, _parse_front_matter
+
+
+class _SyncStubWorkflow:
+    """同步轻量工作流替身: 结构满足 SkillWorkflowProtocol"""
+
+    def __init__(self, ctx: ContextManager, tools_manager: ToolsManager) -> None:
+        self.ctx = ctx
+        self.tools_manager = tools_manager
+
+
+class _AsyncStubWorkflow:
+    """异步轻量工作流替身: 结构满足 SkillWorkflowProtocol"""
+
+    def __init__(self, ctx: AsyncContextManager, tools_manager: AsyncToolsManager) -> None:
+        self.ctx = ctx
+        self.tools_manager = tools_manager
 
 SKILL_MD = """---
 name: coding-agent
@@ -200,7 +214,7 @@ def test_activate_registers_bundled_tools(tmp_path: Path):
     manager.scan()
     wf = _make_sync_workflow(tmp_path)
 
-    assert manager.activate("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert manager.activate("coding-agent", wf) is True
     assert "stopwatch" in wf.tools_manager.tools
     assert wf.tools_manager.is_tool_enabled("stopwatch") is True
     assert "code_sandbox" in wf.tools_manager.tools
@@ -220,18 +234,18 @@ async def test_activate_async_connects_and_deactivate_closes_mcp_clients(tmp_pat
     assert len(skill.mcp_clients) == 1
     client = skill.mcp_clients[0]
 
-    wf = SimpleNamespace(
+    wf = _AsyncStubWorkflow(
         ctx=AsyncContextManager("skill-mcp", db_path=str(tmp_path / "mcp.db"), keep_in_memory=True),
         tools_manager=AsyncToolsManager(),
     )
     await wf.ctx.initialize()
     await wf.ctx.reset_system_prompt("你是助手")
 
-    assert await manager.activate_async("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert await manager.activate_async("coding-agent", wf) is True
     assert client.closed is False
     assert "<skill:coding-agent>" in wf.ctx.get_context()[0]["content"]
 
-    assert await manager.deactivate_async("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert await manager.deactivate_async("coding-agent", wf) is True
     assert client.closed is True
     assert "<skill:coding-agent>" not in wf.ctx.get_context()[0]["content"]
 
@@ -277,7 +291,7 @@ def _make_sync_workflow(tmp_path: Path):
     tools_manager.register_tool(DummyTool())
     ctx = ContextManager("skill-test", db_path=str(tmp_path / "skill.db"), keep_in_memory=True)
     ctx.reset_system_prompt("你是助手")
-    return SimpleNamespace(ctx=ctx, tools_manager=tools_manager)
+    return _SyncStubWorkflow(ctx=ctx, tools_manager=tools_manager)
 
 
 def test_activate_injects_instructions_and_enables_tools(tmp_path: Path):
@@ -288,13 +302,13 @@ def test_activate_injects_instructions_and_enables_tools(tmp_path: Path):
     tools_manager = wf.tools_manager
     tools_manager.disable_tool("code_sandbox")
 
-    assert manager.activate("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert manager.activate("coding-agent", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:coding-agent>" in system_text
     assert "使用沙箱验证代码" in system_text
     assert tools_manager.is_tool_enabled("code_sandbox") is True
 
-    assert manager.activate("coding-agent", wf) is True   # type: ignore[arg-type]   # 幂等
+    assert manager.activate("coding-agent", wf) is True   # 幂等
     assert system_text.count("<skill:coding-agent>") == 1
 
 
@@ -304,8 +318,8 @@ def test_deactivate_strips_instructions_and_disables_tools(tmp_path: Path):
     manager.scan()
     wf = _make_sync_workflow(tmp_path)
 
-    manager.activate("coding-agent", wf)   # type: ignore[arg-type]
-    assert manager.deactivate("coding-agent", wf) is True   # type: ignore[arg-type]
+    manager.activate("coding-agent", wf)
+    assert manager.deactivate("coding-agent", wf) is True
     system_text = wf.ctx.get_context()[0]["content"]
     assert "<skill:coding-agent>" not in system_text
     assert wf.tools_manager.is_tool_enabled("code_sandbox") is False
@@ -314,7 +328,7 @@ def test_deactivate_strips_instructions_and_disables_tools(tmp_path: Path):
 def test_activate_unknown_skill_returns_false(tmp_path: Path):
     manager = SkillsManager(skills_dir=str(tmp_path), include_preset=False)
     wf = _make_sync_workflow(tmp_path)
-    assert manager.activate("ghost", wf) is False   # type: ignore[arg-type]
+    assert manager.activate("ghost", wf) is False
 
 
 async def test_activate_async_with_async_context(tmp_path: Path):
@@ -337,13 +351,13 @@ async def test_activate_async_with_async_context(tmp_path: Path):
     ctx = AsyncContextManager("skill-async", db_path=str(tmp_path / "skill-async.db"), keep_in_memory=True)
     await ctx.initialize()
     await ctx.reset_system_prompt("你是助手")
-    wf = SimpleNamespace(ctx=ctx, tools_manager=tools_manager)
+    wf = _AsyncStubWorkflow(ctx=ctx, tools_manager=tools_manager)
 
-    assert await manager.activate_async("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert await manager.activate_async("coding-agent", wf) is True
     assert "<skill:coding-agent>" in wf.ctx.get_context()[0]["content"]
     assert tools_manager.is_tool_enabled("code_sandbox") is True
 
-    assert await manager.deactivate_async("coding-agent", wf) is True   # type: ignore[arg-type]
+    assert await manager.deactivate_async("coding-agent", wf) is True
     assert "<skill:coding-agent>" not in wf.ctx.get_context()[0]["content"]
     assert tools_manager.is_tool_enabled("code_sandbox") is False
 

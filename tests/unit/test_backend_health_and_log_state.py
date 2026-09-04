@@ -50,13 +50,17 @@ class _FakeAdapter:
 
 
 @pytest.mark.asyncio
-async def test_backend_health_uses_adapter_stats_dict():
+async def test_backend_health_uses_adapter_stats_dict(monkeypatch: pytest.MonkeyPatch):
     """health 的 adapters 字段应为前端可直接读取的 dict"""
     backend = BackendManager()
     backend._running = True
-    backend._adapter_mgr = SimpleNamespace(   # type: ignore[assignment]
-        _adapters={"fake": _FakeAdapter()},
-        list_adapters=lambda: ["fake"],
+    monkeypatch.setattr(
+        backend,
+        "_adapter_mgr",
+        SimpleNamespace(
+            _adapters={"fake": _FakeAdapter()},
+            list_adapters=lambda: ["fake"],
+        ),
     )
 
     health = await backend.health()

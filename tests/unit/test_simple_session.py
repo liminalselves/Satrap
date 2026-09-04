@@ -2508,7 +2508,7 @@ def test_sync_add_handler_rejects_async_callback(tmp_path: Path):
     session = _make_session(tmp_path)
     with pytest.raises(TypeError, match="异步回调"):
         session.add_handler(SessionHandler(
-            name="p", before_user_send=bad,   # pyright: ignore[reportArgumentType]
+            name="p", before_user_send=cast(Any, bad),   # 负向用例: 故意传入异步回调验证拒绝
         ))
 
 
@@ -2782,7 +2782,8 @@ def test_handler_config_frozen(tmp_path: Path):
 
     def tamper(text: str, ctx: HandlerContext) -> str | None:
         try:
-            ctx.config.original_input = "hacked"   # pyright: ignore[reportAttributeAccessIssue]
+            # 负向用例: 通过 Any 视图执行正常赋值路径以验证 frozen 拒绝
+            cast(Any, ctx.config).original_input = "hacked"
         except Exception as e:   # noqa: BLE001
             frozen_seen.append(type(e).__name__)
         return text

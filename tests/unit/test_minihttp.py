@@ -11,10 +11,11 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.server_auth import ServerAuth
 from satrap.core.storage import StorageLayout
@@ -117,7 +118,7 @@ def test_send_json_uses_standard_status_reason(status: int, reason: str):
     """
     server = _EchoServer()
     writer = _MemoryWriter()
-    server._send_json(writer, status, {"ok": True})   # type: ignore[arg-type]
+    server._send_json(cast(asyncio.StreamWriter, writer), status, {"ok": True})
     assert bytes(writer.data).startswith(f"HTTP/1.1 {status} {reason}\r\n".encode())
 
 
@@ -595,7 +596,7 @@ def _make_chat_server(tmp_path: Path) -> ChatHTTPServer:
 
     reg = ChatPluginRegistry(state_path=tmp_path / "plugins.json")
     svc = ChatService(
-        _FakeModelConfig(),   # type: ignore[arg-type]
+        cast(ModelConfigManager, _FakeModelConfig()),
         reg,
         chat_db_path=str(tmp_path / "chat.db"),
         display_db_path=str(tmp_path / "display.db"),

@@ -2,11 +2,23 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from satrap.core.APICall.EmbedCall import AsyncEmbedding
+from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.expend.tools.mem0 import Mem0Memory
+
+
+def _as_llm(fake: "FakeLLM") -> AsyncLLM:
+    """LLM 替身类型边界: 替身实现 structured_output/chat 调用面, cast 集中在此工厂"""
+    return cast(AsyncLLM, fake)
+
+
+def _as_embedding(fake: "FakeEmbedding") -> AsyncEmbedding:
+    """Embedding 替身类型边界: 替身实现 embed 调用面, cast 集中在此工厂"""
+    return cast(AsyncEmbedding, fake)
 
 
 class FakeEmbedding:
@@ -67,8 +79,8 @@ class FakeLLM:
 @pytest.mark.asyncio
 async def test_mem0_add_search_get_delete_and_clear(tmp_path: Path):
     memory = Mem0Memory(
-        llm=FakeLLM(),   # type: ignore[arg-type]
-        embedding=FakeEmbedding(),   # type: ignore[arg-type]
+        llm=_as_llm(FakeLLM()),
+        embedding=_as_embedding(FakeEmbedding()),
         persist_path=str(tmp_path / "mem0.db"),
         top_k=5,
         similarity_threshold=0.0,
@@ -98,8 +110,8 @@ async def test_mem0_add_search_get_delete_and_clear(tmp_path: Path):
 async def test_mem0_update_preserves_memory_id_and_replaces_content(tmp_path: Path):
     llm = FakeLLM()
     memory = Mem0Memory(
-        llm=llm,   # type: ignore[arg-type]
-        embedding=FakeEmbedding(),   # type: ignore[arg-type]
+        llm=_as_llm(llm),
+        embedding=_as_embedding(FakeEmbedding()),
         persist_path=str(tmp_path / "mem0-update.db"),
         top_k=5,
         similarity_threshold=0.0,
@@ -134,8 +146,8 @@ async def test_mem0_summary_tasks_are_coalesced_and_closed(
     - monkeypatch: pytest monkeypatch 夹具
     """
     memory = Mem0Memory(
-        llm=FakeLLM(),   # type: ignore[arg-type]
-        embedding=FakeEmbedding(),   # type: ignore[arg-type]
+        llm=_as_llm(FakeLLM()),
+        embedding=_as_embedding(FakeEmbedding()),
         persist_path=str(tmp_path / "mem0-tasks.db"),
     )
     started = asyncio.Event()

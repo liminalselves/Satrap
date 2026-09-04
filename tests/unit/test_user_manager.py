@@ -69,7 +69,9 @@ def test_store_upsert_get_delete_roundtrip(tmp_path: Path):
 
     got.user_nickname = "新昵称"
     store.upsert(got)
-    assert store.get("u1").user_nickname == "新昵称"   # type: ignore[union-attr]
+    renamed = store.get("u1")
+    assert renamed is not None
+    assert renamed.user_nickname == "新昵称"
 
     assert store.get("missing") is None
     store.delete("u1")
@@ -129,7 +131,9 @@ def test_store_context_session_route(tmp_path: Path):
     assert got.user_id == "u1"
 
     store.upsert_context_session("u1", "misskey", "chat", "sid-2")   # 更新路由
-    assert store.get_context_session("u1", "misskey", "chat").session_id == "sid-2"   # type: ignore[union-attr]
+    rerouted = store.get_context_session("u1", "misskey", "chat")
+    assert rerouted is not None
+    assert rerouted.session_id == "sid-2"
 
     store.delete_context_session("u1", "misskey", "chat")
     assert store.get_context_session("u1", "misskey", "chat") is None
