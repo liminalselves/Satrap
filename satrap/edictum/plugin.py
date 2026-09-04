@@ -33,20 +33,20 @@ tools.py 工厂约定 (解决会话依赖注入):
 from __future__ import annotations
 
 import importlib.util
-import inspect
-import sys
 from dataclasses import dataclass, field
+import threading
 from pathlib import Path
+import inspect
+from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast
 from types import ModuleType
-from typing import TYPE_CHECKING, Any, Callable, TypeVar, cast
-from typing import Protocol
-
 import yaml
+import sys
+
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.skills import Skill
+from satrap.core.type import safe_getattr_callable, safe_getattr_str, safe_getattr_list, safe_getattr_dict
 
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr_callable, safe_getattr_str, safe_getattr_list, safe_getattr_dict
-from satrap.core.utils.skills import Skill
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession
@@ -56,6 +56,81 @@ if TYPE_CHECKING:
 
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class _ModuleIndexEntry:
+    """记录已加载模块及其规范化源路径"""
+
+    module: ModuleType
+    resolved_path: Path | None
+
+
+_module_index_lock = threading.RLock()
+_module_index_by_name: dict[str, _ModuleIndexEntry] = {}
+_module_index_by_path: dict[Path, ModuleType] = {}
+
+
+def _resolve_module_source(module: ModuleType) -> Path | None:
+    """
+    解析已加载模块的规范化源路径
+
+    参数:
+    - module: 已加载模块
+
+    返回:
+    - 模块源路径; 无来源文件或路径无法解析时返回 None
+    """
+    module_file = safe_getattr_str(module, "__file__")
+    if not module_file:
+        return None
+    try:
+        return Path(module_file).resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _refresh_module_index() -> None:
+    """增量解析新增或被替换的模块, 并按当前加载顺序重建路径索引"""
+    loaded_modules = dict(sys.modules)
+    stale_names = _module_index_by_name.keys() - loaded_modules.keys()
+    for module_name in stale_names:
+        _module_index_by_name.pop(module_name, None)
+
+    for module_name, module in loaded_modules.items():
+        indexed = _module_index_by_name.get(module_name)
+        if indexed is not None and indexed.module is module:
+            continue
+        _module_index_by_name[module_name] = _ModuleIndexEntry(
+            module=module,
+            resolved_path=_resolve_module_source(module),
+        )
+
+    _module_index_by_path.clear()
+    for module_name in loaded_modules:
+        indexed = _module_index_by_name[module_name]
+        if indexed.resolved_path is not None:
+            _module_index_by_path.setdefault(indexed.resolved_path, indexed.module)
+
+
+def _record_loaded_module(
+    module_name: str,
+    module: ModuleType,
+    resolved_path: Path,
+) -> None:
+    """
+    记录由插件加载器成功执行的模块
+
+    参数:
+    - module_name: 模块名
+    - module: 已执行完成的模块
+    - resolved_path: 模块的规范化源路径
+    """
+    _module_index_by_name[module_name] = _ModuleIndexEntry(
+        module=module,
+        resolved_path=resolved_path,
+    )
+    _module_index_by_path[resolved_path] = module
 
 
 class _YamlLoader(Protocol):
@@ -139,33 +214,34 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
     - path: 路径
     - module_name: module名称
 
+    返回:
+    - 已加载模块; 文件不存在时返回 None
+
     若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
     避免同一文件被加载两次导致模块级状态 (如工具引用的 WORKSPACE_ROOT) 分裂
-
-    返回:
-    - ModuleType | None:  None)
     """
     if not path.is_file():
         return None
-    existing = sys.modules.get(module_name)
-    if existing is not None:
-        existing_file = safe_getattr_str(existing, "__file__")
-        if existing_file and Path(existing_file).resolve() == path.resolve():
-            return existing
-
     resolved_path = path.resolve()
-    # 模块名不精确匹配时 (如官方插件以包全名注册), 按源文件路径扫描复用
-    for mod in list(sys.modules.values()):
-        mod_file = safe_getattr_str(mod, "__file__")
-        if mod_file and Path(mod_file).resolve() == resolved_path:
-            return mod
-    spec = importlib.util.spec_from_file_location(module_name, str(path))
-    if spec is None or spec.loader is None:
-        raise ValueError(f"无法加载插件模块: {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    sys.modules[module_name] = mod
-    return mod
+    with _module_index_lock:
+        _refresh_module_index()
+
+        existing = _module_index_by_name.get(module_name)
+        if existing is not None and existing.resolved_path == resolved_path:
+            return existing.module
+
+        indexed_module = _module_index_by_path.get(resolved_path)
+        if indexed_module is not None:
+            return indexed_module
+
+        spec = importlib.util.spec_from_file_location(module_name, str(path))
+        if spec is None or spec.loader is None:
+            raise ValueError(f"无法加载插件模块: {path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        sys.modules[module_name] = module
+        _record_loaded_module(module_name, module, resolved_path)
+        return module
 
 
 def collect_cleanup(
