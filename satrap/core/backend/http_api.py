@@ -35,6 +35,9 @@ if TYPE_CHECKING:
 STATIC_DIR = DEFAULT_STATIC_DIR
 # 静态文件目录 - 前端构建产物
 
+RouteResponse = tuple[int, dict[str, Any]]
+# 管理 API 响应: (状态码, JSON 体)
+
 
 def _parse_json_object(body: bytes) -> dict[str, Any]:
     """
@@ -263,7 +266,7 @@ class BackendHTTPServer(MiniHTTPServer):
 
     # ---------- API 路由 ----------
 
-    async def _route(   # pyright: ignore[reportGeneralTypeIssues] 路由表按资源分段, 运行时分支明确
+    async def _route(
         self,
         method: str,
         path: str,
@@ -271,6 +274,8 @@ class BackendHTTPServer(MiniHTTPServer):
     ) -> tuple[int, dict[str, Any]]:
         """
         路由分发到 BackendManager 对应方法
+
+        按源码区段顺序依次尝试各资源处理器, 处理器返回 None 表示路径不属于该区段
 
         参数:
         - method: HTTP 方法
@@ -280,6 +285,27 @@ class BackendHTTPServer(MiniHTTPServer):
         返回:
         - tuple[int, dict[str, Any]]: 路由分发到 BackendManager 对应方法
         """
+        for handler in (
+            self._route_ui_health_reload,
+            self._route_edictum_runtime_plugins,
+            self._route_storage,
+            self._route_shutdown,
+            self._route_session_class_collection,
+            self._route_edictum_config,
+            self._route_discovery,
+            self._route_session_instances,
+            self._route_session_class_items,
+            self._route_models,
+            self._route_user,
+            self._route_checkpoint,
+        ):
+            response = await handler(method, path, body)
+            if response is not None:
+                return response
+        return 404, {"error": f"unknown route: {method} {path}"}
+
+    async def _route_ui_health_reload(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """UI 配置 / 健康检查 / 配置热加载 (精确路径)"""
         backend = self.backend
 
         if method == "GET" and path == "/ui-config.json":
@@ -297,6 +323,12 @@ class BackendHTTPServer(MiniHTTPServer):
         if method == "POST" and path == "/api/config/reload":
             return 200, await backend.reload_config()
         # 接口: POST /api/config/reload
+
+        return None
+
+    async def _route_edictum_runtime_plugins(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """Edictum 插件与运行时配置的热更预览/协调 (精确路径)"""
+        backend = self.backend
 
         if method == "POST" and path == "/api/edictum/plugins/preview":
             try:
@@ -359,7 +391,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 if isinstance(raw_refs, list):
                     session_refs = [
                         dict(cast(dict[str, str], item))
-                        for item in raw_refs
+                        for item in cast(list[object], raw_refs)
                         if isinstance(item, dict)
                     ]
                 raw_config = payload.get("config")
@@ -392,7 +424,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 if isinstance(raw_refs, list):
                     session_refs = [
                         dict(cast(dict[str, str], item))
-                        for item in raw_refs
+                        for item in cast(list[object], raw_refs)
                         if isinstance(item, dict)
                     ]
                 sessions = await backend.reconcile_edictum_runtime_async(
@@ -408,7 +440,13 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(error)}
         # 接口: POST /api/edictum/runtime/apply
 
+        return None
+
+    async def _route_storage(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """存储审计 / 清理 / 回收站恢复与清除 (urlsplit 解析路径)"""
+        backend = self.backend
         storage_route = urlsplit(path).path
+
         if method == "GET" and storage_route == "/api/storage/audit":
             service = StorageMaintenanceService(backend.storage_layout)
             configured_platforms = {
@@ -438,7 +476,7 @@ class BackendHTTPServer(MiniHTTPServer):
                     raise ValueError("item_ids 必须是数组")
                 results = await asyncio.to_thread(
                     StorageMaintenanceService(backend.storage_layout).cleanup,
-                    [str(item) for item in raw_ids],
+                    [str(item) for item in cast(list[object], raw_ids)],
                 )
                 return 200, {
                     "ok": all(item.get("ok", False) for item in results),
@@ -482,7 +520,7 @@ class BackendHTTPServer(MiniHTTPServer):
                     raise ValueError("archive_refs 必须是数组")
                 archive_refs = [
                     dict(cast(dict[str, str], item))
-                    for item in raw_refs or []
+                    for item in cast(list[object], raw_refs or [])
                     if isinstance(item, dict)
                 ]
                 raw_days = payload.get("older_than_days")
@@ -500,10 +538,20 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(error)}
         # 接口: POST /api/storage/trash/purge-batch
 
+        return None
+
+    async def _route_shutdown(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """后端关闭请求 (调度关闭事件后立即应答)"""
         if method == "POST" and path == "/api/shutdown":
-            asyncio.get_event_loop().call_soon(backend.request_shutdown)
+            asyncio.get_event_loop().call_soon(self.backend.request_shutdown)
             return 200, {"ok": True}
         # 接口: POST /api/shutdown
+
+        return None
+
+    async def _route_session_class_collection(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """会话类配置集合 (GET 无管理器时响应空表, POST 无管理器时 fallthrough)"""
+        backend = self.backend
 
         if method == "GET" and path == "/api/config/session-classes":
             mgr = backend.session_class_mgr
@@ -520,6 +568,12 @@ class BackendHTTPServer(MiniHTTPServer):
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/config/session-classes
+
+        return None
+
+    async def _route_edictum_config(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """Edictum 冷配置 (类型表 / 集合 / 前缀项: 详情, 更新, 启停, 删除)"""
+        backend = self.backend
 
         if (
             method == "GET"
@@ -626,7 +680,13 @@ class BackendHTTPServer(MiniHTTPServer):
             except Exception as e:
                 return 400, {"error": str(e)}
 
+        return None
+
+    async def _route_discovery(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """会话类目录发现与创建 (partition("?") 解析路径)"""
+        backend = self.backend
         route_path, _, query_string = path.partition("?")
+
         if method == "GET" and route_path == "/api/session/discovery":
             try:
                 query = parse_qs(query_string)
@@ -656,6 +716,13 @@ class BackendHTTPServer(MiniHTTPServer):
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: POST /api/session/discovery/directories
+
+        return None
+
+    async def _route_session_instances(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """会话实例 (列表 / 创建 / 批量删除 / 重启 / 删除, partition("?") 解析路径)"""
+        backend = self.backend
+        route_path, _, _ = path.partition("?")
 
         if method == "GET" and route_path == "/api/sessions":
             sessions: list[dict[str, Any]] = []
@@ -853,7 +920,13 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(e)}
         # 接口: POST /api/sessions
 
+        return None
+
+    async def _route_session_class_items(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """会话类配置项 (启停 / 详情 / 更新 / 删除, 原始 path 前缀匹配)"""
+        backend = self.backend
         path_prefix = "/api/config/session-classes/"
+
         if method == "POST" and path.startswith(path_prefix) and path.endswith("/enable") and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):-len("/enable")])
             updated = SessionClassConfigService(backend.session_class_mgr).set_enabled(name, True)
@@ -891,6 +964,12 @@ class BackendHTTPServer(MiniHTTPServer):
             return 404, {"error": "not found"}
         # 接口: DELETE /api/config/session-classes/{name}
 
+        return None
+
+    async def _route_models(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """模型配置 (集合查询 / 项创建, 更新, 删除, 原始 path 前缀匹配)"""
+        backend = self.backend
+
         if method == "GET" and path.startswith("/api/config/models") and backend.model_config_manager:
             typ = "llm"
             qs = path.split("?", 1)[1] if "?" in path else ""
@@ -927,6 +1006,12 @@ class BackendHTTPServer(MiniHTTPServer):
                     return 404, {"error": "not found"}
             except Exception as e:
                 return 400, {"error": str(e)}
+
+        return None
+
+    async def _route_user(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """用户管理 (列表 / 详情 / 会话列表 / 创建, 更新, 删除, 绑定, 解绑)"""
+        backend = self.backend
 
         # 接口: GET /api/users (列表, 支持 ?limit=) / GET /api/users?user_id=xxx (详情)
         # 接口: GET /api/user/sessions?user_id=xxx
@@ -982,6 +1067,12 @@ class BackendHTTPServer(MiniHTTPServer):
             except (ValueError, KeyError, IndexError) as e:
                 return 400, {"error": str(e)}
 
+        return None
+
+    async def _route_checkpoint(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """会话检查点 (列表 / 分支 / 血缘 / 审计 / 创建, 回滚, 重试, 分叉)"""
+        backend = self.backend
+
         # 接口: GET /api/checkpoints?conversation=xxx
         # 接口: GET /api/checkpoint/branches?conversation=xxx
         # 接口: GET /api/checkpoint/lineage?checkpoint_id=xxx
@@ -1034,4 +1125,4 @@ class BackendHTTPServer(MiniHTTPServer):
             except (ValueError, KeyError, IndexError) as e:
                 return 400, {"error": str(e)}
 
-        return 404, {"error": f"unknown route: {method} {path}"}
+        return None
