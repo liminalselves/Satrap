@@ -39,6 +39,7 @@ from satrap.core.storage import (
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.utils.paths import get_db_path
 from satrap.core.log import logger
 from typing import TYPE_CHECKING
@@ -1329,11 +1330,9 @@ class SessionManager:
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
+                        self._sync_runtime_to_store(session_id, entry.session)
                     else:
-                        with entry.sync_operation_lock:
-                            response = self._invoke_sync_session(entry.session, user_call)
-
-                    self._sync_runtime_to_store(session_id, entry.session)
+                        response = await SESSION_WORKERS.run(self._invoke_sync_entry, entry, user_call, session_id)
             finally:
                 self.pool.release(entry)
 
@@ -1381,6 +1380,8 @@ class SessionManager:
             await self.cleanup_idle_sessions_async()
             return "" if response is None else str(response)   # 正常返回
 
+        except WorkerBusyError:
+            return "同步会话处理繁忙, 请稍后重试"
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
@@ -2430,6 +2431,13 @@ class SessionManager:
                 logger.error(f"[SessionManager] 读取会话消息数失败：{e}")
         return total
 
+    def _invoke_sync_entry(self, entry: SessionEntry, user_call: UserCall, session_id: str):
+        """在线程内取得并释放同步锁, 运行完成后再保存运行时状态"""
+        with entry.sync_operation_lock:
+            response = self._invoke_sync_session(cast(Session, entry.session), user_call)
+            self._sync_runtime_to_store(session_id, entry.session)
+            return response
+
     def _prepare_session_sync(self, session: Session | AsyncSession) -> None:
         """
         执行 Provider 的同步会话准备生命周期
@@ -2458,7 +2466,7 @@ class SessionManager:
             if inspect.isawaitable(result):
                 await result
             return
-        self._prepare_session_sync(session)
+        await SESSION_WORKERS.run(self._prepare_session_sync, session)
 
     def get_session_runtime_metadata(self, session_id: str) -> dict[str, Any]:
         """

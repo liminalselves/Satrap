@@ -6,13 +6,43 @@ from satrap.core.database import DataBase
 import asyncio, aiofiles, os, traceback
 from types import TracebackType
 from typing import Any
-from typing import Protocol, cast
+from typing import Protocol, Literal, cast
 
 from satrap.core.log import logger
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 
 _LOCAL_INDEX_ROOT = default_storage_layout.platform_root(LOCAL_PLATFORM_ID) / "indexes"
+
+
+def _filter_embedding_results(
+    texts: list[str],
+    vectors: list[list[float]] | Literal[False],
+) -> tuple[list[str], list[list[float]], int]:
+    """
+    按位置同步过滤向量化失败的文本和空向量
+
+    参数:
+    - texts: 当前批次的输入文本
+    - vectors: 与输入等长的向量结果, 或整体失败标记
+
+    返回:
+    - 有效文本, 有效向量和失败项数量
+    """
+    if vectors is False:
+        return [], [], len(texts)
+    if len(texts) != len(vectors):
+        raise ValueError("Embedding 返回数量与输入文本数量不一致")
+
+    valid_texts: list[str] = []
+    valid_vectors: list[list[float]] = []
+    for text, vector in zip(texts, vectors):
+        if not vector:
+            continue
+        valid_texts.append(text)
+        valid_vectors.append(vector)
+
+    return valid_texts, valid_vectors, len(texts) - len(valid_texts)
 
 
 class _AsyncTextReader(Protocol):
@@ -210,6 +240,8 @@ class LiteVectorRAG:
                 text_splitter.split_documents, documents
             )   # 文本分割
 
+            added_count = 0
+            failed_count = 0
             for i in range(0, len(splits), batch_size):
                 batch = splits[i:i + batch_size]
                 batch_texts = [doc for doc in batch]
@@ -219,22 +251,30 @@ class LiteVectorRAG:
                     self.embeddings.embed, batch_texts
                 )   # 批量生成向量
 
-                if not batch_vectors:
-                    logger.error(f"批次 {i//batch_size + 1} 生成空向量")
+                valid_texts, valid_vectors, batch_failed_count = _filter_embedding_results(
+                    batch_texts,
+                    batch_vectors,
+                )
+                failed_count += batch_failed_count
+                if not valid_vectors:
+                    logger.warning(f"批次 {i//batch_size + 1} 没有可入库的有效向量")
                     continue
 
                 await asyncio.to_thread(
                     self.vector_db.add_to_collection,
                     collection_name,
-                    batch,
-                    batch_vectors,
-                    [{} for _ in batch]   # 空元数据
+                    valid_texts,
+                    valid_vectors,
+                    [{} for _ in valid_texts]   # 空元数据
                 )   # 添加到向量数据库
 
-                logger.debug(f"添加批次 {i//batch_size + 1}: {len(batch)} 个文档")
+                added_count += len(valid_texts)
+                logger.debug(f"添加批次 {i//batch_size + 1}: {len(valid_texts)} 个文档")
 
-            logger.info(f"成功添加 {len(splits)} 个文档块")
-            return True
+            if failed_count:
+                logger.warning(f"跳过 {failed_count} 个向量化失败的文档块")
+            logger.info(f"成功添加 {added_count} 个文档块")
+            return added_count > 0 or not splits
 
         except Exception as e:
             logger.error(f"添加文档失败: {e}")
@@ -404,6 +444,7 @@ class LiteVectorRAG:
             logger.info(f"文件分割为 {len(splits)} 个内容块")
 
             added_count = 0
+            failed_count = 0
             for i in range(0, len(splits), batch_size):
                 batch = splits[i:i + batch_size]
                 batch_texts = [doc for doc in batch]
@@ -413,23 +454,30 @@ class LiteVectorRAG:
                     self.embeddings.embed, batch_texts
                 )   # 批量生成向量
 
-                if not batch_vectors:
-                    logger.error(f"批次 {i//batch_size + 1} 生成空向量")
+                valid_texts, valid_vectors, batch_failed_count = _filter_embedding_results(
+                    batch_texts,
+                    batch_vectors,
+                )
+                failed_count += batch_failed_count
+                if not valid_vectors:
+                    logger.warning(f"批次 {i//batch_size + 1} 没有可入库的有效向量")
                     continue
 
                 await asyncio.to_thread(
                     self.vector_db.add_to_collection,
                     collection_name,
-                    batch_texts,
-                    batch_vectors,
-                    [{} for _ in batch]   # 空元数据
+                    valid_texts,
+                    valid_vectors,
+                    [{} for _ in valid_texts]   # 空元数据
                 )   # 添加到向量数据库
 
-                added_count += len(batch)
-                logger.debug(f"添加批次 {i//batch_size + 1}: {len(batch)} 个文档块")
+                added_count += len(valid_texts)
+                logger.debug(f"添加批次 {i//batch_size + 1}: {len(valid_texts)} 个文档块")
             
+            if failed_count:
+                logger.warning(f"从文件 {file_path} 跳过 {failed_count} 个向量化失败的文档块")
             logger.info(f"成功从文件 {file_path} 添加 {added_count} 个文档块到集合 '{collection_name}'")
-            return True
+            return added_count > 0
             
         except UnicodeDecodeError as e:
             logger.error(f"文件编码错误: {file_path} - {e}")
@@ -482,6 +530,7 @@ class LiteVectorRAG:
             if threshold is None:
                 threshold = self.threshold
 
+            # step 1: 如果提供了文档, 先添加文档
             try:
                 if add_documents is not None and len(add_documents) > 0:
                     logger.info(f"开始添加 {len(add_documents)} 个文档到集合 '{collection_name}'")
@@ -494,8 +543,9 @@ class LiteVectorRAG:
                     splits = await asyncio.to_thread(
                         text_splitter.split_documents, add_documents
                     )   # 文本分割
-                    
 
+                    added_count = 0
+                    failed_count = 0
                     for i in range(0, len(splits), batch_size):   # 批量处理文档
                         batch = splits[i:i + batch_size]
                         batch_texts = [doc for doc in batch]
@@ -504,25 +554,32 @@ class LiteVectorRAG:
                             self.embeddings.embed, batch_texts
                         )   # 批量生成向量
 
-                        if not batch_vectors:
-                            logger.error(f"批次 {i//batch_size + 1} 生成空向量")
+                        valid_texts, valid_vectors, batch_failed_count = _filter_embedding_results(
+                            batch_texts,
+                            batch_vectors,
+                        )
+                        failed_count += batch_failed_count
+                        if not valid_vectors:
+                            logger.warning(f"批次 {i//batch_size + 1} 没有可入库的有效向量")
                             continue
 
                         await asyncio.to_thread(
                             self.vector_db.add_to_collection,
                             collection_name,
-                            batch_texts,
-                            batch_vectors,
-                            [{} for _ in batch]   # 空元数据
+                            valid_texts,
+                            valid_vectors,
+                            [{} for _ in valid_texts]   # 空元数据
                         )   # 添加到向量数据库
-                        
-                        logger.debug(f"快速流程 - 添加批次 {i//batch_size + 1}: {len(batch)} 个文档块")
-                    
-                    logger.info(f"快速流程 - 成功添加 {len(splits)} 个文档块")
-                # step 1: 如果提供了文档, 先添加文档
-                
-                documents_list: list[str] = []
+
+                        added_count += len(valid_texts)
+                        logger.debug(f"快速流程 - 添加批次 {i//batch_size + 1}: {len(valid_texts)} 个文档块")
+
+                    if failed_count:
+                        logger.warning(f"快速流程 - 跳过 {failed_count} 个向量化失败的文档块")
+                    logger.info(f"快速流程 - 成功添加 {added_count} 个文档块")
+
                 # step 2: 如果提供了查询, 执行搜索
+                documents_list: list[str] = []
                 scores_list: list[float] = []
 
                 if query is not None and query.strip():

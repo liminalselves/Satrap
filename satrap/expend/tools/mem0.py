@@ -5,7 +5,6 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, cast
 
-import numpy as np
 
 from satrap.core.APICall.EmbedCall import AsyncEmbedding
 from satrap.core.APICall.LLMCall import AsyncLLM
@@ -368,7 +367,7 @@ class Mem0Memory:
         now = datetime.now().isoformat()
 
         fact_vec = await self.embedding.embed(fact)
-        # 1) 向量化候选事实
+        # 1. 向量化候选事实
         if not fact_vec:
             logger.warning(f"[Mem0] 候选向量化失败, 跳过: {fact[:50]}")
             return None
@@ -380,7 +379,7 @@ class Mem0Memory:
             self.top_k,
             self.threshold,
         )
-        # 2) 检索相似记忆
+        # 2. 检索相似记忆
 
         existing_str = "\n".join(
             f'- [id={r["metadata"].get("id", "?")}] {r["document"]} (score {r["score"]:.2f})'
@@ -388,7 +387,7 @@ class Mem0Memory:
         ) or "(no similar memories)"
 
         prompt = _UPDATE_PROMPT.format(new_fact=fact, existing_memories=existing_str)
-        # 3) LLM 决策
+        # 3. LLM 决策
         response = await self.llm.structured_output(
             messages=[{"role": "user", "content": prompt}],
             format={"action": "string"},
@@ -420,7 +419,7 @@ class Mem0Memory:
             )
             logger.info(f"[Mem0] ADD | {fact[:50]}")
             return new_id
-        # 4) 执行动作
+        # 4. 执行动作
 
         if action == "UPDATE":
             memory_id = data.get("memory_id")
@@ -532,18 +531,7 @@ class Mem0Memory:
                 logger.warning(f"[Mem0] 未找到 memory_id: {memory_id}")
                 return False
 
-            conn.execute(
-                "DELETE FROM documents WHERE id=? AND collection_name=?",
-                (target_row_id, collection),
-            )
-            conn.commit()
-
-        index = self.vector_db.indices.get(collection)
-        if index is not None:
-            index.remove_ids(np.array([target_row_id], dtype=np.int64))
-            self.vector_db._save_index(collection)
-
-        return True
+        return self.vector_db.delete_documents(collection, [target_row_id]) == 1
 
     def _get_all_sync(self, collection: str) -> List[Dict[str, Any]]:
         """

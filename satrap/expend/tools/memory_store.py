@@ -41,7 +41,6 @@ CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
 
 class MemoryStore:
     """SQLite 长期记忆存储 (线程安全, 每次操作独立连接)"""
-
     def __init__(
         self,
         db_path: str | Path | None = None,

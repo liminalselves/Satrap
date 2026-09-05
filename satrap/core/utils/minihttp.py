@@ -21,7 +21,7 @@ import struct
 from collections.abc import Mapping
 from typing import Any
 from typing import cast
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from satrap.core.server_auth import ServerAuth
 from satrap.core.log import logger
@@ -208,7 +208,7 @@ def query_param(path: str, key: str) -> str:
     - str: 空串)
     """
     values = parse_qs(urlsplit(path).query).get(key)
-    return unquote(values[0]) if values else ""
+    return values[0] if values else ""
 
 
 class MiniHTTPServer:

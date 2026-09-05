@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import json
+import copy
 import sqlite3
 import threading
 import time
@@ -628,6 +629,27 @@ class DisplayRecorder:
 
     # ---------- 查询 (供前端) ----------
 
+    def snapshot_turns(self) -> list[dict[str, Any]]:
+        """在持久化轮次上叠加当前生成缓冲, 供断线恢复"""
+        with self._lock:
+            turns = self.list_turns()
+            active_turn_id = self._turn_id
+            if active_turn_id is None:
+                return turns
+            for turn in turns:
+                if turn["id"] != active_turn_id:
+                    continue
+                turn.update(
+                    answer="".join(self._answer_parts), thinking="".join(self._thinking_parts) or None,
+                    segments=copy.deepcopy(self._segments), active_variant=self._variant_index, generating=True,
+                    tool_calls=self._list_tool_calls_locked(self._get_conn(), active_turn_id, self._variant_index),
+                )
+                active = {key: turn[key] for key in ("answer", "thinking", "segments", "tool_calls", "created_at", "context_stats")}
+                active["variant_index"] = self._variant_index
+                turn["variants"] = [item for item in turn["variants"] if item["variant_index"] != self._variant_index] + [active]
+                turn["variant_count"] = len(turn["variants"])
+            return turns
+
     def list_turns(self, limit: int | None = None, offset: int = 0) -> list[dict[str, Any]]:
         """
         列出当前会话的对话轮次 (按 turn_index 升序), 每轮含工具调用明细和 segments 时间顺序
@@ -641,17 +663,43 @@ class DisplayRecorder:
         """
         conn = self._get_conn()
         with self._lock:
-            sql = (
-                "SELECT id, turn_index, user_input, thinking, answer, attachments, segments,"
-                " context_stats, created_at, active_variant,"
-                " (SELECT COUNT(*) FROM display_turn_variants v WHERE v.turn_id = display_turns.id)"
-                " FROM display_turns WHERE conversation_id = ? ORDER BY turn_index ASC"
-            )
+            selection = "SELECT id FROM display_turns WHERE conversation_id = ? ORDER BY turn_index ASC"
             params: list[Any] = [self.conversation_id]
             if limit is not None:
-                sql += " LIMIT ? OFFSET ?"
+                selection += " LIMIT ? OFFSET ?"
                 params += [limit, offset]
-            rows = conn.execute(sql, params).fetchall()
+            conn.execute("SAVEPOINT display_history_read")   # 三次查询共用快照, 避免拼接跨时刻数据
+            try:
+                rows = conn.execute(
+                    "SELECT id, turn_index, user_input, thinking, answer, attachments, segments,"
+                    " context_stats, created_at, active_variant FROM display_turns"
+                    f" WHERE id IN ({selection}) ORDER BY turn_index ASC", params,
+                ).fetchall()
+                variant_rows = conn.execute(
+                    "SELECT turn_id, variant_index, thinking, answer, segments, context_stats, created_at"
+                    f" FROM display_turn_variants WHERE turn_id IN ({selection}) ORDER BY variant_index ASC", params,
+                ).fetchall()
+                tool_rows = conn.execute(
+                    "SELECT turn_id, variant_index, seq, name, arguments, success, call_id, created_at"
+                    f" FROM display_tool_calls WHERE turn_id IN ({selection}) ORDER BY seq ASC", params,
+                ).fetchall()
+            finally:
+                conn.execute("RELEASE display_history_read")
+            tools: dict[tuple[int, int], list[dict[str, Any]]] = {}
+            for row in tool_rows:
+                tools.setdefault((row[0], int(row[1])), []).append({
+                    "seq": row[2], "name": row[3], "arguments": row[4],
+                    "success": None if row[5] is None else bool(row[5]),
+                    "call_id": row[6], "created_at": row[7],
+                })
+            variants: dict[int, list[dict[str, Any]]] = {}
+            for row in variant_rows:
+                variants.setdefault(row[0], []).append({
+                    "variant_index": int(row[1]), "thinking": row[2], "answer": row[3],
+                    "segments": json.loads(row[4]) if row[4] else None,
+                    "context_stats": json.loads(row[5]) if row[5] else None,
+                    "created_at": row[6], "tool_calls": tools.get((row[0], int(row[1])), []),
+                })
             turns: list[dict[str, Any]] = [
                 {
                     "id": r[0],
@@ -664,9 +712,9 @@ class DisplayRecorder:
                     "context_stats": json.loads(r[7]) if r[7] else None,
                     "created_at": r[8],
                     "active_variant": int(r[9] or 0),
-                    "variant_count": int(r[10] or 0),
-                    "tool_calls": self._list_tool_calls_locked(conn, r[0], int(r[9] or 0)),
-                    "variants": self._list_variants_locked(conn, r[0]),
+                    "variant_count": len(variants.get(r[0], [])),
+                    "tool_calls": tools.get((r[0], int(r[9] or 0)), []),
+                    "variants": variants.get(r[0], []),
                 }
                 for r in rows
             ]

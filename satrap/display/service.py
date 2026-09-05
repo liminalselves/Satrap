@@ -21,8 +21,9 @@ import json
 import time
 import uuid
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
+from functools import wraps
 from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
 from typing import Iterable
 
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
@@ -126,7 +127,7 @@ class _Conversation:
     """当前正在执行的 run task (None 表示空闲)"""
     pending_model_config: LLMConfig | None = None
     """当前轮次结束后需要应用的最新模型配置"""
-    subscribers: set[asyncio.Queue[dict[str, Any]]] = field(
+    subscribers: set[_SubscriberQueue] = field(
         default_factory=lambda: set()
     )
     """WS 订阅者队列集合"""
@@ -134,6 +135,108 @@ class _Conversation:
         default_factory=lambda: dict[str, _PendingUserInput]()
     )
     """等待前端回答的 ask_user 请求"""
+
+
+@dataclass
+class _ConversationOperation:
+    """从准备到后台运行持有会话, 取消完成后才释放"""
+
+    task: asyncio.Task[Any]
+    state: str = "preparing"
+    operation_id: str = field(default_factory=lambda: uuid.uuid4().hex)
+
+
+class _SubscriberQueue(asyncio.Queue[dict[str, Any]]):
+    """以消息数和 UTF-8 字节数限制订阅缓冲"""
+
+    def __init__(self, maxsize: int = 1000, max_bytes: int = 1024 * 1024):
+        super().__init__(maxsize=maxsize)
+        self.max_bytes = max_bytes
+        self.buffered_bytes = 0
+        self.invalidated = False
+
+    @staticmethod
+    def _size(item: dict[str, Any]) -> int:
+        return len(json.dumps(item, ensure_ascii=False).encode("utf-8"))
+
+    def put_nowait(self, item: dict[str, Any]) -> None:
+        size = self._size(item)
+        if self.buffered_bytes + size > self.max_bytes:
+            raise asyncio.QueueFull
+        super().put_nowait(item)
+        self.buffered_bytes += size
+
+    def get_nowait(self) -> dict[str, Any]:
+        item = super().get_nowait()
+        self.buffered_bytes -= self._size(item)
+        return item
+
+    def invalidate(self) -> None:
+        self.invalidated = True
+        while not self.empty():
+            self.get_nowait()
+            self.task_done()
+        self.put_nowait({"type": "resync_required"})
+
+
+_OperationMethod = TypeVar("_OperationMethod", bound=Callable[..., Awaitable[dict[str, Any]]])
+_CreationMethod = TypeVar("_CreationMethod", bound=Callable[..., Coroutine[Any, Any, _Conversation]])
+
+
+def _exclusive_conversation_operation(method: _OperationMethod) -> _OperationMethod:
+    """在首个 await 前占用会话; 所有入口均在同一事件循环中执行"""
+    @wraps(method)
+    async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        conv = self._conversations.get(conversation_id)
+        if conversation_id in self._operations or (conv and conv.task is not None and not conv.task.done()):
+            return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
+        current = asyncio.current_task()
+        if current is None:
+            raise RuntimeError("会话操作必须运行在 asyncio 任务中")
+        operation = _ConversationOperation(current)
+        self._operations[conversation_id] = operation
+        try:
+            result = await method(self, conversation_id, *args, **kwargs)
+            conv = self._conversations.get(conversation_id)
+            if result.get("ok") and conv and conv.task is not None and not conv.task.done():
+                operation.task = conv.task
+                operation.state = "running"
+                conv.task.add_done_callback(lambda _: self._release_operation(conversation_id, operation))
+            return result
+        finally:
+            if operation.task is current:
+                self._release_operation(conversation_id, operation)
+
+    return cast(_OperationMethod, wrapped)
+
+
+def _shared_runtime_creation(method: _CreationMethod) -> _CreationMethod:
+    """按会话 ID 共享创建任务, 防止预加载和发送构造两个运行时"""
+    @wraps(method)
+    async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> _Conversation:
+        existing = self._conversations.get(conversation_id)
+        if existing is not None:
+            return existing
+        restoring = self._resume_tasks.get(conversation_id)
+        if restoring is not None:
+            restored = await asyncio.shield(restoring)
+            if restored is not None:
+                return restored
+        pending = self._creation_tasks.get(conversation_id)
+        if pending is None:
+            pending = asyncio.create_task(method(self, conversation_id, *args, **kwargs))
+            self._creation_tasks[conversation_id] = pending
+
+            def finished(task: asyncio.Task[_Conversation]) -> None:
+                if self._creation_tasks.get(conversation_id) is task:
+                    self._creation_tasks.pop(conversation_id)
+                if not task.cancelled():
+                    task.exception()
+
+            pending.add_done_callback(finished)
+        return await asyncio.shield(pending)
+
+    return cast(_CreationMethod, wrapped)
 
 
 class ChatService:
@@ -202,27 +305,65 @@ class ChatService:
         if any(self._is_workspace_denied(root) for root in self._workspace_roots):
             raise ValueError("工作区根目录不能位于受保护的 .satrap 数据目录内")
         self._conversations: dict[str, _Conversation] = {}
-        self._orphan_queues: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+        self._operations: dict[str, _ConversationOperation] = {}
+        self._resume_tasks: dict[str, asyncio.Task[_Conversation | None]] = {}
+        self._creation_tasks: dict[str, asyncio.Task[_Conversation]] = {}
+        self._stream_id = uuid.uuid4().hex
+        self._event_sequences: dict[str, int] = {}
+        self._orphan_queues: dict[str, set[_SubscriberQueue]] = {}
         """订阅时会话不在内存的孤儿队列, _resume_conversation 完成后挂入"""
 
     # ---------- 广播 ----------
 
+    def _release_operation(self, conversation_id: str, operation: _ConversationOperation) -> None:
+        """仅持有者可以释放占用; 取消端完成收尾前保持忙状态"""
+        if operation.state != "cancelling" and self._operations.get(conversation_id) is operation:
+            self._operations.pop(conversation_id)
+
     def _broadcast(self, conv: _Conversation, msg: dict[str, Any]) -> None:
         """
-        向会话所有 WS 订阅者广播 (put_nowait 非阻塞; 队列满则丢弃最旧由消费者保证)
+        非阻塞广播, 溢出订阅退出实时流并要求重同步
 
         参数:
         - conv: 会话对象
         - msg: 消息对象
         """
-        msg = {**msg, "conversation_id": conv.conversation_id, "ts": time.time()}
+        sequence = self._event_sequences.get(conv.conversation_id, 0) + 1
+        self._event_sequences[conv.conversation_id] = sequence
+        msg = {**msg, "conversation_id": conv.conversation_id, "ts": time.time(), "seq": sequence, "stream_id": self._stream_id}
         for q in list(conv.subscribers):
             try:
                 q.put_nowait(msg)
             except asyncio.QueueFull:
-                logger.warning(f"[聊天] 会话 {conv.conversation_id} 订阅者队列满, 丢弃消息")
+                conv.subscribers.discard(q)
+                q.invalidate()
+                logger.warning(f"[聊天] 会话 {conv.conversation_id} 慢订阅需要重同步")
 
-    def subscribe(self, conversation_id: str) -> asyncio.Queue[dict[str, Any]]:
+    def runtime_snapshot(self, conversation_id: str) -> dict[str, Any]:
+        """在订阅注册后同步取权威快照, 后续事件从快照序号继续"""
+        conv = self._conversations.get(conversation_id)
+        turns = conv.recorder.snapshot_turns() if conv else self.list_turns(conversation_id)
+        active_turn = next((turn["id"] for turn in turns if turn.get("generating")), None)
+        operation = self._operations.get(conversation_id)
+        state = operation.state if operation and (active_turn is not None or operation.state != "running") else "idle"
+        if active_turn is not None and state == "idle":
+            state = "running"
+        if state == "idle":
+            for turn in turns:
+                if not turn.get("variant_count"):
+                    turn["interrupted"] = True
+        pending_inputs: Iterable[_PendingUserInput] = conv.pending_user_inputs.values() if conv else ()
+        return {
+            "type": "snapshot", "conversation_id": conversation_id, "stream_id": self._stream_id,
+            "seq": self._event_sequences.get(conversation_id, 0), "state": state,
+            "active_turn_id": active_turn, "turns": turns,
+            "pending_user_inputs": [
+                {"request_id": item.request_id, "question": item.question, "options": list(item.options)}
+                for item in pending_inputs if not item.future.done()
+            ],
+        }
+
+    def subscribe(self, conversation_id: str) -> _SubscriberQueue:
         """
         订阅会话广播, 返回队列 (WS 处理器持有, 断开时 unsubscribe)
 
@@ -232,21 +373,12 @@ class ChatService:
         会话不在内存时登记为孤儿队列, _resume_conversation 完成后自动挂入
 
         返回:
-        - asyncio.Queue[dict[str, Any]]: 队列 (WS 处理器持有, 断开时 unsubscribe)
+        - _SubscriberQueue: 队列 (WS 处理器持有, 断开时 unsubscribe)
         """
-        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1000)
+        q = _SubscriberQueue()
         conv = self._conversations.get(conversation_id)
         if conv is not None:
             conv.subscribers.add(q)
-            for pending in conv.pending_user_inputs.values():
-                q.put_nowait({
-                    "type": MSG_ASK_USER,
-                    "conversation_id": conversation_id,
-                    "request_id": pending.request_id,
-                    "question": pending.question,
-                    "options": list(pending.options),
-                    "ts": time.time(),
-                })
         else:
             self._orphan_queues.setdefault(conversation_id, set()).add(q)
         return q
@@ -341,7 +473,7 @@ class ChatService:
         logger.info(f"[聊天] 会话 {conversation_id} 已收到用户回答: {request_id}")
         return {"ok": True}
 
-    def unsubscribe(self, conversation_id: str, q: asyncio.Queue[dict[str, Any]]) -> None:
+    def unsubscribe(self, conversation_id: str, q: _SubscriberQueue) -> None:
         """
         取消订阅
 
@@ -591,6 +723,7 @@ class ChatService:
         encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    @_shared_runtime_creation
     async def _create_conversation_runtime(
         self,
         conversation_id: str,
@@ -603,7 +736,7 @@ class ChatService:
         persisted: bool,
         build_fingerprint: str,
         preload_lock: asyncio.Lock | None = None,
-        subscribers: set[asyncio.Queue[dict[str, Any]]] | None = None,
+        subscribers: set[_SubscriberQueue] | None = None,
     ) -> _Conversation:
         """
         构造并注册一个 Chat 会话运行时
@@ -686,8 +819,6 @@ class ChatService:
             preload_lock=preload_lock or asyncio.Lock(),
             subscribers=subscribers or set(),
         )
-        self._conversations[conversation_id] = conv
-
         async def user_input_provider(question: str, options: list[str] | None = None) -> str:
             """把插件用户询问桥接到 Chat 前端"""
             return await self._request_user_input(conv, question, options)
@@ -724,13 +855,14 @@ class ChatService:
             session.tools_manager.tool_call_start = on_tool_start
             # 工具钩子需在插件安装后挂 (确保挂到主工作流 tools_manager)
             session.tools_manager.tool_call_end = on_tool_end
-        except Exception:
+        except BaseException:
             if self._conversations.get(conversation_id) is conv:
                 self._conversations.pop(conversation_id, None)
             recorder.close()
             self._storage.purge_session(self._platform_id, conversation_id)
             raise
 
+        self._conversations[conversation_id] = conv
         orphans = self._orphan_queues.pop(conversation_id, None)
         if orphans:
             conv.subscribers.update(orphans)
@@ -1139,6 +1271,28 @@ class ChatService:
     # ---------- 会话恢复 ----------
 
     async def _resume_conversation(self, conversation_id: str) -> _Conversation | None:
+        """共享初始化任务, 只发布已经完成初始化的运行时"""
+        existing = self._conversations.get(conversation_id)
+        if existing is not None:
+            return existing
+        creating = self._creation_tasks.get(conversation_id)
+        if creating is not None:
+            return await asyncio.shield(creating)
+        pending = self._resume_tasks.get(conversation_id)
+        if pending is None:
+            pending = asyncio.create_task(self._load_conversation(conversation_id))
+            self._resume_tasks[conversation_id] = pending
+
+            def finished(task: asyncio.Task[_Conversation | None]) -> None:
+                if self._resume_tasks.get(conversation_id) is task:
+                    self._resume_tasks.pop(conversation_id)
+                if not task.cancelled():
+                    task.exception()   # 调用者取消等待后仍收集初始化失败
+
+            pending.add_done_callback(finished)
+        return await asyncio.shield(pending)
+
+    async def _load_conversation(self, conversation_id: str) -> _Conversation | None:
         """
         从 display.db 恢复会话运行时状态 (懒加载)
 
@@ -1207,8 +1361,6 @@ class ChatService:
             default_think=default_think,
             project_id=str(project["project_id"]) if project is not None else None,
         )
-        self._conversations[conversation_id] = conv
-
         async def user_input_provider(question: str, options: list[str] | None = None) -> str:
             """把插件用户询问桥接到 Chat 前端"""
             return await self._request_user_input(conv, question, options)
@@ -1223,11 +1375,16 @@ class ChatService:
             recorder.on_tool_end(event)
             self._broadcast(conv, {"type": MSG_TOOL_END, **event})
 
-        conv.plugin_states = await self._install_enabled_plugins(session)
-        await session.initialize()
+        try:
+            conv.plugin_states = await self._install_enabled_plugins(session)
+            await session.initialize()
+        except BaseException:
+            await self._dispose_conversation_runtime(conv)
+            raise
         session.tools_manager.tool_call_start = on_tool_start
         session.tools_manager.tool_call_end = on_tool_end
 
+        self._conversations[conversation_id] = conv
         orphans = self._orphan_queues.pop(conversation_id, None)
         # 挂入订阅时会话不在内存的孤儿队列
         if orphans:
@@ -1319,6 +1476,7 @@ class ChatService:
             logger.info(f"[聊天] 预加载会话已转为正式会话: {conv.conversation_id}")
             return conv
 
+    @_exclusive_conversation_operation
     async def send(
         self,
         conversation_id: str,
@@ -1464,6 +1622,7 @@ class ChatService:
 
     # ---------- 重试与分支 ----------
 
+    @_exclusive_conversation_operation
     async def retry(self, conversation_id: str, think: str | None = None) -> dict[str, Any]:
         """
         重试最后一轮: 保留旧回复版本, 回退模型上下文后重新生成
@@ -1484,6 +1643,12 @@ class ChatService:
             return {"ok": False, "error": f"会话不存在: {conversation_id}"}
         if conv.task is not None and not conv.task.done():
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
+        async with conv.plugin_lock:
+            return await self._retry_reserved(conv, conversation_id, think)
+
+    async def _retry_reserved(self, conv: _Conversation, conversation_id: str, think: str | None) -> dict[str, Any]:
+        """在会话占用和插件锁保护下准备重试"""
+        original_context = copy.deepcopy(conv.session.ctx.get_context())
         retry_turn = conv.recorder.start_retry_variant()
         if retry_turn is None:
             return {"ok": False, "error": "没有可重试的轮次"}
@@ -1507,53 +1672,58 @@ class ChatService:
                 )
             if previous_context is None or previous_context:
                 await conv.session.ctx.del_last_chat(1)
-        except Exception as e:
-            conv.recorder.abort_active_variant()
-            return {"ok": False, "error": f"回退模型上下文失败: {e}"}
-
-        text = str(retry_turn["user_input"])
-        attachments = cast(list[dict[str, Any]] | None, retry_turn.get("attachments"))
-        display_text = text
-        img_urls: list[str] | None = None
-        if attachments:
-            att_lines = [f"[附件: {item.get('name', 'file')}]" for item in attachments]
-            display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
-            img_urls = [
-                str(item["url"])
-                for item in attachments
-                if str(item.get("type", "")).startswith("image") and item.get("url")
-            ]
-        effective_think = think if think is not None else conv.default_think
-        context_start = conv.session.ctx.static_message()
-        self._broadcast(
-            conv,
-            {
-                "type": "turn_start",
-                "user_input": text,
-                "attachments": attachments,
-                "retry": True,
+            text = str(retry_turn["user_input"])
+            attachments = cast(list[dict[str, Any]] | None, retry_turn.get("attachments"))
+            display_text = text
+            img_urls: list[str] | None = None
+            if attachments:
+                att_lines = [f"[附件: {item.get('name', 'file')}]" for item in attachments]
+                display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
+                img_urls = [
+                    str(item["url"])
+                    for item in attachments
+                    if str(item.get("type", "")).startswith("image") and item.get("url")
+                ]
+            effective_think = think if think is not None else conv.default_think
+            context_start = conv.session.ctx.static_message()
+            self._broadcast(
+                conv,
+                {
+                    "type": "turn_start",
+                    "user_input": text,
+                    "attachments": attachments,
+                    "retry": True,
+                    "turn_id": retry_turn["turn_id"],
+                    "turn_index": retry_turn["turn_index"],
+                    "variant_index": retry_turn["variant_index"],
+                },
+            )
+            conv.task = asyncio.ensure_future(
+                self._run_turn(
+                    conv,
+                    display_text,
+                    effective_think,
+                    img_urls=img_urls,
+                    context_start=context_start,
+                )
+            )
+            return {
+                "ok": True,
+                "conversation_id": conversation_id,
                 "turn_id": retry_turn["turn_id"],
                 "turn_index": retry_turn["turn_index"],
                 "variant_index": retry_turn["variant_index"],
-            },
-        )
-        conv.task = asyncio.ensure_future(
-            self._run_turn(
-                conv,
-                display_text,
-                effective_think,
-                img_urls=img_urls,
-                context_start=context_start,
-            )
-        )
-        return {
-            "ok": True,
-            "conversation_id": conversation_id,
-            "turn_id": retry_turn["turn_id"],
-            "turn_index": retry_turn["turn_index"],
-            "variant_index": retry_turn["variant_index"],
-        }
+            }
+        except BaseException as e:
+            try:
+                await conv.session.ctx.replace_messages(original_context)
+            finally:
+                conv.recorder.abort_active_variant()
+            if isinstance(e, asyncio.CancelledError):
+                raise
+            return {"ok": False, "error": f"回退模型上下文失败: {e}"}
 
+    @_exclusive_conversation_operation
     async def select_variant(
         self,
         conversation_id: str,
@@ -1590,21 +1760,20 @@ class ChatService:
             return {"ok": False, "error": "目标回复版本缺少模型上下文, 无法安全切换"}
 
         async with conv.plugin_lock:
+            original_context = copy.deepcopy(conv.session.ctx.get_context())
             try:
                 if current_context is None or current_context:
                     await conv.session.ctx.del_last_chat(1)
                 if target_context:
                     await conv.session.ctx.add_turn_messages(target_context)
-            except Exception as e:
-                if current_context:
-                    try:
-                        await conv.session.ctx.add_turn_messages(current_context)
-                    except Exception as restore_error:
-                        logger.error(f"[聊天] 回复版本切换回滚失败: {restore_error}")
+                turn = conv.recorder.activate_variant(turn_index, variant_index)
+                if turn is None:
+                    raise ValueError("回复版本不存在")
+            except BaseException as e:
+                await conv.session.ctx.replace_messages(original_context)
+                if isinstance(e, asyncio.CancelledError):
+                    raise
                 return {"ok": False, "error": f"切换模型上下文失败: {e}"}
-            turn = conv.recorder.activate_variant(turn_index, variant_index)
-        if turn is None:
-            return {"ok": False, "error": "回复版本不存在"}
         self._broadcast(
             conv,
             {
@@ -2234,12 +2403,12 @@ class ChatService:
         """
         conv = self._conversations.get(conversation_id)
         if (
-            conv is not None
-            and conv.task is not None
-            and not conv.task.done()
-            and not force
+            conversation_id in self._operations
+            or (conv is not None and conv.task is not None and not conv.task.done())
         ):
-            raise ValueError("会话正在生成, 请停止生成或确认强制删除")
+            if not force:
+                raise ValueError("会话正在生成, 请停止生成或确认强制删除")
+            await self.cancel(conversation_id)
         conv = self._conversations.pop(conversation_id, None)
         was_preloaded = conv is not None and not conv.persisted
         if conv is not None:
@@ -2280,17 +2449,26 @@ class ChatService:
         - dict[str, Any]: 取消当前正在执行的 run task
         """
         conv = self._conversations.get(conversation_id)
-        if conv is None:
-            return {"ok": False, "error": f"会话不存在: {conversation_id}"}
-        if conv.task is None or conv.task.done():
+        operation = self._operations.get(conversation_id)
+        task = operation.task if operation else (conv.task if conv else None)
+        if task is None or task.done():
             return {"ok": False, "error": "没有正在进行的任务"}
-        conv.task.cancel()
+        if operation and operation.state == "cancelling":
+            return {"ok": False, "error": "任务正在取消"}
+        was_running = operation is None or operation.state == "running"
+        if operation:
+            operation.state = "cancelling"
+        task.cancel()
         try:
-            await conv.task
+            await task
         except asyncio.CancelledError:
             pass
-        completed = conv.recorder.end_turn("") or {}
-        self._broadcast(conv, {"type": MSG_TURN_DONE, "answer": "", **completed})
+        finally:
+            if operation and self._operations.get(conversation_id) is operation:
+                self._operations.pop(conversation_id)
+        if conv and was_running:
+            completed = conv.recorder.end_turn("") or {}
+            self._broadcast(conv, {"type": MSG_TURN_DONE, "answer": "", **completed})
         logger.info(f"[聊天] 会话 {conversation_id} 已取消")
         return {"ok": True}
 
@@ -2298,6 +2476,10 @@ class ChatService:
 
     async def close(self) -> None:
         """关闭所有会话运行时并清理未持久化目录"""
+        pending: list[asyncio.Task[Any]] = [*self._resume_tasks.values(), *self._creation_tasks.values()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
         conversations = list(self._conversations.values())
         self._conversations.clear()
         for conv in conversations:

@@ -7,6 +7,7 @@ import shutil
 import sqlite3
 import time
 from dataclasses import asdict, dataclass
+from contextlib import closing
 from pathlib import Path
 from typing import Any, Iterable, cast
 
@@ -421,13 +422,14 @@ class StorageMaintenanceService:
             delete_session_domain_rows(database, session_id)
             manifest: dict[str, Any] = {
                 "layout_version": self.layout.layout_version,
-                "archive_version": 1,
+                "archive_version": 2,
                 "archive_id": archive_id,
                 "platform_id": platform_id,
                 "session_id": session_id,
                 "deleted_at": time.time(),
                 "has_files": moved_files,
                 "tables": sorted(records),
+                "records_sha256": hashlib.sha256((archive / "records.json").read_bytes()).hexdigest(),
             }
             (archive / "manifest.json").write_text(
                 json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -464,18 +466,36 @@ class StorageMaintenanceService:
             if archive.is_symlink() or not archive.is_dir():
                 continue
             manifest = self._read_json(archive / "manifest.json")
+            receipt = self._restore_receipt(self.layout.platform_db(platform_id), archive.name)
+            if manifest is None and receipt is not None:
+                manifest = json.loads(receipt["metadata"])
             if manifest is None or str(manifest.get("platform_id", "")) != platform_id:
                 continue
-            records = self._read_json_records(archive / "records.json")
-            metadata = self._archive_display_metadata(records)
+            try:
+                records = self._read_json_records(archive / "records.json")
+                self._validate_archive_records(manifest, records, archive / "records.json")
+                if manifest.get("layout_version") != self.layout.layout_version:
+                    raise ValueError("回收包数据布局版本不匹配")
+                metadata = self._archive_display_metadata(records)
+                restore_error = ""
+            except (ValueError, TypeError, OSError) as error:
+                records = {}
+                metadata = self._archive_display_metadata({})
+                restore_error = str(error)
+            if receipt and receipt["completed"]:
+                restore_error = ""   # 已恢复包只需重试清理, records.json 可能已经移除
+            deleted_at = manifest.get("deleted_at")
             results.append({
                 "archive_id": archive.name,
                 "platform_id": platform_id,
                 "session_id": str(manifest.get("session_id", "")),
-                "deleted_at": float(manifest.get("deleted_at") or 0),
+                "deleted_at": float(deleted_at) if isinstance(deleted_at, (int, float)) else 0,
                 "size_bytes": self._directory_size(archive),
                 "has_files": bool(manifest.get("has_files", False)),
-                "tables": list(manifest.get("tables", [])),
+                "tables": manifest.get("tables") if isinstance(manifest.get("tables"), list) else [],
+                "restorable": not restore_error,
+                "restore_error": restore_error,
+                "cleanup_pending": bool(receipt and receipt["completed"]),
                 **metadata,
             })
         results.sort(key=lambda item: float(item["deleted_at"]), reverse=True)
@@ -494,23 +514,70 @@ class StorageMaintenanceService:
         """
         try:
             value: object = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {}
+        except (OSError, json.JSONDecodeError) as error:
+            raise ValueError("回收包数据库记录无法读取") from error
         if not isinstance(value, dict):
-            return {}
+            raise ValueError("回收包数据库记录必须为对象")
         records: dict[str, list[dict[str, Any]]] = {}
         for raw_table, raw_rows in cast(dict[object, object], value).items():
             if not isinstance(raw_rows, list):
-                continue
+                raise ValueError(f"归档表 {raw_table} 的记录必须为数组")
             rows: list[dict[str, Any]] = []
             for raw_row in cast(list[object], raw_rows):
-                if isinstance(raw_row, dict):
-                    rows.append({
-                        str(key): item
-                        for key, item in cast(dict[object, Any], raw_row).items()
-                    })
+                if not isinstance(raw_row, dict) or not raw_row:
+                    raise ValueError(f"归档表 {raw_table} 包含无效记录")
+                row = cast(dict[str, Any], raw_row)
+                if any(isinstance(item, (dict, list)) for item in row.values()):
+                    raise ValueError(f"归档表 {raw_table} 包含非标量字段")
+                rows.append(row)
             records[str(raw_table)] = rows
         return records
+
+    @staticmethod
+    def _validate_archive_records(manifest: dict[str, Any], records: dict[str, Any], path: Path) -> None:
+        """验证格式版本, 表清单和新版归档内容摘要"""
+        if manifest.get("archive_version") not in (1, 2):
+            raise ValueError("不支持的回收包版本")
+        if manifest.get("tables") != sorted(records):
+            raise ValueError("归档表清单与数据库记录不匹配")
+        if not isinstance(manifest.get("has_files"), bool):
+            raise ValueError("归档文件清单无效")
+        if not records and not manifest["has_files"]:
+            raise ValueError("回收包没有可恢复数据")
+        if manifest["archive_version"] == 2:
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            if manifest.get("records_sha256") != digest:
+                raise ValueError("回收包数据库记录摘要不匹配")
+
+    @staticmethod
+    def _restore_receipt(database: Path, archive_id: str) -> dict[str, Any] | None:
+        """读取与数据库恢复事务一起提交的凭据"""
+        if not database.exists():
+            return None
+        with closing(sqlite3.connect(str(database))) as connection:
+            connection.row_factory = sqlite3.Row
+            if not connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='archive_restores'"
+            ).fetchone():
+                return None
+            row = connection.execute(
+                "SELECT * FROM archive_restores WHERE archive_id = ?", (archive_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    @staticmethod
+    def _finish_restore_cleanup(archive: Path, platform_id: str, session_id: str, archive_id: str) -> dict[str, Any]:
+        """清理失败只影响回收包, 不把已完成恢复报告为写入失败"""
+        cleanup_error = ""
+        try:
+            if archive.exists():
+                shutil.rmtree(archive)
+        except OSError as error:
+            cleanup_error = str(error)
+        return {
+            "ok": True, "platform_id": platform_id, "session_id": session_id,
+            "archive_id": archive_id, "cleanup_pending": bool(cleanup_error), "cleanup_error": cleanup_error,
+        }
 
     @staticmethod
     def _archive_display_metadata(
@@ -558,6 +625,10 @@ class StorageMaintenanceService:
         - dict[str, Any]: 恢复结果
         """
         archive = self._resolve_archive_path(platform_id, archive_id)
+        database = Path(database_path) if database_path is not None else self.layout.platform_db(platform_id)
+        receipt = self._restore_receipt(database, archive_id)
+        if receipt and receipt["completed"]:
+            return self._finish_restore_cleanup(archive, platform_id, receipt["session_id"], archive_id)
         if not archive.is_dir():
             raise ValueError("回收包不存在或身份不匹配")
         manifest_path = self._resolve_archive_member(archive, "manifest.json")
@@ -575,35 +646,32 @@ class StorageMaintenanceService:
         if not records_path.is_file():
             raise ValueError("回收包数据库记录无效")
         records = self._read_json_records(records_path)
+        self._validate_archive_records(manifest, records, records_path)
+        if manifest.get("layout_version") != self.layout.layout_version:
+            raise ValueError("回收包数据布局版本不匹配")
         destination = self.layout.session_root(platform_id, session_id)
         files_root = self._resolve_archive_member(archive, "files")
-        moved_files = False
-        if destination.exists() or destination.is_symlink():
+        if destination.is_symlink() or destination.resolve() != destination.parent.resolve() / destination.name:
+            raise ValueError("拒绝恢复到链接会话目录")
+        if (destination.exists() or destination.is_symlink()) and receipt is None:
             raise ValueError(f"会话目录已存在: {session_id}")
-        try:
-            if files_root.exists():
-                if not files_root.is_dir():
-                    raise ValueError("回收包文件目录无效")
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(files_root), str(destination))
-                moved_files = True
-            database = (
-                Path(database_path)
-                if database_path is not None
-                else self.layout.platform_db(platform_id)
-            )
-            restore_session_domain(database, session_id, records)
-        except Exception:
-            if moved_files and destination.exists() and not files_root.exists():
-                shutil.move(str(destination), str(files_root))
-            raise
-        shutil.rmtree(archive)
-        return {
-            "ok": True,
-            "platform_id": platform_id,
-            "session_id": session_id,
-            "archive_id": archive_id,
-        }
+        if manifest["has_files"]:
+            if not files_root.is_dir() and not (receipt and destination.is_dir()):
+                raise ValueError("回收包文件目录缺失或无效")
+        elif files_root.exists():
+            raise ValueError("回收包文件与清单不匹配")
+        restore_session_domain(
+            database, session_id, records, restore_id=archive_id,
+            restore_metadata=json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+        )   # 先提交记录和恢复凭据; 后续文件发布失败时保留归档供重试
+        if manifest["has_files"] and files_root.exists():
+            if destination.exists() or destination.is_symlink():
+                raise ValueError(f"会话目录已存在: {session_id}")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            files_root.rename(destination)   # 同一布局内原子发布, 不使用可能留下部分文件的复制删除
+        with closing(sqlite3.connect(str(database))) as connection, connection:
+            connection.execute("UPDATE archive_restores SET completed = 1 WHERE archive_id = ?", (archive_id,))
+        return self._finish_restore_cleanup(archive, platform_id, session_id, archive_id)
 
     def purge_archive(self, platform_id: str, archive_id: str) -> bool:
         """

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from contextlib import closing
 from pathlib import Path
 from typing import Any, cast
 
@@ -176,6 +177,9 @@ def restore_session_domain(
     database: str | Path,
     session_id: str,
     records: dict[str, list[dict[str, Any]]],
+    *,
+    restore_id: str | None = None,
+    restore_metadata: str = "",
 ) -> None:
     """
     在目标会话 ID 未被占用时恢复数据库记录
@@ -187,8 +191,22 @@ def restore_session_domain(
     """
     database_path = Path(database)
     database_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(str(database_path)) as connection:
+    with closing(sqlite3.connect(str(database_path))) as connection:
         connection.row_factory = sqlite3.Row
+        connection.execute("BEGIN IMMEDIATE")   # 身份检查和插入共用写事务, 防止并发恢复交错
+        if restore_id is not None:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS archive_restores "
+                "(archive_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, metadata TEXT NOT NULL, "
+                "completed INTEGER NOT NULL DEFAULT 0)"
+            )
+            receipt = connection.execute(
+                "SELECT session_id, metadata FROM archive_restores WHERE archive_id = ?", (restore_id,),
+            ).fetchone()
+            if receipt is not None:
+                if receipt["session_id"] != session_id or receipt["metadata"] != restore_metadata:
+                    raise ValueError("恢复凭据与归档不匹配")
+                return   # 先前提交已成功, 不重复恢复数据库记录
         tables = _table_names(connection)
         schemas: dict[str, set[str]] = {}
         for table in records:
@@ -197,6 +215,36 @@ def restore_session_domain(
             if table not in tables:
                 raise ValueError(f"目标数据库缺少归档表: {table}")
             schemas[table] = _table_columns(connection, table)
+        turn_ids = {row.get("id") for row in records.get("display_turns", [])}
+        for table, rows in records.items():
+            for row in rows:
+                _validated_restore_columns(table, row, schemas[table])
+                identity_column = {
+                    "session_configs": "session_id", "conversation_meta": "conversation_id",
+                    "display_turns": "conversation_id", "context_sessions": "session_id",
+                }.get(table)
+                if identity_column and row.get(identity_column) != session_id:
+                    raise ValueError(f"归档表 {table} 的会话身份不匹配")
+                if table in ("display_turn_variants", "display_tool_calls") and row.get("turn_id") not in turn_ids:
+                    raise ValueError(f"归档表 {table} 引用了归档外的轮次")
+                scope_column = {
+                    "chat_history": "conversation_id", "state_scopes": "scope_id",
+                    "state_checkpoints": "scope_id", "state_snapshots": "scope_id", "memories": "scope",
+                }.get(table)
+                if scope_column:
+                    expected = f"session:{session_id}" if table == "memories" else session_id
+                    scope = str(row.get(scope_column, ""))
+                    if scope != expected and not scope.startswith(expected + "_"):
+                        raise ValueError(f"归档表 {table} 的会话范围不匹配")
+                if table.startswith("state_") and row.get("namespace") != "conversation":
+                    raise ValueError(f"归档表 {table} 的命名空间不匹配")
+                if table == "user_info":
+                    try:
+                        sessions = json.loads(row.get("user_session") or "[]")
+                    except (TypeError, ValueError) as error:
+                        raise ValueError("归档用户会话列表无效") from error
+                    if not isinstance(sessions, list) or session_id not in sessions:
+                        raise ValueError("归档用户会话身份不匹配")
         identity_checks = {
             "session_configs": ("session_id", session_id),
             "conversation_meta": ("conversation_id", session_id),
@@ -211,7 +259,6 @@ def restore_session_domain(
             if existed is not None:
                 raise ValueError(f"会话 ID 已存在: {session_id}")
         try:
-            connection.execute("BEGIN")
             for table, rows in records.items():
                 if table == "user_info":
                     continue
@@ -256,6 +303,11 @@ def restore_session_domain(
                         "UPDATE user_info SET user_session = ? WHERE user_id = ?",
                         (json.dumps(normalized, ensure_ascii=False), user_id),
                     )
+            if restore_id is not None:
+                connection.execute(
+                    "INSERT INTO archive_restores (archive_id, session_id, metadata) VALUES (?, ?, ?)",
+                    (restore_id, session_id, restore_metadata),
+                )
             connection.commit()
         except Exception:
             connection.rollback()

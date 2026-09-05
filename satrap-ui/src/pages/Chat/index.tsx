@@ -27,6 +27,7 @@ import {
   type ChatPreloadSettings,
   type ChatPlugin,
   type ChatTurnVariant,
+  type ChatTurn,
   type ConversationItem as ChatConversationItem,
   type ContextTurnStats,
   type DirEntry,
@@ -237,6 +238,46 @@ function convertVariant(variant: ChatTurnVariant): LocalResponseVariant {
   };
 }
 
+function turnsToMessages(turns: ChatTurn[]): ChatMessage[] {
+  const messages: ChatMessage[] = [];
+  for (const turn of turns) {
+    messages.push({
+      id: `${turn.id}-u`,
+      role: 'user',
+      content: turn.user_input,
+      timestamp: turn.created_at * 1000,
+      attachments: turn.attachments ?? undefined,
+      turnIndex: turn.turn_index,
+    });
+    const currentVariant: ChatTurnVariant = {
+      variant_index: turn.active_variant ?? 0,
+      thinking: turn.thinking,
+      answer: turn.answer,
+      segments: turn.segments,
+      created_at: turn.created_at,
+      tool_calls: turn.tool_calls,
+      context_stats: turn.context_stats,
+    };
+    const segments = convertSegments(currentVariant);
+    messages.push({
+      id: `${turn.id}-a`,
+      role: 'assistant',
+      streaming: turn.generating ?? false,
+      content: turn.interrupted ? (turn.answer || '[生成已中断]') : turn.answer,
+      thinking: turn.thinking ?? undefined,
+      toolCalls: turn.tool_calls,
+      timestamp: turn.created_at * 1000,
+      turnIndex: turn.turn_index,
+      segments,
+      activeVariant: turn.active_variant ?? 0,
+      variantCount: turn.variant_count ?? 1,
+      variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
+      contextStats: turn.context_stats,
+    });
+  }
+  return messages;
+}
+
 export function Chat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string>('');
@@ -310,6 +351,8 @@ export function Chat() {
   const activeIdRef = useRef('');
   const activeRef = useRef<Conversation | undefined>(undefined);
   const generatingRef = useRef(false);
+  const mutationPendingRef = useRef(false);
+  const snapshotEpochRef = useRef<Record<string, number>>({});
   const settingsThinkRef = useRef(DEFAULT_SETTINGS.think);
   // 单帧内积累的流式增量和对应消息目标
   const streamingDeltasRef = useRef<StreamingDelta[]>([]);
@@ -439,8 +482,51 @@ export function Chat() {
   const handleEvent = useCallback(
     (conversationId: string, event: ChatEvent) => {
       switch (event.type) {
+        case 'snapshot': {
+          flushStreamingDeltas();
+          snapshotEpochRef.current[conversationId] = (snapshotEpochRef.current[conversationId] ?? 0) + 1;
+          const preservePending = mutationPendingRef.current && event.state === 'idle';
+          updateConversation(conversationId, (conversation) => {
+            let messages = turnsToMessages(event.turns);
+            if (preservePending) {
+              const pending = conversation.messages.find((message) => message.streaming);
+              if (pending) {
+                const localTurn = conversation.messages.filter((message) => message.turnIndex === pending.turnIndex);
+                messages = [...messages.filter((message) => message.turnIndex !== pending.turnIndex), ...localTurn];
+              }
+            }
+            return { ...conversation, messages, loaded: true };
+          });
+          if (!preservePending) {
+            streamingMsgIdRef.current = event.active_turn_id === null ? null : `${event.active_turn_id}-a`;
+            generatingRef.current = event.state !== 'idle';
+            setGenerating(event.state !== 'idle');
+          }
+          setPendingUserInputs((previous) => ({
+            ...previous,
+            [conversationId]: event.pending_user_inputs.map((item) => ({
+              requestId: item.request_id, question: item.question, options: item.options,
+            })),
+          }));
+          break;
+        }
         case 'turn_start':
           flushStreamingDeltas();
+          if (!streamingMsgIdRef.current) {
+            streamingMsgIdRef.current = `${event.turn_id}-a`;
+            updateConversation(conversationId, (conversation) => {
+              const previous = conversation.messages.find((message) => message.role === 'assistant' && message.turnIndex === event.turn_index);
+              const messages = conversation.messages.filter((message) => message.turnIndex !== event.turn_index);
+              return { ...conversation, messages: [...messages, {
+                id: `${event.turn_id}-u`, role: 'user', content: event.user_input, timestamp: Date.now(), turnIndex: event.turn_index,
+              }, {
+                id: `${event.turn_id}-a`, role: 'assistant', content: '', timestamp: Date.now(), turnIndex: event.turn_index,
+                activeVariant: event.variant_index, streaming: true, variants: previous?.variants,
+              }] };
+            });
+          }
+          generatingRef.current = true;
+          setGenerating(true);
           updateStreamingMessage((message) => ({
             ...message,
             turnIndex: event.turn_index,
@@ -595,42 +681,10 @@ export function Chat() {
   const loadTurns = useCallback(
     async (conversationId: string) => {
       try {
+        const epoch = snapshotEpochRef.current[conversationId] ?? 0;
         const { turns } = await chatApi.listTurns(conversationId);
-        const messages: ChatMessage[] = [];
-        for (const turn of turns) {
-          messages.push({
-            id: `${turn.id}-u`,
-            role: 'user',
-            content: turn.user_input,
-            timestamp: turn.created_at * 1000,
-            attachments: turn.attachments ?? undefined,
-            turnIndex: turn.turn_index,
-          });
-          const currentVariant: ChatTurnVariant = {
-            variant_index: turn.active_variant ?? 0,
-            thinking: turn.thinking,
-            answer: turn.answer,
-            segments: turn.segments,
-            created_at: turn.created_at,
-            tool_calls: turn.tool_calls,
-            context_stats: turn.context_stats,
-          };
-          const segments = convertSegments(currentVariant);
-          messages.push({
-            id: `${turn.id}-a`,
-            role: 'assistant',
-            content: turn.answer,
-            thinking: turn.thinking ?? undefined,
-            toolCalls: turn.tool_calls,
-            timestamp: turn.created_at * 1000,
-            turnIndex: turn.turn_index,
-            segments,
-            activeVariant: turn.active_variant ?? 0,
-            variantCount: turn.variant_count ?? 1,
-            variants: (turn.variants?.length ? turn.variants : [currentVariant]).map(convertVariant),
-            contextStats: turn.context_stats,
-          });
-        }
+        if ((snapshotEpochRef.current[conversationId] ?? 0) !== epoch) return;
+        const messages = turnsToMessages(turns);
         updateConversation(conversationId, (c) => ({ ...c, messages, loaded: true }));
       } catch (err) {
         console.error('[Chat] 加载历史失败:', err);
@@ -1047,6 +1101,7 @@ export function Chat() {
     };
 
     // 乐观更新: 先写入用户消息 + 占位 assistant 消息
+    mutationPendingRef.current = true;
     const isDraft = targetConv.id === '__draft__';
     const convId = isDraft ? '__draft__' : targetConv.id;
     updateConversation(convId, (c) => ({
@@ -1087,6 +1142,7 @@ export function Chat() {
         streamingMsgIdRef.current = null;
         generatingRef.current = false;
         setGenerating(false);
+        mutationPendingRef.current = false;
         return;
       }
     }
@@ -1123,6 +1179,8 @@ export function Chat() {
       streamingMsgIdRef.current = null;
       generatingRef.current = false;
       setGenerating(false);
+    } finally {
+      mutationPendingRef.current = false;
     }
   }, [input, active, generating, settings.think, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
 
@@ -1232,6 +1290,7 @@ export function Chat() {
     streamingMsgIdRef.current = assistantId;
     generatingRef.current = true;
     setGenerating(true);
+    mutationPendingRef.current = true;
     try {
       const result = await chatApi.retry(currentActive.id, settingsThinkRef.current);
       if (result.ok) {
@@ -1253,6 +1312,8 @@ export function Chat() {
       generatingRef.current = false;
       setGenerating(false);
       alert(`重试失败: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      mutationPendingRef.current = false;
     }
   }, [flushStreamingDeltas, updateConversation, updateStreamingMessage]);
 

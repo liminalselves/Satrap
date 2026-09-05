@@ -1,6 +1,7 @@
 """satrap_coding 插件工具层单元测试 (get_tools 工厂 / 文件 / ask_user / shell)"""
 from __future__ import annotations
 
+import tracemalloc
 from pathlib import Path
 from typing import Any, Iterator
 from typing import Callable, cast
@@ -507,7 +508,7 @@ def test_ask_user_tool(tmp_path: Any):
 
 def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     """
-    shell: 工作区只读直接执行, 所有写操作和工作区外读取均审批, 黑名单拒绝
+    shell: 所有解释器命令逐次审批, 黑名单拒绝
 
     参数:
     - tmp_path: tmp路径
@@ -520,7 +521,7 @@ def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     tools = _install_tools(session)
 
     out = tools["shell"].execute("echo hello")
-    assert "hello" in out
+    assert "需要用户批准" in out
 
     out = tools["shell"].execute("echo written > f.txt")
     assert "需要用户批准" in out
@@ -548,9 +549,9 @@ def test_shell_read_only_and_approval(tmp_path: Any, monkeypatch: Any):
     assert "黑名单" in out
 
     out = tools["shell"].execute("cmd /c dir")
-    assert "需要用户批准" not in out
+    assert "需要用户批准" in out
     out = tools["shell"].execute("cd ..")
-    assert "需要用户批准" not in out
+    assert "需要用户批准" in out
 
     out = tools["shell"].execute("git push")
     assert "需要用户批准" in out
@@ -802,3 +803,31 @@ async def test_async_shell_and_subagent_reject_invalid_integer_arguments(
 
     assert "timeout 必须是整数" in timeout_error
     assert "max_turns 必须是整数" in turns_error
+
+
+@pytest.mark.parametrize("separator", ["\n", "\r\n", "\r", "\v", "\f", "\x1c", "\x1d", "\x1e", "\x85", "\u2028", "\u2029"])
+def test_file_page_matches_splitlines(tmp_path, separator):
+    path = tmp_path / "text.txt"
+    text = ("中文" + separator + separator + "尾行" + separator) * 10000 + "末尾"
+    path.write_bytes(text.encode("utf-8"))
+    for start in (0, 21845, 30000, 40000):
+        lines = text.splitlines()
+        expected = f"{path} 行 {start}-{min(len(lines), start + 20)}/{len(lines)}:\n" + "\n".join(lines[start:start + 20])
+        assert tools_mod._read_file_page(path, start, 20) == expected
+
+
+def test_file_page_bounds_long_line_memory(tmp_path):
+    path = tmp_path / "long.txt"
+    with path.open("wb") as stream:
+        for _ in range(512):
+            stream.write(b"x" * 65536)
+        stream.write(b"\nlast\n")
+    tracemalloc.start()
+    try:
+        result = tools_mod._read_file_page(path, 0, 20)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert peak < 8 * 1024 * 1024
+    assert "已截断" in result and "\nlast\n" in result
+    assert "行 0-2/2" in result

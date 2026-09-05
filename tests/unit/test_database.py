@@ -15,6 +15,67 @@ import pytest
 from satrap.core.database import DataBase, LiteVectorDB
 
 
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_database_rejects_empty_vectors_before_creating_collection(
+    tmp_path: Path,
+    db_class: type[LiteVectorDB] | type[DataBase],
+):
+    """
+    空向量在创建集合或写入数据前被拒绝
+
+    参数:
+    - tmp_path: tmp路径
+    - db_class: 待测试的向量库类型
+    """
+    db = db_class(persist_path=str(tmp_path / "vec"))
+
+    with pytest.raises(ValueError, match="向量不能为空"):
+        db.add_to_collection("docs", ["a"], [[]], [{}])
+
+    assert db.get_collection_names() == []
+
+
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_database_rejects_inconsistent_batch_dimensions(
+    tmp_path: Path,
+    db_class: type[LiteVectorDB] | type[DataBase],
+):
+    """
+    同一批次的向量维度不一致时不产生部分写入
+
+    参数:
+    - tmp_path: tmp路径
+    - db_class: 待测试的向量库类型
+    """
+    db = db_class(persist_path=str(tmp_path / "vec"))
+
+    with pytest.raises(ValueError, match="同一批次的向量维度必须一致"):
+        db.add_to_collection("docs", ["a", "b"], [[1.0], [0.0, 1.0]], [{}, {}])
+
+    assert db.get_collection_names() == []
+
+
+@pytest.mark.parametrize("db_class", [LiteVectorDB, DataBase])
+def test_vector_database_rejects_dimension_change_without_partial_write(
+    tmp_path: Path,
+    db_class: type[LiteVectorDB] | type[DataBase],
+):
+    """
+    后续写入的向量维度变化时保留原集合内容
+
+    参数:
+    - tmp_path: tmp路径
+    - db_class: 待测试的向量库类型
+    """
+    db = db_class(persist_path=str(tmp_path / "vec"))
+    db.add_to_collection("docs", ["a"], [[1.0, 0.0]], [{}])
+
+    with pytest.raises(ValueError, match="向量维度不一致"):
+        db.add_to_collection("docs", ["b"], [[1.0, 0.0, 0.0]], [{}])
+
+    assert db.get_collection_stats("docs")["document_count"] == 1
+
+
 # ================= LiteVectorDB 测试 =================
 
 

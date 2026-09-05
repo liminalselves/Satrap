@@ -1,4 +1,9 @@
-"""基于 SQLite 的轻量向量数据库实现"""
+"""
+轻量向量库与 SQLite 持久化向量库
+
+DataBase 将原始向量与文档原子提交, 使用可重建的 FAISS 版本缓存,
+并提供保留备份的旧格式迁移与缺失向量修复入口
+"""
 from typing import List, Dict, Any, BinaryIO, cast
 import faiss as _faiss
 import numpy as np
@@ -7,6 +12,13 @@ import sqlite3
 import json
 import os
 import re
+from contextlib import closing, contextmanager
+from pathlib import Path
+import shutil
+import tempfile
+import threading
+import uuid
+from weakref import WeakValueDictionary
 
 from satrap.core.log import logger
 
@@ -37,6 +49,35 @@ def _msgpack_pack(data: dict[str, Any], file_obj: BinaryIO) -> None:
     - file_obj: 二进制文件对象
     """
     cast(Any, msgpack).pack(data, file_obj)
+
+
+def _validate_vector_batch(
+    documents: List[str],
+    vectors: List[List[float]],
+    metadata: List[Dict[str, Any]],
+) -> int | None:
+    """
+    在写入前校验文档, 向量和元数据的对应关系
+
+    参数:
+    - documents: 文档列表
+    - vectors: 向量列表
+    - metadata: 元数据列表
+
+    返回:
+    - 非空批次的向量维度, 空批次返回 None
+    """
+    if not (len(documents) == len(vectors) == len(metadata)):
+        raise ValueError("documents, vectors, metadata 长度必须一致")
+    if not vectors:
+        return None
+    if any(not vector for vector in vectors):
+        raise ValueError("向量不能为空")
+
+    dimensions = {len(vector) for vector in vectors}
+    if len(dimensions) != 1:
+        raise ValueError("同一批次的向量维度必须一致")
+    return dimensions.pop()
 
 
 class LiteVectorDB:
@@ -285,12 +326,20 @@ class LiteVectorDB:
         返回:
         - 添加文档到集合
         """
+        if metadata is None:   # 如果没有元数据, 默认空字典
+            metadata = [{} for _ in range(len(documents))]
+
+        dim = _validate_vector_batch(documents, vectors, metadata)
+        # 在创建集合和修改内存数据前完成输入校验
+
+        if dim is not None and name in self.collections:
+            existing_vectors = cast(List[List[float]], self.collections[name]['vectors'])
+            if existing_vectors and len(existing_vectors[0]) != dim:
+                raise ValueError(f"向量维度不一致: 期望 {len(existing_vectors[0])}, 实际 {dim}")
+
         if name not in self.collections:   # 集合不存在时创建
             self.create_collection(name)
             logger.info(f"集合 {name} 在加入数据时创建")
-
-        if metadata is None:   # 如果没有元数据, 默认空字典
-            metadata = [{} for _ in range(len(documents))]
 
         self.collections[name]['documents'].extend(documents)   # 文档
         self.collections[name]['vectors'].extend(vectors)   # 向量
@@ -376,335 +425,462 @@ class LiteVectorDB:
             }
         return {'document_count': 0, 'vector_dimension': 0}
 
+_DATABASE_LOCKS: WeakValueDictionary[str, Any] = WeakValueDictionary()
+_DATABASE_LOCKS_GUARD = threading.Lock()
+
+
+class VectorDataUnavailable(RuntimeError):
+    """持久化向量缺失或损坏, 需要显式补齐后才能搜索"""
+
+
 class DataBase:
-    """使用 faiss + SQLite 的向量数据库"""
+    """SQLite 保存文档与原始向量, FAISS 仅作为可重建的版本缓存"""
 
     def __init__(self, persist_path: str = ".satrap/vector"):
         """
-        初始化 DataBase
+        打开新版向量库, 旧格式要求显式维护迁移
 
         参数:
-        - persist_path: 数据持久化路径, 默认 ".satrap/vector"
+        - persist_path: 包含 metadata.sqlite 与派生索引的目录
         """
-
         self.faiss = _faiss
-        self.persist_path = persist_path
+        self.persist_path = os.path.realpath(persist_path)
         os.makedirs(self.persist_path, exist_ok=True)
-
         self.sqlite_path = os.path.join(self.persist_path, "metadata.sqlite")
+        with _DATABASE_LOCKS_GUARD:
+            self._lock = _DATABASE_LOCKS.setdefault(self.sqlite_path, threading.RLock())
         self.collection_dims: Dict[str, int] = {}
         self.indices: Dict[str, Any] = {}
-
+        self._index_versions: dict[str, tuple[str, int]] = {}
         self._init_sqlite()
         self._load_from_disk()
 
+    @contextmanager
     def _connect(self):
-        """
-        创建 SQLite 连接
-
-        返回:
-        - 创建 SQLite 连接
-        """
-        conn = sqlite3.connect(self.sqlite_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+        """显式关闭连接, 退出时提交或回滚事务"""
+        with closing(sqlite3.connect(self.sqlite_path, timeout=30)) as conn, conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            yield conn
 
     def _init_sqlite(self):
-        """初始化 SQLite 表"""
-        with self._connect() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS collections (
-                    name TEXT PRIMARY KEY,
-                    dim INTEGER NOT NULL DEFAULT 0
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    collection_name TEXT NOT NULL,
-                    document TEXT NOT NULL,
-                    metadata TEXT NOT NULL DEFAULT '{}',
-                    FOREIGN KEY(collection_name) REFERENCES collections(name) ON DELETE CASCADE
-                )
-            """)
-            conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_documents_collection
-                ON documents(collection_name)
-            """)
-            conn.commit()
+        """在写事务内初始化新版表, 不隐式迁移旧库"""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "collections" in tables:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(collections)")}
+                if "collection_id" not in columns:
+                    raise RuntimeError("旧向量库需要维护迁移: 停止所有写入者后调用 DataBase.migrate_legacy(path)")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS collections (name TEXT PRIMARY KEY, dim INTEGER NOT NULL DEFAULT 0, "
+                "collection_id TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL DEFAULT 0)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                "collection_name TEXT NOT NULL, document TEXT NOT NULL, metadata TEXT NOT NULL DEFAULT '{}', "
+                "vector BLOB, FOREIGN KEY(collection_name) REFERENCES collections(name) ON DELETE CASCADE)"
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_documents_collection ON documents(collection_name)")
+            conn.execute("PRAGMA user_version=2")
 
-    def _index_path(self, name: str) -> str:
+    @staticmethod
+    def migrate_legacy(persist_path: str) -> dict[str, Any]:
         """
-        获取集合索引文件路径
+        停止旧写入者后备份并迁移格式, 不访问外部模型或删除旧索引
 
         参数:
-        - name: 名称
+        - persist_path: 需要维护迁移的旧向量库目录
 
         返回:
-        - str: 集合索引文件路径
+        - 备份路径, 各集合恢复统计和缺失文档 ID; 已迁移时返回状态与缺失 ID
         """
-        safe_name = name.replace("/", "_").replace("\\", "_").replace(":", "_")
-        return os.path.join(self.persist_path, f"{safe_name}.faiss")
-
-    def _create_index(self, dim: int):
-        """
-        创建 faiss 索引
-
-        参数:
-        - dim: 维度
-
-        说明:
-        - 使用 IndexFlatIP + IndexIDMap2
-        - 写入前做 L2 归一化, 以支持余弦相似度检索
-
-        返回:
-        - 创建 faiss 索引
-        """
-        return self.faiss.IndexIDMap2(self.faiss.IndexFlatIP(dim))
-
-    def _save_index(self, name: str):
-        """
-        保存单个集合索引到磁盘
-
-        参数:
-        - name: 名称
-        """
-        index = self.indices.get(name)
-        if index is None:
-            return
-        self.faiss.write_index(index, self._index_path(name))
+        root = Path(persist_path).resolve()
+        database = root / "metadata.sqlite"
+        if not database.is_file():
+            raise ValueError("旧向量库不存在")
+        with closing(sqlite3.connect(str(database), timeout=30)) as conn:
+            conn.row_factory = sqlite3.Row
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(collections)")}
+            if "collection_id" in columns:
+                missing = [row[0] for row in conn.execute("SELECT id FROM documents WHERE vector IS NULL ORDER BY id")]
+                return {"already_migrated": True, "missing_document_ids": missing}
+            backup = root / ("migration-backup-" + uuid.uuid4().hex)
+            backup.mkdir()
+            with closing(sqlite3.connect(str(backup / "metadata.sqlite"))) as saved:
+                conn.backup(saved)
+            for file in root.glob("*.faiss"):
+                if file.is_file() and not file.is_symlink():
+                    shutil.copy2(file, backup / file.name)
+            report: dict[str, Any] = {"backup": str(backup), "missing_document_ids": [], "collections": {}}
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("ALTER TABLE collections ADD COLUMN collection_id TEXT")
+                conn.execute("ALTER TABLE collections ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+                conn.execute("ALTER TABLE documents ADD COLUMN vector BLOB")
+                for row in conn.execute("SELECT name, dim FROM collections").fetchall():
+                    name, dim = str(row["name"]), int(row["dim"])
+                    conn.execute("UPDATE collections SET collection_id=? WHERE name=?", (uuid.uuid4().hex, name))
+                    ids = [int(item[0]) for item in conn.execute(
+                        "SELECT id FROM documents WHERE collection_name=? ORDER BY id", (name,),
+                    )]
+                    legacy = name.replace("/", "_").replace("\\", "_").replace(":", "_") + ".faiss"
+                    source = backup / legacy
+                    recovered: set[int] = set()
+                    if source.is_file() and dim > 0:
+                        try:
+                            index = _faiss.read_index(str(source))
+                            if not isinstance(index, _faiss.IndexIDMap2):
+                                raise ValueError("旧索引缺少文档 ID 映射")
+                            stored_ids = _faiss.vector_to_array(index.id_map)
+                            if index.d != dim or len(set(map(int, stored_ids))) != len(stored_ids):
+                                raise ValueError("旧索引维度或文档 ID 无效")
+                            for doc_id in set(ids).intersection(map(int, stored_ids)):
+                                vector = np.asarray(index.reconstruct(doc_id), dtype="<f4")
+                                if vector.size != dim or not np.isfinite(vector).all():
+                                    continue
+                                conn.execute("UPDATE documents SET vector=? WHERE id=?", (vector.tobytes(), doc_id))
+                                recovered.add(doc_id)
+                        except Exception as error:
+                            report["collections"][name] = {"index_error": str(error)}
+                    missing = sorted(set(ids) - recovered)
+                    report["missing_document_ids"].extend(missing)
+                    report["collections"].setdefault(name, {}).update(
+                        recovered=len(recovered), missing_document_ids=missing,
+                    )
+                conn.execute("CREATE UNIQUE INDEX idx_collections_identity ON collections(collection_id)")
+                conn.execute("PRAGMA user_version=2")
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+            (backup / "migration-report.json").write_text(
+                json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+            return report
 
     def _load_from_disk(self):
-        """从 SQLite 和磁盘索引加载集合"""
+        """加载集合维度, 索引在首次查询或写入后按版本恢复"""
+        with self._lock, self._connect() as conn:
+            self.collection_dims = {str(row["name"]): int(row["dim"]) for row in conn.execute("SELECT name, dim FROM collections")}
+
+    @staticmethod
+    def _version(row: sqlite3.Row) -> tuple[str, int]:
+        return str(row["collection_id"]), int(row["revision"])
+
+    def _version_path(self, version: tuple[str, int]) -> str:
+        return os.path.join(self.persist_path, f"v2-{version[0]}-{version[1]}.faiss")
+
+    def _index_path(self, name: str) -> str:
         with self._connect() as conn:
-            rows = conn.execute("SELECT name, dim FROM collections").fetchall()
+            row = conn.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
+            if row is None:
+                raise ValueError(f"集合不存在: {name}")
+            return self._version_path(self._version(row))
 
-        for row in rows:
-            name = str(row["name"])
-            dim = int(row["dim"])
-            self.collection_dims[name] = dim
+    def _create_index(self, dim: int):
+        return self.faiss.IndexIDMap2(self.faiss.IndexFlatIP(dim))
 
-            index_file = self._index_path(name)
-            if os.path.exists(index_file):
-                try:
-                    self.indices[name] = self.faiss.read_index(index_file)
-                except Exception as e:
-                    logger.warning(f"加载集合 {name} 的 faiss 索引失败: {e}")
-                    self.indices[name] = self._create_index(dim) if dim > 0 else None
-            else:
-                self.indices[name] = self._create_index(dim) if dim > 0 else None
+    def _ensure_index(self, conn: sqlite3.Connection, name: str, row: sqlite3.Row):
+        """从同一数据库快照加载源向量并核对索引版本"""
+        version = self._version(row)
+        if self._index_versions.get(name) == version and name in self.indices:
+            return self.indices[name]
+        dim = int(row["dim"])
+        source = conn.execute("SELECT id, vector FROM documents WHERE collection_name=? ORDER BY id", (name,)).fetchall()
+        if any(item["vector"] is None or len(item["vector"]) != dim * 4 for item in source):
+            raise VectorDataUnavailable(f"集合 {name} 存在缺失或损坏向量, 请检查 missing_vector_ids 并显式补齐")
+        ids = np.array([item["id"] for item in source], dtype=np.int64)
+        index = None
+        filename = self._version_path(version)
+        if os.path.isfile(filename) and dim > 0:
+            try:
+                candidate = self.faiss.read_index(filename)
+                if isinstance(candidate, _faiss.IndexIDMap2) and candidate.d == dim and np.array_equal(np.sort(self.faiss.vector_to_array(candidate.id_map)), ids):
+                    index = candidate
+            except Exception as error:
+                logger.warning(f"集合 {name} 的派生索引不可用, 从 SQLite 重建: {error}")
+        if index is None and dim > 0:
+            index = self._create_index(dim)
+            if source:
+                vectors = np.vstack([np.frombuffer(item["vector"], dtype="<f4") for item in source]).astype(np.float32)
+                if not np.isfinite(vectors).all():
+                    raise VectorDataUnavailable(f"集合 {name} 的持久化向量包含非有限值")
+                self.faiss.normalize_L2(vectors)
+                index.add_with_ids(vectors, ids)
+        self.collection_dims[name] = dim
+        self.indices[name] = index
+        self._index_versions[name] = version
+        return index
+
+    def _save_index(self, name: str):
+        """原子发布带集合身份与修订号的缓存, 过期构建不会覆盖新版本"""
+        index = self.indices.get(name)
+        version = self._index_versions.get(name)
+        if index is None or version is None:
+            return
+        descriptor, temporary = tempfile.mkstemp(prefix=".faiss-build-", dir=self.persist_path)
+        os.close(descriptor)
+        try:
+            self.faiss.write_index(index, temporary)
+            with open(temporary, "r+b") as stream:
+                os.fsync(stream.fileno())
+            with self._connect() as conn:
+                row = conn.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
+                if row is not None and self._version(row) == version:
+                    os.replace(temporary, self._version_path(version))
+                    for old_cache in Path(self.persist_path).glob(f"v2-{version[0]}-*.faiss"):
+                        old_revision = old_cache.stem.rsplit("-", 1)[-1]
+                        if old_revision.isdigit() and int(old_revision) < version[1] - 1:
+                            try:
+                                old_cache.unlink()   # 旧读快照仍可用自身 SQLite 源数据重建
+                            except OSError:
+                                pass   # 另一进程可能仍打开该派生缓存, 留待后续写入清理
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    def _refresh_after_commit(self, name: str) -> None:
+        """SQL 提交后缓存失败只记录降级, 不诱发调用方重复写入"""
+        try:
+            with self._connect() as conn:
+                conn.execute("BEGIN")
+                row = conn.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
+                if row is None:
+                    return
+                self._ensure_index(conn, name, row)
+            self._save_index(name)
+        except Exception as error:
+            logger.warning(f"集合 {name} 已持久化, 派生索引暂不可用: {error}")
 
     def create_collection(self, name: str):
         """
-        创建集合
+        幂等创建具有独立持久化身份的集合
 
         参数:
-        - name: 名称
+        - name: 外部集合名称, 不用于构造文件名
 
         返回:
-        - 创建集合
+        - 集合存在或创建成功时返回 True
         """
-        if name not in self.collection_dims:
-            with self._connect() as conn:
-                conn.execute(
-                    "INSERT OR IGNORE INTO collections(name, dim) VALUES (?, ?)",
-                    (name, 0)
-                )
-                conn.commit()
-            self.collection_dims[name] = 0
-            self.indices[name] = None
-            logger.info(f"创建集合: {name}")
-        else:
-            logger.info(f"集合 {name} 已存在")
-
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO collections(name, collection_id) VALUES (?, ?)", (name, uuid.uuid4().hex),
+            )
+            row = conn.execute("SELECT dim FROM collections WHERE name=?", (name,)).fetchone()
+            self.collection_dims[name] = int(row["dim"])
         return True
 
-    def add_to_collection(
-        self,
-        name: str,
-        documents: List[str],
-        vectors: List[List[float]],
-        metadata: List[Dict[str, Any]] | None,
-    ):
+    def add_to_collection(self, name: str, documents: List[str], vectors: List[List[float]], metadata: List[Dict[str, Any]] | None):
         """
-        添加文档到集合
+        原子提交文档和向量, 提交后缓存失败仅记录降级
 
         参数:
-        - name: 集合名称
-        - documents: 文档列表
-        - vectors: 向量列表
-        - metadata: 元数据列表
+        - name: 目标集合名称
+        - documents: 按输入顺序保存的文档
+        - vectors: 与文档对应的原始向量, 维度必须一致
+        - metadata: 对应元数据, None 表示全部使用空对象
 
         返回:
-        - 添加文档到集合
+        - 已提交文档数量, 事务失败抛出异常且不保留部分写入
         """
-        if name not in self.collection_dims:
-            self.create_collection(name)
-
         if metadata is None:
-            metadata = [{} for _ in range(len(documents))]
-
-        if not (len(documents) == len(vectors) == len(metadata)):
-            raise ValueError("documents、vectors、metadata 长度必须一致")
-
-        if not vectors:
+            metadata = [{} for _ in documents]
+        dim = _validate_vector_batch(documents, vectors, metadata)
+        if dim is None:
+            self.create_collection(name)
             return 0
-
-        vectors_np = np.array(vectors, dtype=np.float32)
-        dim = vectors_np.shape[1]
-
-        if self.collection_dims[name] == 0:
-            self.collection_dims[name] = dim
-            self.indices[name] = self._create_index(dim)
+        vector_array = np.asarray(vectors, dtype="<f4")
+        if not np.isfinite(vector_array).all():
+            raise ValueError("向量必须包含有限数值")
+        serialized = [json.dumps(meta if meta is not None else {}, ensure_ascii=False, default=str) for meta in metadata]
+        with self._lock:
             with self._connect() as conn:
-                conn.execute("UPDATE collections SET dim=? WHERE name=?", (dim, name))
-                conn.commit()
-        elif self.collection_dims[name] != dim:
-            raise ValueError(f"向量维度不一致: 期望 {self.collection_dims[name]}, 实际 {dim}")
-
-        self.faiss.normalize_L2(vectors_np)
-
-        ids: list[int] = []
-        with self._connect() as conn:
-            for doc, meta in zip(documents, metadata):
-                meta_json = json.dumps(meta if meta is not None else {}, ensure_ascii=False, default=str)
-                cursor = conn.execute(
-                    "INSERT INTO documents(collection_name, document, metadata) VALUES (?, ?, ?)",
-                    (name, doc, meta_json)
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT OR IGNORE INTO collections(name, collection_id) VALUES (?, ?)", (name, uuid.uuid4().hex),
                 )
-                # sqlite3 插入后 lastrowid 恒有值, None 分支仅为类型守卫
-                row_id = cursor.lastrowid
-                if row_id is not None:
-                    ids.append(row_id)
-            conn.commit()
-
-        ids_np = np.array(ids, dtype=np.int64)
-        self.indices[name].add_with_ids(vectors_np, ids_np)
-        self._save_index(name)
-        logger.info(f"向集合 {name} 添加 {len(documents)} 个文档")
+                existing = conn.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
+                if existing["dim"] not in (0, dim):
+                    raise ValueError(f"向量维度不一致: 期望 {existing['dim']}, 实际 {dim}")
+                ids: list[int] = []
+                previous_version = self._version(existing)
+                for document, meta, vector in zip(documents, serialized, vector_array):
+                    cursor = conn.execute(
+                        "INSERT INTO documents(collection_name, document, metadata, vector) VALUES (?, ?, ?, ?)",
+                        (name, document, meta, vector.tobytes()),
+                    )
+                    if cursor.lastrowid is None:
+                        raise RuntimeError("文档插入未返回 ID")
+                    ids.append(cursor.lastrowid)
+                conn.execute("UPDATE collections SET dim=?, revision=revision+1 WHERE name=?", (dim, name))
+            if self._index_versions.get(name) == previous_version and self.indices.get(name) is not None:
+                try:
+                    normalized = vector_array.copy()
+                    self.faiss.normalize_L2(normalized)
+                    self.indices[name].add_with_ids(normalized, np.asarray(ids, dtype=np.int64))
+                    self._index_versions[name] = (previous_version[0], previous_version[1] + 1)
+                except Exception:
+                    self._index_versions.pop(name, None)   # 部分缓存更新失败时从完整 SQL 快照重建
+            self._refresh_after_commit(name)
         return len(documents)
 
-    def search(
-        self,
-        name: str,
-        query_vector: List[float],
-        k: int = 4,
-        threshold: float = 0.5
-    ) -> List[Dict[str, Any]]:
+    def missing_vector_ids(self, name: str) -> list[int]:
         """
-        搜索相似文档
+        列出缺失或字节长度错误的持久化向量
 
         参数:
-        - name: 集合名称
-        - query_vector: 查询向量
-        - k: 返回的文档数量
-        - threshold: 相似度阈值
+        - name: 需要检查的集合名称
 
         返回:
-        - results: 包含 document, score 和 metadata 的列表
+        - 按文档 ID 升序排列的待补齐记录
         """
-        if name not in self.collection_dims:
-            return cast(List[Dict[str, Any]], [])
+        with self._lock, self._connect() as conn:
+            return [int(row[0]) for row in conn.execute(
+                "SELECT d.id FROM documents d JOIN collections c ON c.name=d.collection_name "
+                "WHERE c.name=? AND (d.vector IS NULL OR length(d.vector) != c.dim*4) ORDER BY d.id", (name,),
+            )]
 
-        index = self.indices.get(name)
-        if index is None or index.ntotal == 0:
-            return cast(List[Dict[str, Any]], [])
+    def repair_missing_vectors(self, name: str, document_ids: list[int], vectors: list[list[float]]) -> None:
+        """
+        原子补齐缺失向量, 不覆盖已有完整向量
 
-        query_np = np.array([query_vector], dtype=np.float32)
-        self.faiss.normalize_L2(query_np)
+        参数:
+        - name: 目标集合名称
+        - document_ids: 待补齐的唯一文档 ID
+        - vectors: 调用方使用原模型生成且与 ID 对应的向量
+        """
+        dim = _validate_vector_batch([""] * len(document_ids), vectors, [{}] * len(document_ids))
+        if dim is None:
+            return
+        if len(set(document_ids)) != len(document_ids):
+            raise ValueError("文档 ID 不能重复")
+        values = np.asarray(vectors, dtype="<f4")
+        if not np.isfinite(values).all():
+            raise ValueError("向量必须包含有限数值")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT dim FROM collections WHERE name=?", (name,)).fetchone()
+                if row is None or row["dim"] != dim:
+                    raise ValueError("集合不存在或向量维度不一致")
+                for doc_id, vector in zip(document_ids, values):
+                    changed = conn.execute(
+                        "UPDATE documents SET vector=? WHERE id=? AND collection_name=? "
+                        "AND (vector IS NULL OR length(vector) != ?)",
+                        (vector.tobytes(), doc_id, name, dim * 4),
+                    ).rowcount
+                    if changed != 1:
+                        raise ValueError(f"文档 {doc_id} 不存在, 不属于集合或已有完整向量")
+                conn.execute("UPDATE collections SET revision=revision+1 WHERE name=?", (name,))
+            self._refresh_after_commit(name)
 
-        top_k = min(max(k, 1), index.ntotal)
-        distances, ids = index.search(query_np, top_k)
-        scores = distances[0]
-        id_list = ids[0]
+    def search(self, name: str, query_vector: List[float], k: int = 4, threshold: float = 0.5) -> List[Dict[str, Any]]:
+        """
+        在同一数据库快照中进行余弦检索, 源向量不完整时明确报错
 
-        results: list[dict[str, Any]] = []
-        with self._connect() as conn:
-            for score, doc_id in zip(scores, id_list):
-                if doc_id < 0:
+        参数:
+        - name: 目标集合名称
+        - query_vector: 与集合维度一致的查询向量
+        - k: 最大候选数量
+        - threshold: 最小余弦相似度
+
+        返回:
+        - 包含 document, score 和 metadata 的相似度降序结果
+        """
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN")
+            row = conn.execute("SELECT * FROM collections WHERE name=?", (name,)).fetchone()
+            if row is None:
+                return []
+            index = self._ensure_index(conn, name, row)
+            if index is None or index.ntotal == 0:
+                return []
+            query = np.asarray([query_vector], dtype=np.float32)
+            if query.ndim != 2 or query.shape[1] != row["dim"] or not np.isfinite(query).all():
+                raise ValueError("查询向量维度不一致或包含非有限值")
+            self.faiss.normalize_L2(query)
+            distances, ids = index.search(query, min(max(k, 1), index.ntotal))
+            results: list[dict[str, Any]] = []
+            for score, doc_id in zip(distances[0], ids[0]):
+                if doc_id < 0 or float(score) < threshold:
                     continue
-                if float(score) < threshold:
-                    continue
-
-                row = conn.execute(
-                    "SELECT document, metadata FROM documents WHERE id=? AND collection_name=?",
-                    (int(doc_id), name)
+                document = conn.execute(
+                    "SELECT document, metadata FROM documents WHERE id=? AND collection_name=?", (int(doc_id), name),
                 ).fetchone()
-                if row is None:
-                    continue
-
-                try:
-                    meta_obj: Any = json.loads(row["metadata"]) if row["metadata"] else {}
-                except Exception:
-                    meta_obj = {}
-
-                results.append({
-                    "document": row["document"],
-                    "score": float(score),
-                    "metadata": meta_obj
-                })
-
-        return results
+                if document is None:
+                    raise VectorDataUnavailable("索引与数据库快照不一致")
+                results.append({"document": document["document"], "score": float(score), "metadata": json.loads(document["metadata"])})
+            return results
 
     def get_collection_names(self):
+        """从数据库获取集合名称, 包括其他实例已经提交的集合"""
+        with self._lock, self._connect() as conn:
+            return [str(row[0]) for row in conn.execute("SELECT name FROM collections ORDER BY rowid")]
+
+    def delete_documents(self, name: str, document_ids: list[int]) -> int:
         """
-        获取所有集合名称
+        原子删除指定文档并更新集合修订号
+
+        参数:
+        - name: 限定删除范围的集合名称
+        - document_ids: 需要删除的文档 ID
 
         返回:
-        - 所有集合名称
+        - 实际删除数量, 缓存失败不撤销已提交删除
         """
-        return list(self.collection_dims.keys())
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                deleted = sum(conn.execute(
+                    "DELETE FROM documents WHERE collection_name=? AND id=?", (name, document_id),
+                ).rowcount for document_id in set(document_ids))
+                if deleted:
+                    conn.execute("UPDATE collections SET revision=revision+1 WHERE name=?", (name,))
+            if deleted:
+                self._refresh_after_commit(name)
+            return deleted
 
     def delete_collection(self, name: str):
         """
-        删除集合
+        原子删除源数据, 随后清理此集合身份下的派生缓存
 
         参数:
-        - name: 名称
+        - name: 待删除集合名称
 
         返回:
-        - 删除集合
+        - 删除或集合已经不存在时返回 True; 缓存清理失败记录日志
         """
-        with self._connect() as conn:
-            conn.execute("DELETE FROM documents WHERE collection_name=?", (name,))
-            conn.execute("DELETE FROM collections WHERE name=?", (name,))
-            conn.commit()
-
-        self.collection_dims.pop(name, None)
-        self.indices.pop(name, None)
-
-        index_file = self._index_path(name)
-        if os.path.exists(index_file):
-            try:
-                os.remove(index_file)
-            except Exception as e:
-                logger.warning(f"删除集合 {name} 的索引文件失败: {e}")
-
-        logger.info(f"删除集合: {name}")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                row = conn.execute("SELECT collection_id FROM collections WHERE name=?", (name,)).fetchone()
+                conn.execute("DELETE FROM documents WHERE collection_name=?", (name,))
+                conn.execute("DELETE FROM collections WHERE name=?", (name,))
+            self.collection_dims.pop(name, None)
+            self.indices.pop(name, None)
+            self._index_versions.pop(name, None)
+            if row is not None:
+                for file in Path(self.persist_path).glob(f"v2-{row['collection_id']}-*.faiss"):
+                    try:
+                        file.unlink()
+                    except OSError as error:
+                        logger.warning(f"集合 {name} 已删除, 缓存清理失败: {error}")
         return True
 
     def get_collection_stats(self, name: str):
         """
-        获取集合统计
+        查询已提交文档数量和集合维度
 
         参数:
-        - name: 名称
+        - name: 目标集合名称
 
         返回:
-        - 集合统计
+        - document_count 与 vector_dimension, 集合不存在时均为 0
         """
-        if name not in self.collection_dims:
-            return {"document_count": 0, "vector_dimension": 0}
-
-        with self._connect() as conn:
+        with self._lock, self._connect() as conn:
             row = conn.execute(
-                "SELECT COUNT(1) AS cnt FROM documents WHERE collection_name=?",
-                (name,)
+                "SELECT c.dim, COUNT(d.id) AS cnt FROM collections c LEFT JOIN documents d "
+                "ON d.collection_name=c.name WHERE c.name=? GROUP BY c.name", (name,),
             ).fetchone()
-            document_count = int(row["cnt"]) if row else 0
-
-        return {
-            "document_count": document_count,
-            "vector_dimension": int(self.collection_dims.get(name, 0))
-        }
-
+            return {"document_count": int(row["cnt"]) if row else 0, "vector_dimension": int(row["dim"]) if row else 0}

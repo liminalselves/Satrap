@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import http.client
+import asyncio
 import ipaddress
 import os
 import socket
@@ -19,6 +20,7 @@ from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
 
 import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
+from satrap.core.utils.async_worker import DNS_WORKERS
 
 
 DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
@@ -622,23 +624,31 @@ async def safe_async_get(
     """
     merged_url = _merge_query_params(url, params)
     initial_url = merged_url
-    current = resolve_outbound_http_url(merged_url, trusted_hosts=trusted_hosts)
+    deadline = asyncio.get_running_loop().time() + timeout
+    trusted_hosts = tuple(trusted_hosts)
+    current = await asyncio.wait_for(
+        DNS_WORKERS.run(resolve_outbound_http_url, merged_url, trusted_hosts=trusted_hosts, wait_on_cancel=False),
+        timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
+    )
     for redirect_count in range(max_redirects + 1):
-        response = await _async_request_once(
-            current,
-            headers=headers,
-            timeout=timeout,
-            max_response_bytes=max_response_bytes,
-            ssl_verify=ssl_verify,
+        remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+        response = await asyncio.wait_for(
+            _async_request_once(
+                current, headers=headers, timeout=remaining,
+                max_response_bytes=max_response_bytes, ssl_verify=ssl_verify,
+            ),
+            timeout=remaining,
         )
         if not allow_redirects or not response.is_redirect:
             return response
         if redirect_count >= max_redirects:
             raise UnsafeOutboundURLError("重定向次数超过限制")
-        next_target = resolve_outbound_redirect(
-            current.url,
-            response.headers.get("Location", ""),
-            trusted_hosts=trusted_hosts,
+        next_target = await asyncio.wait_for(
+            DNS_WORKERS.run(
+                resolve_outbound_redirect, current.url, response.headers.get("Location", ""),
+                trusted_hosts=trusted_hosts, wait_on_cancel=False,
+            ),
+            timeout=max(0.0, deadline - asyncio.get_running_loop().time()),
         )
         if restrict_redirects_to_origin and not same_origin(initial_url, next_target.url):
             raise UnsafeOutboundURLError("重定向不得离开原始来源")

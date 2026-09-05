@@ -16,7 +16,7 @@ from typing import Any, cast
 import pytest
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.utils.minihttp import MiniHTTPServer, query_param
 from satrap.core.server_auth import ServerAuth
 from satrap.core.storage import StorageLayout
 from satrap.display.plugins import ChatPluginRegistry
@@ -692,3 +692,11 @@ async def test_chat_server_manages_history_and_trash(tmp_path: Path):
     assert restored["session_id"] == "history-1"
     assert list_conversations(str(server.service._display_db_path))[0]["conversation_id"] == "history-1"
     await server.service.close()
+
+
+@pytest.mark.parametrize(("query", "expected"), [
+    ("%252F", "%2F"), ("%25", "%"), ("%2B", "+"), ("+", " "),
+    ("%E4%B8%AD%E6%96%87", "中文"), ("", ""), ("first&value=second", "first"),
+])
+def test_query_values_are_decoded_once(query, expected):
+    assert query_param("/api?value=" + query, "value") == expected

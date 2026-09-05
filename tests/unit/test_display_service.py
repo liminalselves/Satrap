@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+from types import SimpleNamespace
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, cast
@@ -15,7 +17,7 @@ from satrap.core.storage import StorageLayout
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
 from satrap.display.plugins import ChatPluginRegistry
-from satrap.display.recorder import list_conversations
+from satrap.display.recorder import DisplayRecorder, list_conversations
 from satrap.display.service import ChatService
 from satrap.edictum.plugin_config import PluginConfigManager
 
@@ -191,6 +193,116 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
     )
 
 
+@pytest.mark.parametrize("failure", ["cancel", "error"])
+async def test_retry_preparation_reserves_and_restores_context(tmp_path: Path, monkeypatch: Any, failure: str):
+    svc = _make_service(tmp_path, monkeypatch)
+    cid = await svc.create_conversation()
+    await svc.send(cid, "原问题")
+    conv = svc.get_conversation(cid)
+    assert conv is not None and conv.task is not None
+    await conv.task
+    original = copy.deepcopy(conv.session.ctx.get_context())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_delete = conv.session.ctx.del_last_chat
+
+    async def blocked_delete(n: int):
+        await original_delete(n)
+        entered.set()
+        await release.wait()
+        raise ValueError("模拟准备失败")
+
+    monkeypatch.setattr(conv.session.ctx, "del_last_chat", blocked_delete)
+    task = asyncio.create_task(svc.retry(cid))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not (await svc.retry(cid))["ok"]
+        assert not (await svc.send(cid, "并发消息"))["ok"]
+        assert not (await svc.select_variant(cid, 0, 0))["ok"]
+        with pytest.raises(ValueError, match="正在生成"):
+            await svc.delete_conversation(cid)
+        if failure == "cancel":
+            assert (await svc.cancel(cid))["ok"]
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release.set()
+            assert not (await task)["ok"]
+        assert conv.session.ctx.get_context() == original
+        assert cid not in svc._operations
+        assert conv.recorder.last_turn()["variant_count"] == 1
+        monkeypatch.setattr(conv.session.ctx, "del_last_chat", original_delete)
+        assert (await svc.retry(cid))["ok"]
+        await conv.task
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await svc.close()
+
+
+async def test_concurrent_resume_publishes_only_initialized_runtime(tmp_path: Path, monkeypatch: Any):
+    svc = _make_service(tmp_path, monkeypatch)
+    cid = await svc.create_conversation()
+    await svc.close()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = svc._install_enabled_plugins
+    installations = 0
+
+    async def blocked_install(session):
+        nonlocal installations
+        installations += 1
+        entered.set()
+        await release.wait()
+        return await original(session)
+
+    monkeypatch.setattr(svc, "_install_enabled_plugins", blocked_install)
+    tasks = [asyncio.create_task(svc._resume_conversation(cid)) for _ in range(2)]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert svc.get_conversation(cid) is None
+        release.set()
+        first, second = await asyncio.gather(*tasks)
+        assert first is second and installations == 1
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await svc.close()
+
+
+async def test_concurrent_preload_and_send_share_initialization(tmp_path: Path, monkeypatch: Any):
+    svc = _make_service(tmp_path, monkeypatch)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original = svc._install_enabled_plugins
+    installations = 0
+
+    async def blocked_install(session):
+        nonlocal installations
+        installations += 1
+        entered.set()
+        await release.wait()
+        return await original(session)
+
+    monkeypatch.setattr(svc, "_install_enabled_plugins", blocked_install)
+    first = asyncio.create_task(svc.preload_conversation(conversation_id="shared"))
+    second = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert svc.get_conversation("shared") is None
+        second = asyncio.create_task(svc.send("shared", "hello"))
+        await asyncio.sleep(0)
+        assert not (await svc.send("shared", "duplicate"))["ok"]
+        release.set()
+        assert await first == "shared"
+        assert (await second)["ok"] and installations == 1
+        await svc.get_conversation("shared").task
+    finally:
+        release.set()
+        await asyncio.gather(*[task for task in (first, second) if task], return_exceptions=True)
+        await svc.close()
+
+
 def test_service_list_models(tmp_path: Path, monkeypatch: Any):
     svc = _make_service(tmp_path, monkeypatch)
     assert set(svc.list_models()) == {"default", "fast"}
@@ -357,8 +469,8 @@ def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
         request_id = event["request_id"]
 
         replay_queue = svc.subscribe(cid)
-        replay = replay_queue.get_nowait()
-        assert replay["type"] == "ask_user"
+        replay = svc.runtime_snapshot(cid)["pending_user_inputs"][0]
+        assert replay_queue.empty()
         assert replay["request_id"] == request_id
         assert replay["options"] == ["继续", "取消"]
 
@@ -1038,3 +1150,47 @@ def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):
     assert svc.update_memory(memory_id, content="新内容", scope=scope)["ok"] is True
     # 正常更新/删除仍成功
     assert svc.delete_memory(memory_id, scope=scope)["ok"] is True
+
+
+async def test_concurrent_retry_must_reserve_conversation(tmp_path):
+    recorder = DisplayRecorder(str(tmp_path / "display.db"), "audit")
+    recorder.start_turn("original")
+    recorder.end_turn("answer", context_messages=[{"role": "user", "content": "original"}])
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    counts = {"deletions": 0, "runs": 0}
+
+    async def delete_turn(n):
+        counts["deletions"] += 1
+        entered.set()
+        await release.wait()   # 固定在生产重试流程的上下文回退 await 处制造交错
+
+    async def run_turn(*args, **kwargs):
+        counts["runs"] += 1
+
+    conv = SimpleNamespace(task=None, recorder=recorder, default_think="off", plugin_lock=asyncio.Lock(), session=SimpleNamespace(
+        ctx=SimpleNamespace(del_last_chat=delete_turn, static_message=lambda: 0, get_context=lambda: []),
+    ))
+    service = ChatService.__new__(ChatService)
+    service._conversations = {"audit": conv}
+    service._operations = {}
+    service._broadcast = lambda *args: None
+    service._run_turn = run_turn
+    tasks = []
+    try:
+        tasks.append(asyncio.create_task(service.retry("audit")))
+        await asyncio.wait_for(entered.wait(), 2)
+        tasks.append(asyncio.create_task(service.retry("audit")))
+        await asyncio.sleep(0)
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), 2)
+        await asyncio.sleep(0)
+        assert counts["deletions"] == 1 and sum(bool(r["ok"]) for r in results) == 1, (
+            f"counts={counts}, results={results}"
+        )
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if conv.task is not None:
+            await conv.task
+        recorder.close()

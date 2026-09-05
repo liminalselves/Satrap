@@ -4,11 +4,11 @@ satrap_coding 权限引擎: 风险分级 x 审批策略 x 规则记忆 + 持久�
 策略三档 (set_mode):
 - user:      默认, 高风险操作逐条询问用户 (工具层走用户输入通道)
 - auto-agent: 模型仅可拒绝或转人工, 不构成写类操作的授权主体
-- full:      用户已授予全部权限, 直接放行
+- full:      普通操作直接放行; 本机 Shell 仍需逐次批准
 
-规则优先级: L3 黑名单 > plan mode 写操作 > 持久规则 > 会话内记忆化规则 > 策略
+规则优先级: L3 黑名单 > plan mode 限制 > Shell 单次批准 > 持久规则 > 会话内记忆化规则 > 策略
 
-plan mode (/plan): 写类操作全部拒绝, 只读放行; 退出后自动恢复
+plan mode (/plan): 工作区写操作和任意 Shell 全部拒绝, 文件只读放行
 """
 from __future__ import annotations
 
@@ -281,7 +281,9 @@ class PermissionEngine:
         返回:
         - 计划模式应阻止该操作时返回 True
         """
-        return self.plan_mode and operation in _WRITE_OPERATIONS and RiskLevel(risk) > RiskLevel.READ
+        return self.plan_mode and operation in _WRITE_OPERATIONS and (
+            operation == "shell" or RiskLevel(risk) > RiskLevel.READ
+        )
 
     # ---------- 评估 ----------
 
@@ -383,8 +385,10 @@ class PermissionEngine:
         """
         if risk >= RiskLevel.FORBIDDEN:
             return PermissionDecision.DENY
-        if self.plan_mode and operation in _WRITE_OPERATIONS and risk > RiskLevel.READ:
+        if self.is_plan_mode_block(operation, risk):
             return PermissionDecision.DENY
+        if operation == "shell":
+            return PermissionDecision.ASK   # 解释器命令不能由分类结果或通用历史规则获得本机权限
         allowed_level = self._persistent_rules.get(operation)
         if allowed_level is None:
             allowed_level = self._session_rules.get(operation)

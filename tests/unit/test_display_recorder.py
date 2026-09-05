@@ -466,3 +466,29 @@ def test_recorder_meta_has_complete_schema(tmp_path: Any):
     assert meta is not None
     assert meta["think"] == "off"
     assert meta["project_id"] is None
+
+
+def test_history_batch_queries_preserve_full_variants(tmp_path):
+    recorder = DisplayRecorder(str(tmp_path / "history.db"), "audit")
+    try:
+        for turn in range(8):
+            recorder.start_turn(f"问题 {turn}")
+            for variant in range(3):
+                if variant:
+                    recorder.start_retry_variant()
+                recorder.on_tool_start({"name": "read", "arguments": "{}", "call_id": f"{turn}-{variant}"})
+                recorder.on_tool_end({"name": "read", "call_id": f"{turn}-{variant}", "success": variant != 1})
+                recorder.end_turn(f"回复 {turn}-{variant}")
+        conn = recorder._get_conn()
+        statements = []
+        conn.set_trace_callback(statements.append)
+        result = recorder.list_turns(limit=3, offset=2)
+        conn.set_trace_callback(None)
+        assert len([sql for sql in statements if sql.lstrip().upper().startswith("SELECT")]) == 3
+        assert [row["turn_index"] for row in result] == [2, 3, 4]
+        for row in result:
+            assert row["variants"] == recorder._list_variants_locked(conn, row["id"])
+            assert row["tool_calls"] == recorder._list_tool_calls_locked(conn, row["id"], 2)
+            assert row["variant_count"] == 3
+    finally:
+        recorder.close()

@@ -66,6 +66,8 @@ export interface ContextTurnStats {
 
 // 对话轮次 (对齐 display_turns)
 export interface ChatTurn {
+  generating?: boolean;
+  interrupted?: boolean;
   id: number;
   turn_index: number;
   user_input: string;
@@ -253,7 +255,9 @@ export interface MemoryRecord {
 }
 
 // WS 推送事件
-export type ChatEvent =
+export type ChatEvent = (
+  | { type: 'snapshot'; conversation_id: string; seq: number; stream_id: string; state: 'idle' | 'preparing' | 'running' | 'cancelling'; active_turn_id: number | null; turns: ChatTurn[]; pending_user_inputs: { request_id: string; question: string; options: string[] }[] }
+  | { type: 'resync_required' }
   | { type: 'subscribed'; conversation_id: string }
   | { type: 'turn_start'; user_input: string; turn_id: number; turn_index: number; variant_index: number; retry?: boolean }
   | { type: 'thinking_delta'; delta: string }
@@ -264,7 +268,8 @@ export type ChatEvent =
   | { type: 'ask_user_end'; conversation_id: string; request_id: string; status: 'answered' | 'timeout' | 'cancelled' }
   | { type: 'turn_done'; answer: string; turn_id: number; turn_index: number; variant_index: number; variant_count: number; context_stats?: ContextTurnStats | null }
   | { type: 'variant_selected'; turn_index: number; variant_index: number }
-  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null };
+  | { type: 'error'; error?: string; message?: string; turn_id?: number; turn_index?: number; variant_index?: number; variant_count?: number; context_stats?: ContextTurnStats | null }
+) & { seq?: number; stream_id?: string };
 
 // ==================== HTTP 请求 ====================
 
@@ -498,24 +503,52 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
   const wsUrl = `${getChatApiUrl().replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
-  const ws = new WebSocket(wsUrl);
-
-  ws.onmessage = (e) => {
-    try {
-      onEvent(JSON.parse(e.data) as ChatEvent);
-    } catch (err) {
-      console.error('[ChatWS] 解析消息失败:', err);
-    }
+  let ws: WebSocket;
+  let stopped = false;
+  let retry = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const connect = () => {
+    if (stopped) return;
+    ws = new WebSocket(wsUrl);
+    const current = ws;
+    let sequence: number | undefined;
+    let streamId: string | undefined;
+    ws.onmessage = (e) => {
+      if (stopped || current !== ws) return;
+      try {
+        const event = JSON.parse(e.data) as ChatEvent;
+        if (event.type === 'snapshot') {
+          sequence = event.seq;
+          streamId = event.stream_id;
+          retry = 0;
+        } else if (event.type === 'resync_required') {
+          current.close(1000, 'resync');
+          return;
+        } else if (event.seq !== undefined) {
+          if (sequence === undefined || event.stream_id !== streamId || event.seq > sequence + 1) {
+            current.close(1000, 'sequence gap');
+            return;
+          }
+          if (event.seq <= sequence) return;
+          sequence = event.seq;
+        }
+        onEvent(event);
+      } catch (err) {
+        console.error('[ChatWS] 解析消息失败:', err);
+        current.close(1000, 'invalid event');
+      }
+    };
+    ws.onclose = () => {
+      if (!stopped && current === ws) {
+        timer = setTimeout(connect, Math.min(1000 * 2 ** retry++, 10000));
+      }
+    };
   };
-  ws.onerror = (err) => {
-    console.error('[ChatWS] 连接错误:', err);
-  };
-  ws.onclose = (e) => {
-    console.log('[ChatWS] 连接关闭:', e.code, e.reason);
-  };
-
+  connect();
   return () => {
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+    stopped = true;
+    clearTimeout(timer);
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       ws.close(1000, 'unsubscribe');
     }
   };

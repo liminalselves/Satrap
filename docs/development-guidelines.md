@@ -99,8 +99,7 @@ request_kwargs: dict[str, Any] = {
     "model": target_model,
     "input": batch_texts,
     "encoding_format": target_encoding,
-}
-# 构造 Embedding API 请求参数
+}   # 构造 Embedding API 请求参数
 
 embeddings = parse_embedding_response(response, self.suppress_error)
 # 解析响应并保持结果顺序与输入顺序一致
@@ -251,6 +250,35 @@ return []   # 抑制解析异常时保持既有空列表返回契约
 - 所有非测试 Python 文件都能通过 `ast.get_docstring()` 取得模块头文档
 - 模块头文档位于 import 之前, 没有被误写成普通字符串常量
 - 核心模块和常用模块不是只有含义空泛的一句摘要
+
+### 1.10 导入规范
+
+导入语句应按照以下分组顺序编写, 各组之间保留一个空行, 同一组内不添加空行:
+
+1. 外部库, 包括 Python 标准库和第三方库
+2. 内部库, 即 `satrap` 项目内模块
+3. Satrap logger, 固定使用 `from satrap.core.log import logger`, 并与其他内部库导入分组
+
+外部库和内部库组内均以导入路径为排序键, 按路径字符数从多到少逐条排列
+
+多个名称较短的模块允许在同一条 `import` 语句中使用逗号导入, 同一行内同样按模块名字符数从多到少排列:
+
+```python
+import json, re
+```
+
+推荐结构如下, 具体写法可参考 `satrap/core/APICall/LLMCall.py`:
+
+```python
+from openai.types.chat.chat_completion import ChatCompletion
+from typing import AsyncIterator, Iterator, Optional, Any
+import json, re
+
+from satrap.core.utils.vision import normalize_chat_messages
+from satrap.core.type import LLMCallResponse
+
+from satrap.core.log import logger
+```
 
 ## 2. 静态类型检查规范
 

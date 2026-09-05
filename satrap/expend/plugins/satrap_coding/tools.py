@@ -7,19 +7,17 @@ satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
 约定:
 - get_tools(session) 工厂: 按会话形态 (SimpleSession / AsyncSimpleSession) 返回同步/异步工具,
   并注入会话依赖 (llm / 权限引擎 / 沙箱 / 目标状态)
-- 审批模型: 全部写类操作走 PermissionEngine (user 询问 / auto-agent 判断 / full 放行),
-  plan mode 下写类操作被引擎直接拒绝
-- 沙箱语义: 沙箱内执行无需审批; 环境修改 (pip install 等) = 越界, 走审批;
-  外部工具 (shell/文件工具) 直接操作沙箱目录被拒绝
+- 审批模型: 文件写入按策略审批, 所有本机 Shell 逐次批准,
+  plan mode 下文件写入和任意 Shell 均被拒绝
+- 文件工具共用工作区与敏感路径保护; 已授权 Shell 具有当前进程资源访问能力,
+  不提供操作系统隔离保证
 """
 from __future__ import annotations
 
 import asyncio
 import inspect
-import ntpath
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import uuid
@@ -253,14 +251,15 @@ def _approve_sync(
         if engine.is_plan_mode_block(operation, risk):
             return False, f"计划模式已拒绝写操作: {description}"
         return False, f"操作被拒绝: {description} (风险级 {int(risk)})"
-    answer = _ask_user_sync(session, f"是否允许执行: {description}? (y 仅本次批准 / n 拒绝 / all 本会话全部放行)")
+    choices = "y 仅本次批准 / n 拒绝" if operation == "shell" else "y 仅本次批准 / n 拒绝 / all 本会话全部放行"
+    answer = _ask_user_sync(session, f"是否允许执行: {description}? ({choices})")
     if answer is None:
         return False, f"需要用户批准: {description} (未配置 user_input_provider, 已拒绝)"
     answer = answer.strip().lower()
     if answer in ("y", "yes", "允许", "批准"):
         engine.approve(operation, risk, remember=False)
         return True, ""
-    if answer in ("all", "全部", "全放行"):
+    if operation != "shell" and answer in ("all", "全部", "全放行"):
         engine.set_mode("full", persist=False)
         return True, "已授予本会话全部权限"
     return False, f"用户拒绝了操作: {description}"
@@ -293,14 +292,15 @@ async def _approve_async(
         if engine.is_plan_mode_block(operation, risk):
             return False, f"计划模式已拒绝写操作: {description}"
         return False, f"操作被拒绝: {description} (风险级 {int(risk)})"
-    answer = await _ask_user_async(session, f"是否允许执行: {description}? (y 仅本次批准 / n 拒绝 / all 本会话全部放行)")
+    choices = "y 仅本次批准 / n 拒绝" if operation == "shell" else "y 仅本次批准 / n 拒绝 / all 本会话全部放行"
+    answer = await _ask_user_async(session, f"是否允许执行: {description}? ({choices})")
     if answer is None:
         return False, f"需要用户批准: {description} (未配置 user_input_provider, 已拒绝)"
     answer = answer.strip().lower()
     if answer in ("y", "yes", "允许", "批准"):
         engine.approve(operation, risk, remember=False)
         return True, ""
-    if answer in ("all", "全部", "全放行"):
+    if operation != "shell" and answer in ("all", "全部", "全放行"):
         engine.set_mode("full", persist=False)
         return True, "已授予本会话全部权限"
     return False, f"用户拒绝了操作: {description}"
@@ -382,131 +382,6 @@ def _resolve_grep_file(path: Path, root: Path) -> Path | None:
         return resolved
     except OSError:
         return None
-
-
-_DYNAMIC_PATH_RE = re.compile(
-    r"(?:%[^%]+%|\$env:[a-zA-Z_][\w]*|\$\{[^}]+\}|\$HOME|~)[\\/]",
-    re.IGNORECASE,
-)
-"""无法在审批前可靠解析的动态路径表达式"""
-
-
-def _has_outside_workspace_path(
-    command: str,
-    root: Path | None = None,
-    cwd: Path | None = None,
-) -> bool:
-    """
-    判断命令是否引用工作区外路径或无法可靠解析的动态路径
-
-    参数:
-    - command: 命令内容
-    - root: 根目录
-    - cwd: 命令工作目录, 默认工作区根
-
-    返回:
-    - 如果存在越界路径或动态路径表达式则返回 True
-    """
-    workspace = (root or WORKSPACE_ROOT).resolve()
-    workdir = (cwd or workspace).resolve()
-    if _DYNAMIC_PATH_RE.search(command) or "$(" in command or "`" in command:
-        return True
-
-    try:
-        tokens = shlex.split(command, posix=False)
-    except ValueError:
-        return True   # shell 语法无法可靠拆分时按越界处理
-
-    normalized_tokens = [_normalize_shell_token(token) for token in tokens]
-    nested_command = _nested_shell_command(normalized_tokens)
-    if nested_command is not None:
-        return _has_outside_workspace_path(nested_command, workspace, workdir)
-
-    if (
-        len(normalized_tokens) == 2
-        and normalized_tokens[0].lower() in {"cd", "chdir", "set-location", "sl"}
-    ):
-        return False   # 单独切换目录不会影响下一次独立 shell 调用
-
-    for raw_token in normalized_tokens:
-        token = raw_token
-        if "=" in token and token.startswith("-"):
-            token = token.split("=", 1)[1]
-        token = token.rstrip(",;")
-        if not token or token.lower() in {"/c", "/k", "-command", "-c"}:
-            continue
-        candidate: Path | None = None
-        if re.match(r"^[a-zA-Z]:[\\/]", token) or token.startswith("\\\\"):
-            if os.name != "nt":
-                normalized = ntpath.normcase(ntpath.abspath(token))
-                root_text = ntpath.normcase(ntpath.abspath(str(workspace)))
-                if normalized != root_text and not normalized.startswith(root_text + ntpath.sep):
-                    return True
-                continue
-            candidate = Path(token)
-        elif token.startswith("\\"):
-            anchor = workdir.anchor or workspace.anchor
-            candidate = Path(anchor) / token.lstrip("\\/")
-        elif token.startswith("/"):
-            candidate = Path(token)
-        elif token == ".." or token.startswith(("../", "..\\")):
-            candidate = workdir / token
-        elif ".." in token.replace("\\", "/").split("/"):
-            candidate = workdir / token
-        elif "/" in token or "\\" in token:
-            candidate = workdir / token
-        if candidate is None:
-            continue
-        try:
-            resolved = candidate.resolve()
-        except (OSError, RuntimeError):
-            return True
-        if resolved != workspace and not resolved.is_relative_to(workspace):
-            return True
-    return False
-
-
-def _normalize_shell_token(token: str) -> str:
-    """
-    移除 shell 参数外围引号
-
-    参数:
-    - token: 原始 shell 参数
-
-    返回:
-    - 去除成对外围引号后的参数
-    """
-    value = token.strip()
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-        return value[1:-1]
-    return value
-
-
-def _nested_shell_command(tokens: list[str]) -> str | None:
-    """
-    提取 cmd 或 PowerShell 包装器中的内层命令
-
-    参数:
-    - tokens: 已移除外围引号的 shell 参数
-
-    返回:
-    - 内层命令文本; 当前命令不是可解析包装器时返回 None
-    """
-    if not tokens:
-        return None
-    head = tokens[0].lower()
-    if head in {"cmd", "cmd.exe"}:
-        for index, token in enumerate(tokens[1:], start=1):
-            if token.lower() in {"/c", "/k"} and index + 1 < len(tokens):
-                return " ".join(tokens[index + 1:])
-        return None
-    if head not in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
-        return None
-    for index, token in enumerate(tokens[1:], start=1):
-        option = token.lstrip("-/").lower()
-        if option and "command".startswith(option) and index + 1 < len(tokens):
-            return " ".join(tokens[index + 1:])
-    return None
 
 
 def _protection_reason(path: Path, root: Path | None = None) -> str | None:
@@ -617,6 +492,64 @@ async def _approve_file_write_async(
     return await _approve_async(session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}")
 
 
+_FILE_LINE_BREAK = re.compile(r"[\n\v\f\x1c-\x1e\x85\u2028\u2029]")
+
+
+def _read_file_page(path: Path, start: int, page_size: int) -> str:
+    """流式统计总行数, 仅保留目标页; 单行与总输出均限制 UTF-8 字节数"""
+    line_number = 0
+    line_bytes = 0
+    output_bytes = 0
+    has_tail = False
+    truncated = False
+    pieces: list[str] = []
+    lines: list[str] = []
+
+    def retain(piece: str) -> None:
+        nonlocal line_bytes, output_bytes, truncated
+        if not start <= line_number < start + page_size:
+            return
+        budget = min(16 * 1024 - line_bytes, 1024 * 1024 - output_bytes)
+        raw = piece.encode("utf-8")
+        if len(raw) > budget:
+            raw = raw[:budget]
+            truncated = True
+        text = raw.decode("utf-8", errors="ignore")   # 截断时保留完整多字节字符
+        if text:
+            pieces.append(text)
+        line_bytes += len(raw)
+        output_bytes += len(raw)
+
+    def finish_line() -> None:
+        nonlocal line_number, line_bytes
+        if start <= line_number < start + page_size:
+            lines.append("".join(pieces))
+        pieces.clear()
+        line_bytes = 0
+        line_number += 1
+
+    try:
+        with path.open("r", encoding="utf-8", errors="replace", newline=None) as stream:
+            while chunk := stream.read(64 * 1024):
+                position = 0
+                for match in _FILE_LINE_BREAK.finditer(chunk):
+                    retain(chunk[position:match.start()])
+                    finish_line()
+                    position = match.end()
+                    has_tail = False
+                if position < len(chunk):
+                    retain(chunk[position:])
+                    has_tail = True
+            if has_tail:
+                finish_line()
+    except OSError as error:
+        return f"错误: 读取失败: {error}"
+    end = min(line_number, start + page_size)
+    body = "\n".join(lines)
+    notice = "\n[输出已截断: 单行上限 16 KiB, 总内容上限 1 MiB]" if truncated else ""
+    return f"{path} 行 {start}-{end}/{line_number}:\n{body}{notice}"
+
+
 class ReadFileTool(Tool):
     """读取工作区内文件 (支持分页)"""
 
@@ -655,19 +588,13 @@ class ReadFileTool(Tool):
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
             return f"错误: 文件不存在: {abs_path}"
-        try:
-            lines = abs_path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError as e:
-            return f"错误: 读取失败: {e}"
         start, error = _parse_integer_argument(offset, "offset", minimum=0, maximum=10_000_000)
         if error is not None or start is None:
             return error or "错误: offset 无效"
         page_size, error = _parse_integer_argument(limit, "limit", minimum=1, maximum=2000)
         if error is not None or page_size is None:
             return error or "错误: limit 无效"
-        end = min(len(lines), start + page_size)
-        body = "\n".join(lines[start:end])
-        return f"{abs_path} 行 {start}-{end}/{len(lines)}:\n{body}"
+        return _read_file_page(abs_path, start, page_size)
 
 
 class WriteFileTool(Tool):
@@ -1129,11 +1056,57 @@ def _resolve_shell_executable(shell: str) -> str:
     return found or str(system_root / "System32" / "cmd.exe")
 
 
+def _prepare_shell(command: str, shell: str, root: Path, workdir: Path) -> tuple[list[str], RiskLevel, str]:
+    """固定执行参数和审批说明; 所有解释器输入均需逐次授权"""
+    if shell not in ("powershell", "cmd"):
+        raise ValueError("shell 必须为 powershell 或 cmd")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("command 必须为非空字符串")
+    risk, _ = classify_command(command)
+    if risk == RiskLevel.FORBIDDEN:
+        raise ValueError(f"命令被拒绝 (黑名单): {command}")
+    executable = _resolve_shell_executable(shell)
+    if shell == "powershell":
+        prefix = (
+            "[Console]::InputEncoding=[System.Text.UTF8Encoding]::new($false); "
+            "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+            "$OutputEncoding=[Console]::OutputEncoding; "
+            "$env:PYTHONUTF8='1'; $env:PYTHONIOENCODING='utf-8'; chcp 65001 > $null;\n"
+        )
+        args = [executable, "-NoProfile", "-NonInteractive", "-Command", prefix + command]
+    else:
+        args = [executable, "/D", "/S", "/C", "chcp 65001 > nul & " + command]
+    description = (
+        f"本机执行 (可访问当前进程资源): {command}\n"
+        f"Shell: {shell} ({executable})\n工作区: {root}\n工作目录: {workdir}"
+    )
+    return args, max(risk, RiskLevel.HIGH), description
+
+
+def _run_shell(args: list[str], workdir: Path, timeout: int) -> str:
+    """以 UTF-8 执行已经批准的固定参数, 同步和异步共用"""
+    try:
+        result = subprocess.run(
+            args, cwd=str(workdir), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", check=False, timeout=timeout,
+            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+        )
+        output = (result.stdout or "")[-20000:]
+        error = (result.stderr or "")[-20000:]
+        if result.returncode == 0:
+            return output or "(无输出)"
+        return f"退出码 {result.returncode}:\n{error or output}"
+    except subprocess.TimeoutExpired:
+        return f"执行超时 ({timeout}s)"
+    except OSError as error:
+        return f"错误: 执行失败: {error}"
+
+
 class ShellTool(Tool):
-    """执行本机 shell 命令 (PowerShell/cmd), 写操作走审批"""
+    """执行本机 shell 命令 (PowerShell/cmd), 每次执行均需批准"""
 
     tool_name = "shell"
-    description = "在本机执行 shell 命令 (PowerShell/cmd), 返回输出; 只读命令直接执行, 写/高危命令需批准"
+    description = "在本机执行 shell 命令 (PowerShell/cmd), 每次均需用户批准, 计划模式禁用; 免审批读取请使用文件工具"
     params_dict = {
         "command": ("string", "要执行的命令"),
         "cwd": ("string", "工作目录, 默认项目根"),
@@ -1178,46 +1151,15 @@ class ShellTool(Tool):
         try:
             root = _tool_root(self)
             workdir_path = _resolve_path(cwd, root) if cwd else root
+            args, risk, description = _prepare_shell(command, shell, root, workdir_path)
         except ValueError as e:
             return f"错误: {e}"
-        risk, escape = classify_command(command)
-        if risk == RiskLevel.FORBIDDEN:
-            return f"命令被拒绝 (黑名单): {command}"
-        outside_workspace = _has_outside_workspace_path(command, root, workdir_path)
-        if outside_workspace:
-            risk = max(risk, RiskLevel.HIGH)
-            escape = True
-        if risk > RiskLevel.READ:
-            operation = "sandbox_escape" if escape else "shell"
-            summary = "环境或工作区外命令" if escape else "执行命令"
-            allowed, message = _approve_sync(
-                self._session, self.engine, operation, risk,
-                f"{summary}: {command}",
-            )
-            if not allowed:
-                return message
-        workdir = str(workdir_path)
-        try:
-            use_ps = shell.lower() == "powershell"
-            executable = _resolve_shell_executable("powershell" if use_ps else "cmd")
-            result = subprocess.run(
-                [executable, "-NoProfile", "-Command", command] if use_ps else [executable, "/C", command],
-                cwd=workdir,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                check=False,
-                timeout=timeout_value,
-            )
-            output = (result.stdout or "")[-20000:]
-            error = (result.stderr or "")[-20000:]
-            if result.returncode == 0:
-                return output or "(无输出)"
-            return f"退出码 {result.returncode}:\n{error or output}"
-        except subprocess.TimeoutExpired:
-            return f"执行超时 ({timeout}s): {command}"
-        except OSError as e:
-            return f"错误: 执行失败: {e}"
+        allowed, message = _approve_sync(self._session, self.engine, "shell", risk, description)
+        if not allowed:
+            return message
+        if self.engine.plan_mode or _tool_root(self) != root or workdir_path.resolve() != workdir_path:
+            return "执行已取消: 审批期间计划模式或工作区发生变化"
+        return _run_shell(args, workdir_path, timeout_value)
 
     def _bind(self, session: SimpleSession) -> None:
         self._session = session
@@ -1418,10 +1360,10 @@ class AsyncAskUserTool(AsyncTool):
 
 
 class AsyncShellTool(AsyncTool):
-    """执行本机 shell 命令 (异步), 写操作走审批"""
+    """执行本机 shell 命令 (异步), 每次执行均需批准"""
 
     tool_name = "shell"
-    description = "在本机执行 shell 命令 (PowerShell/cmd), 返回输出; 只读命令直接执行, 写/高危命令需批准"
+    description = ShellTool.description
     params_dict = {
         "command": ("string", "要执行的命令"),
         "cwd": ("string", "工作目录, 默认项目根"),
@@ -1468,46 +1410,15 @@ class AsyncShellTool(AsyncTool):
         try:
             root = _tool_root(self)
             workdir_path = _resolve_path(cwd, root) if cwd else root
+            args, risk, description = _prepare_shell(command, shell, root, workdir_path)
         except ValueError as e:
             return f"错误: {e}"
-        risk, escape = classify_command(command)
-        if risk == RiskLevel.FORBIDDEN:
-            return f"命令被拒绝 (黑名单): {command}"
-        outside_workspace = _has_outside_workspace_path(command, root, workdir_path)
-        if outside_workspace:
-            risk = max(risk, RiskLevel.HIGH)
-            escape = True
-        if risk > RiskLevel.READ:
-            operation = "sandbox_escape" if escape else "shell"
-            summary = "环境或工作区外命令" if escape else "执行命令"
-            allowed, message = await _approve_async(
-                self._session, self.engine, operation, risk,
-                f"{summary}: {command}",
-            )
-            if not allowed:
-                return message
-        workdir = str(workdir_path)
-        try:
-            use_ps = shell.lower() == "powershell"
-            executable = _resolve_shell_executable("powershell" if use_ps else "cmd")
-            args = (
-                [executable, "-NoProfile", "-Command", command]
-                if use_ps else [executable, "/C", command]
-            )
-            result = await asyncio.to_thread(
-                subprocess.run, args,
-                cwd=workdir, capture_output=True, text=True, errors="replace", check=False,
-                timeout=timeout_value,
-            )
-            output = (result.stdout or "")[-20000:]
-            error = (result.stderr or "")[-20000:]
-            if result.returncode == 0:
-                return output or "(无输出)"
-            return f"退出码 {result.returncode}:\n{error or output}"
-        except subprocess.TimeoutExpired:
-            return f"执行超时 ({timeout}s): {command}"
-        except OSError as e:
-            return f"错误: 执行失败: {e}"
+        allowed, message = await _approve_async(self._session, self.engine, "shell", risk, description)
+        if not allowed:
+            return message
+        if self.engine.plan_mode or _tool_root(self) != root or workdir_path.resolve() != workdir_path:
+            return "执行已取消: 审批期间计划模式或工作区发生变化"
+        return await asyncio.to_thread(_run_shell, args, workdir_path, timeout_value)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
@@ -1602,21 +1513,13 @@ class AsyncReadFileTool(AsyncTool):
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
             return f"错误: 文件不存在: {abs_path}"
-        try:
-            lines = await asyncio.to_thread(
-                lambda: abs_path.read_text(encoding="utf-8", errors="replace").splitlines(),
-            )
-        except OSError as e:
-            return f"错误: 读取失败: {e}"
         start, error = _parse_integer_argument(offset, "offset", minimum=0, maximum=10_000_000)
         if error is not None or start is None:
             return error or "错误: offset 无效"
         page_size, error = _parse_integer_argument(limit, "limit", minimum=1, maximum=2000)
         if error is not None or page_size is None:
             return error or "错误: limit 无效"
-        end = min(len(lines), start + page_size)
-        body = "\n".join(lines[start:end])
-        return f"{abs_path} 行 {start}-{end}/{len(lines)}:\n{body}"
+        return await asyncio.to_thread(_read_file_page, abs_path, start, page_size)
     def _bind(self, session: AsyncSimpleSession) -> None:
         self._session = session
 
@@ -2122,4 +2025,3 @@ def get_tools(session: SimpleSession | AsyncSimpleSession, config: dict[str, Any
         if bind is not None:
             bind(session)
     return tools
-

@@ -125,19 +125,28 @@ class ChatHTTPServer(MiniHTTPServer):
             return
 
         queue = self.service.subscribe(conversation_id)
-        await self._ws_send(writer, {"type": "subscribed", "conversation_id": conversation_id})
         try:
+            snapshot = self.service.runtime_snapshot(conversation_id)
+            await asyncio.wait_for(self._ws_send(writer, snapshot), timeout=5.0)
             while True:
                 if reader.at_eof():
                     break
                     # 等待广播消息 (带超时以便检测客户端断开)
                 try:
                     msg = await asyncio.wait_for(queue.get(), timeout=1.0)
-                    await self._ws_send(writer, msg)
                 except asyncio.TimeoutError:
                     continue
+                if msg["type"] == "resync_required":
+                    await asyncio.wait_for(self._ws_send(writer, msg), timeout=5.0)
+                    await asyncio.wait_for(self._ws_close(writer, 1013, "resync required"), timeout=2.0)
+                    return
+                if msg.get("seq", 0) <= snapshot["seq"]:
+                    continue
+                await asyncio.wait_for(self._ws_send(writer, msg), timeout=5.0)
         except asyncio.CancelledError:
             pass
+        except asyncio.TimeoutError:
+            writer.transport.abort()   # 慢客户端不能无限占用发送协程
         except Exception as e:
             logger.warning(f"[聊天服务] WS 推送异常: {e}")
         finally:

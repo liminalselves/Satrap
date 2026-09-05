@@ -1,0 +1,550 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-05T07:37:03.206168+00:00",
+  "environment": {
+    "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 204 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "sqlite": "3.45.3",
+    "dependencies": {
+      "aiohttp": "3.11.10",
+      "numpy": "2.1.3",
+      "faiss-cpu": "1.14.3",
+      "pytest": "9.1.1"
+    },
+    "git_head": "fe2d8ac9b76392a4b916f39d1ff226690f89e165",
+    "source_sha256": {
+      "satrap/core/framework/SessionManager.py": "9faef4cc54ed6fc762abd99d35e04256b2d4920bc6175c36be1528ec100f49fd",
+      "satrap/core/utils/outbound.py": "9b2e35be4ee4305bbe9e42772014d2e0e2b59bb32a865b2131560b5d8c236739",
+      "satrap/expend/plugins/satrap_coding/tools.py": "42f8b3b9ffc4050b57df1fb79d7b50f407603e95c56accbcce8aa98d0bae2027",
+      "satrap/display/recorder.py": "513648f522f959acb62c6091856ec22e5fc181c0f9d9903d28dec6ea5dad7005",
+      "satrap/display/service.py": "1f765494868f5e8a5670afc89daf3cdd90fdb5d35b4ac0178d2dc5e8f2e98d2b",
+      "satrap/core/database/__init__.py": "e7dcf058e74a71e6b305c91b8f36b578814ab884c541962b9c281bd12c8621a5",
+      "satrap/core/storage/maintenance.py": "8912e000f2e15c3439b811a8a2c81ba744b4d0c2b55779b84d977077a79380c0",
+      "satrap/core/utils/minihttp.py": "29231fa3502d46175460b88a058564858fdecae3fe317e0f2e4972cf161925a2",
+      "satrap/expend/plugins/satrap_coding/core/command_gate.py": "cf446f37c8ce39adb0fb72b03faa87742d1b60b887bf04e73b299d051ebc6455"
+    },
+    "benchmark_sha256": "3ccf513514d3007f573b0dba3d0af845e4b302e2a06e48cc4499dbc251123e67"
+  },
+  "method": {
+    "repeats": 9,
+    "warmups": 1,
+    "memory": "one separate tracemalloc run; Python allocations only, not RSS",
+    "cache": "warm OS cache; no cold-cache claim",
+    "network": "none; DNS and HTTP mocked"
+  },
+  "event_loop": [
+    {
+      "case": "async_sleep_control",
+      "injected_delay_ms": 100.0,
+      "heartbeat_interval_ms": 5,
+      "elapsed_ms": {
+        "samples": [
+          108.9159,
+          109.5113,
+          108.1889,
+          107.5787,
+          108.1243,
+          109.7165,
+          109.4237,
+          108.0312,
+          108.4677
+        ],
+        "median": 108.4677,
+        "min": 107.5787,
+        "max": 109.7165
+      },
+      "max_loop_lag_ms": {
+        "samples": [
+          11.0242,
+          11.0487,
+          11.1137,
+          10.7712,
+          11.145,
+          10.9962,
+          11.0641,
+          10.8558,
+          10.9772
+        ],
+        "median": 11.0242,
+        "min": 10.7712,
+        "max": 11.145
+      }
+    },
+    {
+      "case": "sync_session",
+      "injected_delay_ms": 100.0,
+      "heartbeat_interval_ms": 5,
+      "elapsed_ms": {
+        "samples": [
+          101.1112,
+          101.226,
+          101.1813,
+          101.154,
+          101.2528,
+          100.7766,
+          101.2306,
+          101.123,
+          101.7004
+        ],
+        "median": 101.1813,
+        "min": 100.7766,
+        "max": 101.7004
+      },
+      "max_loop_lag_ms": {
+        "samples": [
+          10.8722,
+          11.202,
+          11.1216,
+          10.5475,
+          10.9371,
+          10.9387,
+          10.9366,
+          11.3173,
+          11.5503
+        ],
+        "median": 10.9387,
+        "min": 10.5475,
+        "max": 11.5503
+      }
+    },
+    {
+      "case": "sync_dns",
+      "injected_delay_ms": 100.0,
+      "heartbeat_interval_ms": 5,
+      "elapsed_ms": {
+        "samples": [
+          101.0167,
+          101.4875,
+          102.2885,
+          101.0015,
+          101.4341,
+          101.0443,
+          100.9287,
+          101.0043,
+          101.276
+        ],
+        "median": 101.0443,
+        "min": 100.9287,
+        "max": 102.2885
+      },
+      "max_loop_lag_ms": {
+        "samples": [
+          11.2071,
+          11.088,
+          16.1843,
+          11.3224,
+          10.9175,
+          10.8088,
+          11.2296,
+          10.9881,
+          11.0916
+        ],
+        "median": 11.0916,
+        "min": 10.8088,
+        "max": 16.1843
+      }
+    }
+  ],
+  "file_pagination": [
+    {
+      "size_bytes": 1048560,
+      "line_count": 13107,
+      "mode": "sync",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1693,
+      "elapsed_ms": {
+        "samples": [
+          6.478,
+          7.598,
+          7.5574,
+          6.3697,
+          7.3843,
+          8.0673,
+          6.3629,
+          7.6496,
+          8.6906
+        ],
+        "median": 7.5574,
+        "min": 6.3629,
+        "max": 8.6906
+      },
+      "python_peak_bytes": 278036
+    },
+    {
+      "size_bytes": 1048560,
+      "line_count": 13107,
+      "mode": "sync",
+      "offset": 13087,
+      "limit": 20,
+      "output_bytes": 1700,
+      "elapsed_ms": {
+        "samples": [
+          5.9085,
+          7.2434,
+          6.7265,
+          6.8675,
+          8.5298,
+          6.3269,
+          6.4762,
+          7.3193,
+          6.6291
+        ],
+        "median": 6.7265,
+        "min": 5.9085,
+        "max": 8.5298
+      },
+      "python_peak_bytes": 274895
+    },
+    {
+      "size_bytes": 1048560,
+      "line_count": 13107,
+      "mode": "async",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1693,
+      "elapsed_ms": {
+        "samples": [
+          7.1228,
+          6.8355,
+          7.6121,
+          6.6229,
+          7.6345,
+          6.6927,
+          7.5322,
+          8.1843,
+          7.5204
+        ],
+        "median": 7.5204,
+        "min": 6.6229,
+        "max": 8.1843
+      },
+      "python_peak_bytes": 281676
+    },
+    {
+      "size_bytes": 1048560,
+      "line_count": 13107,
+      "mode": "async",
+      "offset": 13087,
+      "limit": 20,
+      "output_bytes": 1700,
+      "elapsed_ms": {
+        "samples": [
+          6.8569,
+          6.9272,
+          6.2162,
+          6.7101,
+          7.5007,
+          8.7278,
+          7.4079,
+          7.1378,
+          6.9367
+        ],
+        "median": 6.9367,
+        "min": 6.2162,
+        "max": 8.7278
+      },
+      "python_peak_bytes": 279267
+    },
+    {
+      "size_bytes": 8388560,
+      "line_count": 104857,
+      "mode": "sync",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1694,
+      "elapsed_ms": {
+        "samples": [
+          49.9498,
+          50.2241,
+          62.9395,
+          48.9322,
+          51.5128,
+          59.5784,
+          51.7836,
+          50.1263,
+          50.2308
+        ],
+        "median": 50.2308,
+        "min": 48.9322,
+        "max": 62.9395
+      },
+      "python_peak_bytes": 277425
+    },
+    {
+      "size_bytes": 8388560,
+      "line_count": 104857,
+      "mode": "sync",
+      "offset": 104837,
+      "limit": 20,
+      "output_bytes": 1703,
+      "elapsed_ms": {
+        "samples": [
+          46.0531,
+          47.1885,
+          45.4549,
+          45.2798,
+          48.1857,
+          49.9148,
+          47.1405,
+          47.4692,
+          48.2611
+        ],
+        "median": 47.1885,
+        "min": 45.2798,
+        "max": 49.9148
+      },
+      "python_peak_bytes": 274801
+    },
+    {
+      "size_bytes": 8388560,
+      "line_count": 104857,
+      "mode": "async",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1694,
+      "elapsed_ms": {
+        "samples": [
+          50.8584,
+          47.2749,
+          50.514,
+          51.7035,
+          49.7825,
+          49.1096,
+          49.2355,
+          47.6386,
+          50.2362
+        ],
+        "median": 49.7825,
+        "min": 47.2749,
+        "max": 51.7035
+      },
+      "python_peak_bytes": 280567
+    },
+    {
+      "size_bytes": 8388560,
+      "line_count": 104857,
+      "mode": "async",
+      "offset": 104837,
+      "limit": 20,
+      "output_bytes": 1703,
+      "elapsed_ms": {
+        "samples": [
+          46.8835,
+          44.003,
+          47.7458,
+          43.8721,
+          46.0238,
+          46.9587,
+          46.9702,
+          43.6402,
+          46.1957
+        ],
+        "median": 46.1957,
+        "min": 43.6402,
+        "max": 47.7458
+      },
+      "python_peak_bytes": 278782
+    },
+    {
+      "size_bytes": 33554400,
+      "line_count": 419430,
+      "mode": "sync",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1695,
+      "elapsed_ms": {
+        "samples": [
+          203.8997,
+          205.4553,
+          193.437,
+          195.4738,
+          204.3234,
+          198.8411,
+          192.6889,
+          202.6104,
+          204.1136
+        ],
+        "median": 202.6104,
+        "min": 192.6889,
+        "max": 205.4553
+      },
+      "python_peak_bytes": 277428
+    },
+    {
+      "size_bytes": 33554400,
+      "line_count": 419430,
+      "mode": "sync",
+      "offset": 419410,
+      "limit": 20,
+      "output_bytes": 1704,
+      "elapsed_ms": {
+        "samples": [
+          189.5429,
+          187.7914,
+          192.305,
+          183.425,
+          177.8359,
+          183.2434,
+          184.0189,
+          184.0355,
+          185.5054
+        ],
+        "median": 184.0355,
+        "min": 177.8359,
+        "max": 192.305
+      },
+      "python_peak_bytes": 274804
+    },
+    {
+      "size_bytes": 33554400,
+      "line_count": 419430,
+      "mode": "async",
+      "offset": 0,
+      "limit": 20,
+      "output_bytes": 1695,
+      "elapsed_ms": {
+        "samples": [
+          207.2698,
+          189.1506,
+          197.6707,
+          191.5235,
+          201.3678,
+          195.6553,
+          201.3939,
+          191.555,
+          195.3382
+        ],
+        "median": 195.6553,
+        "min": 189.1506,
+        "max": 207.2698
+      },
+      "python_peak_bytes": 281409
+    },
+    {
+      "size_bytes": 33554400,
+      "line_count": 419430,
+      "mode": "async",
+      "offset": 419410,
+      "limit": 20,
+      "output_bytes": 1704,
+      "elapsed_ms": {
+        "samples": [
+          177.8306,
+          188.9809,
+          187.4569,
+          201.11,
+          178.4797,
+          190.9432,
+          189.4866,
+          191.9469,
+          181.1244
+        ],
+        "median": 188.9809,
+        "min": 177.8306,
+        "max": 201.11
+      },
+      "python_peak_bytes": 278738
+    }
+  ],
+  "history": [
+    {
+      "turns": 100,
+      "variants_per_turn": 1,
+      "tools_per_variant": 2,
+      "select_statements": 3,
+      "response_json_bytes": 184982,
+      "elapsed_ms": {
+        "samples": [
+          1.2174,
+          1.3905,
+          1.3169,
+          1.1747,
+          1.5078,
+          1.1579,
+          1.2415,
+          1.2226,
+          1.2351
+        ],
+        "median": 1.2351,
+        "min": 1.1579,
+        "max": 1.5078
+      },
+      "python_peak_bytes": 363516
+    },
+    {
+      "turns": 100,
+      "variants_per_turn": 3,
+      "tools_per_variant": 2,
+      "select_statements": 3,
+      "response_json_bytes": 358982,
+      "elapsed_ms": {
+        "samples": [
+          2.4561,
+          3.0161,
+          2.4551,
+          2.6788,
+          2.4497,
+          2.5569,
+          3.1512,
+          2.7654,
+          2.4253
+        ],
+        "median": 2.5569,
+        "min": 2.4253,
+        "max": 3.1512
+      },
+      "python_peak_bytes": 809308
+    },
+    {
+      "turns": 1000,
+      "variants_per_turn": 1,
+      "tools_per_variant": 2,
+      "select_statements": 3,
+      "response_json_bytes": 1851783,
+      "elapsed_ms": {
+        "samples": [
+          10.8024,
+          9.3372,
+          9.3629,
+          10.3942,
+          9.717,
+          9.0214,
+          9.7161,
+          9.5857,
+          10.0055
+        ],
+        "median": 9.7161,
+        "min": 9.0214,
+        "max": 10.8024
+      },
+      "python_peak_bytes": 3714688
+    },
+    {
+      "turns": 1000,
+      "variants_per_turn": 3,
+      "tools_per_variant": 2,
+      "select_statements": 3,
+      "response_json_bytes": 3591783,
+      "elapsed_ms": {
+        "samples": [
+          26.7626,
+          26.5674,
+          24.8899,
+          26.0987,
+          25.0595,
+          28.0164,
+          26.7779,
+          26.528,
+          25.2984
+        ],
+        "median": 26.528,
+        "min": 24.8899,
+        "max": 28.0164
+      },
+      "python_peak_bytes": 8380208
+    }
+  ]
+}
