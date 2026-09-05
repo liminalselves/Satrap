@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol, cast
 from zipfile import ZIP_DEFLATED, ZipFile
-
 import pytest
+from typing import Any, Callable, Iterator, Protocol, cast
 
+from satrap.expend.plugins.base_take.core.docread import extract_text
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
-from satrap.expend.plugins.base_take.core.docread import extract_text
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "base_take"
 CODING_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"

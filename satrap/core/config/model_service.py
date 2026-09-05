@@ -4,8 +4,8 @@ from __future__ import annotations
 from dataclasses import fields, replace
 from typing import Any, cast
 
-from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
+from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, validate_thinking_levels
 
 

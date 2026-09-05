@@ -1,14 +1,13 @@
 """ContextManager 上下文预算与最近 usage 快照测试"""
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
+import sqlite3
+import pytest
 from typing import Any, cast
 
-import pytest
-
-from satrap.core.type import ContextUsageSnapshot, TokenUsage
 from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.type import ContextUsageSnapshot, TokenUsage
 
 
 class _ModelIdentity:

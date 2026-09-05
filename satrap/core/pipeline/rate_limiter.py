@@ -1,9 +1,9 @@
 """后端请求管线使用的令牌桶限流器"""
 from __future__ import annotations
 
+from dataclasses import dataclass
 import asyncio
 import time
-from dataclasses import dataclass
 
 
 @dataclass

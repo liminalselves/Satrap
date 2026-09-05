@@ -1,13 +1,12 @@
 """模型上下文策略解析与运行时应用测试"""
 from pathlib import Path
+import pytest
 from typing import Any, cast
 
-import pytest
-
-from satrap.core.APICall.LLMCall import AsyncLLM
-from satrap.core.type import LLMConfig
-from satrap.core.utils.context import ContextManager
 from satrap.core.utils.context_policy import apply_context_policy, resolve_context_policy
+from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.core.utils.context import ContextManager
+from satrap.core.type import LLMConfig
 from satrap.edictum import AsyncSimpleSession
 
 

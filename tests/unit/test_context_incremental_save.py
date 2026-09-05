@@ -10,12 +10,11 @@
 - 异步版增量保存
 - 写失败后水位恢复, 重试不产生重复行
 """
-import sqlite3
-from pathlib import Path
-from typing import Any
 from unittest.mock import MagicMock
-
+from pathlib import Path
+import sqlite3
 import pytest
+from typing import Any
 
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 

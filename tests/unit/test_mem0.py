@@ -1,10 +1,9 @@
 import asyncio
 import hashlib
-import json
 from pathlib import Path
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+import json
 
 from satrap.core.APICall.EmbedCall import AsyncEmbedding
 from satrap.core.APICall.LLMCall import AsyncLLM

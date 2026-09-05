@@ -13,16 +13,19 @@ edictum SimpleSession / AsyncSimpleSession 单元测试
 """
 from __future__ import annotations
 
-import asyncio
 import importlib
-import logging
 import threading
-import time
+import asyncio
+import logging
 from pathlib import Path
-from typing import Any, Iterator, Protocol, cast
-
 import pytest
+from typing import Any, Iterator, Protocol, cast
+import time
 
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.skills import SkillsManager
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import (
     AsyncSimpleSession,
     HandlerAbortError,
@@ -32,10 +35,6 @@ from satrap.edictum import (
     SessionHandler,
     SimpleSession,
 )
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.utils.skills import SkillsManager
 
 
 class _SessionAwareTool(Protocol):

@@ -6,15 +6,15 @@
 """
 from __future__ import annotations
 
-import argparse
-import sys
 from contextlib import contextmanager
+import argparse
 from typing import Iterator
+import sys
 
-from satrap.core.state import StateStore
-from satrap.core.type import StateScope
 from satrap.core.utils.context import ContextManager
 from satrap.core.storage import StorageLayout
+from satrap.core.state import StateStore
+from satrap.core.type import StateScope
 
 
 def _db_path(args: argparse.Namespace) -> str:

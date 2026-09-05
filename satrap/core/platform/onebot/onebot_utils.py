@@ -1,9 +1,9 @@
 """OneBot 消息段与 Satrap 消息组件转换工具"""
 from __future__ import annotations
 
+from typing import Any, cast
 import json
 import os
-from typing import Any, cast
 
 from satrap.core.components import (
     At,

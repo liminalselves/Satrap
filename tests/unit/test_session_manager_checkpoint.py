@@ -8,19 +8,18 @@ SessionManager 检查点集成 (P3-1 收尾) 单元测试
 - 真实 Session 子类端到端可用检查点
 - BackendConfig 解析 session_checkpoint 字段
 """
-import time
 from pathlib import Path
-from typing import Any, Callable, Optional
-
 import pytest
+from typing import Any, Callable, Optional
+import time
 
-from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.framework.Base import Session
 from satrap.core.framework.SessionManager import SessionConfig, SessionManager
+from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.framework.command import CommandHandler
-from satrap.core.state import StateStore
+from satrap.core.framework.Base import Session
 from satrap.core.utils.context import ContextManager
 from satrap.core.utils.paths import get_db_path
+from satrap.core.state import StateStore
 
 
 class _RecordingSession(Session):

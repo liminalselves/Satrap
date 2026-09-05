@@ -11,11 +11,10 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from satrap.edictum import AsyncSimpleSession, SimpleSession
-
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 _APPROVE_MODES = ("user", "auto-agent", "full")
 

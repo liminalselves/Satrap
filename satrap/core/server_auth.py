@@ -1,19 +1,19 @@
 """本地管理服务共享鉴权, 来源校验与令牌持久化"""
 from __future__ import annotations
 
-import hmac
-import hashlib
+from http.cookies import SimpleCookie
+from urllib.parse import urlsplit
+from dataclasses import dataclass
 import ipaddress
+import threading
+import hashlib
+from pathlib import Path
+import secrets
+from typing import Callable
+import hmac
+import time
 import os
 import re
-import secrets
-import threading
-import time
-from dataclasses import dataclass
-from http.cookies import SimpleCookie
-from pathlib import Path
-from typing import Callable
-from urllib.parse import urlsplit
 
 from satrap.core.utils.paths import get_project_root
 

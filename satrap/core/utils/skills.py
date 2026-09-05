@@ -58,16 +58,15 @@ skills.deactivate("coding-agent", workflow)        # 取消激活
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 import importlib.util
 import inspect
-import os
-import re
-from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union, cast
 from typing import Protocol
-
 import yaml
+import os
+import re
 
 
 class _YamlLoader(Protocol):

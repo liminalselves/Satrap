@@ -1,10 +1,10 @@
-import ast
-import json
 import operator
 from typing import Any
+import json
+import ast
 
-from satrap.core.utils import safe_parse_arguments
 from satrap.core.utils.TCBuilder import Tool, ToolsManager, create_tool_defined
+from satrap.core.utils import safe_parse_arguments
 
 
 class WeatherTool(Tool):

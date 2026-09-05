@@ -11,11 +11,10 @@ ContextManager 编辑 API 单元测试 (add_chat / tool / system / 删除 / 导�
 - _group_messages_by_turns 轮次分组
 - 异步版核心编辑 API
 """
-import json
 from pathlib import Path
-from typing import Any
-
 import pytest
+from typing import Any
+import json
 
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 

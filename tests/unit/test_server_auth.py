@@ -4,7 +4,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from http.cookies import SimpleCookie
 from pathlib import Path
-
 import pytest
 
 from satrap.core.server_auth import BrowserSessionStore, ServerAuth, load_or_create_api_token

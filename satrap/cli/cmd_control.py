@@ -1,13 +1,12 @@
 """CLI 后端状态, 停止与重启命令"""
 from __future__ import annotations
 import argparse
-
 import asyncio
-import sys
 import time
+import sys
 
-from satrap.cli.common import daemon_client_from_args, load_cli_config
 from satrap.cli.cmd_run import cmd_run
+from satrap.cli.common import daemon_client_from_args, load_cli_config
 
 
 def cmd_status(args: argparse.Namespace):

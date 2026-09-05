@@ -4,13 +4,14 @@
 提供查询与候选文档的同步和异步相关性排序,
 统一处理模型配置, 返回数量与排序结果解析
 """
-from typing import List, Dict, Any, Optional, Union, Literal, cast
-from typing import Protocol
-from satrap.core.utils import normalize_openai_base_url
 import requests
 import aiohttp
 import asyncio
+from typing import List, Dict, Any, Optional, Union, Literal, cast
+from typing import Protocol
 import json
+
+from satrap.core.utils import normalize_openai_base_url
 
 from satrap.core.log import logger
 

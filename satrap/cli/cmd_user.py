@@ -7,12 +7,11 @@
 from __future__ import annotations
 
 import argparse
+from typing import Any, cast
 import sys
 
-from typing import Any, cast
-
-from satrap.api import user as user_api
 from satrap.core.storage import StorageLayout
+from satrap.api import user as user_api
 
 
 def _db_path(args: argparse.Namespace) -> str:

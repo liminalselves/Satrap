@@ -12,7 +12,6 @@
 """
 import sys
 
-from . import tools
 from .tools import (
     AsyncCodeSandboxTool,
     AsyncFetchPageTool,
@@ -24,6 +23,7 @@ from .tools import (
     Mem0Memory,
     SearchTool,
 )
+from . import tools
 
 for _name in ("agent", "mem0", "rag", "sandbox_tools", "search"):
     sys.modules[f"{__name__}.{_name}"] = getattr(tools, _name)   # 子模块名来自固定元组, 必定存在, 保留裸 getattr

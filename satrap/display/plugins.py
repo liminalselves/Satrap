@@ -19,21 +19,22 @@
 """
 from __future__ import annotations
 
-import json
 import threading
 from pathlib import Path
 from typing import Any, cast
+import json
 
-from satrap.core.log import logger
+from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
 from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
     CAPABILITY_KINDS,
 )
-from satrap.edictum.plugin_catalog import PluginCatalog
-from satrap.edictum.plugin_config import PluginConfigManager
-from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
+
+from satrap.core.log import logger
 
 CAPABILITY_LABELS = {
     "tools": "工具",

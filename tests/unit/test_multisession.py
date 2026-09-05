@@ -1,7 +1,6 @@
 
 import asyncio
 from pathlib import Path
-
 import pytest
 
 from satrap.core.framework import AsyncSession, Session, SessionManager

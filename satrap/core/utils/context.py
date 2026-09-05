@@ -6,29 +6,28 @@
 """
 from __future__ import annotations
 
-from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
+from dataclasses import dataclass
+import aiosqlite
+import threading
+import asyncio
+from pathlib import Path
+import sqlite3
 from typing import List, Dict, Union, Optional, Any, cast, TYPE_CHECKING, Literal
+from types import TracebackType
+import copy
+import json
+import time
+
+from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
+from satrap.core.state.mutation import state_mutation_context
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
     content_text_projection,
     estimate_content_image_count,
 )
-import aiosqlite
-import asyncio
-import sqlite3
-import json
-import copy
-import threading
-import time
-from dataclasses import dataclass
-from pathlib import Path
-
-from satrap.core.log import logger
 from satrap.core.utils.paths import get_db_path
-from types import TracebackType
 from satrap.core.state import StateStore
-from satrap.core.state.mutation import state_mutation_context
 from satrap.core.type import (
     ContextUsageSnapshot,
     JsonRow,
@@ -38,6 +37,8 @@ from satrap.core.type import (
     StateScope,
     TokenUsage,
 )
+
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import AsyncLLM, LLM

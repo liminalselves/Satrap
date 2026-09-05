@@ -12,16 +12,15 @@
 - 同名不同 id 顺序激活, 注入标记互不干扰, 停用不误伤
 """
 from pathlib import Path
-
 import pytest
 
+from satrap.core.utils.TCBuilder import ToolsManager
+from satrap.core.utils.context import ContextManager
 from satrap.core.utils.skills import (
     DEFAULT_USER_SKILLS_DIR,
     SKILLS_PRESET_DIR,
     SkillsManager,
 )
-from satrap.core.utils.TCBuilder import ToolsManager
-from satrap.core.utils.context import ContextManager
 
 
 class _SyncStubWorkflow:

@@ -1,7 +1,6 @@
-from types import SimpleNamespace
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
 
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding, parse_embedding_response
 

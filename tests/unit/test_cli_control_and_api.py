@@ -1,22 +1,21 @@
 from __future__ import annotations
 
 from argparse import Namespace
-import json
-from typing import Any
-
-import pytest
 from pathlib import Path
+import pytest
+from typing import Any
+import json
 
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.backend.BackendManager import BackendManager
+from satrap.core.framework.UserManager import UserManager
+from satrap.core.backend.http_api import BackendHTTPServer
+from satrap.edictum.registry import create_default_edictum_type_registry
+from satrap.edictum.config import EdictumConfigManager
 from satrap.cli.client import DaemonClient
 from satrap.main import _build_parser
-from satrap.core.backend.BackendManager import BackendManager
-from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.framework.UserManager import UserManager
-from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.edictum.config import EdictumConfigManager
-from satrap.edictum.registry import create_default_edictum_type_registry
 
 
 class _FakeClient:

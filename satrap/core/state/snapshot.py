@@ -1,4 +1,5 @@
 """快照编排: 构建, 恢复与引用重映射"""
+import sqlite3
 from typing import Dict, List
 
 from satrap.core.state.registry import DomainRegistry
@@ -9,7 +10,6 @@ from satrap.core.type import (
     StateScope,
     StateSnapshot,
 )
-import sqlite3
 
 
 def build_snapshot(

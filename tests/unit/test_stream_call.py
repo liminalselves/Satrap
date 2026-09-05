@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from typing import Any, Iterator, TypeVar, cast
-
-import pytest
 from pathlib import Path
+import pytest
+from typing import Any, Iterator, TypeVar, cast
+from types import SimpleNamespace
 
+from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap import (
     AsyncLLM,
     AsyncModelWorkflowFramework,
@@ -18,7 +18,6 @@ from satrap import (
     Tool,
     ToolsManager,
 )
-from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 def _chunks() -> list[dict[str, Any]]:

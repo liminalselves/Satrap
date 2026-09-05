@@ -8,13 +8,12 @@ checkpoint CLI 分发兜底测试
 """
 from argparse import Namespace
 from pathlib import Path
+import pytest
 from typing import Any
 
-import pytest
-
 from satrap.cli.cmd_checkpoint import dispatch
-from satrap.core.storage import StorageLayout
 from satrap.core.utils.context import ContextManager
+from satrap.core.storage import StorageLayout
 
 
 def _args(data_root: str, **overrides: Any) -> Namespace:

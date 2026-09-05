@@ -1,11 +1,11 @@
-import pytest
 from pathlib import Path
+import pytest
 from typing import Any, cast
 
+from satrap.core.platform.misskey.adapter import MisskeyAdapter
+from satrap.core.platform.event import MessageChain
 from satrap.core.components import File, Image, Plain
 from satrap.core.platform import PlatformConfig
-from satrap.core.platform.event import MessageChain
-from satrap.core.platform.misskey.adapter import MisskeyAdapter
 from satrap.core.type import PlatformMessage, PlatformMessageType
 
 

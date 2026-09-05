@@ -1,15 +1,14 @@
 """真实 WebSocket 上验证溢出, 重连快照及询问恢复"""
+import aiohttp
 import asyncio
+import pytest
 from types import SimpleNamespace
 
-import aiohttp
-import pytest
-
-from satrap.core.server_auth import ServerAuth
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.server_auth import ServerAuth
 from satrap.display.recorder import DisplayRecorder
-from satrap.display.server import ChatHTTPServer
 from satrap.display.service import ChatService, _SubscriberQueue
+from satrap.display.server import ChatHTTPServer
 
 
 async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):

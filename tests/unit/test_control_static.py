@@ -1,23 +1,22 @@
 """控制服务 React 静态托管测试"""
 from __future__ import annotations
 
-import asyncio
 from email.message import Message
-import io
-import json
 import urllib.error
 import urllib.parse
+import asyncio
 from pathlib import Path
-from typing import NoReturn, cast
-
 import pytest
+from typing import NoReturn, cast
+import json
+import io
 
-from satrap.core.backend import control_server
 from satrap.core.backend.static_ui import SPAStaticService
-from satrap.core.type import UserInfo
-from satrap.core.storage import StorageLayout
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import DisplayRecorder
+from satrap.core.backend import control_server
+from satrap.core.storage import StorageLayout
+from satrap.core.type import UserInfo
 
 
 def test_control_server_uses_workspace_project_root():

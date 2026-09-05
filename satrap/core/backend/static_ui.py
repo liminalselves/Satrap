@@ -5,13 +5,13 @@ React SPA 静态文件托管
 """
 from __future__ import annotations
 
-import asyncio
-import json
+from urllib.parse import unquote, urlsplit
 import mimetypes
-import re
+import asyncio
 from pathlib import Path
 from typing import Mapping
-from urllib.parse import unquote, urlsplit
+import json
+import re
 
 
 DEFAULT_STATIC_DIR = Path(__file__).resolve().parent.parent.parent.parent / "satrap-ui" / "dist"

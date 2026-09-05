@@ -4,12 +4,11 @@
 通过 BackendHTTPServer._route 直接验证端点 (不启动真实端口):
 列表 / 详情 / 创建 / 更新 / 删除 / 绑定 / 解绑 / 会话列表 / 异常路径
 """
-import json
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
+import json
 
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer

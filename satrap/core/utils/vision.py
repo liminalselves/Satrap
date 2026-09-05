@@ -1,12 +1,12 @@
 """多模态图片输入的解析, 下载与格式转换工具"""
 from __future__ import annotations
 
-import base64
-import io
 import mimetypes
-import os
 from pathlib import Path
+import base64
 from typing import Any, cast
+import io
+import os
 
 from satrap.core.log import logger
 

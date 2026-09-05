@@ -6,8 +6,8 @@
 """
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Protocol, runtime_checkable
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM

@@ -6,16 +6,17 @@
 """
 from __future__ import annotations
 
-import json
-import os
-import threading
 from dataclasses import asdict, fields
+import threading
 from pathlib import Path
 from typing import Any, Dict, Literal, TypeVar, cast
+import json
+import os
+
+from satrap.core.utils.paths import get_data_dir
+from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
 
 from satrap.core.log import logger
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
-from satrap.core.utils.paths import get_data_dir
 
 
 ConfigTarget = Literal["llm", "embedding", "rerank"]

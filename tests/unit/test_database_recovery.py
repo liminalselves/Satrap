@@ -1,15 +1,14 @@
 """向量源数据, 缓存故障和旧格式迁移回归"""
-import json
-import sqlite3
-import subprocess
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+import subprocess
 from pathlib import Path
-
+import sqlite3
+import pytest
 import faiss
 import numpy as np
-import pytest
+import json
+import sys
 
 from satrap.core.database import DataBase, VectorDataUnavailable
 

@@ -1,6 +1,5 @@
-import os
-
 import pytest
+import os
 
 from satrap.core.APICall.EmbedCall import Embedding
 

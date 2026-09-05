@@ -2,13 +2,12 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
-
 import pytest
 
-from satrap.cli.backend_lock import BackendInstanceLock
-from satrap.cli.client import DaemonInfo
-from satrap.cli.cmd_run import load_run_config
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.cli.backend_lock import BackendInstanceLock
+from satrap.cli.cmd_run import load_run_config
+from satrap.cli.client import DaemonInfo
 
 
 def test_daemon_info_from_config_uses_config_values(monkeypatch: pytest.MonkeyPatch):

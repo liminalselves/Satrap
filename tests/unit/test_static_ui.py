@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import asyncio
-import gzip
 from pathlib import Path
-from typing import cast
-
 import pytest
+from typing import cast
+import gzip
 
 from satrap.core.backend.BackendManager import BackendManager
-from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.backend.static_ui import SPAStaticService
+from satrap.core.backend.http_api import BackendHTTPServer
 
 
 class _BufferWriter:

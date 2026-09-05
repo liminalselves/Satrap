@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
-from types import SimpleNamespace
-from typing import Any, cast
-
-import pytest
+import asyncio
 from pathlib import Path
+import pytest
+from typing import Any, cast
+from types import SimpleNamespace
 
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer

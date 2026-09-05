@@ -1,10 +1,10 @@
 """Satrap v2 平台与会话数据布局测试"""
-import json
-import sqlite3
 from pathlib import Path
-
+import sqlite3
 import pytest
+import json
 
+from satrap.core.storage.database import restore_session_domain
 from satrap.core.storage import (
     StorageLayout,
     StorageMaintenanceService,
@@ -12,7 +12,6 @@ from satrap.core.storage import (
     delete_session_domain_rows,
     storage_key,
 )
-from satrap.core.storage.database import restore_session_domain
 
 
 def test_storage_key_is_stable_and_collision_resistant():

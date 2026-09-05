@@ -1,10 +1,9 @@
-from pathlib import Path
-from types import ModuleType, SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock
 import importlib.util
-
+from unittest.mock import AsyncMock
+from pathlib import Path
 import pytest
+from typing import Any
+from types import ModuleType, SimpleNamespace
 
 
 def _load_misskey_session_module() -> ModuleType:

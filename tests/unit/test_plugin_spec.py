@@ -2,9 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
 import yaml
 
 from satrap.edictum.plugin_catalog import PluginCatalog

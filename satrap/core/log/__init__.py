@@ -1,10 +1,10 @@
 """Satrap 统一日志配置与输出接口"""
+import colorlog
+from datetime import datetime
 import logging
 from os.path import dirname, abspath
-import os
-import colorlog 
 import time
-from datetime import datetime
+import os
 
 from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
 

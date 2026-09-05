@@ -12,18 +12,17 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import sys
 from pathlib import Path
 from typing import Any, cast
 from typing import Awaitable, Callable
+import sys
 
-from satrap.core.type import safe_getattr, safe_getattr_callable
-from satrap.core.utils.paths import get_project_root
-from satrap.core.utils.sandbox import CodeSandbox
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.plugins.base_take.core.docread import extract_text
 from satrap.expend.plugins.base_take.state import get_plugin_state
+from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.sandbox import CodeSandbox
+from satrap.core.utils.paths import get_project_root
 from satrap.expend.tools import (
     AsyncCodeSandboxTool,
     AsyncFetchPageTool,
@@ -32,7 +31,8 @@ from satrap.expend.tools import (
     FetchPageTool,
     SearchTool,
 )
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.type import safe_getattr, safe_getattr_callable
+from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 SessionType = SimpleSession | AsyncSimpleSession
 """插件支持的会话类型"""

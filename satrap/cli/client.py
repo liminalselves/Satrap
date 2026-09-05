@@ -1,13 +1,13 @@
 """CLI 与 Satrap 后端守护进程通信的 HTTP 客户端"""
 from __future__ import annotations
 
-import json
-import os
+import urllib.request
 import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+import json
+import os
 
 from satrap.core.server_auth import load_or_create_api_token
 

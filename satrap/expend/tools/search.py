@@ -1,12 +1,12 @@
 """网页搜索与页面内容抓取工具"""
-from satrap.core.utils.TCBuilder import Tool, AsyncTool
-from bs4 import BeautifulSoup
-from typing import Any, cast
-from typing import Protocol
 import requests
 import random
+from typing import Any, cast
+from typing import Protocol
 import json
+from bs4 import BeautifulSoup
 
+from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.utils.outbound import (
     OutboundHTTPError,
     UnsafeOutboundURLError,

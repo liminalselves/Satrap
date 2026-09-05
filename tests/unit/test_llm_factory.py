@@ -10,8 +10,8 @@ build_llm_from_config 统一 LLM 构造工厂测试
 """
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, cast
+from types import SimpleNamespace
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.type import LLMConfig

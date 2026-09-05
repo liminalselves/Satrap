@@ -9,8 +9,8 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from satrap.core.type import safe_getattr
 from satrap.expend.tools.memory_store import DEFAULT_MEMORY_DB, MemoryStore
+from satrap.core.type import safe_getattr
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession

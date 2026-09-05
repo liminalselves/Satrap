@@ -1,11 +1,10 @@
-import json
-import logging
-from types import TracebackType
-from typing import Any, cast
-
 import aiohttp
-import pytest
+import logging
 from pathlib import Path
+import pytest
+from typing import Any, cast
+from types import TracebackType
+import json
 
 from satrap.core.platform.misskey.client import (
     APIError,

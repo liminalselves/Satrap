@@ -1,20 +1,19 @@
 """CLI 会话配置与生命周期管理命令"""
 from __future__ import annotations
 import argparse
-
-import json
-import sys
 from pathlib import Path
 from typing import Any, cast
+import json
+import sys
 
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.session_discovery import SessionClassDiscoveryService
+from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 from satrap.cli.client import DaemonClient
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, print_json
-from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.framework.session_discovery import SessionClassDiscoveryService
-from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 
 
 def _configured_adapter_ids(config: BackendConfig) -> set[str]:

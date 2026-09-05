@@ -1,10 +1,7 @@
-import pytest
 from pathlib import Path
+import pytest
 from typing import Any, cast
 
-from satrap.core.framework import AsyncSession, CommandHandler, Session
-from satrap.core.type import CommandAction
-from satrap.edictum.plugin import collect_commands
 from satrap.expend.command.session_commands import (
     cmd_about,
     cmd_history,
@@ -14,6 +11,9 @@ from satrap.expend.command.session_commands import (
     cmd_switch,
     cmd_switch_async,
 )
+from satrap.core.framework import AsyncSession, CommandHandler, Session
+from satrap.edictum.plugin import collect_commands
+from satrap.core.type import CommandAction
 
 
 class FakeUserManager:

@@ -1,14 +1,12 @@
 """CLI 模型配置管理命令"""
 from __future__ import annotations
 import argparse
-
+from typing import Any, cast
 import json
 import sys
 
-from typing import Any, cast
-
-from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr, safe_getattr_callable
 
 

@@ -29,22 +29,22 @@ await mcp.close()   # 断开连接并自动注销已注册工具
 
 from __future__ import annotations
 
-import asyncio
-import inspect
-import threading
-from asyncio import AbstractEventLoop
+from mcp.client.streamable_http import streamable_http_client
+from mcp.client.stdio import StdioServerParameters, stdio_client
 from contextlib import AsyncExitStack
-from types import TracebackType
+from mcp.server import MCPServer
+import threading
+import asyncio
+from asyncio import AbstractEventLoop
+import inspect
 from typing import Any, Awaitable, Dict, List, Literal, Optional, Protocol, Tuple, cast
+from types import TracebackType
+from mcp import ClientSession
+
+from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
+from satrap.core.type import safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_str
-from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
-
-from mcp import ClientSession
-from mcp.client.stdio import StdioServerParameters, stdio_client
-from mcp.client.streamable_http import streamable_http_client
-from mcp.server import MCPServer
 
 TYPE_MAP: dict[str, type] = {
     "string": str,

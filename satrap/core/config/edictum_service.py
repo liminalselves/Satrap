@@ -3,9 +3,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.registry import EdictumTypeRegistry
+from satrap.edictum.config import EdictumConfigManager
 
 
 _ALLOWED_FIELDS = {

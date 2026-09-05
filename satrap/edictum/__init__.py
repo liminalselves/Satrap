@@ -7,7 +7,6 @@ Agent 框架, 支持命令/工具/MCP/skill/处理器/插件六类能力的注�
 - Plugin: 目录化组合包 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py), 双层启停
 - checkpoint 与多模态/流式能力完整
 """
-from satrap.edictum.plugin import Plugin
 from satrap.edictum.simple_session import (
     AsyncSimpleSession,
     HandlerAbortError,
@@ -17,7 +16,6 @@ from satrap.edictum.simple_session import (
     SessionHandler,
     SimpleSession,
 )
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import (
     EDICTUM_PROVIDER,
     EdictumTypeDefinition,
@@ -26,6 +24,8 @@ from satrap.edictum.registry import (
     EdictumPluginUninstaller,
     create_default_edictum_type_registry,
 )
+from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.plugin import Plugin
 
 __all__ = [
     "SimpleSession", "AsyncSimpleSession", "SessionHandler",

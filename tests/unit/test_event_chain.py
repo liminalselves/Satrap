@@ -9,15 +9,12 @@ platform.event 消息链 / 结果构建 / 事件属性单元测试
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
-
 import pytest
+from typing import Any
+from types import SimpleNamespace
+import re
 
-from satrap.core.components import BaseMessageComponent, PlatformComponentType
-from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.platform.event import (
     MessageChain,
     MessageEvent,
@@ -25,6 +22,8 @@ from satrap.core.platform.event import (
     MessageSession,
     PlatformMetadata,
 )
+from satrap.core.components import BaseMessageComponent, PlatformComponentType
+from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 
 

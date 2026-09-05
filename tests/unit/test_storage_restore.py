@@ -1,13 +1,12 @@
 """归档结构校验, 文件发布故障和幂等清理回归"""
-import json
-import sqlite3
 from contextlib import closing
 from pathlib import Path
-
+import sqlite3
 import pytest
+import json
 
-from satrap.core.storage.layout import StorageLayout
 from satrap.core.storage.maintenance import StorageMaintenanceService
+from satrap.core.storage.layout import StorageLayout
 
 
 @pytest.fixture

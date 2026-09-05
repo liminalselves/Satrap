@@ -1,6 +1,7 @@
-import json
 # 文件名: test_search.py
 import asyncio
+import json
+
 from satrap.expend.tools.search import AsyncSearchTool
 
 async def test():

@@ -1,16 +1,16 @@
 """提供配置文档的校验, 原子保存和平台配置操作"""
 from __future__ import annotations
 
-import json
-import os
-import re
 import tempfile
 from pathlib import Path
 from typing import Any, cast
+import json
+import os
+import re
 
 from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.config.loader import ConfigLoader
+from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 
 
 MASKED_SECRET = "********"

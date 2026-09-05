@@ -1,15 +1,16 @@
 """检索增强生成的数据索引与查询工具"""
-from satrap.core.database import LiteVectorDB
-from satrap.core.APICall.EmbedCall import Embedding, AsyncEmbedding
-from satrap.core.utils.text_utils import TextSplitter
-from satrap.core.database import DataBase
-import asyncio, aiofiles, os, traceback
-from types import TracebackType
+import traceback, aiofiles, asyncio, os
 from typing import Any
 from typing import Protocol, Literal, cast
+from types import TracebackType
+
+from satrap.core.APICall.EmbedCall import Embedding, AsyncEmbedding
+from satrap.core.utils.text_utils import TextSplitter
+from satrap.core.database import LiteVectorDB
+from satrap.core.database import DataBase
+from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 from satrap.core.log import logger
-from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 
 _LOCAL_INDEX_ROOT = default_storage_layout.platform_root(LOCAL_PLATFORM_ID) / "indexes"

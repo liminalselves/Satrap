@@ -8,9 +8,8 @@ LiteVectorDB / DataBase 向量库单元测试
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 import pytest
+from typing import Any
 
 from satrap.core.database import DataBase, LiteVectorDB
 

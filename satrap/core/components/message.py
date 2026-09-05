@@ -6,26 +6,26 @@
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
+from pydantic import BaseModel, ConfigDict, Field
 import asyncio
+from pathlib import Path
 import base64
+from typing import Any, Dict, cast
+from enum import Enum
 import json
+import uuid
 import os
 import re
-import uuid
-from collections.abc import Iterable
-from enum import Enum
-from pathlib import Path
-from typing import Any, Dict, cast
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from satrap.core.log import logger
-from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 from satrap.core.utils.outbound import (
     DEFAULT_MAX_DOWNLOAD_BYTES,
     safe_async_get,
     trusted_hosts_from_env,
 )
+from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
+
+from satrap.core.log import logger
 
 
 _SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"

@@ -1,19 +1,19 @@
 """CLI 后端服务启动命令"""
 from __future__ import annotations
 import argparse
-
 import asyncio
+from pathlib import Path
 import signal
 import sys
-from pathlib import Path
 
-from satrap.cli.backend_lock import BackendInstanceLock
-from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.config.loader import ConfigLoader
-from satrap.core.log import logger
+from satrap.cli.backend_lock import BackendInstanceLock
 from satrap.core.log.stream import install_standard_stream_capture
+from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.type import safe_getattr
+
+from satrap.core.log import logger
 
 
 def load_run_config(args: argparse.Namespace):

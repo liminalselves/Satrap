@@ -11,13 +11,13 @@
 """
 from __future__ import annotations
 
-import json
-import sqlite3
 import threading
-import uuid
 from datetime import datetime
 from pathlib import Path
+import sqlite3
 from typing import Any, cast
+import json
+import uuid
 
 from satrap.core.utils.paths import get_db_path
 

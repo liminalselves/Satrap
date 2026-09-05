@@ -1,10 +1,9 @@
-import os
-import shutil
-import time
 import random
+import shutil
 from typing import Any
-
 import numpy as np
+import time
+import os
 
 from satrap.core.database import LiteVectorDB, DataBase
 

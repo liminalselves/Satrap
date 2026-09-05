@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-import sys
-import time
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Awaitable, Callable
+import time
+import sys
 
-from satrap import AsyncLLM, AsyncToolsManager
+from satrap.expend.command.session_commands import cmd_new_async, cmd_switch_async, cmd_history_async, cmd_about_async
+from satrap.expend.tools.sandbox_tools import AsyncCodeSandboxTool
 from satrap.core.framework.command import AsyncCommandHandler
-from satrap.core.framework import AsyncSession
 from satrap.core.framework.Base import AsyncModelWorkflowFramework
+from satrap.expend.tools.search import AsyncSearchTool, AsyncFetchPageTool
 from satrap.core.utils.context import AsyncContextManager
 from satrap.core.utils.sandbox import CodeSandbox
-from satrap.expend.tools.sandbox_tools import AsyncCodeSandboxTool
-from satrap.expend.tools.search import AsyncSearchTool, AsyncFetchPageTool
-from satrap.expend.command.session_commands import cmd_new_async, cmd_switch_async, cmd_history_async, cmd_about_async
-from functools import partial
+from satrap.core.framework import AsyncSession
+from satrap import AsyncLLM, AsyncToolsManager
 
 if TYPE_CHECKING:
     from satrap.core.framework.UserManager import UserManager

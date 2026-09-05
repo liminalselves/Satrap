@@ -1,22 +1,21 @@
 from __future__ import annotations
 
-import base64
-import os
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
-
+import base64
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
+import os
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.type import LLMCallResponse
-from satrap.core.utils import normalize_openai_base_url
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
     build_multimodal_content,
     content_text_projection,
 )
+from satrap.core.utils import normalize_openai_base_url
+from satrap.core.type import LLMCallResponse
 
 
 def _tiny_png_data_url() -> str:

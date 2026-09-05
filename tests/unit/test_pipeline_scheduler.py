@@ -9,17 +9,16 @@ PipelineScheduler / RateLimiter 单元测试
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+import time
 
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
-from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
+from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 
 

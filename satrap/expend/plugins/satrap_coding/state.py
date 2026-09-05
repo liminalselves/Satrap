@@ -12,11 +12,11 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from satrap.core.utils.paths import get_project_root
-from satrap.core.type import safe_getattr
-from satrap.core.storage import storage_key
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.utils.paths import get_project_root
+from satrap.core.storage import storage_key
+from satrap.core.type import safe_getattr
 
 if TYPE_CHECKING:
     from satrap.edictum import AsyncSimpleSession, SimpleSession

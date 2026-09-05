@@ -1,15 +1,14 @@
 """同步任务取消, 队列背压和 DNS 截止时间回归"""
-import asyncio
-import threading
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
-
+import threading
+import asyncio
 import pytest
+from types import SimpleNamespace
 
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.type import UserCall
-from satrap.core.utils import outbound
 from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
+from satrap.core.utils import outbound
+from satrap.core.type import UserCall
 
 
 async def wait_thread_event(event):

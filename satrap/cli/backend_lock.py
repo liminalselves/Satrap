@@ -1,12 +1,11 @@
 """CLI 后端实例锁与进程标识管理"""
 from __future__ import annotations
 
-from types import TracebackType
-
-import os
 from pathlib import Path
-from typing import IO
 import msvcrt
+from typing import IO
+from types import TracebackType
+import os
 
 from satrap.core.utils.paths import get_data_dir
 

@@ -12,11 +12,10 @@ from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
-
 import pytest
 
-from satrap.cli import common
 from satrap.core.backend.BackendManager import BackendConfig
+from satrap.cli import common
 
 
 class _AliveClient:

@@ -6,7 +6,6 @@ PyYAML 无类型标注, safe_load/safe_dump 的成员访问产生 Unknown,
 from __future__ import annotations
 
 from typing import Any, TextIO, cast
-
 import yaml
 
 

@@ -1,13 +1,13 @@
 """插件运行协调器: 统一安装插件并通过插件命名空间应用子能力"""
 from __future__ import annotations
 
-import inspect
-import time
 from dataclasses import dataclass, field
+import inspect
 from typing import Any, Awaitable, Callable, Iterable
+import time
 
-from satrap.edictum.plugin import CAPABILITY_KINDS
 from satrap.edictum.plugin_spec import PluginSpec
+from satrap.edictum.plugin import CAPABILITY_KINDS
 
 
 _CAPABILITY_SINGULAR = {

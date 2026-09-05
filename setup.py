@@ -1,9 +1,8 @@
 """Satrap 项目的打包与安装配置"""
 from __future__ import annotations
 
-from pathlib import Path
-
 from setuptools import find_packages, setup
+from pathlib import Path
 
 
 ROOT = Path(__file__).parent

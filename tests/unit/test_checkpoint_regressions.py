@@ -12,17 +12,16 @@ P1-P3 审查缺陷修复回归测试
 - L4: clear_memory 使用会话自定义库
 - L6: BackendConfig 字符串布尔解析
 """
-import sqlite3
 from pathlib import Path
-from typing import Any
-
+import sqlite3
 import pytest
+from typing import Any
 
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.framework.Base import AsyncSession, Session
+from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.state import StateStore
 from satrap.core.type import StateScope
-from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 class _MiniSession(Session):

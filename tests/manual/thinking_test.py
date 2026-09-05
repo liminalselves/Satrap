@@ -5,10 +5,10 @@ API 配置从 .toolkit/apikey.txt 读取 (该目录已 gitignore, 不硬编码�
 格式: 每块为若干 `key: value` 行, 空行分隔; 取 base url 含 deepseek.com 的块
 """
 import asyncio
-import sys
-import os
 from pathlib import Path
 from typing import Any
+import sys
+import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 

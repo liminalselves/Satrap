@@ -1,15 +1,15 @@
 """CLI 命令共享的参数, 输出与连接辅助函数"""
 from __future__ import annotations
 
-import json
-import sys
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
+import json
+import sys
 
-from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
+from satrap.cli.client import DaemonClient, DaemonInfo
 from satrap.core.type import safe_getattr, safe_getattr_bool
 
 

@@ -12,10 +12,11 @@ from typing import Awaitable, Callable, List, TypeVar, cast
 
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
-from satrap.core.log import logger
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
+
+from satrap.core.log import logger
 
 
 _T = TypeVar("_T")

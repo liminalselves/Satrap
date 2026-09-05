@@ -12,16 +12,15 @@ http_api._route 路由分派特征测试
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 from typing import Any
 
-import pytest
-
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
+from satrap.edictum.config import EdictumConfigManager
 
 
 def _make_server(tmp_path: Path) -> BackendHTTPServer:

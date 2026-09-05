@@ -1,7 +1,6 @@
 from pathlib import Path
-import sys
-
 import pytest
+import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

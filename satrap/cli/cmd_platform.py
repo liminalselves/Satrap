@@ -1,11 +1,9 @@
 """CLI 平台适配器配置与状态管理命令"""
 from __future__ import annotations
 import argparse
-
+from typing import Any, cast
 import json
 import sys
-
-from typing import Any, cast
 
 from satrap.core.config.document import (
     delete_platform,

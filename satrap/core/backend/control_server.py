@@ -12,24 +12,37 @@
 """
 from __future__ import annotations
 
-import argparse
-import asyncio
-import atexit
-import ctypes
-import dataclasses
-import json
-import os
-import secrets
-import signal
-import subprocess
-import sys
 from collections.abc import Mapping
-from pathlib import Path
-from typing import Any, cast
+import urllib.request
 import urllib.error
 import urllib.parse
-import urllib.request
+import dataclasses
+import subprocess
+import argparse
+import asyncio
+from pathlib import Path
+import secrets
+import atexit
+import ctypes
+import signal
+from typing import Any, cast
+import json
+import sys
+import os
 
+from satrap.core.config.session_instance_service import SessionInstanceConfigService
+from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.config.session_class_service import SessionClassConfigService
+from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.framework.session_discovery import (
+    SessionClassDiscoveryService,
+    create_default_session_dir,
+)
+from satrap.core.framework.SessionManager import SessionConfigStore
+from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.framework.UserManager import UserInfoStore
+from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
@@ -44,26 +57,6 @@ from satrap.core.config.document import (
     validate_config_document,
     validate_platforms,
 )
-from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.framework.session_discovery import (
-    SessionClassDiscoveryService,
-    create_default_session_dir,
-)
-from satrap.core.config.model_service import ModelConfigService
-from satrap.core.config.edictum_service import EdictumConfigService
-from satrap.core.config.session_instance_service import SessionInstanceConfigService
-from satrap.core.config.session_class_service import SessionClassConfigService
-from satrap.core.framework.SessionManager import SessionConfigStore
-from satrap.core.framework.UserManager import UserInfoStore
-from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
-from satrap.core.storage import (
-    CHAT_PLATFORM_ID,
-    LOCAL_PLATFORM_ID,
-    StorageLayout,
-    StorageMaintenanceService,
-)
-from satrap.core.server_auth import ServerAuth
 from satrap.core.utils.minihttp import (
     DEFAULT_BODY_TIMEOUT,
     DEFAULT_HEADER_TIMEOUT,
@@ -72,10 +65,17 @@ from satrap.core.utils.minihttp import (
     read_request_body,
     read_request_headers,
 )
+from satrap.core.server_auth import ServerAuth
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import EDICTUM_PROVIDER, create_default_edictum_type_registry
+from satrap.edictum.config import EdictumConfigManager
+from satrap.core.storage import (
+    CHAT_PLATFORM_ID,
+    LOCAL_PLATFORM_ID,
+    StorageLayout,
+    StorageMaintenanceService,
+)
 
 PROJECT_ROOT = get_project_root()
 # 项目根目录

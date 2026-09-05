@@ -4,13 +4,21 @@
 定义同步和异步工作流的模型调用, 工具执行与上下文处理流程,
 并为会话提供命令, 状态检查点和持久化能力
 """
-from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
-from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
-from satrap.core.utils.context import AsyncContextManager, ContextManager, PreparedModelContext, _messages_domain
+import asyncio
+import inspect, copy, json, uuid
+from pathlib import Path
+from typing import Optional, Callable, Any, Awaitable, TypeVar, cast, Literal
+from typing import TYPE_CHECKING
+
+from satrap.core.utils.context_policy import apply_context_policy
 from satrap.core.framework.command import CommandHandler, AsyncCommandHandler
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from typing import Optional, Callable, Any, Awaitable, TypeVar, cast, Literal
-from satrap.core.utils.context_policy import apply_context_policy
+from satrap.core.utils.TCBuilder import Tool, create_tool_defined, ToolsManager, AsyncToolsManager
+from satrap.core.state.mutation import state_mutation_context
+from satrap.core.utils.context import add_user_message, add_bot_message, add_tool_message, add_tools_call_flow, clear_reasoning_content
+from satrap.core.utils.context import AsyncContextManager, ContextManager, PreparedModelContext, _messages_domain
+from satrap.core.utils.paths import get_db_path
+from satrap.core.state import StateStore
 from satrap.core.type import (
     LLMCallResponse,
     LLMConfig,
@@ -19,15 +27,8 @@ from satrap.core.type import (
     StateCheckpoint,
     TokenUsage,
 )
-from satrap.core.state import StateStore
-from satrap.core.state.mutation import state_mutation_context
-import inspect, json, copy, uuid
-import asyncio
-from pathlib import Path
 
-from typing import TYPE_CHECKING
 from satrap.core.log import logger
-from satrap.core.utils.paths import get_db_path
 
 if TYPE_CHECKING:
     from satrap.core.framework.SessionManager import SessionManager

@@ -1,11 +1,11 @@
 """有界同步任务执行器, 保留取消期间的资源生命周期"""
 from __future__ import annotations
 
-import asyncio
-import contextvars
-import threading
 from concurrent.futures import ThreadPoolExecutor
+import contextvars
 from functools import partial
+import threading
+import asyncio
 from typing import Any, Callable, TypeVar
 
 _T = TypeVar("_T")

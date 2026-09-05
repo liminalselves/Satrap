@@ -35,8 +35,8 @@ from __future__ import annotations
 import importlib.util
 from dataclasses import dataclass, field
 import threading
-from pathlib import Path
 import inspect
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast
 from types import ModuleType
 import yaml

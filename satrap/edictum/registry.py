@@ -6,8 +6,8 @@ Edictum 会话类型注册表
 """
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
+import threading
 from typing import Any, Awaitable, Callable, cast
 
 from satrap.core.framework.Base import AsyncSession, Session

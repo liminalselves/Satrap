@@ -9,20 +9,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+import json
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.utils.minihttp import MiniHTTPServer, query_param
 from satrap.core.server_auth import ServerAuth
-from satrap.core.storage import StorageLayout
-from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.recorder import DisplayRecorder, list_conversations
-from satrap.display.server import ChatHTTPServer
+from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+from satrap.display.server import ChatHTTPServer
+from satrap.core.storage import StorageLayout
 
 
 class _EchoServer(MiniHTTPServer):

@@ -1,8 +1,7 @@
 """RAG 对部分 Embedding 失败结果的处理测试"""
 from pathlib import Path
-from typing import Any, Literal, cast
-
 import pytest
+from typing import Any, Literal, cast
 
 from satrap.expend.tools.rag import LiteVectorRAG, _filter_embedding_results
 

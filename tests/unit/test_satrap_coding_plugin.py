@@ -2,14 +2,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 from typing import Any, Iterator, cast
 
-import pytest
-
+from satrap.expend.plugins.satrap_coding import tools as tools_mod
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import SimpleSession
-from satrap.expend.plugins.satrap_coding import tools as tools_mod
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"
 

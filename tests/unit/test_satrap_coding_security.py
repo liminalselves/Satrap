@@ -1,12 +1,11 @@
 """Shell 逐次授权, 计划模式和受保护文件边界回归"""
-import os
+import pytest
 import shutil
 from types import SimpleNamespace
+import os
 
-import pytest
-
-from satrap.expend.plugins.satrap_coding import tools as coding
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
+from satrap.expend.plugins.satrap_coding import tools as coding
 
 
 @pytest.fixture

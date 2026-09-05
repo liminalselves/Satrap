@@ -1,19 +1,18 @@
 """StateStore 检查点 / 回滚 / 分支 单元测试"""
-import sqlite3
 from pathlib import Path
+import sqlite3
+import pytest
 from typing import Any, cast
 
-import pytest
-
-from satrap.core.state import StateStore
 from satrap.core.state.mutation import current_mutation_context, state_mutation_context
+from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.state import StateStore
 from satrap.core.type import (
     JsonRow,
     RestoreOptions,
     SnapshotDomain,
     StateScope,
 )
-from satrap.core.utils.context import AsyncContextManager, ContextManager
 
 
 def _kv_domain() -> SnapshotDomain:

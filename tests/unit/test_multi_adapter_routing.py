@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+import pytest
 from typing import Any, cast
 
-import pytest
-
-from satrap.cli.cmd_session import _configured_adapter_ids
-from satrap.core.framework.Base import Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
+from satrap.core.framework.Base import Session
+from satrap.core.platform.event import MessageEvent, PlatformMetadata
+from satrap.cli.cmd_session import _configured_adapter_ids
 from satrap.core.platform import (
     EventDispatcher,
     PlatformAdapter,
@@ -19,9 +20,7 @@ from satrap.core.platform import (
     PlatformAdapterRegistry,
     PlatformConfig,
 )
-from satrap.core.platform.event import MessageEvent, PlatformMetadata
 from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
-from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 
 
 class _EchoSession(Session):

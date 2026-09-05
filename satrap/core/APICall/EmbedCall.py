@@ -4,8 +4,8 @@
 提供单条和批量文本的同步与异步向量化接口,
 统一处理模型配置, 输入校验与嵌入响应提取
 """
-from typing import List, Dict, Any, Optional, Union, Literal, cast, overload
 from openai import OpenAI, AsyncOpenAI, APIError
+from typing import List, Dict, Any, Optional, Union, Literal, cast, overload
 
 from satrap.core.utils import normalize_openai_base_url
 from satrap.core.type import safe_getattr

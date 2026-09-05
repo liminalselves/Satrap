@@ -6,31 +6,28 @@ Satrap 后端服务组件的统一编排器
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import asyncio
-import os
+from pathlib import Path
 import secrets
 import signal
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Awaitable, Dict, List, Optional
+import os
 
-from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
+from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
-from satrap.core.log import logger
-from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
-from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
+from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import (
     EDICTUM_PROVIDER,
     EdictumTypeRegistry,
     create_default_edictum_type_registry,
 )
-from satrap.core.pipeline.rate_limiter import RateLimiter
-from satrap.core.pipeline.scheduler import PipelineScheduler
+from satrap.edictum.config import EdictumConfigManager
 from satrap.core.platform import (
     EventDispatcher,
     PlatformAdapterManager,
@@ -38,6 +35,10 @@ from satrap.core.platform import (
     PlatformConfig,
     registry as global_registry,
 )
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
+from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
+
+from satrap.core.log import logger
 
 
 @dataclass

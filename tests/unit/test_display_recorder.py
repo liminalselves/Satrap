@@ -1,19 +1,18 @@
 """DisplayRecorder 展示层旁路记录测试"""
 from __future__ import annotations
 
-import json
 import threading
-import time
 from pathlib import Path
-from typing import Any, Iterator
-
 import pytest
+from typing import Any, Iterator
+import json
+import time
 
 from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, TokenUsage
 from satrap.core.utils.TCBuilder import AsyncToolsManager, Tool, ToolsManager
-from satrap.display import DisplayRecorder
 from satrap.display.recorder import _truncate_arguments
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, TokenUsage
+from satrap.display import DisplayRecorder
 from satrap.edictum import SimpleSession
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "satrap" / "expend" / "plugins" / "satrap_coding"

@@ -1,13 +1,13 @@
 """标准日志实时流与有界历史缓冲"""
 from __future__ import annotations
 
-import asyncio
-import re
-import sys
 from collections import deque
 from dataclasses import dataclass
 from threading import Lock
+import asyncio
 from typing import TextIO, cast
+import sys
+import re
 
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

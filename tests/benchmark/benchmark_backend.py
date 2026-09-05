@@ -1,27 +1,27 @@
 """后端审计性能基线; 固定离线负载, 分开测量耗时, Python 分配峰值和查询数量"""
 from __future__ import annotations
 
-import argparse
-import asyncio
-import gc
-import hashlib
 import importlib.metadata
-import json
-import logging
-import os
-import platform
-import socket
+from unittest.mock import AsyncMock, patch
+import tracemalloc
 import statistics
 import subprocess
-import sys
-import tempfile
 import threading
-import time
-import tracemalloc
+import argparse
 from datetime import datetime, timezone
+import platform
+import tempfile
+import asyncio
+import hashlib
+import logging
 from pathlib import Path
+import socket
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+import json
+import time
+import sys
+import gc
+import os
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))

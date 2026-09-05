@@ -1,19 +1,18 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
-
 import pytest
+from typing import Any
+import json
 
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.framework.Base import Session
-from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import (
     EdictumTypeDefinition,
     EdictumTypeRegistry,
     create_default_edictum_type_registry,
 )
+from satrap.edictum.config import EdictumConfigManager
 
 
 class _FutureEdictumSession(Session):

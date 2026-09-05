@@ -1,11 +1,10 @@
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock
-
-import httpx
-import pytest
-from openai import APIError
 from openai.types.chat.chat_completion import ChatCompletion
+from unittest.mock import AsyncMock
+from openai import APIError
+import pytest
+from typing import Any
+import httpx
+from types import SimpleNamespace
 
 from satrap.core.APICall.LLMCall import AsyncLLM, parse_call_response, parse_chat_response
 

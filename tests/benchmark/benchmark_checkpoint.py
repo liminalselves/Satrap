@@ -18,18 +18,17 @@
 """
 from __future__ import annotations
 
-import os
-import shutil
-import sqlite3
-import sys
-import tempfile
-import time
 import tracemalloc
-from typing import Any, cast
+import tempfile
 from pathlib import Path
-from typing import Any
-
+import sqlite3
 import psutil
+import shutil
+from typing import Any, cast
+from typing import Any
+import time
+import sys
+import os
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 

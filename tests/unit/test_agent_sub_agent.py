@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import satrap.expend.tools.agent as agent_module
 from collections.abc import Callable
 import threading
 from pathlib import Path
@@ -12,7 +13,6 @@ import time
 from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from satrap.core.utils.TCBuilder import ToolsManager, AsyncToolsManager
 from satrap.expend.tools.agent import AsyncSubAgent, AsyncSubAgentModel, SubAgent, SubAgentModel
-import satrap.expend.tools.agent as agent_module
 from satrap.core.type import LLMCallResponse
 
 

@@ -6,23 +6,24 @@
 """
 from __future__ import annotations
 
-import importlib
 import importlib.util
-import inspect
-import json
-import os
-import sys
+import importlib
 import threading
+import inspect
 from pathlib import Path
 from typing import Any, Dict, Optional, Type, cast
+import json
+import sys
+import os
 
-from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.session_discovery import (
     build_session_module_catalog,
     ensure_session_scan_paths,
 )
-from satrap.core.log import logger
+from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.paths import get_data_dir
+
+from satrap.core.log import logger
 
 
 class SessionClassConfigManager:

@@ -3,8 +3,8 @@ from __future__ import annotations
 
 from typing import Any, cast
 
-from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.platform.event import MessageChain
+from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
 
 

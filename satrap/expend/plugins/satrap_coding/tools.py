@@ -14,22 +14,16 @@ satrap_coding 插件工具集: 文件 / ask_user / shell / subagent
 """
 from __future__ import annotations
 
+import subprocess
 import asyncio
 import inspect
+from pathlib import Path
+import shutil
+from typing import Any, Awaitable, Callable, cast
+import uuid
 import os
 import re
-import shutil
-import subprocess
-import uuid
-from pathlib import Path
-from typing import Any, Awaitable, Callable, cast
 
-from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
-from satrap.core.log import logger
-from satrap.core.type import safe_getattr, safe_getattr_callable
-from satrap.core.utils.paths import get_project_root
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.edictum import AsyncSimpleSession, SimpleSession
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
@@ -37,6 +31,13 @@ from satrap.expend.plugins.satrap_coding.core.permission import (
     RiskLevel,
 )
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
+from satrap.core.utils.paths import get_project_root
+from satrap.core.type import safe_getattr, safe_getattr_callable
+from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+from satrap.core.log import logger
 
 WORKSPACE_ROOT = get_project_root()
 """文件工具白名单根目录 (项目根)"""

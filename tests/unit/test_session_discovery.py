@@ -2,14 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from satrap.core.backend.BackendManager import BackendConfig
-from satrap.core.config.loader import ConfigLoader
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.session_discovery import (
     SessionClassDiscoveryService,
     create_default_session_dir,
     discover_session_classes,
 )
+from satrap.core.backend.BackendManager import BackendConfig
+from satrap.core.config.loader import ConfigLoader
 
 
 def _write_session_file(root: Path, name: str, content: str) -> Path:

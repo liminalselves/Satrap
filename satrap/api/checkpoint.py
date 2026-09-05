@@ -10,9 +10,9 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from satrap.core.utils.context import ContextManager
 from satrap.core.state import StateStore
 from satrap.core.type import StateCheckpoint, StateScope
-from satrap.core.utils.context import ContextManager
 
 
 def _cp_to_dict(cp: StateCheckpoint) -> dict[str, Any]:

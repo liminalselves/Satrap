@@ -7,12 +7,12 @@ satrap_coding 命令闸门: shell 命令风险分级
 """
 from __future__ import annotations
 
-import re
 import shlex
-
-from satrap.core.log import logger
+import re
 
 from satrap.expend.plugins.satrap_coding.core.permission import RiskLevel
+
+from satrap.core.log import logger
 
 # ---------- 规则表 (首词匹配, 大小写不敏感) ----------
 

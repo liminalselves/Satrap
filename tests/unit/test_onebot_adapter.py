@@ -3,10 +3,6 @@ from __future__ import annotations
 import pytest
 from typing import Any, cast
 
-from satrap.core.components import At, AtAll, Face, Image, Json, Plain, Reply, Unknown
-from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
-from satrap.core.platform.event import MessageChain, MessageEvent
-from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.onebot_utils import (
     create_platform_message,
     group_session_id,
@@ -14,6 +10,10 @@ from satrap.core.platform.onebot.onebot_utils import (
     onebot_segments_to_components,
     private_session_id,
 )
+from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.platform.event import MessageChain, MessageEvent
+from satrap.core.components import At, AtAll, Face, Image, Json, Plain, Reply, Unknown
+from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
 from satrap.core.type import PlatformMessage, PlatformMessageType
 
 

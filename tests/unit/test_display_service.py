@@ -1,25 +1,24 @@
 """display 层 ChatPluginRegistry / ChatService 单元测试"""
 from __future__ import annotations
 
-import asyncio
-import copy
-from types import SimpleNamespace
 from collections.abc import AsyncIterator
+import asyncio
 from pathlib import Path
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
+import copy
 import yaml
 
-from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.core.APICall.LLMCall import AsyncLLM
+from satrap.display.recorder import DisplayRecorder, list_conversations
+from satrap.display.plugins import ChatPluginRegistry
+from satrap.display.service import ChatService
 from satrap.core.storage import StorageLayout
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
-from satrap.display.plugins import ChatPluginRegistry
-from satrap.display.recorder import DisplayRecorder, list_conversations
-from satrap.display.service import ChatService
-from satrap.edictum.plugin_config import PluginConfigManager
 
 
 # ---------- ChatPluginRegistry 测试 ----------

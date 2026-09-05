@@ -4,7 +4,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from satrap.core.framework.Base import AsyncSession, Session
 from satrap.expend.command.session_commands import (
     cmd_about,
     cmd_about_async,
@@ -15,6 +14,7 @@ from satrap.expend.command.session_commands import (
     cmd_switch,
     cmd_switch_async,
 )
+from satrap.core.framework.Base import AsyncSession, Session
 
 
 def _about_text(

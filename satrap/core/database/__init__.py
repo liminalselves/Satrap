@@ -4,21 +4,21 @@
 DataBase 将原始向量与文档原子提交, 使用可重建的 FAISS 版本缓存,
 并提供保留备份的旧格式迁移与缺失向量修复入口
 """
+from contextlib import closing, contextmanager
+import threading
+import tempfile
+import msgpack
+from pathlib import Path
+import sqlite3
+from weakref import WeakValueDictionary
+import shutil
 from typing import List, Dict, Any, BinaryIO, cast
 import faiss as _faiss
 import numpy as np
-import msgpack
-import sqlite3
 import json
+import uuid
 import os
 import re
-from contextlib import closing, contextmanager
-from pathlib import Path
-import shutil
-import tempfile
-import threading
-import uuid
-from weakref import WeakValueDictionary
 
 from satrap.core.log import logger
 

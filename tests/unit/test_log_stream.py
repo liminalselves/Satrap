@@ -2,15 +2,15 @@
 from __future__ import annotations
 
 import asyncio
-import io
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+import io
 
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
-from satrap.core.log import logger
 from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
+
+from satrap.core.log import logger
 
 
 @pytest.mark.asyncio

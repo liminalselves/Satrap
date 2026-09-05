@@ -1,12 +1,12 @@
 """代码沙箱路径边界与执行授权测试"""
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 import pytest
+import sys
 
-from satrap.core.utils.sandbox import CodeSandbox
 from satrap.expend.tools.sandbox_tools import AsyncCodeSandboxTool, CodeSandboxTool
+from satrap.core.utils.sandbox import CodeSandbox
 
 
 @pytest.fixture

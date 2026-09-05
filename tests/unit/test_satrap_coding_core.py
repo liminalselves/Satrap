@@ -2,18 +2,17 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
-
 import pytest
+from typing import Any
 
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
-from satrap.expend.tools.memory_store import MemoryStore
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
     PermissionEngine,
     RiskLevel,
 )
+from satrap.expend.tools.memory_store import MemoryStore
 
 
 # ================= command_gate: 命令风险分级 =================

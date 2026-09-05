@@ -3,16 +3,15 @@ from __future__ import annotations
 
 import tracemalloc
 from pathlib import Path
+import pytest
 from typing import Any, Iterator
 from typing import Callable, cast
 
-import pytest
-
+from satrap.expend.plugins.satrap_coding.tools import get_tools
+from satrap.expend.plugins.satrap_coding import tools as tools_mod
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from satrap.expend.plugins.satrap_coding import tools as tools_mod
-from satrap.expend.plugins.satrap_coding.tools import get_tools
 
 
 def _reply(value: str) -> Callable[[str], str]:

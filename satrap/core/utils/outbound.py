@@ -6,20 +6,20 @@
 """
 from __future__ import annotations
 
-import http.client
-import asyncio
-import ipaddress
-import os
-import socket
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
 from email.message import Message
+from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
+from aiohttp.abc import AbstractResolver, ResolveResult
+from dataclasses import dataclass
+import http.client
+import ipaddress
+import aiohttp
+import asyncio
+import socket
 from http import HTTPStatus
 from ssl import SSLContext, create_default_context
-from urllib.parse import urlencode, urljoin, urlsplit, urlunsplit
+import os
 
-import aiohttp
-from aiohttp.abc import AbstractResolver, ResolveResult
 from satrap.core.utils.async_worker import DNS_WORKERS
 
 

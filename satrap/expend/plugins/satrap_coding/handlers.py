@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from satrap.edictum import AsyncSimpleSession, HandlerContext, SessionHandler, SimpleSession
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
+from satrap.edictum import AsyncSimpleSession, HandlerContext, SessionHandler, SimpleSession
 
 _HEADER = "【持续目标】\n"
 

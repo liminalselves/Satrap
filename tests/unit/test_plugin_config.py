@@ -1,21 +1,20 @@
 """插件配置机制测试: config_schema 解析 / 全局读写 / 两级合成 / install_plugin 注入"""
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Iterator
-
 import pytest
+from typing import Any, Iterator
+import json
 
-from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
-from satrap.edictum import SimpleSession
 from satrap.edictum.plugin_config import (
     ConfigField,
     PluginConfigManager,
     parse_config_schema,
     schema_to_payload,
 )
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.edictum import SimpleSession
 
 
 class _FakeLLM(LLM):

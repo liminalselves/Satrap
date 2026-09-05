@@ -2,9 +2,9 @@
 from __future__ import annotations
 import argparse
 from typing import Any, cast
-
 import sys
 
+from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.document import (
     create_default_config,
     find_config_path,
@@ -13,7 +13,6 @@ from satrap.core.config.document import (
     save_config_document,
 )
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs, print_json
-from satrap.core.backend.BackendManager import BackendConfig
 
 
 def _warn_if_backend_running(args: argparse.Namespace):

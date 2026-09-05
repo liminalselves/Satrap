@@ -10,11 +10,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
-from typing import cast
-
 import pytest
+from typing import cast
+import json
 
 from satrap.core.backend import control_server
 

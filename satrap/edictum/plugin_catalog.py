@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
 from satrap.edictum.plugin import (
     CAPABILITY_KINDS,
     PLUGINS_PRESET_DIR,
@@ -12,7 +13,6 @@ from satrap.edictum.plugin import (
     load_plugin_meta,
     parse_capability_descriptions,
 )
-from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
 
 
 @dataclass(frozen=True)

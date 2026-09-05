@@ -1,12 +1,11 @@
 """ReRank 凭据与同步异步响应边界测试"""
 from __future__ import annotations
 
+import pytest
 from typing import cast
 
-import pytest
-
-from satrap.core.APICall import ReRankCall as rerank_module
 from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
+from satrap.core.APICall import ReRankCall as rerank_module
 
 
 class _SyncResponse:

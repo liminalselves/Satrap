@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+import pytest
 
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.context import AsyncContextManager, ContextManager

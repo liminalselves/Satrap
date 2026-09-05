@@ -7,11 +7,11 @@ satrap_coding 持续目标状态机: 目标 + 子任务 todo + 持久化
 """
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
+import json
 
 from satrap.core.utils.paths import get_data_dir
 

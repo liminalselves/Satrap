@@ -1,15 +1,14 @@
 """出站 HTTP URL 与网页抓取安全边界测试"""
 from __future__ import annotations
 
-import json
-import socket
-import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 from pathlib import Path
-from typing import NoReturn, Protocol, cast
-
 import pytest
+import socket
+from typing import NoReturn, Protocol, cast
+import json
 
 from satrap.core.components.message import download_file
 from satrap.core.utils.outbound import (
@@ -23,8 +22,8 @@ from satrap.core.utils.outbound import (
     validate_outbound_http_url,
     validate_outbound_redirect,
 )
-from satrap.expend.tools import search as search_module
 from satrap.expend.tools.search import FetchPageTool, SearchTool
+from satrap.expend.tools import search as search_module
 
 
 class _Resolver(Protocol):

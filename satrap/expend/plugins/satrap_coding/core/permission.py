@@ -12,15 +12,16 @@ plan mode (/plan): 工作区写操作和任意 Shell 全部拒绝, 文件只读�
 """
 from __future__ import annotations
 
-import json
 import threading
 from datetime import datetime
-from enum import IntEnum
 from pathlib import Path
 from typing import Any, Callable, cast
+from enum import IntEnum
+import json
+
+from satrap.core.utils.paths import get_data_dir
 
 from satrap.core.log import logger
-from satrap.core.utils.paths import get_data_dir
 
 
 class RiskLevel(IntEnum):

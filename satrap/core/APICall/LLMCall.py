@@ -4,15 +4,15 @@
 提供兼容 OpenAI 接口的同步, 异步, 流式和非流式调用,
 统一处理多模态消息, 思考内容, 工具调用与响应事件
 """
-from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam, ChatCompletionToolChoiceOptionParam
-from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, Iterable, cast
 from openai.types.chat.chat_completion import ChatCompletion
+from openai.types.chat import ChatCompletionMessageParam, ChatCompletionToolUnionParam, ChatCompletionToolChoiceOptionParam
 from openai import OpenAI, AsyncOpenAI, APIError
+from typing import List, Dict, Any, Optional, Union, Literal, Iterator, AsyncIterator, Iterable, cast
 import json, re
 
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, TokenUsage, safe_getattr, safe_getattr_str, safe_getattr_list
-from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
 from satrap.core.utils.vision import normalize_chat_messages
+from satrap.core.utils import safe_parse_arguments, normalize_openai_base_url
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig, TokenUsage, safe_getattr, safe_getattr_str, safe_getattr_list
 
 from satrap.core.log import logger
 

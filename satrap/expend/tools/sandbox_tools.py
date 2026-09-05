@@ -1,9 +1,10 @@
 """代码沙箱的同步与异步执行工具封装"""
+from collections.abc import Awaitable, Callable
+import asyncio, re
+from typing import Dict, Any, Optional
+
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
 from satrap.core.utils.sandbox import CodeSandbox
-from collections.abc import Awaitable, Callable
-from typing import Dict, Any, Optional
-import re, asyncio
 
 from satrap.core.log import logger
 

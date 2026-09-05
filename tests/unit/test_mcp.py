@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
+from mcp.types import Tool as MCPTool
+import threading
 import asyncio
 import inspect
-import threading
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any
-
 import pytest
-
-from mcp.types import Tool as MCPTool
+from typing import Any
+from types import SimpleNamespace
 
 from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import AsyncToolsManager, Tool, ToolsManager
 from satrap.core.utils.mcp import (
     MCPClient,
@@ -24,6 +21,7 @@ from satrap.core.utils.mcp import (
     content_to_text,
     export_tools_to_mcp,
 )
+from satrap.core.type import LLMCallResponse
 from satrap.edictum import SimpleSession
 
 

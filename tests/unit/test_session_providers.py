@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import importlib
-import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
-
+import sqlite3
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
 
-from satrap.core.APICall.LLMCall import LLM
-from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
 from satrap.core.framework.providers import (
@@ -18,14 +15,16 @@ from satrap.core.framework.providers import (
     SessionProviderDefinition,
     SessionProviderRegistry,
 )
-from satrap.core.type import CommandAction, SessionConfig, UserCall
-from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.simple_session import AsyncSimpleSession
+from satrap.core.APICall.LLMCall import LLM
+from satrap.core.framework.Base import AsyncSession, Session
 from satrap.edictum.registry import (
     EdictumTypeDefinition,
     EdictumTypeRegistry,
     create_default_edictum_type_registry,
 )
-from satrap.edictum.simple_session import AsyncSimpleSession
+from satrap.edictum.config import EdictumConfigManager
+from satrap.core.type import CommandAction, SessionConfig, UserCall
 
 
 def _placeholder_llm() -> LLM:

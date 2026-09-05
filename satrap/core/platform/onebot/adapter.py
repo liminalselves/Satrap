@@ -1,14 +1,11 @@
 """OneBot 平台事件与消息收发适配器"""
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 import asyncio
 import inspect
-from collections.abc import AsyncGenerator
 from typing import Any
 
-from satrap.core.log import logger
-from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, register_platform_adapter
-from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform.onebot.onebot_utils import (
     create_platform_message,
     extract_group_id,
@@ -17,7 +14,11 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_private_session,
     message_chain_to_onebot_segments,
 )
+from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
+from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, register_platform_adapter
 from satrap.core.type import PlatformMessage, safe_getattr_callable
+
+from satrap.core.log import logger
 
 
 class _MissingCQHttp:

@@ -3,9 +3,9 @@ from __future__ import annotations
 
 import secrets
 import string
-from satrap.core.type import CommandAction
-
 from typing import TYPE_CHECKING
+
+from satrap.core.type import CommandAction
 if TYPE_CHECKING:
     from satrap.core.framework.Base import Session, AsyncSession
     from satrap.core.framework.command import CommandHandler, AsyncCommandHandler

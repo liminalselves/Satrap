@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
-import threading
-import time
-from typing import cast
 from unittest.mock import MagicMock
-
+import threading
+import asyncio
+from pathlib import Path
 import pytest
+from typing import cast
+import time
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionManager import (
     SessionConfig,
     SessionEntry,
@@ -22,6 +19,8 @@ from satrap.core.framework.SessionManager import (
     SessionPoolCapacityError,
 )
 from satrap.core.framework.UserManager import UserManager
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.type import LLMConfig, UserCall
 
 

@@ -1,23 +1,13 @@
 """Misskey 平台事件与消息收发适配器"""
 from __future__ import annotations
 
-import asyncio
-import os
-import random
-import re
 from collections.abc import AsyncGenerator
+import asyncio
+import random
 from typing import Any, cast
+import os
+import re
 
-from satrap.core.components import File, Image, PlatformComponentType, Record, Video
-from satrap.core.log import logger
-from satrap.core.platform import (
-    EventHandler,
-    PlatformAdapter,
-    PlatformConfig,
-    register_platform_adapter,
-)
-from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
-from satrap.core.platform.misskey.client import MisskeyAPI, StreamingClient
 from satrap.core.platform.misskey.misskey_utils import (
     add_at_mention_if_needed,
     cache_room_info,
@@ -37,8 +27,19 @@ from satrap.core.platform.misskey.misskey_utils import (
     serialize_message_chain,
     upload_local_with_retries,
 )
-from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.platform.misskey.client import MisskeyAPI, StreamingClient
+from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
+from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.components import Plain
+from satrap.core.platform import (
+    EventHandler,
+    PlatformAdapter,
+    PlatformConfig,
+    register_platform_adapter,
+)
+from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
+
+from satrap.core.log import logger
 
 
 MAX_FILE_UPLOAD_COUNT = 16

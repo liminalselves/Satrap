@@ -7,17 +7,16 @@ pytest tests/integration/test_function_calling.py --run-integration
 
 from __future__ import annotations
 
-import ast
 import operator
-import os
-from typing import Any, cast
-
 import pytest
+from typing import Any, cast
+import ast
+import os
 
 from satrap.core.APICall.LLMCall import LLM
-from satrap.core.type import LLMCallResponse
 from satrap.core.utils.TCBuilder import Tool, ToolsManager
 from satrap.core.utils.context import ContextManager
+from satrap.core.type import LLMCallResponse
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_api]
 

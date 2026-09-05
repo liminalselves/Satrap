@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import satrap.edictum.plugin as plugin_module
 from concurrent.futures import ThreadPoolExecutor
 from collections.abc import Iterator
 import importlib.util
@@ -7,8 +8,6 @@ from pathlib import Path
 import pytest
 from types import ModuleType
 import sys
-
-import satrap.edictum.plugin as plugin_module
 
 
 @pytest.fixture

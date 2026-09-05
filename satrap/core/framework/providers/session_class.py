@@ -9,13 +9,13 @@ from __future__ import annotations
 import inspect
 from typing import Any, Protocol, Type
 
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.providers.base import (
     SESSION_CLASS_PROVIDER,
     SessionProviderDefinition,
 )
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
+from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.type import SessionConfig
 
 

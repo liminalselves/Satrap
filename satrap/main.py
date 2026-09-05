@@ -7,8 +7,8 @@ Satrap CLI 入口
 """
 import argparse
 import asyncio
-import sys
 from pathlib import Path
+import sys
 
 _proj_root = str(Path(__file__).resolve().parent.parent)
 # 确保项目根目录在 sys.path 中

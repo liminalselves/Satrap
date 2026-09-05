@@ -9,10 +9,9 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from satrap.edictum import AsyncSimpleSession, SimpleSession
-
 from satrap.expend.plugins.base_take.state import get_plugin_state
 from satrap.expend.tools.memory_store import MemoryStore
+from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 _MEMORY_MODES = ("disabled", "base", "full")
 

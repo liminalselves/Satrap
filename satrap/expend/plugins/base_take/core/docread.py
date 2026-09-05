@@ -6,11 +6,11 @@
 """
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Sequence
+import logging
 from pathlib import Path
-from typing import Protocol, cast
 from zipfile import BadZipFile, ZipFile
+from typing import Protocol, cast
 
 _TEXT_EXTS = {".txt", ".md", ".py", ".json", ".csv", ".log", ".yaml", ".yml", ".toml", ".xml", ".html", ".js", ".ts"}
 # 纯文本可直接读取的扩展名

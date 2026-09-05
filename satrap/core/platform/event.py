@@ -6,21 +6,21 @@
 """
 from __future__ import annotations
 
-import asyncio
-import os
-import re
-import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
+import asyncio
+from typing import Any
 from enum import Enum
 from time import time
-from typing import Any
+import uuid
+import os
+import re
 
-from satrap.core.log import logger
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
+from satrap.core.platform import PlatformAdapter
 from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
 
-from satrap.core.platform import PlatformAdapter
+from satrap.core.log import logger
 # 模块级导入, 避免每个方法重复 lazy import; 无循环依赖风险 (__init__.py 仅在 TYPE_CHECKING 下引用 event.py)
 
 

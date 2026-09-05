@@ -9,13 +9,12 @@ Session 级聚合检查点 (P1) 单元测试
 - AsyncSession 异步聚合检查点
 """
 from pathlib import Path
+import pytest
 from typing import Any
 
-import pytest
-
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.core.state import StateStore
 from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.state import StateStore
 
 
 class _SimpleSession(Session):

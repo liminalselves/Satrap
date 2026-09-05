@@ -4,13 +4,12 @@ checkpoint HTTP API 路由测试
 通过 BackendHTTPServer._route 直接验证端点 (不启动真实端口):
 列表 / 创建 / 审计 / 血缘 / fork / 分支 / 回滚 / 重试 / 异常路径
 """
-import json
-import sqlite3
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, cast
-
+import sqlite3
 import pytest
+from typing import Any, cast
+from types import SimpleNamespace
+import json
 
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer

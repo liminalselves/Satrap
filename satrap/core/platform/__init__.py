@@ -1,18 +1,19 @@
 """平台适配器协议, 注册表与运行时管理器"""
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from datetime import datetime
 import asyncio
 import inspect
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 import time
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 
-from satrap.core.log import logger
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
+
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator

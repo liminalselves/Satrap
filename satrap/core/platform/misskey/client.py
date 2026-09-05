@@ -1,24 +1,21 @@
 """Misskey HTTP 与 WebSocket API 客户端"""
 from __future__ import annotations
 
-import asyncio
-import json
-import logging
-import os
-import random
-import tempfile
-import uuid
 from collections.abc import Awaitable, Callable
-from types import TracebackType
-from typing import Any, NoReturn, ParamSpec, TypeVar, cast
 from urllib.parse import urlencode, urlsplit, urlunsplit
-
-import aiohttp
 import websockets
+import tempfile
+import aiohttp
+import asyncio
+import logging
+import random
+from typing import Any, NoReturn, ParamSpec, TypeVar, cast
+from types import TracebackType
+import json
+import uuid
+import os
 
-from satrap.core.log import logger
 from satrap.core.platform.misskey.misskey_utils import FileIDExtractor
-from satrap.core.type import safe_getattr_str
 from satrap.core.utils.outbound import (
     DEFAULT_MAX_DOWNLOAD_BYTES,
     UnsafeOutboundURLError,
@@ -26,6 +23,9 @@ from satrap.core.utils.outbound import (
     safe_async_get,
     same_origin,
 )
+from satrap.core.type import safe_getattr_str
+
+from satrap.core.log import logger
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")

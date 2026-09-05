@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import ast
 import operator
-import sys
 from pathlib import Path
 from typing import Any, cast
+import ast
+import sys
 
 _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:

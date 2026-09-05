@@ -9,20 +9,17 @@
 """
 from __future__ import annotations
 
-import asyncio
-import sqlite3
 from collections.abc import AsyncIterator
+import asyncio
 from pathlib import Path
+import sqlite3
+import pytest
 from typing import Any, cast
 
-import pytest
-
-from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.storage import StorageLayout
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
-from satrap.display import service as service_mod
-from satrap.display.plugins import ChatPluginRegistry
+from satrap.expend.plugins.base_take.tools import AddMemoryTool
+from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.display.recorder import (
     DisplayRecorder,
     create_project,
@@ -34,9 +31,11 @@ from satrap.display.recorder import (
     list_projects,
     set_conversation_project,
 )
+from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
-from satrap.expend.plugins.base_take.tools import AddMemoryTool
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.storage import StorageLayout
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.display import service as service_mod
 
 
 def _created_project_id(result: dict[str, object]) -> str:

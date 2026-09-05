@@ -1,7 +1,6 @@
 from pathlib import Path
-from typing import Any
-
 import pytest
+from typing import Any
 
 from satrap.core.config.document import (
     create_default_config,

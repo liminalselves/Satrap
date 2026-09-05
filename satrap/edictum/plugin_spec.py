@@ -1,13 +1,13 @@
 """插件运行规格: 统一 Chat 与平台 Edictum 的配置结构和指纹"""
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field, replace
+import hashlib
 from typing import Any, Callable, cast
+import json
 
-from satrap.edictum.plugin import CAPABILITY_KINDS
 from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
+from satrap.edictum.plugin import CAPABILITY_KINDS
 
 
 PluginConfigResolver = Callable[[PluginCatalogEntry, dict[str, Any]], dict[str, Any]]

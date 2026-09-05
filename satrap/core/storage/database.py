@@ -1,12 +1,12 @@
 """平台数据库中的会话级数据清理操作"""
 from __future__ import annotations
 
-import json
-import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
 from pathlib import Path
+import sqlite3
 from typing import Any, cast
+import json
 
 
 _RESTORABLE_TABLES = frozenset({

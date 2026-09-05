@@ -1,8 +1,9 @@
 """领域注册表: 维护领域注册与恢复顺序"""
 from typing import Dict, List
 
-from satrap.core.log import logger
 from satrap.core.type import SnapshotDomain
+
+from satrap.core.log import logger
 
 
 class DomainRegistry:

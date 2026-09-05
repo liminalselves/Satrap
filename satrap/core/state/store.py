@@ -10,21 +10,19 @@
 与检查点同库时享受完整事务原子性
 """
 from contextlib import contextmanager
-from pathlib import Path
-from typing import Any, Generator, List, Optional, Union
-import hashlib
-import json
-import sqlite3
 import threading
+import hashlib
+from pathlib import Path
+import sqlite3
+from typing import Any, Generator, List, Optional, Union
+import json
 import time
 import uuid
 
-from satrap.core.utils.paths import get_db_path
-
-from satrap.core.log import logger
 from satrap.core.state.mutation import current_mutation_context
 from satrap.core.state.registry import DomainRegistry
 from satrap.core.state.snapshot import build_id_map, build_snapshot, restore_snapshot
+from satrap.core.utils.paths import get_db_path
 from satrap.core.type import (
     RestoreOptions,
     SnapshotDomain,
@@ -32,6 +30,8 @@ from satrap.core.type import (
     StateScope,
     StateSnapshot,
 )
+
+from satrap.core.log import logger
 
 
 def _json_dumps(value: object) -> str:

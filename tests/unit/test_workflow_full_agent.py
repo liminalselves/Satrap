@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import copy
-from typing import Any, cast
-
-import pytest
 from pathlib import Path
+import pytest
+from typing import Any, cast
+import copy
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
-from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
-from satrap.core.type import LLMCallResponse
-from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.TCBuilder import AsyncToolsManager, ToolsManager
+from satrap.core.framework.Base import AsyncModelWorkflowFramework, ModelWorkflowFramework
+from satrap.core.utils.context import AsyncContextManager, ContextManager
+from satrap.core.type import LLMCallResponse
 
 
 def _as_llm(fake: Any) -> LLM:

@@ -12,18 +12,19 @@
 """
 from __future__ import annotations
 
-import asyncio
-import base64
-import hashlib
-from http import HTTPStatus
-import json
-import struct
 from collections.abc import Mapping
+from urllib.parse import parse_qs, urlsplit
+import asyncio
+import hashlib
+import base64
+import struct
 from typing import Any
 from typing import cast
-from urllib.parse import parse_qs, urlsplit
+from http import HTTPStatus
+import json
 
 from satrap.core.server_auth import ServerAuth
+
 from satrap.core.log import logger
 
 DEFAULT_CORS_HEADERS = {

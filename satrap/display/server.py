@@ -39,21 +39,22 @@ WebSocket:
 """
 from __future__ import annotations
 
+from urllib.parse import unquote
 import argparse
 import asyncio
 import base64
-import json
 import signal
 from typing import Any, cast
-from urllib.parse import unquote
+import json
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.config.loader import ConfigLoader
-from satrap.core.log import logger
 from satrap.core.utils.minihttp import MiniHTTPServer
-from satrap.display.plugins import ChatPluginRegistry
+from satrap.core.config.loader import ConfigLoader
 from satrap.display.recorder import list_conversations
+from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+
+from satrap.core.log import logger
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 19872

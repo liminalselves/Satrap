@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+import pytest
 from typing import Any
 from typing import TypedDict, cast
-
-import pytest
-from pathlib import Path
 
 
 class _PlatformSettings(TypedDict):

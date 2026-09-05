@@ -1,9 +1,9 @@
 """上下文分离比例 + 滞回截断 + 总结压缩的单元测试"""
 
-import pytest
-from pathlib import Path
-from typing import Any, cast
 from unittest.mock import MagicMock, AsyncMock
+from pathlib import Path
+import pytest
+from typing import Any, cast
 
 from satrap.core.utils.context import ContextManager, AsyncContextManager
 from satrap.core.type import TokenUsage

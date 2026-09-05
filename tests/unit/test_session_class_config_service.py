@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Protocol, cast
 import pytest
+from typing import Protocol, cast
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
