@@ -34,15 +34,16 @@ from satrap.core.config.session_instance_service import SessionInstanceConfigSer
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.framework.session_discovery import (
-    SessionClassDiscoveryService,
-    create_default_session_dir,
-)
+from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
+from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ModelConfigService
+from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
+from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
+from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
@@ -57,6 +58,7 @@ from satrap.core.config.document import (
     validate_config_document,
     validate_platforms,
 )
+from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import (
     DEFAULT_BODY_TIMEOUT,
     DEFAULT_HEADER_TIMEOUT,
@@ -70,12 +72,8 @@ from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import EDICTUM_PROVIDER, create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.core.storage import (
-    CHAT_PLATFORM_ID,
-    LOCAL_PLATFORM_ID,
-    StorageLayout,
-    StorageMaintenanceService,
-)
+from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
+from satrap.core.rag import RagService
 
 PROJECT_ROOT = get_project_root()
 # 项目根目录
@@ -639,7 +637,8 @@ def _edictum_config_service() -> EdictumConfigService:
             storage_path = PROJECT_ROOT / storage_path
     registry = create_default_edictum_type_registry()
     manager = EdictumConfigManager(registry, storage_path=storage_path)
-    return EdictumConfigService(manager, registry)
+    models = _model_config_service().manager
+    return EdictumConfigService(manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"))
 
 
 def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | None:
@@ -799,8 +798,7 @@ def _cold_chat_history_query(
     )
     for item in cast(list[dict[str, Any]], result["items"]):
         item.update({"active": False, "generating": False, "waiting_user": False})
-    sessions_root = layout.platform_root(CHAT_PLATFORM_ID) / "sessions"
-    result["storage_size_bytes"] = StorageMaintenanceService._directory_size(sessions_root)
+    result.update(StorageMaintenanceService(layout).session_size_snapshot(CHAT_PLATFORM_ID))
     result["mode"] = "cold"
     return result
 
@@ -1040,6 +1038,11 @@ async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - ControlResponse | None: 路径不属于本区段时返回 None
     """
+    if ctx.path == "/chat/history/storage" and ctx.method in {"GET", "POST"}:
+        return 200, await asyncio.to_thread(
+            StorageMaintenanceService(_configured_storage_layout()).session_size_snapshot,
+            CHAT_PLATFORM_ID, refresh=ctx.method == "POST",
+        )
     if ctx.method == "GET" and ctx.path == "/chat/history":
         try:
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
@@ -1611,6 +1614,88 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
+    """平台会话覆盖入口, 读写共用配置服务且不激活会话"""
+    if ctx.path == "/config/plugin-model-options" and ctx.method == "GET":
+        return 200, {"options": model_options(_model_config_service().manager)}
+    if ctx.path != "/config/session-plugin-config" or ctx.method not in {"GET", "PUT"}:
+        return None
+    try:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+        platform_id = query.get("platform_id", [""])[0]
+        session_id = query.get("session_id", [""])[0]
+        name = query.get("plugin", [""])[0]
+        if platform_id not in _configured_platform_ids():
+            raise ValueError("平台不存在")
+        instances = _session_instance_config_service(platform_id)
+        instance = instances.store.get(session_id)
+        if instance is None:
+            raise ValueError("会话不存在")
+        edictum = _edictum_config_service()
+        entry = edictum.plugin_catalog.get(name)
+        if entry is None:
+            raise ValueError("插件不存在")
+        named: dict[str, Any] = {}
+        if instance.provider_name == "edictum" and instance.session_type_name:
+            definition = edictum.manager.get_config(instance.session_type_name) or {}
+            for item in definition.get("plugins", []):
+                if isinstance(item, dict):
+                    item = cast(dict[str, Any], item)
+                    if item.get("name") == name:
+                        named = item.get("config", {})
+        models = _model_config_service().manager
+        service = PluginSettingsService(instances.storage_layout.platform_db(platform_id), models=models, rag=RagService(instances.storage_layout, models, platform_id, session_id))
+        if ctx.method == "PUT":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            values = payload.get("overrides", {})
+            if not isinstance(values, dict):
+                raise ValueError("overrides 必须是对象")
+            values = cast(dict[str, Any], values)
+            validate_model_values(models, entry.config_schema, values)
+            await RAG_WORKERS.run(service.save, session_id, name, entry.config_schema, values, expected_revision=payload.get("expected_revision"), named=named)
+        return 200, {
+            "ok": True, **service.get(session_id, name, entry.config_schema, named),
+            "model_options": model_options(models), "runtime": {"status": "next_turn"},
+        }
+    except OverrideConflictError as error:
+        return 409, {"error": str(error)}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error)}
+    except (OSError, TypeError, ValueError) as error:
+        return 400, {"error": str(error)}
+
+
+async def _route_rag(ctx: _RouteContext) -> ControlResponse | None:
+    """统一 RAG 管理入口, 阻塞索引和模型调用在线程执行"""
+    if not ((ctx.path == "/config/rag" and ctx.method in {"GET", "POST"}) or (ctx.path == "/config/rag/upload" and ctx.method == "POST")):
+        return None
+    try:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+        platform_id = query.get("platform_id", ["local"])[0]
+        session_id = query.get("session_id", [""])[0]
+        if platform_id not in {*_configured_platform_ids(), "chat", "local"}:
+            raise ValueError("平台不存在")
+        layout = _configured_storage_layout()
+        if session_id:
+            require_stored_session(layout.platform_db(platform_id), session_id)
+        service = RagService(layout, _model_config_service().manager, platform_id, session_id)
+        if ctx.path.endswith("/upload"):
+            service._get(query.get("kb_id", [""])[0])
+            content = await read_request_body(ctx.reader, ctx.raw_request, max_bytes=DEFAULT_MAX_FILE_SIZE, timeout=DEFAULT_BODY_TIMEOUT, required=True)
+            return 200, await RAG_WORKERS.run(
+                rag_upload_document, service, query.get("kb_id", [""])[0],
+                query.get("file_name", [""])[0], content, query.get("source", [""])[0],
+            )
+        payload = {key: values[0] for key, values in query.items()} if ctx.method == "GET" else await _read_json_body(ctx.reader, ctx.raw_request)
+        return 200, await RAG_WORKERS.run(rag_admin_request, service, ctx.method, payload)
+    except RagOperationError as error:
+        return error.status, {"error": str(error), "stage": error.stage}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error)}
+    except (OSError, TypeError, ValueError, TimeoutError) as error:
+        return 400, {"error": str(error)}
+
+
 async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None:
     """
     会话实例冷管理区段: 集合 GET/POST, bulk-delete 与前缀单项 DELETE
@@ -2052,6 +2137,8 @@ async def _handle_request(
             _route_storage,
             _route_edictum_metadata,
             _route_session_instances,
+            _route_session_plugin_config,
+            _route_rag,
             _route_edictum_mutations,
             _route_session_class_collection_post,
             _route_discovery,

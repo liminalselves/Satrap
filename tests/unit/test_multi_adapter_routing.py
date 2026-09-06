@@ -315,5 +315,8 @@ def test_backend_isolates_same_session_id_between_platform_databases(tmp_path: P
     assert second_manager.store.get("same-id") is not None
     first_root = backend._storage.session_root("onebot-main", "same-id")
     second_root = backend._storage.session_root("misskey-main", "same-id")
-    assert first_root.is_dir() and second_root.is_dir()
+    assert not first_root.exists() and not second_root.exists()
     assert first_root != second_root
+    (first_root / "uploads").mkdir(parents=True)
+    (first_root / "uploads" / "document.txt").write_text("私有文档", encoding="utf-8")
+    assert not second_root.exists()

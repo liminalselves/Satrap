@@ -31,6 +31,9 @@ from satrap.core.type import (
 from satrap.core.log import logger
 
 if TYPE_CHECKING:
+    from satrap.core.config.session_overrides import SessionOverrideStore
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.storage.layout import StorageLayout
     from satrap.core.framework.SessionManager import SessionManager
     from satrap.core.framework.UserManager import UserManager
 
@@ -648,6 +651,11 @@ class ModelWorkflowFramework:
 
 class Session:
     """会话类, 用于管理多个模型工作流的会话"""
+    plugin_override_store: "SessionOverrideStore | None" = None
+    plugin_model_manager: "ModelConfigManager | None" = None
+    storage_layout: "StorageLayout | None" = None
+    storage_platform_id: str | None = None
+
     def __init__(self, session_id: str, content_callback: Optional[Callable[[str], None]] | None = None,
         command_handler: Optional[CommandHandler] | None = None, *, db_path: str = get_db_path(),
         state_store: Optional[StateStore] = None, enable_checkpoint: bool = False):
@@ -1677,6 +1685,11 @@ class AsyncSession:
                 await self._ensure_initialized()
                 return await run(self, *args, **kw)
             cls.run = _wrapped_run
+
+    plugin_override_store: "SessionOverrideStore | None" = None
+    plugin_model_manager: "ModelConfigManager | None" = None
+    storage_layout: "StorageLayout | None" = None
+    storage_platform_id: str | None = None
 
     def __init__(self, session_id: str,
         content_callback: Optional[Callable[[str], Awaitable[None]]] | None = None,

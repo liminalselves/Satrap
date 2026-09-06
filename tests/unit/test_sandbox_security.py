@@ -74,7 +74,7 @@ def test_delete_sandbox_root_is_rejected(sandbox: CodeSandbox, path: str) -> Non
     - path: 参数化沙箱根目录表示
     """
     marker = Path(sandbox.sandbox_path) / "marker.txt"
-    marker.write_text("keep", encoding="utf-8")
+    sandbox.save_to_file("keep", "marker.txt")
     with pytest.raises(PermissionError, match="沙箱根目录"):
         sandbox.delete_directory(path)
     assert marker.read_text(encoding="utf-8") == "keep"

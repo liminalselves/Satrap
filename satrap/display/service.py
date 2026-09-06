@@ -19,21 +19,27 @@ from functools import wraps
 import asyncio
 import hashlib
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast
-from typing import Iterable
+from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, Iterable
 import copy
 import json
 import time
 import uuid
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.core.storage.session_fork import fork_session_settings
 from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.expend.tools.memory_store import MemoryStore
-from satrap.edictum.plugin_runtime import (
-    PluginRuntimeState,
-    reconcile_plugin_states_async,
+from satrap.core.utils.async_worker import RAG_WORKERS
+from satrap.edictum.plugin_settings import (
+    resolve_runtime_specs,
+    validate_plugin_settings,
+    PluginSettingsService,
+    validate_model_values,
+    model_options,
 )
-from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload
+from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
+from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
 from satrap.core.utils.paths import get_data_dir, get_project_root
@@ -58,6 +64,7 @@ from satrap.core.storage import (
     delete_session_domain_rows,
 )
 from satrap.core.type import CommandAction, LLMConfig, validate_thinking_levels
+from satrap.core.rag import RagService
 from satrap.edictum import AsyncSimpleSession
 
 from satrap.core.log import logger
@@ -1025,7 +1032,7 @@ class ChatService:
         states: list[PluginRuntimeState] = []
         result = await reconcile_plugin_states_async(
             states,
-            self._plugins.resolve_specs(PluginConfigManager()),
+            resolve_runtime_specs(session, self._plugins.resolve_specs(PluginConfigManager()), self._plugins.catalog),
             session.install_plugin,
             session.uninstall_plugin,
         )
@@ -1137,8 +1144,7 @@ class ChatService:
             item["waiting_user"] = bool(
                 runtime is not None and runtime.pending_user_inputs
             )
-        sessions_root = self._storage.platform_root(self._platform_id) / "sessions"
-        result["storage_size_bytes"] = StorageMaintenanceService._directory_size(sessions_root)
+        result.update(StorageMaintenanceService(self._storage).session_size_snapshot(self._platform_id))
         result["mode"] = "hot"
         return result
 
@@ -1592,6 +1598,7 @@ class ChatService:
         """
         async with conv.plugin_lock:
             try:
+                await self._refresh_session_plugins(conv)
                 result = await conv.session.run(text, img_urls=img_urls, thinking=think)
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
@@ -1863,20 +1870,27 @@ class ChatService:
             src = await self._resume_conversation(conversation_id)
         if src is None:
             return {"ok": False, "error": f"会话不存在: {conversation_id}"}
-        # 新建会话并继承影响运行时构建的会话设置
-        new_cid = await self.create_conversation(
-            model=src.model,
-            think=src.default_think,
-            system_prompt=src.system_prompt,
-            project_id=src.project_id,
-        )
-        new_conv = self._conversations[new_cid]
-        context_messages = src.recorder.active_context_before(turn_index)
-        copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
-        if copied > 0 and not context_messages:
-            context_messages = self._legacy_fork_context(src, turn_index)
-        if context_messages:
-            await new_conv.session.ctx.add_turn_messages(context_messages)
+        async with src.plugin_lock:
+            new_cid = await self.create_conversation(
+                model=src.model,
+                think=src.default_think,
+                system_prompt=src.system_prompt,
+                project_id=src.project_id,
+            )
+            try:
+                new_conv = self._conversations[new_cid]
+                await RAG_WORKERS.run(fork_session_settings, self._storage, self._platform_id, conversation_id, new_cid)
+                async with new_conv.plugin_lock:
+                    await self._refresh_session_plugins(new_conv)
+                context_messages = src.recorder.active_context_before(turn_index)
+                copied = src.recorder.copy_turns_to(new_conv.recorder, turn_index)
+                if copied > 0 and not context_messages:
+                    context_messages = self._legacy_fork_context(src, turn_index)
+                if context_messages:
+                    await new_conv.session.ctx.add_turn_messages(context_messages)
+            except BaseException:
+                await self.delete_conversation(new_cid)
+                raise
         logger.info(f"[聊天] fork: {conversation_id} -> {new_cid}, 复制 {copied} 轮")
         return {"ok": True, "conversation_id": new_cid, "copied_turns": copied}
 
@@ -1893,6 +1907,10 @@ class ChatService:
         无项目时工作区与 sandbox 都限定在会话独占目录;
         有项目时只共享外部工作区, sandbox 与 uploads 仍保持会话隔离
         """
+        session.plugin_override_store = SessionOverrideStore(self._storage.platform_db(self._platform_id))
+        session.plugin_model_manager = self._model_cfg
+        session.storage_layout = self._storage
+        session.storage_platform_id = self._platform_id
         project_id = str(project.get("project_id") or "") if project else ""
         scope = StorageScope(
             platform_id=self._platform_id,
@@ -1900,7 +1918,7 @@ class ChatService:
             session_id=session.session_id,
             project_id=project_id,
         )
-        session_root = self._storage.ensure_session(scope)
+        session_root = self._storage.bind_session(scope)
         if project is not None:
             try:
                 workspace_root = self._resolve_workspace_directory(str(project["root_path"]))
@@ -2175,7 +2193,7 @@ class ChatService:
                 async with conv.plugin_lock:
                     result = await reconcile_plugin_states_async(
                         conv.plugin_states,
-                        desired_specs,
+                        resolve_runtime_specs(conv.session, desired_specs, self._plugins.catalog),
                         conv.session.install_plugin,
                         conv.session.uninstall_plugin,
                     )
@@ -2280,6 +2298,47 @@ class ChatService:
             "config": global_cfg,
         }
 
+    def session_plugin_config(self, conversation_id: str, name: str) -> dict[str, Any]:
+        """读取当前会话的插件覆盖和来源, 不激活未运行的会话"""
+        if conversation_id not in self._conversations and not get_conversation_meta(conversation_id, db_path=self._display_db_path):
+            raise ValueError("会话不存在")
+        entry = self._plugins.catalog.get(name)
+        if entry is None:
+            raise ValueError("插件不存在")
+        service = PluginSettingsService(self._storage.platform_db(self._platform_id))
+        return {"ok": True, **service.get(conversation_id, name, entry.config_schema), "model_options": model_options(self._model_cfg)}
+
+    async def save_session_plugin_config(
+        self, conversation_id: str, name: str, values: dict[str, Any], expected_revision: int,
+    ) -> dict[str, Any]:
+        """保存会话显式参数, 本轮执行中时留到下一轮安全应用"""
+        self.session_plugin_config(conversation_id, name)
+        entry = self._plugins.catalog.get(name)
+        if entry is None:
+            raise ValueError("插件不存在")
+        validate_model_values(self._model_cfg, entry.config_schema, values)
+        service = PluginSettingsService(self._storage.platform_db(self._platform_id), models=self._model_cfg, rag=RagService(self._storage, self._model_cfg, self._platform_id, conversation_id))
+        await RAG_WORKERS.run(service.save, conversation_id, name, entry.config_schema, values, expected_revision=expected_revision)
+        conv = self._conversations.get(conversation_id)
+        result = {"status": "next_activation"}
+        if conv is not None:
+            if conv.task is not None and not conv.task.done():
+                result = {"status": "next_turn"}
+            else:
+                async with conv.plugin_lock:
+                    result = await self._refresh_session_plugins(conv)
+        return {**self.session_plugin_config(conversation_id, name), "runtime": result}
+
+    async def _refresh_session_plugins(self, conv: _Conversation) -> dict[str, Any]:
+        """在会话锁内按最新模型引用和覆盖协调插件"""
+        reload_models = getattr(self._model_cfg, "reload", None)
+        if callable(reload_models):
+            reload_models()
+        desired = resolve_runtime_specs(conv.session, self._plugins.resolve_specs(PluginConfigManager()), self._plugins.catalog)
+        result = await reconcile_plugin_states_async(conv.plugin_states, desired, conv.session.install_plugin, conv.session.uninstall_plugin)
+        self._coordinate_sandbox(conv.session)
+        return result
+
     async def save_plugin_config(self, name: str, config: dict[str, Any]) -> dict[str, Any]:
         """
         保存插件全局配置 (按 schema 校验)
@@ -2298,6 +2357,8 @@ class ChatService:
         schema = parse_config_schema(meta)
         mgr = PluginConfigManager()
         try:
+            config = validate_config_values(schema, config)
+            validate_plugin_settings(name, schema, {**{key: field.default for key, field in schema.items()}, **config}, models=self._model_cfg, rag=RagService(self._storage, self._model_cfg, self._platform_id))
             mgr.save_global(name, schema, config)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
@@ -2422,7 +2483,8 @@ class ChatService:
                 "conversation_id": conversation_id,
                 "preloaded": True,
             }
-        archived = StorageMaintenanceService(self._storage).archive_session(
+        archived = await RAG_WORKERS.run(
+            StorageMaintenanceService(self._storage).archive_session,
             self._platform_id,
             conversation_id,
             database_path=self._display_db_path,

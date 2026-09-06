@@ -318,8 +318,8 @@ class Embedding:
                 "model": target_model,
                 "input": batch_texts,
                 "encoding_format": target_encoding,
-            }
-            # 构造请求参数
+            }   # 构造请求参数
+
             if target_dimensions is not None:
                 request_kwargs["dimensions"] = target_dimensions
 

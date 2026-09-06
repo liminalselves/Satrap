@@ -584,6 +584,7 @@ class BackendHTTPServer(MiniHTTPServer):
             service = EdictumConfigService(
                 backend.edictum_config_manager,
                 backend.edictum_type_registry,
+                models=backend.model_config_manager,
             )
             return 200, {"types": service.list_types()}
         # 接口: GET /api/config/edictum/types
@@ -597,6 +598,7 @@ class BackendHTTPServer(MiniHTTPServer):
             service = EdictumConfigService(
                 backend.edictum_config_manager,
                 backend.edictum_type_registry,
+                models=backend.model_config_manager,
             )
             return 200, service.list_configs()
         # 接口: GET /api/config/edictum/sessions
@@ -611,6 +613,7 @@ class BackendHTTPServer(MiniHTTPServer):
                 service = EdictumConfigService(
                     backend.edictum_config_manager,
                     backend.edictum_type_registry,
+                    models=backend.model_config_manager,
                 )
                 created = service.create(_parse_json_object(body))
                 return 200, {"ok": True, "config": created}
@@ -636,6 +639,7 @@ class BackendHTTPServer(MiniHTTPServer):
             service = EdictumConfigService(
                 backend.edictum_config_manager,
                 backend.edictum_type_registry,
+                models=backend.model_config_manager,
             )
             try:
                 if method == "GET" and not action:

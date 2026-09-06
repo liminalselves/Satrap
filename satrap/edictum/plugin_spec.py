@@ -24,6 +24,8 @@ class PluginSpec:
     capabilities: dict[str, dict[str, bool]] = field(default_factory=dict[str, dict[str, bool]])
     version: str = ""
     path: str = ""
+    resources_revision: str = ""
+    config_resolved: bool = False
 
     def to_config(self) -> dict[str, Any]:
         """
@@ -190,6 +192,7 @@ def plugin_specs_fingerprint(specs: list[PluginSpec]) -> str:
             "config": spec.config,
             "capabilities": spec.capabilities,
             "version": spec.version,
+            "resources_revision": spec.resources_revision,
         }
         for spec in sorted(specs, key=lambda item: item.name)
     ]

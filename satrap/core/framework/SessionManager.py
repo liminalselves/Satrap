@@ -16,12 +16,12 @@ from pathlib import Path
 import secrets
 import sqlite3
 import string
-from typing import Any, Awaitable, Dict, List, Optional, Type, cast
-from typing import TYPE_CHECKING
+from typing import Any, Awaitable, Dict, List, Optional, Type, cast, TYPE_CHECKING
 import json
 import time
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.providers import (
     SESSION_CLASS_PROVIDER,
     SessionClassProvider,
@@ -2254,7 +2254,7 @@ class SessionManager:
         self.store.upsert(config)
         session_id = str(config.session_id or "").strip()
         if session_id:
-            self.storage_layout.ensure_session(
+            self.storage_layout.bind_session(
                 StorageScope(platform_id=self.platform_id, session_id=session_id)
             )
 
@@ -2290,7 +2290,11 @@ class SessionManager:
         - session: 运行时会话
         - session_id: 会话 ID
         """
-        root = self.storage_layout.ensure_session(
+
+        session.plugin_override_store = SessionOverrideStore(self.storage_layout.platform_db(self.platform_id))
+        session.plugin_model_manager = self._model_cfg_mgr
+        session.storage_layout = self.storage_layout
+        root = self.storage_layout.bind_session(
             StorageScope(platform_id=self.platform_id, session_id=session_id)
         )
         setattr(session, "storage_platform_id", self.platform_id)

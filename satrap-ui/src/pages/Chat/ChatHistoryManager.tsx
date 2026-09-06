@@ -29,7 +29,8 @@ const EMPTY_RESULT: ChatHistoryResult = {
   items: [], total: 0, page: 1, page_size: 50, storage_size_bytes: 0, mode: 'hot',
 };
 
-function formatBytes(bytes: number): string {
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return '大小未统计';
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
@@ -237,6 +238,12 @@ export function ChatHistoryManager({
           <div className="flex items-center gap-2 text-xs text-text-tertiary">
             <Badge variant={result.mode === 'hot' ? 'success' : 'warning'}>{result.mode === 'hot' ? '热管理' : '冷管理'}</Badge>
             <span>{tab === 'history' ? `${result.total} 个会话 · ${formatBytes(result.storage_size_bytes)}` : `${trash.length} 个回收项 · ${formatBytes(trashSize)}`}</span>
+            {tab === 'history' && <Button variant="ghost" size="sm" disabled={working || loading} title={result.storage_size_updated_at ? `上次统计: ${new Date(result.storage_size_updated_at * 1000).toLocaleString()}` : '按需统计文件大小'} onClick={async () => {
+              setWorking(true);
+              try { const snapshot = await (result.mode === 'cold' ? controlApi.refreshChatHistoryStorage() : chatApi.refreshHistoryStorage()); setResult((current) => ({ ...current, ...snapshot })); }
+              catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+              finally { setWorking(false); }
+            }}>统计大小</Button>}
             <Button variant="ghost" size="sm" onClick={() => void (tab === 'history' ? loadHistory() : loadTrash())} disabled={loading || working}>
               <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             </Button>

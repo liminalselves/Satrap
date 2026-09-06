@@ -22,6 +22,9 @@ from uuid import uuid4
 import sys
 
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload
+from satrap.edictum.plugin_settings import EffectivePluginConfig, resolve_session_plugin_config
+from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.utils.TCBuilder import AsyncTool, AsyncToolsManager, Tool, ToolsManager
 from satrap.core.framework.Base import (
@@ -1094,6 +1097,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
         command_states: dict[str, bool] = {}
         mcp_states: dict[str, bool] = {}
         mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
+        resources = None
         try:
             meta = load_plugin_meta(plugin_dir)
             name = str(meta.get("name") or "").strip()
@@ -1105,9 +1109,17 @@ class SimpleSession(Session, _HandlerRegistryMixin):
 
             config_schema = parse_config_schema(meta)
             # 合成插件配置: schema.default < 全局 json < 会话覆盖
-            plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+            if isinstance(config, EffectivePluginConfig):
+                plugin_config = dict(config)
+            else:
+                plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+                plugin_config = resolve_session_plugin_config(self, name, config_schema, plugin_config)
+            model_manager = getattr(self, "plugin_model_manager", None)
+            if model_manager is None and any(item.type in MODEL_TYPES for item in config_schema.values()):
+                model_manager = ModelConfigManager(auto_create=False)
+            resources = PluginResources(model_manager, config_schema, plugin_config, async_=False)
 
-            for t in collect_tools(plugin_dir, name, Tool, self, plugin_config):
+            for t in collect_tools(plugin_dir, name, Tool, self, plugin_config, resources):
                 tname = t.get_tool_name()
                 if tname in self._wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
@@ -1123,7 +1135,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                 mgr._register_skill(s)
                 skill_states[key] = True
 
-            for h in collect_handlers(plugin_dir, name, self, SessionHandler):
+            for h in collect_handlers(plugin_dir, name, self, SessionHandler, plugin_config, resources):
                 self._validate_handler(h)
                 _assert_sync_callbacks(h)
                 with self._registry_lock:
@@ -1135,7 +1147,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
-            sync_commands, _async_commands = collect_commands(plugin_dir, name, self, plugin_config)
+            sync_commands, _async_commands = collect_commands(plugin_dir, name, self, plugin_config, resources)
             for cname, chandler in sync_commands.items():
                 if cname in self.cmd_handler.commands or cname in command_states:
                     raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
@@ -1166,6 +1178,7 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                 description=str(meta.get("description") or ""),
                 path=str(plugin_dir),
             )
+            plugin.resources = resources
             plugin._session = self
             plugin._cleanup = collect_cleanup(plugin_dir, name, self)
             plugin.tools = tool_states
@@ -1189,6 +1202,8 @@ class SimpleSession(Session, _HandlerRegistryMixin):
             logger.info(f"[edictum] 插件 {name} 已安装")
             return plugin
         except Exception:
+            if resources is not None:
+                resources.close()
             _remove_plugin_sys_path(plugin_dir)
             for tname in tool_states:
                 self._wf.tools_manager.unregister_tool(tname)
@@ -1258,6 +1273,8 @@ class SimpleSession(Session, _HandlerRegistryMixin):
                 cleanup(self)
             except Exception as e:
                 logger.warning(f"[edictum] 插件 {name} 清理回调失败: {e}")
+        if plugin.resources is not None:
+            plugin.resources.close()
         logger.info(f"[edictum] 插件 {name} 已卸载")
         return True
 
@@ -2088,6 +2105,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
         command_states: dict[str, bool] = {}
         mcp_states: dict[str, bool] = {}
         mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
+        resources = None
         try:
             meta = load_plugin_meta(plugin_dir)
             name = str(meta.get("name") or "").strip()
@@ -2100,9 +2118,17 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
 
             config_schema = parse_config_schema(meta)
             # 合成插件配置: schema.default < 全局 json < 会话覆盖
-            plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+            if isinstance(config, EffectivePluginConfig):
+                plugin_config = dict(config)
+            else:
+                plugin_config = PluginConfigManager().resolve(name, config_schema, config)
+                plugin_config = resolve_session_plugin_config(self, name, config_schema, plugin_config)
+            model_manager = getattr(self, "plugin_model_manager", None)
+            if model_manager is None and any(item.type in MODEL_TYPES for item in config_schema.values()):
+                model_manager = ModelConfigManager(auto_create=False)
+            resources = PluginResources(model_manager, config_schema, plugin_config, async_=True)
 
-            for t in collect_tools(plugin_dir, name, AsyncTool, self, plugin_config):
+            for t in collect_tools(plugin_dir, name, AsyncTool, self, plugin_config, resources):
                 tname = t.get_tool_name()
                 if tname in wf.tools_manager.tools or tname in tool_states:
                     raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
@@ -2118,7 +2144,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                 mgr._register_skill(s)
                 skill_states[key] = True
 
-            for h in collect_handlers(plugin_dir, name, self, SessionHandler):
+            for h in collect_handlers(plugin_dir, name, self, SessionHandler, plugin_config, resources):
                 self._validate_handler(h)
                 _assert_sync_callbacks(h)
                 with self._registry_lock:
@@ -2130,7 +2156,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                     self._handlers[h.name] = h
                 handler_states[h.name] = True
 
-            _sync_commands, async_commands = collect_commands(plugin_dir, name, self, plugin_config)
+            _sync_commands, async_commands = collect_commands(plugin_dir, name, self, plugin_config, resources)
             for cname, chandler in async_commands.items():
                 if cname in self.command_handler.commands or cname in command_states:
                     raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
@@ -2160,6 +2186,7 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                 description=str(meta.get("description") or ""),
                 path=str(plugin_dir),
             )
+            plugin.resources = resources
             plugin._session = self
             plugin._cleanup = collect_cleanup(plugin_dir, name, self)
             plugin.tools = tool_states
@@ -2183,6 +2210,8 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
             logger.info(f"[edictum] 插件 {name} 已安装")
             return plugin
         except Exception:
+            if resources is not None:
+                await resources.aclose()
             _remove_plugin_sys_path(plugin_dir)
             wf = self._wf
             if wf is not None:
@@ -2256,6 +2285,8 @@ class AsyncSimpleSession(AsyncSession, _HandlerRegistryMixin):
                 cleanup(self)
             except Exception as e:
                 logger.warning(f"[edictum] 插件 {name} 清理回调失败: {e}")
+        if plugin.resources is not None:
+            await plugin.resources.aclose()
         logger.info(f"[edictum] 插件 {name} 已卸载")
         return True
 

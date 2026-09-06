@@ -39,7 +39,7 @@ WebSocket:
 """
 from __future__ import annotations
 
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 import argparse
 import asyncio
 import base64
@@ -48,11 +48,18 @@ from typing import Any, cast
 import json
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.config.session_overrides import OverrideConflictError
+from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
+from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
+from satrap.edictum.plugin_settings import model_options
+from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.config.loader import ConfigLoader
 from satrap.display.recorder import list_conversations
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+from satrap.core.storage import StorageMaintenanceService
+from satrap.core.rag import RagService
 
 from satrap.core.log import logger
 
@@ -155,6 +162,21 @@ class ChatHTTPServer(MiniHTTPServer):
 
     # ---------- API 路由 ----------
 
+    def _request_body_limit(self, method: str, path: str) -> int:
+        """
+        为文件上传单独设置 32 MiB 上限
+
+        参数:
+        - method: HTTP 方法
+        - path: 请求路径
+
+        返回:
+        - 当前路由的请求体字节上限
+        """
+        if method == "POST" and urlsplit(path).path == "/api/chat/rag/upload":
+            return DEFAULT_MAX_FILE_SIZE
+        return super()._request_body_limit(method, path)
+
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
         clean = path.split("?", 1)[0]
@@ -169,6 +191,54 @@ class ChatHTTPServer(MiniHTTPServer):
 
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}
+
+        if clean == "/api/chat/plugin-model-options" and method == "GET":
+            svc._model_cfg.reload()
+            return 200, {"options": model_options(svc._model_cfg)}
+
+        if (clean == "/api/chat/rag" and method in {"GET", "POST"}) or (clean == "/api/chat/rag/upload" and method == "POST"):
+            try:
+                session_id = self._query_param(path, "session_id")
+                if session_id and session_id not in svc._conversations:
+                    require_stored_session(svc._storage.platform_db(svc._platform_id), session_id)
+                payload = {"kb_id": self._query_param(path, "kb_id")} if method == "GET" or clean.endswith("/upload") else json.loads(body or b"{}")
+                svc._model_cfg.reload()
+                service = RagService(svc._storage, svc._model_cfg, svc._platform_id, session_id)
+                if clean.endswith("/upload"):
+                    return 200, await RAG_WORKERS.run(
+                        rag_upload_document, service, self._query_param(path, "kb_id"),
+                        self._query_param(path, "file_name"), body, self._query_param(path, "source"),
+                    )
+                return 200, await RAG_WORKERS.run(rag_admin_request, service, method, payload)
+            except RagOperationError as error:
+                return error.status, {"error": str(error), "stage": error.stage}
+            except WorkerBusyError as error:
+                return 503, {"error": str(error)}
+            except (OSError, TypeError, ValueError, TimeoutError) as error:
+                return 400, {"error": str(error)}
+
+        if clean == "/api/chat/session-plugin-config" and method in {"GET", "PUT"}:
+            try:
+                conversation_id = self._query_param(path, "conversation_id")
+                name = self._query_param(path, "plugin")
+                if method == "GET":
+                    return 200, svc.session_plugin_config(conversation_id, name)
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("请求体必须是对象")
+                payload = cast(dict[str, Any], payload)
+                revision = payload.get("expected_revision")
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                    raise ValueError("expected_revision 必须是非负整数")
+                return 200, await svc.save_session_plugin_config(
+                    conversation_id, name, payload.get("overrides", {}), revision,
+                )
+            except OverrideConflictError as error:
+                return 409, {"error": str(error)}
+            except WorkerBusyError as error:
+                return 503, {"error": str(error)}
+            except (TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
 
         if method == "GET" and clean == "/api/chat/models/detail":
             return 200, svc.list_models_detail()
@@ -232,6 +302,11 @@ class ChatHTTPServer(MiniHTTPServer):
                 )
             except (TypeError, ValueError) as error:
                 return 400, {"error": str(error)}
+        if clean == "/api/chat/history/storage" and method in {"GET", "POST"}:
+            return 200, await asyncio.to_thread(
+                StorageMaintenanceService(svc._storage).session_size_snapshot,
+                svc._platform_id, refresh=method == "POST",
+            )
         # 接口: GET /api/chat/history
 
         if method == "POST" and clean == "/api/chat/history/delete":

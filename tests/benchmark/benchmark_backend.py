@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import importlib.metadata
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 import tracemalloc
 import statistics
 import subprocess
@@ -17,6 +17,8 @@ import logging
 from pathlib import Path
 import socket
 from types import SimpleNamespace
+from typing import Any, cast
+import inspect
 import json
 import time
 import sys
@@ -90,11 +92,11 @@ async def file_baselines(root, repeats):
             stream.write(line * (line_count % 1024))
         for asynchronous in (False, True):
             tool = AsyncReadFileTool() if asynchronous else ReadFileTool()
-            tool._bind(session)
+            tool._bind(cast(Any, session))
             for offset in (0, line_count - 20):
                 async def call():
                     value = tool.execute(str(path), offset=offset, limit=20)
-                    result = await value if asynchronous else value
+                    result = await value if inspect.isawaitable(value) else value
                     if result.count("audit-line") != 20:
                         raise RuntimeError(f"分页结果校验失败: {result[:200]}")
                     return result
@@ -185,11 +187,11 @@ async def event_loop_baselines(repeats):
 
     entry = SimpleNamespace(session=SimpleNamespace(run=run), async_operation_lock=asyncio.Lock(), sync_operation_lock=threading.RLock())
     manager = SessionManager.__new__(SessionManager)
-    manager.pool = SimpleNamespace(list_entries=lambda: {"audit": entry}, release=lambda value: None)
-    manager._resolve_or_create_session_config = lambda call: SimpleNamespace(session_id="audit")
+    manager.pool = Mock(list_entries=lambda: {"audit": entry}, release=lambda value: None)
+    manager._resolve_or_create_session_config = Mock(return_value=SimpleNamespace(session_id="audit"))
     manager._acquire_or_create_entry_async = AsyncMock(return_value=entry)
     manager._prepare_session_async = AsyncMock()
-    manager._sync_runtime_to_store = lambda *args: None
+    manager._sync_runtime_to_store = Mock(return_value=None)
     manager.cleanup_idle_sessions_async = AsyncMock()
 
     async def session_call():

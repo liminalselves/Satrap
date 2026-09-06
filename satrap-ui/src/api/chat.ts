@@ -1,4 +1,7 @@
 import { getChatApiUrl } from '@/utils/constants';
+import type { SessionPluginSettings } from './pluginSettings';
+import type { ModelOptions } from '@/components/common/PluginConfigFields';
+import type { RagResult } from './rag';
 
 // ==================== 类型 ====================
 
@@ -119,7 +122,8 @@ export interface ChatHistoryResult {
   total: number;
   page: number;
   page_size: number;
-  storage_size_bytes: number;
+  storage_size_bytes: number | null;
+  storage_size_updated_at?: number | null;
   mode: 'hot' | 'cold';
 }
 
@@ -305,6 +309,12 @@ function historyQueryString(query: ChatHistoryQuery = {}): string {
 }
 
 export const chatApi = {
+  refreshHistoryStorage: () => request<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('POST', '/api/chat/history/storage'),
+  ragList: (sessionId: string, kbId: string) => request<RagResult>('GET', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId, kb_id: kbId })}`),
+  ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),
+  pluginModelOptions: () => request<{ options: ModelOptions }>('GET', '/api/chat/plugin-model-options'),
+  getSessionPluginConfig: (conversationId: string, plugin: string) => request<SessionPluginSettings>('GET', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`),
+  saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision }),
   health: () => request<{ ok: boolean; conversations: number; preloaded: number }>('GET', '/api/chat/health'),
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),

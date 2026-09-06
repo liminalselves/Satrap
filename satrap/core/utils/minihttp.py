@@ -321,6 +321,7 @@ class MiniHTTPServer:
             return
 
         self._active_connections += 1
+        origin: str | None = None
         try:
             raw_request = await read_request_headers(
                 reader,
@@ -390,24 +391,37 @@ class MiniHTTPServer:
             body = await read_request_body(
                 reader,
                 raw_request,
-                max_bytes=self._max_body_bytes,
+                max_bytes=self._request_body_limit(method, path),
                 timeout=self._body_timeout,
             )
 
             status, data = await self._route(method, path, body)
             self._send_json(writer, status, data, origin)
         except HTTPRequestError as error:
-            self._send_json(writer, error.status, {"error": error.message})
+            self._send_json(writer, error.status, {"error": error.message}, origin)
         except Exception as e:
             if self._log_errors:
                 logger.error(f"[HTTP] 请求处理异常: {e}")
-            self._send_json(writer, 500, {"error": "internal server error"})
+            self._send_json(writer, 500, {"error": "internal server error"}, origin)
         finally:
             self._active_connections -= 1
             try:
                 writer.close()
             except Exception:
                 pass
+
+    def _request_body_limit(self, method: str, path: str) -> int:
+        """
+        返回已鉴权路由的请求体上限, 子类可为上传路由单独配置
+
+        参数:
+        - method: HTTP 方法
+        - path: 含查询参数的请求路径
+
+        返回:
+        - 最大请求体字节数
+        """
+        return self._max_body_bytes
 
     # ---------- 响应 ----------
 

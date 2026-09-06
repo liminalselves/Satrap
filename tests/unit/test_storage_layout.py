@@ -4,6 +4,7 @@ import sqlite3
 import pytest
 import json
 
+from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.storage.database import restore_session_domain
 from satrap.core.storage import (
     StorageLayout,
@@ -32,6 +33,36 @@ def test_platform_uses_one_database(tmp_path: Path):
     assert layout.platform_db("onebot-main").name == "platform.db"
     assert layout.platform_db("onebot-main").parent == layout.platform_root("onebot-main")
     assert layout.platform_db("onebot-main") != layout.platform_db("onebot-backup")
+
+
+def test_session_binding_and_overrides_do_not_create_session_directories(tmp_path: Path):
+    """会话身份和参数覆盖存入数据库, 绑定多个会话也不生成空目录"""
+    layout = StorageLayout(tmp_path / "data")
+    store = SessionOverrideStore(layout.platform_db("chat"))
+    for number in range(20):
+        session_id = f"conversation-{number}"
+        root = layout.bind_session(StorageScope("chat", session_id=session_id))
+        store.replace(session_id, "plugins.example", {"enabled": False}, expected_revision=0)
+        assert not root.exists()
+    assert store.read("conversation-10", "plugins.example")["overrides"] == {"enabled": False}
+
+
+def test_session_sizes_only_scan_on_explicit_refresh(tmp_path: Path, monkeypatch):
+    """列表读取旧缓存也不扫描磁盘, 刷新操作才更新大小和时间"""
+    layout = StorageLayout(tmp_path / "data")
+    maintenance = StorageMaintenanceService(layout)
+    assert maintenance.session_size_snapshot("chat")["storage_size_bytes"] is None
+    root = layout.bind_session(StorageScope("chat", session_id="one"))
+    (root / "uploads").mkdir(parents=True)
+    document = root / "uploads" / "text.txt"
+    document.write_bytes(b"hello")
+    snapshot = maintenance.session_size_snapshot("chat", refresh=True)
+    assert snapshot["storage_size_bytes"] == 5
+    document.write_bytes(b"changed")
+    def unexpected_scan(*args):
+        raise AssertionError("列表不能遍历目录")
+    monkeypatch.setattr(maintenance, "_directory_size", unexpected_scan)
+    assert maintenance.session_size_snapshot("chat") == snapshot
 
 
 def test_ensure_session_creates_isolated_directories(tmp_path: Path):

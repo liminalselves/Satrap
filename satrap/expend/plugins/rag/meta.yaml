@@ -1,0 +1,68 @@
+name: rag
+version: 0.1.0
+author: Satrap Team
+description: "分层知识库检索与文档导入, 结果由当前会话模型组织回答"
+config_schema:
+  db_scope:
+    type: select
+    default: session
+    options: [global, session, session_global]
+    description: "检索全局库, 当前会话库, 或两者"
+  global_db_ids:
+    type: knowledge_bases
+    scope: global
+    default: []
+    description: "选中的全局库, 空列表不表示全部"
+  session_db_ids:
+    type: knowledge_bases
+    scope: session
+    default: []
+    description: "当前会话库, 留空使用当前会话默认库"
+  write_db_id:
+    type: knowledge_base
+    default: ""
+    description: "默认导入目标, 必须位于检索允许范围内"
+  rerank:
+    type: rerank
+    default: ""
+    description: "可选后端 ReRank 配置, 留空使用检索排名融合"
+  candidate_k:
+    type: number
+    integer: true
+    minimum: 1
+    maximum: 1000
+    default: 20
+    description: "每个知识库召回的候选片段数"
+  top_k:
+    type: number
+    integer: true
+    minimum: 1
+    maximum: 100
+    default: 5
+    description: "合并, 去重, 排序后的最多返回片段数"
+  similarity_threshold:
+    type: number
+    nullable: true
+    default: null
+    description: "各知识库向量相似度阈值, null 表示不额外过滤"
+  rerank_min_score:
+    type: number
+    nullable: true
+    default: null
+    description: "重排分数阈值, null 沿用后端模型配置"
+  rerank_failure_policy:
+    type: select
+    default: fallback
+    options: [fallback, error]
+    description: "重排失败时退回排名融合并说明, 或返回错误"
+  max_result_chars:
+    type: number
+    integer: true
+    minimum: 1
+    maximum: 100000
+    default: 12000
+    description: "返回片段正文的总字符预算"
+tools:
+  rag_search: "检索配置允许的知识库, 返回正文片段和来源"
+  rag_list: "列出允许访问的知识库或指定库的文档概要"
+  rag_ingest: "导入文本或当前工作区及会话文件目录中的文档"

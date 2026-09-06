@@ -12,10 +12,12 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import pytest
-from typing import cast
+from typing import Any, cast
 import json
 
+from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.backend import control_server
+from satrap.core.type import SessionConfig, EmbeddingConfig
 
 
 class _BufferWriter:
@@ -77,7 +79,7 @@ async def _request(
     return bytes(writer.data)
 
 
-def _json_body(response: bytes) -> object:
+def _json_body(response: bytes) -> dict[str, Any]:
     """
     解析响应 JSON 体
 
@@ -85,9 +87,11 @@ def _json_body(response: bytes) -> object:
     - response: 完整响应字节
 
     返回:
-    - object: JSON 解析结果
+    - dict[str, Any]: JSON 对象
     """
-    return json.loads(response.split(b"\r\n\r\n", 1)[1])
+    payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _use_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -113,6 +117,37 @@ def _use_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         encoding="utf-8",
     )
     monkeypatch.setattr(control_server, "CONFIG_PATH", config_path)
+
+
+@pytest.mark.asyncio
+async def test_control_rag_and_session_overrides_share_scope_and_revision(tmp_path, monkeypatch):
+    """冷管理接口共用真实数据库, 拒绝跨会话引用与过期覆盖请求"""
+    _use_config(monkeypatch, tmp_path)
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    instances = control_server._session_instance_config_service("local")
+    for name in ("one", "two"):
+        instances.store.upsert(SessionConfig(session_id=name, session_type_name="example"))
+    models = control_server._model_config_service().manager
+    models.set_embedding_config(EmbeddingConfig(model="embed", api_key="secret-test-key", dimensions=3), "embed")
+    async def action(path, method="GET", payload=None):
+        return await _request(path, method, json.dumps(payload).encode("utf-8") if payload is not None else b"")
+    created = _json_body(await action("/config/rag?platform_id=local&session_id=one", "POST", {"action": "create", "name": "当前库", "scope": "session", "config": {"embed": "embed"}}))
+    kb_id = created["knowledge_base"]["id"]
+    assert not instances.storage_layout.session_root("local", "one").exists()
+    assert _json_body(await action("/config/rag?platform_id=local&session_id=two"))["knowledge_bases"] == []
+    url = "/config/session-plugin-config?platform_id=local&session_id=one&plugin=rag"
+    record = _json_body(await action(url))
+    assert record["revision"] == 0
+    assert "secret-test-key" not in json.dumps(record)
+    saved = _json_body(await action(url, "PUT", {"overrides": {"session_db_ids": [kb_id], "top_k": 3}, "expected_revision": 0}))
+    assert saved["revision"] == 1 and saved["sources"]["top_k"] == "session"
+    assert b"409" in await action(url, "PUT", {"overrides": {}, "expected_revision": 0})
+    other = url.replace("session_id=one", "session_id=two")
+    assert b"400" in await action(other, "PUT", {"overrides": {"session_db_ids": [kb_id]}, "expected_revision": 0})
+    assert _json_body(await action(other))["revision"] == 0
+    reset = _json_body(await action(url, "PUT", {"overrides": {}, "expected_revision": 1}))
+    assert reset["config"]["top_k"] == 5 and reset["overrides"] == {}
+    assert b"400" in await action(url.replace("session_id=one", "session_id=missing"))
 
 
 @pytest.mark.asyncio

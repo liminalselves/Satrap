@@ -8,15 +8,21 @@ import pytest
 from typing import Any, cast
 from types import SimpleNamespace
 import copy
+import json
 import yaml
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.expend.tools.memory_store import MemoryStore
+from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import AsyncLLM
-from satrap.display.recorder import DisplayRecorder, list_conversations
+from satrap.display.recorder import DisplayRecorder, list_conversations, get_conversation_meta
 from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
+from satrap.display.server import ChatHTTPServer
+from satrap.edictum.plugin import load_plugin_meta
 from satrap.core.storage import StorageLayout
+from satrap.expend.tools import memory_store as ms_mod
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
 
@@ -158,7 +164,6 @@ class _FakeModelConfig:
         return {"default": {}, "fast": {}}
 
     def get_llm_config(self, name: str = "default") -> Any:
-        from satrap.core.type import LLMConfig
         return LLMConfig(name=name, model="m", api_key="k", base_url="https://x")
 
 
@@ -190,6 +195,45 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
         display_db_path=str(tmp_path / "display.db"),
         storage_layout=StorageLayout(tmp_path / "data"),
     )
+
+
+@pytest.mark.asyncio
+async def test_chat_override_api_defers_busy_session_and_fork_inherits_parameters(tmp_path, monkeypatch):
+    """Chat HTTP 入口验证覆盖版本, 执行中延后应用, 分支继承独立覆盖"""
+    svc = _make_service(tmp_path, monkeypatch)
+    manager = ModelConfigManager(tmp_path / "models.json")
+    manager.set_llm_config(LLMConfig(model="test", api_key="secret-test-key"), "default")
+    svc._model_cfg = manager
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    cid = await svc.create_conversation()
+    conv = svc.get_conversation(cid)
+    assert conv is not None
+    server = ChatHTTPServer(svc)
+    url = f"/api/chat/session-plugin-config?conversation_id={cid}&plugin=rag"
+    try:
+        status, result = await server._route("GET", url, b"")
+        assert status == 200 and result["revision"] == 0
+        assert "secret-test-key" not in json.dumps(result)
+        conv.task = asyncio.create_task(asyncio.sleep(30))
+        status, result = await server._route("PUT", url, json.dumps({"overrides": {"top_k": 2}, "expected_revision": 0}).encode())
+        assert status == 200 and result["runtime"]["status"] == "next_turn"
+        status, _ = await server._route("PUT", url, b'{"overrides":{},"expected_revision":0}')
+        assert status == 409
+        conv.task.cancel()
+        await asyncio.gather(conv.task, return_exceptions=True)
+        result = await svc.fork(cid, 0)
+        copied = svc.session_plugin_config(result["conversation_id"], "rag")
+        assert copied["overrides"] == {"top_k": 2}
+        assert not svc._storage.session_root("chat", result["conversation_id"]).exists()
+        store = SessionOverrideStore(svc._storage.platform_db("chat"))
+        store.replace(result["conversation_id"], "plugins.rag", {"top_k": 3}, expected_revision=copied["revision"])
+        assert store.read(cid, "plugins.rag")["overrides"] == {"top_k": 2}
+    finally:
+        if conv.task is not None:
+            conv.task.cancel()
+            await asyncio.gather(conv.task, return_exceptions=True)
+        await svc.close()
 
 
 @pytest.mark.parametrize("failure", ["cancel", "error"])
@@ -229,7 +273,8 @@ async def test_retry_preparation_reserves_and_restores_context(tmp_path: Path, m
             assert not (await task)["ok"]
         assert conv.session.ctx.get_context() == original
         assert cid not in svc._operations
-        assert conv.recorder.last_turn()["variant_count"] == 1
+        last_turn = conv.recorder.last_turn()
+        assert last_turn is not None and last_turn["variant_count"] == 1
         monkeypatch.setattr(conv.session.ctx, "del_last_chat", original_delete)
         assert (await svc.retry(cid))["ok"]
         await conv.task
@@ -295,10 +340,14 @@ async def test_concurrent_preload_and_send_share_initialization(tmp_path: Path, 
         release.set()
         assert await first == "shared"
         assert (await second)["ok"] and installations == 1
-        await svc.get_conversation("shared").task
+        conv = svc.get_conversation("shared")
+        assert conv is not None and conv.task is not None
+        await conv.task
     finally:
         release.set()
-        await asyncio.gather(*[task for task in (first, second) if task], return_exceptions=True)
+        await asyncio.gather(first, return_exceptions=True)
+        if second is not None:
+            await asyncio.gather(second, return_exceptions=True)
         await svc.close()
 
 
@@ -619,7 +668,6 @@ def test_service_preload_rebuilds_same_id_after_model_change(tmp_path: Path, mon
     cid, model = asyncio.run(_run())
     assert model == "fast"
     assert built_models == ["default", "fast"]
-    from satrap.display.recorder import get_conversation_meta
     meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
     assert meta is not None and meta["model"] == "fast"
 
@@ -632,7 +680,6 @@ def test_service_preload_rebuilds_after_selected_model_config_change(tmp_path: P
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
     """
-    from satrap.core.type import LLMConfig
 
     temperatures: list[float | None] = []
 
@@ -687,8 +734,6 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
     """
-    from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
 
     preset = tmp_path / "preset"
     plugin_dir = _write_plugin(preset, "plug", tools={"shell": "执行命令"})
@@ -815,7 +860,9 @@ def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatc
     async def _run() -> tuple[str, Path]:
         cid = await svc.preload_conversation()
         session_root = svc._storage.session_root("chat", cid)
-        assert session_root.is_dir()
+        assert not session_root.exists()
+        (session_root / "uploads").mkdir(parents=True)
+        (session_root / "uploads" / "draft.txt").write_text("draft", encoding="utf-8")
         await asyncio.sleep(0.05)
         assert svc.get_conversation(cid) is None
         await svc.close()
@@ -870,11 +917,11 @@ def test_service_delete_conversation_cascades_data_and_trashes_files(
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
     """
-    from satrap.expend.tools.memory_store import MemoryStore
 
     svc = _make_service(tmp_path, monkeypatch)
     conversation_id = asyncio.run(svc.create_conversation())
     session_root = svc._storage.session_root("chat", conversation_id)
+    (session_root / "sandbox").mkdir(parents=True)
     (session_root / "sandbox" / "result.txt").write_text("data", encoding="utf-8")
     memory = MemoryStore(
         db_path=svc._chat_db_path,
@@ -948,7 +995,6 @@ def test_service_send_default_think(tmp_path: Path, monkeypatch: Any):
         assert result["ok"] is True
         assert conv.task is not None
         await conv.task
-        from satrap.display.recorder import get_conversation_meta
         meta = get_conversation_meta(cid, db_path=str(svc._display_db_path))
         assert meta is not None and meta["think"] == "high"
         return cid, str(recorded[0] if recorded else None)
@@ -1127,7 +1173,6 @@ def test_service_memory_failure_propagation(tmp_path: Path, monkeypatch: Any):
     - tmp_path: tmp路径
     - monkeypatch: pytest monkeypatch 夹具
     """
-    from satrap.expend.tools import memory_store as ms_mod
 
     monkeypatch.setattr(ms_mod, "DEFAULT_MEMORY_DB", tmp_path / "memory.db")
     svc = _make_service(tmp_path, monkeypatch)
@@ -1171,9 +1216,9 @@ async def test_concurrent_retry_must_reserve_conversation(tmp_path):
         ctx=SimpleNamespace(del_last_chat=delete_turn, static_message=lambda: 0, get_context=lambda: []),
     ))
     service = ChatService.__new__(ChatService)
-    service._conversations = {"audit": conv}
+    service._conversations = {"audit": cast(service_mod._Conversation, conv)}
     service._operations = {}
-    service._broadcast = lambda *args: None
+    service._broadcast = lambda conv, msg: None
     service._run_turn = run_turn
     tasks = []
     try:

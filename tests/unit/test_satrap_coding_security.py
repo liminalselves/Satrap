@@ -3,6 +3,7 @@ import pytest
 import shutil
 from types import SimpleNamespace
 import os
+from typing import Any, cast
 
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine, RiskLevel
 from satrap.expend.plugins.satrap_coding import tools as coding
@@ -25,8 +26,8 @@ def shell_env(tmp_path, monkeypatch):
 async def execute_shell(shell_env, asynchronous, command, shell="powershell"):
     _, engine, session = shell_env
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
-    tool._bind(session)
-    if asynchronous:
+    tool._bind(cast(Any, session))
+    if isinstance(tool, coding.AsyncShellTool):
         return await tool.execute(command, timeout=10, shell=shell)
     return tool.execute(command, timeout=10, shell=shell)
 
@@ -37,8 +38,8 @@ async def test_shell_harness_read_control(shell_env, asynchronous, shell):
     root, engine, session = shell_env
     (root / "control.txt").write_text("audit-control", encoding="utf-8")
     reader = coding.AsyncReadFileTool() if asynchronous else coding.ReadFileTool()
-    reader._bind(session)
-    output = await reader.execute("control.txt") if asynchronous else reader.execute("control.txt")
+    reader._bind(cast(Any, session))
+    output = await reader.execute("control.txt") if isinstance(reader, coding.AsyncReadFileTool) else reader.execute("control.txt")
     assert "audit-control" in output
     engine.set_plan_mode(False)
     session.user_input_provider = lambda *args: "y"
@@ -69,7 +70,7 @@ async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
     token = "audit-fake-token-does-not-authorize-anything"
     (root / ".satrap" / "api-token").write_text(token, encoding="utf-8")
     reader = coding.ReadFileTool()
-    reader._bind(session)
+    reader._bind(cast(Any, session))
     if "拒绝读取" not in reader.execute(".satrap/api-token"):
         raise RuntimeError("复现前置条件失败: 文件工具未拒绝受保护路径")
     output = await execute_shell(shell_env, asynchronous, "Get-Content .satrap/api-token")
@@ -94,9 +95,9 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
     session = SimpleNamespace(coding_workspace_root=tmp_path, user_input_provider=provider if answer else None)
     monkeypatch.setattr(coding, "_run_shell", lambda *args: calls.append(args) or "executed")
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
-    tool._bind(session)
+    tool._bind(cast(Any, session))
     for _ in range(2):
-        result = await tool.execute("echo harmless") if asynchronous else tool.execute("echo harmless")
+        result = await tool.execute("echo harmless") if isinstance(tool, coding.AsyncShellTool) else tool.execute("echo harmless")
         assert (result == "executed") == (answer == "y")
     assert len(calls) == (2 if answer == "y" else 0)
     assert len(approvals) == (2 if answer else 0)
@@ -119,6 +120,6 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
     session.user_input_provider = provider
     monkeypatch.setattr(coding, "_run_shell", lambda *args: pytest.fail("已失效授权不能执行"))
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
-    tool._bind(session)
-    result = await tool.execute("echo audit") if asynchronous else tool.execute("echo audit")
+    tool._bind(cast(Any, session))
+    result = await tool.execute("echo audit") if isinstance(tool, coding.AsyncShellTool) else tool.execute("echo audit")
     assert "执行已取消" in result

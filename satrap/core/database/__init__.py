@@ -841,6 +841,45 @@ class DataBase:
                 self._refresh_after_commit(name)
             return deleted
 
+    def source_documents(self, name: str) -> list[dict[str, Any]]:
+        """读取 RAG 来源记录, 原文仅保存在首块元数据中"""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT metadata FROM documents WHERE collection_name=? "
+                "AND json_extract(metadata, '$.chunk_index')=0 ORDER BY id", (name,),
+            ).fetchall()
+            return [json.loads(row["metadata"]) for row in rows]
+
+    def replace_source(
+        self, name: str, source_id: str, documents: list[str], vectors: list[list[float]], metadata: list[dict[str, Any]],
+    ) -> int:
+        """在同一事务中替换来源的全部块, 空批次表示删除来源"""
+        dim = _validate_vector_batch(documents, vectors, metadata)
+        if any(item.get("source_id") != source_id for item in metadata):
+            raise ValueError("来源 ID 与元数据不一致")
+        array = np.asarray(vectors, dtype="<f4")
+        if not np.isfinite(array).all():
+            raise ValueError("向量必须包含有限数值")
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("INSERT OR IGNORE INTO collections(name, collection_id) VALUES (?, ?)", (name, uuid.uuid4().hex))
+                row = conn.execute("SELECT dim FROM collections WHERE name=?", (name,)).fetchone()
+                if dim is not None and row["dim"] not in (0, dim):
+                    raise ValueError("向量维度不一致, 请重建知识库")
+                conn.execute(
+                    "DELETE FROM documents WHERE collection_name=? AND json_extract(metadata, '$.source_id')=?",
+                    (name, source_id),
+                )
+                for document, vector, meta in zip(documents, array, metadata):
+                    conn.execute(
+                        "INSERT INTO documents(collection_name, document, metadata, vector) VALUES (?, ?, ?, ?)",
+                        (name, document, json.dumps(meta, ensure_ascii=False, allow_nan=False), vector.tobytes()),
+                    )
+                conn.execute("UPDATE collections SET dim=?, revision=revision+1 WHERE name=?", (dim or row["dim"], name))
+            self._refresh_after_commit(name)
+        return len(documents)
+
     def delete_collection(self, name: str):
         """
         原子删除源数据, 随后清理此集合身份下的派生缓存

@@ -22,9 +22,6 @@ class CodeSandbox:
         self.sandbox_path = str(Path(sandbox_path).resolve())
         self.python_executable = env
         self.execution_timeout = max(0.1, float(execution_timeout))
-        # 确保沙箱目录存在
-
-        os.makedirs(self.sandbox_path, exist_ok=True)
 
     def _safe_join(self, *paths: str) -> str:
         """
@@ -57,6 +54,7 @@ class CodeSandbox:
         - 包含 stdout, stderr, returncode 的字典
         """
         try:
+            os.makedirs(self.sandbox_path, exist_ok=True)
             result = subprocess.run(
                 [self.python_executable] + args,
                 cwd=cwd or self.sandbox_path,

@@ -11,6 +11,8 @@ import json
 
 _RESTORABLE_TABLES = frozenset({
     "session_configs",
+    "session_config_overrides",
+    "rag_knowledge_bases",
     "conversation_meta",
     "display_turns",
     "display_turn_variants",
@@ -116,6 +118,8 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
         related_pattern = _related_scope_pattern(session_id)
         selectors: dict[str, tuple[str, tuple[object, ...]]] = {
             "session_configs": ("session_id = ?", (session_id,)),
+            "session_config_overrides": ("session_id = ?", (session_id,)),
+            "rag_knowledge_bases": ("session_id = ? AND scope = 'session'", (session_id,)),
             "conversation_meta": ("conversation_id = ?", (session_id,)),
             "display_turns": ("conversation_id = ?", (session_id,)),
             "display_turn_variants": (
@@ -207,6 +211,14 @@ def restore_session_domain(
                 if receipt["session_id"] != session_id or receipt["metadata"] != restore_metadata:
                     raise ValueError("恢复凭据与归档不匹配")
                 return   # 先前提交已成功, 不重复恢复数据库记录
+        if "session_config_overrides" in records:
+            from satrap.core.config.session_overrides import ensure_override_tables
+            # core.config 包导出依赖存储维护模块, 延迟到恢复时避免循环导入
+            ensure_override_tables(connection)
+        if "rag_knowledge_bases" in records:
+            from satrap.core.rag import ensure_rag_tables
+            # RAG 依赖 storage 包且会加载可选 FAISS, 延迟到知识库恢复时导入
+            ensure_rag_tables(connection)
         tables = _table_names(connection)
         schemas: dict[str, set[str]] = {}
         for table in records:
@@ -221,10 +233,14 @@ def restore_session_domain(
                 _validated_restore_columns(table, row, schemas[table])
                 identity_column = {
                     "session_configs": "session_id", "conversation_meta": "conversation_id",
+                    "session_config_overrides": "session_id",
+                    "rag_knowledge_bases": "session_id",
                     "display_turns": "conversation_id", "context_sessions": "session_id",
                 }.get(table)
                 if identity_column and row.get(identity_column) != session_id:
                     raise ValueError(f"归档表 {table} 的会话身份不匹配")
+                if table == "rag_knowledge_bases" and row.get("scope") != "session":
+                    raise ValueError("会话归档不能恢复全局知识库")
                 if table in ("display_turn_variants", "display_tool_calls") and row.get("turn_id") not in turn_ids:
                     raise ValueError(f"归档表 {table} 引用了归档外的轮次")
                 scope_column = {
@@ -367,6 +383,10 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
                 "DELETE FROM session_configs WHERE session_id = ?",
                 (session_id,),
             )
+        if "session_config_overrides" in tables:
+            connection.execute("DELETE FROM session_config_overrides WHERE session_id = ?", (session_id,))
+        if "rag_knowledge_bases" in tables:
+            connection.execute("DELETE FROM rag_knowledge_bases WHERE session_id = ? AND scope = 'session'", (session_id,))
         for table in ("state_checkpoints", "state_snapshots", "state_scopes"):
             if table in tables:
                 connection.execute(

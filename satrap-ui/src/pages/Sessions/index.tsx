@@ -1,3 +1,7 @@
+import { RagManager } from '@/components/common/RagManager';
+import { Modal } from '@/components/ui/Modal';
+import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
+import { controlApi } from '@/api/control';
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useBackendStore } from '@/stores/useBackendStore';
@@ -26,6 +30,17 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions() {
+  const [ragSession, setRagSession] = useState<RuntimeSession | null>(null);
+  const [overrideSession, setOverrideSession] = useState<RuntimeSession | null>(null);
+  const [overridePlugins, setOverridePlugins] = useState<string[]>([]);
+  useEffect(() => {
+    if (!overrideSession) return;
+    let cancelled = false;
+    controlApi.listEdictumPlugins().then((plugins) => { if (!cancelled) setOverridePlugins(plugins.map((plugin) => plugin.name)); })
+      .catch((error) => toast('error', error.message));
+    return () => { cancelled = true; };
+  }, [overrideSession]);
+
   const { sessionClasses, llmConfigs, fetchSessionClasses, fetchModels } = useConfigStore();
   const { health, isRunning } = useBackendStore();
   const [showRegisterModal, setShowRegisterModal] = useState(false);
@@ -469,6 +484,8 @@ export function Sessions() {
           );
         return (
           <div className="flex items-center gap-1">
+            <Button variant="ghost" size="sm" onClick={() => setRagSession(item)}>知识库</Button>
+            <Button variant="ghost" size="sm" title="会话插件参数" onClick={() => setOverrideSession(item)}><Settings className="h-4 w-4" /></Button>
             {canRetry && (
               <Button
                 variant="ghost"
@@ -534,6 +551,14 @@ export function Sessions() {
 
   return (
     <div className="space-y-6">
+      <Modal open={ragSession !== null} title="会话知识库" onClose={() => setRagSession(null)} size="lg">
+        {ragSession && <RagManager context={{ platformId: ragSession.platform_id, sessionId: ragSession.session_id, via: 'control' }} />}
+      </Modal>
+      <SessionPluginSettingsModal
+        context={overrideSession ? { platformId: overrideSession.platform_id, sessionId: overrideSession.session_id } : null}
+        plugins={overridePlugins}
+        onClose={() => setOverrideSession(null)}
+      />
       <PageHeader
         title="会话管理"
         description="管理扫描式会话类、Edictum 命名配置和运行时会话"

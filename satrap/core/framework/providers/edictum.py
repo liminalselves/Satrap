@@ -16,6 +16,7 @@ import time
 
 from satrap.core.framework.providers.base import SessionProviderDefinition
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_settings import resolve_runtime_specs
 from satrap.edictum.plugin_runtime import (
     PluginInstallationError,
     PluginRuntimeState,
@@ -23,6 +24,7 @@ from satrap.edictum.plugin_runtime import (
     install_plugin_spec_async,
     preview_plugin_reconciliation,
     reconcile_plugin_states_async,
+    reconcile_plugin_states,
 )
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base import AsyncSession, Session
@@ -324,7 +326,26 @@ class EdictumProvider:
         state = self._get_runtime_state(session)
         if state is None or state.type_definition.plugin_installer is None:
             return
+        self.config_manager.reload()
+        models = getattr(session, "plugin_model_manager", None)
+        if models is not None:
+            models.reload()
+        if not any(item.status == "pending" for item in state.plugins):
+            config = self.config_manager.get_config(state.config_name) or {}
+            specs = resolve_runtime_specs(session, parse_plugin_specs(config.get("plugins", []), self.plugin_catalog), self.plugin_catalog)
+            installer = state.type_definition.plugin_installer
+            uninstaller = state.type_definition.plugin_uninstaller
+            result = reconcile_plugin_states(
+                state.plugins, specs, lambda path, values: installer(session, path, values),
+                (lambda name: uninstaller(session, name)) if uninstaller else None,
+            )
+            self._refresh_runtime_fingerprint(state)
+            if not result.get("ok", False):
+                raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
+            return
         for plugin_state in state.plugins:
+            if plugin_state.desired_spec is not None:
+                plugin_state.desired_spec = resolve_runtime_specs(session, [plugin_state.desired_spec], self.plugin_catalog)[0]
             if plugin_state.status != "pending":
                 continue
             self._install_plugin_sync(session, state.type_definition, plugin_state)
@@ -349,7 +370,18 @@ class EdictumProvider:
         state = self._get_runtime_state(session)
         if state is None or state.type_definition.plugin_installer is None:
             return
+        self.config_manager.reload()
+        models = getattr(session, "plugin_model_manager", None)
+        if models is not None:
+            models.reload()
+        if not any(item.status == "pending" for item in state.plugins):
+            result = await self.reconcile_session_plugins_async(session)
+            if not result.get("ok", False):
+                raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
+            return
         for plugin_state in state.plugins:
+            if plugin_state.desired_spec is not None:
+                plugin_state.desired_spec = resolve_runtime_specs(session, [plugin_state.desired_spec], self.plugin_catalog)[0]
             if plugin_state.status != "pending":
                 continue
             await self._install_plugin_async(session, state.type_definition, plugin_state)
@@ -717,6 +749,7 @@ class EdictumProvider:
             self.plugin_catalog,
             require_available=False,
         )
+        desired_specs = resolve_runtime_specs(session, desired_specs, self.plugin_catalog)
         state.desired_fingerprint = plugin_specs_fingerprint(desired_specs)
         definition = state.type_definition
         installer = definition.plugin_installer
@@ -774,6 +807,7 @@ class EdictumProvider:
             self.plugin_catalog,
             require_available=False,
         )
+        desired_specs = resolve_runtime_specs(session, desired_specs, self.plugin_catalog)
         return {
             "ok": True,
             "config_name": state.config_name,

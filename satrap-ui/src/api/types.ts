@@ -42,7 +42,7 @@ export interface EmbeddingConfig {
   model?: string;
   base_url?: string;
   api_key?: string;
-  dimensions?: number;
+  dimensions?: number | null;
   max_batch_size?: number;
 }
 
@@ -94,6 +94,13 @@ export interface EdictumPluginConfigField {
   default: unknown;
   description: string;
   options?: string[];
+  required?: boolean;
+  nullable?: boolean;
+  session_overridable?: boolean;
+  minimum?: number | null;
+  maximum?: number | null;
+  integer?: boolean;
+  scope?: string;
 }
 
 export interface EdictumAvailablePlugin {

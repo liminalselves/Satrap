@@ -1,3 +1,8 @@
+import { RagManager } from '@/components/common/RagManager';
+import { ragApi } from '@/api/rag';
+import type { ConfigOption } from '@/components/common/PluginConfigFields';
+import { PluginConfigFields, type ModelOptions } from '@/components/common/PluginConfigFields';
+import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '@/components/ui/Card';
@@ -306,8 +311,10 @@ export function Chat() {
   const [capabilityPlugin, setCapabilityPlugin] = useState<string | null>(null);
   // 配置弹窗当前查看的插件名 (null = 关闭)
   const [configPlugin, setConfigPlugin] = useState<string | null>(null);
+  const [sessionConfigPlugin, setSessionConfigPlugin] = useState<string | null>(null);
   // 记忆面板开关
   const [memoryOpen, setMemoryOpen] = useState(false);
+  const [ragOpen, setRagOpen] = useState(false);
   // 历史管理面板开关
   const [historyOpen, setHistoryOpen] = useState(false);
   // 项目列表 (绑定的工作区文件夹)
@@ -1558,7 +1565,13 @@ export function Chat() {
             <p className="mt-1 text-xs text-text-tertiary">Chat 服务停止时使用冷管理读取历史和回收站</p>
           </button>
         </Modal>
-        <ChatHistoryManager
+        <SessionPluginSettingsModal
+        context={sessionConfigPlugin && activeId ? { platformId: 'chat', sessionId: activeId } : null}
+        plugins={sessionConfigPlugin ? [sessionConfigPlugin] : []}
+        onClose={() => setSessionConfigPlugin(null)}
+      />
+
+      <ChatHistoryManager
           open={historyOpen}
           onClose={() => setHistoryOpen(false)}
           projects={projects}
@@ -1863,6 +1876,7 @@ export function Chat() {
         onViewCapabilities={(name) => setCapabilityPlugin(name)}
         onViewConfig={(name) => setConfigPlugin(name)}
         onOpenMemory={() => setMemoryOpen(true)}
+        onOpenRag={() => { setSettingsOpen(false); setRagOpen(true); }}
         onOpenHistory={() => setHistoryOpen(true)}
         modelsDetail={modelsDetail}
         onAddModel={() => setEditingModel('')}
@@ -1888,6 +1902,7 @@ export function Chat() {
       {/* 插件配置弹窗 */}
       <PluginConfigModal
         pluginName={configPlugin}
+        onSessionConfig={activeId && activeId !== '__draft__' ? () => { setSessionConfigPlugin(configPlugin); setConfigPlugin(null); } : undefined}
         onClose={() => setConfigPlugin(null)}
         onSaved={handlePluginConfigSaved}
       />
@@ -1906,6 +1921,10 @@ export function Chat() {
         }}
         onChanged={refreshHistorySidebar}
       />
+
+      <Modal open={ragOpen} onClose={() => setRagOpen(false)} title="RAG 知识库" size="lg">
+        {ragOpen && <RagManager key={activeId} context={{ platformId: 'chat', sessionId: activeId && activeId !== '__draft__' ? activeId : undefined }} />}
+      </Modal>
 
       {/* 记忆管理面板 */}
       <MemoryPanel
@@ -2235,6 +2254,7 @@ function ChatSettingsModal({
   onViewCapabilities,
   onViewConfig,
   onOpenMemory,
+  onOpenRag,
   onOpenHistory,
   modelsDetail,
   onAddModel,
@@ -2252,6 +2272,7 @@ function ChatSettingsModal({
   onViewCapabilities: (name: string) => void;
   onViewConfig: (name: string) => void;
   onOpenMemory: () => void;
+  onOpenRag: () => void;
   onOpenHistory: () => void;
   modelsDetail: Record<string, ModelConfigItem>;
   onAddModel: () => void;
@@ -2409,6 +2430,8 @@ function ChatSettingsModal({
           <p className="text-xs text-text-tertiary mt-1.5">启用后对新会话生效, 能力来自插件 meta.yaml 声明</p>
         </div>
 
+        <Button variant="subtle" onClick={onOpenRag}>管理 RAG 知识库</Button>
+
         {/* 记忆管理 */}
         <div>
           <label className="block text-sm font-medium text-text-primary mb-2">长期记忆</label>
@@ -2527,15 +2550,19 @@ function PluginCapabilitiesModal({
 // 插件配置弹窗: 按 config_schema 渲染表单, 保存到后端
 function PluginConfigModal({
   pluginName,
+  onSessionConfig,
   onClose,
   onSaved,
 }: {
   pluginName: string | null;
+  onSessionConfig?: () => void;
   onClose: () => void;
   onSaved: () => void;
 }) {
   const [data, setData] = useState<PluginConfigResponse | null>(null);
   const [form, setForm] = useState<Record<string, unknown>>({});
+  const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
+  const [modelOptions, setModelOptions] = useState<ModelOptions>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -2545,7 +2572,12 @@ function PluginConfigModal({
     let cancelled = false;
     (async () => {
       try {
-        const resp = await chatApi.getPluginConfig(pluginName);
+        const [resp, options] = await Promise.all([chatApi.getPluginConfig(pluginName), chatApi.pluginModelOptions()]);
+        if (!cancelled) setModelOptions(options.options);
+        if (Object.values(resp.schema).some((field) => field.type.startsWith('knowledge_base'))) {
+          const libraries = await ragApi.list({ platformId: 'chat' });
+          if (!cancelled) setKnowledgeBases(libraries.knowledge_bases.filter((item) => item.scope === 'global').map((item) => ({ value: item.id, label: item.name, scope: item.scope })));
+        }
         if (!cancelled) {
           setData(resp);
           setForm({ ...resp.config });
@@ -2583,55 +2615,9 @@ function PluginConfigModal({
         {error && <p className="text-sm text-error">{error}</p>}
         {keys.length === 0 && !data && <p className="text-sm text-text-tertiary">加载中...</p>}
         {keys.length === 0 && data && <p className="text-sm text-text-tertiary">该插件无可配置项</p>}
-        {keys.map((key) => {
-          const field = schema[key];
-          const value = form[key] ?? field.default ?? '';
-          return (
-            <div key={key}>
-              <label className="block text-sm font-medium text-text-primary mb-1">
-                {key}
-                <span className="text-xs text-text-tertiary font-normal ml-2">{field.type}</span>
-              </label>
-              {field.description && (
-                <p className="text-xs text-text-tertiary mb-1.5">{field.description}</p>
-              )}
-              {field.type === 'bool' ? (
-                <Toggle
-                  checked={Boolean(value)}
-                  onChange={(v) => setForm((prev) => ({ ...prev, [key]: v }))}
-                />
-              ) : field.type === 'select' && field.options ? (
-                <Select
-                  value={String(value)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
-                  options={field.options.map((o) => ({ value: o, label: o }))}
-                />
-              ) : field.type === 'number' ? (
-                <input
-                  type="number"
-                  value={Number(value) || 0}
-                  onChange={(e) => setForm((prev) => ({ ...prev, [key]: Number(e.target.value) }))}
-                  className="glass-input w-full text-sm"
-                />
-              ) : field.type === 'textarea' ? (
-                <textarea
-                  value={String(value)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
-                  className="glass-input w-full resize-y text-sm"
-                  rows={5}
-                />
-              ) : (
-                <input
-                  type="text"
-                  value={String(value)}
-                  onChange={(e) => setForm((prev) => ({ ...prev, [key]: e.target.value }))}
-                  className="glass-input w-full text-sm"
-                  placeholder={String(field.default ?? '')}
-                />
-              )}
-            </div>
-          );
-        })}
+        {onSessionConfig && <Button variant="subtle" onClick={onSessionConfig}>配置当前会话参数</Button>}
+        <PluginConfigFields schema={schema} values={form} modelOptions={modelOptions} knowledgeBases={knowledgeBases} disabled={saving}
+          onChange={(key, value) => setForm((prev) => ({ ...prev, [key]: value }))} />
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>取消</Button>
           <Button variant="primary" onClick={handleSave} disabled={saving}>

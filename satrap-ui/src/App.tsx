@@ -4,6 +4,7 @@ import { AppLayout } from '@/components/layout/AppLayout';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })));
 const Models = lazy(() => import('@/pages/Models').then((module) => ({ default: module.Models })));
+const Rag = lazy(() => import('@/pages/Rag').then((module) => ({ default: module.Rag })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
@@ -54,6 +55,7 @@ function App() {
         <Route element={<AppLayout />}>
           <Route path="/" element={lazyRoute(<Dashboard />)} />
           <Route path="/models" element={lazyRoute(<Models />)} />
+          <Route path="/rag" element={lazyRoute(<Rag />)} />
           <Route path="/sessions" element={lazyRoute(<Sessions />)} />
           <Route path="/platforms" element={lazyRoute(<Platforms />)} />
           <Route path="/logs" element={lazyRoute(<Logs />)} />

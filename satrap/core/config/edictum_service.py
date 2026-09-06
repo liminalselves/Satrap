@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any, cast
 
+from satrap.edictum.plugin_settings import validate_plugin_settings
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
 from satrap.edictum.registry import EdictumTypeRegistry
 from satrap.edictum.config import EdictumConfigManager
 
@@ -27,6 +29,7 @@ class EdictumConfigService:
         self,
         manager: EdictumConfigManager,
         type_registry: EdictumTypeRegistry,
+        *, models: Any = None, rag: Any = None,
     ) -> None:
         """
         初始化 Edictum 冷配置服务
@@ -38,6 +41,8 @@ class EdictumConfigService:
         self.manager = manager
         self.type_registry = type_registry
         self.plugin_catalog = PluginCatalog()
+        self.models = models
+        self.rag = rag
 
     def list_types(self) -> list[dict[str, Any]]:
         """
@@ -94,6 +99,7 @@ class EdictumConfigService:
             raise ValueError("Edictum 配置名称不能为空")
         if not str(cleaned.get("edictum_type", "")).strip():
             raise ValueError("edictum_type 不能为空")
+        self._validate_plugin_values(cleaned.get("plugins", []))
         return self.manager.create(name, cleaned)
 
     def update(self, name: str, payload: object) -> tuple[str, dict[str, Any]]:
@@ -108,6 +114,8 @@ class EdictumConfigService:
         - tuple[str, dict[str, Any]]: 最终名称和完整配置
         """
         cleaned = self._validate_payload(payload)
+        if "plugins" in cleaned:
+            self._validate_plugin_values(cleaned["plugins"])
         new_name = str(cleaned.pop("name")).strip() if "name" in cleaned else None
         return self.manager.update(name, cleaned, new_name=new_name)
 
@@ -135,6 +143,26 @@ class EdictumConfigService:
         - bool: 是否找到并删除配置
         """
         return self.manager.delete(name)
+
+    def _validate_plugin_values(self, plugins: list[Any]) -> None:
+        """命名配置保存前校验显式参数及继承后的模型和知识库引用"""
+        manager = PluginConfigManager()
+        for item in plugins:
+            values: dict[str, Any] = {}
+            if isinstance(item, str):
+                name = item
+            elif isinstance(item, dict):
+                definition = cast(dict[str, Any], item)
+                name = definition.get("name", "")
+                values = definition.get("config", {})
+            else:
+                continue
+            entry = self.plugin_catalog.get(name)
+            if entry is None:
+                continue
+            values = validate_config_values(entry.config_schema, values)
+            effective = manager.resolve(name, entry.config_schema, values)
+            validate_plugin_settings(name, entry.config_schema, effective, models=self.models, rag=self.rag)
 
     @staticmethod
     def _validate_payload(payload: object) -> dict[str, Any]:

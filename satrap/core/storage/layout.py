@@ -232,6 +232,13 @@ class StorageLayout:
         )
         return root
 
+    def bind_session(self, scope: StorageScope) -> Path:
+        """绑定会话路径而不创建目录, 会话身份以平台数据库为准"""
+        if not scope.session_id.strip():
+            raise ValueError("session_id 不能为空")
+        self.ensure_platform(scope.platform_id)
+        return self.session_root(scope.platform_id, scope.session_id)
+
     def ensure_session(self, scope: StorageScope) -> Path:
         """
         创建会话独占目录和身份清单

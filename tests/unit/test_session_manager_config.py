@@ -222,6 +222,7 @@ def test_remove_session_with_config_deletes_both(tmp_path: Path):
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     sandbox_path = sm.storage_layout.session_sandbox("local", "s-1")
+    sandbox_path.mkdir(parents=True)
     (sandbox_path / "result.txt").write_text("data", encoding="utf-8")
 
     sm.remove_session("s-1", remove_config=True)
@@ -254,6 +255,7 @@ async def test_remove_session_async(tmp_path: Path):
     sm = _make_sm(tmp_path)
     _register_active_session(sm, "s-1")
     sandbox_path = sm.storage_layout.session_sandbox("local", "s-1")
+    sandbox_path.mkdir(parents=True)
     (sandbox_path / "result.txt").write_text("data", encoding="utf-8")
 
     await sm.remove_session_async("s-1", remove_config=True)

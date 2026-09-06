@@ -274,12 +274,32 @@ def collect_cleanup(
     return None
 
 
+def _invoke_factory(factory: Callable[..., Any], session: Any, config: dict[str, Any] | None, resources: Any) -> Any:
+    """先绑定签名再执行, 工厂内部 TypeError 必须透传且不重复调用"""
+    signature = inspect.signature(factory)
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = [
+        ((session, config or {}), {"resources": resources}),
+        ((session, config or {}, resources), {}),
+        ((session, config or {}), {}),
+        ((session,), {}),
+        ((), {}),
+    ] if session is not None else [((), {})]
+    for args, kwargs in attempts:
+        try:
+            signature.bind(*args, **kwargs)
+        except TypeError:
+            continue
+        return factory(*args, **kwargs)
+    raise TypeError(f"插件工厂参数不匹配: {factory.__name__}")
+
+
 def collect_tools(
     plugin_dir: Path,
     module_name: str,
     base: type[T],
     session: SessionType | None = None,
     config: dict[str, Any] | None = None,
+    resources: Any = None,
 ) -> list[T]:
     """
     收集 tools.py 中的工具实例
@@ -303,21 +323,11 @@ def collect_tools(
         return []
     factory = safe_getattr_callable(mod, "get_tools")
     if factory is not None:
-        attempts: list[tuple[Any, ...]] = []
-        if session is not None:
-            attempts.append((session, config or {}))
-            attempts.append((session,))
-        attempts.append(())
-        for args in attempts:
-            try:
-                result: Any = factory(*args)
-            except TypeError:
-                continue
-            if result is None:
-                return []
-            items_list = cast(list[Any], result) if isinstance(result, (list, tuple)) else [cast(Any, result)]
-            return [cast(T, item) for item in items_list]
-        raise ValueError(f"插件 {module_name} 的 get_tools 工厂调用失败 (参数不匹配)")
+        result = _invoke_factory(factory, session, config, resources)
+        if result is None:
+            return []
+        items_list = cast(list[Any], result) if isinstance(result, (list, tuple)) else [result]
+        return [cast(T, item) for item in items_list]
     found: list[T] = []
     for attr_name in dir(mod):
         obj = getattr(mod, attr_name)   # dir() 返回的属性名必定存在, 无需 safe_getattr
@@ -331,6 +341,7 @@ def collect_commands(
     module_name: str,
     session: SessionType | None = None,
     config: dict[str, Any] | None = None,
+    resources: Any = None,
 ) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """
     收集 commands.py 的命令映射, 返回 (同步命令, 异步命令)
@@ -354,13 +365,7 @@ def collect_commands(
         return {}, {}
     builder = safe_getattr_callable(mod, "build_commands")
     if builder is not None and session is not None:
-        built: Any = None
-        for args in ((session, config or {}), (session,)):
-            try:
-                built = builder(*args)
-                break
-            except TypeError:
-                continue
+        built = _invoke_factory(builder, session, config, resources)
         if isinstance(built, tuple):
             pair = cast(tuple[Any, ...], built)
             if len(pair) == 2:
@@ -556,6 +561,8 @@ def collect_handlers(
     module_name: str,
     session: SessionType | None = None,
     handler_class: type[SessionHandler] | None = None,
+    config: dict[str, Any] | None = None,
+    resources: Any = None,
 ) -> list[SessionHandler]:
     """
     收集 handlers.py: 优先 build_handlers(session) 工厂 (会话依赖注入);
@@ -575,7 +582,7 @@ def collect_handlers(
         return []
     builder = safe_getattr_callable(mod, "build_handlers")
     if builder is not None and session is not None:
-        built = builder(session)
+        built = _invoke_factory(builder, session, config, resources)
         if isinstance(built, (list, tuple)):
             return list(cast("list[SessionHandler]", built))
     declared = safe_getattr_list(mod, "handlers")
@@ -618,6 +625,7 @@ class Plugin:
     capability_descriptions: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
     """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
     config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    resources: Any = field(default=None, repr=False)
     """配置项声明 (meta.yaml config_schema): 键 -> {type/default/description/options}, 供前端渲染表单"""
     _session: SessionType | None = field(default=None, repr=False, compare=False)
     _cleanup: Callable[..., Any] | None = field(default=None, repr=False, compare=False)

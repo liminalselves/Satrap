@@ -11,6 +11,7 @@ import json
 import sys
 
 from satrap.core.database import DataBase, VectorDataUnavailable
+import satrap.core.database as module
 
 
 def test_sql_failure_rolls_back_entire_vector_batch(tmp_path):
@@ -55,6 +56,7 @@ def test_missing_or_corrupt_cache_rebuilds_from_sqlite(tmp_path):
 def test_process_exit_after_sql_commit_recovers(tmp_path):
     script = """
 import logging, os, sys
+from unittest.mock import patch
 with patch('logging.FileHandler', lambda *a, **k: logging.NullHandler()):
     from satrap.core.database import DataBase
 db = DataBase(sys.argv[1])
@@ -84,6 +86,7 @@ def test_cross_process_writers_and_stale_cache_publish(tmp_path):
     first.add_to_collection("a", ["before"], [[1, 0]], None)
     script = """
 import logging, sys
+from unittest.mock import patch
 with patch('logging.FileHandler', lambda *a, **k: logging.NullHandler()):
     from satrap.core.database import DataBase
 db = DataBase(sys.argv[1])
@@ -154,7 +157,6 @@ def test_legacy_migration_preserves_backup_and_reports_missing_vectors(tmp_path,
 
 def test_migration_interruption_rolls_back_schema(tmp_path, monkeypatch):
     legacy_database(tmp_path)
-    import satrap.core.database as module
     original_uuid = module.uuid.uuid4
     calls = 0
 

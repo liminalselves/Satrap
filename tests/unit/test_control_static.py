@@ -759,6 +759,8 @@ async def test_control_server_cold_manages_session_instances(
 
     service = control_server._session_instance_config_service("local")
     sandbox_path = service.storage_layout.session_sandbox("local", "cold-1")
+    assert not sandbox_path.exists()
+    sandbox_path.mkdir(parents=True)
     (sandbox_path / "result.txt").write_text("data", encoding="utf-8")
     service.user_store.upsert(
         UserInfo(

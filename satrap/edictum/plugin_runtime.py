@@ -5,8 +5,12 @@ from dataclasses import dataclass, field
 import inspect
 from typing import Any, Awaitable, Callable, Iterable
 import time
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 
 from satrap.edictum.plugin_spec import PluginSpec
+from satrap.edictum.plugin_settings import EffectivePluginConfig
 from satrap.edictum.plugin import CAPABILITY_KINDS
 
 
@@ -24,6 +28,22 @@ PluginInstaller = Callable[[str, dict[str, Any] | None], object]
 AsyncPluginInstaller = Callable[[str, dict[str, Any] | None], object | Awaitable[object]]
 AsyncPluginUninstaller = Callable[[str], bool | Awaitable[bool]]
 """插件安装器签名"""
+
+
+def reconcile_plugin_states(
+    states: list[PluginRuntimeState], desired_specs: Iterable[PluginSpec],
+    installer: PluginInstaller, uninstaller: AsyncPluginUninstaller | None,
+) -> dict[str, Any]:
+    """同步入口复用同一协调状态机, 已有事件循环时隔离运行临时循环"""
+    def run() -> dict[str, Any]:
+        return asyncio.run(reconcile_plugin_states_async(states, desired_specs, installer, uninstaller))
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return run()
+    context = copy_context()
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        return executor.submit(context.run, run).result()
 
 
 class PluginInstallationError(RuntimeError):
@@ -223,7 +243,7 @@ def install_plugin_spec(installer: PluginInstaller, spec: PluginSpec) -> tuple[o
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, spec.config)
+    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
     try:
         changes = apply_plugin_capabilities(plugin, spec)
     except Exception as error:
@@ -247,7 +267,7 @@ async def install_plugin_spec_async(
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, spec.config)
+    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
     if inspect.isawaitable(plugin):
         plugin = await plugin
     try:
@@ -290,6 +310,7 @@ def preview_plugin_reconciliation(
                 action = "enable"
             elif (
                 applied.config != target.config
+                or applied.resources_revision != target.resources_revision
                 or applied.path != target.path
                 or applied.version != target.version
             ):

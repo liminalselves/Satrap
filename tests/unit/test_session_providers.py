@@ -6,8 +6,10 @@ import sqlite3
 import pytest
 from typing import Any, cast
 from types import SimpleNamespace
+import yaml
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
 from satrap.core.framework.providers import (
     EdictumProvider,
@@ -15,21 +17,76 @@ from satrap.core.framework.providers import (
     SessionProviderDefinition,
     SessionProviderRegistry,
 )
-from satrap.edictum.simple_session import AsyncSimpleSession
+from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
+from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import LLM
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.edictum.registry import (
-    EdictumTypeDefinition,
-    EdictumTypeRegistry,
-    create_default_edictum_type_registry,
-)
+from satrap.edictum.registry import EdictumTypeDefinition, EdictumTypeRegistry, create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
-from satrap.core.type import CommandAction, SessionConfig, UserCall
+from satrap.core.storage import StorageLayout
+from satrap.core.type import CommandAction, SessionConfig, UserCall, ReRankConfig
 
 
 def _placeholder_llm() -> LLM:
     """占位 LLM: 被测 Provider 不触发真实模型调用, cast 集中在此工厂"""
     return cast(LLM, object())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_provider_refreshes_inherited_plugin_values_and_model_references(tmp_path, monkeypatch, asynchronous):
+    """同步与异步入口读取最新覆盖, 下层配置更新和模型引用变更按需重装"""
+    layout = StorageLayout(tmp_path / "data")
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_rerank_config(ReRankConfig(model="rank", api_key="first-key", base_url="http://localhost:1234"), "rank")
+    meta = yaml.safe_load(Path("satrap/expend/plugins/rag/meta.yaml").read_text(encoding="utf-8"))
+    assert isinstance(meta, dict)
+    schema = parse_config_schema(meta)
+    global_config = PluginConfigManager(tmp_path / "plugin-config")
+    global_config.save_global("rag", schema, {"candidate_k": 21, "top_k": 4})
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: global_config)
+    monkeypatch.setattr("satrap.edictum.simple_session.PluginConfigManager", lambda: global_config)
+    registry = create_default_edictum_type_registry()
+    manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    manager.create("assistant", {"edictum_type": "async_simple" if asynchronous else "simple", "plugins": [{"name": "rag", "config": {"top_k": 7, "rerank": "rank"}}]})
+    provider = EdictumProvider(manager, registry, default_checkpoint_db=str(layout.platform_db("local")))
+    session = provider.create_session(SessionConfig(session_id="one", session_type_name="assistant", provider_name="edictum"), llm=_placeholder_llm())
+    assert isinstance(session, (SimpleSession, AsyncSimpleSession))
+    session.storage_layout, session.storage_platform_id, session.plugin_model_manager = layout, "local", models
+    session.plugin_override_store = SessionOverrideStore(layout.platform_db("local"))
+    session.plugin_override_store.replace("one", "plugins.rag", {"top_k": 3}, expected_revision=0)
+    async def prepare():
+        if asynchronous:
+            await provider.prepare_session_async(session)
+        else:
+            provider.prepare_session(session)
+        return next(item for item in session.list_plugins() if item.name == "rag")
+    try:
+        plugin = await prepare()
+        assert session._wf is not None
+        tool = session._wf.tools_manager.tools["rag_search"]
+        config = getattr(tool, "config")
+        assert isinstance(config, dict)
+        assert config["top_k"] == 3 and config["candidate_k"] == 21
+        assert await prepare() is plugin
+        session.plugin_override_store.replace("one", "plugins.rag", {}, expected_revision=1)
+        plugin = await prepare()
+        assert getattr(session._wf.tools_manager.tools["rag_search"], "config")["top_k"] == 7
+        other_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+        other_manager.update("assistant", {"plugins": [{"name": "rag", "config": {"top_k": 8, "rerank": "rank"}}]})
+        plugin = await prepare()
+        assert getattr(session._wf.tools_manager.tools["rag_search"], "config")["top_k"] == 8
+        external_models = ModelConfigManager(tmp_path / "models.json")
+        external_models.set_rerank_config(ReRankConfig(model="rank", api_key="second-key", base_url="http://localhost:1234"), "rank")
+        replacement = await prepare()
+        assert replacement is not plugin
+        assert replacement.resources is not None
+        assert replacement.resources._configs["rerank"][1].api_key == "second-key"
+    finally:
+        if asynchronous:
+            await provider.release_session_async(session)
+        else:
+            provider.release_session(session)
 
 
 class _CapturingSession(Session):

@@ -77,3 +77,5 @@ class BoundedAsyncWorker:
 
 SESSION_WORKERS = BoundedAsyncWorker("satrap-session", workers=8, capacity=32)
 DNS_WORKERS = BoundedAsyncWorker("satrap-dns", workers=4, capacity=16)
+
+RAG_WORKERS = BoundedAsyncWorker("satrap-rag", workers=4, capacity=16)

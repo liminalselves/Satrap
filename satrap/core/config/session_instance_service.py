@@ -6,20 +6,24 @@
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
 import dataclasses
 import secrets
 import string
-from typing import Any
 import time
 
-from satrap.core.framework.SessionClassManager import SessionClassConfigManager
-from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
-from satrap.core.framework.UserManager import UserInfoStore
 from satrap.edictum.registry import EDICTUM_PROVIDER
-from satrap.edictum.config import EdictumConfigManager
-from satrap.core.storage import StorageLayout, StorageMaintenanceService, StorageScope
+from satrap.core.storage import StorageMaintenanceService, StorageScope
 from satrap.core.type import SessionConfig
+
+if TYPE_CHECKING:
+    from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+    from satrap.core.framework.SessionManager import SessionConfigStore
+    from satrap.core.framework.UserManager import UserInfoStore
+    from satrap.edictum.config import EdictumConfigManager
+    from satrap.core.storage import StorageLayout
+# 管理器和存储对象由调用方注入, 此处仅在静态类型检查时导入
 
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
@@ -151,7 +155,7 @@ class SessionInstanceConfigService:
             session_config=params,
         )
         self.store.upsert(created)
-        self.storage_layout.ensure_session(
+        self.storage_layout.bind_session(
             StorageScope(platform_id=self.platform_id, session_id=final_session_id)
         )
         return created

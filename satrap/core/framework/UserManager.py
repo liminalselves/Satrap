@@ -858,7 +858,7 @@ class UserManager:
 
         if session_id:
             if self.storage_layout is not None:
-                self.storage_layout.ensure_session(
+                self.storage_layout.bind_session(
                     StorageScope(
                         platform_id=self.platform_id,
                         user_id=user_id,

@@ -1,3 +1,6 @@
+import { PluginConfigFields, type ModelOptions, type ConfigOption } from '@/components/common/PluginConfigFields';
+import { ragApi } from '@/api/rag';
+import { controlApi } from '@/api/control';
 import { useEffect, useMemo, useState } from 'react';
 import { Plus, Puzzle, Trash2 } from 'lucide-react';
 
@@ -66,6 +69,20 @@ export function EdictumPluginManager({
   onSave,
 }: EdictumPluginManagerProps) {
   const [states, setStates] = useState<Record<string, ManagedPluginState>>({});
+  const [modelOptions, setModelOptions] = useState<ModelOptions>({});
+  const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
+  const [modelError, setModelError] = useState('');
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    controlApi.pluginModelOptions().then((result) => { if (!cancelled) { setModelOptions(result.options); setModelError(''); } })
+      .catch((error) => { if (!cancelled) setModelError(error.message); });
+    ragApi.list({ platformId: 'local', via: 'control' }).then((result) => {
+      if (!cancelled) setKnowledgeBases(result.knowledge_bases.filter((item) => item.scope === 'global').map((item) => ({ value: item.id, label: item.name, scope: item.scope })));
+    }).catch((error) => { if (!cancelled) setModelError(error.message); });
+    return () => { cancelled = true; };
+  }, [open]);
+
 
   useEffect(() => {
     if (open) setStates(normalizeConfiguredPlugins(configuredPlugins));
@@ -214,55 +231,9 @@ export function EdictumPluginManager({
 
               {present && schemaEntries.length > 0 && (
                 <div className="mt-4 grid gap-3 border-t border-glass-border pt-4 md:grid-cols-2">
-                  {schemaEntries.map(([key, field]) => {
-                    const value = state.config[key] ?? field.default ?? '';
-                    return (
-                      <label key={key} className="block">
-                        <span className="text-sm font-medium text-text-primary">{key}</span>
-                        {field.description && (
-                          <span className="mt-0.5 block text-xs text-text-tertiary">
-                            {field.description}
-                          </span>
-                        )}
-                        {field.type === 'bool' ? (
-                          <input
-                            type="checkbox"
-                            checked={Boolean(value)}
-                            onChange={(event) => setConfigValue(plugin.name, key, event.target.checked)}
-                            className="mt-2 h-4 w-4 accent-accent"
-                          />
-                        ) : field.type === 'select' && field.options ? (
-                          <select
-                            value={String(value)}
-                            onChange={(event) => setConfigValue(plugin.name, key, event.target.value)}
-                            className="glass-input mt-2 w-full text-sm"
-                          >
-                            {field.options.map((option) => (
-                              <option key={option} value={option}>{option}</option>
-                            ))}
-                          </select>
-                        ) : field.type === 'textarea' ? (
-                          <textarea
-                            value={String(value)}
-                            onChange={(event) => setConfigValue(plugin.name, key, event.target.value)}
-                            className="glass-input mt-2 w-full resize-y text-sm"
-                            rows={5}
-                          />
-                        ) : (
-                          <input
-                            type={field.type === 'number' ? 'number' : 'text'}
-                            value={field.type === 'number' ? Number(value) : String(value)}
-                            onChange={(event) => setConfigValue(
-                              plugin.name,
-                              key,
-                              field.type === 'number' ? Number(event.target.value) : event.target.value,
-                            )}
-                            className="glass-input mt-2 w-full text-sm"
-                          />
-                        )}
-                      </label>
-                    );
-                  })}
+                  {modelError && <p role="alert" className="text-sm text-error">{modelError}</p>}
+                  <PluginConfigFields schema={plugin.config_schema} values={state.config} modelOptions={modelOptions} knowledgeBases={knowledgeBases}
+                    onChange={(key, value) => setConfigValue(plugin.name, key, value)} />
                 </div>
               )}
 

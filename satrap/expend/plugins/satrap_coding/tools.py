@@ -342,7 +342,12 @@ def _tool_root(tool: Any) -> Path:
     返回:
     - Path: 取工具所属会话的工作区根 (未绑会话时回落全局)
     """
-    return _workspace_root(getattr(tool, "_session", None))
+    session = getattr(tool, "_session", None)
+    root = _workspace_root(session)
+    sandbox = getattr(session, "coding_sandbox_root", None)
+    if sandbox and root == Path(sandbox).resolve():
+        root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def _resolve_path(path: str, root: Path | None = None) -> Path:

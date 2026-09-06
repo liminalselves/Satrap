@@ -11,11 +11,8 @@ from typing import Any, Iterable, cast
 import json
 import time
 
-from satrap.core.storage.database import (
-    delete_session_domain_rows,
-    restore_session_domain,
-    snapshot_session_domain,
-)
+from satrap.core.storage.file_lock import session_storage_lock
+from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
 from satrap.core.storage.layout import StorageLayout
 
 
@@ -74,6 +71,26 @@ class StorageMaintenanceService:
             except OSError:
                 continue
         return total
+
+    def session_size_snapshot(self, platform_id: str, *, refresh: bool = False) -> dict[str, Any]:
+        """列表只读缓存, 显式刷新才遍历目录, 未统计返回 null"""
+        database = self.layout.platform_db(platform_id)
+        if not database.exists() and not refresh:
+            return {"storage_size_bytes": None, "storage_size_updated_at": None}
+        if refresh:
+            size = self._directory_size(self.layout.platform_root(platform_id) / "sessions")
+            database.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(database)) as connection, connection:
+                connection.execute("CREATE TABLE IF NOT EXISTS storage_statistics (name TEXT PRIMARY KEY, size_bytes INTEGER NOT NULL, updated_at REAL NOT NULL)")
+                connection.execute(
+                    "INSERT INTO storage_statistics VALUES ('sessions', ?, ?) ON CONFLICT(name) DO UPDATE SET size_bytes=excluded.size_bytes, updated_at=excluded.updated_at",
+                    (size, time.time()),
+                )
+        with closing(sqlite3.connect(database)) as connection:
+            if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='storage_statistics'").fetchone():
+                return {"storage_size_bytes": None, "storage_size_updated_at": None}
+            row = connection.execute("SELECT size_bytes, updated_at FROM storage_statistics WHERE name='sessions'").fetchone()
+        return {"storage_size_bytes": row[0] if row else None, "storage_size_updated_at": row[1] if row else None}
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:
@@ -182,14 +199,11 @@ class StorageMaintenanceService:
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
             }
-            if "session_configs" not in tables:
-                return set()
-            return {
-                str(row[0])
-                for row in connection.execute(
-                    "SELECT session_id FROM session_configs"
-                ).fetchall()
-            }
+            result: set[str] = set()
+            for table, column in (("session_configs", "session_id"), ("conversation_meta", "conversation_id")):
+                if table in tables:
+                    result.update(str(row[0]) for row in connection.execute(f"SELECT {column} FROM {table}"))
+            return result
 
     @staticmethod
     def _orphan_database_refs(database: Path, valid_ids: set[str]) -> dict[str, list[str]]:
@@ -305,6 +319,7 @@ class StorageMaintenanceService:
                 ))
             database = platform_root / "platform.db"
             valid_ids = self._database_session_ids(database)
+            directory_ids = {self.layout.session_root(platform_id, session_id).name: session_id for session_id in valid_ids}
             sessions_root = platform_root / "sessions"
             if sessions_root.exists():
                 for session_root in sorted(sessions_root.iterdir()):
@@ -320,6 +335,8 @@ class StorageMaintenanceService:
                         continue
                     session_manifest = self._read_json(session_root / "meta.json")
                     session_id = str((session_manifest or {}).get("session_id", "")).strip()
+                    if not session_id and session_manifest is None:
+                        session_id = directory_ids.get(session_root.name, "")
                     if not session_id:
                         results.append(self._audit_item(
                             category="invalid_manifest",
@@ -389,64 +406,65 @@ class StorageMaintenanceService:
         返回:
         - dict[str, Any]: 回收包清单
         """
-        database = (
-            Path(database_path)
-            if database_path is not None
-            else self.layout.platform_db(platform_id)
-        )
-        records = snapshot_session_domain(database, session_id)
-        source = self.layout.session_root(platform_id, session_id)
-        if not records and not source.exists():
-            raise ValueError(f"会话不存在: {session_id}")
-        archive_id = (
-            time.strftime("%Y%m%d-%H%M%S", time.localtime())
-            + "-"
-            + str(time.time_ns())
-            + "-"
-            + self._item_id(platform_id, session_id, str(time.time_ns()))[:8]
-        )
-        archive = self.layout.trash_root(platform_id) / "sessions" / archive_id
-        archive.mkdir(parents=True, exist_ok=False)
-        files_root = archive / "files"
-        moved_files = False
-        try:
-            (archive / "records.json").write_text(
-                json.dumps(records, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+        with session_storage_lock(self.layout, platform_id, session_id):
+            database = (
+                Path(database_path)
+                if database_path is not None
+                else self.layout.platform_db(platform_id)
             )
-            if source.exists() or source.is_symlink():
-                if source.is_symlink():
-                    raise ValueError("拒绝回收符号链接会话目录")
-                shutil.move(str(source), str(files_root))
-                moved_files = True
-            delete_session_domain_rows(database, session_id)
-            manifest: dict[str, Any] = {
-                "layout_version": self.layout.layout_version,
-                "archive_version": 2,
-                "archive_id": archive_id,
-                "platform_id": platform_id,
-                "session_id": session_id,
-                "deleted_at": time.time(),
-                "has_files": moved_files,
-                "tables": sorted(records),
-                "records_sha256": hashlib.sha256((archive / "records.json").read_bytes()).hexdigest(),
-            }
-            (archive / "manifest.json").write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
+            records = snapshot_session_domain(database, session_id)
+            source = self.layout.session_root(platform_id, session_id)
+            if not records and not source.exists():
+                raise ValueError(f"会话不存在: {session_id}")
+            archive_id = (
+                time.strftime("%Y%m%d-%H%M%S", time.localtime())
+                + "-"
+                + str(time.time_ns())
+                + "-"
+                + self._item_id(platform_id, session_id, str(time.time_ns()))[:8]
             )
-            return manifest
-        except Exception:
-            if moved_files and files_root.exists() and not source.exists():
-                source.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(files_root), str(source))
-            if records:
-                try:
-                    restore_session_domain(database, session_id, records)
-                except Exception:
-                    pass
-            shutil.rmtree(archive, ignore_errors=True)
-            raise
+            archive = self.layout.trash_root(platform_id) / "sessions" / archive_id
+            archive.mkdir(parents=True, exist_ok=False)
+            files_root = archive / "files"
+            moved_files = False
+            try:
+                (archive / "records.json").write_text(
+                    json.dumps(records, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                if source.exists() or source.is_symlink():
+                    if source.is_symlink():
+                        raise ValueError("拒绝回收符号链接会话目录")
+                    shutil.move(str(source), str(files_root))
+                    moved_files = True
+                delete_session_domain_rows(database, session_id)
+                manifest: dict[str, Any] = {
+                    "layout_version": self.layout.layout_version,
+                    "archive_version": 2,
+                    "archive_id": archive_id,
+                    "platform_id": platform_id,
+                    "session_id": session_id,
+                    "deleted_at": time.time(),
+                    "has_files": moved_files,
+                    "tables": sorted(records),
+                    "records_sha256": hashlib.sha256((archive / "records.json").read_bytes()).hexdigest(),
+                }
+                (archive / "manifest.json").write_text(
+                    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                return manifest
+            except Exception:
+                if moved_files and files_root.exists() and not source.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(files_root), str(source))
+                if records:
+                    try:
+                        restore_session_domain(database, session_id, records)
+                    except Exception:
+                        pass
+                shutil.rmtree(archive, ignore_errors=True)
+                raise
 
     def list_archives(self, platform_id: str) -> list[dict[str, Any]]:
         """

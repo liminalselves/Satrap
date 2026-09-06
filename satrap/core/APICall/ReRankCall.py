@@ -10,6 +10,7 @@ import asyncio
 from typing import List, Dict, Any, Optional, Union, Literal, cast
 from typing import Protocol
 import json
+import math
 
 from satrap.core.utils import normalize_openai_base_url
 
@@ -86,7 +87,9 @@ def parse_rerank_result(
         results = cast(list[Any] | None, api_response.get("results"))
     # 兼容保证
 
-    if not results or not isinstance(results, list):
+    if not isinstance(results, list):
+        if not suppress_error:
+            raise ValueError("重排接口响应中缺少有效的 results 数组")
         logger.warning("重排接口响应中未找到有效的 'results' 列表")
         return []
 
@@ -94,7 +97,15 @@ def parse_rerank_result(
     parsed_data: list[dict[str, Any]] = []
     for item in cast(list[Any], results):
         try:
+            if not isinstance(item, dict):
+                raise ValueError("重排结果项必须是对象")
+            item = cast(dict[str, Any], item)
             score = item.get("relevance_score", 0.0)
+            if not suppress_error and ("relevance_score" not in item or isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score)):
+                raise ValueError("重排结果分数无效")
+            position = item.get("index")
+            if not suppress_error and (isinstance(position, bool) or not isinstance(position, int) or position < 0):
+                raise ValueError("重排结果索引无效")
             if score < min_score:
                 continue
 
@@ -113,6 +124,8 @@ def parse_rerank_result(
             })
 
         except Exception as e:
+            if not suppress_error:
+                raise ValueError("重排结果格式无效") from e
             logger.warning(f"重排接口结果中跳过格式错误项: {e}")
             continue
 
@@ -157,6 +170,7 @@ class ReRank:
         self.min_score = min_score
         self.lock_api_key = lock_api_key
         self.timeout = timeout
+        self.suppress_error = True
        
     def call(
         self,
@@ -203,6 +217,8 @@ class ReRank:
 
             if not 200 <= response.status_code < 300:
                 logger.error(f"[ReRank] 重排接口返回 HTTP {response.status_code}")
+                if not self.suppress_error:
+                    raise RuntimeError(f"重排接口返回 HTTP {response.status_code}")
                 return []
 
             raw_response = response.json()   # 解析 JSON 响应
@@ -215,24 +231,32 @@ class ReRank:
 
         except requests.exceptions.Timeout:
             logger.error("[ReRank] 重排接口请求请求超时")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
         
         except requests.exceptions.ConnectionError as e:
             logger.error(f"[ReRank] 重排接口连接错误: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
 
         except json.JSONDecodeError as e:
             logger.error(f"[ReRank] 重排接口响应解析错误: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
         
         except Exception as e:
             logger.error(f"[ReRank] 重排接口调用出错: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
 
         parsed_results = parse_rerank_result(
             api_response=api_response,
             min_score=min_score,
-            suppress_error=True,
+            suppress_error=self.suppress_error,
         )   # 解析结果
 
         if len(parsed_results) > top_k:   # 保证返回数量不超过上限
@@ -345,6 +369,7 @@ class AsyncReRank:
         self.min_score = min_score
         self.lock_api_key = lock_api_key
         self.timeout = timeout
+        self.suppress_error = True
        
     async def call(
         self,
@@ -391,6 +416,8 @@ class AsyncReRank:
                 ) as response:
                     if not 200 <= response.status < 300:
                         logger.error(f"[AsyncReRank] 重排接口返回 HTTP {response.status}")
+                        if not self.suppress_error:
+                            raise RuntimeError(f"重排接口返回 HTTP {response.status}")
                         return []
                     raw_response: object = await response.json()   # 解析 JSON 响应
                     if not isinstance(raw_response, dict):
@@ -402,24 +429,32 @@ class AsyncReRank:
 
         except asyncio.TimeoutError:
             logger.error("[AsyncReRank] 重排接口请求超时")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
         
         except aiohttp.ClientConnectionError as e:
             logger.error(f"[AsyncReRank] 重排接口连接错误: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
 
         except json.JSONDecodeError as e:
             logger.error(f"[AsyncReRank] 重排接口响应解析错误: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
         
         except Exception as e:
             logger.error(f"[AsyncReRank] 重排接口调用出错: {e}")
+            if not self.suppress_error:
+                raise RuntimeError("重排接口调用失败")
             return []
 
         parsed_results = parse_rerank_result(
             api_response=api_response,
             min_score=min_score,
-            suppress_error=True,
+            suppress_error=self.suppress_error,
         )   # 解析结果
 
         if len(parsed_results) > top_k:   # 保证返回数量不超过上限

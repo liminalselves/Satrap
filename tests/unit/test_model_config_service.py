@@ -1,12 +1,35 @@
 """模型配置共享领域服务测试"""
 from __future__ import annotations
 
+from unittest.mock import Mock
 from pathlib import Path
 import pytest
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.model_service import ModelConfigService
+from satrap.edictum.plugin_resources import build_model_client
+from satrap.core.APICall.EmbedCall import Embedding
 from satrap.core.type import LLMConfig
+
+
+def test_clear_embedding_dimensions_persists_and_omits_request_parameter(tmp_path: Path) -> None:
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    service.create("embedding", "demo", {"model": "embedding-model", "api_key": "test-key", "dimensions": 1024})
+    service.update("embedding", "demo", {"dimensions": None})
+    manager.reload()
+    config = manager.get_embedding_config("demo")
+    assert config.dimensions is None
+    assert config.api_key == "test-key"
+    client = build_model_client("embed", config)
+    assert isinstance(client, Embedding)
+    endpoint = Mock(return_value={"data": [{"index": 0, "embedding": [1.0, 0.0]}]})
+    client.client.embeddings.create = endpoint
+    try:
+        assert client.embed("测试文本") == [1.0, 0.0]
+        assert "dimensions" not in endpoint.call_args.kwargs
+    finally:
+        client.client.close()
 
 
 def test_model_config_service_crud_and_masking(tmp_path: Path):

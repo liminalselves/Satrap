@@ -2,18 +2,19 @@
 import aiohttp
 import asyncio
 import pytest
+from typing import cast
 from types import SimpleNamespace
 
 from satrap.core.utils.minihttp import MiniHTTPServer
 from satrap.core.server_auth import ServerAuth
 from satrap.display.recorder import DisplayRecorder
-from satrap.display.service import ChatService, _SubscriberQueue
+from satrap.display.service import ChatService, _SubscriberQueue, _Conversation
 from satrap.display.server import ChatHTTPServer
 
 
 async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     recorder = DisplayRecorder(str(tmp_path / "display.db"), "audit")
-    conv = SimpleNamespace(conversation_id="audit", recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None)
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", recorder=recorder, subscribers=set(), pending_user_inputs={}, task=None))
     service = ChatService.__new__(ChatService)
     service._conversations = {"audit": conv}
     service._orphan_queues = {}
@@ -27,6 +28,7 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
     server.service = service
     question_task = None
     await server.start()
+    assert server._server is not None
     port = server._server.sockets[0].getsockname()[1]
     try:
         async with aiohttp.ClientSession(headers={"Authorization": f"Bearer {token}"}) as client:
@@ -41,6 +43,7 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
                     service._broadcast(conv, {"type": "content_delta", "delta": "x"})
                     assert fast.get_nowait()["type"] == "content_delta"
                 completed = recorder.end_turn()
+                assert completed is not None
                 service._broadcast(conv, {"type": "turn_done", "answer": "x" * 1005, **completed})
                 assert fast.get_nowait()["type"] == "turn_done"
                 assert not fast.invalidated
@@ -63,6 +66,7 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
                 ended = await recovered.receive_json(timeout=2)
                 assert ended["type"] == "ask_user_end" and ended["seq"] == snapshot["seq"] + 1
                 completed = recorder.end_turn("finished")
+                assert completed is not None
                 service._broadcast(conv, {"type": "turn_done", "answer": "finished", **completed})
                 assert (await recovered.receive_json(timeout=2))["type"] == "turn_done"
                 assert service.runtime_snapshot("audit")["state"] == "idle"
@@ -77,7 +81,6 @@ async def test_slow_websocket_recovers_reply_and_pending_question(tmp_path):
 def test_subscriber_byte_budget_is_independent_of_message_count():
     queue = _SubscriberQueue(maxsize=1000, max_bytes=128)
     queue.put_nowait({"type": "content_delta", "delta": "x" * 60})
-    import pytest
     with pytest.raises(asyncio.QueueFull):
         queue.put_nowait({"type": "content_delta", "delta": "x" * 60})
     queue.invalidate()
@@ -86,14 +89,13 @@ def test_subscriber_byte_budget_is_independent_of_message_count():
 
 @pytest.mark.parametrize("event_type", ["turn_done", "ask_user"])
 def test_full_queue_requires_resynchronization(event_type):
-    from satrap.display.service import _SubscriberQueue
     service = ChatService.__new__(ChatService)
     service._event_sequences = {}
     service._stream_id = "audit"
     queue = _SubscriberQueue(maxsize=1000)
     for _ in range(1000):
         queue.put_nowait({"type": "content", "delta": "old"})
-    conv = SimpleNamespace(conversation_id="audit", subscribers={queue})
+    conv = cast(_Conversation, SimpleNamespace(conversation_id="audit", subscribers={queue}))
     service._broadcast(conv, {"type": event_type})
     events = [queue.get_nowait() for _ in range(queue.qsize())]
     assert events == [{"type": "resync_required"}]

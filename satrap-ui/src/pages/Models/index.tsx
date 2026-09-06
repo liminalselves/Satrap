@@ -29,7 +29,7 @@ interface ModelFormData {
   thinking_fields?: string[];
   thinking_levels?: string[];
   omit_none_thinking_fields?: boolean;
-  dimensions?: number;
+  dimensions?: number | null;
   max_batch_size?: number;
   top_k?: number;
   min_score?: number;
@@ -73,7 +73,7 @@ const FIELD_META: Record<ModelType, FormField[]> = {
     { key: 'model', label: '模型' },
     { key: 'base_url', label: 'Base URL' },
     { key: 'api_key', label: 'API Key', type: 'password' },
-    { key: 'dimensions', label: 'Dimensions', type: 'number' },
+    { key: 'dimensions', label: 'Dimensions', type: 'number', placeholder: '留空使用模型默认维度，不发送 dimensions 参数' },
     { key: 'max_batch_size', label: 'Max Batch Size', type: 'number' },
   ],
   rerank: [
@@ -176,7 +176,7 @@ export function Models() {
   }, []);
 
   const handleFieldChange = useCallback((key: string, value: unknown) => {
-    setFormData((prev) => ({ ...prev, [key]: value }));
+    setFormData((prev) => ({ ...prev, [key]: key === 'dimensions' && value === undefined ? null : value }));   // 显式传 null 清除旧维度, 省略字段会保留后端原值
   }, []);
 
   // 表单字段
