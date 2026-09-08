@@ -1,0 +1,192 @@
+from __future__ import annotations
+from typing import Any
+from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
+from satrap.core.utils.TCBuilder import Tool
+from satrap.edictum import SimpleSession
+from .utils import (
+    _SUBAGENT_PROMPT,
+    _parse_integer_argument,
+    _ask_user_sync,
+    _approve_sync,
+    _tool_root,
+    _resolve_path,
+    _prepare_shell,
+    _run_shell,
+)
+from .subagent import _CodingSubAgent
+
+
+class AskUserTool(Tool):
+    """向用户询问请求, 等待用户回复"""
+
+    tool_name = "ask_user"
+    description = (
+        "向用户提出一个问题并等待回复, 用于获取缺失信息或确认意图; "
+        "建议提供 2-3 个推荐选项 (options), 用户可直接输入序号选择; "
+        "需要宿主通过 session.user_input_provider 适配用户输入通道"
+    )
+    params_dict = {
+        "question": ("string", "要询问的问题"),
+        "options": ("array", "推荐回答选项 (2-3 个), 如 ['方案A', '方案B']"),
+    }
+
+    def __init__(self) -> None:
+        """初始化 AskUserTool"""
+        super().__init__()
+
+    def execute(self, question: str, options: list[str] | None = None) -> str:
+        """
+        执行
+
+        参数:
+        - question: 问题内容
+        - options: 选项集合
+
+        返回:
+        - str: 执行
+        """
+        answer = _ask_user_sync(self._session, question, options)
+        if answer is None:
+            return (
+                "需要用户回复: "
+                + question
+                + " (未配置 user_input_provider, 请回复后继续)"
+            )
+        return f"用户回复: {answer}"
+
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
+
+
+class ShellTool(Tool):
+    """执行本机 shell 命令 (PowerShell/cmd), 每次执行均需批准"""
+
+    tool_name = "shell"
+    description = "在本机执行 shell 命令 (PowerShell/cmd), 每次均需用户批准, 计划模式禁用; 免审批读取请使用文件工具"
+    params_dict = {
+        "command": ("string", "要执行的命令"),
+        "cwd": ("string", "工作目录, 默认项目根"),
+        "timeout": ("number", "超时秒数, 范围 1-3600, 默认 120"),
+        "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
+    }
+
+    def __init__(self, engine: PermissionEngine) -> None:
+        """
+        初始化 ShellTool
+
+        参数:
+        - engine: 执行引擎
+        """
+        super().__init__()
+        self.engine = engine
+
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        timeout: int | float | str = 120,
+        shell: str = "powershell",
+    ) -> str:
+        """
+        执行
+
+        参数:
+        - command: 命令内容
+        - cwd: 当前工作目录
+        - timeout: 超时秒数, 范围 1-3600, 默认 120
+        - shell: Shell 类型
+
+        返回:
+        - str: 执行
+        """
+        from . import _run_shell
+
+        timeout_value, error = _parse_integer_argument(
+            timeout,
+            "timeout",
+            minimum=1,
+            maximum=3600,
+        )
+        if error is not None or timeout_value is None:
+            return error or "错误: timeout 无效"
+        try:
+            root = _tool_root(self)
+            workdir_path = _resolve_path(cwd, root) if cwd else root
+            args, risk, description = _prepare_shell(command, shell, root, workdir_path)
+        except ValueError as e:
+            return f"错误: {e}"
+        allowed, message = _approve_sync(
+            self._session, self.engine, "shell", risk, description
+        )
+        if not allowed:
+            return message
+        if (
+            self.engine.plan_mode
+            or _tool_root(self) != root
+            or workdir_path.resolve() != workdir_path
+        ):
+            return "执行已取消: 审批期间计划模式或工作区发生变化"
+        return _run_shell(args, workdir_path, timeout_value)
+
+    def _bind(self, session: SimpleSession) -> None:
+        self._session = session
+
+
+class SubAgentTool(Tool):
+    """子代理: 独立上下文处理任务, 继承主会话工具与审批策略"""
+
+    tool_name = "subagent"
+    description = "在独立上下文中运行子代理处理任务, 返回结果; 用于并行调研/独立子任务"
+    params_dict = {
+        "task": ("string", "子代理要完成的任务描述"),
+        "tools": ("array", "允许使用的工具名白名单, 缺省使用全部工具"),
+        "system_prompt": ("string", "自定义子代理系统提示词"),
+        "max_turns": ("number", "最大工具迭代轮数, 范围 1-100, 默认 20"),
+    }
+
+    def __init__(self, llm: Any, tools_manager: Any) -> None:
+        """
+        初始化 SubAgentTool
+
+        参数:
+        - llm: 模型实例
+        - tools_manager: 工具管理器实例
+        """
+        super().__init__()
+        self.llm = llm
+        self.tools_manager = tools_manager
+
+    def execute(
+        self,
+        task: str,
+        tools: list[str] | None = None,
+        system_prompt: str = "",
+        max_turns: int | float | str = 20,
+    ) -> str:
+        """
+        执行
+
+        参数:
+        - task: 任务描述
+        - tools: 工具集合
+        - system_prompt: 系统prompt
+        - max_turns: 最大工具迭代轮数, 范围 1-100, 默认 20
+
+        返回:
+        - str: 执行
+        """
+        max_turns_value, error = _parse_integer_argument(
+            max_turns,
+            "max_turns",
+            minimum=1,
+            maximum=100,
+        )
+        if error is not None or max_turns_value is None:
+            return error or "错误: max_turns 无效"
+        agent = _CodingSubAgent(
+            self.llm,
+            self.tools_manager,
+            system_prompt or _SUBAGENT_PROMPT,
+            tools,
+        )
+        return agent.forward(task, max_turns_value)

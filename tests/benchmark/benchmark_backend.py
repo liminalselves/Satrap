@@ -38,8 +38,8 @@ with patch("logging.FileHandler", lambda *args, **kwargs: logging.NullHandler())
 
 SOURCE_FILES = [
     "satrap/core/framework/SessionManager.py",
-    "satrap/core/utils/outbound.py",
-    "satrap/expend/plugins/satrap_coding/tools.py",
+    *[path.relative_to(ROOT).as_posix() for path in sorted((ROOT / "satrap/core/utils/outbound").glob("*.py"))],
+    *[path.relative_to(ROOT).as_posix() for path in sorted((ROOT / "satrap/expend/plugins/satrap_coding/tools").glob("*.py"))],
     "satrap/display/recorder.py",
     "satrap/display/service.py",
     "satrap/core/database/__init__.py",

@@ -208,7 +208,7 @@ def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, s
 
 def _load_module(path: Path, module_name: str) -> ModuleType | None:
     """
-    动态加载插件模块 (文件不存在返回 None)
+    动态加载插件模块或同名包 (入口不存在返回 None)
 
     参数:
     - path: 路径
@@ -220,6 +220,8 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
     若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
     避免同一文件被加载两次导致模块级状态 (如工具引用的 WORKSPACE_ROOT) 分裂
     """
+    if not path.is_file() and path.suffix == ".py":
+        path = path.with_suffix("") / "__init__.py"
     if not path.is_file():
         return None
     resolved_path = path.resolve()
@@ -238,8 +240,39 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
         if spec is None or spec.loader is None:
             raise ValueError(f"无法加载插件模块: {path}")
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        created_parents: list[str] = []
+        if spec.submodule_search_locations is not None:
+            parent_path = path.parent.parent
+            parents: list[tuple[str, Path]] = []
+            parts = module_name.split(".")
+            for index in range(len(parts) - 1, 0, -1):
+                parents.append((".".join(parts[:index]), parent_path))
+                parent_path = parent_path.parent
+            for parent_name, parent_path in reversed(parents):
+                if parent_name not in sys.modules:
+                    namespace = ModuleType(parent_name)
+                    namespace.__path__ = [str(parent_path)]
+                    namespace.__package__ = parent_name
+                    sys.modules[parent_name] = namespace
+                    created_parents.append(parent_name)
+        previous = {
+            name: loaded for name, loaded in dict(sys.modules).items()
+            if name == module_name or name.startswith(module_name + ".")
+        }
+        if spec.submodule_search_locations is not None:
+            for name in previous:
+                sys.modules.pop(name, None)
         sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            for name in tuple(sys.modules):
+                if name == module_name or name.startswith(module_name + "."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(previous)
+            for parent_name in reversed(created_parents):
+                sys.modules.pop(parent_name, None)
+            raise
         _record_loaded_module(module_name, module, resolved_path)
         return module
 

@@ -35,6 +35,63 @@ def _write_module(path: Path, source: str = "VALUE = object()\n") -> None:
     path.write_text(source, encoding="utf-8")
 
 
+def test_load_package_supports_relative_imports_and_reuses_source(
+    tmp_path: Path, loaded_module_names: list[str],
+) -> None:
+    """同名包可以相对导入子模块, 且别名加载复用同一对象"""
+    package = tmp_path / "tools"
+    package.mkdir()
+    _write_module(package / "__init__.py", "from .worker import Result\nVALUE = Result('成功')\n")
+    _write_module(package / "worker.py", "from dataclasses import dataclass\n@dataclass\nclass Result:\n    text: str\n")
+    name = "_satrap_test_package.tools"
+    loaded_module_names.extend([name, name + ".worker", "_satrap_test_package_alias.tools", "_satrap_test_package"])
+    module = plugin_module._load_module(tmp_path / "tools.py", name)
+    assert module is not None and module.VALUE.text == "成功"
+    assert plugin_module._load_module(tmp_path / "tools.py", "_satrap_test_package_alias.tools") is module
+
+
+def test_failed_package_replacement_restores_previous_modules(
+    tmp_path: Path, loaded_module_names: list[str],
+) -> None:
+    """包加载失败时移除新子模块, 恢复之前的包及子模块"""
+    first = tmp_path / "first" / "tools"
+    second = tmp_path / "second" / "tools"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    _write_module(first / "__init__.py", "from .worker import VALUE\n")
+    _write_module(first / "worker.py", "VALUE = 'first'\n")
+    _write_module(second / "__init__.py", "from .worker import VALUE\nfrom . import extra\nraise RuntimeError('加载失败')\n")
+    _write_module(second / "worker.py", "VALUE = 'second'\n")
+    _write_module(second / "extra.py", "VALUE = 'extra'\n")
+    name = "_satrap_test_failed_package.tools"
+    loaded_module_names.extend([name, name + ".worker", name + ".extra", "_satrap_test_failed_package"])
+    previous = plugin_module._load_module(first.parent / "tools.py", name)
+    previous_worker = sys.modules[name + ".worker"]
+    with pytest.raises(RuntimeError, match="加载失败"):
+        plugin_module._load_module(second.parent / "tools.py", name)
+    assert sys.modules[name] is previous
+    assert sys.modules[name + ".worker"] is previous_worker
+    assert name + ".extra" not in sys.modules
+    _write_module(second / "__init__.py", "from .worker import VALUE\n")
+    replacement = plugin_module._load_module(second.parent / "tools.py", name)
+    assert replacement is not None and replacement.VALUE == "second"
+    assert sys.modules[name + ".worker"] is not previous_worker
+
+
+def test_file_entry_keeps_precedence_over_package(
+    tmp_path: Path, loaded_module_names: list[str],
+) -> None:
+    """文件与包同时存在时保持原文件入口优先"""
+    package = tmp_path / "tools"
+    package.mkdir()
+    _write_module(package / "__init__.py", "VALUE = 'package'\n")
+    _write_module(tmp_path / "tools.py", "VALUE = 'file'\n")
+    name = "_satrap_test_file_precedence"
+    loaded_module_names.append(name)
+    module = plugin_module._load_module(tmp_path / "tools.py", name)
+    assert module is not None and module.VALUE == "file"
+
+
 def test_load_module_reuses_same_source_under_different_names(
     tmp_path: Path,
     loaded_module_names: list[str],

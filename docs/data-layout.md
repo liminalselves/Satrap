@@ -4,6 +4,9 @@ Satrap 的运行数据统一放在 `.satrap/data`。平台适配器实例是最�
 
 ```text
 .satrap/data/
+├── rag/
+│   ├── indexes/            # 全局 (scope=global) RAG 知识库索引, 按库 ID 分目录
+│   └── locks/              # 知识库重建 / 写入文件锁
 └── platforms/
     └── <可读平台名>--<稳定哈希>/
         ├── platform.json
@@ -18,11 +21,15 @@ Satrap 的运行数据统一放在 `.satrap/data`。平台适配器实例是最�
         │       ├── sandbox/
         │       ├── uploads/
         │       ├── artifacts/
-        │       ├── indexes/
+        │       ├── indexes/      # 会话级 RAG 库在 indexes/rag/<库 ID>/ 下
         │       └── cache/
         ├── projects/
         └── trash/
             └── sessions/
+                └── <archive_id>/     # 单个会话回收包: 时间戳+纳秒+短哈希
+                    ├── files/        # 原会话目录整体移入 (sandbox/uploads/artifacts/indexes/cache)
+                    ├── records.json  # 会话域数据库记录快照 (13 张表, 带 records_sha256 摘要)
+                    └── manifest.json # 回收包清单 (layout_version / archive_version=2 / session_id / deleted_at)
 ```
 
 ## 平台数据库
@@ -48,14 +55,16 @@ Chat 项目绑定只共享用户选择的外部工作区。项目会话的沙箱
 
 ## 删除生命周期
 
-删除会话按以下顺序执行:
+删除会话 = 归档为可恢复回收包 (软删除), 在会话级文件锁下按以下顺序执行:
 
-1. 停止运行任务并释放插件状态
-2. 将会话目录整体移动到同平台的 `trash/sessions`
-3. 删除 `chat_history`, 状态检查点和 `session:<session_id>` 长期记忆
-4. 删除会话配置, 用户绑定和上下文路由
+1. 确认会话不在运行: 正在生成的会话需显式强制取消后才可回收; 同步删除路径对非空闲会话跳过删除
+2. 释放运行时与插件状态
+3. `snapshot_session_domain` 导出会话域 13 张表记录 (会话配置 / 覆盖 / 会话级 RAG 库 / 展示轮次与版本 / 工具调用 / chat_history / 状态三件套 / `session:<session_id>` 记忆 / 上下文路由) 写入回收包 `records.json`
+4. 会话目录整体移动到回收包 `files/` (同平台内移动, 不跨平台)
+5. 删除平台库中的会话域记录行, 写入带 `records_sha256` 摘要的 `manifest.json`
+6. 任一步骤失败回滚: 文件移回原位, 数据库记录恢复, 删除半成品回收包
 
-回收区与原会话位于同一平台目录, 移动操作不会跨平台。永久清理回收区应由独立管理操作完成。
+恢复回收包为凭据式两阶段: 先把 `records.json` 的数据库行插回并写 `archive_restores` 恢复凭据, 再将 `files/` 原子发布回原会话目录, 最后标记凭据完成并清理回收包; 恢复前严格校验回收包身份, 摘要与布局版本, 目标会话目录已存在则拒绝。永久删除回收包 (`purge`) 由独立管理操作完成, 不可恢复; Chat 回收站见 [聊天展示层](chat-display.md)。
 
 ## 路径键
 

@@ -720,6 +720,11 @@
     --nav-reflect-color: var(--reflect-default);
   }
 
+  /* 撑满整列的导航项 (如设置弹窗侧栏): button 元素默认收缩到内容宽度, 需显式补全 */
+  .glass-nav-item.nav-fill {
+    width: calc(100% - 20px);
+  }
+
   /* 导航项反光效果 - 默认隐藏 */
   .glass-nav-item::after {
     content: '';

@@ -222,7 +222,14 @@ class SessionClassConfigManager:
             if not inspect.isclass(cls) or not issubclass(cls, (Session, AsyncSession)):
                 raise ValueError(f"{class_path} 不是 Session/AsyncSession 子类")
             if cls.__module__ != module_path:
-                raise ValueError(f"{class_path} 不是模块内声明的会话类")
+                if expected_source.name != "__init__.py" or not cls.__module__.startswith(module_path + "."):
+                    raise ValueError(f"{class_path} 不是模块内声明的会话类")
+                _, _, implementation_source = self._trusted_module_source(
+                    f"{cls.__module__}.{cls.__name__}"
+                )
+                if not implementation_source.is_relative_to(expected_source.parent):
+                    raise ValueError(f"{class_path} 的实现不在对应可信包中")
+                expected_source = implementation_source
             source = inspect.getsourcefile(cls)
             if source is None or Path(source).resolve() != expected_source:
                 raise ValueError(f"{class_path} 的源码不在可信代码根中")

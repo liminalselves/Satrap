@@ -8,6 +8,7 @@
 - `satrap.expend.mcp`: MCP 生态扩展 (预留)
 - `satrap.expend.command`: 可复用的 Session 命令
 - `satrap.expend.skills`: 内置技能 (coding_agent / web_research)
+- `satrap.expend.plugins`: 官方预设插件 (base_take / satrap_coding / rag), 经插件系统安装启用, 见 [插件系统](plugin-system.md)
 
 顶层导出包括长期记忆, RAG, 搜索, 网页抓取和代码沙箱 (旧路径 `satrap.expend.<mod>` 兼容):
 
@@ -102,6 +103,8 @@ print(result)
 沙箱工具会尝试从 Markdown 代码块中提取代码。给 Agent 使用时, 建议在系统提示中限制可执行范围和文件路径。
 
 ## RAG
+
+> **给 Agent 用推荐走官方 rag 插件**: `satrap/expend/plugins/rag` 提供分层知识库 (global / session 作用域) 与 `rag_search` / `rag_list` / `rag_ingest` 工具, 知识库建库、文档导入与检索测试在管理面板"知识库"页完成, 完整使用流程见 [RAG 与会话覆盖](rag-and-session-overrides.md)。下列两个类是直接在代码里组合使用的底层独立实现。
 
 `LiteVectorRAG` 基于 `LiteVectorDB`, `DataBaseRAG` 基于 `DataBase`, 都用于把文本切块, 向量化, 存入本地向量库并检索。
 
@@ -259,15 +262,19 @@ memories = store.list_all()
 
 ## 插件配置机制
 
-插件经 meta.yaml 的 `config_schema` 声明可配置项, 支持两级配置:
+插件经 meta.yaml 的 `config_schema` 声明可配置项, 按四级合并:
 
-- **全局默认**: 存于 `.satrap/plugin_config/<name>.json`, 由 `PluginConfigManager` 管理
-- **会话覆盖**: `install_plugin(path, config={...})` 传入, 优先级高于全局默认
+```text
+schema 默认 < 全局配置 (.satrap/plugin_config/<name>.json, PluginConfigManager 管理)
+           < Edictum 命名配置 (session_class_config) < 当前会话覆盖
+```
 
-合成顺序: `schema.default < 全局 json < 会话覆盖`。配置在 `collect_tools` 工厂调用时注入, 工厂签名自适应 `(session, config)` / `(session)` / `()`。
+- **会话覆盖**: 代码内经 `install_plugin(path, config={...})` 传入; Chat / 前端另有 `session-plugin-config` 接口按字段整体覆盖, 删除键表示恢复继承, 覆盖记录存平台库 `session_config_overrides` 表并随会话进入归档 / 恢复生命周期, 详见 [RAG 与会话覆盖](rag-and-session-overrides.md)。
+- 配置在 `collect_tools` 工厂调用时注入, 工厂签名按 `(session, config, resources)` → `(session, config)` → `(session)` → `()` 自适应绑定。
 
-支持的字段类型: `string` / `path` / `number` / `bool` / `select` (带 options)。
+支持的字段类型: `string` / `path` / `textarea` / `number` / `bool` / `select` (带 options), 以及模型与资源选择器 `llm` / `embed` / `rerank` / `knowledge_base` / `knowledge_bases`。
 
 官方插件:
 - [base_take](base-take-plugin.md): 基础能力集 (搜索 / 沙箱 / 文档解析 / 长期记忆)
 - [satrap_coding](satrap-coding-plugin.md): Coding Agent (文件读写 / shell / 子代理 / 目标与计划)
+- [rag](rag-and-session-overrides.md): 分层知识库检索与文档导入 (`rag_search` / `rag_list` / `rag_ingest`), 结果由当前会话模型组织回答

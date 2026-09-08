@@ -141,18 +141,18 @@ class Mem0Memory:
         self._push_history(user_id, user_message, assistant_message)
 
         candidates = await self._extract(user_id, user_message, assistant_message)
-        # 1) 提取候选记忆
+        # 1. 提取候选记忆
         logger.info(f"[Mem0] user={user_id}, 提取候选数={len(candidates)}")
 
         affected_ids: List[str] = []
-        # 2) 对每条候选执行 ADD, UPDATE, DELETE, NOOP
+        # 2. 对每条候选执行 ADD, UPDATE, DELETE, NOOP
         for fact in candidates:
             memory_id = await self._update(user_id, fact)
             if memory_id:
                 affected_ids.append(memory_id)
 
         self._schedule_summary_refresh(user_id)
-        # 3) 异步刷新会话摘要
+        # 3. 异步刷新会话摘要
         return affected_ids
 
     async def close(self) -> None:

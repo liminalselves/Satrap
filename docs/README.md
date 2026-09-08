@@ -18,6 +18,7 @@
 12. [测试说明](testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
 13. [常见问题](faq.md): 常见报错, 配置排查, 图片与上下文问题
 14. [聊天展示层](chat-display.md): 面向前端聊天页的独立实时服务 (录制 / 会话编排 / WebSocket / HTTP API)
+15. [RAG 与会话覆盖](rag-and-session-overrides.md): RAG 插件使用流程, 知识库参数与文档管理, Embedding 绑定与索引重建, 检索参数, 会话级插件配置覆盖 (实施记录见 [RAG 实施记录](rag-implementation-plan.md))
 
 ## 项目结构速览
 

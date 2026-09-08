@@ -1,0 +1,317 @@
+from __future__ import annotations
+import threading
+from pathlib import Path
+import sqlite3
+from typing import List, Dict, Any, TYPE_CHECKING
+import json
+import time
+from satrap.core.utils.vision import content_text_projection
+from satrap.core.log import logger
+from .utils import (
+    _SUMMARY_PROMPT_VERSION,
+    _ContextRuntimeState,
+    _message_content_json,
+    _load_message_content,
+    _load_tool_calls,
+)
+
+if TYPE_CHECKING:
+    from satrap.core.APICall.LLMCall import LLM, AsyncLLM
+from .base import _ContextCore
+
+
+class _SyncStorage(_ContextCore):
+    _conn: sqlite3.Connection | None
+    _conn_lock: threading.Lock
+
+    def _get_conn(self):
+        """
+        获取数据库连接 (进程内复用, 避免每次操作建连开销)
+
+        注意: 复用连接假定 ContextManager 单线程使用 (Session 内串行调用),
+        连接创建与释放由 _conn_lock 保护
+
+        返回:
+        - 数据库连接 (进程内复用, 避免每次操作建连开销)
+        """
+        with self._conn_lock:
+            if self._conn is None:
+                Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+                self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        return self._conn
+
+    def close(self):
+        """关闭复用连接 (进程退出或不再使用时调用, 未调用时由 GC 兜底)"""
+        with self._conn_lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _init_db_table(self):
+        """初始化数据库表结构"""
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    conversation_id TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content TEXT,
+                    content_json TEXT,
+                    tool_call_id TEXT,
+                    tool_calls TEXT,
+                    reasoning_content TEXT
+                )
+            """
+            )
+
+            cursor.execute(
+                """CREATE INDEX IF NOT EXISTS idx_conv_id ON chat_history (conversation_id)"""
+            )
+
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS context_runtime_state (
+                    conversation_id TEXT PRIMARY KEY,
+                    summary TEXT NOT NULL DEFAULT '',
+                    covered_turn_count INTEGER NOT NULL DEFAULT 0,
+                    summary_model TEXT,
+                    summary_prompt_version INTEGER NOT NULL DEFAULT 1,
+                    usage_model TEXT,
+                    api_input_tokens INTEGER,
+                    estimated_input_tokens INTEGER,
+                    api_output_tokens INTEGER,
+                    api_total_tokens INTEGER,
+                    api_cached_tokens INTEGER,
+                    updated_at REAL NOT NULL
+                )
+            """
+            )
+
+            try:
+                cursor.execute(
+                    "ALTER TABLE context_runtime_state ADD COLUMN api_cached_tokens INTEGER"
+                )
+            except sqlite3.OperationalError:
+                pass
+
+            for col in (
+                "content_json",
+                "tool_call_id",
+                "tool_calls",
+                "reasoning_content",
+            ):
+                try:
+                    cursor.execute(f"ALTER TABLE chat_history ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass
+
+            conn.commit()
+        except Exception as e:
+            logger.error(
+                f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}"
+            )
+
+    def _sync(self):
+        """根据 keep_in_memory 策略决定是否立即写入数据库"""
+        if not self.keep_in_memory:
+            self.save_context()
+
+    def load_context(self):
+        """从数据库加载当前ID的上下文信息到内存中"""
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT role, content, content_json, tool_call_id, tool_calls, reasoning_content FROM chat_history WHERE conversation_id = ? ORDER BY id ASC",
+                (self.conversation_id,),
+            )
+            rows = cursor.fetchall()
+
+            self._messages: List[Dict[str, Any]] = []
+            for row_index, row in enumerate(rows, start=1):
+                msg = {"role": row[0], "content": _load_message_content(row[1], row[2])}
+                if row[3] is not None:
+                    msg["tool_call_id"] = row[3]
+                tool_calls = _load_tool_calls(row[4], self.conversation_id, row_index)
+                if tool_calls is not None:
+                    msg["tool_calls"] = tool_calls
+                if row[5] is not None:
+                    msg["reasoning_content"] = row[5]
+                self._messages.append(msg)
+            self._saved_count = len(rows)
+            self._load_runtime_state(conn)
+        except Exception as e:
+            logger.error(
+                f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+            )
+            self._messages: List[Dict[str, Any]] = []
+            self._saved_count = 0
+
+    def _load_runtime_state(self, conn: sqlite3.Connection) -> None:
+        """
+        加载当前对话的总结缓存和 usage 校准状态
+
+        参数:
+        - conn: SQLite 连接
+        """
+        row = conn.execute(
+            "SELECT summary, covered_turn_count, summary_model, summary_prompt_version, "
+            "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+            "api_cached_tokens "
+            "FROM context_runtime_state WHERE conversation_id = ?",
+            (self.conversation_id,),
+        ).fetchone()
+        if row is None:
+            self._runtime_state = _ContextRuntimeState()
+            self._runtime_state_dirty = False
+            return
+        self._runtime_state = _ContextRuntimeState(
+            summary=str(row[0] or ""),
+            covered_turn_count=int(row[1] or 0),
+            summary_model=str(row[2]) if row[2] else None,
+            summary_prompt_version=int(row[3] or _SUMMARY_PROMPT_VERSION),
+            usage_model=str(row[4]) if row[4] else None,
+            api_input_tokens=int(row[5]) if row[5] is not None else None,
+            estimated_input_tokens=int(row[6]) if row[6] is not None else None,
+            api_output_tokens=int(row[7]) if row[7] is not None else None,
+            api_total_tokens=int(row[8]) if row[8] is not None else None,
+            api_cached_tokens=int(row[9]) if row[9] is not None else None,
+        )
+        self._runtime_state_dirty = False
+        conversation_turns = self._conversation_turns(self._messages)
+        if (
+            self._runtime_state.summary_prompt_version != _SUMMARY_PROMPT_VERSION
+            or self._runtime_state.covered_turn_count > len(conversation_turns)
+        ):
+            self._invalidate_summary(persist=True)
+
+    def _write_runtime_state(self, conn: sqlite3.Connection) -> None:
+        """
+        将运行时状态写入当前事务
+
+        参数:
+        - conn: SQLite 连接
+        """
+        state = self._runtime_state
+        conn.execute(
+            "INSERT INTO context_runtime_state "
+            "(conversation_id, summary, covered_turn_count, summary_model, summary_prompt_version, "
+            "usage_model, api_input_tokens, estimated_input_tokens, api_output_tokens, api_total_tokens, "
+            "api_cached_tokens, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(conversation_id) DO UPDATE SET "
+            "summary = excluded.summary, covered_turn_count = excluded.covered_turn_count, "
+            "summary_model = excluded.summary_model, summary_prompt_version = excluded.summary_prompt_version, "
+            "usage_model = excluded.usage_model, api_input_tokens = excluded.api_input_tokens, "
+            "estimated_input_tokens = excluded.estimated_input_tokens, api_output_tokens = excluded.api_output_tokens, "
+            "api_total_tokens = excluded.api_total_tokens, api_cached_tokens = excluded.api_cached_tokens, "
+            "updated_at = excluded.updated_at",
+            (
+                self.conversation_id,
+                state.summary,
+                state.covered_turn_count,
+                state.summary_model,
+                state.summary_prompt_version,
+                state.usage_model,
+                state.api_input_tokens,
+                state.estimated_input_tokens,
+                state.api_output_tokens,
+                state.api_total_tokens,
+                state.api_cached_tokens,
+                time.time(),
+            ),
+        )
+
+    def _save_runtime_state(self) -> None:
+        """持久化当前对话的总结缓存和 usage 校准状态"""
+        conn = self._get_conn()
+        self._write_runtime_state(conn)
+        conn.commit()
+        self._runtime_state_dirty = False
+
+    def _invalidate_summary(self, persist: bool = False) -> None:
+        """
+        清除因历史编辑而失效的总结缓存
+
+        参数:
+        - persist: 是否立即同步到数据库
+        """
+        self._runtime_state.summary = ""
+        self._runtime_state.covered_turn_count = 0
+        self._runtime_state.summary_model = None
+        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._runtime_state_dirty = True
+        if persist:
+            self._save_runtime_state()
+
+    def save_context(self):
+        """
+        保存当前上下文到数据库
+
+        增量策略: 纯追加时只 INSERT 尾部新消息 (O(1));
+        编辑/外部修改 (标记 dirty) 或状态未知时全量重写
+        """
+        conn = self._get_conn()
+        cursor = conn.cursor()
+        prev_saved = self._saved_count  # 失败时恢复水位, 保证重试幂等
+        try:
+            if self._saved_count < 0 or self._saved_count > len(self._messages):
+                cursor.execute(
+                    "DELETE FROM chat_history WHERE conversation_id = ?",
+                    (self.conversation_id,),
+                )
+                # 全量重写: 消息列表被编辑过, 行 id 将重新分配
+                self._saved_count = 0
+
+            new_messages = self._messages[self._saved_count :]
+            if new_messages:
+                data_to_insert = [
+                    (
+                        self.conversation_id,
+                        msg["role"],
+                        content_text_projection(msg.get("content")),
+                        _message_content_json(msg.get("content")),
+                        msg.get("tool_call_id"),
+                        (
+                            json.dumps(msg["tool_calls"], ensure_ascii=False)
+                            if msg.get("tool_calls")
+                            else None
+                        ),
+                        msg.get("reasoning_content"),
+                    )
+                    for msg in new_messages
+                ]
+                cursor.executemany(
+                    "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    data_to_insert,
+                )
+            if self._runtime_state_dirty:
+                self._write_runtime_state(conn)
+            conn.commit()
+            # 提交成功后才推进已保存水位
+            self._saved_count = len(self._messages)
+            self._runtime_state_dirty = False
+
+        except Exception as e:
+            logger.error(
+                f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+            )
+            conn.rollback()
+            self._saved_count = prev_saved  # 恢复水位, 下次保存重试 (全量重写路径幂等)
+
+    def _mark_dirty(self) -> None:
+        """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
+        self._saved_count = -1
+        self._invalidate_summary()

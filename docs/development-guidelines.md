@@ -6,7 +6,7 @@
 
 ## 1. 注释规范
 
-本节根据 `satrap/core/APICall/EmbedCall.py` 的手写注释风格整理
+本节根据 `satrap/core/APICall/EmbedCall/` 的手写注释风格整理
 
 ### 1.1 基本原则
 
@@ -267,7 +267,7 @@ return []   # 抑制解析异常时保持既有空列表返回契约
 import json, re
 ```
 
-推荐结构如下, 具体写法可参考 `satrap/core/APICall/LLMCall.py`:
+推荐结构如下, 具体写法可参考 `satrap/core/APICall/LLMCall/responses.py`:
 
 ```python
 from openai.types.chat.chat_completion import ChatCompletion

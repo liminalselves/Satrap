@@ -323,6 +323,13 @@ from satrap.core.APICall.EmbedCall import Embedding
 from satrap.core.APICall.ReRankCall import ReRank
 ```
 
+`embed()` 的行为契约 (同步 / 异步一致):
+
+- 空列表输入返回 `[]` (单文本输入返回该文本的向量);
+- 输入按 `max_batch_size` (默认 100, `<= 0` 构造时抛 `ValueError`) 分批请求; 单批 API 失败不中止整个调用, 失败批的项以 `[]` 按输入位置占位, 继续后续批次 (`suppress_error=False` 时改为抛出);
+- 跨批次向量维度不一致的项置为 `[]` 占位 (`_align_embedding_dimensions`);
+- `return_false=True` 时, 任意批次含空结果则整体返回 `False` 而非占位列表。
+
 ## 消息组件
 
 `satrap.core.components.message` 定义了跨平台消息组件, 包括:

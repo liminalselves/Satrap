@@ -25,6 +25,8 @@ class AssistantSession(Session):
         return self.workflow.full_agent(message)
 ```
 
+同步 Session 的 `run()` 在共享有界线程池 (`SESSION_WORKERS`, 8 线程 / 32 槽, `satrap.core.utils.async_worker.BoundedAsyncWorker`) 中执行, 不阻塞后端事件循环; 队列饱和时调用方立即收到"同步会话处理繁忙, 请稍后重试"。取消任务时线程资源会保留到底层工作真正结束 (`wait_on_cancel`), 不会提前释放会话。同模块还提供 `DNS_WORKERS` (4/16, 出站 DNS 解析) 与 `RAG_WORKERS` (4/16, RAG 管理操作) 两个单例池。
+
 ## 异步 Session
 
 ```python

@@ -10,7 +10,7 @@
 插件名/
 ├── meta.yaml     # name(必填) / version / author / repo / description
 │                 # 及可选能力组成描述: tools/skills/handlers/commands/mcp (名字 -> 描述)
-├── tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools(session) 工厂
+├── tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools(session, config?, resources?) 工厂
 ├── skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md 文件夹式)
 ├── mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (仅异步版)
 ├── commands.py   # 可选: 导出 commands / async_commands 字典, 或 build_commands(session) 工厂, 或 cmd_* 约定
@@ -53,6 +53,27 @@ mcp: {}
 ```
 
 > 声明仅作**描述补充**: 能力的实际注册由自动扫描 (`collect_*`) 决定 (真相源), meta.yaml 声明不改变安装行为。声明了但扫描不到的能力仅在安装时给出 `warning` 日志; 扫描到但未声明的能力照常安装 (描述留空)。声明经 `plugin.capability_descriptions` 读取, 并在 `plugin.list_capabilities()` 的每项以 `description` 字段返回。
+
+### 配置项声明 `config_schema` (可选)
+
+插件可在 meta.yaml 用 `config_schema` 声明配置项 (键 -> `{type, default, description, options?}`), 供前端渲染配置表单, 解析后存于 `plugin.config_schema`:
+
+```yaml
+config_schema:
+  db_scope:
+    type: select            # string / path / number / bool / select
+    default: session
+    options: [global, session, session_global]
+    description: "检索范围"
+  write_db_id:
+    type: knowledge_base    # 模型/资源选择器: knowledge_base / knowledge_bases / llm / embed / rerank
+    default: ""
+    description: "默认导入目标"
+```
+
+- 基础类型: `string` / `path` / `textarea` / `number` (可加 `integer` / `minimum` / `maximum`) / `bool` / `select` (配 `options`);
+- 模型与资源选择器: `llm` / `embed` / `rerank` (引用后端模型配置名) 与 `knowledge_base` / `knowledge_bases` (引用 RAG 知识库), 前端以下拉选项渲染, 模型引用的运行时注入与校验见 [RAG 与会话覆盖](rag-and-session-overrides.md);
+- 配置值按四级合并后注入工具工厂 (见下"插件配置与会话级覆盖"), schema 不提供校验之外的安装行为变化。
 
 ## 安装 / 启停 / 卸载
 
@@ -99,13 +120,26 @@ plugin.list_capabilities()        # 展示插件内每项能力的实效状态 (
 >
 > 工具与处理器采用**执行路径合成**: 插件停用后, 即使 `enable_tool` / `enable_all_tools` / `enable_handler` 更新了独立位, 执行时仍按「独立位 ∧ 插件聚合开关」过滤 (`execute_tool` 返回 disabled 错误, 处理器不执行); 工具定义列表 (`get_tools_definitions`) 按独立位展示, 与执行路径解耦。
 
+## 插件配置与会话级覆盖
+
+声明了 `config_schema` 的插件支持运行时配置, 按**四级合并** (后者覆盖前者):
+
+```text
+schema 默认 < 全局插件配置 (.satrap/plugin_config/<name>.json) < Edictum 命名配置 (session_class_config) < 当前会话覆盖
+```
+
+- **会话级覆盖**存平台库 `session_config_overrides` 表, 按会话与配置域隔离; 空值按 schema 校验, **删除键表示恢复继承**, 不保存合并结果, 对象和数组按字段整体替换;
+- 合并后的配置作为 `config` 参数注入 `get_tools(session, config, ...)` 等工厂, 工具按当前生效配置工作;
+- Chat 前端经 `GET/PUT /api/chat/session-plugin-config` 读写覆盖 (GET 返回合并后配置与各字段来源), 控制服务另有 `/config/session-plugin-config` 冷接口; 覆盖记录随会话进入删除 / 归档 / 恢复 / 分支生命周期;
+- 完整语义 (字段来源、并发控制、RAG 插件示例) 见 [RAG 与会话覆盖](rag-and-session-overrides.md)。
+
 ## 能力收集约定 (collect_*)
 
 每个能力文件支持多种导出方式, 安装时按优先级自动扫描:
 
 | 文件 | 收集方式 (按优先级) |
 | --- | --- |
-| `tools.py` | ① `get_tools(session)` 工厂 (会话依赖注入, 签名不匹配降级 `get_tools()`); ② 模块内 `Tool`/`AsyncTool` 子类 (无参构造, 排除基类) |
+| `tools.py` | ① `get_tools(...)` 工厂, 按签名自适应绑定: `(session, config, resources=...)` → `(session, config, resources)` → `(session, config)` → `(session)` → `()`; ② 模块内 `Tool`/`AsyncTool` 子类 (无参构造, 排除基类) |
 | `skills.py` | ① `skills/` 子目录 (每个文件夹一个 `skill.md`); ② 导出 `skills: list[Skill]` |
 | `mcp.py` | ① 导出 `clients: dict[str, MCPClient]`; ② `build_clients()` 工厂 |
 | `commands.py` | ① `build_commands(session)` 工厂 (返回 (同步, 异步) 二元组或同步映射); ② 导出 `commands` / `async_commands` 字典; ③ `cmd_*` (同步) / `cmd_*_async` (异步) 约定 |

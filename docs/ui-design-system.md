@@ -29,38 +29,45 @@
 
 ### 基础色板
 
-```css
-/* 背景 */
---color-bg-base: #0f0f1a;              /* 深蓝黑基底 */
---color-bg-glass: rgba(255, 255, 255, 0.03);
---color-bg-glass-hover: rgba(255, 255, 255, 0.06);
---color-bg-glass-active: rgba(255, 255, 255, 0.08);
+主题为 Fluent 2 风格, 暗色 / 浅色两套 (`:root` 暗色为默认, 浅色覆盖同组变量)。暗色主要变量:
 
-/* 边框 */
---color-border-glass: rgba(255, 255, 255, 0.08);
---color-border-glass-strong: rgba(255, 255, 255, 0.12);
+```css
+/* 背景层次 */
+--color-bg-base: #0d0d0f;
+--color-bg-layer1: rgba(30, 30, 35, 0.6);
+--color-bg-layer2: rgba(40, 40, 48, 0.5);
+--color-bg-layer3: rgba(50, 50, 60, 0.4);
+
+/* 玻璃材质 */
+--glass-bg: rgba(255, 255, 255, 0.03);
+--glass-bg-hover: rgba(255, 255, 255, 0.05);
+--glass-bg-active: rgba(255, 255, 255, 0.08);
+--glass-border: rgba(255, 255, 255, 0.06);
+--glass-border-hover: rgba(255, 255, 255, 0.08);
 
 /* 强调色 */
---color-accent: #6366f1;               /* 靛蓝 */
---color-accent-hover: #818cf8;
---color-success: #10b981;              /* 翠绿 */
---color-warning: #f59e0b;              /* 琥珀 */
---color-error: #ef4444;                /* 红色 */
+--color-accent: #0078d4;
+--color-accent-light: #2b88d8;
+--color-accent-dark: #106ebe;
+--color-accent-subtle: rgba(0, 120, 212, 0.15);
+--color-success: #13a10e;
+--color-warning: #ff8c00;
+--color-error: #e81123;
 
 /* 文字 */
---color-text-primary: #f8fafc;         /* 主要文字 */
---color-text-secondary: #94a3b8;       /* 次要文字 */
---color-text-tertiary: #64748b;        /* 辅助文字 */
+--color-text-primary: #ffffff;
+--color-text-secondary: rgba(255, 255, 255, 0.75);
+--color-text-tertiary: rgba(255, 255, 255, 0.5);
 ```
 
 ### 语义化色彩
 
 | 用途 | 变量 | 值 |
 |-----|------|-----|
-| 主要操作 | `--color-accent` | `#6366f1` |
-| 成功状态 | `--color-success` | `#10b981` |
-| 警告状态 | `--color-warning` | `#f59e0b` |
-| 错误状态 | `--color-error` | `#ef4444` |
+| 主要操作 | `--color-accent` | `#0078d4` |
+| 成功状态 | `--color-success` | `#13a10e` |
+| 警告状态 | `--color-warning` | `#ff8c00` |
+| 错误状态 | `--color-error` | `#e81123` |
 
 ## 组件规范
 
@@ -125,21 +132,42 @@
 
 ### 模态框 (Modal)
 
+`components/ui/Modal.tsx` 渲染 `.glass-overlay` + `.glass-modal`, 支持嵌套弹窗栈 (只有栈顶响应 Escape 与遮罩点击, z-index 递增):
+
 ```css
 .glass-overlay {
-  @apply fixed inset-0 bg-black/60 backdrop-blur-sm;
+  position: fixed; inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  animation: fadeIn 200ms ease;
 }
 
 .glass-modal {
-  @apply glass-strong rounded-xl p-6;
-  @apply animate-slide-up;
+  background: var(--glass-bg);
+  backdrop-filter: blur(40px) saturate(180%);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-modal);
+  animation: slideIn 250ms cubic-bezier(0.1, 0.9, 0.2, 1);
+  padding: 24px;
 }
 ```
 
+尺寸档位 (`size` prop, 默认 `md`):
+
+| size | 最大宽度 | 用途 |
+| --- | --- | --- |
+| `sm` | `max-w-sm` (384px) | 小型确认对话框 |
+| `md` | `max-w-md` (448px) | 常规表单 |
+| `lg` | `max-w-lg` (512px) | 较大内容 (如 RAG 管理) |
+| `xl` | `max-w-xl` (576px) | 宽表单 |
+| `2xl` | `max-w-5xl` (1024px) | 超宽内容 |
+| `3xl` | `max-w-3xl` (768px) | 左右分栏布局 (如对话设置) |
+
 **特征:**
 - 全屏毛玻璃遮罩
-- 居中玻璃卡片
-- 滑入动画
+- 居中玻璃卡片, `max-h-[85vh]`, 内容区独立滚动
+- 滑入动画 (slideIn)
 
 ### 表格 (Table)
 
@@ -160,21 +188,45 @@
 
 ### 标签页 (Tabs)
 
-```css
-/* 底部边框指示器 */
-.tabs-trigger {
-  @apply px-4 py-2 text-sm font-medium;
-  @apply border-b-2 -mb-px;
-}
+`components/ui/Tabs.tsx` 提供 `Tabs` / `TabsList` / `TabsTrigger` / `TabsContent` 组合式组件 (非 CSS 类), 以内联 Tailwind 类实现:
 
-.tabs-trigger.active {
-  @apply text-accent border-accent;
-}
+```tsx
+<Tabs defaultValue="general">
+  <TabsList>           {/* flex gap-1 border-b border-border-glass */}
+    <TabsTrigger value="general">通用</TabsTrigger>
+  </TabsList>
+  <TabsContent value="general">...</TabsContent>   {/* animate-fade-in */}
+</Tabs>
 ```
 
 **特征:**
 - 底部边框指示器
 - 无背景色块
+- 内容切换淡入
+
+### 导航项 (glass-nav-item)
+
+侧边栏与管理弹窗分类导航共用 `.glass-nav-item` (globals.css), 提供图标 + 文字的行式导航, 悬停有径向反光效果; 颜色变体 `nav-accent` / `nav-purple` / `nav-teal` / `nav-pink` / `nav-orange` / `nav-green` 决定悬停与 `.active` 选中态的配色:
+
+```tsx
+<button className={cn('glass-nav-item nav-accent', isActive && 'active')}>
+  <Icon className="h-4 w-4" /> 对话
+</button>
+```
+
+**变体:**
+- `.nav-fill`: 撑满整列宽度 (`width: calc(100% - 20px)`) — `button` 元素默认收缩到内容宽度, 在设置弹窗侧栏等需要等宽对齐的场景必须加此变体
+
+### 其他 UI 原语
+
+`components/ui/` 还包含:
+
+| 组件 | 说明 |
+| --- | --- |
+| `Select` | 自定义下拉选择 (`options: {value, label}[]` 驱动, portal 渲染浮层, 非原生 select) |
+| `Badge` | 状态徽标 |
+| `Toast` | 全局轻提示 (`toast(type, message, duration?)`, type: `success` / `error` / `warning` / `info`) |
+| `CopyButton` | 复制到剪贴板按钮 (带已复制状态反馈) |
 
 ## 动画
 
@@ -187,39 +239,33 @@
 }
 
 .animate-fade-in {
-  animation: fadeIn 200ms ease-out;
+  animation: fadeIn 200ms ease;
 }
 ```
 
-### 滑入 (Slide Up)
+### 滑入 (Slide In)
 
 ```css
-@keyframes slideUp {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+@keyframes slideIn {
+  from { opacity: 0; transform: translateY(-12px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
-.animate-slide-up {
-  animation: slideUp 200ms ease-out;
+.animate-slide-in {
+  animation: slideIn 250ms cubic-bezier(0.1, 0.9, 0.2, 1);
 }
 ```
 
-### 脉冲 (Pulse Subtle)
+### 脉冲 (Pulse)
 
 ```css
-@keyframes pulseSubtle {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.7; }
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 0.3; }
+  50% { transform: scale(1.5); opacity: 0; }
 }
 
-.animate-pulse-subtle {
-  animation: pulseSubtle 2s ease-in-out infinite;
+.animate-pulse {
+  animation: pulse 2s ease-in-out infinite;
 }
 ```
 

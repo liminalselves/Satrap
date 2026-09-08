@@ -86,6 +86,11 @@ import {
   FolderInput,
   HardDrive,
   Gauge,
+  BookOpen,
+  Cpu,
+  Database,
+  SlidersHorizontal,
+  type LucideIcon,
 } from 'lucide-react';
 
 const LazyMarkdownContent = lazy(() => import('./MarkdownContent'));
@@ -1876,7 +1881,7 @@ export function Chat() {
         onViewCapabilities={(name) => setCapabilityPlugin(name)}
         onViewConfig={(name) => setConfigPlugin(name)}
         onOpenMemory={() => setMemoryOpen(true)}
-        onOpenRag={() => { setSettingsOpen(false); setRagOpen(true); }}
+        onOpenRag={() => setRagOpen(true)}
         onOpenHistory={() => setHistoryOpen(true)}
         modelsDetail={modelsDetail}
         onAddModel={() => setEditingModel('')}
@@ -2241,7 +2246,17 @@ function OptionsPanel({
   );
 }
 
-// 聊天设置弹窗
+// 聊天设置弹窗分类
+type ChatSettingsCategory = 'chat' | 'models' | 'plugins' | 'data';
+
+const CHAT_SETTINGS_CATEGORIES: { key: ChatSettingsCategory; label: string; icon: LucideIcon }[] = [
+  { key: 'chat', label: '对话', icon: SlidersHorizontal },
+  { key: 'models', label: '模型管理', icon: Cpu },
+  { key: 'plugins', label: '插件', icon: Puzzle },
+  { key: 'data', label: '数据管理', icon: Database },
+];
+
+// 聊天设置弹窗: 左侧分类导航 + 右侧分类内容
 function ChatSettingsModal({
   open,
   onClose,
@@ -2279,192 +2294,248 @@ function ChatSettingsModal({
   onEditModel: (name: string) => void;
   onDeleteModel: (name: string) => void;
 }) {
+  const [category, setCategory] = useState<ChatSettingsCategory>('chat');
+
+  // 每次打开重置到第一个分类
+  useEffect(() => {
+    if (open) setCategory('chat');
+  }, [open]);
+
   return (
-    <Modal open={open} onClose={onClose} title="对话设置" size="md">
-      <div className="space-y-5">
-        {/* 模型 */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium text-text-primary">模型</label>
+    <Modal open={open} onClose={onClose} title="对话设置" size="3xl">
+      <div className="flex gap-4 h-[60vh] min-h-[420px]">
+        {/* 左侧分类导航 */}
+        <nav className="w-44 shrink-0">
+          {CHAT_SETTINGS_CATEGORIES.map((item) => (
             <button
-              onClick={onAddModel}
-              className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+              key={item.key}
+              onClick={() => setCategory(item.key)}
+              className={cn('glass-nav-item nav-accent nav-fill', category === item.key && 'active')}
             >
-              <Plus className="h-3 w-3" /> 新增模型
+              <item.icon className="h-4 w-4" />
+              {item.label}
             </button>
-          </div>
-          <Select
-            value={settings.model}
-            onChange={(e) => onChange('model', e.target.value)}
-            options={modelOptions}
-          />
-          {/* 模型列表 */}
-          {Object.keys(modelsDetail).length > 0 && (
-            <div className="mt-2 space-y-1.5">
-              {Object.entries(modelsDetail).map(([name, cfg]) => (
-                <div
-                  key={name}
-                  className="glass-card rounded-md px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
-                >
-                  <div className="min-w-0 flex-1">
-                    <span className="text-text-primary font-medium">{name}</span>
-                    {cfg.model && (
-                      <span className="text-text-tertiary ml-2">{cfg.model}</span>
-                    )}
+          ))}
+        </nav>
+
+        {/* 右侧分类内容 */}
+        <div className="min-w-0 flex-1 overflow-y-auto custom-scrollbar border-l border-glass-border pl-4 pr-1">
+          <div className="space-y-5">
+            {category === 'chat' && (
+              <>
+                {/* 模型 */}
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">模型</label>
+                  <Select
+                    value={settings.model}
+                    onChange={(e) => onChange('model', e.target.value)}
+                    options={modelOptions}
+                  />
+                  <p className="text-xs text-text-tertiary mt-1.5">模型配置的新增与编辑见「模型管理」页</p>
+                </div>
+
+                {/* 思考强度 */}
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-sm font-medium text-text-primary">思考强度</div>
+                    <div className="text-xs text-text-tertiary mt-0.5">控制模型推理深度(需模型支持)</div>
                   </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => onEditModel(name)}
-                      className="p-0.5 rounded text-text-tertiary hover:text-accent transition-colors"
-                      title="编辑"
-                    >
-                      <Pencil className="h-3 w-3" />
-                    </button>
-                    <button
-                      onClick={() => onDeleteModel(name)}
-                      className="p-0.5 rounded text-text-tertiary hover:text-error transition-colors"
-                      title="删除"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                    </button>
+                  <Select
+                    value={settings.think}
+                    onChange={(e) => onChange('think', e.target.value)}
+                    options={thinkingOptions}
+                  />
+                </div>
+
+                {/* 温度 */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <label className="text-sm font-medium text-text-primary">温度</label>
+                    <span className="text-sm text-accent font-medium">{settings.temperature.toFixed(2)}</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={2}
+                    step={0.05}
+                    value={settings.temperature}
+                    onChange={(e) => onChange('temperature', Number(e.target.value))}
+                    className="w-full accent-accent"
+                  />
+                  <div className="flex justify-between text-xs text-text-tertiary mt-1">
+                    <span>严谨 0</span>
+                    <span>平衡 1</span>
+                    <span>发散 2</span>
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
 
-        {/* 思考强度 */}
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-medium text-text-primary">思考强度</div>
-            <div className="text-xs text-text-tertiary mt-0.5">控制模型推理深度(需模型支持)</div>
-          </div>
-          <Select
-            value={settings.think}
-            onChange={(e) => onChange('think', e.target.value)}
-            options={thinkingOptions}
-          />
-        </div>
+                {/* 系统提示词 */}
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">系统提示词</label>
+                  <textarea
+                    value={settings.systemPrompt}
+                    onChange={(e) => onChange('systemPrompt', e.target.value)}
+                    placeholder="为当前对话设置系统级指令, 留空使用默认"
+                    rows={4}
+                    className="glass-input w-full resize-none text-sm"
+                  />
+                </div>
+              </>
+            )}
 
-        {/* 温度 */}
-        <div>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium text-text-primary">温度</label>
-            <span className="text-sm text-accent font-medium">{settings.temperature.toFixed(2)}</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={2}
-            step={0.05}
-            value={settings.temperature}
-            onChange={(e) => onChange('temperature', Number(e.target.value))}
-            className="w-full accent-accent"
-          />
-          <div className="flex justify-between text-xs text-text-tertiary mt-1">
-            <span>严谨 0</span>
-            <span>平衡 1</span>
-            <span>发散 2</span>
-          </div>
-        </div>
-
-        {/* 系统提示词 */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-2">系统提示词</label>
-          <textarea
-            value={settings.systemPrompt}
-            onChange={(e) => onChange('systemPrompt', e.target.value)}
-            placeholder="为当前对话设置系统级指令, 留空使用默认"
-            rows={4}
-            className="glass-input w-full resize-none text-sm"
-          />
-        </div>
-
-        {/* 插件 */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-2">插件</label>
-          {plugins.length === 0 ? (
-            <p className="text-xs text-text-tertiary">暂无可用插件</p>
-          ) : (
-            <div className="space-y-2">
-              {plugins.map((p) => {
-                const capCount = Object.values(p.capabilities).reduce((n, list) => n + list.length, 0);
-                return (
-                  <div
-                    key={p.name}
-                    className="glass-card rounded-lg px-3 py-2.5 flex items-center justify-between gap-3"
+            {category === 'models' && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-text-primary">模型配置</label>
+                  <button
+                    onClick={onAddModel}
+                    className="text-xs text-accent hover:underline inline-flex items-center gap-1"
                   >
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <Puzzle className="h-4 w-4 text-accent shrink-0" />
-                        <span className="text-sm font-medium text-text-primary truncate">{p.name}</span>
-                        <span className="text-xs text-text-tertiary shrink-0">v{p.version}</span>
+                    <Plus className="h-3 w-3" /> 新增模型
+                  </button>
+                </div>
+                {Object.keys(modelsDetail).length === 0 ? (
+                  <p className="text-xs text-text-tertiary">暂无模型配置</p>
+                ) : (
+                  <div className="mt-2 space-y-1.5">
+                    {Object.entries(modelsDetail).map(([name, cfg]) => (
+                      <div
+                        key={name}
+                        className="glass-card rounded-md px-2.5 py-1.5 flex items-center justify-between gap-2 text-xs"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="text-text-primary font-medium">{name}</span>
+                          {cfg.model && (
+                            <span className="text-text-tertiary ml-2">{cfg.model}</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            onClick={() => onEditModel(name)}
+                            className="p-0.5 rounded text-text-tertiary hover:text-accent transition-colors"
+                            title="编辑"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                          <button
+                            onClick={() => onDeleteModel(name)}
+                            className="p-0.5 rounded text-text-tertiary hover:text-error transition-colors"
+                            title="删除"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </button>
+                        </div>
                       </div>
-                      <p className="text-xs text-text-tertiary mt-1 line-clamp-2">{p.description}</p>
-                      <div className="flex items-center gap-2 mt-1.5">
-                        <button
-                          onClick={() => onViewCapabilities(p.name)}
-                          className="text-xs text-accent hover:underline inline-flex items-center gap-1"
-                        >
-                          查看全部能力 ({capCount})
-                        </button>
-                        <button
-                          onClick={() => onViewConfig(p.name)}
-                          className="text-xs text-accent hover:underline inline-flex items-center gap-1"
-                        >
-                          配置
-                        </button>
-                      </div>
-                    </div>
-                    <Toggle
-                      checked={p.enabled}
-                      onChange={(v) => onTogglePlugin(p.name, v)}
-                      title={p.enabled ? '停用插件' : '启用插件'}
-                    />
+                    ))}
                   </div>
-                );
-              })}
-            </div>
-          )}
-          <p className="text-xs text-text-tertiary mt-1.5">启用后对新会话生效, 能力来自插件 meta.yaml 声明</p>
-        </div>
+                )}
+              </div>
+            )}
 
-        <Button variant="subtle" onClick={onOpenRag}>管理 RAG 知识库</Button>
+            {category === 'plugins' && (
+              <div>
+                <label className="block text-sm font-medium text-text-primary mb-2">插件</label>
+                {plugins.length === 0 ? (
+                  <p className="text-xs text-text-tertiary">暂无可用插件</p>
+                ) : (
+                  <div className="space-y-2">
+                    {plugins.map((p) => {
+                      const capCount = Object.values(p.capabilities).reduce((n, list) => n + list.length, 0);
+                      return (
+                        <div
+                          key={p.name}
+                          className="glass-card rounded-lg px-3 py-2.5 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <Puzzle className="h-4 w-4 text-accent shrink-0" />
+                              <span className="text-sm font-medium text-text-primary truncate">{p.name}</span>
+                              <span className="text-xs text-text-tertiary shrink-0">v{p.version}</span>
+                            </div>
+                            <p className="text-xs text-text-tertiary mt-1 line-clamp-2">{p.description}</p>
+                            <div className="flex items-center gap-2 mt-1.5">
+                              <button
+                                onClick={() => onViewCapabilities(p.name)}
+                                className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                              >
+                                查看全部能力 ({capCount})
+                              </button>
+                              <button
+                                onClick={() => onViewConfig(p.name)}
+                                className="text-xs text-accent hover:underline inline-flex items-center gap-1"
+                              >
+                                配置
+                              </button>
+                            </div>
+                          </div>
+                          <Toggle
+                            checked={p.enabled}
+                            onChange={(v) => onTogglePlugin(p.name, v)}
+                            title={p.enabled ? '停用插件' : '启用插件'}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="text-xs text-text-tertiary mt-1.5">启用后对新会话生效, 能力来自插件 meta.yaml 声明</p>
+              </div>
+            )}
 
-        {/* 记忆管理 */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-2">长期记忆</label>
-          <button
-            onClick={onOpenMemory}
-            className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <Brain className="h-4 w-4 text-accent shrink-0" />
-              <span className="text-sm text-text-primary">管理记忆</span>
-            </div>
-            <p className="text-xs text-text-tertiary mt-1">查看 / 添加 / 删除长期记忆条目</p>
-          </button>
-        </div>
+            {category === 'data' && (
+              <>
+                {/* RAG 知识库 */}
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">RAG 知识库</label>
+                  <button
+                    onClick={onOpenRag}
+                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <BookOpen className="h-4 w-4 text-accent shrink-0" />
+                      <span className="text-sm text-text-primary">管理知识库</span>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-1">知识库创建、文档导入与检索测试</p>
+                  </button>
+                </div>
 
-        {/* 会话历史管理 */}
-        <div>
-          <label className="block text-sm font-medium text-text-primary mb-2">会话历史</label>
-          <button
-            onClick={onOpenHistory}
-            className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
-          >
-            <div className="flex items-center gap-2">
-              <HardDrive className="h-4 w-4 text-accent shrink-0" />
-              <span className="text-sm text-text-primary">管理历史与回收站</span>
-            </div>
-            <p className="text-xs text-text-tertiary mt-1">搜索、批量清理、恢复或永久删除 Chat 会话</p>
-          </button>
-        </div>
+                {/* 记忆管理 */}
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">长期记忆</label>
+                  <button
+                    onClick={onOpenMemory}
+                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Brain className="h-4 w-4 text-accent shrink-0" />
+                      <span className="text-sm text-text-primary">管理记忆</span>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-1">查看 / 添加 / 删除长期记忆条目</p>
+                  </button>
+                </div>
 
-        <div className="flex justify-end pt-1">
-          <Button variant="primary" onClick={onClose}>完成</Button>
+                {/* 会话历史管理 */}
+                <div>
+                  <label className="block text-sm font-medium text-text-primary mb-2">会话历史</label>
+                  <button
+                    onClick={onOpenHistory}
+                    className="glass-card rounded-lg px-3 py-2.5 w-full text-left hover:bg-glass-active transition-colors"
+                  >
+                    <div className="flex items-center gap-2">
+                      <HardDrive className="h-4 w-4 text-accent shrink-0" />
+                      <span className="text-sm text-text-primary">管理历史与回收站</span>
+                    </div>
+                    <p className="text-xs text-text-tertiary mt-1">搜索、批量清理、恢复或永久删除 Chat 会话</p>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
+      </div>
+
+      <div className="flex justify-end pt-3">
+        <Button variant="primary" onClick={onClose}>完成</Button>
       </div>
     </Modal>
   );
