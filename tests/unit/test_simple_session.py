@@ -225,16 +225,20 @@ def test_call_delegates_to_run(tmp_path: Path):
 
 def test_run_multimodal_img_urls(tmp_path: Path):
     """
-    多模态: img_urls 透传到 llm.call
+    多模态: 图片固定在用户消息中传入 llm.call
 
     参数:
     - tmp_path: tmp路径
     """
     llm = _FakeLLM()
+    llm.supports_visual_input = True
     session = _make_session(tmp_path, llm)
 
-    session.run("看图", img_urls=["http://x/a.png"])
-    assert llm.calls[0]["img_urls"] == ["http://x/a.png"]
+    session.run("看图", img_urls=["data:image/png;base64,aW1hZ2U="])
+    assert llm.calls[0]["img_urls"] is None
+    user = next(m for m in llm.calls[0]["messages"] if m["role"] == "user")
+    assert user["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
+    assert len(user["content"]) == 2
 
 
 # ================= 工具管理 =================
@@ -1296,19 +1300,26 @@ async def test_async_concurrent_init_single_workflow(tmp_path: Path):
 
 def test_img_urls_passed_in_tool_loop(tmp_path: Path):
     """
-    L1 修复: 工具循环内每轮 llm.call 都透传 img_urls
+    工具循环内每轮 llm.call 保留原用户图片且不重复追加
 
     参数:
     - tmp_path: tmp路径
     """
     llm = _ToolLoopLLM()
+    llm.supports_visual_input = True
     session = _make_session(tmp_path, llm)
     session.add_tool(_CalcTool())
-    result = session.run("算 2+3", img_urls=["http://x/a.png"])
+    result = session.run("算 2+3", img_urls=["data:image/png;base64,aW1hZ2U="])
     assert result == "最终回复"
     assert len(llm.calls) == 2
-    assert llm.calls[0]["img_urls"] == ["http://x/a.png"]
-    assert llm.calls[1]["img_urls"] == ["http://x/a.png"]
+    assert llm.calls[0]["img_urls"] is None
+    user = next(m for m in llm.calls[0]["messages"] if m["role"] == "user")
+    assert user["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
+    assert len(user["content"]) == 2
+    assert llm.calls[1]["img_urls"] is None
+    user = next(m for m in llm.calls[1]["messages"] if m["role"] == "user")
+    assert user["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
+    assert len(user["content"]) == 2
 
 
 # ================= 目录插件测试 =================
@@ -2522,6 +2533,7 @@ def test_handler_context_fields_passthrough(tmp_path: Path):
     """
     seen: dict[str, Any] = {}
     llm = _FakeLLM()
+    llm.supports_visual_input = True
     session = _make_session(tmp_path, llm)
 
     def probe(text: str, ctx: HandlerContext) -> str | None:
@@ -2529,11 +2541,11 @@ def test_handler_context_fields_passthrough(tmp_path: Path):
         return None
 
     session.add_handler(SessionHandler(name="p", before_user_send=probe))
-    session.run("你好", img_urls=["http://x/a.png"], max_iterations=5)
+    session.run("你好", img_urls=["data:image/png;base64,aW1hZ2U="], max_iterations=5)
     ctx = seen["ctx"]
     assert ctx.config.original_input == "你好"
     assert ctx.text == "你好"
-    assert ctx.config.img_urls == ["http://x/a.png"]
+    assert ctx.config.img_urls == ["data:image/png;base64,aW1hZ2U="]
     assert ctx.config.thinking == "off"
     assert ctx.config.max_iterations == 5
     assert ctx.config.call_id

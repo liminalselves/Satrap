@@ -154,7 +154,7 @@ def test_model_workflow_tools_agent_keeps_only_system_context(tmp_path: Path):
     assert reloaded.get_context() == [{"role": "system", "content": "系统提示"}]
 
 
-def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
+def test_model_workflow_tools_agent_clears_without_system_and_uses_shared_engine(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
         def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
@@ -170,8 +170,8 @@ def test_model_workflow_tools_agent_clears_without_system_and_preserves_options(
 
     result = wf.tools_agent("本轮消息", callback=False, max_iterations=2)
 
-    assert result == "临时回复"
-    assert wf.executor_options == (False, 2)
+    assert result == "同步回复"
+    assert not hasattr(wf, "executor_options")
     assert wf.ctx.get_context() == []
 
 
@@ -231,7 +231,7 @@ async def test_async_model_workflow_tools_agent_keeps_only_system_context(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_tools_agent_clears_without_system_and_preserves_options(tmp_path: Path):
+async def test_async_model_workflow_tools_agent_clears_without_system_and_uses_shared_engine(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
         async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
@@ -248,8 +248,8 @@ async def test_async_model_workflow_tools_agent_clears_without_system_and_preser
 
     result = await wf.tools_agent("本轮消息", callback=False, max_iterations=2)
 
-    assert result == "异步临时回复"
-    assert wf.executor_options == (False, 2)
+    assert result == "异步回复"
+    assert not hasattr(wf, "executor_options")
     assert wf.ctx.get_context() == []
 
 

@@ -441,6 +441,16 @@ class ChatHTTPServer(MiniHTTPServer):
             return (200 if result.get("ok") else 400), result
         # ask_user 工具回答回填
 
+        if method == "GET" and clean == "/api/chat/media":
+            conversation = self._query_param(path, "conversation")
+            source = self._query_param(path, "source")
+            if not conversation or not source:
+                return 400, {"error": "缺少 conversation / source 参数"}
+            try:
+                return 200, await asyncio.to_thread(svc.preview_media, conversation, source)
+            except (ValueError, OSError) as error:
+                return 400, {"error": str(error)}
+
         if method == "POST" and clean == "/api/chat/upload":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()

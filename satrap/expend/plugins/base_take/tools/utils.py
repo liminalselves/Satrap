@@ -5,7 +5,7 @@ base_take 插件工具集: search / fetch_page / code_sandbox / read_document / 
 - get_tools(session, config) 工厂: 按会话形态返回同步/异步工具, 配置经合成后注入
 - search/fetch_page 复用 expend.tools.search, timeout 从 config
 - code_sandbox 复用 expend.tools.sandbox_tools, sandbox_root 从 config (全局共享目录)
-- read_document 解析 xlsx/docx/pdf 为纯文本 (core.docread)
+- read_document 提取文档文本, 按模型能力分页渲染 PDF 页面
 - memory 复用公共 MemoryStore (expend.tools.memory_store), scope 从 config
 """
 

@@ -408,3 +408,45 @@ def test_extract_img_urls_from_components():
 
     urls = PipelineScheduler._extract_img_urls(event)
     assert urls == ["http://x/1.png", "local.png"]
+
+
+@pytest.mark.asyncio
+async def test_platform_media_without_text_reaches_session(monkeypatch):
+    from satrap.core.platform.onebot.onebot_utils import onebot_segments_to_components
+
+    adapter = _RecorderAdapter()
+    manager = _FakeSessionManager()
+    event = _message_event(adapter, message_str="")
+    components, _ = onebot_segments_to_components([
+        {"type": "image", "data": {"url": "https://example.com/image.png"}},
+        {"type": "video", "data": {"url": "https://example.com/video.mp4"}},
+    ])
+    monkeypatch.setattr(event, "get_messages", lambda: components)
+    await PipelineScheduler(_as_session_manager(manager)).execute(event)
+    assert len(manager.calls) == 1
+    assert manager.calls[0].img_urls == ["https://example.com/image.png"]
+    assert manager.calls[0].video_urls == ["https://example.com/video.mp4"]
+
+
+def test_session_video_signature_adaptation():
+    from satrap.core.type import UserCall
+
+    call = UserCall(message="内容", img_urls=["image.png"], video_urls=["video.mp4"])
+
+    def keywords(message, *, video_urls=None):
+        return message, video_urls
+
+    def legacy(message, img_urls=None, *, video_urls=None):
+        return message, img_urls, video_urls
+
+    def structured(user_call, **kwargs):
+        return user_call, kwargs
+
+    def invoke(method):
+        return method(*SessionManager._build_run_args(method, call), **SessionManager._build_media_kwargs(method, call))
+
+    assert invoke(keywords) == ("内容", ["video.mp4"])
+    assert invoke(legacy) == ("内容", ["image.png"], ["video.mp4"])
+    assert invoke(structured) == (call, {})
+    with pytest.raises(ValueError, match="未提供视频"):
+        invoke(lambda message: message)

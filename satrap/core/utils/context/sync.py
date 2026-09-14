@@ -390,6 +390,16 @@ class ContextManager(_SyncSummary):
     )
 
 
+    def replace_messages(self, messages: list[dict[str, Any]]) -> None:
+        """
+        同步保存完整上下文快照, 用于回滚及兼容输入更新
+
+        参数:
+        - messages: 完整消息快照, 不修改调用方的数据
+        """
+        self._replace_messages_content(messages)
+        self._sync()
+
     def _commit_turn_messages(self, messages: list[dict[str, Any]]) -> None:
         """
         提交成功执行的整轮消息, 保存失败时恢复内存历史

@@ -18,6 +18,7 @@ from satrap.core.utils.vision import (
     build_multimodal_content,
     content_text_projection,
     estimate_content_image_count,
+    estimate_content_media_tokens,
 )
 from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope
 
@@ -144,8 +145,7 @@ def _estimate_request_tokens(
     token_count = 0
     for msg in messages:
         content = msg.get("content", "")
-        image_count = estimate_content_image_count(content)
-        token_count += 4 + image_count * DEFAULT_IMAGE_TOKEN_COST
+        token_count += 4 + estimate_content_media_tokens(content)
         token_count += _estimate_text(content_text_projection(content), method)
         metadata = {
             key: value
@@ -483,15 +483,18 @@ def add_tool_message(
     - tool_call_id: 工具调用 ID
     - tool_result: 工具调用结果, 字典转为 JSON, 字符串原样保存
     """
+    from satrap.core.utils.media import MEDIA_RESULT_KEY
+
+    content = (
+        [{"type": "text", "text": str(tool_result.get("text", ""))}, *tool_result.get("media", [])]
+        if isinstance(tool_result, dict) and tool_result.get(MEDIA_RESULT_KEY) == 1
+        else json.dumps(tool_result, ensure_ascii=False) if isinstance(tool_result, dict) else tool_result
+    )
     context.append(
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": (
-                json.dumps(tool_result, ensure_ascii=False)
-                if isinstance(tool_result, dict)
-                else tool_result
-            ),
+            "content": content,
         }
     )
 

@@ -577,6 +577,7 @@ def test_service_ask_user_round_trip(tmp_path: Path, monkeypatch: Any):
             user_input: str,
             img_urls: list[str] | None = None,
             *,
+            video_urls: list[str] | None = None,
             thinking: str = "off",
         ) -> str:
             answer = provider("请选择", ["继续", "取消"])
@@ -638,6 +639,7 @@ def test_service_cancel_pending_ask_user(tmp_path: Path, monkeypatch: Any):
             user_input: str,
             img_urls: list[str] | None = None,
             *,
+            video_urls: list[str] | None = None,
             thinking: str = "off",
         ) -> str:
             answer = provider("是否取消?")
@@ -1337,3 +1339,49 @@ async def test_concurrent_retry_must_reserve_conversation(tmp_path):
         if conv.task is not None:
             await conv.task
         recorder.close()
+
+
+@pytest.mark.asyncio
+async def test_visual_attachments_rejected_before_turn_creation(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        cid = await service.create_conversation()
+        conv = service.get_conversation(cid)
+        assert conv is not None
+        upload = service.save_upload(cid, "image.png", b"image")
+        attachment = {"name": "image.png", "url": upload["file_url"], "type": upload["file_type"]}
+        rejected = await service.send(cid, "看图", attachments=[attachment])
+        assert rejected["ok"] is False
+        assert "未启用" in rejected["error"]
+        assert conv.recorder.list_turns() == []
+        assert conv.task is None
+        conv.session.llm.supports_visual_input = True
+        images, videos = service._attachment_media(conv, [attachment])
+        assert images == [str(Path(upload["file_url"]).resolve())]
+        assert videos == []
+        preview = service.preview_media(cid, upload["file_url"])
+        assert preview["data_url"] == "data:image/png;base64,aW1hZ2U="
+        server = ChatHTTPServer(service)
+        from urllib.parse import urlencode
+        status, body = await server._route("GET", "/api/chat/media?" + urlencode({
+            "conversation": cid, "source": upload["file_url"],
+        }), b"")
+        assert status == 200 and body == preview
+        foreign = tmp_path / "private.png"
+        foreign.write_bytes(b"private")
+        with pytest.raises(ValueError, match="当前会话已上传"):
+            service.preview_media(cid, str(foreign))
+        rejected = await service.send(cid, "看图", attachments=[{**attachment, "url": str(foreign)}])
+        assert rejected["ok"] is False
+        assert "当前会话已上传" in rejected["error"]
+        assert conv.recorder.list_turns() == []
+        other = await service.create_conversation()
+        other_upload = service.save_upload(other, "other.mp4", b"video")
+        with pytest.raises(ValueError, match="当前会话已上传"):
+            service._attachment_media(conv, [{"url": other_upload["file_url"], "type": "video/mp4"}])
+        video = service.save_upload(cid, "video.mp4", b"video")
+        assert service._attachment_media(conv, [{"url": video["file_url"], "type": "video/mp4"}]) == (
+            [], [str(Path(video["file_url"]).resolve())],
+        )
+    finally:
+        await service.close()

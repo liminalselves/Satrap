@@ -259,6 +259,8 @@ class UserCall:
     """用户输入消息"""
     img_urls: Optional[List[str]] = None
     """用户输入图片 URL 列表"""
+    video_urls: Optional[List[str]] = None
+    """用户输入视频 URL 列表"""
 
 @dataclass
 class LLMConfig:
@@ -301,6 +303,15 @@ class LLMConfig:
     """该模型在前端开放的思考强度列表"""
     omit_none_thinking_fields: bool = False
     """关闭思考时是否省略值为 none 的思考字段"""
+
+    supports_visual_input: bool = False
+    """是否声明模型支持图像与原生视频输入, 默认关闭"""
+
+    def __post_init__(self) -> None:
+        """拒绝非布尔值的模型视觉能力声明"""
+        if not isinstance(self.supports_visual_input, bool):
+            raise ValueError("supports_visual_input 必须是布尔值")
+
 
 @dataclass
 class EmbeddingConfig:

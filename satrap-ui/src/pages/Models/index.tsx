@@ -29,6 +29,7 @@ interface ModelFormData {
   thinking_fields?: string[];
   thinking_levels?: string[];
   omit_none_thinking_fields?: boolean;
+  supports_visual_input?: boolean;
   dimensions?: number | null;
   max_batch_size?: number;
   top_k?: number;
@@ -39,6 +40,7 @@ type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
 
 const FIELD_META: Record<ModelType, FormField[]> = {
   llm: [
+    { key: "supports_visual_input", label: "图像与视频输入", type: "checkbox", placeholder: "声明此模型支持图片和原生视频输入" },
     { key: 'model', label: '模型' },
     { key: 'base_url', label: 'Base URL' },
     { key: 'api_key', label: 'API Key', type: 'password' },
@@ -124,6 +126,7 @@ export function Models() {
           thinking_fields: [],
           thinking_levels: [...DEFAULT_THINKING_LEVELS],
           omit_none_thinking_fields: false,
+          supports_visual_input: false,
         }
         : {}),
     });

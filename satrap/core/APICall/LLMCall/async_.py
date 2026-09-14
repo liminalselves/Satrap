@@ -1,5 +1,7 @@
 """异步模型调用入口"""
 
+import asyncio
+
 from openai import AsyncOpenAI, APIError
 from typing import (
     List,
@@ -211,6 +213,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
+        *, video_urls: Optional[List[str]] = None,
     ) -> LLMCallResponse | Literal[False]:
         """
         异步调用 LLM 并返回响应
@@ -225,6 +228,8 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
         - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
+
+        - video_urls: 视频来源列表, 默认 None, 要求启用视觉输入
 
         返回:
         - 包含响应类型 (message 或 tools_call), 文本回答与函数调用参数 (字典格式); 如果出错, 根据配置返回空字符串或 False
@@ -242,8 +247,9 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
                 else False
             )
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls
+        processed_messages = await asyncio.to_thread(prepare_call_messages,
+            messages, self.thinking_field_name, img_urls,
+            video_urls=video_urls, supports_visual_input=self.supports_visual_input
         )
 
         try:
@@ -294,6 +300,7 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         tools: Optional[List[Dict[str, Any]]] = None,
         tool_choice: str = "auto",
         img_urls: Optional[List[str]] = None,
+        *, video_urls: Optional[List[str]] = None,
     ) -> AsyncIterator[LLMCallStreamEvent]:
         """
         异步流式调用 LLM 并返回结构化增量事件
@@ -308,6 +315,8 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - tool_choice: 工具选择策略, 可选 "auto", "none", 或 {"type": "function", "function": {"name": "工具名"}}
         - img_urls: 可选参数, 图片 URL 列表, 支持本地文件路径和远程 URL
+
+        - video_urls: 视频来源列表, 默认 None, 要求启用视觉输入
 
         返回:
         - 异步生成器, 生成增量事件
@@ -329,8 +338,9 @@ class AsyncLLM(_LLMBase[AsyncOpenAI]):
             )
             return
 
-        processed_messages = prepare_call_messages(
-            messages, self.thinking_field_name, img_urls
+        processed_messages = await asyncio.to_thread(prepare_call_messages,
+            messages, self.thinking_field_name, img_urls,
+            video_urls=video_urls, supports_visual_input=self.supports_visual_input
         )
         request_params = self._build_request(
             parameters,

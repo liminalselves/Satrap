@@ -82,6 +82,7 @@ def _serialize_llm(llm: LLM) -> bytes:
             "api_key": str(client_api_key),
             "base_url": llm.base_url,
             "model": llm.model,
+            "supports_visual_input": llm.supports_visual_input,
             "temperature": llm.temperature,
             "top_p": llm.top_p,
             "max_tokens": llm.max_tokens,

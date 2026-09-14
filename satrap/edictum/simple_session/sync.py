@@ -177,6 +177,7 @@ class SimpleSession(Session, _SessionFeatures):
         *,
         thinking: str = "off",
         max_iterations: int = 10,
+        video_urls: list[str] | None = None,
     ) -> str | CommandAction:
         """
         串行执行一轮同步 Agent 流程
@@ -186,6 +187,7 @@ class SimpleSession(Session, _SessionFeatures):
         - img_urls: 附加图片 URL 列表, 默认 None
         - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
         - max_iterations: 最大工具迭代次数, 默认 10
+        - video_urls: 视频来源列表, 默认 None
 
         返回:
         - 最终模型文本或命令动作
@@ -195,7 +197,7 @@ class SimpleSession(Session, _SessionFeatures):
                 user_input,
                 img_urls,
                 thinking=thinking,
-                max_iterations=max_iterations,
+                max_iterations=max_iterations, video_urls=video_urls,
             )
 
     def _run_once(
@@ -205,6 +207,7 @@ class SimpleSession(Session, _SessionFeatures):
         *,
         thinking: str = "off",
         max_iterations: int = 10,
+        video_urls: list[str] | None = None,
     ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -214,6 +217,7 @@ class SimpleSession(Session, _SessionFeatures):
         - img_urls: 图片 URL 列表 (多模态)
         - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
         - max_iterations: 最大工具调用迭代次数
+        - video_urls: 视频来源列表, 默认 None
 
         处理器语义:
         - before_user_send 可链式改写 (str/None/HandlerResult); respond/reject 短路跳过模型;
@@ -243,7 +247,7 @@ class SimpleSession(Session, _SessionFeatures):
                     original_input=user_input,
                     img_urls=img_urls,
                     thinking=thinking,
-                    max_iterations=max_iterations,
+                    max_iterations=max_iterations, video_urls=video_urls,
                     call_id=call_id,
                 ),
                 text=user_input,
@@ -307,14 +311,14 @@ class SimpleSession(Session, _SessionFeatures):
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations,
+                        max_iterations=max_iterations, video_urls=video_urls,
                     )
                 else:
                     result = self._wf.full_agent(
                         text,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations,
+                        max_iterations=max_iterations, video_urls=video_urls,
                     )
             except BaseException as e:
                 ctx.error = e

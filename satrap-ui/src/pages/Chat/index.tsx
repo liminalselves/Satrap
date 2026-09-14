@@ -1,6 +1,7 @@
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RunRecovery } from "./RunRecovery";
 import { RagManager } from '@/components/common/RagManager';
+import { MediaAttachment } from './MediaAttachment';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
 import { PluginConfigFields, type ModelOptions } from '@/components/common/PluginConfigFields';
@@ -79,8 +80,6 @@ import {
   Loader2,
   RotateCcw,
   GitFork,
-  X,
-  FileText,
   Pencil,
   Folder,
   FolderOpen,
@@ -1052,6 +1051,11 @@ export function Chat() {
   const handleSend = useCallback(async () => {
     const content = input.trim();
     if ((!content && pendingAttachments.length === 0) || generating) return;
+    if (pendingAttachments.some((attachment) => /^(image|video)\//.test(attachment.type ?? ''))
+      && !modelsDetail[settings.model]?.supports_visual_input) {
+      alert('当前模型未启用图像与视频输入, 请切换模型或移除媒体附件');
+      return;
+    }
 
     // 无选中会话时自动创建草稿
     let targetConv = active;
@@ -1168,7 +1172,7 @@ export function Chat() {
     } finally {
       mutationPendingRef.current = false;
     }
-  }, [input, active, generating, settings.think, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
+  }, [input, active, generating, settings.think, settings.model, modelsDetail, pendingAttachments, updateConversation, createDraft, preloadKeyFor, preloadSettingsFor, startPreload]);
 
   // 选择文件
   const handleFileSelect = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1207,17 +1211,24 @@ export function Chat() {
     }
 
     for (const file of Array.from(files)) {
+      if ((file.type.startsWith('image/') || file.type.startsWith('video/')) && !modelsDetail[settings.model]?.supports_visual_input) {
+        alert('当前模型未启用图像与视频输入');
+        continue;
+      }
       if (file.size > 10 * 1024 * 1024) {
         alert(`文件 ${file.name} 超过 10MB 限制`);
         continue;
       }
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve) => {
-        reader.onload = () => resolve((reader.result as string).split(',')[1]);
-        reader.readAsDataURL(file);
-      });
       try {
+        const reader = new FileReader();
+        const base64 = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => resolve((reader.result as string).split(',')[1]);
+          reader.onerror = () => reject(new Error(`无法读取 ${file.name}`));
+          reader.onabort = () => reject(new Error(`已取消读取 ${file.name}`));
+          reader.readAsDataURL(file);
+        });
         const result = await chatApi.uploadFile(targetConv.id, file.name, base64);
+        if (!result.ok) throw new Error(result.error || '上传失败');
         if (result.ok) {
           setPendingAttachments((prev) => [...prev, {
             name: result.file_name,
@@ -1227,12 +1238,12 @@ export function Chat() {
         }
       } catch (err) {
         console.error('[Chat] 上传失败:', err);
-        alert(`上传 ${file.name} 失败`);
+        alert(`上传 ${file.name} 失败: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     // 清空 input 以便重复选择同一文件
     e.target.value = '';
-  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload]);
+  }, [active, pendingAttachments.length, createDraft, preloadKeyFor, startPreload, modelsDetail, settings.model]);
 
   // 移除待发送附件
   const removeAttachment = useCallback((index: number) => {
@@ -1714,6 +1725,7 @@ export function Chat() {
                   <MessageBubble
                     key={msg.id}
                     message={msg}
+                    conversationId={active.id}
                     isLast={idx === active.messages.length - 1}
                     onRetry={handleRetry}
                     onFork={handleFork}
@@ -1746,13 +1758,8 @@ export function Chat() {
               {pendingAttachments.length > 0 && (
                 <div className="flex flex-wrap gap-2 mb-2">
                   {pendingAttachments.map((att, i) => (
-                    <div key={i} className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs">
-                      <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
-                      <span className="text-text-primary truncate max-w-[120px]">{att.name}</span>
-                      <button onClick={() => removeAttachment(i)} className="text-text-tertiary hover:text-error shrink-0">
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
+                    <MediaAttachment key={att.url} attachment={att} conversationId={active?.id ?? ''}
+                      onRemove={() => removeAttachment(i)} />
                   ))}
                 </div>
               )}
@@ -1777,7 +1784,7 @@ export function Chat() {
                   ref={fileInputRef}
                   type="file"
                   multiple
-                  accept="image/*,.txt,.md,.pdf"
+                  accept={modelsDetail[settings.model]?.supports_visual_input ? "image/*,video/*,.txt,.md,.pdf" : ".txt,.md,.pdf"}
                   onChange={handleFileSelect}
                   className="hidden"
                 />
@@ -3168,12 +3175,14 @@ const MarkdownContent = memo(function MarkdownContent({ content }: { content: st
 // 消息气泡(用户紫色 / 助手蓝色, 独立反光)
 const MessageBubble = memo(function MessageBubble({
   message,
+  conversationId,
   isLast,
   onRetry,
   onFork,
   onSelectVariant,
 }: {
   message: ChatMessage;
+  conversationId: string;
   isLast?: boolean;
   onRetry?: () => void;
   onFork?: (turnIndex: number) => void;
@@ -3216,11 +3225,8 @@ const MessageBubble = memo(function MessageBubble({
           {/* 附件 (用户消息或 AI 消息都可能携带) */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-2">
-              {message.attachments.map((att, i) => (
-                <div key={i} className="glass-card rounded-md px-2.5 py-1.5 flex items-center gap-2 text-xs">
-                  <FileText className="h-3 w-3 text-text-tertiary shrink-0" />
-                  <span className="text-text-primary">{att.name}</span>
-                </div>
+              {message.attachments.map((att) => (
+                <MediaAttachment key={att.url} attachment={att} conversationId={conversationId} />
               ))}
             </div>
           )}
@@ -3426,6 +3432,7 @@ function ModelEditModal({
   const [thinkingFields, setThinkingFields] = useState<string[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<string[]>([...DEFAULT_THINKING_LEVELS]);
   const [omitNoneThinkingFields, setOmitNoneThinkingFields] = useState(false);
+  const [supportsVisualInput, setSupportsVisualInput] = useState(false);
   const [saving, setSaving] = useState(false);
 
   // 打开时填充表单
@@ -3449,6 +3456,7 @@ function ModelEditModal({
       setThinkingFields([]);
       setThinkingLevels([...DEFAULT_THINKING_LEVELS]);
       setOmitNoneThinkingFields(false);
+      setSupportsVisualInput(false);
     } else if (existing) {
       setName(existing.name);
       setModel(existing.model ?? '');
@@ -3469,6 +3477,7 @@ function ModelEditModal({
       setThinkingFields(existing.thinking_fields ?? []);
       setThinkingLevels(existing.thinking_levels ?? [...DEFAULT_THINKING_LEVELS]);
       setOmitNoneThinkingFields(existing.omit_none_thinking_fields ?? false);
+      setSupportsVisualInput(existing.supports_visual_input ?? false);
     }
   }, [modelName, isNew, existing]);
 
@@ -3524,6 +3533,7 @@ function ModelEditModal({
         thinking_fields: thinkingFields,
         thinking_levels: thinkingLevels,
         omit_none_thinking_fields: omitNoneThinkingFields,
+        supports_visual_input: supportsVisualInput,
       };
       const result = isNew
         ? await chatApi.addModel(config)
@@ -3550,7 +3560,7 @@ function ModelEditModal({
     } finally {
       setSaving(false);
     }
-  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, contextStrategy, contextThreshold, truncationFloor, summaryKeepRecentTurns, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, isNew, modelName, isRunning, reloadConfig, onSaved, onClose]);
+  }, [name, model, baseUrl, apiKey, temperature, topP, maxTokens, contextWindow, historyRatio, contextStrategy, contextThreshold, truncationFloor, summaryKeepRecentTurns, thinkingFieldName, thinkingFields, thinkingLevels, omitNoneThinkingFields, supportsVisualInput, isNew, modelName, isRunning, reloadConfig, onSaved, onClose]);
 
   const contextBudgetPreview = useMemo(() => {
     const windowTokens = contextWindow.trim() ? Number(contextWindow) : 128000;
@@ -3818,6 +3828,10 @@ function ModelEditModal({
             <p className="text-[11px] text-text-tertiary mt-1.5">Chat 只显示这里勾选的强度, 关闭选项始终保留</p>
           </div>
         )}
+        <label className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer">
+          <input type="checkbox" checked={supportsVisualInput} onChange={(event) => setSupportsVisualInput(event.target.checked)} />
+          <span>图像与视频输入</span>
+        </label>
         <label className="glass-card rounded-md px-3 py-2 flex items-start gap-2 cursor-pointer">
           <input
             type="checkbox"

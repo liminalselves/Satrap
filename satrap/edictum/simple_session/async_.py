@@ -219,6 +219,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         *,
         thinking: str = "off",
         max_iterations: int = 10,
+        video_urls: list[str] | None = None,
     ) -> str | CommandAction:
         """
         执行一轮 Agent 流程 (React 范式), 返回最终模型输出
@@ -228,6 +229,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - img_urls: 图片 URL 列表 (多模态)
         - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
         - max_iterations: 最大工具调用迭代次数
+        - video_urls: 视频来源列表, 默认 None
 
         处理器语义 (与同步版一致): 短路/改写/隔离/超时/finally, 见 SimpleSession.run
 
@@ -254,7 +256,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                         original_input=user_input,
                         img_urls=img_urls,
                         thinking=thinking,
-                        max_iterations=max_iterations,
+                        max_iterations=max_iterations, video_urls=video_urls,
                         call_id=uuid4().hex,
                     ),
                     text=user_input,
@@ -318,14 +320,14 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                             text,
                             img_urls=img_urls,
                             thinking=thinking,
-                            max_iterations=max_iterations,
+                            max_iterations=max_iterations, video_urls=video_urls,
                         )
                     else:
                         result = await wf.full_agent(
                             text,
                             img_urls=img_urls,
                             thinking=thinking,
-                            max_iterations=max_iterations,
+                            max_iterations=max_iterations, video_urls=video_urls,
                         )
                 except BaseException as e:
                     ctx.error = e

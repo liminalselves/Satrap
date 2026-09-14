@@ -173,6 +173,9 @@ class _SyncSummary(_SyncCheckpoints):
         messages = copy.deepcopy(self._messages)
         if pending_messages:
             messages.extend(copy.deepcopy(pending_messages))
+        from satrap.core.utils.media import project_messages, visual_enabled
+
+        messages = project_messages(messages, visual_enabled(llm))
         original_turns = len(self._conversation_turns(messages))
         original_estimate = self.estimate_request_tokens(
             messages, method, tools, img_urls

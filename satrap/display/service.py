@@ -557,6 +557,7 @@ class ChatService:
                 allow_insecure_base_url=bool(config.get("allow_insecure_base_url")),
                 thinking_field_name=config.get("thinking_field_name"),
                 thinking_fields=config.get("thinking_fields"),
+                supports_visual_input=config.get("supports_visual_input", False),
                 thinking_levels=thinking_levels,
                 omit_none_thinking_fields=bool(config.get("omit_none_thinking_fields")),
             )
@@ -599,6 +600,7 @@ class ChatService:
             "allow_insecure_base_url",
             "thinking_field_name",
             "thinking_fields",
+            "supports_visual_input",
             "thinking_levels",
             "omit_none_thinking_fields",
         }
@@ -1548,15 +1550,16 @@ class ChatService:
         if conv.task is not None and not conv.task.done():
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
 
+        try:
+            img_urls, video_urls = self._attachment_media(conv, attachments)
+        except ValueError as error:
+            return {"ok": False, "error": str(error)}
         effective_think = think if think is not None else conv.default_think
 
         display_text = text
-        # 附件拼入文本前缀 + 图片传 img_urls
-        img_urls: list[str] | None = None
         if attachments:
             att_lines = [f"[附件: {a.get('name', 'file')}]" for a in attachments]
             display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
-            img_urls = [a["url"] for a in attachments if a.get("type", "").startswith("image")]
 
         turn = conv.recorder.start_turn(text, attachments=attachments)
         context_start = conv.session.ctx.static_message()
@@ -1574,7 +1577,7 @@ class ChatService:
                 conv,
                 display_text,
                 effective_think,
-                img_urls=img_urls,
+                img_urls=img_urls, video_urls=video_urls,
                 context_start=context_start,
             )
         )
@@ -1587,6 +1590,7 @@ class ChatService:
         think: str,
         *,
         img_urls: list[str] | None = None,
+        video_urls: list[str] | None = None,
         context_start: int,
         resume_run_id: str | None = None,
     ) -> None:
@@ -1605,7 +1609,7 @@ class ChatService:
                 await self._refresh_session_plugins(conv)
                 conv.session.recovery_origin = conv.recorder.recovery_origin()
                 result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
-                          else await conv.session.run(text, img_urls=img_urls, thinking=think))
+                          else await conv.session.run(text, img_urls=img_urls, video_urls=video_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
@@ -1721,6 +1725,8 @@ class ChatService:
         if retry_turn is None:
             return {"ok": False, "error": "没有可重试的轮次"}
         try:
+            attachments = cast(list[dict[str, Any]] | None, retry_turn.get("attachments"))
+            img_urls, video_urls = self._attachment_media(conv, attachments)
             previous_context = retry_turn.get("previous_context_messages")
             if previous_context is None:
                 all_messages = copy.deepcopy(conv.session.ctx.get_context())
@@ -1741,17 +1747,10 @@ class ChatService:
             if previous_context is None or previous_context:
                 await conv.session.ctx.del_last_chat(1)
             text = str(retry_turn["user_input"])
-            attachments = cast(list[dict[str, Any]] | None, retry_turn.get("attachments"))
             display_text = text
-            img_urls: list[str] | None = None
             if attachments:
                 att_lines = [f"[附件: {item.get('name', 'file')}]" for item in attachments]
                 display_text = "\n".join(att_lines) + "\n" + text if text.strip() else "\n".join(att_lines)
-                img_urls = [
-                    str(item["url"])
-                    for item in attachments
-                    if str(item.get("type", "")).startswith("image") and item.get("url")
-                ]
             effective_think = think if think is not None else conv.default_think
             context_start = conv.session.ctx.static_message()
             self._broadcast(
@@ -1771,7 +1770,7 @@ class ChatService:
                     conv,
                     display_text,
                     effective_think,
-                    img_urls=img_urls,
+                    img_urls=img_urls, video_urls=video_urls,
                     context_start=context_start,
                 )
             )
@@ -2188,6 +2187,75 @@ class ChatService:
 
     # ---------- 文件上传 ----------
 
+    def _attachment_media(
+        self, conv: _Conversation, attachments: list[dict[str, Any]] | None,
+    ) -> tuple[list[str], list[str]]:
+        """
+        校验 Chat 媒体附件并按类型分组
+
+        参数:
+        - conv: 当前会话, 使用实际运行模型检查视觉能力
+        - attachments: 已上传附件列表, None 表示无附件
+
+        返回:
+        - 图片和视频本地路径列表, 无效类型, 越界路径或未启用视觉时抛出 ValueError
+        """
+        import mimetypes
+        from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
+
+        images: list[str] = []
+        videos: list[str] = []
+        if attachments is not None and not isinstance(attachments, list):
+            raise ValueError("附件必须是列表")
+        for attachment in attachments or []:
+            if not isinstance(attachment, dict) or not isinstance(attachment.get("url"), str):
+                raise ValueError("附件缺少有效文件路径")
+            source = attachment["url"]
+            declared = str(attachment.get("type", ""))
+            detected = mimetypes.guess_type(source)[0] or ""
+            kind = detected.split("/", 1)[0]
+            if kind not in {"image", "video"}:
+                if declared.startswith(("image/", "video/")):
+                    raise ValueError("附件媒体类型与文件格式不符")
+                continue
+            if not visual_enabled(conv.session.llm):
+                raise ValueError("当前模型未启用图像与视频输入")
+            root = self._storage.session_uploads(self._platform_id, conv.conversation_id).resolve()
+            path = Path(source).resolve()
+            if not path.is_relative_to(root) or not path.is_file():
+                raise ValueError("媒体附件必须是当前会话已上传的文件")
+            (images if kind == "image" else videos).append(str(path))
+            if len(images) + len(videos) > MAX_MEDIA_ITEMS:
+                raise ValueError("单次媒体输入不能超过 16 项")
+        return images, videos
+
+    def preview_media(self, conversation_id: str, source: str) -> dict[str, str]:
+        """
+        读取当前会话私有媒体供已鉴权的 Chat 客户端预览
+
+        参数:
+        - conversation_id: 媒体所属会话 ID
+        - source: 上传接口返回的本地文件路径
+
+        返回:
+        - 包含 Data URL 的字典, 越界路径, 非媒体和超限文件抛出 ValueError
+        """
+        import mimetypes
+        import base64
+
+        root = self._storage.session_uploads(self._platform_id, conversation_id).resolve()
+        path = Path(source).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("媒体附件必须是当前会话已上传的文件")
+        mime = mimetypes.guess_type(path.name)[0] or ""
+        if not mime.startswith(("image/", "video/")):
+            raise ValueError("仅支持预览图像和视频")
+        with path.open("rb") as file:
+            data = file.read(10 * 1024 * 1024 + 1)
+        if len(data) > 10 * 1024 * 1024:
+            raise ValueError("预览文件超过 10 MiB 限制")
+        return {"data_url": f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"}
+
     def save_upload(self, conversation_id: str, file_name: str, file_data: bytes) -> dict[str, Any]:
         """
         保存上传文件到当前会话的私有 uploads 目录
@@ -2214,10 +2282,9 @@ class ChatService:
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         fpath = upload_dir / unique_name
         fpath.write_bytes(file_data)
-        # 推断类型
-        ext = Path(safe_name).suffix.lower()
-        img_exts = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
-        file_type = f"image/{ext[1:]}" if ext in img_exts else "application/octet-stream"
+        import mimetypes
+
+        file_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         return {
             "ok": True,
             "file_name": safe_name,

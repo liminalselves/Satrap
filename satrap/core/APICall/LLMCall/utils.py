@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Iterable, cast
 from openai import APIError
 import json
 
-from satrap.core.utils.vision import normalize_chat_messages
 from satrap.core.type import safe_getattr
 
 _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
@@ -175,11 +174,42 @@ def prepare_call_messages(
     messages: list[dict[str, Any]],
     thinking_field_name: str | None,
     img_urls: list[str] | None,
+    *, video_urls: list[str] | None = None, supports_visual_input: bool = False,
 ) -> list[dict[str, Any]]:
-    """统一思考字段与多模态消息预处理"""
-    return normalize_chat_messages(
-        _rename_thinking_field(messages, thinking_field_name), img_urls=img_urls
-    )
+    """
+    统一思考字段与多模态消息预处理
+
+    参数:
+    - messages: 原始消息, 处理时创建副本
+    - thinking_field_name: 供应商思考字段名称, None 表示保持原字段
+    - img_urls: 追加到最后一条用户消息的图片来源, 默认无图片
+    - video_urls: 视频来源, 默认 None
+    - supports_visual_input: 是否允许媒体输入, 默认 False
+
+    返回:
+    - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
+    """
+    from types import SimpleNamespace
+    from satrap.core.utils.media import user_media_content, project_messages, expand_tool_media
+
+    prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True)
+    if img_urls or video_urls:
+        for message in reversed(prepared):
+            if message.get("role") == "user":
+                content = user_media_content("", img_urls, video_urls, SimpleNamespace(supports_visual_input=supports_visual_input))
+                assert isinstance(content, list)
+                existing = message.get("content", "")
+                parts = existing if isinstance(existing, list) else [{"type": "text", "text": existing}]
+                message["content"] = parts + content[1:]
+                break
+        else:
+            raise ValueError("媒体输入需要关联用户消息")
+    if not supports_visual_input and any(
+        isinstance(message.get("content"), list) and any(part.get("type") in {"image_url", "video_url"} for part in message["content"])
+        for message in prepared
+    ):
+        raise ValueError("当前模型未启用图像与视频输入")
+    return expand_tool_media(prepared)
 
 
 def prepare_structured_messages(

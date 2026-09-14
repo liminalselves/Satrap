@@ -29,7 +29,7 @@ class ToolStep:
     call: dict[str, Any]
 
 
-def agent_flow(user_input: str | None, max_iterations: int) -> Generator[ModelStep | ToolStep, Any, tuple[list[dict[str, Any]], str]]:
+def agent_flow(user_input: str | list[dict[str, Any]] | None, max_iterations: int) -> Generator[ModelStep | ToolStep, Any, tuple[list[dict[str, Any]], str]]:
     """
     生成普通与可恢复执行共用的模型和工具步骤
 

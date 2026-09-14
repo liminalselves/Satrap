@@ -345,9 +345,13 @@ class AsyncContextManager(_AsyncSummary):
         await self._sync()
 
     async def replace_messages(self, messages: list[dict[str, Any]]) -> None:
-        """用完整快照恢复上下文, 供会话准备失败时回滚"""
-        self._messages = copy.deepcopy(messages)
-        self._mark_dirty()
+        """
+        异步保存完整上下文快照, 用于回滚及兼容输入更新
+
+        参数:
+        - messages: 完整消息快照, 不修改调用方的数据
+        """
+        self._replace_messages_content(messages)
         await self._sync()
 
     async def del_last_chat(self, n: int = 1):

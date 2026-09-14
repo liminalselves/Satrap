@@ -122,6 +122,7 @@ def _make_llm(fake_completions: _FakeCompletions) -> LLM:
     llm.thinking_field_name = "reasoning_content"
     llm.thinking_fields = None
     llm.omit_none_thinking_fields = False
+    llm.supports_visual_input = True
     return llm
 
 
@@ -157,6 +158,7 @@ async def test_async_llm_call_appends_images_to_last_user_message():
     llm.thinking_field_name = "reasoning_content"
     llm.thinking_fields = None
     llm.omit_none_thinking_fields = False
+    llm.supports_visual_input = True
 
     response = await llm.call([{"role": "user", "content": "看图"}], img_urls=[_tiny_png_data_url()])
 

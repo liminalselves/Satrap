@@ -10,10 +10,12 @@ from dataclasses import asdict, dataclass, fields
 from contextlib import nullcontext
 import asyncio
 import inspect
+import copy
 from typing import Any, Generator, TYPE_CHECKING, TypedDict, Unpack, cast
 
 from satrap.core.utils.context import PreparedModelContext
 from satrap.core.type import LLMCallResponse, TokenUsage
+from satrap.core.utils.media import user_media_content, freeze_tool_result
 from .errors import ModelCallError
 from .store import RunStore, RunConflictError, RunNeedsAttention, fingerprint
 from .flow import ModelStep, ToolStep, agent_flow
@@ -34,9 +36,19 @@ class ExecutionOptions(TypedDict, total=False):
     callback: bool
     thinking: str
     img_urls: list[str] | None
+    video_urls: list[str] | None
     max_iterations: int
     recoverable: bool
     initial_response: LLMCallResponse | None
+
+
+@dataclass
+class FreezeInput:
+    """在执行记录创建前固定用户媒体, 异步驱动使用工作线程"""
+
+    text: str
+    images: list[str] | None
+    videos: list[str] | None
 
 
 @dataclass
@@ -87,7 +99,14 @@ class Commit:
     messages: list[dict[str, Any]]
 
 
-Action = Prepare | InvokeModel | InvokeTool | Reload | RecordUsage | Commit
+@dataclass
+class ReplaceHistory:
+    """为兼容执行器预先保存的用户消息补齐固定媒体"""
+
+    messages: list[dict[str, Any]]
+
+
+Action = FreezeInput | Prepare | InvokeModel | InvokeTool | Reload | RecordUsage | Commit | ReplaceHistory
 
 
 def configuration(wf: Workflow) -> str:
@@ -102,7 +121,7 @@ def configuration(wf: Workflow) -> str:
     """
     model = {key: getattr(wf.llm, key, None) for key in (
         "model", "base_url", "temperature", "top_p", "max_tokens",
-        "thinking_fields", "omit_none_thinking_fields",
+        "supports_visual_input", "thinking_fields", "omit_none_thinking_fields",
     )}
     tools: list[dict[str, Any]] = []
     registry = cast(dict[str, Any], wf.tools_manager.tools)
@@ -147,6 +166,7 @@ def execute(
     wf: Workflow, *, user_input: str | None = "", run_id: str | None = None,
     stream: bool = False, callback: bool = True, thinking: str = "off",
     img_urls: list[str] | None = None, max_iterations: int = 10,
+    video_urls: list[str] | None = None,
     recoverable: bool = True, initial_response: LLMCallResponse | None = None,
 ) -> Generator[Action, Any, str]:
     """
@@ -160,6 +180,7 @@ def execute(
     - callback: 是否回传模型内容, 默认 True
     - thinking: 模型思考强度, 默认 off
     - img_urls: 附加图片地址, 默认 None
+    - video_urls: 附加视频地址, 默认 None
     - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
     - recoverable: 是否记录执行步骤, 默认 True; workflow 入口显式传入自身配置
     - initial_response: 已取得的首次模型响应, 默认 None, 仅用于非持久化兼容执行
@@ -180,6 +201,22 @@ def execute(
             "origin": getattr(wf, "recovery_origin", {}),
             "context_start": len(wf.ctx.get_context()),
         }
+        if run_id is None and (img_urls or video_urls):
+            content = yield FreezeInput(user_input or "", img_urls, video_urls)
+            if user_input is None:
+                history = copy.deepcopy(wf.ctx.get_context())
+                for message in reversed(history):
+                    if message.get("role") == "user":
+                        existing = message.get("content", "")
+                        parts = existing if isinstance(existing, list) else [{"type": "text", "text": existing}]
+                        message["content"] = parts + [part for part in content[1:] if part not in parts]
+                        break
+                else:
+                    raise ValueError("媒体输入需要关联用户消息")
+                yield ReplaceHistory(history)
+            else:
+                payload["user_input"] = content
+            payload["img_urls"] = None
         context_fingerprint = ""
         if store is not None:
             yield Reload()
@@ -306,13 +343,18 @@ async def run_async(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionO
     try:
         action = next(driver)
         while True:
-            if isinstance(action, Prepare):
+            if isinstance(action, FreezeInput):
+                value = await asyncio.to_thread(user_media_content, action.text, action.images, action.videos, wf.llm)
+            elif isinstance(action, Prepare):
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                            tools=action.tools, img_urls=action.images)
             elif isinstance(action, InvokeTool):
-                value = await wf.tools_manager.execute_tool_call(action.call)
+                tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
+                value = (tool_message, await asyncio.to_thread(freeze_tool_result, tool_result, wf.llm))
             elif isinstance(action, Commit):
                 value = await wf.ctx._commit_turn_messages(action.messages)
+            elif isinstance(action, ReplaceHistory):
+                value = await wf.ctx.replace_messages(action.messages)
             elif isinstance(action, Reload):
                 value = await wf.ctx.load_context()
                 if action.checkpoint:
@@ -371,13 +413,18 @@ def run_sync(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> 
     try:
         action = next(driver)
         while True:
-            if isinstance(action, Prepare):
+            if isinstance(action, FreezeInput):
+                value = user_media_content(action.text, action.images, action.videos, wf.llm)
+            elif isinstance(action, Prepare):
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                      tools=action.tools, img_urls=action.images)
             elif isinstance(action, InvokeTool):
-                value = wf.tools_manager.execute_tool_call(action.call)
+                tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)
+                value = (tool_message, freeze_tool_result(tool_result, wf.llm))
             elif isinstance(action, Commit):
                 value = wf.ctx._commit_turn_messages(action.messages)
+            elif isinstance(action, ReplaceHistory):
+                value = wf.ctx.replace_messages(action.messages)
             elif isinstance(action, Reload):
                 value = wf.ctx.load_context()
                 if action.checkpoint:

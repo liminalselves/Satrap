@@ -97,6 +97,8 @@ def content_text_projection(content: ChatContent | None) -> str:
             parts.append(str(part.get("text", "")))
         elif is_image_content_part(part):
             parts.append("[图片]")
+        elif isinstance(part, dict) and part.get("type") == "video_url":
+            parts.append("[视频]")
         else:
             ptype = part.get("type", "unknown") if isinstance(part, dict) else "unknown"
             parts.append(f"[{ptype}]")
@@ -116,6 +118,20 @@ def estimate_content_image_count(content: ChatContent | None) -> int:
     if not isinstance(content, list):
         return 0
     return sum(1 for part in content if is_image_content_part(part))
+
+
+def estimate_content_media_tokens(content: ChatContent | None) -> int:
+    """
+    估算媒体占用的上下文预算, 不对 Base64 文本进行分词
+
+    参数:
+    - content: 消息内容
+
+    返回:
+    - 图片按既有固定成本估算, 视频暂按八张图片预留; 实际成本由模型 usage 校准
+    """
+    videos = sum(part.get("type") == "video_url" for part in content) if isinstance(content, list) else 0
+    return (estimate_content_image_count(content) + videos * 8) * DEFAULT_IMAGE_TOKEN_COST
 
 
 def _guess_mime_type(path: str) -> str:

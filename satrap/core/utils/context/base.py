@@ -419,6 +419,16 @@ class _ContextCore:
         self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
         self._runtime_state_dirty = True
 
+    def _replace_messages_content(self, messages: list[dict[str, Any]]) -> None:
+        """
+        从完整快照替换内存消息并失效派生状态
+
+        参数:
+        - messages: 完整消息快照, 使用深拷贝避免调用方后续修改
+        """
+        self._messages = copy.deepcopy(messages)
+        self._mark_dirty()
+
     def _mark_dirty(self) -> None:
         """标记历史编辑并清除总结, 下次保存全量重写消息"""
         self._saved_count = -1

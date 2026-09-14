@@ -65,10 +65,11 @@ def _clients(monkeypatch, error=None, **options):
             chat=SimpleNamespace(completions=SimpleNamespace(create=acreate))
         ),
     )
-    kwargs = dict(
-        api_key="test", model="默认模型", thinking_fields=["enable_thinking"], **options
+    return (
+        LLM(api_key="test", model="默认模型", thinking_fields=["enable_thinking"], **options),
+        AsyncLLM(api_key="test", model="默认模型", thinking_fields=["enable_thinking"], **options),
+        calls,
     )
-    return LLM(**kwargs), AsyncLLM(**kwargs), calls
 
 
 async def _invoke(llm, method, messages, **kwargs):

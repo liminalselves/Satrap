@@ -27,6 +27,7 @@ install_requires = [
     "splintr-rs>=0.1.0",
     "numpy>=1.24.0",
     "pillow>=10.0.0",
+    "pypdfium2>=4.30.0",
     "msgpack>=1.0.5",
     "aiosqlite>=0.19.0",
     "beautifulsoup4>=4.12.0",

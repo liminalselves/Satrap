@@ -562,6 +562,7 @@ async def test_control_server_manages_edictum_config_while_backend_is_stopped(
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
     """
+    monkeypatch.setattr(control_server, "_check_backend_health", lambda: {"running": False})
     edictum_path = tmp_path / "edictum.json"
     config_path = tmp_path / "config.json"
     config_path.write_text(

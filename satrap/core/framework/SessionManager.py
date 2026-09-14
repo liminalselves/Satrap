@@ -2345,7 +2345,7 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            return run_method(*args)
+            return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             logger.error(f"[SessionManager] 同步会话执行失败：{e}")
             return ""
@@ -2365,10 +2365,34 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            return await run_method(*args)
+            return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             logger.error(f"[SessionManager] 异步会话执行失败：{e}")
             return ""
+
+    @staticmethod
+    def _build_media_kwargs(run_method: Any, user_call: UserCall) -> dict[str, Any]:
+        """
+        按会话签名适配新增视频参数
+
+        参数:
+        - run_method: 当前会话的 run 方法
+        - user_call: 平台用户调用
+
+        返回:
+        - 有视频时传递关键字参数, 不支持该输入的旧会话明确报错
+        """
+        if not user_call.video_urls:
+            return {}
+        params = inspect.signature(run_method).parameters
+        positional = [p for p in params.values() if p.kind in {
+            inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }]
+        if positional and positional[0].name.lower() in {"user_call", "call", "request"}:
+            return {}
+        if "video_urls" in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()):
+            return {"video_urls": user_call.video_urls}
+        raise ValueError("当前会话未提供视频输入接口")
 
     @staticmethod
     def _build_run_args(run_method: Any, user_call: UserCall) -> tuple[Any, ...]:
@@ -2391,14 +2415,16 @@ class SessionManager:
         if any(param.kind == inspect.Parameter.VAR_POSITIONAL for param in params):
             return (user_call.message or "",)
 
+        params = [param for param in params if param.kind in {
+            inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }]
         param_size = len(params)
         if param_size == 0:
             return ()
 
-        if param_size == 1:
-            name = params[0].name.lower()
-            if name in {"user_call", "call", "request"}:
-                return (user_call,)
+        if params[0].name.lower() in {"user_call", "call", "request"}:
+            return (user_call,)
+        if param_size == 1 or params[1].name == "video_urls":
             return (user_call.message or "",)
 
         return (user_call.message or "", user_call.img_urls)

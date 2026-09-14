@@ -127,6 +127,8 @@ class HandlerConfig:
     max_iterations: int
     call_id: str
     """每轮 run 唯一标识"""
+    video_urls: list[str] | None = None
+    """当前轮视频来源列表, 默认 None"""
 
 
 @dataclass

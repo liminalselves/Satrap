@@ -168,7 +168,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
     async def agent_executor(
         self, model_response: LLMCallResponse, callback: bool = False,
         max_iterations: int = 10, img_urls: list[str] | None = None,
-        *, thinking: str = "off",
+        *, thinking: str = "off", video_urls: list[str] | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
         """
         使用共用循环处理已有模型响应, 保留元组返回接口
@@ -179,6 +179,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
         - img_urls: 附加图片地址, 默认 None
         - thinking: 后续模型请求的思考强度, 默认 off
+        - video_urls: 视频来源列表, 默认 None
 
         返回:
         - 当前上下文和成功标志, 执行异常返回 False, 取消信号继续向外传播
@@ -189,7 +190,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
             await run_async(
                 self, user_input=None, initial_response=model_response,
                 recoverable=False, callback=callback, max_iterations=max_iterations,
-                img_urls=img_urls, thinking=thinking,
+                img_urls=img_urls, video_urls=video_urls, thinking=thinking,
             )
             return self.ctx.get_context(), True
         except Exception as error:
@@ -225,6 +226,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
     async def full_agent(
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         img_urls: list[str] | None = None, *, thinking: str = "off",
+        video_urls: list[str] | None = None,
     ) -> str:
         """
         异步执行完整 Agent 循环, 成功后提交本轮消息
@@ -236,6 +238,8 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - img_urls: 附加图片地址, 默认 None, 保留既有位置参数调用
         - thinking: 模型思考强度, 默认 off, 仅可通过关键字传入
 
+        - video_urls: 视频来源列表, 默认 None, 仅可通过关键字传入
+
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
@@ -243,7 +247,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         return await run_async(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
             stream=False, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -303,6 +307,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
     async def stream_full_agent(
         self, user_input: str, callback: bool = True, max_iterations: int = 10,
         thinking: str = "off", img_urls: list[str] | None = None,
+        *, video_urls: list[str] | None = None,
     ) -> str:
         """
         异步流式执行完整 Agent 循环, 成功后提交本轮消息
@@ -314,6 +319,8 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - thinking: 模型思考强度, 默认 off
         - img_urls: 附加图片地址, 默认 None
 
+        - video_urls: 视频来源列表, 默认 None, 仅可通过关键字传入
+
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
@@ -321,7 +328,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
 
         return await run_async(
             self, user_input=user_input, callback=callback,
-            max_iterations=max_iterations, img_urls=img_urls,
+            max_iterations=max_iterations, img_urls=img_urls, video_urls=video_urls,
             stream=True, thinking=thinking, recoverable=self.recoverable,
         )
 
@@ -331,6 +338,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         callback: bool = True,
         max_iterations: int = 10,
         img_urls: list[str] | None = None,
+        *, video_urls: list[str] | None = None,
     ) -> str:
         """
         使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
@@ -340,6 +348,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - callback: 回调函数
         - max_iterations: 最大迭代次数
         - img_urls: 图片 URL 列表
+        - video_urls: 视频来源列表, 默认 None
 
         返回:
         - str: 使用临时上下文完整执行一轮异步 Agent 流程, 返回最终模型输出
@@ -348,26 +357,19 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         self.reset_context_stats()
         await self._restore_context_keep_system(system_messages)
 
+        from .execution.engine import run_async
+        from .execution.errors import ModelCallError
+
         try:
-            await self.ctx.add_user_message(user_input)
-
-            response = await self._call_model(
-                tools=self.tools_manager.get_tools_definitions(),
-                img_urls=img_urls,
+            return await run_async(
+                self, user_input=user_input, callback=callback, max_iterations=max_iterations,
+                img_urls=img_urls, video_urls=video_urls, recoverable=False,
             )
-            if not response:
-                return "模型调用失败"
-
-            context, success = await self.agent_executor(
-                response,
-                callback=callback,
-                max_iterations=max_iterations,
-                img_urls=img_urls,
-            )
-            if not success:
-                return "执行失败"
-
-            return self.get_bot_message(context)
+        except ModelCallError:
+            return "模型调用失败"
+        except Exception as error:
+            logger.error(f"临时工具会话执行失败: {error}")
+            return "执行失败"
         finally:
             await self._restore_context_keep_system(system_messages)
 
@@ -378,6 +380,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         max_iterations: int = 10,
         thinking: str = "off",
         img_urls: list[str] | None = None,
+        *, video_urls: list[str] | None = None,
     ) -> str:
         """
         使用临时上下文异步流式执行一轮 Agent 流程, 返回最终模型输出
@@ -388,6 +391,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - max_iterations: 最大迭代次数, 默认 10
         - thinking: 模型思考强度, 默认 off
         - img_urls: 随请求发送的图片 URL 列表
+        - video_urls: 视频来源列表, 默认 None
 
         返回:
         - 最终模型输出
@@ -401,7 +405,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
                 callback=callback,
                 max_iterations=max_iterations,
                 thinking=thinking,
-                img_urls=img_urls,
+                img_urls=img_urls, video_urls=video_urls,
             )
         finally:
             await self._restore_context_keep_system(system_messages)

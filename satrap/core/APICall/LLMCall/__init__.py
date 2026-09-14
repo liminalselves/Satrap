@@ -84,7 +84,7 @@ def build_llm_from_config(cfg: LLMConfig, *, async_: bool = False) -> "LLM | Asy
     for name in (
         "top_p",
         "thinking_field_name",
-        "thinking_fields",
+        "supports_visual_input", "thinking_fields",
         "omit_none_thinking_fields",
     ):
         val = safe_getattr(cfg, name)

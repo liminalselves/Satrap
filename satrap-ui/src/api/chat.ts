@@ -420,6 +420,9 @@ export const chatApi = {
     request<{ ok: boolean; error?: string }>('DELETE', `/api/chat/models/${encodeURIComponent(name)}`),
 
   // 文件上传
+  previewMedia: (conversation: string, source: string) =>
+    request<{ data_url: string }>('GET', `/api/chat/media?conversation=${encodeURIComponent(conversation)}&source=${encodeURIComponent(source)}`),
+
   uploadFile: (conversation: string, fileName: string, fileDataBase64: string) =>
     request<{ ok: boolean; file_name: string; file_url: string; file_type: string; error?: string }>(
       'POST', '/api/chat/upload',

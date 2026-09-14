@@ -422,12 +422,15 @@ async def test_existing_positional_images_remain_compatible(tmp_path: Path, asyn
     """
     script = Script([ANSWER])
     wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
-    images = ["https://example.com/image.png"]
+    wf.llm.supports_visual_input = True
+    images = ["data:image/png;base64,aW1hZ2U="]
     if isinstance(wf, AsyncModelWorkflowFramework):
         assert await wf.full_agent("问题", False, 1, images, thinking="high") == "完成"
     else:
         assert wf.full_agent("问题", False, 1, images, thinking="high") == "完成"
-    assert script.requests[0]["img_urls"] == images
+    assert script.requests[0]["img_urls"] is None
+    user = next(message for message in reversed(script.requests[0]["messages"]) if message["role"] == "user")
+    assert user["content"][1]["image_url"]["url"] == images[0]
     assert script.requests[0]["thinking"] == "high"
 
 
@@ -453,3 +456,121 @@ async def test_resume_preserves_original_thinking(tmp_path: Path, asynchronous: 
     else:
         assert run_sync(wf, run_id=wf.last_run_id, thinking="low") == "完成"
     assert [request["thinking"] for request in script.requests] == ["high", "high"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_tool_media_recovery_reuses_frozen_result(tmp_path, monkeypatch, asynchronous, stream):
+    from satrap.core.framework.Base.execution.engine import run_async, run_sync
+    import base64
+
+    source = tmp_path / "page.png"
+    source.write_bytes(b"original-page")
+    script = Script([TOOLS, RuntimeError("模型暂时失败"), ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, True)
+    wf.llm.supports_visual_input = True
+    executions = []
+
+    def result():
+        executions.append(1)
+        return {"satrap_media_result": 1, "text": "页面文字", "media": [
+            {"type": "image_url", "image_url": {"url": str(source)}},
+        ]}
+
+    async def async_result():
+        return result()
+
+    monkeypatch.setattr(wf.tools_manager.tools["noop"], "execute", async_result if asynchronous else result)
+    with pytest.raises(RuntimeError, match="模型暂时失败"):
+        await invoke(wf, stream, iterations=2)
+    run_id = wf.last_run_id
+    assert run_id is not None
+    source.unlink()
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        answer = await run_async(wf, run_id=run_id)
+    else:
+        answer = run_sync(wf, run_id=run_id)
+    assert answer == "完成"
+    assert executions == [1]
+    tool = next(message for message in wf.ctx.get_context() if message["role"] == "tool")
+    data = tool["content"][1]["image_url"]["url"]
+    assert base64.b64decode(data.split(",")[1]) == b"original-page"
+    assert script.requests[1]["messages"] == script.requests[2]["messages"]
+    assert [m["content"] for m in wf.ctx.get_context() if m["role"] == "user"] == ["旧输入", "新输入"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("kind", ["image", "video"])
+async def test_user_media_recovery_survives_source_deletion(tmp_path, asynchronous, stream, kind):
+    from satrap.core.framework.Base.execution.engine import run_async, run_sync
+    import base64
+
+    source = tmp_path / ("input.png" if kind == "image" else "input.mp4")
+    source.write_bytes(b"original-input")
+    script = Script([RuntimeError("模型暂时失败"), ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, True)
+    wf.llm.supports_visual_input = True
+    images = [str(source)] if kind == "image" else None
+    videos = [str(source)] if kind == "video" else None
+    with pytest.raises(RuntimeError, match="模型暂时失败"):
+        if isinstance(wf, AsyncModelWorkflowFramework):
+            await run_async(wf, user_input="媒体问题", stream=stream, img_urls=images, video_urls=videos)
+        else:
+            run_sync(wf, user_input="媒体问题", stream=stream, img_urls=images, video_urls=videos)
+    source.unlink()
+    assert wf.last_run_id is not None
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        await run_async(wf, run_id=wf.last_run_id)
+    else:
+        run_sync(wf, run_id=wf.last_run_id)
+    assert script.requests[0]["messages"] == script.requests[1]["messages"]
+    message = wf.ctx.get_context()[-2]
+    assert message["role"] == "user"
+    data = message["content"][1][kind + "_url"]["url"]
+    assert base64.b64decode(data.split(",")[1]) == b"original-input"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_compat_executor_media_stays_on_original_user(tmp_path, asynchronous):
+    script = Script([ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
+    wf.llm.supports_visual_input = True
+    image = "data:image/png;base64,aW1hZ2U="
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        _, success = await wf.agent_executor(TOOLS, max_iterations=1, img_urls=[image])
+    else:
+        _, success = wf.agent_executor(TOOLS, max_iterations=1, img_urls=[image])
+    assert success
+    users = [m for m in script.requests[0]["messages"] if m["role"] == "user"]
+    assert users[0]["content"][1]["image_url"]["url"] == image
+    assert isinstance(users[-1]["content"], str)
+    assert "已达到最大" in users[-1]["content"]
+    assert script.requests[0]["img_urls"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
+async def test_temporary_tools_agent_accepts_video(tmp_path, asynchronous, stream):
+    script = Script([ANSWER])
+    wf, _ = await make_workflow(tmp_path, script, asynchronous, False)
+    wf.llm.supports_visual_input = True
+    video = "data:video/mp4;base64,dmlkZW8="
+    if isinstance(wf, AsyncModelWorkflowFramework):
+        if stream:
+            answer = await wf.stream_tools_agent("视频", video_urls=[video])
+        else:
+            answer = await wf.tools_agent("视频", video_urls=[video])
+    else:
+        if stream:
+            answer = wf.stream_tools_agent("视频", video_urls=[video])
+        else:
+            answer = wf.tools_agent("视频", video_urls=[video])
+    assert answer == "完成"
+    user = next(m for m in script.requests[0]["messages"] if m["role"] == "user")
+    assert user["content"][1]["video_url"]["url"] == video
+    assert all(m["role"] == "system" for m in wf.ctx.get_context())

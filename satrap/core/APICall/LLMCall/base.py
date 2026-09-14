@@ -30,6 +30,7 @@ class _LLMBase(Generic[_ClientT]):
         thinking_field_name: Optional[str] = "reasoning_content",
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: bool = False,
+        supports_visual_input: bool = False,
     ):
         """
         LLM API 共用配置初始化
@@ -49,6 +50,7 @@ class _LLMBase(Generic[_ClientT]):
         - thinking_field_name: 可选参数, 用于指定思考内容的字段名称
         - thinking_fields: 可选参数, 该模型需要的思考字段列表, 如 ["reasoning_effort", "thinking.type"]
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
+        - supports_visual_input: 是否支持图像与原生视频输入, 默认 False
         """
         self.api_key = api_key if not lock_api_key else "api key locked"
         self.model = model
@@ -64,6 +66,10 @@ class _LLMBase(Generic[_ClientT]):
         self.thinking_field_name = thinking_field_name
         self.thinking_fields = thinking_fields
         self.omit_none_thinking_fields = omit_none_thinking_fields
+
+        if not isinstance(supports_visual_input, bool):
+            raise ValueError("supports_visual_input 必须是布尔值")
+        self.supports_visual_input = supports_visual_input
 
         self.client = self._create_client(api_key, timeout)
 
@@ -107,6 +113,7 @@ class _LLMBase(Generic[_ClientT]):
         max_tokens: Optional[int] = None,
         thinking_fields: Optional[List[str]] = None,
         omit_none_thinking_fields: Optional[bool] = None,
+        supports_visual_input: Optional[bool] = None,
     ):
         """
         更新 LLM 实例的默认参数设置
@@ -118,7 +125,12 @@ class _LLMBase(Generic[_ClientT]):
         - max_tokens: 新的最大 token 数
         - thinking_fields: 新的思考字段列表
         - omit_none_thinking_fields: 关闭思考时是否省略值为 none 的字段
+        - supports_visual_input: 是否支持图像与原生视频输入, None 表示保持原值
         """
+        if supports_visual_input is not None and not isinstance(supports_visual_input, bool):
+            raise ValueError("supports_visual_input 必须是布尔值")
+        if supports_visual_input is not None:
+            self.supports_visual_input = supports_visual_input
         if model is not None:
             self.model = model
         if temperature is not None:

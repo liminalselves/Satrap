@@ -126,7 +126,9 @@ class PipelineScheduler:
             # ---------- Stage 1c: 权限检查 ----------
 
             message = event.get_message_str()
-            if not message:
+            images = self._extract_img_urls(event)
+            videos = self._extract_img_urls(event, "video")
+            if not message and not images and not videos:
                 return
 
             session_id = event.session_id
@@ -149,7 +151,8 @@ class PipelineScheduler:
                 session_provider=event.session_provider,
                 session_type=event.session_type,
                 message=message,
-                img_urls=self._extract_img_urls(event),
+                img_urls=images,
+                video_urls=videos,
             )
             # ---------- Stage 2: LLM 请求 via Session (带超时保护) ----------
             try:
@@ -219,15 +222,16 @@ class PipelineScheduler:
         return source_adapter_id, {"adapter_id": source_adapter_id}
 
     @staticmethod
-    def _extract_img_urls(event: MessageEvent) -> list[str]:
+    def _extract_img_urls(event: MessageEvent, media_type: str = "image") -> list[str]:
         """
-        从 event 中提取图片 URL 列表
+        从 event 中提取指定类型的媒体来源
 
         参数:
         - event: 事件
+        - media_type: image 或 video, 默认 image 保持既有调用含义
 
         返回:
-        - list[str]: 从 event 中提取图片 URL 列表
+        - list[str]: 对应媒体的 URL 或文件路径列表
         """
         urls: list[str] = []
         try:
@@ -235,7 +239,7 @@ class PipelineScheduler:
                 ctype = safe_getattr(comp, 'type')
                 if ctype is not None:
                     ctype_str = ctype.value if hasattr(ctype, 'value') else str(ctype)
-                    if ctype_str.lower() == 'image':
+                    if ctype_str.lower() == media_type:
                         url = safe_getattr_str(comp, 'url') or safe_getattr_str(comp, 'file')
                         if url:
                             urls.append(str(url))
