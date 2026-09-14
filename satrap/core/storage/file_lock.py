@@ -45,9 +45,6 @@ class FileLock:
             return self
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self.path.open("a+b")
-        if self._file.seek(0, 2) == 0:
-            self._file.write(b"\0")
-            self._file.flush()
         deadline = time.monotonic() + self.timeout
         while True:
             try:
@@ -56,6 +53,9 @@ class FileLock:
                     msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
                     fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if self._file.seek(0, 2) == 0:
+                    self._file.write(b"\0")
+                    self._file.flush()
                 held[self._key] = _HeldLock(self._file)
                 return self
             except OSError:

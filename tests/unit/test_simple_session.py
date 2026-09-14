@@ -1202,31 +1202,33 @@ async def test_plugin_non_str_return_ignored_async(tmp_path: Path):
     assert user_msgs[-1]["content"] == "hi"   # dict 被忽略, 未改写
 
 
-def test_thinking_requires_stream_mode_sync(tmp_path: Path):
+def test_non_stream_thinking_is_forwarded_sync(tmp_path: Path):
     """
-    M3 修复: 非流式 thinking="medium" 抛 NotImplementedError
+    验证同步非流式会话向模型传递 thinking
 
     参数:
     - tmp_path: tmp路径
     """
-    session = _make_session(tmp_path)
-    with pytest.raises(NotImplementedError):
-        session.run("hi", thinking="medium")
+    llm = _FakeLLM()
+    session = _make_session(tmp_path, llm=llm)
+    assert session.run("hi", thinking="medium") == "回复"
+    assert llm.calls[0]["thinking"] == "medium"
 
 
 @pytest.mark.asyncio
-async def test_thinking_requires_stream_mode_async(tmp_path: Path):
+async def test_non_stream_thinking_is_forwarded_async(tmp_path: Path):
     """
-    M3 修复: 异步非流式 thinking="medium" 抛 NotImplementedError
+    验证异步非流式会话向模型传递 thinking
 
     参数:
     - tmp_path: tmp路径
     """
+    llm = _FakeAsyncLLM()
     session = AsyncSimpleSession(
-        "conv-a", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
+        "conv-a", llm, db_path=str(tmp_path / "chat.db"), enable_checkpoint=True,
     )
-    with pytest.raises(NotImplementedError):
-        await session.run("hi", thinking="medium")
+    assert await session.run("hi", thinking="medium") == "异步回复"
+    assert llm.calls[0]["thinking"] == "medium"
 
 
 @pytest.mark.asyncio

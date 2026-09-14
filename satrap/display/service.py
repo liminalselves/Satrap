@@ -803,6 +803,7 @@ class ChatService:
             "content_callback": on_content,
             "thinking_callback": on_thinking,
             "enable_checkpoint": False,
+            "recoverable": True,
         }
         if system_prompt:
             session_kwargs["system_prompt"] = system_prompt
@@ -1354,6 +1355,7 @@ class ChatService:
             "content_callback": on_content,
             "thinking_callback": on_thinking,
             "enable_checkpoint": False,
+            "recoverable": True,
         }
         if self._chat_db_path:
             session_kwargs["db_path"] = self._chat_db_path
@@ -1586,6 +1588,7 @@ class ChatService:
         *,
         img_urls: list[str] | None = None,
         context_start: int,
+        resume_run_id: str | None = None,
     ) -> None:
         """
         后台执行一轮 run, 结束回填 recorder + 广播完成
@@ -1600,7 +1603,9 @@ class ChatService:
         async with conv.plugin_lock:
             try:
                 await self._refresh_session_plugins(conv)
-                result = await conv.session.run(text, img_urls=img_urls, thinking=think)
+                conv.session.recovery_origin = conv.recorder.recovery_origin()
+                result = (await conv.session.resume_run(resume_run_id) if resume_run_id is not None
+                          else await conv.session.run(text, img_urls=img_urls, thinking=think))
                 answer = result.message if isinstance(result, CommandAction) else result
                 context_messages = copy.deepcopy(conv.session.ctx.get_context()[context_start:])
                 context_stats = conv.session.get_context_stats()
@@ -1630,6 +1635,60 @@ class ChatService:
                 self._apply_pending_model_refresh(conv)
 
     # ---------- 重试与分支 ----------
+
+    async def list_runs(self, conversation_id: str, *, limit: int = 20, cursor: str | None = None, unfinished: bool = False) -> dict[str, Any]:
+        """查询会话内任务, 不暴露持久化请求正文"""
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            return {"ok": False, "error": "会话不存在"}
+        from satrap.edictum.simple_session.recovery import store_for_session
+
+        return {"ok": True, **store_for_session(conv.session).summaries(limit, cursor, unfinished)}
+
+    @_exclusive_conversation_operation
+    async def manage_run(self, conversation_id: str, run_id: str, action: str, step_id: str = "") -> dict[str, Any]:
+        """恢复和取消均复用现有会话占用及插件互斥"""
+        from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
+        from satrap.core.framework.Base.execution.engine import configuration
+
+        conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
+        if conv is None:
+            return {"ok": False, "error": "会话不存在"}
+        if conv.task is not None and not conv.task.done():
+            return {"ok": False, "error": "会话正在执行任务"}
+        async with conv.plugin_lock:
+            try:
+                await conv.session.initialize()
+                store = store_for_session(conv.session)
+                run = store.get(run_id)
+                if action == "abort":
+                    await conv.session.abort_run(run_id)
+                    return {"ok": True}
+                if action == "authorize_retry":
+                    await conv.session.retry_uncertain_step(run_id, step_id)
+                    return {"ok": True}
+                if action != "resume":
+                    return {"ok": False, "error": "未知任务操作"}
+                await self._refresh_session_plugins(conv)
+                prepare_session_recovery(conv.session)
+                if run["status"] == "cancelled":
+                    return {"ok": False, "error": "任务已取消"}
+                if run["status"] == "completed" and run["payload"].get("committed_context_fingerprint") != store.history_signature():
+                    return {"ok": False, "error": "任务完成后会话历史已改变, 不能回填旧轮次"}
+                if run["status"] != "completed" and (
+                    run["context_fingerprint"] != store.history_signature()
+                    or run["config_fingerprint"] != configuration(conv.session._wf)
+                ):
+                    return {"ok": False, "error": "历史或执行配置已改变, 请使用重新生成或分支"}
+                origin = run["payload"].get("origin", {})
+                turn = conv.recorder.resume_turn(int(origin["turn_id"]), int(origin["variant_index"]))
+                context_start = int(run["payload"].get("context_start", conv.session.ctx.static_message()))
+                self._broadcast(conv, {"type": "turn_start", "retry": True, "resumed": True, **turn})
+                conv.task = asyncio.ensure_future(self._run_turn(conv, "", conv.default_think,
+                                                                context_start=context_start, resume_run_id=run_id))
+                return {"ok": True, **turn}
+            except (ValueError, RuntimeError, KeyError) as exc:
+                return {"ok": False, "error": str(exc)}
 
     @_exclusive_conversation_operation
     async def retry(self, conversation_id: str, think: str | None = None) -> dict[str, Any]:

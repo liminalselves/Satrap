@@ -93,7 +93,7 @@ def test_model_workflow_full_agent_runs_complete_agent_flow(tmp_path: Path):
     assert llm.tools == []
 
 
-def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
+def test_model_workflow_full_agent_uses_shared_engine(tmp_path: Path):
     class _Workflow(ModelWorkflowFramework):
         def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
@@ -108,8 +108,8 @@ def test_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
 
     result = wf.full_agent("你好", callback=False, max_iterations=3)
 
-    assert result == "自定义回复"
-    assert wf.executor_options == (False, 3)
+    assert result == "同步回复"
+    assert not hasattr(wf, "executor_options")
 
 
 @pytest.mark.asyncio
@@ -286,7 +286,7 @@ async def test_async_context_manager_del_context_keeps_only_system_messages(tmp_
 
 
 @pytest.mark.asyncio
-async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path: Path):
+async def test_async_model_workflow_full_agent_uses_shared_engine(tmp_path: Path):
     class _Workflow(AsyncModelWorkflowFramework):
         async def agent_executor(self, model_response: LLMCallResponse, callback: bool = False, max_iterations: int = 10, img_urls: list[str] | None = None):
             self.executor_options = (callback, max_iterations)
@@ -302,5 +302,5 @@ async def test_async_model_workflow_full_agent_accepts_executor_options(tmp_path
 
     result = await wf.full_agent("你好", callback=False, max_iterations=4)
 
-    assert result == "异步自定义回复"
-    assert wf.executor_options == (False, 4)
+    assert result == "异步回复"
+    assert not hasattr(wf, "executor_options")

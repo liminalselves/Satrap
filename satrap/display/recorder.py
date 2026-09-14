@@ -374,6 +374,31 @@ class DisplayRecorder:
                 "variant_index": self._variant_index,
             }
 
+    def recovery_origin(self) -> dict[str, int]:
+        """返回当前轮次身份, 供执行记录在进程重启后重新关联"""
+        with self._lock:
+            return {"turn_id": self._turn_id, "variant_index": self._variant_index} if self._turn_id is not None else {}
+
+    def resume_turn(self, turn_id: int, variant_index: int) -> dict[str, Any]:
+        """恢复原轮次的记录通道, 不创建新回复版本"""
+        with self._lock:
+            conn = self._get_conn()
+            row = conn.execute(
+                "SELECT turn_index,user_input,active_variant FROM display_turns WHERE id=? AND conversation_id=?",
+                (turn_id, self.conversation_id),
+            ).fetchone()
+            if row is None or int(row[2]) != variant_index:
+                raise ValueError("原轮次不存在或已选择其他回复版本")
+            self._turn_id = turn_id
+            self._variant_index = variant_index
+            self._thinking_parts = []
+            self._answer_parts = []
+            self._segments = []
+            count = conn.execute("SELECT COUNT(*) FROM display_tool_calls WHERE turn_id=?", (turn_id,)).fetchone()
+            self._tool_seq = int(count[0])
+            return {"turn_id": turn_id, "turn_index": int(row[0]), "variant_index": variant_index,
+                    "user_input": str(row[1])}
+
     def end_turn(
         self,
         fallback_answer: str = "",

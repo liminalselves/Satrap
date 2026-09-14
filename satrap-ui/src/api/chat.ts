@@ -427,6 +427,10 @@ export const chatApi = {
     ),
 
   // Retry / Fork
+  listRuns: (conversation: string, cursor?: string, unfinished = false) =>
+    request<{ ok: boolean; runs: AgentRun[]; next_cursor: string | null }>("GET", `/api/chat/runs?conversation=${encodeURIComponent(conversation)}&limit=20&unfinished=${unfinished}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`),
+  manageRun: (conversation: string, runId: string, action: string, stepId?: string) =>
+    request<{ ok: boolean; error?: string }>("POST", "/api/chat/runs/action", { conversation, run_id: runId, action, step_id: stepId }),
   retry: (conversation: string, think?: string) =>
     request<{ ok: boolean; turn_id: number; turn_index: number; variant_index: number; error?: string }>(
       'POST', '/api/chat/retry', { conversation, think },
@@ -548,4 +552,9 @@ export function subscribeChat(conversationId: string, onEvent: ChatEventHandler)
       ws.close(1000, 'unsubscribe');
     }
   };
+}
+
+export interface AgentRun {
+  id: string; status: string; created_at: number; updated_at: number; error?: string;
+  steps: { step_key: string; kind: string; status: string; recovery_policy: string }[];
 }

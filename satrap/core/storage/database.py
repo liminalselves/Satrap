@@ -18,6 +18,9 @@ _RESTORABLE_TABLES = frozenset({
     "display_turn_variants",
     "display_tool_calls",
     "chat_history",
+    "agent_runs",
+    "agent_steps",
+    "agent_step_inputs",
     "state_scopes",
     "state_checkpoints",
     "state_snapshots",
@@ -117,6 +120,15 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
         tables = _table_names(connection)
         related_pattern = _related_scope_pattern(session_id)
         selectors: dict[str, tuple[str, tuple[object, ...]]] = {
+            "agent_runs": ("scope = ? OR scope LIKE ? ESCAPE '\\'", (session_id, related_pattern)),
+            "agent_steps": (
+                "run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
+                (session_id, related_pattern),
+            ),
+            "agent_step_inputs": (
+                "run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
+                (session_id, related_pattern),
+            ),
             "session_configs": ("session_id = ?", (session_id,)),
             "session_config_overrides": ("session_id = ?", (session_id,)),
             "rag_knowledge_bases": ("session_id = ? AND scope = 'session'", (session_id,)),
@@ -195,6 +207,10 @@ def restore_session_domain(
     """
     database_path = Path(database)
     database_path.parent.mkdir(parents=True, exist_ok=True)
+    if records.get("agent_step_inputs"):
+        from satrap.core.framework.Base.execution.store import RunStore
+
+        RunStore(database_path, session_id)  # 兼容尚未加载恢复功能的旧数据库结构
     with closing(sqlite3.connect(str(database_path))) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("BEGIN IMMEDIATE")   # 身份检查和插入共用写事务, 防止并发恢复交错
@@ -228,6 +244,13 @@ def restore_session_domain(
                 raise ValueError(f"目标数据库缺少归档表: {table}")
             schemas[table] = _table_columns(connection, table)
         turn_ids = {row.get("id") for row in records.get("display_turns", [])}
+        run_ids = {row.get("id") for row in records.get("agent_runs", [])}
+        step_ids = {(row.get("run_id"), row.get("step_key")) for row in records.get("agent_steps", []) if row.get("kind") == "model"}
+        bodies = {(row.get("run_id"), row.get("step_key")) for row in records.get("agent_step_inputs", [])}
+        for step in records.get("agent_steps", []):
+            metadata = json.loads(step.get("input") or "{}")
+            if isinstance(metadata, dict) and metadata.get("_format") == 2 and (step.get("run_id"), step.get("step_key")) not in bodies:
+                raise ValueError("归档缺少模型请求正文")
         for table, rows in records.items():
             for row in rows:
                 _validated_restore_columns(table, row, schemas[table])
@@ -243,7 +266,16 @@ def restore_session_domain(
                     raise ValueError("会话归档不能恢复全局知识库")
                 if table in ("display_turn_variants", "display_tool_calls") and row.get("turn_id") not in turn_ids:
                     raise ValueError(f"归档表 {table} 引用了归档外的轮次")
+                if table == "agent_steps" and row.get("run_id") not in run_ids:
+                    raise ValueError("执行步骤引用了归档外的任务")
+                if table == "agent_step_inputs" and (row.get("run_id") not in run_ids or (row.get("run_id"), row.get("step_key")) not in step_ids):
+                    raise ValueError("请求正文引用了归档外的模型步骤")
+                if table == "agent_step_inputs":
+                    body = json.loads(row.get("body") or "{}")
+                    if not isinstance(body, dict) or body.get("version") != 2 or (body.get("base") is not None and (not isinstance(body["base"], str) or (row.get("run_id"), body["base"]) not in step_ids)):
+                        raise ValueError("请求正文版本无效或引用了其他任务的步骤")
                 scope_column = {
+                    "agent_runs": "scope",
                     "chat_history": "conversation_id", "state_scopes": "scope_id",
                     "state_checkpoints": "scope_id", "state_snapshots": "scope_id", "memories": "scope",
                 }.get(table)
@@ -366,6 +398,17 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
                 "DELETE FROM conversation_meta WHERE conversation_id = ?",
                 (session_id,),
             )
+        if "agent_step_inputs" in tables and "agent_runs" in tables:
+            connection.execute(
+                "DELETE FROM agent_step_inputs WHERE run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
+                (session_id, related_pattern))
+        if "agent_steps" in tables and "agent_runs" in tables:
+            connection.execute(
+                "DELETE FROM agent_steps WHERE run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
+                (session_id, related_pattern),
+            )
+        if "agent_runs" in tables:
+            connection.execute("DELETE FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\'", (session_id, related_pattern))
         if "chat_history" in tables:
             connection.execute(
                 "DELETE FROM chat_history WHERE conversation_id = ? "

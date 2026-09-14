@@ -198,6 +198,84 @@ def _make_service(tmp_path: Path, monkeypatch: Any) -> ChatService:
 
 
 @pytest.mark.asyncio
+async def test_chat_run_pagination_preserves_python_all_results(tmp_path, monkeypatch):
+    """HTTP 使用分页, Python 无参接口仍返回全部摘要"""
+    from satrap.edictum.simple_session.recovery import store_for_session
+
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        cid = await service.create_conversation()
+        session = service.get_conversation(cid).session
+        store = store_for_session(session)
+        for _ in range(23):
+            run = store.create({}, "c", "f")
+            store.update(run, status="completed")
+        store.create({}, "c", "f")
+        assert len(await session.list_runs()) == 24
+        server = ChatHTTPServer(service)
+        status, first = await server._route("GET", f"/api/chat/runs?conversation={cid}", b"")
+        assert status == 200 and len(first["runs"]) == 20 and first["next_cursor"]
+        status, second = await server._route("GET", f"/api/chat/runs?conversation={cid}&cursor={first['next_cursor']}", b"")
+        assert status == 200 and len(second["runs"]) == 4 and second["next_cursor"] is None
+        assert not ({row["id"] for row in first["runs"]} & {row["id"] for row in second["runs"]})
+        status, pending = await server._route("GET", f"/api/chat/runs?conversation={cid}&unfinished=true", b"")
+        assert status == 200 and len(pending["runs"]) == 1
+        for query in ("limit=101", "limit=bad", "cursor=invalid"):
+            status, _ = await server._route("GET", f"/api/chat/runs?conversation={cid}&{query}", b"")
+            assert status == 400
+    finally:
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_chat_resume_after_service_restart_then_retry_and_fork(tmp_path, monkeypatch):
+    """续跑保持原轮次, retry 创建新执行, fork 不继承旧任务执行权"""
+    requests = []
+
+    class RecoveringModel(_FakeAsyncLLM):
+        async def stream_call(self, messages, **kwargs):
+            requests.append(copy.deepcopy(messages))
+            response = False if len(requests) == 1 else LLMCallResponse("answer", f"回答{len(requests)}")
+            yield LLMCallStreamEvent(kind="done", response=response)
+
+    svc = _make_service(tmp_path, monkeypatch)
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: RecoveringModel())
+    cid = await svc.create_conversation(model="default")
+    await svc.send(cid, "问题")
+    await svc.get_conversation(cid).task
+    runs = (await svc.list_runs(cid))["runs"]
+    assert runs[0]["status"] == "failed"
+    run_id = runs[0]["id"]
+    await svc.close()
+
+    resumed = _make_service(tmp_path, monkeypatch)
+    monkeypatch.setattr(service_mod, "build_llm", lambda cfg: RecoveringModel())
+    try:
+        result = await resumed.manage_run(cid, run_id, "resume")
+        assert result["ok"], result
+        await resumed.get_conversation(cid).task
+        assert requests[0] == requests[1]
+        turns = resumed.list_turns(cid)
+        assert len(turns) == 1
+        assert turns[0]["answer"] == "回答2"
+        assert turns[0]["variant_count"] == 1
+        assert (await resumed.list_runs(cid))["runs"][0]["status"] == "completed"
+
+        result = await resumed.retry(cid)
+        assert result["ok"], result
+        await resumed.get_conversation(cid).task
+        assert len((await resumed.list_runs(cid))["runs"]) == 2
+        assert resumed.list_turns(cid)[0]["variant_count"] == 2
+        forked = await resumed.fork(cid, 1)
+        assert forked["ok"]
+        assert (await resumed.list_runs(forked["conversation_id"]))["runs"] == []
+        denied = await resumed.manage_run(forked["conversation_id"], run_id, "resume")
+        assert denied["ok"] is False
+    finally:
+        await resumed.close()
+
+
+@pytest.mark.asyncio
 async def test_chat_override_api_defers_busy_session_and_fork_inherits_parameters(tmp_path, monkeypatch):
     """Chat HTTP 入口验证覆盖版本, 执行中延后应用, 分支继承独立覆盖"""
     svc = _make_service(tmp_path, monkeypatch)

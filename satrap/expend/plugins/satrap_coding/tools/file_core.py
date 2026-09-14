@@ -16,6 +16,8 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 class _ReadFileToolCore(_ToolBase):
     """读取工作区内文件 (支持分页)"""
 
+    recovery_policy = "retry"
+
     tool_name = "read_file"
     description = "读取工作区内文件内容, offset/limit 支持分页读取大文件"
     params_dict = {
@@ -65,6 +67,8 @@ class _ReadFileToolCore(_ToolBase):
 class _ListDirToolCore(_ToolBase):
     """列出工作区内目录内容"""
 
+    recovery_policy = "retry"
+
     tool_name = "list_dir"
     description = "列出工作区内目录下的文件与子目录"
     params_dict = {
@@ -101,6 +105,8 @@ class _ListDirToolCore(_ToolBase):
 class _GlobFilesToolCore(_ToolBase):
     """按 glob 模式搜索工作区内文件"""
 
+    recovery_policy = "retry"
+
     tool_name = "glob_files"
     description = "按 glob 模式递归搜索文件, 如 **/*.py"
     params_dict = {
@@ -135,6 +141,8 @@ class _GlobFilesToolCore(_ToolBase):
 
 class _GrepFilesToolCore(_ToolBase):
     """正则搜索工作区内文件内容"""
+
+    recovery_policy = "retry"
 
     tool_name = "grep_files"
     description = "在指定目录内按正则表达式搜索文件内容, 返回匹配行"

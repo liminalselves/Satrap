@@ -659,6 +659,7 @@ class Plugin:
     """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
     config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
     resources: Any = field(default=None, repr=False)
+    recovery_fingerprint: str = ""
     """配置项声明 (meta.yaml config_schema): 键 -> {type/default/description/options}, 供前端渲染表单"""
     _session: SessionType | None = field(default=None, repr=False, compare=False)
     _cleanup: Callable[..., Any] | None = field(default=None, repr=False, compare=False)

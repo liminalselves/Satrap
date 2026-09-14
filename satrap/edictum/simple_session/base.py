@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 from satrap.core.utils.skills import SkillsManager
 from satrap.edictum.plugin import Plugin
 from .handlers import _HandlerRegistryMixin
@@ -7,6 +8,7 @@ from .handlers import _HandlerRegistryMixin
 class _SessionFeatures(_HandlerRegistryMixin):
     _skills_manager: SkillsManager | None
     stream: bool
+    recovery_origin: dict[str, Any]
 
     def _get_skills_manager(self) -> SkillsManager:
         """

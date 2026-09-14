@@ -1,4 +1,5 @@
 import { restoreConversation, type Conversation as ConversationState } from './conversations';
+import { RunRecovery } from "./RunRecovery";
 import { RagManager } from '@/components/common/RagManager';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
@@ -1664,6 +1665,10 @@ export function Chat() {
             <Settings2 className="h-4 w-4" />
           </Button>
         </div>
+
+        {active && active.id !== "__draft__" && !active.preloaded && (
+          <RunRecovery conversation={active.id} generating={generating} />
+        )}
 
         {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
         <div className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">

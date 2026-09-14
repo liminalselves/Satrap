@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>恢复分页测试</title></head>
+<body>
+<div id="root"></div>
+<script type="module">
+  import React from 'react';
+  import { createRoot } from 'react-dom/client';
+  import { RunRecovery } from '/src/pages/Chat/RunRecovery.tsx';
+  const root = createRoot(document.getElementById('root'));
+  window.renderRecovery = conversation => root.render(React.createElement(RunRecovery, { conversation, generating: false }));
+  window.renderRecovery('a');
+</script>
+</body>
+</html>

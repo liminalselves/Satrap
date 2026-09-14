@@ -8,6 +8,8 @@ from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 
 
 class _DocumentCore(_ToolBase):
+    recovery_policy = "retry"
+
     def __init__(self, workspace_root: Path) -> None:
         """
         初始化 ReadDocumentTool
@@ -165,6 +167,8 @@ class _DeleteMemoryToolCore(_MemoryBinding):
 
 class _ListMemoriesToolCore(_MemoryBinding):
     """查看全部长期记忆"""
+
+    recovery_policy = "retry"
 
     tool_name = "list_memories"
     description = "列出当前全部长期记忆 (含 ID, 供 update/delete 定位)"

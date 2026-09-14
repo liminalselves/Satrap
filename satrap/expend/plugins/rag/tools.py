@@ -106,6 +106,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     result: list[RagTool | AsyncRagTool] = []
     for name, (description, params, _) in _DEFINITIONS.items():
         tool = base(name, description, params)
+        tool.recovery_policy = "retry" if name in {"rag_search", "rag_list"} else "manual"
         tool.service, tool.session, tool.config = service, session, config
         result.append(tool)
     return result

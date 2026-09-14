@@ -14,6 +14,7 @@ from satrap.core.utils.outbound import UnsafeOutboundURLError
 from .utils import USER_AGENTS
 
 class _SearchCore(_ToolBase):
+    recovery_policy = "retry"  # 搜索请求可重复执行, 返回结果可能随时间变化
 
     def __init__(self, timeout: int = 10):
         """

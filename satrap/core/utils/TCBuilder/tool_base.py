@@ -5,6 +5,8 @@ from .utils import create_tool_defined
 
 
 class _ToolBase:
+    recovery_policy: str = "manual"
+    """执行结果未知时的恢复策略, 可安全重复的工具可显式设置 retry"""
     def __init__(
         self,
         tool_name: str | None = None,

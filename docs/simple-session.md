@@ -34,6 +34,8 @@ result = session("你好")
 print(result)
 ```
 
+非流式和流式调用均支持 `session.run("问题", thinking="high")`, `return_thinking` 仅决定是否回传思考内容. 内部 Agent 成功后提交整轮模型上下文, 失败抛出异常, 不再把模型调用失败字符串当作成功回答. 可恢复模式和兼容接口边界见 [任务执行记录与恢复](task-recovery.md)
+
 ## 处理器示例 (优先级 + 改写 + 短路)
 
 ```python

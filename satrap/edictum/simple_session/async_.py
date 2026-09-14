@@ -1,3 +1,10 @@
+"""
+异步简易会话入口
+
+组合主工作流, 插件与会话边界处理器, 支持可选的任务恢复,
+通过显式插件环境约束插件适用范围
+"""
+
 from __future__ import annotations
 import asyncio
 from typing import Any, Callable, Iterable
@@ -22,6 +29,7 @@ from .utils import (
 )
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from .base import _SessionFeatures
+from . import recovery
 from . import async_plugins, async_capabilities
 
 
@@ -44,27 +52,35 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         content_callback: Callable[[str], Any] | None = None,
         db_path: str = get_db_path(),
         enable_checkpoint: bool = True,
+        recoverable: bool = False,
         plugin_environment: PluginEnvironment | None = None,
         stream: bool = False,
         return_thinking: bool = False,
         thinking_callback: Callable[[str], Any] | None = None,
     ):
         """
-        初始化异步简易会话 (工作流在 initialize 中构建)
+        初始化异步简易会话, 主工作流在 initialize 中构建
 
         参数:
         - session_id: 会话 ID
-        - llm: 模型实例
-        - system_prompt: 系统提示词
-        - tools: 工具列表
-        - content_callback: 内容回调函数
-        - db_path: 数据库路径
-        - enable_checkpoint: 是否enable检查点
+        - llm: 主模型实例
+        - system_prompt: 系统提示词, 默认 None 保留已有系统提示词, 提供时在初始化阶段重置
+        - tools: 初始工具列表, 默认 None 表示不预注册工具
+        - content_callback: 内容回调, 用于模型与命令输出, 默认 None 表示不回调
+        - db_path: 上下文, 检查点与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
+        - enable_checkpoint: 是否启用会话级检查点, 默认 True, 与 recoverable 独立控制
+        - recoverable: 是否启用可恢复 Agent 执行, 默认 False; 为 True 时持久化主工作流的模型与工具步骤
         - plugin_environment: 插件适用环境, 默认 None 使用 embedded; Chat 或平台入口应显式提供对应环境
-        - stream: 是否使用流式调用
-        - return_thinking: 返回思考内容
-        - thinking_callback: 思考内容回调函数
+        - stream: 默认是否流式调用模型, 默认 False
+        - return_thinking: 是否回传模型思考内容, 默认 False
+        - thinking_callback: 思考内容回调, 默认 None 时复用 content_callback
+
+        恢复边界:
+        - 中断任务可通过 resume_run(run_id) 恢复, 已完成步骤复用保存结果
+        - 恢复不重放会话输入和输出处理器, 工具结果未知时按恢复策略重试或等待人工确认
+        - recoverable 不等同于检查点, 也不表示进程启动后自动恢复任务
         """
+        self.recoverable = recoverable
         self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
             session_id,
@@ -104,6 +120,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                 self._init_llm,
                 context_id=wf_id,
                 tools_manager=AsyncToolsManager(),
+                recoverable=self.recoverable,
                 system_prompt=self._init_system_prompt,
                 content_callback=self._init_content_callback,
                 return_thinking=self._init_return_thinking,
@@ -209,7 +226,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         参数:
         - user_input: 用户输入
         - img_urls: 图片 URL 列表 (多模态)
-        - thinking: 是否要求模型思考
+        - thinking: 模型思考强度, 默认 off, 流式和非流式均支持
         - max_iterations: 最大工具调用迭代次数
 
         处理器语义 (与同步版一致): 短路/改写/隔离/超时/finally, 见 SimpleSession.run
@@ -288,6 +305,9 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                             p, "before_model_reply", p.before_model_reply, ctx
                         )
 
+                if self.recoverable:
+                    recovery.prepare_session_recovery(self)
+
                 result: str | None = None
                 ctx.error = None
                 try:
@@ -301,13 +321,10 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
                             max_iterations=max_iterations,
                         )
                     else:
-                        if thinking != "off":
-                            raise NotImplementedError(
-                                "thinking 参数仅在流式模式 (stream=True) 下生效"
-                            )
                         result = await wf.full_agent(
                             text,
                             img_urls=img_urls,
+                            thinking=thinking,
                             max_iterations=max_iterations,
                         )
                 except BaseException as e:
@@ -375,6 +392,25 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
 
     async def __call__(self, user_input: str, **kwargs: Any) -> str | CommandAction:
         return await self.run(user_input, **kwargs)
+
+    async def resume_run(self, run_id: str) -> str:
+        """从保存步骤继续, 不重放 SessionHandler"""
+        return await recovery.resume_async(self, run_id)
+
+    async def list_runs(self):
+        """查询当前会话任务状态"""
+        await self.initialize()
+        return recovery.summaries(self)
+
+    async def abort_run(self, run_id: str) -> None:
+        """终止未完成的任务"""
+        await self.initialize()
+        recovery.store_for_session(self).abort(run_id)
+
+    async def retry_uncertain_step(self, run_id: str, step_id: str) -> None:
+        """明确授权未知结果工具步骤重试"""
+        await self.initialize()
+        recovery.store_for_session(self).authorize_retry(run_id, step_id)
 
     # ---------- 命令管理 ----------
 

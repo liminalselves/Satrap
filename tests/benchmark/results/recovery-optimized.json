@@ -1,0 +1,3357 @@
+{
+  "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "sqlite": "3.45.3",
+  "samples_per_case": 7,
+  "method": "离线固定模型, 每轮 2 工具; 每条历史 512 汉字; 上下文预算 400 万以避免触发截断, 不代表真实模型容量; 不含初始化与历史填充; 首个样本预热丢弃; SQL trace 计数包含计时开销; 文件增长不等于物理磁盘写入量",
+  "results": [
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 0,
+      "tool_rounds": 0,
+      "median_ms": 14.249700005166233,
+      "p95_ms": 15.08420001482591,
+      "samples": [
+        {
+          "elapsed_ms": 10.080300009576604,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 9.038499993039295,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 12.052599980961531,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 15.08420001482591,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 14.652400015620515,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 14.249700005166233,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 14.683499990496784,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 0,
+      "tool_rounds": 0,
+      "median_ms": 59.00139998993836,
+      "p95_ms": 59.74559998139739,
+      "samples": [
+        {
+          "elapsed_ms": 37.34629999962635,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 34.228799981065094,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 35.97320002154447,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 59.00139998993836,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 59.38310001511127,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 59.46970000513829,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 59.74559998139739,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 0,
+      "tool_rounds": 3,
+      "median_ms": 35.02549999393523,
+      "p95_ms": 94.53810000559315,
+      "samples": [
+        {
+          "elapsed_ms": 35.02549999393523,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 35.34040000522509,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 33.78249998786487,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 33.4961999906227,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 60.12229999760166,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 94.53810000559315,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 33.13759999582544,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 0,
+      "tool_rounds": 3,
+      "median_ms": 179.33040001662448,
+      "p95_ms": 730.0023999996483,
+      "samples": [
+        {
+          "elapsed_ms": 178.52899999707006,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 178.2459999958519,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 189.9429999757558,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 179.33040001662448,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 174.93850001483224,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 407.10340000805445,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 730.0023999996483,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 200,
+      "tool_rounds": 0,
+      "median_ms": 34.20379999442957,
+      "p95_ms": 63.14929999643937,
+      "samples": [
+        {
+          "elapsed_ms": 33.68110000155866,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 59.83759998343885,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 63.14929999643937,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 31.0915999871213,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 34.20379999442957,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 42.47890002443455,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 32.69070002716035,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 200,
+      "tool_rounds": 0,
+      "median_ms": 143.8897000043653,
+      "p95_ms": 190.7305000058841,
+      "samples": [
+        {
+          "elapsed_ms": 164.11919999518432,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 143.61339999595657,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 104.36519997892901,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 161.31970001151785,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 138.71550001204014,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 143.8897000043653,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 190.7305000058841,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 200,
+      "tool_rounds": 3,
+      "median_ms": 116.75149999791756,
+      "p95_ms": 568.308000016259,
+      "samples": [
+        {
+          "elapsed_ms": 102.77090000454336,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 111.56779999146238,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 116.82870000367984,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 109.60789999808185,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 568.308000016259,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 131.847500015283,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 116.75149999791756,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 200,
+      "tool_rounds": 3,
+      "median_ms": 331.35009999386966,
+      "p95_ms": 348.7700000114273,
+      "samples": [
+        {
+          "elapsed_ms": 334.52040000702254,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 331.04809999349527,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 330.79569999244995,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 333.0108000081964,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 331.35009999386966,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 348.7700000114273,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 329.428299999563,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 2000,
+      "tool_rounds": 0,
+      "median_ms": 220.1900000218302,
+      "p95_ms": 647.5996000226587,
+      "samples": [
+        {
+          "elapsed_ms": 647.5996000226587,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 204.0009999764152,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 220.50830000080168,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 278.97170002688654,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 210.72859998093918,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 219.6764000109397,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 220.1900000218302,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 2000,
+      "tool_rounds": 0,
+      "median_ms": 678.462199983187,
+      "p95_ms": 818.5507000016514,
+      "samples": [
+        {
+          "elapsed_ms": 731.3723999832291,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 561.6490000102203,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 628.6326000117697,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 818.5507000016514,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 675.0723000150174,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 678.462199983187,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 712.5057999801356,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": false,
+      "history_messages": 2000,
+      "tool_rounds": 3,
+      "median_ms": 792.1009000274353,
+      "p95_ms": 861.2958999874536,
+      "samples": [
+        {
+          "elapsed_ms": 826.868000003742,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 792.1009000274353,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 739.5237000018824,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 727.7929999982007,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 861.2958999874536,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 747.4867000128143,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 801.75759998383,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": false,
+      "recoverable": true,
+      "history_messages": 2000,
+      "tool_rounds": 3,
+      "median_ms": 1963.1471000029705,
+      "p95_ms": 2458.55459998711,
+      "samples": [
+        {
+          "elapsed_ms": 1985.6306000147015,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1963.1471000029705,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 2458.55459998711,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 2019.2452000046615,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1911.000000021886,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1781.6462000191677,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1864.0604999964125,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 0,
+      "tool_rounds": 0,
+      "median_ms": 28.473899990785867,
+      "p95_ms": 45.89239999768324,
+      "samples": [
+        {
+          "elapsed_ms": 29.85739998985082,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 45.89239999768324,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 28.473899990785867,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 28.69269999791868,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 28.38730000075884,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 27.31029997812584,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 27.36960002221167,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 0,
+      "tool_rounds": 0,
+      "median_ms": 81.65000000735745,
+      "p95_ms": 110.34990000189282,
+      "samples": [
+        {
+          "elapsed_ms": 84.24379999632947,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 110.34990000189282,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 83.06479998282157,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 81.65000000735745,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 77.60440002311952,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 81.25940000172704,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 78.82970001082867,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 32768,
+          "request_payload_bytes": 760,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 0,
+      "tool_rounds": 3,
+      "median_ms": 58.833799994317815,
+      "p95_ms": 73.12439999077469,
+      "samples": [
+        {
+          "elapsed_ms": 58.71879999176599,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 58.1501999986358,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 60.478300001705065,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 59.341799991670996,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 57.651499984785914,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 73.12439999077469,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 58.833799994317815,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 0,
+      "tool_rounds": 3,
+      "median_ms": 206.37170001282357,
+      "p95_ms": 229.6648999908939,
+      "samples": [
+        {
+          "elapsed_ms": 200.6822999974247,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 199.62309999391437,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 223.58260001055896,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 221.89690000959672,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 204.92729998659343,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 229.6648999908939,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 206.37170001282357,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 65536,
+          "request_payload_bytes": 8998,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "8db11d797c74475f1c8d4aa524508ef5fe331f9e32fc3b131f71a0e955306a06",
+            "afa90b80948513367670a5ab85d6a0f4dac359f3e7cf880f3a394a1f195b1405",
+            "8ceef2a508e6a2a53d463000181243efe2fd8c56596ffe4c33a31eadc6c392d3",
+            "43b5c62fec5d9e580062f3610db5dd6dd27471c3026c6a44fc40a545989e8094"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 200,
+      "tool_rounds": 0,
+      "median_ms": 55.49219998647459,
+      "p95_ms": 62.25380001706071,
+      "samples": [
+        {
+          "elapsed_ms": 55.49219998647459,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 53.73879999388009,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 42.86030001821928,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 55.22430001292378,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 61.014699982479215,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 59.263300005113706,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 62.25380001706071,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 200,
+      "tool_rounds": 0,
+      "median_ms": 135.47470001503825,
+      "p95_ms": 154.87670002039522,
+      "samples": [
+        {
+          "elapsed_ms": 131.4307999855373,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 131.9233999820426,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 133.66980000864714,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 135.47470001503825,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 154.87670002039522,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 146.47909998893738,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 138.73909998801537,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 344064,
+          "request_payload_bytes": 314963,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 200,
+      "tool_rounds": 3,
+      "median_ms": 196.7945000214968,
+      "p95_ms": 328.58510001096874,
+      "samples": [
+        {
+          "elapsed_ms": 166.60689999116585,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 196.7945000214968,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 312.89030000334606,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 328.58510001096874,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 175.06569999386556,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 202.5736999930814,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 174.7441999905277,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 200,
+      "tool_rounds": 3,
+      "median_ms": 430.99439999787137,
+      "p95_ms": 688.3329000265803,
+      "samples": [
+        {
+          "elapsed_ms": 430.7576999999583,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 460.74189999490045,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 468.680799996946,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 688.3329000265803,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 430.99439999787137,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 424.7574000037275,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 380.7651000097394,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 380928,
+          "request_payload_bytes": 323234,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "d04b6f432d620685d5a13339607333408a646b4c806c14e8b4ae5b9fdfd0fd51",
+            "15e6699adca8c8c1fabc505981675a26c12a9cd903b2dcc592f5ff0e71482fbd",
+            "08a2ec3e9bb2841449a00623ff199e14cadd9795da1e00ba68a3a62cb41da087",
+            "5afe1c7b730e12c0a23bbe2014e706e2f533f09713dd44c833b8129f14826192"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 2000,
+      "tool_rounds": 0,
+      "median_ms": 220.05979999084957,
+      "p95_ms": 238.70159999933094,
+      "samples": [
+        {
+          "elapsed_ms": 229.6724999905564,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 216.09820000594482,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 221.69500001473352,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 238.70159999933094,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 220.05979999084957,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 204.94230001349933,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 208.08410001336597,
+          "sql": {
+            "INSERT": 3,
+            "COMMIT": 3
+          },
+          "db_growth_bytes": 0,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 2000,
+      "tool_rounds": 0,
+      "median_ms": 617.6325999840628,
+      "p95_ms": 769.6402999863494,
+      "samples": [
+        {
+          "elapsed_ms": 617.6325999840628,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 640.0303000118583,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 609.3161000171676,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 769.6402999863494,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 710.8082000049762,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 570.9234999958426,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        },
+        {
+          "elapsed_ms": 600.5066000216175,
+          "sql": {
+            "SELECT": 12,
+            "INSERT": 6,
+            "COMMIT": 5,
+            "UPDATE": 2
+          },
+          "db_growth_bytes": 3178496,
+          "request_payload_bytes": 3144668,
+          "db_free_bytes": 0,
+          "model_calls": 1,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c"
+          ],
+          "history_rows_added": 2,
+          "steps": 1
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": false,
+      "history_messages": 2000,
+      "tool_rounds": 3,
+      "median_ms": 801.0801000054926,
+      "p95_ms": 963.4722000046168,
+      "samples": [
+        {
+          "elapsed_ms": 801.0801000054926,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 795.380199997453,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 797.0360000035726,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 787.36210000352,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 813.6468000011519,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 803.7802999897394,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        },
+        {
+          "elapsed_ms": 963.4722000046168,
+          "sql": {
+            "INSERT": 15,
+            "COMMIT": 6
+          },
+          "db_growth_bytes": 8192,
+          "request_payload_bytes": 0,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 0
+        }
+      ]
+    },
+    {
+      "async": true,
+      "recoverable": true,
+      "history_messages": 2000,
+      "tool_rounds": 3,
+      "median_ms": 2021.384499996202,
+      "p95_ms": 2173.5751000232995,
+      "samples": [
+        {
+          "elapsed_ms": 2062.0789999957196,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1870.0951999926474,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 2106.4093000022694,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 2021.384499996202,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1957.12409997941,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 1966.1819999746513,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        },
+        {
+          "elapsed_ms": 2173.5751000232995,
+          "sql": {
+            "SELECT": 39,
+            "INSERT": 30,
+            "COMMIT": 26,
+            "UPDATE": 11
+          },
+          "db_growth_bytes": 3211264,
+          "request_payload_bytes": 3152957,
+          "db_free_bytes": 0,
+          "model_calls": 4,
+          "request_hashes": [
+            "acc6785439c005393ee656234557c6800c69645675bbb71ac08639de887cf10c",
+            "8dc226aac77fd0a703c8f769dbb2e08d157fb0aaccc0270d88dd164809c1f008",
+            "8218ce7fcf6b8c42866d6ab130d1d3ffd85818842c2678eed8605837b93671b6",
+            "37694e95f95307c2c20739130235a926e32ce2407c17e3e20958039413f1ed28"
+          ],
+          "history_rows_added": 11,
+          "steps": 10
+        }
+      ]
+    }
+  ]
+}

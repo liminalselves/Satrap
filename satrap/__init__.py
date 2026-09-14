@@ -9,6 +9,7 @@ from .core.type import ContextUsageSnapshot, LLMCallResponse, LLMCallStreamEvent
 from .core.log import Logger
 from .edictum import AsyncSimpleSession, Plugin, SessionHandler, SimpleSession
 from .edictum import PluginEnvironment, PluginCompatibilityError
+from .core.framework.Base.execution import AgentExecutionError, ModelCallError, ModelProtocolError, RunConflictError, RunNeedsAttention
 
 __all__ = [
     "ContextManager",
@@ -41,4 +42,9 @@ __all__ = [
     "Plugin",
     "PluginEnvironment",
     "PluginCompatibilityError",
+    "AgentExecutionError",
+    "ModelCallError",
+    "ModelProtocolError",
+    "RunConflictError",
+    "RunNeedsAttention",
 ]

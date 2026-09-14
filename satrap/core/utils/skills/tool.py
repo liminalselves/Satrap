@@ -12,6 +12,7 @@ class SkillTool(AsyncTool):
     """
 
     tool_name = "load_skill"
+    recovery_policy = "retry"  # 只返回技能文本, 不执行技能中的指令
     description = (
         "加载指定技能, 返回技能指令与可用工具列表; 当任务需要特定专业能力时调用"
     )

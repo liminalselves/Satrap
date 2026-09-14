@@ -1,0 +1,7 @@
+name: recovery_probe
+version: 0.1.0
+description: 隔离进程恢复验收工具
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [chat]

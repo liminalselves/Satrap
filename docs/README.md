@@ -22,6 +22,12 @@
 
 ## 项目结构速览
 
+[任务执行记录与恢复](task-recovery.md): 可恢复 Agent 循环, 未知副作用处理, Chat 续跑与 retry / fork 的区别
+
+[恢复机制验收记录](recovery-validation.md): 后端进程中断验收, 工具恢复策略和性能 / 存储基准
+
+[恢复存储优化结果](recovery-optimization-results.md): 请求增量编码、兼容与分页、优化前后存储实测
+
 ```text
 satrap/
   core/

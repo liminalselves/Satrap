@@ -1,0 +1,50 @@
+{
+  "method": "每任务 4 KiB 输入和 5 步骤, 预热一次, 正式测量 5 次; legacy 复现旧列表查询路径",
+  "results": [
+    {
+      "tasks": 100,
+      "legacy_all": {
+        "median_ms": 217.67290000570938,
+        "rows": 100
+      },
+      "paged_20": {
+        "median_ms": 2.211000013630837,
+        "rows": 20
+      },
+      "compatible_all": {
+        "median_ms": 5.512899981113151,
+        "rows": 100
+      }
+    },
+    {
+      "tasks": 1000,
+      "legacy_all": {
+        "median_ms": 1986.2244999967515,
+        "rows": 1000
+      },
+      "paged_20": {
+        "median_ms": 2.078199991956353,
+        "rows": 20
+      },
+      "compatible_all": {
+        "median_ms": 40.707900014240295,
+        "rows": 1000
+      }
+    },
+    {
+      "tasks": 10000,
+      "legacy_all": {
+        "median_ms": 20236.81800000486,
+        "rows": 10000
+      },
+      "paged_20": {
+        "median_ms": 1.9419999734964222,
+        "rows": 20
+      },
+      "compatible_all": {
+        "median_ms": 394.8974999948405,
+        "rows": 10000
+      }
+    }
+  ]
+}

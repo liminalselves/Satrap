@@ -1,3 +1,10 @@
+"""
+异步模型工作流入口
+
+协调模型, 上下文与工具管理器, 提供普通和流式 Agent 调用,
+共用固定执行循环并按构造参数选择步骤持久化与任务恢复
+"""
+
 from __future__ import annotations
 import inspect, copy
 from typing import Optional, Callable, Any, Awaitable, cast, Literal
@@ -13,13 +20,6 @@ from satrap.core.utils.paths import get_db_path
 from satrap.core.type import LLMCallResponse, ModelContextTurnStats
 from satrap.core.log import logger
 from .utils import _WorkflowT
-
-if TYPE_CHECKING:
-    from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.core.framework.BackGroundManager import ModelConfigManager
-    from satrap.core.storage.layout import StorageLayout
-    from satrap.core.framework.SessionManager import SessionManager
-    from satrap.core.framework.UserManager import UserManager
 
 from .base import _WorkflowCore
 from .utils import _new_async_context
@@ -50,6 +50,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         *,
         db_path: str = get_db_path(),
+        recoverable: bool = False,
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -65,7 +66,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - 推荐使用 `await AsyncModelWorkflowFramework.create(...)`
         - 或在调用前显式执行 `await self.initialize()`
 
-        如果设置了 `content_callback`, 可通过 `self._content_content(content)` 在模型调用过程中回传增量内容
+        如果设置了 `content_callback`, 可通过 `self._content_callback(content)` 在模型调用过程中回传增量内容
 
         参数:
         - llm: 异步模型实例 (`AsyncLLM`)
@@ -75,8 +76,18 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - content_callback: 内容回调函数; 用于在复杂调用流程中回传模型内容
         - return_thinking: 是否回传模型思考内容
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
-        - db_path: 上下文数据库路径
+        - db_path: 上下文与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
+        - recoverable: 是否启用可恢复 Agent 执行, 默认 False; 为 True 时将模型与工具步骤持久化到 db_path
+
+        恢复边界:
+        - full_agent 和 stream_full_agent 共用执行循环, recoverable 仅控制步骤记录与恢复
+        - full_agent 不再调用可覆写的 agent_executor, 自定义编排应在 forward 中显式调用兼容接口
+        - 不自动接管自定义 forward 或 tools_agent 的任意逻辑
+        - 中断后可按任务 ID 恢复并复用已完成步骤, 工具结果未知时按恢复策略重试或等待人工确认
+        - 恢复时会检查会话历史及模型和工具配置, 不匹配时拒绝继续原任务
         """
+        self.recoverable = recoverable
+        self.last_run_id: str | None = None
         self.llm = llm
         self.ctx = _new_async_context(context_id, db_path=db_path)
         self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()
@@ -155,121 +166,34 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         return value
 
     async def agent_executor(
-        self,
-        model_response: LLMCallResponse,
-        callback: bool = False,
-        max_iterations: int = 10,
-        img_urls: list[str] | None = None,
-    ) -> tuple[list[dict[str, str | list[Any]]], bool]:
+        self, model_response: LLMCallResponse, callback: bool = False,
+        max_iterations: int = 10, img_urls: list[str] | None = None,
+        *, thinking: str = "off",
+    ) -> tuple[list[dict[str, Any]], bool]:
         """
-        异步智能体执行器, 用于执行智能体调用流程
+        使用共用循环处理已有模型响应, 保留元组返回接口
 
         参数:
-        - model_response: 模型调用响应
-        - callback: 是否回调回复, 默认关闭
-        - max_iterations: 最大迭代次数
-        - img_urls: 随请求发送的图片 URL 列表
+        - model_response: 已获取的首次模型响应, 用户消息由调用方预先写入上下文
+        - callback: 是否回传模型内容, 默认 False
+        - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
+        - img_urls: 附加图片地址, 默认 None
+        - thinking: 后续模型请求的思考强度, 默认 off
 
         返回:
-        - list[dict[str, str | list[Any]]]: 上下文消息列表
-        - bool: 是否成功执行
+        - 当前上下文和成功标志, 执行异常返回 False, 取消信号继续向外传播
         """
+        from .execution.engine import run_async
+
         try:
-            now_iteration = 0
-            now_response = model_response
-            turn_messages: list[dict[str, Any]] = []
-
-            while (
-                now_response.type == "tools_call"
-                and now_response.tool_calls
-                and now_iteration < max_iterations
-            ):
-                now_iteration += 1
-                tool_messages: list[dict[str, Any]] = []
-                tool_results: list[dict[str, Any]] = []
-
-                if callback:  # 回调回复
-                    if now_response.thinking and self.content_callback:
-                        await self._content_callback(
-                            f"<think>\n{now_response.thinking}\n</think>"
-                        )
-                    if now_response.content and self.content_callback:
-                        await self._content_callback(now_response.content)
-
-                for tool_call in now_response.tool_calls:
-                    result = await self.tools_manager.execute_tool_call(tool_call)
-                    tool_message, tool_result = result
-                    tool_messages.append(tool_message)
-                    tool_results.append(tool_result)
-                    # 执行工具调用并获取结果
-
-                add_tools_call_flow(
-                    turn_messages,
-                    now_response.content,
-                    tool_messages,
-                    tool_results,
-                    now_response.thinking,
-                )
-                # 添加至本轮消息流
-
-                new_response = await self._call_model(
-                    pending_messages=turn_messages,
-                    tools=self.tools_manager.get_tools_definitions(),
-                    img_urls=img_urls,
-                )  # 调用模型
-
-                if not new_response:  # 模型调用失败, 无响应返回
-                    clear_reasoning_content(turn_messages)
-                    await self.ctx.add_turn_messages(turn_messages)
-                    logger.error("模型调用失败, 无响应返回")
-                    break
-
-                if now_iteration >= max_iterations:  # 达到最大迭代次数
-                    if callback:  # 回调回复
-                        if now_response.thinking and self.content_callback:
-                            await self._content_callback(
-                                f"<think>\n{now_response.thinking}\n</think>"
-                            )
-                        if now_response.content and self.content_callback:
-                            await self._content_callback(now_response.content)
-
-                    clear_reasoning_content(turn_messages)
-                    await self.ctx.add_turn_messages(turn_messages)
-                    logger.warning("已达到最大工具调用迭代次数, 停止执行")
-                    await self.ctx.add_user_message(
-                        "已达到最大工具调用尝试次数，请基于已有信息给出最终答案。"
-                    )
-                    final_response = await self._call_model(tools=[], img_urls=img_urls)
-
-                    if not final_response:
-                        logger.error("达到最大迭代次数后调用 LLM 生成最终答案失败")
-                        return self.ctx.get_context(), False
-
-                    await self.ctx.add_bot_message(final_response.content)
-                    if callback:
-                        await self._content_callback(final_response.content)
-
-                    return self.ctx.get_context(), True
-
-                now_response = new_response  # 更新当前响应
-
-            else:  # 模型直接返回最终答案
-                if callback:  # 回调回复
-                    if now_response.thinking and self.content_callback:
-                        await self._content_callback(
-                            f"<think>\n{now_response.thinking}\n</think>"
-                        )
-                    if now_response.content and self.content_callback:
-                        await self._content_callback(now_response.content)
-
-                add_bot_message(turn_messages, now_response.content)
-                clear_reasoning_content(turn_messages)
-                await self.ctx.add_turn_messages(turn_messages)
-
+            await run_async(
+                self, user_input=None, initial_response=model_response,
+                recoverable=False, callback=callback, max_iterations=max_iterations,
+                img_urls=img_urls, thinking=thinking,
+            )
             return self.ctx.get_context(), True
-
-        except Exception as e:
-            logger.error(f"智能体执行器错误: {e}")
+        except Exception as error:
+            logger.error(f"智能体执行器错误: {error}")
             return self.ctx.get_context(), False
 
     @staticmethod
@@ -299,44 +223,29 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         await self.ctx._sync()
 
     async def full_agent(
-        self,
-        user_input: str,
-        callback: bool = True,
-        max_iterations: int = 10,
-        img_urls: list[str] | None = None,
+        self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        img_urls: list[str] | None = None, *, thinking: str = "off",
     ) -> str:
         """
-        完整执行一轮异步 Agent 流程, 返回最终模型输出
+        异步执行完整 Agent 循环, 成功后提交本轮消息
 
         参数:
-        - user_input: 用户输入
-        - callback: 回调函数
-        - max_iterations: 最大迭代次数
-        - img_urls: 图片 URL 列表
+        - user_input: 本轮用户输入
+        - callback: 是否回传模型内容, 默认 True
+        - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
+        - img_urls: 附加图片地址, 默认 None, 保留既有位置参数调用
+        - thinking: 模型思考强度, 默认 off, 仅可通过关键字传入
 
         返回:
-        - str: 完整执行一轮异步 Agent 流程, 返回最终模型输出
+        - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        self.reset_context_stats()
-        await self.ctx.add_user_message(user_input)
+        from .execution.engine import run_async
 
-        response = await self._call_model(
-            tools=self.tools_manager.get_tools_definitions(),
-            img_urls=img_urls,
+        return await run_async(
+            self, user_input=user_input, callback=callback,
+            max_iterations=max_iterations, img_urls=img_urls,
+            stream=False, thinking=thinking, recoverable=self.recoverable,
         )
-        if not response:
-            return "模型调用失败"
-
-        context, success = await self.agent_executor(
-            response,
-            callback=callback,
-            max_iterations=max_iterations,
-            img_urls=img_urls,
-        )
-        if not success:
-            return "执行失败"
-
-        return self.get_bot_message(context)
 
     async def _stream_call_response(
         self,
@@ -353,7 +262,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - pending_messages: 尚未写入完整历史的本轮临时消息
         - tools: 可选参数, 工具定义列表, 用于 Function Calling
         - callback: 是否回调回复, 默认关闭
-        - thinking: 是否要求模型进行思考, 默认为 False
+        - thinking: 模型思考强度, 默认 off
         - img_urls: 随请求发送的图片 URL 列表
 
         返回:
@@ -392,107 +301,29 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         return False
 
     async def stream_full_agent(
-        self,
-        user_input: str,
-        callback: bool = True,
-        max_iterations: int = 10,
-        thinking: str = "off",
-        img_urls: list[str] | None = None,
+        self, user_input: str, callback: bool = True, max_iterations: int = 10,
+        thinking: str = "off", img_urls: list[str] | None = None,
     ) -> str:
         """
-        异步流式执行一轮 Agent 流程并返回最终模型输出
+        异步流式执行完整 Agent 循环, 成功后提交本轮消息
 
         参数:
-        - user_input: 用户输入
-        - callback: 是否回调回复, 默认关闭
-        - max_iterations: 最大迭代次数, 默认 10
-        - thinking: 是否要求模型进行思考, 默认为 False
-        - img_urls: 随请求发送的图片 URL 列表
+        - user_input: 本轮用户输入
+        - callback: 是否回传模型内容, 默认 True
+        - max_iterations: 最大工具轮数, 默认 10, 非正数按 1 处理
+        - thinking: 模型思考强度, 默认 off
+        - img_urls: 附加图片地址, 默认 None
 
         返回:
-        - 最终模型输出
+        - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        self.reset_context_stats()
-        await self.ctx.add_user_message(user_input)
-        max_iterations = max(1, max_iterations)
+        from .execution.engine import run_async
 
-        response = await self._stream_call_response(
-            None,
-            self.tools_manager.get_tools_definitions(),
-            callback,
-            thinking,
-            img_urls=img_urls,
+        return await run_async(
+            self, user_input=user_input, callback=callback,
+            max_iterations=max_iterations, img_urls=img_urls,
+            stream=True, thinking=thinking, recoverable=self.recoverable,
         )
-        if not isinstance(response, LLMCallResponse):
-            return "模型调用失败"
-
-        now_response = response
-        now_iteration = 0
-        turn_messages: list[dict[str, Any]] = []
-
-        while (
-            now_response.type == "tools_call"
-            and now_response.tool_calls
-            and now_iteration < max_iterations
-        ):
-            now_iteration += 1
-            tool_messages: list[dict[str, Any]] = []
-            tool_results: list[dict[str, Any]] = []
-
-            for tool_call in now_response.tool_calls:
-                tool_message, tool_result = await self.tools_manager.execute_tool_call(
-                    tool_call
-                )
-                tool_messages.append(tool_message)
-                tool_results.append(tool_result)
-
-            add_tools_call_flow(
-                turn_messages,
-                now_response.content,
-                tool_messages,
-                tool_results,
-                now_response.thinking,
-            )
-
-            new_response = await self._stream_call_response(
-                turn_messages,
-                self.tools_manager.get_tools_definitions(),
-                callback,
-                thinking,
-                img_urls=img_urls,
-            )
-
-            if not isinstance(new_response, LLMCallResponse):
-                clear_reasoning_content(turn_messages)
-                await self.ctx.add_turn_messages(turn_messages)
-                return "执行失败"
-
-            if now_iteration >= max_iterations:
-                clear_reasoning_content(turn_messages)
-                await self.ctx.add_turn_messages(turn_messages)
-                await self.ctx.add_user_message(
-                    "已达到最大工具调用尝试次数，请基于已有信息给出最终答案。"
-                )
-                final_response = await self._stream_call_response(
-                    None,
-                    [],
-                    callback,
-                    thinking,
-                    img_urls=img_urls,
-                )
-                if not isinstance(final_response, LLMCallResponse):
-                    return "执行失败"
-                await self.ctx.add_bot_message(final_response.content)
-                return final_response.content
-
-            now_response = new_response
-
-        add_bot_message(
-            turn_messages, now_response.content, reasoning=now_response.thinking
-        )
-        clear_reasoning_content(turn_messages)
-        await self.ctx.add_turn_messages(turn_messages)
-        return self.get_bot_message(self.ctx.get_context())
 
     async def tools_agent(
         self,
@@ -555,7 +386,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - user_input: 用户输入
         - callback: 是否回调回复, 默认开启
         - max_iterations: 最大迭代次数, 默认 10
-        - thinking: 是否要求模型进行思考, 默认为 False
+        - thinking: 模型思考强度, 默认 off
         - img_urls: 随请求发送的图片 URL 列表
 
         返回:

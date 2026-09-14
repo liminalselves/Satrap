@@ -455,6 +455,25 @@ class ChatHTTPServer(MiniHTTPServer):
             return 200, svc.save_upload(conv, file_name, file_data)
         # 文件上传
 
+        if method == "GET" and clean == "/api/chat/runs":
+            conv = self._query_param(path, "conversation")
+            if not conv:
+                return 400, {"error": "缺少 conversation 参数"}
+            try:
+                result = await svc.list_runs(conv, limit=int(self._query_param(path, "limit") or 20), cursor=self._query_param(path, "cursor") or None, unfinished=self._query_param(path, "unfinished") == "true")
+            except ValueError as error:
+                return 400, {"ok": False, "error": str(error)}
+            return (200 if result.get("ok") else 404), result
+
+        if method == "POST" and clean == "/api/chat/runs/action":
+            payload = json.loads(body or b"{}")
+            conv = str(payload.get("conversation") or "").strip()
+            run_id = str(payload.get("run_id") or "").strip()
+            if not conv or not run_id:
+                return 400, {"error": "缺少 conversation 或 run_id 参数"}
+            result = await svc.manage_run(conv, run_id, str(payload.get("action") or ""), str(payload.get("step_id") or ""))
+            return (200 if result.get("ok") else 409), result
+
         if method == "POST" and clean == "/api/chat/retry":
             payload = json.loads(body or b"{}")
             conv = str(payload.get("conversation") or "").strip()

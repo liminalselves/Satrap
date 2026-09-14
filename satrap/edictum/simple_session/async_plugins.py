@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from pathlib import Path
+from .recovery import plugin_fingerprint
 from satrap.edictum.plugin_compatibility import check_plugin_compatibility
 from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
@@ -161,6 +162,7 @@ async def install_plugin(
             mcp_states[mcp_name] = True
 
         plugin = Plugin(
+            recovery_fingerprint=plugin_fingerprint(plugin_dir, plugin_config, model_manager, config_schema),
             name=name,
             version=str(meta.get("version") or ""),
             author=str(meta.get("author") or ""),
