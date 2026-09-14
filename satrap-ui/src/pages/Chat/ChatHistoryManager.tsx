@@ -1,3 +1,4 @@
+import { formatBytes } from '@/utils/format';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArchiveRestore, RefreshCw, Trash2 } from 'lucide-react';
 
@@ -29,13 +30,6 @@ const EMPTY_RESULT: ChatHistoryResult = {
   items: [], total: 0, page: 1, page_size: 50, storage_size_bytes: 0, mode: 'hot',
 };
 
-function formatBytes(bytes: number | null): string {
-  if (bytes === null) return '大小未统计';
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
 
 export function ChatHistoryManager({
   open,

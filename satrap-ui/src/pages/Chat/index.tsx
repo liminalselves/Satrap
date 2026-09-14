@@ -1,3 +1,4 @@
+import { restoreConversation, type Conversation as ConversationState } from './conversations';
 import { RagManager } from '@/components/common/RagManager';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
@@ -194,20 +195,7 @@ interface ChatMessage {
 }
 
 // 一个会话
-interface Conversation {
-  id: string;   // 后端 conversation_id
-  title: string;
-  messages: ChatMessage[];
-  updatedAt: number;
-  // 是否已从后端加载历史
-  loaded?: boolean;
-  // 所属项目 id (无项目会话为 null/缺省, 归入"最近")
-  projectId?: string | null;
-  // 是否为尚未发送首条消息的后端预加载会话
-  preloaded?: boolean;
-  // 前端触发本次预加载时的设置键
-  preloadKey?: string;
-}
+type Conversation = ConversationState<ChatMessage>;
 
 // 生成唯一 id (本地消息用)
 const genId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -395,17 +383,9 @@ export function Chat() {
   const mergeHistoryItems = useCallback((items: ChatConversationItem[]) => {
     setConversations((current) => {
       const existing = new Map(current.map((conversation) => [conversation.id, conversation]));
-      const restored = items.map((item): Conversation => {
-        const previous = existing.get(item.conversation_id);
-        return {
-          id: item.conversation_id,
-          title: item.title,
-          messages: previous?.messages ?? [],
-          updatedAt: item.last_at,
-          loaded: previous?.loaded ?? false,
-          projectId: item.project_id ?? null,
-        };
-      });
+      const restored = items.map((item) => (
+        restoreConversation(item, existing.get(item.conversation_id))
+      ));
       const drafts = current.filter((conversation) => (
         conversation.id === '__draft__' || conversation.preloaded
       ));
@@ -742,14 +722,7 @@ export function Chat() {
           setSettings((prev) => (modelList.includes(prev.model) ? prev : { ...prev, model: modelList[0] }));
         }
         // 恢复历史会话
-        const restored: Conversation[] = convList.map((item) => ({
-          id: item.conversation_id,
-          title: item.title,
-          messages: [],
-          updatedAt: item.last_at,
-          loaded: false,
-          projectId: item.project_id ?? null,
-        }));
+        const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
         setConversations(restored);
         if (restored.length > 0) {
           // 有历史会话时展示入口选择, 不自动选中
@@ -1372,13 +1345,7 @@ export function Chat() {
       if (result.ok && result.conversation_id) {
         // 刷新会话列表并切换到新会话
         const { conversations: convList } = await chatApi.listConversations();
-        const restored: Conversation[] = convList.map((item) => ({
-          id: item.conversation_id,
-          title: item.title,
-          messages: [],
-          updatedAt: item.last_at,
-          loaded: false,
-        }));
+        const restored = convList.map((item) => restoreConversation<ChatMessage>(item));
         setConversations(restored);
         setActiveId(result.conversation_id);
       }

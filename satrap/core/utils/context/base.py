@@ -1,10 +1,19 @@
+"""
+对话上下文共用状态与预算管理
+
+集中处理内存消息编辑和总结状态重置, 供同步和异步管理器复用
+"""
+
 from __future__ import annotations
+
 from typing import List, Dict, Optional, Any, TYPE_CHECKING
 import copy
+
 from satrap.core.state import StateStore
 from satrap.core.type import ContextUsageSnapshot, StateScope
+from .utils import _SUMMARY_PROMPT_VERSION, TokenEstimateMethod, _ContextRuntimeState, _estimate_request_tokens
+
 from satrap.core.log import logger
-from .utils import TokenEstimateMethod, _ContextRuntimeState, _estimate_request_tokens
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import LLM, AsyncLLM
@@ -400,3 +409,41 @@ class _ContextCore:
         "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
         "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
     )
+
+
+    def _reset_summary_state(self) -> None:
+        """清除失效总结并标记运行时状态待保存, 不执行存储操作"""
+        self._runtime_state.summary = ""
+        self._runtime_state.covered_turn_count = 0
+        self._runtime_state.summary_model = None
+        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
+        self._runtime_state_dirty = True
+
+    def _mark_dirty(self) -> None:
+        """标记历史编辑并清除总结, 下次保存全量重写消息"""
+        self._saved_count = -1
+        self._reset_summary_state()
+
+    def _delete_last_chat_messages(self, n: int) -> None:
+        """
+        从内存历史中删除最后若干组对话, 保留系统消息
+
+        参数:
+        - n: 删除组数, 保留既有行为, 非正数也删除最后一组
+        """
+        indices_to_remove: list[int] = []
+        groups_removed = 0
+        # Step.1 倒序定位待删除的对话组
+        for i in range(len(self._messages) - 1, -1, -1):
+            role = self._messages[i].get("role")
+            if role == "system":
+                break
+            indices_to_remove.append(i)
+            if role == "user":
+                groups_removed += 1
+                if groups_removed >= n:
+                    break
+
+        # Step.2 按索引降序删除, 避免列表缩短导致索引偏移
+        for index in sorted(indices_to_remove, reverse=True):
+            self._messages.pop(index)

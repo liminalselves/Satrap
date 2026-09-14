@@ -1,3 +1,4 @@
+import { formatBytes } from '@/utils/format';
 import { useCallback, useMemo, useState } from 'react';
 import { RefreshCw, RotateCcw, ShieldAlert, Trash2 } from 'lucide-react';
 import { storageApi, type StorageAuditItem } from '@/api/storage';
@@ -15,13 +16,6 @@ const CATEGORY_LABELS: Record<string, string> = {
   unsafe_entry: '不安全路径',
 };
 
-function formatBytes(value: number): string {
-  // 格式化数据大小
-  if (value < 1024) return value + ' B';
-  if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KiB';
-  if (value < 1024 * 1024 * 1024) return (value / 1024 / 1024).toFixed(1) + ' MiB';
-  return (value / 1024 / 1024 / 1024).toFixed(1) + ' GiB';
-}
 
 export function DataMaintenancePanel({
   backendRunning,

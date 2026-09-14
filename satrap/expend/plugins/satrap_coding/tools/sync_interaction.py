@@ -1,8 +1,18 @@
+"""
+同步用户询问与命令执行工具
+
+复用公共业务规则, 根据操作性质协调会话交互与文件执行
+"""
+
 from __future__ import annotations
+
 from typing import Any
+
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.TCBuilder import Tool
 from satrap.edictum import SimpleSession
+from .contracts import require_bound_session
+from .subagent import _CodingSubAgent
 from .utils import (
     _SUBAGENT_PROMPT,
     _parse_integer_argument,
@@ -13,8 +23,6 @@ from .utils import (
     _prepare_shell,
     _run_shell,
 )
-from .subagent import _CodingSubAgent
-
 
 class AskUserTool(Tool):
     """向用户询问请求, 等待用户回复"""
@@ -33,19 +41,21 @@ class AskUserTool(Tool):
     def __init__(self) -> None:
         """初始化 AskUserTool"""
         super().__init__()
+        self._session: SimpleSession | None = None
 
     def execute(self, question: str, options: list[str] | None = None) -> str:
         """
-        执行
+        同步向用户询问并返回回复
 
         参数:
-        - question: 问题内容
-        - options: 选项集合
+        - question: 需要用户回答的问题
+        - options: 推荐选项, 默认 None 表示不提供选项
 
         返回:
-        - str: 执行
+        - 用户回复或需要回复的说明; 未绑定会话时抛出 RuntimeError
         """
-        answer = _ask_user_sync(self._session, question, options)
+        session = require_bound_session(self._session, self.tool_name)
+        answer = _ask_user_sync(session, question, options)
         if answer is None:
             return (
                 "需要用户回复: "
@@ -55,6 +65,12 @@ class AskUserTool(Tool):
         return f"用户回复: {answer}"
 
     def _bind(self, session: SimpleSession) -> None:
+        """
+        在工具注册前绑定所属会话
+
+        参数:
+        - session: 工具后续执行使用的会话
+        """
         self._session = session
 
 
@@ -79,6 +95,7 @@ class ShellTool(Tool):
         """
         super().__init__()
         self.engine = engine
+        self._session: SimpleSession | None = None
 
     def execute(
         self,
@@ -88,17 +105,19 @@ class ShellTool(Tool):
         shell: str = "powershell",
     ) -> str:
         """
-        执行
+        同步审批并执行 Shell 命令
 
         参数:
-        - command: 命令内容
-        - cwd: 当前工作目录
-        - timeout: 超时秒数, 范围 1-3600, 默认 120
-        - shell: Shell 类型
+        - command: 待审批的 Shell 命令
+        - cwd: 工作目录, 默认空字符串表示工作区根目录
+        - timeout: 超时秒数, 默认 120, 范围 1-3600
+        - shell: Shell 类型, 默认 powershell
 
         返回:
-        - str: 执行
+        - 执行结果, 参数错误或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
+        # Step.1 检查会话绑定并准备命令参数
+        session = require_bound_session(self._session, self.tool_name)
         from . import _run_shell
 
         timeout_value, error = _parse_integer_argument(
@@ -115,11 +134,13 @@ class ShellTool(Tool):
             args, risk, description = _prepare_shell(command, shell, root, workdir_path)
         except ValueError as e:
             return f"错误: {e}"
+        # Step.2 请求命令执行审批
         allowed, message = _approve_sync(
-            self._session, self.engine, "shell", risk, description
+            session, self.engine, "shell", risk, description
         )
         if not allowed:
             return message
+        # Step.3 复核执行环境并运行已批准的命令
         if (
             self.engine.plan_mode
             or _tool_root(self) != root
@@ -129,6 +150,12 @@ class ShellTool(Tool):
         return _run_shell(args, workdir_path, timeout_value)
 
     def _bind(self, session: SimpleSession) -> None:
+        """
+        在工具注册前绑定所属会话
+
+        参数:
+        - session: 工具后续执行使用的会话
+        """
         self._session = session
 
 

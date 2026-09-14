@@ -1,11 +1,14 @@
-from typing import cast
+"""
+异步搜索与网页抓取工具
+
+负责异步安全请求, 复用公共页面解析与错误分类
+"""
+
 import json
-from bs4 import BeautifulSoup
+
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.core.utils.outbound import safe_async_get
-from .utils import _TitleSoup
-from .base import _SearchCore, _FetchCore
-
+from .base import _SearchCore, _FetchCore, _fetch_error
 
 class AsyncSearchTool(_SearchCore, AsyncTool):
     """搜索爬虫工具"""
@@ -62,11 +65,11 @@ class AsyncFetchPageTool(_FetchCore, AsyncTool):
         异步执行网页获取
 
         参数:
-        - url: URL
-        - max_length: 最大length
+        - url: 待抓取的 HTTP 或 HTTPS 地址
+        - max_length: 正文最大长度, 默认 5000, 超出时截断
 
         返回:
-        - str: 异步执行网页获取
+        - 页面 JSON, HTTP 状态错误, 安全拒绝, 请求失败或解析失败说明
         """
         try:
             response = await safe_async_get(
@@ -75,41 +78,6 @@ class AsyncFetchPageTool(_FetchCore, AsyncTool):
                 timeout=self.timeout,
                 max_redirects=5,
             )
-            if response.status_code != 200:
-                return json.dumps(
-                    {
-                        "error": f"HTTP {response.status_code}",
-                        "url": response.url,
-                    },
-                    ensure_ascii=False,
-                )
-
-            html = response.text
-            soup = cast(_TitleSoup, BeautifulSoup(html, "html.parser"))
-            title = (
-                soup.title.string.strip()
-                if soup.title and soup.title.string
-                else "无标题"
-            )
-            # 提取页面标题, 缺失时使用稳定占位值
-
-            text = self._extract_text(html)
-            # 提取正文文本并移除页面结构噪音
-            if len(text) > max_length:
-                text = text[:max_length] + "...(内容已截断)"
-
-            result: dict[str, object] = {
-                "url": response.url,
-                "title": title,
-                "content": text,
-                "status_code": response.status_code,
-            }
-            return json.dumps(result, ensure_ascii=False, indent=2)
-        except Exception as e:
-            return json.dumps(
-                {
-                    "error": f"解析失败: {str(e)}",
-                    "url": url,
-                },
-                ensure_ascii=False,
-            )
+        except Exception as error:
+            return _fetch_error(url, error)
+        return self._format_response(response.url, response, max_length)

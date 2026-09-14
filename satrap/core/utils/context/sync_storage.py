@@ -1,12 +1,19 @@
+"""
+同步上下文存储
+
+管理消息与运行时状态的 SQLite 持久化, 共用核心层的内存失效逻辑
+"""
+
 from __future__ import annotations
+
 import threading
 from pathlib import Path
 import sqlite3
 from typing import List, Dict, Any, TYPE_CHECKING
 import json
 import time
+
 from satrap.core.utils.vision import content_text_projection
-from satrap.core.log import logger
 from .utils import (
     _SUMMARY_PROMPT_VERSION,
     _ContextRuntimeState,
@@ -14,10 +21,12 @@ from .utils import (
     _load_message_content,
     _load_tool_calls,
 )
+from .base import _ContextCore
+
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from .base import _ContextCore
 
 
 class _SyncStorage(_ContextCore):
@@ -246,19 +255,18 @@ class _SyncStorage(_ContextCore):
         清除因历史编辑而失效的总结缓存
 
         参数:
-        - persist: 是否立即同步到数据库
+        - persist: 是否立即保存到数据库, 默认 False 仅重置内存状态
         """
-        self._runtime_state.summary = ""
-        self._runtime_state.covered_turn_count = 0
-        self._runtime_state.summary_model = None
-        self._runtime_state.summary_prompt_version = _SUMMARY_PROMPT_VERSION
-        self._runtime_state_dirty = True
+        self._reset_summary_state()
         if persist:
             self._save_runtime_state()
 
-    def save_context(self):
+    def save_context(self, *, raise_on_error: bool = False):
         """
         保存当前上下文到数据库
+
+        参数:
+        - raise_on_error: 保存失败时是否向外抛出异常, 默认 False 保留旧接口的日志处理
 
         增量策略: 纯追加时只 INSERT 尾部新消息 (O(1));
         编辑/外部修改 (标记 dirty) 或状态未知时全量重写
@@ -310,8 +318,5 @@ class _SyncStorage(_ContextCore):
             )
             conn.rollback()
             self._saved_count = prev_saved  # 恢复水位, 下次保存重试 (全量重写路径幂等)
-
-    def _mark_dirty(self) -> None:
-        """标记消息列表被外部编辑 (非纯追加), 下次保存走全量重写"""
-        self._saved_count = -1
-        self._invalidate_summary()
+            if raise_on_error:
+                raise

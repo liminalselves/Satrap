@@ -1,15 +1,17 @@
 """
-对话上下文管理组件
+上下文消息与预算辅助逻辑
 
-提供消息的 SQLite 持久化, 查询, 分支和令牌预算裁剪,
-并实现供同步与异步工作流使用的上下文管理器
+提供运行时状态结构, 消息构造和令牌估算, 供同步与异步上下文管理器共用
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 from dataclasses import dataclass
 import sqlite3
 from typing import List, Dict, Optional, Any, cast, TYPE_CHECKING, Literal
 import json
+
 from satrap.core.utils.tokenizer import tokenizer_estimate, experience_estimate
 from satrap.core.utils.vision import (
     DEFAULT_IMAGE_TOKEN_COST,
@@ -18,8 +20,8 @@ from satrap.core.utils.vision import (
     estimate_content_image_count,
 )
 from satrap.core.type import JsonRow, RestoreOptions, SnapshotDomain, StateScope
-from satrap.core.log import logger
 
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import AsyncLLM, LLM
@@ -474,12 +476,12 @@ def add_tool_message(
     context: list[dict[str, Any]], tool_call_id: str, tool_result: dict[str, Any] | str
 ):
     """
-    向上下文中添加一条工具调用结果消息
+    添加工具调用结果消息
 
     参数:
-    - context: 上下文列表
+    - context: 接收消息的原始上下文列表
     - tool_call_id: 工具调用 ID
-    - tool_result: 工具调用结果
+    - tool_result: 工具调用结果, 字典转为 JSON, 字符串原样保存
     """
     context.append(
         {
@@ -498,25 +500,18 @@ def add_tools_call_flow(
     context: list[dict[str, Any]],
     message: str,
     tool_messages: list[dict[str, Any]],
-    tool_results: list[dict[str, Any]],
+    tool_results: Sequence[dict[str, Any] | str],
     reasoning: str | None = None,
 ):
     """
-    添加一个完整的工具调用消息流到上下文中
-
-    相当于:
-    ``` python
-    ctx.add_bot_message(message, tool_messages, reasoning)
-    for tool_msg, tool_res in zip(tool_messages, tool_results):
-        ctx.add_tool_message(tool_msg["id"], tool_res)
-    ```
+    添加完整的助手工具调用及结果消息流
 
     参数:
-    - context: 上下文列表
+    - context: 接收消息的原始上下文列表
     - message: 助手消息内容
     - tool_messages: 工具调用消息列表
-    - tool_results: 工具调用结果列表
-    - reasoning: 思考内容, 默认 None
+    - tool_results: 字典或字符串结果序列, 与 tool_messages 按顺序配对
+    - reasoning: 思考内容, 默认 None 表示不添加
     """
     add_bot_message(context, message, tools_calls=tool_messages, reasoning=reasoning)
     for tool_msg, tool_res in zip(tool_messages, tool_results):

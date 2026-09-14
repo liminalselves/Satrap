@@ -1,17 +1,18 @@
-import requests
-from typing import cast
+"""
+同步搜索与网页抓取工具
+
+负责同步请求和重定向校验, 复用公共页面解析与错误分类
+"""
+
 import json
-from bs4 import BeautifulSoup
+
 from satrap.core.utils.TCBuilder import Tool
 from satrap.core.utils.outbound import (
-    OutboundHTTPError,
     UnsafeOutboundURLError,
     validate_outbound_http_url,
     validate_outbound_redirect,
 )
-from .utils import _requests_get, _TitleSoup
-from .base import _SearchCore, _FetchCore
-
+from .base import _SearchCore, _FetchCore, _fetch_error
 
 class SearchTool(_SearchCore, Tool):
     """搜索爬虫工具"""
@@ -73,11 +74,11 @@ class FetchPageTool(_FetchCore, Tool):
         执行网页获取, 返回JSON字符串
 
         参数:
-        - url: URL
-        - max_length: 最大length
+        - url: 待抓取的 HTTP 或 HTTPS 地址
+        - max_length: 正文最大长度, 默认 5000, 超出时截断
 
         返回:
-        - str: JSON字符串
+        - 页面 JSON, HTTP 状态错误, 安全拒绝, 请求失败或解析失败说明
         """
         from . import _requests_get
 
@@ -99,35 +100,7 @@ class FetchPageTool(_FetchCore, Tool):
                 break
             else:
                 raise UnsafeOutboundURLError("重定向次数超过限制")
-            resp.raise_for_status()
             resp.encoding = resp.apparent_encoding or "utf-8"
-
-            soup = cast(_TitleSoup, BeautifulSoup(resp.text, "html.parser"))
-            title = (
-                soup.title.string.strip()
-                if soup.title and soup.title.string
-                else "无标题"
-            )
-            # 提取页面标题, 缺失时使用稳定占位值
-
-            text = self._extract_text(resp.text)
-            # 提取正文文本并移除页面结构噪音
-            if len(text) > max_length:
-                text = text[:max_length] + "...(内容已截断)"
-
-            result: dict[str, object] = {
-                "url": current_url,
-                "title": title,
-                "content": text,
-                "status_code": resp.status_code,
-            }
-            return json.dumps(result, ensure_ascii=False, indent=2)
-
-        except (OutboundHTTPError, requests.RequestException) as e:
-            return json.dumps(
-                {"error": f"请求失败: {str(e)}", "url": url}, ensure_ascii=False
-            )
-        except Exception as e:
-            return json.dumps(
-                {"error": f"解析失败: {str(e)}", "url": url}, ensure_ascii=False
-            )
+        except Exception as error:
+            return _fetch_error(url, error)
+        return self._format_response(current_url, resp, max_length)

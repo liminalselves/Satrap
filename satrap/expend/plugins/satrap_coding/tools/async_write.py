@@ -1,17 +1,25 @@
+"""
+异步文件修改与批量替换工具
+
+复用公共业务规则, 根据操作性质协调会话交互与文件执行
+"""
+
 from __future__ import annotations
+
 import asyncio
 from typing import Any
+
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
+from .contracts import require_bound_session, prepare_replacements
+from .file_io import write_file, edit_file, replace_file
 from .utils import (
     _tool_root,
     _resolve_path,
     _protection_reason_full,
     _approve_file_write_async,
 )
-from .file_io import write_file, edit_file, replace_file
-
 
 class AsyncWriteFileTool(AsyncTool):
     """写入/追加工作区内文件 (异步, 写操作走审批)"""
@@ -37,17 +45,18 @@ class AsyncWriteFileTool(AsyncTool):
 
     async def execute(self, path: str, content: str, append: bool = False) -> str:
         """
-        执行
+        异步执行文件修改, 全部校验通过后请求审批
 
         参数:
-        - path: 路径
-        - content: 内容
-        - append: 是否追加
+        - path: 文件路径, 绝对路径或相对工作区路径
+        - content: 写入内容
+        - append: 是否追加, 默认 False 表示覆盖
 
         返回:
-        - str: 执行
+        - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        assert self._session is not None, "write_file 未绑定会话"
+        # Step.1 检查会话绑定并校验路径和修改输入
+        session = require_bound_session(self._session, self.tool_name)
         try:
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
@@ -55,8 +64,9 @@ class AsyncWriteFileTool(AsyncTool):
         reason = _protection_reason_full(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
+        # Step.2 请求文件修改审批
         allowed, message = await _approve_file_write_async(
-            self._session,
+            session,
             self.engine,
             abs_path,
             "写入文件",
@@ -64,9 +74,16 @@ class AsyncWriteFileTool(AsyncTool):
         if not allowed:
             return message
 
+        # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(write_file, abs_path, content, append)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
+        """
+        在工具注册前绑定所属会话
+
+        参数:
+        - session: 工具后续执行使用的会话
+        """
         self._session = session
 
 
@@ -97,18 +114,19 @@ class AsyncEditFileTool(AsyncTool):
         self, path: str, old: str, new: str, replace_all: bool = False
     ) -> str:
         """
-        执行
+        异步执行文件修改, 全部校验通过后请求审批
 
         参数:
-        - path: 路径
-        - old: 原值
-        - new: 新值
-        - replace_all: 是否全部替换
+        - path: 文件路径, 绝对路径或相对工作区路径
+        - old: 需要匹配的原文
+        - new: 替换后的文本
+        - replace_all: 是否替换全部匹配, 默认 False 仅替换首处
 
         返回:
-        - str: 执行
+        - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        assert self._session is not None, "edit_file 未绑定会话"
+        # Step.1 检查会话绑定并校验路径和修改输入
+        session = require_bound_session(self._session, self.tool_name)
         try:
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
@@ -124,8 +142,9 @@ class AsyncEditFileTool(AsyncTool):
             return f"错误: 读取失败: {e}"
         if old not in content:
             return f"错误: 未找到匹配文本: {old[:80]}"
+        # Step.2 请求文件修改审批
         allowed, message = await _approve_file_write_async(
-            self._session,
+            session,
             self.engine,
             abs_path,
             "编辑文件",
@@ -133,11 +152,18 @@ class AsyncEditFileTool(AsyncTool):
         if not allowed:
             return message
 
+        # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(
             edit_file, abs_path, content, old, new, replace_all
         )
 
     def _bind(self, session: AsyncSimpleSession) -> None:
+        """
+        在工具注册前绑定所属会话
+
+        参数:
+        - session: 工具后续执行使用的会话
+        """
         self._session = session
 
 
@@ -170,16 +196,17 @@ class AsyncSearchReplaceTool(AsyncTool):
 
     async def execute(self, path: str, replacements: list[dict[str, Any]]) -> str:
         """
-        执行
+        异步执行文件修改, 全部校验通过后请求审批
 
         参数:
-        - path: 路径
-        - replacements: 替换项列表
+        - path: 文件路径, 绝对路径或相对工作区路径
+        - replacements: 替换项列表, 全部通过校验后才审批和写入
 
         返回:
-        - str: 执行
+        - 成功说明, 输入或读写错误, 或审批拒绝说明; 未绑定会话时抛出 RuntimeError
         """
-        assert self._session is not None, "search_replace 未绑定会话"
+        # Step.1 检查会话绑定并校验路径和修改输入
+        session = require_bound_session(self._session, self.tool_name)
         try:
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
@@ -193,16 +220,12 @@ class AsyncSearchReplaceTool(AsyncTool):
             content = await asyncio.to_thread(abs_path.read_text, encoding="utf-8")
         except OSError as e:
             return f"错误: 读取失败: {e}"
-        pairs: list[tuple[str, str, bool]] = []
-        for i, rep in enumerate(replacements or [], 1):
-            if not isinstance(rep, dict) or not str(rep.get("old") or ""):
-                return f"错误: 第 {i} 个替换项格式无效 (需 {{old, new, replace_all?}})"
-            old = str(rep["old"])
-            if old not in content:
-                return f"错误: 第 {i} 个替换项未找到匹配: {old[:80]}"
-            pairs.append((old, str(rep.get("new") or ""), bool(rep.get("replace_all"))))
+        pairs = prepare_replacements(content, replacements)
+        if isinstance(pairs, str):
+            return pairs
+        # Step.2 请求文件修改审批
         allowed, message = await _approve_file_write_async(
-            self._session,
+            session,
             self.engine,
             abs_path,
             "批量替换",
@@ -210,7 +233,14 @@ class AsyncSearchReplaceTool(AsyncTool):
         if not allowed:
             return message
 
+        # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(replace_file, abs_path, content, pairs)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
+        """
+        在工具注册前绑定所属会话
+
+        参数:
+        - session: 工具后续执行使用的会话
+        """
         self._session = session

@@ -1,18 +1,28 @@
+"""
+同步对话上下文管理
+
+复用公共消息编辑逻辑, 负责同步持久化和检查点调用
+"""
+
 from __future__ import annotations
+
+from collections.abc import Sequence
 import threading
 import sqlite3
 from typing import List, Dict, Union, Optional, Any, TYPE_CHECKING
 import copy
 import json
+
 from satrap.core.utils.vision import build_multimodal_content
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
+from .sync_summary import _SyncSummary
+from .utils import _ContextRuntimeState, _messages_domain, add_tool_message
+
 from satrap.core.log import logger
-from .utils import _ContextRuntimeState, _messages_domain
 
 if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import LLM, AsyncLLM
-from .sync_summary import _SyncSummary
 
 
 class ContextManager(_SyncSummary):
@@ -203,25 +213,15 @@ class ContextManager(_SyncSummary):
         self._sync()
         self._maybe_auto_checkpoint()
 
-    def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any] | str):
+    def add_tool_message(self, tool_call_id: str, tool_result: dict[str, Any] | str) -> None:
         """
-        添加工具调用的返回消息到上下文中
+        添加工具调用结果消息
 
         参数:
-        - tool_call_id: 工具调用ID
-        - tool_result: 工具调用的返回结果
+        - tool_call_id: 工具调用 ID
+        - tool_result: 工具调用结果, 字典转为 JSON, 字符串原样保存
         """
-        self._messages.append(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "content": (
-                    json.dumps(tool_result, ensure_ascii=False)
-                    if isinstance(tool_result, dict)
-                    else tool_result
-                ),
-            }
-        )
+        add_tool_message(self._messages, tool_call_id, tool_result)
         self._sync()
         self._maybe_auto_checkpoint()
 
@@ -229,22 +229,15 @@ class ContextManager(_SyncSummary):
         self,
         message: str,
         tool_messages: list[dict[str, Any]],
-        tool_results: list[dict[str, Any]],
+        tool_results: Sequence[dict[str, Any] | str],
     ):
         """
-        添加一个完整的工具调用消息流到上下文中
-
-        相当于:
-        ``` python
-        ctx.add_bot_message(message, tool_messages)
-        for tool_msg, tool_res in zip(tool_messages, tool_results):
-            ctx.add_tool_message(tool_msg["id"], tool_res)
-        ```
+        添加完整的助手工具调用及结果消息流
 
         参数:
-        - message: 模型消息
+        - message: 助手消息内容
         - tool_messages: 工具调用消息列表
-        - tool_results: 工具调用的返回结果列表, 与 tool_messages 一一对应
+        - tool_results: 字典或字符串结果序列, 与 tool_messages 按顺序配对
         """
         self.add_bot_message(message, tool_messages)
         for tool_msg, tool_res in zip(tool_messages, tool_results):
@@ -361,34 +354,13 @@ class ContextManager(_SyncSummary):
 
     def del_last_chat(self, n: int = 1):
         """
-        删除上下文中的最后 n 组聊天消息
+        删除上下文中的最后若干组聊天消息
 
         参数:
-        - n: 删除的组数
+        - n: 删除组数, 默认 1, 非正数保留既有行为并删除最后一组
         """
         self._protect_before_edit()
-        indices_to_remove: list[int] = []
-        groups_removed = 0
-
-        # Step.1 倒序遍历消息列表
-        for i in range(len(self._messages) - 1, -1, -1):
-            msg = self._messages[i]
-            role = msg.get("role")
-
-            if role == "system":  # 系统消息在开头, 说明已经没对话了
-                break
-
-            indices_to_remove.append(i)  # 将当前索引加入待删除列表
-
-            if role == "user":  # 遇到 user 消息, 说明完成了一整组对话的定位
-                groups_removed += 1
-                if groups_removed >= n:
-                    break
-
-        for index in indices_to_remove:
-            self._messages.pop(index)
-        # 执行删除
-
+        self._delete_last_chat_messages(n)
         self._mark_dirty()
         self._sync()
 
@@ -416,3 +388,23 @@ class ContextManager(_SyncSummary):
         "请将以下对话历史浓缩为一段简洁的摘要, 保留关键事实、用户意图、已做的决策和待办事项。"
         "摘要将注入 system prompt 作为后续对话的上下文, 请用第三人称客观描述, 不要遗漏影响后续交互的信息。"
     )
+
+
+    def _commit_turn_messages(self, messages: list[dict[str, Any]]) -> None:
+        """
+        提交成功执行的整轮消息, 保存失败时恢复内存历史
+
+        参数:
+        - messages: 本轮完整消息, 包括用户输入与全部模型和工具结果
+        """
+        previous_count = len(self._messages)
+        previous_saved = self._saved_count
+        self._messages.extend(messages)
+        try:
+            if not self.keep_in_memory:
+                self.save_context(raise_on_error=True)
+        except BaseException:
+            del self._messages[previous_count:]
+            self._saved_count = previous_saved
+            raise
+        self._maybe_auto_checkpoint()

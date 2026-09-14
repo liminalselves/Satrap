@@ -1,3 +1,4 @@
+import type { LLMConfig } from './types';
 import { getChatApiUrl } from '@/utils/constants';
 import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
@@ -183,25 +184,7 @@ export interface DirEntry {
 }
 
 // 模型配置项
-export interface ModelConfigItem {
-  name: string;
-  model?: string;
-  base_url?: string;
-  api_key?: string;
-  temperature?: number;
-  top_p?: number;
-  max_tokens?: number;
-  context_window?: number;
-  history_ratio?: number;
-  context_strategy?: 'sliding' | 'mid_truncate' | 'summarize';
-  context_threshold?: number;
-  truncation_floor?: number;
-  summary_keep_recent_turns?: number;
-  thinking_field_name?: string | null;
-  thinking_fields?: string[];
-  thinking_levels?: string[];
-  omit_none_thinking_fields?: boolean;
-}
+export type ModelConfigItem = LLMConfig;
 
 // 预加载及首次发送使用的会话构建设置
 export interface ChatPreloadSettings {
