@@ -189,7 +189,6 @@ def test_pipeline_uses_source_adapter_binding(tmp_path: Path):
     scm = _session_class_mgr(tmp_path, {"adapter_id": "misskey2"})
     sm = _session_manager(tmp_path, scm)
     scheduler = PipelineScheduler(sm)
-    scheduler.set_adapter_ids({"misskey1", "misskey2"})
 
     platform_id, extra = scheduler._resolve_route_adapter(_message_event("misskey1"))
 
@@ -207,7 +206,6 @@ def test_pipeline_records_source_adapter_in_session_params(tmp_path: Path):
     scm = _session_class_mgr(tmp_path, {"adapter_id": "missing"})
     sm = _session_manager(tmp_path, scm)
     scheduler = PipelineScheduler(sm)
-    scheduler.set_adapter_ids({"misskey1"})
 
     platform_id, extra = scheduler._resolve_route_adapter(_message_event("misskey1"))
 

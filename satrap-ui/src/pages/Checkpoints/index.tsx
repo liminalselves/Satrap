@@ -40,13 +40,12 @@ export function Checkpoints() {
 
     setLoading(true);
     try {
-      const [cpData, branchData, mutationData] = await Promise.all([
+      const [cpData, mutationData] = await Promise.all([
         checkpointApi.list(platformId, conversationId),
-        checkpointApi.listBranches(platformId, conversationId),
         checkpointApi.listMutations(platformId, conversationId),
       ]);
       setCheckpoints(cpData.checkpoints);
-      setBranches(branchData.branches);
+      setBranches(cpData.branches);
       setMutations(mutationData.mutations);
     } catch (e) {
       toast('error', '获取数据失败: ' + (e instanceof Error ? e.message : '未知错误'));

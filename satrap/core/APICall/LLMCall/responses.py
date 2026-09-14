@@ -1,7 +1,13 @@
 """同步与异步共用的模型响应解析"""
 
 from openai.types.chat.chat_completion import ChatCompletion
-from typing import Any, Optional, Dict, Union, cast
+from typing import (
+    Any,
+    Optional,
+    Dict,
+    Union,
+    cast,
+)
 import re
 
 from satrap.core.utils import safe_parse_arguments
@@ -44,14 +50,13 @@ def _response_content_text(content: object) -> str:
 
 
 def _extract_thinking_from_message(
-    message: Union[Any, Dict[str, Any]], full_response: Optional[Any] = None
+    message: Union[Any, Dict[str, Any]]
 ) -> Optional[str]:
     """
     从消息对象中提取思考内容, 支持多种供应商格式
 
     参数:
     - message: 消息内容
-    - full_response: full响应
 
     支持的格式 (按优先级):
     - reasoning_content (DeepSeek, Qwen, GLM, Kimi, Fireworks, IBM)
@@ -223,7 +228,7 @@ def parse_call_response(
         text_content = _response_content_text(content)
         # 提取文本内容
 
-        reasoning = _extract_thinking_from_message(message, api_response)
+        reasoning = _extract_thinking_from_message(message)
         # 提取思考内容
 
         # Step.4 检查是否存在工具调用 (tool_calls)

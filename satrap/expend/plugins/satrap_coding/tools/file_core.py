@@ -1,16 +1,23 @@
+"""
+编程插件文件读取和待办工具的共用业务实现
+
+统一参数校验, 工作区路径保护和内容读取, 供同步与异步工具入口复用
+"""
+
 from __future__ import annotations
 from typing import Any
 import os
 import re
-from .utils import (
-    _parse_integer_argument,
+
+from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from .approval import _parse_integer_argument
+from .paths import (
     _tool_root,
     _resolve_path,
     _resolve_grep_file,
-    _protection_reason_full,
+    _protection_reason,
     _read_file_page,
 )
-from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 
 
 class _ReadFileToolCore(_ToolBase):
@@ -46,7 +53,7 @@ class _ReadFileToolCore(_ToolBase):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path, _tool_root(self))
+        reason = _protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
@@ -129,7 +136,7 @@ class _GlobFilesToolCore(_ToolBase):
             for p in root.glob(pattern)
             if p.is_file()
             and p.resolve().is_relative_to(root)
-            and _protection_reason_full(p, root) is None
+            and _protection_reason(p, root) is None
         ]
         matches.sort()
         if not matches:
@@ -176,7 +183,7 @@ class _GrepFilesToolCore(_ToolBase):
         hits: list[str] = []
         for p in base.rglob(glob or "*"):
             resolved = _resolve_grep_file(p, root)
-            if resolved is None or _protection_reason_full(resolved, root) is not None:
+            if resolved is None or _protection_reason(resolved, root) is not None:
                 continue
             try:
                 text = resolved.read_text(encoding="utf-8", errors="ignore")

@@ -83,7 +83,6 @@ async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
 async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asynchronous, mode, answer):
     engine = PermissionEngine(mode, rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl")
     engine.add_persistent_rule("shell", RiskLevel.HIGH)
-    engine.add_persistent_rule("sandbox_escape", RiskLevel.HIGH)
     engine.approve("shell", RiskLevel.HIGH)
     calls = []
     approvals = []

@@ -14,10 +14,10 @@ from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
 from .contracts import require_bound_session, prepare_replacements
 from .file_io import write_file, edit_file, replace_file
-from .utils import (
+from .paths import (
     _tool_root,
     _resolve_path,
-    _protection_reason_full,
+    _protection_reason,
     _approve_file_write_async,
 )
 
@@ -61,7 +61,7 @@ class AsyncWriteFileTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path, _tool_root(self))
+        reason = _protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
         # Step.2 请求文件修改审批
@@ -131,7 +131,7 @@ class AsyncEditFileTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path, _tool_root(self))
+        reason = _protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -211,7 +211,7 @@ class AsyncSearchReplaceTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason_full(abs_path, _tool_root(self))
+        reason = _protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():

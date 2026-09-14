@@ -10,12 +10,6 @@ export const checkpointApi = {
       branches: Checkpoint[];
     }>(`/api/checkpoints?platform_id=${encodeURIComponent(platformId)}&conversation=${encodeURIComponent(conversationId)}`),
 
-  // 列出分支
-  listBranches: (platformId: string, conversationId: string) =>
-    apiClient.get<{ conversation_id: string; branches: Checkpoint[] }>(
-      `/api/checkpoint/branches?platform_id=${encodeURIComponent(platformId)}&conversation=${encodeURIComponent(conversationId)}`
-    ),
-
   // 查看血缘
   traceLineage: (platformId: string, checkpointId: string) =>
     apiClient.get<{ checkpoint_id: string; lineage: Checkpoint[] }>(

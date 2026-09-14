@@ -7,7 +7,6 @@ interface BackendState {
   health: BackendHealth | null;
   controlStatus: BackendStatus | null;
   loading: boolean;
-  error: string | null;
   // 统一的后端运行状态: 优先使用控制服务状态, 其次是 health 状态
   isRunning: boolean;
   refreshHealth: () => Promise<void>;
@@ -16,18 +15,16 @@ interface BackendState {
   reloadConfig: () => Promise<boolean>;
   shutdown: () => Promise<boolean>;
   setHealth: (health: BackendHealth) => void;
-  setControlStatus: (status: BackendStatus | null) => void;
 }
 
 export const useBackendStore = create<BackendState>((set, get) => ({
   health: null,
   controlStatus: null,
   loading: false,
-  error: null,
   isRunning: false,
 
   refreshHealth: async () => {
-    set({ loading: true, error: null });
+    set({ loading: true });
     try {
       const health = await backendApi.health();
       set({ 
@@ -40,7 +37,6 @@ export const useBackendStore = create<BackendState>((set, get) => ({
       set({
         health: { running: false, error: e instanceof Error ? e.message : 'Unknown error' },
         loading: false,
-        error: e instanceof Error ? e.message : 'Unknown error',
         isRunning: controlRunning,
       });
     }
@@ -92,13 +88,6 @@ export const useBackendStore = create<BackendState>((set, get) => ({
     set({ 
       health,
       isRunning: health.running || get().controlStatus?.running || false,
-    });
-  },
-
-  setControlStatus: (status: BackendStatus | null) => {
-    set({ 
-      controlStatus: status,
-      isRunning: status?.running || get().health?.running || false,
     });
   },
 }));

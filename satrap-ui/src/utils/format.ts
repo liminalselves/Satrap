@@ -19,11 +19,6 @@ export function formatRelativeTime(timestamp: number): string {
   return `${Math.floor(diff / 86400)} 天前`;
 }
 
-export function truncate(str: string, length: number): string {
-  if (str.length <= length) return str;
-  return str.slice(0, length) + '...';
-}
-
 /** 按 1024 换算存储量, 未统计时保留占位说明 */
 export function formatBytes(bytes: number | null): string {
   if (bytes === null) return '大小未统计';

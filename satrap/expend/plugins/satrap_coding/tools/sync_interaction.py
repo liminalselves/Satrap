@@ -12,17 +12,11 @@ from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.TCBuilder import Tool
 from satrap.edictum import SimpleSession
 from .contracts import require_bound_session
+from .constants import _SUBAGENT_PROMPT
 from .subagent import _CodingSubAgent
-from .utils import (
-    _SUBAGENT_PROMPT,
-    _parse_integer_argument,
-    _ask_user_sync,
-    _approve_sync,
-    _tool_root,
-    _resolve_path,
-    _prepare_shell,
-    _run_shell,
-)
+from .approval import _parse_integer_argument, _ask_user_sync, _approve_sync
+from .paths import _tool_root, _resolve_path
+from .shell import _prepare_shell, _run_shell
 
 class AskUserTool(Tool):
     """向用户询问请求, 等待用户回复"""

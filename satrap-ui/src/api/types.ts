@@ -216,18 +216,7 @@ export interface UserInfo {
   user_session: string[];
 }
 
-export interface ApiResponse<T = unknown> {
-  ok?: boolean;
-  error?: string;
-  data?: T;
-}
 
-export interface LogEntry {
-  timestamp: number;
-  level: string;
-  message: string;
-  source?: string;
-}
 
 export interface BackendConfig {
   api_host: string;

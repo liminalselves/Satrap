@@ -20,12 +20,11 @@ _READ_COMMANDS = {
     # 通用
     "dir", "ls", "pwd", "cd", "echo", "find", "where", "which", "help", "type",
     "cat", "more", "less", "head", "tail", "grep", "rg", "findstr", "fc",
-    "git",   # 细粒度在 _read_git_prefixes 判断
     "date", "time", "whoami", "hostname", "ver",
     # PowerShell 命令
     "get-childitem", "gci", "get-content", "gc", "get-location", "gl",
     "get-item", "gi", "get-process", "gps", "get-service", "get-help",
-    "select-string", "sls", "get-date", "get-location", "test-path",
+    "select-string", "sls", "get-date", "test-path",
     "get-command", "gcm", "get-alias", "gal",
     # cmd 命令
     "tree", "attrib", "vol", "ipconfig", "netstat", "ping", "tasklist",
@@ -37,14 +36,13 @@ _WRITE_COMMANDS = {
     "copy", "cp", "xcopy", "robocopy", "move", "mv", "ren", "rename",
     "mkdir", "md", "new-item", "ni", "set-content", "add-content",
     "ac", "out-file", "clear-content", "clip", "start", "explorer",
-    "git",   # add/commit/init 等写操作
     "python", "py", "node", "npm",   # 执行脚本 (npm 细粒度: install 是环境修改)
     "powershell", "pwsh", "cmd", "cmd.exe", "powershell.exe",
     # cmd 命令
-    "md", "copy", "move", "ren", "set", "assoc", "ftype",
-    "npm", "npx", "pip", "pip3", "pipx", "yarn", "pnpm", "uv", "poetry",
+    "set", "assoc", "ftype",
+    "npx", "pip", "pip3", "pipx", "yarn", "pnpm", "uv", "poetry",
     "conda", "mamba", "apt", "apt-get", "dnf", "yum", "gem", "cargo", "go",
-    "start", "taskkill", "stop-process", "kill",
+    "taskkill", "stop-process", "kill",
 }
 
 _HIGH_COMMANDS = {
@@ -227,8 +225,6 @@ def _classify_segment(segment: str) -> tuple[RiskLevel, bool]:
             return RiskLevel.READ, False
         return RiskLevel.HIGH, False
     if head in _WRITE_COMMANDS:
-        if head == "git":
-            return _classify_git(tokens[1:]), False
         return RiskLevel.WRITE, False
     if head in _READ_COMMANDS:
         if _has_redirect(text):
@@ -359,8 +355,6 @@ def _is_env_modify(tokens: list[str]) -> bool:
         return False
     head = tokens[0].lower().strip('"').strip("'")
     sub = tokens[1].lower().rstrip(",").strip('"').strip("'")
-    if head == "npm" and sub in ("i", "install", "add", "uninstall", "rm", "update"):
-        return True
     return sub in _ENV_MODIFY_SUBCOMMANDS.get(head, set())
 
 

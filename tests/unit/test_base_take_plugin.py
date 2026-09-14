@@ -223,17 +223,26 @@ def test_memory_inject_handler(session: SimpleSession):
     store = state["store"]
     store.add("项目约定", "回复用中文", importance=5)
 
-    injector = state["_injector"]
-    # 直接用注入器 (handler 已把它挂在 state 上)
-    injected = injector.inject("你好")
+    session.run("你好")
+    injected = next(message["content"] for message in reversed(session.ctx.get_context()) if message["role"] == "user")
     assert "长期记忆" in injected
     assert "项目约定" in injected
     assert "回复用中文" in injected
 
+    store.add("新增约定", "回答附上示例", importance=5)
+    session.run("再问一次")
+    updated = next(message["content"] for message in reversed(session.ctx.get_context()) if message["role"] == "user")
+    assert "回答附上示例" in updated
+
+    store.clear()
+    session.run("清空后")
+    cleared = next(message["content"] for message in reversed(session.ctx.get_context()) if message["role"] == "user")
+    assert cleared == "清空后"
+
 
 def test_memory_writes_not_blocked_by_plan_mode(tmp_path: Any, monkeypatch: Any):
     """
-    计划模式只限制工作区写操作 (文件/shell/沙箱); 记忆是元信息, 增删改不受拦截 (有意设计)
+    计划模式限制工作区文件写入和 Shell; 记忆是元信息, 增删改不受拦截
 
     参数:
     - tmp_path: tmp路径
@@ -341,7 +350,7 @@ def test_pdfminer_fontbbox_warning_filtered():
     """缺 FontBBox 的良性警告被过滤, 其他 pdfminer 警告不受影响, 挂载幂等"""
     import logging
 
-    from satrap.expend.plugins.base_take.core.docread import _mute_pdfminer_fontbbox_warning
+    from satrap.core.utils.documents import _mute_pdfminer_fontbbox_warning
 
     class _Capture(logging.Handler):
         def __init__(self) -> None:

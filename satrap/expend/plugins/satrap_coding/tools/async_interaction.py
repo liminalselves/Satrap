@@ -14,17 +14,11 @@ from satrap.core.utils.TCBuilder import AsyncTool
 from .sync_interaction import ShellTool
 from satrap.edictum import AsyncSimpleSession
 from .contracts import require_bound_session
+from .constants import _SUBAGENT_PROMPT
 from .subagent import _AsyncCodingSubAgent
-from .utils import (
-    _SUBAGENT_PROMPT,
-    _parse_integer_argument,
-    _ask_user_async,
-    _approve_async,
-    _tool_root,
-    _resolve_path,
-    _prepare_shell,
-    _run_shell,
-)
+from .approval import _parse_integer_argument, _ask_user_async, _approve_async
+from .paths import _tool_root, _resolve_path
+from .shell import _prepare_shell, _run_shell
 
 class AsyncAskUserTool(AsyncTool):
     """向用户询问请求 (异步)"""

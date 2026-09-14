@@ -362,7 +362,6 @@ def test_resolve_route_adapter_no_requested_uses_source():
     """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()
     sched = PipelineScheduler(_as_session_manager(sm))
-    sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
     platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
@@ -374,7 +373,6 @@ def test_resolve_route_adapter_requested_missing_falls_back():
     """会话类中的旧 adapter_id 不应覆盖实际事件来源"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("ghost"))
     sched = PipelineScheduler(_as_session_manager(sm))
-    sched.set_adapter_ids({"rec1"})
 
     adapter = _RecorderAdapter()
     platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))
@@ -386,7 +384,6 @@ def test_resolve_route_adapter_requested_exists():
     """存在同名 adapter_id 参数时仍应绑定事件来源适配器"""
     sm = _FakeSessionManager(class_cfg_mgr=_FakeClassCfgMgr("rec1"))
     sched = PipelineScheduler(_as_session_manager(sm))
-    sched.set_adapter_ids({"rec1", "rec2"})
 
     adapter = _RecorderAdapter()
     platform_id, extra = sched._resolve_route_adapter(_message_event(adapter))

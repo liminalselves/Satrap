@@ -56,7 +56,7 @@ async def test_invalid_later_replacement_never_approves_or_writes(
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
-        monkeypatch.setattr(module, "_protection_reason_full", lambda path, root: None)
+        monkeypatch.setattr(module, "_protection_reason", lambda path, root: None)
     sync_approve, async_approve = Mock(), AsyncMock()
     monkeypatch.setattr(sync_write, "_approve_file_write", sync_approve)
     monkeypatch.setattr(async_write, "_approve_file_write_async", async_approve)
@@ -89,7 +89,7 @@ async def test_replacements_preserve_order_and_approval(
     async_tool._bind(AsyncSimpleSession.__new__(AsyncSimpleSession))
     for module in (sync_write, async_write):
         monkeypatch.setattr(module, "_tool_root", lambda tool: tmp_path)
-        monkeypatch.setattr(module, "_protection_reason_full", lambda path, root: None)
+        monkeypatch.setattr(module, "_protection_reason", lambda path, root: None)
     monkeypatch.setattr(sync_write, "_approve_file_write", Mock(return_value=(allowed, "拒绝")))
     monkeypatch.setattr(async_write, "_approve_file_write_async", AsyncMock(return_value=(allowed, "拒绝")))
     replacements = [{"old": "first", "new": "second"}, {"old": "second", "new": "third", "replace_all": True}]

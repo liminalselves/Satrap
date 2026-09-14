@@ -6,10 +6,16 @@ import asyncio
 import inspect
 from pathlib import Path
 import shutil
-from typing import Any, Awaitable, Callable, cast
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    cast,
+)
 import uuid
 import os
 import re
+
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionDecision,
@@ -23,10 +29,20 @@ from satrap.core.framework.Base import (
     ModelWorkflowFramework,
 )
 from satrap.core.utils.paths import get_project_root
+from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
 from satrap.core.type import safe_getattr, safe_getattr_callable
+from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
-from satrap.core.log import logger
-from .utils import (
+from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
+from .sync_write import WriteFileTool, EditFileTool, SearchReplaceTool
+from .async_read import (
+    AsyncReadFileTool,
+    AsyncListDirTool,
+    AsyncGlobFilesTool,
+    AsyncGrepFilesTool,
+    AsyncTodoWriteTool,
+)
+from .constants import (
     WORKSPACE_ROOT,
     DATA_ROOT,
     _APPROVAL_PROMPT,
@@ -36,28 +52,6 @@ from .utils import (
     _FILE_LINE_BREAK,
     _SUBAGENT_PROMPT,
     DEFAULT_SANDBOX_ROOT,
-    _parse_integer_argument,
-    _make_sync_judge,
-    _make_async_judge,
-    _ask_user_sync,
-    _ask_user_async,
-    _call_user_input_provider,
-    _approve_sync,
-    _approve_async,
-    _workspace_root,
-    _tool_root,
-    _resolve_path,
-    _resolve_grep_file,
-    _protection_reason,
-    _protection_reason_full,
-    _session_sandbox_root,
-    _in_sandbox,
-    _approve_file_write,
-    _approve_file_write_async,
-    _read_file_page,
-    _resolve_shell_executable,
-    _prepare_shell,
-    _run_shell,
 )
 from .sync_read import (
     ReadFileTool,
@@ -66,18 +60,32 @@ from .sync_read import (
     GrepFilesTool,
     TodoWriteTool,
 )
-from .sync_write import WriteFileTool, EditFileTool, SearchReplaceTool
-from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
-from .async_read import (
-    AsyncReadFileTool,
-    AsyncListDirTool,
-    AsyncGlobFilesTool,
-    AsyncGrepFilesTool,
-    AsyncTodoWriteTool,
+from .approval import (
+    _parse_integer_argument,
+    _make_sync_judge,
+    _make_async_judge,
+    _ask_user_sync,
+    _ask_user_async,
+    _call_user_input_provider,
+    _approve_sync,
+    _approve_async,
 )
-from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
-from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
 from .subagent import _CodingSubAgent, _AsyncCodingSubAgent
+from .paths import (
+    _workspace_root,
+    _tool_root,
+    _resolve_path,
+    _resolve_grep_file,
+    _protection_reason,
+    _session_sandbox_root,
+    _in_sandbox,
+    _approve_file_write,
+    _approve_file_write_async,
+    _read_file_page,
+)
+from .shell import _resolve_shell_executable, _prepare_shell, _run_shell
+
+from satrap.core.log import logger
 
 
 def _apply_config(config: dict[str, Any]) -> None:

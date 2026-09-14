@@ -2,17 +2,20 @@
 satrap_coding 处理器: 持续目标注入模型输入
 
 注入点: before_user_send (用户消息进入模型前), 把目标块拼接到消息头部;
-版本号缓存避免每轮重复读库, 内容变化 (写操作后) 自动失效
+每轮读取内容并比较缓存, 内容变化时重新拼接注入文本
 
 注: 长期记忆注入已移交 base_take 插件 (priority=0), 本处理器只注入目标 (priority=1)
 """
 from __future__ import annotations
 
-from typing import Any
-
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
-from satrap.edictum import AsyncSimpleSession, HandlerContext, SessionHandler, SimpleSession
+from satrap.edictum import (
+    AsyncSimpleSession,
+    HandlerContext,
+    SessionHandler,
+    SimpleSession,
+)
 
 _HEADER = "【持续目标】\n"
 
@@ -54,11 +57,6 @@ class _GoalInjector:
             self._cache = (goal_block, _HEADER + goal_block + "\n")
         return self._cache[1] + text
 
-    def invalidate(self) -> None:
-        """主动失效缓存 (目标被修改后调用)"""
-        self._cache = ("", "")
-
-
 def build_handlers(session: SessionType) -> list[SessionHandler]:
     """
     构建处理器: 注入目标到模型输入
@@ -73,7 +71,6 @@ def build_handlers(session: SessionType) -> list[SessionHandler]:
     goals = state["goals"]
     assert isinstance(goals, GoalState)
     injector = _GoalInjector(goals, session)
-    state["_injector"] = injector
 
     def before_user_send(text: str, ctx: HandlerContext) -> str:
         return injector.inject(text)

@@ -10,11 +10,9 @@ interface ConfigState {
   llmConfigs: Record<string, LLMConfig>;
   embeddingConfigs: Record<string, EmbeddingConfig>;
   rerankConfigs: Record<string, ReRankConfig>;
-  modelLoading: boolean;
 
   // 会话类配置
   sessionClasses: Record<string, SessionClassConfig>;
-  sessionLoading: boolean;
 
   // 操作
   fetchModels: (type: ModelType) => Promise<void>;
@@ -29,20 +27,13 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   llmConfigs: {},
   embeddingConfigs: {},
   rerankConfigs: {},
-  modelLoading: false,
   sessionClasses: {},
-  sessionLoading: false,
 
   fetchModels: async (type: ModelType) => {
-    set({ modelLoading: true });
-    try {
-      const data = await modelApi.list(type);
-      if (type === 'llm') set({ llmConfigs: data as Record<string, LLMConfig> });
-      else if (type === 'embedding') set({ embeddingConfigs: data as Record<string, EmbeddingConfig> });
-      else set({ rerankConfigs: data as Record<string, ReRankConfig> });
-    } finally {
-      set({ modelLoading: false });
-    }
+    const data = await modelApi.list(type);
+    if (type === 'llm') set({ llmConfigs: data as Record<string, LLMConfig> });
+    else if (type === 'embedding') set({ embeddingConfigs: data as Record<string, EmbeddingConfig> });
+    else set({ rerankConfigs: data as Record<string, ReRankConfig> });
   },
 
   fetchAllModels: async () => {
@@ -54,13 +45,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   fetchSessionClasses: async () => {
-    set({ sessionLoading: true });
-    try {
-      const data = await sessionApi.list();
-      set({ sessionClasses: data });
-    } finally {
-      set({ sessionLoading: false });
-    }
+    const data = await sessionApi.list();
+    set({ sessionClasses: data });
   },
 
   createModel: async (type, name, config) => {

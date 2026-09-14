@@ -37,14 +37,25 @@ from dataclasses import dataclass, field
 import threading
 import inspect
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Protocol, TypeVar, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    Protocol,
+    TypeVar,
+    cast,
+)
 from types import ModuleType
 import yaml
 import sys
 
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.skills import Skill
-from satrap.core.type import safe_getattr_callable, safe_getattr_str, safe_getattr_list, safe_getattr_dict
+from satrap.core.type import (
+    safe_getattr_callable,
+    safe_getattr_str,
+    safe_getattr_list,
+    safe_getattr_dict,
+)
 
 from satrap.core.log import logger
 

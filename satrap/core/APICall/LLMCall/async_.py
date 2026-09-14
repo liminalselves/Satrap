@@ -8,7 +8,6 @@ from typing import (
     Optional,
     Union,
     Literal,
-    Iterator,
     AsyncIterator,
     cast,
 )

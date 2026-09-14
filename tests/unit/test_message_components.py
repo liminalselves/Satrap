@@ -59,6 +59,15 @@ def test_special_serializers():
     assert Json('{"a": 1}').data == {"a": 1}
 
 
+def test_video_base64_preserves_component_fields():
+    encoded = base64.b64encode(b"satrap-video").decode("ascii")
+    video = Video.fromBase64(encoded, cover="https://example.com/cover.png")
+    assert isinstance(video, Video)
+    assert video.file == f"base64://{encoded}"
+    assert video.cover == "https://example.com/cover.png"
+    assert video.toDict()["type"] == "video"
+
+
 @pytest.mark.asyncio
 async def test_node_and_nodes_to_dict():
     node = Node(content=[Plain("hello")], name="tester", uin="10001")

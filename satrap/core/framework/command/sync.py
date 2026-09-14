@@ -1,7 +1,20 @@
-from typing import Any, Optional, Callable, Dict, List
-from satrap.core.log import logger
+"""
+同步文本命令注册与分派
+
+按命令前缀和参数分隔符解析输入, 调用已注册的处理函数并输出结果
+"""
+
+from typing import (
+    Any,
+    Optional,
+    Callable,
+    Dict,
+    List,
+)
 
 from .base import _CommandRegistry
+
+from satrap.core.log import logger
 
 
 class CommandHandler(_CommandRegistry):
@@ -25,7 +38,6 @@ class CommandHandler(_CommandRegistry):
         self.prefix = cmd_prefix
         self.pref_len = len(cmd_prefix)
         self.param_split = param_split
-        self.param_split_len = len(param_split)
         self._disabled_commands: set[str] = set()
 
         self.register_help()  # 默认注册帮助命令

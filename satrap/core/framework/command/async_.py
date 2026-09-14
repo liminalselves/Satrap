@@ -1,7 +1,21 @@
-from typing import Any, Optional, Callable, Dict, List, Awaitable
-from satrap.core.log import logger
+"""
+异步文本命令注册与分派
+
+按命令前缀和参数分隔符解析输入, 等待已注册的处理函数并输出结果
+"""
+
+from typing import (
+    Any,
+    Optional,
+    Callable,
+    Dict,
+    List,
+    Awaitable,
+)
 
 from .base import _CommandRegistry
+
+from satrap.core.log import logger
 
 
 class AsyncCommandHandler(_CommandRegistry):
@@ -25,7 +39,6 @@ class AsyncCommandHandler(_CommandRegistry):
         self.prefix = cmd_prefix
         self.pref_len = len(cmd_prefix)
         self.param_split = param_split
-        self.param_split_len = len(param_split)
         self._disabled_commands: set[str] = set()
 
         self.register_help()  # 默认注册帮助命令

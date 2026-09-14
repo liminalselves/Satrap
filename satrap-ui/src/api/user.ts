@@ -49,9 +49,4 @@ export const userApi = {
       session_id: sessionId,
     }),
 
-  // 获取用户会话列表
-  getSessions: (platformId: string, userId: string) =>
-    apiClient.get<{ user_id: string; session_ids: string[]; count: number }>(
-      `/api/user/sessions?platform_id=${encodeURIComponent(platformId)}&user_id=${encodeURIComponent(userId)}`
-    ),
 };

@@ -1,6 +1,13 @@
+"""
+编程工具的工作区路径解析与访问保护
+
+优先使用会话工作区, 保留包级配置兜底, 在读写前检查保护目录和沙箱边界
+"""
+
 from __future__ import annotations
 from pathlib import Path
 from typing import Any
+
 from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionEngine,
     RiskLevel,
@@ -102,7 +109,7 @@ def _resolve_grep_file(path: Path, root: Path) -> Path | None:
 
 def _protection_reason(path: Path, root: Path | None = None) -> str | None:
     """
-    命中保护路径返回原因 (敏感目录/文件)
+    命中保护路径返回原因 (敏感目录/文件), 沙箱边界由 _in_sandbox 单独判断
 
     参数:
     - path: 路径
@@ -133,20 +140,6 @@ def _protection_reason(path: Path, root: Path | None = None) -> str | None:
         if path.name.lower() == name:
             return f"路径命中受保护文件 {name}"
     return None
-
-
-def _protection_reason_full(path: Path, root: Path | None = None) -> str | None:
-    """
-    完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)
-
-    参数:
-    - path: 路径
-    - root: 根目录
-
-    返回:
-    - str | None: 完整保护检查入口 (沙箱目录由会话沙箱根单独判定, 见 _in_sandbox)
-    """
-    return _protection_reason(path, root)
 
 
 def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:

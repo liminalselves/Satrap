@@ -50,11 +50,6 @@ _WRITE_OPERATIONS = frozenset({
     "file_write",
     "file_delete",
     "shell",
-    "sandbox_save",
-    "sandbox_delete",
-    "sandbox_escape",
-    "sandbox_import",
-    "sandbox_export",
 })
 # plan mode 下被压制的写类操作 (集合)
 # 注: 记忆写操作有意不在此列 -- 记忆是元信息, 与工作区写操作隔离,

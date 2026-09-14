@@ -9,7 +9,6 @@ from typing import (
     Union,
     Literal,
     Iterator,
-    AsyncIterator,
     cast,
 )
 

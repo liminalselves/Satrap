@@ -5,19 +5,24 @@ Satrap 后端服务组件的统一编排器
 负责后端的启动, 停止, 配置热重载与运行状态汇总
 """
 from __future__ import annotations
-from satrap.edictum.plugin_compatibility import PluginEnvironment
-
 from dataclasses import dataclass, field
 import asyncio
 from pathlib import Path
 import secrets
 import signal
-from typing import Any, Awaitable, Dict, List, Optional
+from typing import (
+    Any,
+    Awaitable,
+    Dict,
+    List,
+    Optional,
+)
 import os
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
@@ -915,7 +920,6 @@ class BackendManager:
                 logger.error(f"[BackendManager] 创建平台适配器失败: {pid} ({ptype})")
 
         if self._scheduler and self._adapter_mgr:
-            self._scheduler.set_adapter_ids(set(self._adapter_mgr.list_adapters()))
             self._scheduler.set_platform_runtimes(self._platform_runtimes)
 
         if self._adapter_mgr:

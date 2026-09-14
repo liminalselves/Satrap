@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Awaitable, Callable, List, TypeVar, cast
+from typing import (
+    Awaitable,
+    Callable,
+    List,
+    TypeVar,
+    cast,
+)
 
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.UserManager import UserManager
@@ -56,7 +62,6 @@ class PipelineScheduler:
         self.error_feedback = error_feedback
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], Awaitable[bool] | bool]] = []
-        self.adapter_ids: set[str] = set()
         self.platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
@@ -67,15 +72,6 @@ class PipelineScheduler:
         - fn: 待调用函数, 支持同步或异步 (返回值经 _await_if_needed 统一处理)
         """
         self.preprocessors.append(fn)
-
-    def set_adapter_ids(self, adapter_ids: set[str]):
-        """
-        设置当前后端已注册的平台适配器实例 ID
-
-        参数:
-        - adapter_ids: 适配器ids
-        """
-        self.adapter_ids = set(adapter_ids)
 
     def set_platform_runtimes(
         self,

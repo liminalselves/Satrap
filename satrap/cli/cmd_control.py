@@ -6,7 +6,7 @@ import time
 import sys
 
 from satrap.cli.cmd_run import cmd_run
-from satrap.cli.common import daemon_client_from_args, load_cli_config
+from satrap.cli.common import daemon_client_from_args
 
 
 def cmd_status(args: argparse.Namespace):
@@ -77,7 +77,6 @@ def cmd_restart(args: argparse.Namespace):
         if client.is_alive():
             print("后端未在超时时间内停止")
             sys.exit(1)
-    load_cli_config(args)
     asyncio.run(cmd_run(args))
 
 

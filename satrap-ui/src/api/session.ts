@@ -13,9 +13,6 @@ export const sessionApi = {
   // 列出会话类配置
   list: () => controlApi.listSessionClasses(),
 
-  // 获取单个会话类配置
-  get: (name: string) => controlApi.getSessionClass(name),
-
   // 注册会话类
   register: (data: {
     name: string;
@@ -35,10 +32,6 @@ export const sessionApi = {
   // 禁用会话类
   disable: (name: string) =>
     controlApi.setSessionClassEnabled(name, false),
-
-  // 更新会话类参数
-  updateParams: (name: string, params: Record<string, unknown>) =>
-    controlApi.updateSessionClass(name, { params }),
 
   // 更新会话类配置
   update: (name: string, data: {

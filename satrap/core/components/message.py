@@ -496,20 +496,6 @@ class Video(_FileLikeComponent):
         """
         super().__init__(file=file, **kwargs)
 
-    @classmethod
-    def fromBase64(cls, bs64_data: str, **kwargs: Any):
-        """
-        从 Base64 数据创建实例
-
-        参数:
-        - bs64_data: Base64 数据
-        - kwargs: 额外关键字参数
-
-        返回:
-        - 从 Base64 数据创建实例
-        """
-        return cls(file=f"base64://{bs64_data}", **kwargs)
-
     async def to_dict(self) -> dict[str, Any]:
         """
         异步序列化视频, 支持按 callback 地址暴露本地文件
