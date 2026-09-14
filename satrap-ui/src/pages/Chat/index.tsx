@@ -2139,12 +2139,13 @@ function DirectoryPicker({
 }
 
 // 精致拨杆开关
-function Toggle({ checked, onChange, title }: { checked: boolean; onChange: (v: boolean) => void; title?: string }) {
+function Toggle({ checked, onChange, title, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; title?: string; disabled?: boolean }) {
   return (
     <button
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'w-9 h-5 rounded-full relative transition-colors shrink-0 border',
+        'w-9 h-5 rounded-full relative transition-colors shrink-0 border disabled:opacity-40 disabled:cursor-not-allowed',
         checked ? 'bg-accent border-accent' : 'bg-glass-active border-glass-border'
       )}
       title={title}
@@ -2420,6 +2421,9 @@ function ChatSettingsModal({
                               <span className="text-xs text-text-tertiary shrink-0">v{p.version}</span>
                             </div>
                             <p className="text-xs text-text-tertiary mt-1 line-clamp-2">{p.description}</p>
+                            {p.availability?.allowed === false && (
+                              <p className="text-xs text-warning mt-1">{p.availability.message}</p>
+                            )}
                             <div className="flex items-center gap-2 mt-1.5">
                               <button
                                 onClick={() => onViewCapabilities(p.name)}
@@ -2437,6 +2441,7 @@ function ChatSettingsModal({
                           </div>
                           <Toggle
                             checked={p.enabled}
+                            disabled={p.availability?.allowed === false && !p.enabled}
                             onChange={(v) => onTogglePlugin(p.name, v)}
                             title={p.enabled ? '停用插件' : '启用插件'}
                           />

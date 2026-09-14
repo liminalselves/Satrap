@@ -1,5 +1,6 @@
 """插件运行规格: 统一 Chat 与平台 Edictum 的配置结构和指纹"""
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import CompatibilityResult
 
 from dataclasses import dataclass, field, replace
 import hashlib
@@ -26,6 +27,7 @@ class PluginSpec:
     path: str = ""
     resources_revision: str = ""
     config_resolved: bool = False
+    availability: CompatibilityResult | None = None
 
     def to_config(self) -> dict[str, Any]:
         """

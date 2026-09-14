@@ -21,6 +21,26 @@
 
 ## meta.yaml
 
+### 兼容版本与适用会话
+
+插件可以声明框架版本范围和适用会话入口, 在导入插件代码及初始化插件资源之前检查:
+
+```yaml
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [platform]
+  platforms: "*"
+```
+
+`session_types` 支持 `chat` (Web Chat), `platform` (外部平台会话), `embedded` (直接 Python 调用). `platforms` 可为 `"*"` 或适配器类型列表, 如 `[onebot, misskey]`, 不使用平台实例 ID
+
+`session_commands` 声明为仅平台会话可用, Chat 会展示不可用原因并拒绝启用. 通用内置插件声明支持三种会话入口. 版本范围遵循 PEP 440; 示例范围应按插件实际使用的 API 调整
+
+宿主通过 `PluginEnvironment(session_type="platform", platform_type="onebot")` 明确传递环境, Python 直接创建会话默认为 `embedded`. `SimpleSession` 和 `AsyncSimpleSession` 均接受 `plugin_environment=`. 平台管理器和 Chat 自动提供该信息, 不能通过插件配置覆盖
+
+未声明字段的旧插件保留原行为并返回未完整声明的提示; 显式错误的声明不能降级为无限制. 目录, 安装, 启用和运行协调预检共用同一兼容性判定. 不兼容的新规格会在卸载原实例之前被阻止; 已保存的插件配置不会因为当前入口不适用而被删除
+
 ### 身份字段
 
 ```yaml

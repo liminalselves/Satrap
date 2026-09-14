@@ -13,6 +13,7 @@
 - DisplayRecorder 内部 RLock + 独立连接, 多会话并发安全
 """
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
 from functools import wraps
@@ -808,7 +809,7 @@ class ChatService:
         if self._chat_db_path:
             session_kwargs["db_path"] = self._chat_db_path
 
-        session = AsyncSimpleSession(conversation_id, llm, **session_kwargs)
+        session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         # 会话存储与项目工作区绑定需在插件安装前完成
@@ -1357,7 +1358,7 @@ class ChatService:
         if self._chat_db_path:
             session_kwargs["db_path"] = self._chat_db_path
 
-        session = AsyncSimpleSession(conversation_id, llm, **session_kwargs)
+        session = AsyncSimpleSession(conversation_id, llm, plugin_environment=PluginEnvironment("chat"), **session_kwargs)
         session.apply_context_config(cfg)
         self._apply_project(session, project)
         conv = _Conversation(

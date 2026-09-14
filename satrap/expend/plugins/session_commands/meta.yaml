@@ -14,3 +14,10 @@ commands:
   history: 查看当前用户的历史对话
   switch: 按 Session ID 切换对话
   about: 查看 Satrap 平台会话信息
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+
+applicability:
+  session_types: [platform]
+  platforms: "*"

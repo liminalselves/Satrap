@@ -16,6 +16,32 @@ from satrap.edictum.plugin_runtime import (
 from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs, plugin_specs_fingerprint
 
 
+@pytest.mark.asyncio
+async def test_incompatible_upgrade_is_blocked_before_uninstall():
+    from satrap.edictum.plugin_compatibility import CompatibilityResult
+
+    old = PluginSpec(name="demo", version="1", path="original")
+    handle = object()
+    states = [PluginRuntimeState(desired_spec=old, applied_spec=old, handle=handle)]
+    target = PluginSpec(name="demo", version="2", path="replacement",
+                        availability=CompatibilityResult(False, "session_type_not_supported", "仅平台可用"))
+    calls = []
+
+    async def install(path, config):
+        calls.append("install")
+
+    async def uninstall(name):
+        calls.append("uninstall")
+
+    preview = preview_plugin_reconciliation(states, [target])
+    assert preview[0]["action"] == "blocked"
+    result = await reconcile_plugin_states_async(states, [target], install, uninstall)
+    assert not result["ok"]
+    assert calls == []
+    assert states[0].handle is handle
+    assert states[0].applied_spec is old
+
+
 def _write_plugin(root: Path) -> None:
     """
     写入最小插件元数据

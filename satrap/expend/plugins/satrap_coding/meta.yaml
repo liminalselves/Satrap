@@ -51,3 +51,10 @@ commands:
   plan: 进入/退出计划模式 (写操作全部禁用)
   approve: 切换审批策略/管理持久规则
 mcp: {}
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

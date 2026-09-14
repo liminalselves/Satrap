@@ -319,6 +319,10 @@ def preview_plugin_reconciliation(
                 action = "capabilities"
             elif state is not None and (state.drift or state.status == "error"):
                 action = "retry"
+        if target is not None and target.enabled and target.availability is not None and not target.availability.allowed:
+            impacts.append({"plugin": name, "action": "blocked", "active": bool(applied and applied.enabled),
+                            "reason_code": target.availability.reason_code, "error": target.availability.message})
+            continue
         if action != "none":
             impacts.append({
                 "plugin": name,
@@ -414,6 +418,8 @@ async def reconcile_plugin_states_async(
             else:
                 operation = "update_disabled"
         try:
+            if desired is not None and desired.enabled and desired.availability is not None:
+                desired.availability.require()
             if operation in {"track_disabled", "update_disabled"}:
                 state.applied_spec = desired
                 state.handle = None

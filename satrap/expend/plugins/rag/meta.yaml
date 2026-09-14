@@ -66,3 +66,10 @@ tools:
   rag_search: "检索配置允许的知识库, 返回正文片段和来源"
   rag_list: "列出允许访问的知识库或指定库的文档概要"
   rag_ingest: "导入文本或当前工作区及会话文件目录中的文档"
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

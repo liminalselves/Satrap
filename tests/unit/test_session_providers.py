@@ -1,4 +1,5 @@
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 import importlib
 from pathlib import Path
@@ -344,6 +345,7 @@ def test_edictum_provider_manages_sync_plugin_lifecycle(tmp_path: Path) -> None:
     )
 
     created = provider.create_session(config, llm=_placeholder_llm())
+    created.plugin_environment = PluginEnvironment("platform", "onebot")
     provider.prepare_session(created)
     metadata = provider.get_runtime_metadata(created)
 
@@ -407,6 +409,7 @@ async def test_edictum_provider_manages_async_plugin_lifecycle(tmp_path: Path) -
     )
 
     created = provider.create_session(config, llm=_placeholder_llm())
+    created.plugin_environment = PluginEnvironment("platform", "onebot")
     await provider.prepare_session_async(created)
     assert isinstance(created, _AsyncPluginSession)
     assert created.installed == ["session_commands"]
@@ -441,6 +444,7 @@ def test_default_edictum_type_loads_platform_command_plugin(tmp_path: Path) -> N
     )
 
     created = provider.create_session(config, llm=_placeholder_llm())
+    created.plugin_environment = PluginEnvironment("platform", "onebot")
     provider.prepare_session(created)
     assert isinstance(created, Session)
     help_result = created.run("/help")
@@ -491,6 +495,7 @@ async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
     )
 
     created = provider.create_session(config, llm=_placeholder_llm())
+    created.plugin_environment = PluginEnvironment("platform", "onebot")
     await provider.prepare_session_async(created)
     assert isinstance(created, AsyncSimpleSession)
     plugin = next(item for item in created.list_plugins() if item.name == "session_commands")

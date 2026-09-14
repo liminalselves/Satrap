@@ -19,6 +19,7 @@ from .utils import (
     HandlerContext,
     SessionHandler,
 )
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 from .base import _SessionFeatures
 from . import sync_plugins, sync_capabilities
 
@@ -45,6 +46,7 @@ class SimpleSession(Session, _SessionFeatures):
         content_callback: Callable[[str], None] | None = None,
         db_path: str = get_db_path(),
         enable_checkpoint: bool = True,
+        plugin_environment: PluginEnvironment | None = None,
         stream: bool = False,
         return_thinking: bool = False,
         thinking_callback: Callable[[str], None] | None = None,
@@ -60,10 +62,12 @@ class SimpleSession(Session, _SessionFeatures):
         - content_callback: 内容回调 (流式输出与命令输出)
         - db_path: 上下文/检查点数据库路径
         - enable_checkpoint: 是否启用会话级检查点
+        - plugin_environment: 插件适用环境, 默认 None 使用 embedded; Chat 或平台入口应显式提供对应环境
         - stream: 默认是否流式输出
         - return_thinking: 是否回传思考内容
         - thinking_callback: 思考内容回调
         """
+        self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
             session_id,
             content_callback,

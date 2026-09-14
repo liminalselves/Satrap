@@ -18,6 +18,8 @@
 - capabilities: 能力独立启用状态 (默认 true), 能力生效 = 插件启用 AND 独立启用
 """
 from __future__ import annotations
+from dataclasses import asdict
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 import threading
 from pathlib import Path
@@ -164,6 +166,9 @@ class ChatPluginRegistry:
                     "version": entry.version,
                     "description": entry.description,
                     "dir": str(entry.path),
+                    "compatibility": dict(entry.compatibility),
+                    "applicability": dict(entry.applicability),
+                    "availability": asdict(entry.check_environment(PluginEnvironment("chat"))),
                     "enabled": bool(state.get("enabled", False)),
                     "capabilities": capabilities,
                 })
@@ -212,7 +217,7 @@ class ChatPluginRegistry:
             )
             raw_items.append({
                 "name": entry.name,
-                "enabled": state["enabled"],
+                "enabled": state["enabled"] and entry.check_environment(PluginEnvironment("chat")).allowed,
                 "capabilities": state["capabilities"],
             })
         return parse_plugin_specs(
@@ -248,6 +253,10 @@ class ChatPluginRegistry:
         - name: 名称
         - enabled: 是否启用
         """
+        if enabled:
+            entry = self.catalog.get(name)
+            if entry is not None:
+                entry.check_environment(PluginEnvironment("chat")).require()
         with self._lock:
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             st["enabled"] = bool(enabled)

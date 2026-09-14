@@ -20,6 +20,7 @@ from .utils import (
     HANDLER_TIMEOUT,
     SessionHandler,
 )
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 from .base import _SessionFeatures
 from . import async_plugins, async_capabilities
 
@@ -43,6 +44,7 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         content_callback: Callable[[str], Any] | None = None,
         db_path: str = get_db_path(),
         enable_checkpoint: bool = True,
+        plugin_environment: PluginEnvironment | None = None,
         stream: bool = False,
         return_thinking: bool = False,
         thinking_callback: Callable[[str], Any] | None = None,
@@ -58,10 +60,12 @@ class AsyncSimpleSession(AsyncSession, _SessionFeatures):
         - content_callback: 内容回调函数
         - db_path: 数据库路径
         - enable_checkpoint: 是否enable检查点
+        - plugin_environment: 插件适用环境, 默认 None 使用 embedded; Chat 或平台入口应显式提供对应环境
         - stream: 是否使用流式调用
         - return_thinking: 返回思考内容
         - thinking_callback: 思考内容回调函数
         """
+        self.plugin_environment = plugin_environment or PluginEnvironment()
         super().__init__(
             session_id,
             content_callback,

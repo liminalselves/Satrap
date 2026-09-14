@@ -1,5 +1,6 @@
 from __future__ import annotations
 from pathlib import Path
+from satrap.edictum.plugin_compatibility import check_plugin_compatibility
 from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
 from satrap.edictum.plugin_settings import (
@@ -56,6 +57,8 @@ def install_plugin(
     - Plugin: 安装目录插件 (meta.yaml + tools.py/skills.py/mcp.py/handlers.py)
     """
     plugin_dir = Path(path)
+    meta = load_plugin_meta(plugin_dir)
+    check_plugin_compatibility(meta, self.plugin_environment).require()
     _add_plugin_sys_path(plugin_dir)
     tool_states: dict[str, bool] = {}
     skill_states: dict[str, bool] = {}
@@ -65,7 +68,6 @@ def install_plugin(
     mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
     resources = None
     try:
-        meta = load_plugin_meta(plugin_dir)
         name = str(meta.get("name") or "").strip()
         if not name:
             raise ValueError(f"插件 {path} 的 meta.yaml 缺少 name")
@@ -282,6 +284,7 @@ def enable_plugin(self: SimpleSession, name: str) -> bool:
         plugin = self._plugins.get(name)
         if plugin is None:
             return False
+        check_plugin_compatibility(load_plugin_meta(Path(plugin.path)), self.plugin_environment).require()
         if plugin.enabled:
             return True
         plugin.enabled = True

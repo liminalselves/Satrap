@@ -36,6 +36,7 @@ install_requires = [
     "aiocqhttp>=1.4.4",
     "aiofiles>=23.2.0",
     "pyyaml>=6.0.0",
+    "packaging>=23.0",
 ]
 
 extras_require = {

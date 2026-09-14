@@ -772,6 +772,25 @@ def test_service_runtime_fingerprint_tracks_plugin_capability_and_config(
     assert third != second
 
 
+def _write_chat_commands(tmp_path: Path, monkeypatch: Any) -> None:
+    """使用专属 Chat 测试插件验证命令配置和热更新"""
+    root = tmp_path / "chat_plugins"
+    plugin = root / "chat_commands"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text(
+        "name: chat_commands\nversion: 0.1.0\napplicability:\n  session_types: [chat]\n"
+        "commands:\n  about: 说明\nconfig_schema:\n  about_text:\n    type: string\n    default: ''\n",
+        encoding="utf-8",
+    )
+    (plugin / "commands.py").write_text(
+        "def build_commands(session, config=None):\n"
+        "    async def about():\n        return (config or {}).get('about_text', '')\n"
+        "    return {}, {'about': about}\n", encoding="utf-8",
+    )
+    monkeypatch.setattr("satrap.display.plugins.PLUGINS_PRESET_DIR", root)
+    monkeypatch.setattr("satrap.display.plugins.USER_PLUGINS_DIR", tmp_path / "empty")
+
+
 def test_chat_plugin_capability_updates_active_session(
     tmp_path: Path,
     monkeypatch: Any,
@@ -785,19 +804,20 @@ def test_chat_plugin_capability_updates_active_session(
     """
     config_manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    _write_chat_commands(tmp_path, monkeypatch)
     svc = _make_service(tmp_path, monkeypatch)
-    svc._plugins.set_enabled("session_commands", True)
-    svc._plugins.set_capability("session_commands", "commands", "about", False)
+    svc._plugins.set_enabled("chat_commands", True)
+    svc._plugins.set_capability("chat_commands", "commands", "about", False)
 
     async def _run() -> None:
         cid = await svc.create_conversation(model="default")
         conv = svc.get_conversation(cid)
         assert conv is not None
-        plugin = next(item for item in conv.session.list_plugins() if item.name == "session_commands")
+        plugin = next(item for item in conv.session.list_plugins() if item.name == "chat_commands")
         assert plugin.commands["about"] is False
 
         result = await svc.set_plugin_capability(
-            "session_commands",
+            "chat_commands",
             "commands",
             "about",
             True,
@@ -824,8 +844,9 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
     """
     config_manager = PluginConfigManager(tmp_path / "plugin_config")
     monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    _write_chat_commands(tmp_path, monkeypatch)
     svc = _make_service(tmp_path, monkeypatch)
-    svc._plugins.set_enabled("session_commands", True)
+    svc._plugins.set_enabled("chat_commands", True)
 
     async def _run() -> None:
         cid = await svc.create_conversation(model="default")
@@ -833,7 +854,7 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
         assert conv is not None
 
         result = await svc.save_plugin_config(
-            "session_commands",
+            "chat_commands",
             {"about_text": "Chat 热重装说明"},
         )
 

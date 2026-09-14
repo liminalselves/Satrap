@@ -26,6 +26,7 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin import Plugin
+from satrap.edictum.plugin_compatibility import PluginEnvironment, PluginCompatibilityError
 
 __all__ = [
     "SimpleSession", "AsyncSimpleSession", "SessionHandler",
@@ -33,4 +34,5 @@ __all__ = [
     "EDICTUM_PROVIDER", "EdictumConfigManager", "EdictumTypeDefinition",
     "EdictumTypeRegistry", "EdictumPluginInstaller", "EdictumPluginUninstaller",
     "create_default_edictum_type_registry",
+    "PluginEnvironment", "PluginCompatibilityError",
 ]

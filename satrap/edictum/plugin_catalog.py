@@ -1,5 +1,6 @@
 """Edictum 插件目录: 统一扫描插件元数据, 配置结构和能力声明"""
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,12 +27,20 @@ class PluginCatalogEntry:
     description: str = ""
     config_schema: dict[str, ConfigField] = field(default_factory=dict[str, ConfigField])
     capabilities: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
+    compatibility: dict[str, Any] = field(default_factory=dict[str, Any])
+    applicability: dict[str, Any] = field(default_factory=dict[str, Any])
+
+    def check_environment(self, environment: PluginEnvironment):
+        """根据指定环境计算适用性"""
+        return check_plugin_compatibility({"compatibility": self.compatibility, "applicability": self.applicability}, environment)
 
     def to_payload(self) -> dict[str, Any]:
         """转换为前端可使用的插件元数据"""
         return {
             "name": self.name,
             "version": self.version,
+            "compatibility": dict(self.compatibility),
+            "applicability": dict(self.applicability),
             "author": self.author,
             "description": self.description,
             "config_schema": schema_to_payload(self.config_schema),
@@ -75,10 +84,13 @@ class PluginCatalog:
         name = str(meta.get("name") or "").strip()
         if not name:
             raise ValueError(f"插件目录缺少合法 name: {plugin_dir}")
+        compatibility, applicability = parse_compatibility(meta)
         descriptions = parse_capability_descriptions(meta)
         return PluginCatalogEntry(
             name=name,
             path=plugin_dir,
+            compatibility=compatibility,
+            applicability=applicability,
             version=str(meta.get("version") or ""),
             author=str(meta.get("author") or ""),
             description=str(meta.get("description") or ""),

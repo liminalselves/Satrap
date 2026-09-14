@@ -746,6 +746,9 @@ class SessionManager:
         self.default_session_type = default_session_type
         self._default_checkpoint = default_checkpoint
         self._default_checkpoint_db = default_checkpoint_db
+        from satrap.edictum.plugin_compatibility import PluginEnvironment
+
+        self.plugin_environment = PluginEnvironment()
         self.platform_id = platform_id.strip() or LOCAL_PLATFORM_ID
         self.storage_layout = (
             storage_layout
@@ -2054,6 +2057,7 @@ class SessionManager:
                         f"请先通过 'satrap model set' 配置"
                     )
             session = provider.create_session(session_cfg, llm=llm_instance)
+            setattr(session, "plugin_environment", self.plugin_environment)
             if llm_cfg is not None:
                 self._apply_session_context_config(session, llm_cfg)
             self._apply_storage_scope(session, session_id)

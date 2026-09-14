@@ -8,6 +8,7 @@ from .core.APICall.LLMCall import LLM, AsyncLLM
 from .core.type import ContextUsageSnapshot, LLMCallResponse, LLMCallStreamEvent, TokenUsage
 from .core.log import Logger
 from .edictum import AsyncSimpleSession, Plugin, SessionHandler, SimpleSession
+from .edictum import PluginEnvironment, PluginCompatibilityError
 
 __all__ = [
     "ContextManager",
@@ -38,4 +39,6 @@ __all__ = [
     "AsyncSimpleSession",
     "SessionHandler",
     "Plugin",
+    "PluginEnvironment",
+    "PluginCompatibilityError",
 ]

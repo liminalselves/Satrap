@@ -42,3 +42,10 @@ handlers:
   base_take.memory_inject: 在用户输入前注入长期记忆上下文
 commands:
   memory: 管理长期记忆 (list/add/del/clear/mode)
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+
+applicability:
+  session_types: [chat, platform, embedded]
+  platforms: "*"

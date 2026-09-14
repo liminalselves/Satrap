@@ -1,5 +1,6 @@
 """插件配置域适配器: 复用通用会话覆盖服务, 合并全局和命名配置"""
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import replace
 from pathlib import Path
@@ -117,5 +118,6 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any) -> list[
         config = manager.resolve(spec.name, entry.config_schema, spec.config)
         config = resolve_session_plugin_config(session, spec.name, entry.config_schema, config)
         revision = model_reference_fingerprint(models, entry.config_schema, config) if models is not None else ""
-        resolved.append(replace(spec, config=config, resources_revision=revision, config_resolved=True))
+        resolved.append(replace(spec, config=config, resources_revision=revision, config_resolved=True,
+                                availability=entry.check_environment(getattr(session, "plugin_environment", PluginEnvironment()))))
     return resolved

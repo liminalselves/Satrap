@@ -240,6 +240,7 @@ class EdictumProvider:
         payload = dict(session_config.session_config or {})
         payload.pop("model_name", None)
         payload.pop("plugins", None)
+        payload.pop("plugin_environment", None)
         if "enable_checkpoint" not in payload and ("enable_checkpoint" in parameters or has_var_kw):
             payload["enable_checkpoint"] = self.default_checkpoint
         if (

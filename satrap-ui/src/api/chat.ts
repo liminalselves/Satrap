@@ -206,6 +206,9 @@ export type CapabilityKind = 'tools' | 'skills' | 'mcp' | 'handlers' | 'commands
 
 // 插件信息
 export interface ChatPlugin {
+  availability?: { allowed: boolean; reason_code: string; message: string; warnings: string[] };
+  compatibility?: { satrap?: string };
+  applicability?: { session_types?: string[]; platforms?: string[] | "*" };
   name: string;
   version: string;
   description: string;

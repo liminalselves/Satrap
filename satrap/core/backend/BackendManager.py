@@ -5,6 +5,7 @@ Satrap 后端服务组件的统一编排器
 负责后端的启动, 停止, 配置热重载与运行状态汇总
 """
 from __future__ import annotations
+from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import dataclass, field
 import asyncio
@@ -873,6 +874,7 @@ class BackendManager:
                 continue
 
             platform_session_manager, _ = self._ensure_platform_runtime(pid)
+            platform_session_manager.plugin_environment = PluginEnvironment("platform", ptype)
 
             session_type = self._resolve_platform_session_type(
                 ptype,
