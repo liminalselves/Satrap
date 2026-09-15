@@ -134,7 +134,7 @@ satrap run --config config.yaml
 
 默认测试只运行不依赖外部服务的测试。`tests/integration/` 以及 `tests/unit/` 中少量带 `integration` 标记的测试需要 API key, embedding 服务或其他外部配置, 缺少条件时会被安全跳过。
 
-查看完整测试说明和环境变量要求, 请阅读 [测试说明](testing.md)。配置好服务后, 使用下面的命令显式运行集成测试:
+查看完整测试说明和环境变量要求, 请阅读 [测试说明](../development/testing.md)。配置好服务后, 使用下面的命令显式运行集成测试:
 
 ```bash
 python -m pytest -q --run-integration

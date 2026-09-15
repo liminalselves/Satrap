@@ -170,7 +170,7 @@ print(f"\n最终答案: {answer}")
 
 ## 8. 运行测试
 
-测试依赖和测试目录说明见 [测试说明](testing.md)。最常用的离线检查命令是:
+测试依赖和测试目录说明见 [测试说明](../development/testing.md)。最常用的离线检查命令是:
 
 ```bash
 python -m pip install -r requirements-test.txt

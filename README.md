@@ -84,16 +84,15 @@ python -m satrap.main run
 ## 文档
 
 - [文档首页](docs/README.md)
-- [快速开始](docs/quick-start.md)
-- [配置说明](docs/configuration.md)
-- [核心 API](docs/core-api.md)
-- [工具与 Agent](docs/tools-and-agent.md)
-- [扩展模块](docs/extensions.md)
-- [Session, 后端与 CLI](docs/sessions-backend-cli.md)
-- [平台接入](docs/platforms.md)
-- [常见问题](docs/faq.md)
-
-旧入口 [docs/usage-guide.md](docs/usage-guide.md) 已改为文档导航页。
+- [快速开始](docs/getting-started/quick-start.md)
+- [配置说明](docs/getting-started/configuration.md)
+- [核心 API](docs/core/core-api.md)
+- [工具与 Agent](docs/core/tools-and-agent.md)
+- [edictum 体系总览](docs/edictum/README.md)
+- [扩展模块](docs/plugins/extensions.md)
+- [Session, 后端与 CLI](docs/core/sessions-backend-cli.md)
+- [平台接入](docs/platform/platforms.md)
+- [常见问题](docs/getting-started/faq.md)
 
 ## 兼容性
 

@@ -34,7 +34,7 @@ result = session("你好")
 print(result)
 ```
 
-非流式和流式调用均支持 `session.run("问题", thinking="high")`, `return_thinking` 仅决定是否回传思考内容. 内部 Agent 成功后提交整轮模型上下文, 失败抛出异常, 不再把模型调用失败字符串当作成功回答. 可恢复模式和兼容接口边界见 [任务执行记录与恢复](task-recovery.md)
+非流式和流式调用均支持 `session.run("问题", thinking="high")`, `return_thinking` 仅决定是否回传思考内容. 内部 Agent 成功后提交整轮模型上下文, 失败抛出异常, 不再把模型调用失败字符串当作成功回答. 可恢复模式和兼容接口边界见 [任务执行记录与恢复](../execution/task-recovery.md)
 
 ## 处理器示例 (优先级 + 改写 + 短路)
 
@@ -121,7 +121,7 @@ session.uninstall_plugin("my-plugin")  # 卸载: 全量回收, 不留孤儿
 plugin.list_capabilities()              # 每项能力的实效状态 (含 meta.yaml 声明的 description)
 ```
 
-> 插件系统的完整说明 (目录结构 / meta.yaml 能力声明 / 能力收集约定 / 错误处理 / 同步异步差异) 见 [插件系统](plugin-system.md); 官方示例见 [satrap_coding 插件](satrap-coding-plugin.md)。
+> 插件系统的完整说明 (目录结构 / meta.yaml 能力声明 / 能力收集约定 / 错误处理 / 同步异步差异) 见 [插件系统](plugin-system.md); 官方示例见 [satrap_coding 插件](../plugins/satrap-coding-plugin.md)。
 
 ## 工具 / 命令 / skill
 

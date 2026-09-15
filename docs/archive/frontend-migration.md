@@ -59,8 +59,8 @@ python -m satrap.main run
 | `06_settings.py` | `Settings` | 已替换, 支持默认配置创建、校验和按需重启 |
 | `07_checkpoint_management.py` | `Checkpoints` | 已替换, 支持回滚、重试、描述和血缘查看 |
 | `08_user_management.py` | `Users` | 已替换, 旧页面已移除 |
-| — (新增) | `Chat` | React 新增聊天页, 独立整页, 由聊天展示层服务 (19872) 提供, 见 [聊天展示层](chat-display.md) |
-| — (新增) | `Rag` (知识库) | React 新增 RAG 知识库管理页, 列表 / 文档导入 / 配置 / 重建 / 检索测试, 与 Chat 页共用 `RagManager` 组件, 见 [RAG 与会话覆盖](rag-and-session-overrides.md) |
+| — (新增) | `Chat` | React 新增聊天页, 独立整页, 由聊天展示层服务 (19872) 提供, 见 [聊天展示层](../ui/chat-display.md) |
+| — (新增) | `Rag` (知识库) | React 新增 RAG 知识库管理页, 列表 / 文档导入 / 配置 / 重建 / 检索测试, 与 Chat 页共用 `RagManager` 组件, 见 [RAG 与会话覆盖](../plugins/rag-and-session-overrides.md) |
 
 ## 架构变化
 
@@ -116,7 +116,7 @@ const apiClient = axios.create({
 | `/api/checkpoint/*` | POST | 检查点操作 |
 | `/ws/logs?lines=100` | WebSocket | 日志历史与实时推送, 行数范围 50–500 |
 
-独立控制服务默认监听 `127.0.0.1:19871`, 提供 `/config`、`/config/default`、`/config/validate`、`/config/platforms`、`/config/models`、`/config/session-classes`、`/config/edictum`、`/config/session/discovery`、`/config/session/discovery/directories` 和后端启动、停止、重启接口。控制服务还提供 RAG 与会话插件配置的冷接口 (`/config/rag`、`/config/session-plugin-config`) 以及 Chat 历史冷管理接口 (`/chat/history/*`); 对应的在线接口由聊天服务 (19872) 的 `/api/chat/rag`、`/api/chat/session-plugin-config`、`/api/chat/history/*` 提供, 见 [聊天展示层](chat-display.md)。
+独立控制服务默认监听 `127.0.0.1:19871`, 提供 `/config`、`/config/default`、`/config/validate`、`/config/platforms`、`/config/models`、`/config/session-classes`、`/config/edictum`、`/config/session/discovery`、`/config/session/discovery/directories` 和后端启动、停止、重启接口。控制服务还提供 RAG 与会话插件配置的冷接口 (`/config/rag`、`/config/session-plugin-config`) 以及 Chat 历史冷管理接口 (`/chat/history/*`); 对应的在线接口由聊天服务 (19872) 的 `/api/chat/rag`、`/api/chat/session-plugin-config`、`/api/chat/history/*` 提供, 见 [聊天展示层](../ui/chat-display.md)。
 
 模型配置、会话类配置和 Edictum 命名配置的管理请求由控制服务处理, 因此平台后端停止时仍可完成增删改查。会话扫描目录的创建和 Session 类扫描同样由控制服务处理; 冷扫描会导入扫描目录中的模块以识别 Session/AsyncSession 子类, 但不会创建运行时会话实例。运行时会话的列出与创建仍由平台后端负责。
 

@@ -122,7 +122,7 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 - **cancel**: 取消后台 task, 本轮 answer 置空并广播 `turn_done`。
 - **回复版本 (variant)**: 每轮可保留多个回复版本 (`display_turn_variants`), `POST /turns/variant` 切换最后一轮当前版本, 前端左右箭头翻页浏览。
 - **ask_user**: 会话内 ask_user 工具挂起等待时, WS 推送 `ask_user`, 前端问答面板收集答案经 `/ask-user/answer` 回填后继续生成。
-- **历史与回收站**: 删除会话 = 把会话目录与 13 张会话域表记录归档为回收包 (`trash/sessions/<archive_id>/`), 可经 `/history/trash` 系列恢复或永久删除; 详见 [运行数据布局](data-layout.md) 与回收站生命周期。Chat 服务停止时, 前端历史管理自动回落到控制服务的冷管理接口 (同一存储布局)。
+- **历史与回收站**: 删除会话 = 把会话目录与 13 张会话域表记录归档为回收包 (`trash/sessions/<archive_id>/`), 可经 `/history/trash` 系列恢复或永久删除; 详见 [运行数据布局](../core/data-layout.md) 与回收站生命周期。Chat 服务停止时, 前端历史管理自动回落到控制服务的冷管理接口 (同一存储布局)。
 - **会话恢复**: 重启后首次访问会话时, 经 `conversation_meta` / `display_turns` 懒加载重建运行时状态, 模型、默认 think、项目绑定与插件按原样恢复。
 
 ## 项目 (工作区文件夹绑定)
@@ -152,12 +152,12 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 
 前端勾选后由 `ChatService` 对**所有活动会话**即时执行 `install_plugin` / `uninstall_plugin`。沙箱协调: `satrap_coding` 与 `base_take` 同时启用时, 自动停用 base_take 的 `code_sandbox` 工具 (coding 的 shell 能力更强), 避免模型困惑。
 
-插件配置采用四级合并 (schema 默认 < 全局 json < Edictum 命名配置 < 当前会话覆盖), 会话级覆盖经 `GET/PUT /session-plugin-config` 读写, 详见 [RAG 与会话覆盖](rag-and-session-overrides.md) 与 [扩展模块](extensions.md#插件配置机制)。
+插件配置采用四级合并 (schema 默认 < 全局 json < Edictum 命名配置 < 当前会话覆盖), 会话级覆盖经 `GET/PUT /session-plugin-config` 读写, 详见 [RAG 与会话覆盖](../plugins/rag-and-session-overrides.md) 与 [扩展模块](../plugins/extensions.md#插件配置机制)。
 
 ## 模型与记忆
 
 - 模型配置与平台后端共用同一份 `.satrap/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
-- 记忆管理走 `chat/platform.db` 中的公共 `MemoryStore` 表, 默认 scope 为 `session:<conversation_id>`, 见 [运行数据布局](data-layout.md)。
+- 记忆管理走 `chat/platform.db` 中的公共 `MemoryStore` 表, 默认 scope 为 `session:<conversation_id>`, 见 [运行数据布局](../core/data-layout.md)。
 - **记忆隔离**: 每个会话只读写 `session:<conversation_id>` 作用域。项目绑定不会自动共享记忆; 未来增加共享领域时需要单独的数据模型和授权。
 
 ## 前端聊天页
@@ -173,4 +173,4 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 | 插件 | 插件清单与启停, 能力清单弹窗 (`PluginCapabilitiesModal`, 双层启停), 配置弹窗 (`PluginConfigModal`, 按 schema 渲染表单, 可跳转 `SessionPluginSettingsModal` 配置当前会话参数) |
 | 数据管理 | RAG 知识库 (`RagManager`)、长期记忆 (`MemoryPanel`)、会话历史 (`ChatHistoryManager`) 三个入口, 均叠层打开不关闭设置弹窗 |
 
-其他要点: `ChatHistoryManager` 分**历史 / 回收站**两栏, 支持搜索过滤、批量回收、恢复与永久删除, Chat 服务停止时自动回落控制服务冷管理; 记忆面板按 `session:<conversation_id>` 作用域读写, 添加表单的作用域固定为"当前会话"。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见 [前端迁移指南](frontend-migration.md) 与 `satrap-ui/DEVELOPMENT.md`。
+其他要点: `ChatHistoryManager` 分**历史 / 回收站**两栏, 支持搜索过滤、批量回收、恢复与永久删除, Chat 服务停止时自动回落控制服务冷管理; 记忆面板按 `session:<conversation_id>` 作用域读写, 添加表单的作用域固定为"当前会话"。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见 [前端迁移指南](../archive/frontend-migration.md) 与 `satrap-ui/DEVELOPMENT.md`。

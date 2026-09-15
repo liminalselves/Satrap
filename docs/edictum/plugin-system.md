@@ -2,7 +2,7 @@
 
 插件是 edictum 的**可分发能力组合包**: 一个目录即一个插件, 由 `meta.yaml` 声明身份, 可同时携带工具 / 技能 / MCP 接入 / 处理脚本 / 命令。安装后其能力全部注册进会话, 并支持**双层启停** (插件级开关 × 能力独立状态, 能力生效 = 两者皆开)。
 
-> 本文专注插件系统本身 (结构 / 安装 / 启停 / 错误处理 / 扫描机制)。会话框架整体见 [简易 Agent 框架](simple-session.md); 官方示例插件见 [satrap_coding 插件](satrap-coding-plugin.md)。
+> 本文专注插件系统本身 (结构 / 安装 / 启停 / 错误处理 / 扫描机制)。会话框架整体见 [简易 Agent 框架](simple-session.md); 官方示例插件见 [satrap_coding 插件](../plugins/satrap-coding-plugin.md)。
 
 ## 目录结构
 
@@ -92,7 +92,7 @@ config_schema:
 ```
 
 - 基础类型: `string` / `path` / `textarea` / `number` (可加 `integer` / `minimum` / `maximum`) / `bool` / `select` (配 `options`);
-- 模型与资源选择器: `llm` / `embed` / `rerank` (引用后端模型配置名) 与 `knowledge_base` / `knowledge_bases` (引用 RAG 知识库), 前端以下拉选项渲染, 模型引用的运行时注入与校验见 [RAG 与会话覆盖](rag-and-session-overrides.md);
+- 模型与资源选择器: `llm` / `embed` / `rerank` (引用后端模型配置名) 与 `knowledge_base` / `knowledge_bases` (引用 RAG 知识库), 前端以下拉选项渲染, 模型引用的运行时注入与校验见 [RAG 与会话覆盖](../plugins/rag-and-session-overrides.md);
 - 配置值按四级合并后注入工具工厂 (见下"插件配置与会话级覆盖"), schema 不提供校验之外的安装行为变化。
 
 ## 安装 / 启停 / 卸载
@@ -151,7 +151,7 @@ schema 默认 < 全局插件配置 (.satrap/plugin_config/<name>.json) < Edictum
 - **会话级覆盖**存平台库 `session_config_overrides` 表, 按会话与配置域隔离; 空值按 schema 校验, **删除键表示恢复继承**, 不保存合并结果, 对象和数组按字段整体替换;
 - 合并后的配置作为 `config` 参数注入 `get_tools(session, config, ...)` 等工厂, 工具按当前生效配置工作;
 - Chat 前端经 `GET/PUT /api/chat/session-plugin-config` 读写覆盖 (GET 返回合并后配置与各字段来源), 控制服务另有 `/config/session-plugin-config` 冷接口; 覆盖记录随会话进入删除 / 归档 / 恢复 / 分支生命周期;
-- 完整语义 (字段来源、并发控制、RAG 插件示例) 见 [RAG 与会话覆盖](rag-and-session-overrides.md)。
+- 完整语义 (字段来源、并发控制、RAG 插件示例) 见 [RAG 与会话覆盖](../plugins/rag-and-session-overrides.md)。
 
 ## 能力收集约定 (collect_*)
 

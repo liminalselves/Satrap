@@ -8,7 +8,7 @@
 - `satrap.expend.mcp`: MCP 生态扩展 (预留)
 - `satrap.expend.command`: 可复用的 Session 命令
 - `satrap.expend.skills`: 内置技能 (coding_agent / web_research)
-- `satrap.expend.plugins`: 官方预设插件 (base_take / satrap_coding / rag), 经插件系统安装启用, 见 [插件系统](plugin-system.md)
+- `satrap.expend.plugins`: 官方预设插件 (base_take / satrap_coding / rag), 经插件系统安装启用, 见 [插件系统](../edictum/plugin-system.md)
 
 顶层导出包括长期记忆, RAG, 搜索, 网页抓取和代码沙箱 (旧路径 `satrap.expend.<mod>` 兼容):
 
@@ -231,7 +231,7 @@ tools.register_tool(sub_agent_tool)
 
 ## 默认 Session 命令
 
-`satrap.expend.command.session_commands` 提供可复用的 Session 命令函数, 裸 `Session` 默认只注册 `/help`; 具体 Session 需要显式注册下面的命令。注册示例见 [Session, 后端与 CLI](sessions-backend-cli.md)。
+`satrap.expend.command.session_commands` 提供可复用的 Session 命令函数, 裸 `Session` 默认只注册 `/help`; 具体 Session 需要显式注册下面的命令。注册示例见 [Session, 后端与 CLI](../core/sessions-backend-cli.md)。
 
 | 命令 | 说明 |
 | --- | --- |
@@ -244,7 +244,7 @@ tools.register_tool(sub_agent_tool)
 
 ## MCP 与技能 (Skill)
 
-MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机制 (`Skill` / `SkillsManager` / `SkillTool`) 属于框架基础设施, 与 `ToolsManager` 同层, 位于 `satrap.core.utils` 并已在顶层导出。详细用法见 [核心 API](core-api.md#mcp-客户端) 和 [核心 API](core-api.md#技能-skill)。
+MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机制 (`Skill` / `SkillsManager` / `SkillTool`) 属于框架基础设施, 与 `ToolsManager` 同层, 位于 `satrap.core.utils` 并已在顶层导出。详细用法见 [核心 API](../core/core-api.md#mcp-客户端) 和 [核心 API](../core/core-api.md#技能-skill)。
 
 ## 长期记忆存储 (MemoryStore)
 
@@ -258,7 +258,7 @@ store.add(title="偏好", content="用户喜欢简洁回答", tags=["偏好"], i
 memories = store.list_all()
 ```
 
-`scope` 是必填的非空会话作用域。一个 `MemoryStore` 实例只能读写自己的 scope, 不提供全库读取、全局层或项目共享层。项目绑定不改变记忆作用域, 见 [聊天展示层](chat-display.md#项目-工作区文件夹绑定)。
+`scope` 是必填的非空会话作用域。一个 `MemoryStore` 实例只能读写自己的 scope, 不提供全库读取、全局层或项目共享层。项目绑定不改变记忆作用域, 见 [聊天展示层](../ui/chat-display.md#项目-工作区文件夹绑定)。
 
 ## 插件配置机制
 
