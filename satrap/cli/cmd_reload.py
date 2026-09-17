@@ -1,8 +1,8 @@
 """CLI 后端配置热重载命令"""
 import argparse
-import sys
 
 from satrap.cli.common import daemon_client_from_args
+from satrap.cli.output import ok
 
 
 def cmd_reload(args: argparse.Namespace):
@@ -13,11 +13,6 @@ def cmd_reload(args: argparse.Namespace):
     - args: 额外位置参数
     """
     client = daemon_client_from_args(args)
-    if not client.is_alive():
-        print(f"错误: 后端未运行 ({client.daemon.base_url})")
-        sys.exit(1)
-    result = client.reload_config()
-    if "error" in result:
-        print(f"重载失败: {result['error']}")
-        sys.exit(1)
-    print("配置已重载")
+    client.require_alive()
+    client.reload_config()
+    ok("配置已重载")

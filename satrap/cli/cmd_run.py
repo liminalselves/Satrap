@@ -2,6 +2,7 @@
 from __future__ import annotations
 import argparse
 import asyncio
+import logging
 from pathlib import Path
 import signal
 import sys
@@ -38,6 +39,26 @@ def load_run_config(args: argparse.Namespace):
     return config
 
 
+def apply_log_level(args: argparse.Namespace) -> None:
+    """
+    应用 --log-level 到控制台日志 (文件日志级别保持不变)
+
+    参数:
+    - args: 额外位置参数
+    """
+    raw = str(safe_getattr(args, "log_level") or "").strip().upper()
+    if not raw:
+        return
+    level = logging.getLevelNamesMapping().get(raw)
+    if not isinstance(level, int):
+        print(f"警告: 未知日志级别 {raw}, 保持默认")
+        return
+    stdout_logger = logger.stdout_logger
+    stdout_logger.setLevel(level)
+    for handler in stdout_logger.handlers:
+        handler.setLevel(level)
+
+
 async def cmd_run(args: argparse.Namespace):
     """
     启动后端服务
@@ -46,6 +67,7 @@ async def cmd_run(args: argparse.Namespace):
     - args: 额外位置参数
     """
     install_standard_stream_capture()
+    apply_log_level(args)
     config = load_run_config(args)
 
     daemon = DaemonInfo.from_config(config)

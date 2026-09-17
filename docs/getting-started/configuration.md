@@ -25,10 +25,20 @@ Satrap 的配置分为三层:
 ## 生成配置
 
 ```bash
-satrap config init
-satrap config path
-satrap config show
+satrap config init       # 创建默认配置文件
+satrap config path       # 显示当前生效的配置文件路径
+satrap config show       # 显示解析后的配置 (api_key 等敏感字段脱敏)
+satrap config raw        # 显示原始配置文本 (不脱敏, 注意勿外泄)
 ```
+
+校验与修改:
+
+```bash
+satrap config validate                              # 只校验不落盘, 失败退出码 1
+satrap config set --set api.port=19870 data_root=.satrap/data
+```
+
+`config set` 会先校验再落盘, 支持 `api.host` 这类点分嵌套键; 后端在线时改动默认走在线链路, 需要直写文件时加 `--offline`。
 
 也可以从项目根目录复制样例:
 

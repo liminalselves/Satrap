@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 from typing import Any, cast
 import json
-import sys
 
 from satrap.core.config.document import (
     delete_platform,
@@ -11,8 +10,10 @@ from satrap.core.config.document import (
     load_config_document,
     save_config_document,
     upsert_platform,
+    validate_platforms,
 )
-from satrap.cli.common import daemon_client_from_args, parse_kv_pairs, print_json
+from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
+from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table
 from satrap.core.type import safe_getattr
 
 
@@ -25,7 +26,7 @@ def _warn_if_backend_running(args: argparse.Namespace):
     """
     client = daemon_client_from_args(args)
     if client.is_alive():
-        print("提示: 后端正在运行, 平台配置变更需要重启后端后生效.")
+        info("后端正在运行, 平台配置变更需要重启后端后生效")
 
 
 def cmd_platform_list(args: argparse.Namespace):
@@ -44,15 +45,15 @@ def cmd_platform_list(args: argparse.Namespace):
         print(f"后端: {client.daemon.base_url}")
         if adapters:
             rows: list[list[str]] = []
-            for aid, info in adapters.items():
+            for aid, adapter_info in adapters.items():
                 rows.append([
                     aid,
-                    info.get("config_type", "?"),
-                    info.get("session_type", "?"),
-                    info.get("status", "?"),
-                    str(info.get("started", False)),
+                    adapter_info.get("config_type", "?"),
+                    adapter_info.get("session_type", "?"),
+                    adapter_info.get("status", "?"),
+                    str(adapter_info.get("started", False)),
                 ])
-            print(_fmt_table(rows, ["ID", "类型", "会话类", "状态", "已启动"]))
+            print_table(rows, ["ID", "类型", "会话类", "状态", "已启动"])
         else:
             print("当前无运行中的适配器实例")
     else:
@@ -69,7 +70,7 @@ def cmd_platform_list(args: argparse.Namespace):
             ]
             for p in configured
         ]
-        print(_fmt_table(rows, ["ID", "类型", "会话类", "settings"]))
+        print_table(rows, ["ID", "类型", "会话类", "settings"])
     else:
         print("\n配置中的平台: (空)")
 
@@ -86,8 +87,7 @@ def cmd_platform_show(args: argparse.Namespace):
         if str(item.get("id", "")) == args.id:
             print_json(item)
             return
-    print(f"未找到平台: {args.id}")
-    sys.exit(1)
+    raise CliError(f"未找到平台: {args.id}")
 
 
 def _settings_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -128,17 +128,17 @@ def cmd_platform_upsert(args: argparse.Namespace):
         session_type = str(safe_getattr(args, "session_type") or "").strip()
         if session_type:
             platform["session_type"] = session_type
-        data["platforms"] = upsert_platform(
+        merged = upsert_platform(
             platforms,
             platform,
             original_id=args.id if args.action == "update" else None,
         )
+        data["platforms"] = validate_platforms(merged)
         save_config_document(path, data)
-        print(f"平台配置已保存: {args.id}")
-        print("提示: 平台实例变更需要重启后端后生效.")
     except Exception as e:
-        print(f"保存失败: {e}")
-        sys.exit(1)
+        raise CliError(f"保存失败: {e}") from e
+    ok(f"平台配置已保存: {args.id}")
+    info("平台实例变更需要重启后端后生效")
 
 
 def cmd_platform_remove(args: argparse.Namespace):
@@ -153,25 +153,8 @@ def cmd_platform_remove(args: argparse.Namespace):
     data = load_config_document(path)
     data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
     save_config_document(path, data)
-    print(f"平台配置已删除: {args.id}")
-    print("提示: 平台实例变更需要重启后端后生效.")
-
-
-def _fmt_table(rows: list[list[str]], header: list[str] | None = None) -> str:
-    if not rows:
-        return "(空)"
-    col_widths: list[int] = []
-    all_rows = ([header] if header else []) + rows
-    for col_idx in range(len(all_rows[0])):
-        col_widths.append(max(len(str(r[col_idx])) for r in all_rows))
-    lines: list[str] = []
-    if header:
-        hdr = " | ".join(str(h).ljust(w) for h, w in zip(header, col_widths))
-        lines.append(hdr)
-        lines.append("-+-".join("-" * w for w in col_widths))
-    for row in rows:
-        lines.append(" | ".join(str(c).ljust(w) for c, w in zip(row, col_widths)))
-    return "\n".join(lines)
+    ok(f"平台配置已删除: {args.id}")
+    info("平台实例变更需要重启后端后生效")
 
 
 def dispatch(args: argparse.Namespace):
@@ -181,14 +164,10 @@ def dispatch(args: argparse.Namespace):
     参数:
     - args: 命令参数
     """
-    if args.action == "list":
-        cmd_platform_list(args)
-    elif args.action == "show":
-        cmd_platform_show(args)
-    elif args.action in ("add", "update"):
-        cmd_platform_upsert(args)
-    elif args.action == "remove":
-        cmd_platform_remove(args)
-    else:
-        print(f"未知操作: {args.action}")
-        sys.exit(1)
+    dispatch_action({
+        "list": cmd_platform_list,
+        "show": cmd_platform_show,
+        "add": cmd_platform_upsert,
+        "update": cmd_platform_upsert,
+        "remove": cmd_platform_remove,
+    }, args)

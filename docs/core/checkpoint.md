@@ -57,14 +57,14 @@ session.fork(branch_name="alternate")     # 双上下文一并分支
 ## CLI
 
 ```bash
-satrap checkpoint create   --conversation conv-1 --name 开场
-satrap checkpoint list     --conversation conv-1
-satrap checkpoint rollback --conversation conv-1 --checkpoint-id manual-xxxx
-satrap checkpoint retry    --conversation conv-1 --checkpoint-id manual-xxxx
-satrap checkpoint fork     --conversation conv-1 --branch-name v2
-satrap checkpoint lineage  --checkpoint-id manual-xxxx
-satrap checkpoint branches --conversation conv-1
-satrap checkpoint audit    --conversation conv-1
+satrap checkpoint create conv-1 --name 开场
+satrap checkpoint list conv-1
+satrap checkpoint rollback conv-1 manual-xxxx
+satrap checkpoint retry conv-1 manual-xxxx
+satrap checkpoint fork conv-1 v2                  # --checkpoint 指定源检查点, 默认最近一个
+satrap checkpoint lineage manual-xxxx
+satrap checkpoint branches conv-1
+satrap checkpoint audit conv-1
 ```
 
 默认操作 `local` 平台的 `platform.db`, 使用 `--platform-id` 选择其他平台实例。可以用 `--data-root` 选择完整的数据根目录, 不能绕过平台作用域指定任意数据库文件。

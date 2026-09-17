@@ -58,13 +58,19 @@ print(response.content if response else "调用失败")
 
 ```bash
 satrap --help
-satrap run
+satrap run                      # 前台启动后端
+satrap start                    # 后台启动后端
 satrap status
-satrap config show
+satrap config show              # 密钥脱敏; config raw / validate / set 亦可用
 satrap model list
 satrap session list
+satrap session instance list    # 持久化会话实例
 satrap platform list
+satrap plugin list              # 聊天插件与能力
+satrap edictum list             # Edictum 命名配置
 ```
+
+所有命令支持全局 `--json` 输出结构化结果, 退出码统一为 0 成功 / 1 业务错误 / 2 用法错误。
 
 React 管理面板由后端托管, 首次使用先构建前端:
 

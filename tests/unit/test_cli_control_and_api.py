@@ -50,6 +50,43 @@ def test_parser_accepts_api_flags_for_control_commands():
     assert args.api_port == 19871
 
 
+def test_parser_run_accepts_api_flags():
+    """run 命令应与其他命令一致地接受 API 地址覆盖"""
+    parser = _build_parser()
+    args = parser.parse_args(["run", "--api-host", "127.0.0.3", "--api-port", "19880"])
+    assert args.command == "run"
+    assert args.api_host == "127.0.0.3"
+    assert args.api_port == 19880
+
+
+def test_parser_new_command_groups():
+    """plugin / edictum / session instance / start / config validate 解析"""
+    parser = _build_parser()
+
+    args = parser.parse_args(["start"])
+    assert args.command == "start"
+
+    args = parser.parse_args(["config", "validate"])
+    assert args.action == "validate"
+
+    args = parser.parse_args(["plugin", "capability", "demo", "tools", "shell", "off"])
+    assert args.command == "plugin"
+    assert (args.kind, args.cap, args.state) == ("tools", "shell", "off")
+
+    args = parser.parse_args(["edictum", "create", "assistant", "--type", "simple", "--plugin", "base_take"])
+    assert args.command == "edictum"
+    assert args.plugin == ["base_take"]
+
+    args = parser.parse_args(["session", "instance", "bulk-delete", "--mode", "empty"])
+    assert args.action == "instance"
+    assert args.instance_action == "bulk-delete"
+    assert args.mode == "empty"
+
+    args = parser.parse_args(["session", "instance", "restart", "s1", "--platform-id", "main"])
+    assert args.instance_action == "restart"
+    assert args.platform_id == "main"
+
+
 def test_platform_parser_accepts_session_type_binding():
     """平台命令应支持显式选择入站消息使用的会话类"""
     parser = _build_parser()

@@ -103,10 +103,32 @@ satrap session config assistant --show
 satrap session create assistant --id demo-session --llm default
 ```
 
-## 后端启动
+## 会话实例管理
+
+持久化会话实例 (跨平台) 的查看与清理:
 
 ```bash
-satrap run --config config.yaml
+satrap session instance list                            # 列出全部平台实例的会话
+satrap session instance list --platform-id misskey      # 只看指定平台实例
+satrap session instance delete <session_id>             # 删除单个实例
+satrap session instance bulk-delete --mode empty        # 批量清理无消息实例 (另有 single / selected)
+satrap session instance restart <session_id>            # 按冷配置重启实例 (仅在线)
+```
+
+在线模式走后端 API (活跃会话即时生效); 后端停止时自动回退为直读各平台 `platform.db`, `restart` 仅支持在线。
+
+## 后端启动
+
+前台启动 (开发调试常用, `--log-level` 控制控制台日志级别):
+
+```bash
+satrap run --config config.yaml --log-level INFO
+```
+
+后台启动 (后端已在运行时直接提示; 控制服务在线时委托其拉起, 否则 CLI 自行孵化后台进程并等待健康检查通过):
+
+```bash
+satrap start
 ```
 
 常用控制命令:
@@ -114,11 +136,13 @@ satrap run --config config.yaml
 ```bash
 satrap status
 satrap reload
-satrap stop
-satrap restart
+satrap stop       # 后端未运行时退出码 1
+satrap restart    # 等价于 stop + 前台 run
 ```
 
-默认 HTTP API 地址为 `http://127.0.0.1:19870`。`satrap status`, `reload`, `stop`, `restart` 会通过这个 API 与后端通信。
+默认 HTTP API 地址为 `http://127.0.0.1:19870`。`satrap start`, `status`, `reload`, `stop`, `restart` 会通过这个 API 与后端通信。
+
+全部 CLI 命令遵循统一约定: 退出码 `0` 成功 / `1` 业务错误 / `2` 用法错误; 错误输出固定 `错误:` / `警告:` / `提示:` 前缀; 任意位置加 `--json` 输出结构化 JSON 便于脚本处理。CLI 也可以 `python -m satrap` 形式调用, 与 `satrap` 等价。
 
 ## 用户管理
 
@@ -193,6 +217,41 @@ python -m satrap.main run
 - 系统设置
 - 检查点管理
 - 用户管理
+
+## 聊天插件管理
+
+聊天服务 (19872) 的插件与单项能力管理:
+
+```bash
+satrap plugin list                                   # 插件列表 (启用状态 / 来源 / 能力计数)
+satrap plugin show rag                               # 插件详情
+satrap plugin enable rag                             # 启用插件
+satrap plugin disable rag                            # 停用插件
+satrap plugin capability rag tools search off        # 关闭单项能力 (tools/skills/handlers/commands/mcp)
+satrap plugin config rag --show                      # 查看插件全局配置
+satrap plugin config rag --set top_k=5               # 修改配置 (按键类型严格校验)
+```
+
+能力生效 = 插件启用 AND 能力独立启用。Chat 服务在线时写操作走 HTTP (活动会话即时同步); 离线时直写 `.satrap/chat_plugins.json` 与 `.satrap/plugin_config/`, 下次启动生效。
+
+## Edictum 配置管理
+
+Edictum 命名配置 (会话行为模板) 的全生命周期:
+
+```bash
+satrap edictum types                                 # 列出可用 Edictum 类型
+satrap edictum list                                  # 列出命名配置
+satrap edictum show my-preset                        # 查看详情
+satrap edictum create my-preset --type simple --model default --set system_prompt=你好
+satrap edictum update my-preset --rename new-name    # 改名会自动迁移会话引用
+satrap edictum enable my-preset
+satrap edictum disable my-preset
+satrap edictum delete my-preset                      # 仍被会话引用时拒绝删除
+satrap edictum preview                               # 预览运行时配置变更影响 (仅在线)
+satrap edictum apply                                 # 应用运行时配置变更 (仅在线)
+```
+
+离线修改后, 在线后端需要 `edictum apply` 或 `satrap reload` 才会生效。
 
 ## 离线写入
 
