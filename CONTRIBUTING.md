@@ -92,7 +92,7 @@ PR 描述应尽量说明：
 ### Issues
 
 对 Issues 没有强制性的格式要求。<br>
-对于任何 Issues，建议在在 label 中选择合适的标签。<br>
+对于任何 Issues，建议在 label 中选择合适的标签。<br>
 建议分成问题、目标、现状、需求等部分分别阐述。
 
 ### License
