@@ -62,22 +62,28 @@ async def test_incompatible_plugin_never_imported(tmp_path, async_mode):
         encoding="utf-8",
     )
     (plugin / "tools.py").write_text("raise AssertionError('plugin imported')\n", encoding="utf-8")
-    llm = (AsyncLLM if async_mode else LLM)(api_key="test", model="test")
-    session = (AsyncSimpleSession if async_mode else SimpleSession)(
-        "compatibility-test", llm, db_path=str(tmp_path / "chat.db"),
-        plugin_environment=PluginEnvironment("chat"),
-    )
-    try:
-        with pytest.raises(PluginCompatibilityError):
-            if async_mode:
-                await session.install_plugin(str(plugin))
-            else:
-                session.install_plugin(str(plugin))
-        if async_mode:
-            assert session._wf is None
-        assert not session.list_plugins()
-    finally:
-        if async_mode:
-            await llm.client.close()
-        else:
-            llm.client.close()
+    if async_mode:
+        async_llm = AsyncLLM(api_key="test", model="test")
+        async_session = AsyncSimpleSession(
+            "compatibility-test", async_llm, db_path=str(tmp_path / "chat.db"),
+            plugin_environment=PluginEnvironment("chat"),
+        )
+        try:
+            with pytest.raises(PluginCompatibilityError):
+                await async_session.install_plugin(str(plugin))
+            assert async_session._wf is None
+            assert not async_session.list_plugins()
+        finally:
+            await async_llm.client.close()
+    else:
+        sync_llm = LLM(api_key="test", model="test")
+        sync_session = SimpleSession(
+            "compatibility-test", sync_llm, db_path=str(tmp_path / "chat.db"),
+            plugin_environment=PluginEnvironment("chat"),
+        )
+        try:
+            with pytest.raises(PluginCompatibilityError):
+                sync_session.install_plugin(str(plugin))
+            assert not sync_session.list_plugins()
+        finally:
+            sync_llm.client.close()

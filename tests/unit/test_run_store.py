@@ -1,7 +1,17 @@
 """执行记录的作用域和故障恢复基础约束"""
+from typing import Any
+
 import pytest
 
 from satrap.core.framework.Base.execution.store import RunStore, RunConflictError
+
+
+def _must_step(store: RunStore, run_id: str, key: str) -> dict[str, Any]:
+    """读取必须存在的步骤记录"""
+    step = store.step(run_id, key)
+    if step is None:
+        raise AssertionError(f"步骤不存在: {run_id}/{key}")
+    return step
 
 
 def test_reopen_preserves_completed_and_uncertain_steps(tmp_path):
@@ -12,9 +22,9 @@ def test_reopen_preserves_completed_and_uncertain_steps(tmp_path):
         store.finish_step(run, "model:0", {"content": "", "tools": ["write"]})
         store.start_step(run, "tool:0:0", "tool", {"name": "write"})
     reopened = RunStore(tmp_path / "platform.db", "session:main")
-    assert reopened.step(run, "model:0")["status"] == "completed"
-    assert reopened.step(run, "tool:0:0")["status"] == "running"
-    assert reopened.step(run, "tool:0:0")["recovery_policy"] == "manual"
+    assert _must_step(reopened, run, "model:0")["status"] == "completed"
+    assert _must_step(reopened, run, "tool:0:0")["status"] == "running"
+    assert _must_step(reopened, run, "tool:0:0")["recovery_policy"] == "manual"
 
 
 def test_scope_isolation_and_nonreentrant_claim(tmp_path):
@@ -42,7 +52,7 @@ def test_explicit_retry_only_for_uncertain_tool(tmp_path):
         store.authorize_retry(run, "tool:0:0")
     store.update(run, status="needs_attention")
     store.authorize_retry(run, "tool:0:0")
-    assert store.step(run, "tool:0:0")["recovery_policy"] == "retry"
+    assert _must_step(store, run, "tool:0:0")["recovery_policy"] == "retry"
     store.abort(run)
     assert store.get(run)["status"] == "cancelled"
 
@@ -53,7 +63,7 @@ def test_result_must_be_serializable_without_destroying_step(tmp_path):
     store.start_step(run, "tool:0", "tool", {})
     with pytest.raises(TypeError):
         store.finish_step(run, "tool:0", object())
-    assert store.step(run, "tool:0")["status"] == "running"
+    assert _must_step(store, run, "tool:0")["status"] == "running"
 
 
 def test_messages_and_completion_commit_together(tmp_path):
@@ -111,7 +121,10 @@ def test_os_lock_released_after_process_exit(tmp_path):
         text=True, encoding="utf-8", env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
     )
     try:
-        assert child.stdout.readline().strip() == "ready"
+        child_stdout = child.stdout
+        if child_stdout is None:
+            raise AssertionError("子进程 stdout 未重定向")
+        assert child_stdout.readline().strip() == "ready"
         store = RunStore(database, "a")
         with pytest.raises(RunConflictError), store.claim():
             pass
@@ -136,7 +149,7 @@ def test_archive_restores_run_steps_and_rejects_foreign_run(tmp_path):
     delete_session_domain_rows(database, "a")
     assert store.list() == []
     restore_session_domain(database, "a", snapshot)
-    assert store.step(run, "tool:0")["status"] == "running"
+    assert _must_step(store, run, "tool:0")["status"] == "running"
     delete_session_domain_rows(database, "a")
     snapshot["agent_steps"][0]["run_id"] = "foreign"
     with pytest.raises(ValueError):

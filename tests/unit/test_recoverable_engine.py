@@ -1,6 +1,7 @@
 """真实上下文存储上的中断恢复测试"""
 import pytest
 
+from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.framework.Base.execution.engine import run_sync, run_async
 from satrap.core.framework.Base.execution.store import RunStore, RunNeedsAttention, RunConflictError
 from satrap.core.framework.Base import ModelWorkflowFramework, AsyncModelWorkflowFramework
@@ -12,10 +13,9 @@ class Crash(BaseException):
     pass
 
 
-class Model:
-    model = "offline"
-
+class Model(LLM):
     def __init__(self):
+        super().__init__(api_key="test", model="offline")
         self.calls = 0
 
     def call(self, messages, **kwargs):
@@ -50,6 +50,8 @@ def test_uncertain_tool_requires_explicit_retry_and_reuses_model(tmp_path):
         with pytest.raises(Crash):
             run_sync(wf, user_input="write", callback=False)
         run = wf.last_run_id
+        if run is None:
+            raise AssertionError("缺少运行记录")
         store = RunStore(wf.ctx.db_path, wf.ctx.conversation_id)
         assert model.calls == 1
         with pytest.raises(RunNeedsAttention):
@@ -68,10 +70,9 @@ def test_uncertain_tool_requires_explicit_retry_and_reuses_model(tmp_path):
 
 @pytest.mark.asyncio
 async def test_async_resume_reuses_saved_request(tmp_path):
-    class AsyncModel:
-        model = "offline"
-
+    class AsyncModel(AsyncLLM):
         def __init__(self):
+            super().__init__(api_key="test", model="offline")
             self.calls = 0
 
         async def call(self, messages, **kwargs):
@@ -114,8 +115,9 @@ async def test_async_session_cancel_is_terminal(tmp_path):
     import asyncio
     from satrap import AsyncSimpleSession
 
-    class CancelModel:
-        model = "offline"
+    class CancelModel(AsyncLLM):
+        def __init__(self):
+            super().__init__(api_key="test", model="offline")
 
         async def call(self, messages, **kwargs):
             raise asyncio.CancelledError()
@@ -132,9 +134,10 @@ async def test_async_session_cancel_is_terminal(tmp_path):
 def test_sync_stream_and_completed_replay_preserve_usage(tmp_path):
     from satrap.core.type import LLMCallStreamEvent, TokenUsage
 
-    class StreamingModel:
-        model = "offline"
-        calls = 0
+    class StreamingModel(LLM):
+        def __init__(self):
+            super().__init__(api_key="test", model="offline")
+            self.calls = 0
 
         def stream_call(self, messages, **kwargs):
             self.calls += 1
