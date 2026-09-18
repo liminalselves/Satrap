@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import argparse
 from typing import Any, cast
-import sys
 
 from satrap.core.storage import StorageLayout
 from satrap.api import user as user_api
+from satrap.cli.output import CliError, dispatch_action, ok, print_table, render_data
 
 
 def _db_path(args: argparse.Namespace) -> str:
@@ -25,6 +25,17 @@ def _db_path(args: argparse.Namespace) -> str:
     - str: 平台实例数据库路径
     """
     return str(StorageLayout(args.data_root).platform_db(str(args.platform_id)))
+
+
+def _require_ok(result: dict[str, Any]) -> None:
+    """
+    api 层返回 ok=False 时抛业务错误
+
+    参数:
+    - result: api 返回结果
+    """
+    if not result.get("ok", True):
+        raise CliError(str(result.get("error") or "操作失败"))
 
 
 def _print_user(info: dict[str, Any]):
@@ -50,14 +61,24 @@ def cmd_user_list(args: argparse.Namespace):
     """
     result = user_api.list_users(_db_path(args), limit=args.limit)
     users = result["users"]
-    if not users:
-        print("(暂无用户)")
-        return
-    for u in users:
-        sessions = u["user_session"]
-        label = u["user_nickname"] or "-"
-        print(f"{u['user_id']:<24} {u['user_platform'] or '-':<12} {label:<16} {len(sessions)} 个会话")
-    print(f"\n共 {result['count']} 个用户")
+
+    def _human() -> None:
+        if not users:
+            print("(暂无用户)")
+            return
+        rows = [
+            [
+                str(u["user_id"]),
+                str(u["user_platform"] or "-"),
+                str(u["user_nickname"] or "-"),
+                f"{len(u['user_session'])} 个会话",
+            ]
+            for u in users
+        ]
+        print_table(rows, ["user_id", "platform", "nickname", "会话数"])
+        print(f"\n共 {result['count']} 个用户")
+
+    render_data(result, _human)
 
 
 def cmd_user_info(args: argparse.Namespace):
@@ -68,10 +89,8 @@ def cmd_user_info(args: argparse.Namespace):
     - args: 额外位置参数
     """
     result = user_api.get_user(_db_path(args), args.user_id)
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
-    _print_user(result["user"])
+    _require_ok(result)
+    render_data(result["user"], lambda: _print_user(result["user"]))
 
 
 def cmd_user_create(args: argparse.Namespace):
@@ -85,11 +104,9 @@ def cmd_user_create(args: argparse.Namespace):
         _db_path(args), args.user_id,
         platform=args.platform, nickname=args.nickname,
     )
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
+    _require_ok(result)
     tag = "已创建" if result.get("created") else "已存在, 已更新"
-    print(f"{tag}: {args.user_id}")
+    ok(f"{tag}: {args.user_id}")
 
 
 def cmd_user_update(args: argparse.Namespace):
@@ -103,10 +120,8 @@ def cmd_user_update(args: argparse.Namespace):
         _db_path(args), args.user_id,
         nickname=args.nickname, platform=args.platform,
     )
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
-    print(f"已更新: {args.user_id}")
+    _require_ok(result)
+    ok(f"已更新: {args.user_id}")
 
 
 def cmd_user_delete(args: argparse.Namespace):
@@ -117,10 +132,8 @@ def cmd_user_delete(args: argparse.Namespace):
     - args: 额外位置参数
     """
     result = user_api.delete_user(_db_path(args), args.user_id)
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
-    print(f"已删除用户: {args.user_id}")
+    _require_ok(result)
+    ok(f"已删除用户: {args.user_id}")
 
 
 def cmd_user_bind(args: argparse.Namespace):
@@ -131,10 +144,8 @@ def cmd_user_bind(args: argparse.Namespace):
     - args: 额外位置参数
     """
     result = user_api.bind_session(_db_path(args), args.user_id, args.session_id)
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
-    print(f"已绑定: {args.user_id} -> {args.session_id}")
+    _require_ok(result)
+    ok(f"已绑定: {args.user_id} -> {args.session_id}")
 
 
 def cmd_user_unbind(args: argparse.Namespace):
@@ -145,10 +156,8 @@ def cmd_user_unbind(args: argparse.Namespace):
     - args: 额外位置参数
     """
     result = user_api.unbind_session(_db_path(args), args.user_id, args.session_id)
-    if not result.get("ok"):
-        print(f"错误: {result.get('error')}")
-        sys.exit(1)
-    print(f"已解绑: {args.user_id} -> {args.session_id}")
+    _require_ok(result)
+    ok(f"已解绑: {args.user_id} -> {args.session_id}")
 
 
 def cmd_user_sessions(args: argparse.Namespace):
@@ -160,12 +169,16 @@ def cmd_user_sessions(args: argparse.Namespace):
     """
     result = user_api.list_user_sessions(_db_path(args), args.user_id)
     session_ids = result["session_ids"]
-    if not session_ids:
-        print(f"用户 {args.user_id} 未绑定任何会话")
-        return
-    for sid in session_ids:
-        print(sid)
-    print(f"\n共 {result['count']} 个会话")
+
+    def _human() -> None:
+        if not session_ids:
+            print(f"用户 {args.user_id} 未绑定任何会话")
+            return
+        for sid in session_ids:
+            print(sid)
+        print(f"\n共 {result['count']} 个会话")
+
+    render_data(result, _human)
 
 
 def dispatch(args: argparse.Namespace):
@@ -173,9 +186,9 @@ def dispatch(args: argparse.Namespace):
     user 命令分发 (统一异常处理, 不输出 traceback 退出)
 
     参数:
-    - args: 额外位置参数
+    - args: 命令参数
     """
-    action_map = {
+    dispatch_action({
         "list": cmd_user_list,
         "info": cmd_user_info,
         "create": cmd_user_create,
@@ -184,17 +197,4 @@ def dispatch(args: argparse.Namespace):
         "bind": cmd_user_bind,
         "unbind": cmd_user_unbind,
         "sessions": cmd_user_sessions,
-    }
-    handler = action_map.get(args.action)
-    if handler is None:
-        print(f"未知操作: {args.action}")
-        sys.exit(2)
-    try:
-        handler(args)
-    except ValueError as e:
-        print(f"错误: {e}")
-        # 业务错误 (user_id 为空 / 用户不存在)
-        sys.exit(1)
-    except Exception as e:
-        print(f"执行出错: {e}")
-        sys.exit(2)
+    }, args)

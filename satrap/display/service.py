@@ -1679,9 +1679,12 @@ class ChatService:
                     return {"ok": False, "error": "任务已取消"}
                 if run["status"] == "completed" and run["payload"].get("committed_context_fingerprint") != store.history_signature():
                     return {"ok": False, "error": "任务完成后会话历史已改变, 不能回填旧轮次"}
+                workflow = conv.session._wf
+                if workflow is None:
+                    return {"ok": False, "error": "会话工作流未初始化"}
                 if run["status"] != "completed" and (
                     run["context_fingerprint"] != store.history_signature()
-                    or run["config_fingerprint"] != configuration(conv.session._wf)
+                    or run["config_fingerprint"] != configuration(workflow)
                 ):
                     return {"ok": False, "error": "历史或执行配置已改变, 请使用重新生成或分支"}
                 origin = run["payload"].get("origin", {})

@@ -223,7 +223,7 @@ def test_session_config_constructor_case_injected(tmp_path: Path):
         def __init__(
             self, session_config: SessionConfig, session_id: str | None = None, **kw: Any
         ):
-            self.session_id = session_id
+            self.session_id = session_id if session_id is not None else (session_config.session_id or "")
             self.received = kw
 
     sm = SessionManager(

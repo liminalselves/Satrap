@@ -32,6 +32,7 @@ async def test_incompatible_upgrade_is_blocked_before_uninstall():
 
     async def uninstall(name):
         calls.append("uninstall")
+        return True
 
     preview = preview_plugin_reconciliation(states, [target])
     assert preview[0]["action"] == "blocked"

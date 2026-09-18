@@ -39,6 +39,7 @@ from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
@@ -70,7 +71,7 @@ from satrap.core.utils.minihttp import (
 from satrap.core.server_auth import ServerAuth
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
-from satrap.edictum.registry import EDICTUM_PROVIDER, create_default_edictum_type_registry
+from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
 from satrap.core.rag import RagService
@@ -862,21 +863,11 @@ def _edictum_config_references(config_name: str) -> list[dict[str, str]]:
     返回:
     - list[dict[str, str]]: 平台和会话引用
     """
-    layout = _configured_storage_layout()
-    platform_ids = _configured_platform_ids()
-    if CHAT_PLATFORM_ID not in platform_ids:
-        platform_ids.append(CHAT_PLATFORM_ID)
-    references: list[dict[str, str]] = []
-    for platform_id in platform_ids:
-        store = SessionConfigStore(layout.platform_db(platform_id))
-        references.extend(
-            {"platform_id": platform_id, "session_id": session_id}
-            for session_id in store.list_definition_references(
-                EDICTUM_PROVIDER,
-                config_name,
-            )
-        )
-    return references
+    return list_edictum_config_references(
+        _configured_storage_layout(),
+        _configured_platform_ids(),
+        config_name,
+    )
 
 
 def _rename_edictum_config_references(
@@ -893,34 +884,12 @@ def _rename_edictum_config_references(
     返回:
     - list[dict[str, str]]: 已迁移的平台和会话引用
     """
-    layout = _configured_storage_layout()
-    platform_ids = _configured_platform_ids()
-    if CHAT_PLATFORM_ID not in platform_ids:
-        platform_ids.append(CHAT_PLATFORM_ID)
-    completed: list[SessionConfigStore] = []
-    migrated: list[dict[str, str]] = []
-    try:
-        for platform_id in platform_ids:
-            store = SessionConfigStore(layout.platform_db(platform_id))
-            session_ids = store.rename_definition_references(
-                EDICTUM_PROVIDER,
-                old_name,
-                new_name,
-            )
-            completed.append(store)
-            migrated.extend(
-                {"platform_id": platform_id, "session_id": session_id}
-                for session_id in session_ids
-            )
-    except Exception:
-        for store in reversed(completed):
-            store.rename_definition_references(
-                EDICTUM_PROVIDER,
-                new_name,
-                old_name,
-            )
-        raise
-    return migrated
+    return rename_edictum_config_references(
+        _configured_storage_layout(),
+        _configured_platform_ids(),
+        old_name,
+        new_name,
+    )
 
 
 def _require_backend_stopped() -> None:

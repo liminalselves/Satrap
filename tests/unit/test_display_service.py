@@ -27,6 +27,37 @@ from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
 
 
+def _must_conversation(service: ChatService, conversation_id: str):
+    """
+    取必须存在的会话运行时状态
+
+    参数:
+    - service: 聊天服务
+    - conversation_id: 会话 ID
+
+    返回:
+    - 会话运行时状态
+    """
+    conv = service.get_conversation(conversation_id)
+    if conv is None:
+        raise AssertionError(f"会话不存在: {conversation_id}")
+    return conv
+
+
+async def _wait_conversation_task(service: ChatService, conversation_id: str) -> None:
+    """
+    等待会话当前任务结束 (会话与任务必须存在)
+
+    参数:
+    - service: 聊天服务
+    - conversation_id: 会话 ID
+    """
+    task = _must_conversation(service, conversation_id).task
+    if task is None:
+        raise AssertionError(f"会话无进行中任务: {conversation_id}")
+    await task
+
+
 # ---------- ChatPluginRegistry 测试 ----------
 
 
@@ -205,7 +236,7 @@ async def test_chat_run_pagination_preserves_python_all_results(tmp_path, monkey
     service = _make_service(tmp_path, monkeypatch)
     try:
         cid = await service.create_conversation()
-        session = service.get_conversation(cid).session
+        session = _must_conversation(service, cid).session
         store = store_for_session(session)
         for _ in range(23):
             run = store.create({}, "c", "f")
@@ -242,7 +273,7 @@ async def test_chat_resume_after_service_restart_then_retry_and_fork(tmp_path, m
     monkeypatch.setattr(service_mod, "build_llm", lambda cfg: RecoveringModel())
     cid = await svc.create_conversation(model="default")
     await svc.send(cid, "问题")
-    await svc.get_conversation(cid).task
+    await _wait_conversation_task(svc, cid)
     runs = (await svc.list_runs(cid))["runs"]
     assert runs[0]["status"] == "failed"
     run_id = runs[0]["id"]
@@ -253,7 +284,7 @@ async def test_chat_resume_after_service_restart_then_retry_and_fork(tmp_path, m
     try:
         result = await resumed.manage_run(cid, run_id, "resume")
         assert result["ok"], result
-        await resumed.get_conversation(cid).task
+        await _wait_conversation_task(resumed, cid)
         assert requests[0] == requests[1]
         turns = resumed.list_turns(cid)
         assert len(turns) == 1
@@ -263,7 +294,7 @@ async def test_chat_resume_after_service_restart_then_retry_and_fork(tmp_path, m
 
         result = await resumed.retry(cid)
         assert result["ok"], result
-        await resumed.get_conversation(cid).task
+        await _wait_conversation_task(resumed, cid)
         assert len((await resumed.list_runs(cid))["runs"]) == 2
         assert resumed.list_turns(cid)[0]["variant_count"] == 2
         forked = await resumed.fork(cid, 1)

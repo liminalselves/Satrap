@@ -16,6 +16,7 @@ import pytest
 
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.cli import common
+from satrap.cli import output
 
 
 class _AliveClient:
@@ -134,15 +135,15 @@ def test_offline_flags():
 
 def test_ensure_offline_allowed_rejects_when_backend_alive(monkeypatch: pytest.MonkeyPatch):
     """
-    后端在线且未强制时拒绝并退出码 1
+    后端在线且未强制时抛 CliError (由分发层渲染为退出码 1)
 
     参数:
     - monkeypatch: pytest monkeypatch 夹具
     """
     monkeypatch.setattr(common, "daemon_client_from_args", _alive_client_factory)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(output.CliError) as exc:
         common.ensure_offline_allowed(Namespace())
-    assert exc.value.code == 1
+    assert exc.value.exit_code == output.EXIT_ERROR
 
 
 def test_ensure_offline_allowed_force_warns(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):

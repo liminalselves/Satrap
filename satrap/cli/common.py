@@ -1,16 +1,30 @@
-"""CLI 命令共享的参数, 输出与连接辅助函数"""
+"""CLI 命令共享的参数, 连接与解析辅助函数"""
 from __future__ import annotations
 
 from argparse import Namespace
 from pathlib import Path
 from typing import Any
 import json
-import sys
+import os
 
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
-from satrap.cli.client import DaemonClient, DaemonInfo
+from satrap.cli.client import DEFAULT_CHAT_PORT, DEFAULT_CONTROL_PORT, DaemonClient, DaemonInfo
+from satrap.cli.output import CliError, print_json, warn
 from satrap.core.type import safe_getattr, safe_getattr_bool
+
+__all__ = [
+    "load_cli_config",
+    "daemon_client_from_args",
+    "control_client_from_args",
+    "chat_client_from_args",
+    "offline_requested",
+    "force_offline",
+    "ensure_offline_allowed",
+    "parse_kv_pairs",
+    "coerce_value",
+    "print_json",
+]
 
 
 def load_cli_config(args: Namespace) -> BackendConfig:
@@ -38,16 +52,56 @@ def load_cli_config(args: Namespace) -> BackendConfig:
 
 def daemon_client_from_args(args: Namespace, timeout: float = 2) -> DaemonClient:
     """
-    按 CLI 参数创建 daemon client
+    按 CLI 参数创建后端 client
 
     参数:
     - args: 额外位置参数
     - timeout: 超时时间
 
     返回:
-    - DaemonClient: 按 CLI 参数创建 daemon client
+    - DaemonClient: 按 CLI 参数创建后端 client
     """
     return DaemonClient(daemon=DaemonInfo.from_config(load_cli_config(args)), timeout=timeout)
+
+
+def control_client_from_args(args: Namespace, timeout: float = 5) -> DaemonClient:
+    """
+    创建控制服务 client (默认 127.0.0.1:19871, 可用 SATRAP_CONTROL_PORT 覆盖)
+
+    参数:
+    - args: 额外位置参数
+    - timeout: 超时时间
+
+    返回:
+    - DaemonClient: 控制服务 client
+    """
+    port = int(os.getenv("SATRAP_CONTROL_PORT", str(DEFAULT_CONTROL_PORT)))
+    return DaemonClient(
+        daemon=DaemonInfo(host="127.0.0.1", port=port),
+        timeout=timeout,
+        health_path="/status",
+        service_label="控制服务",
+    )
+
+
+def chat_client_from_args(args: Namespace, timeout: float = 5) -> DaemonClient:
+    """
+    创建聊天服务 client (默认 127.0.0.1:19872, 可用 SATRAP_CHAT_PORT 覆盖)
+
+    参数:
+    - args: 额外位置参数
+    - timeout: 超时时间
+
+    返回:
+    - DaemonClient: 聊天服务 client
+    """
+    port = int(os.getenv("SATRAP_CHAT_PORT", str(DEFAULT_CHAT_PORT)))
+    return DaemonClient(
+        daemon=DaemonInfo(host="127.0.0.1", port=port),
+        timeout=timeout,
+        health_path="/api/chat/health",
+        service_label="Chat 服务",
+    )
 
 
 def offline_requested(args: Namespace) -> bool:
@@ -78,7 +132,7 @@ def force_offline(args: Namespace) -> bool:
 
 def ensure_offline_allowed(args: Namespace, action: str = "写入本地配置") -> None:
     """
-    后端在线时阻止普通离线写入
+    后端在线时阻止普通离线写入 (抛 CliError, 由分发层统一渲染)
 
     参数:
     - args: 额外位置参数
@@ -86,11 +140,12 @@ def ensure_offline_allowed(args: Namespace, action: str = "写入本地配置") 
     """
     client = daemon_client_from_args(args)
     if client.is_alive() and not force_offline(args):
-        print(f"错误: 后端正在运行, 为避免 CLI 与后端抢写配置, 已拒绝离线{action}.")
-        print("请改用默认在线模式, 或先执行 `satrap stop`; 确认风险后可加 --force-offline.")
-        sys.exit(1)
+        raise CliError(
+            f"后端正在运行, 为避免 CLI 与后端抢写配置, 已拒绝离线{action}",
+            hint="请改用默认在线模式, 或先执行 `satrap stop`; 确认风险后可加 --force-offline",
+        )
     if client.is_alive() and force_offline(args):
-        print("警告: 正在后端运行时强制离线写入, 运行态可能不会立即同步.")
+        warn("正在后端运行时强制离线写入, 运行态可能不会立即同步")
 
 
 def parse_kv_pairs(groups: list[list[str]] | None) -> dict[str, Any]:
@@ -133,13 +188,3 @@ def coerce_value(value: str) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return value
-
-
-def print_json(data: Any) -> None:
-    """
-    输出 JSON
-
-    参数:
-    - data: 输入数据
-    """
-    print(json.dumps(data, ensure_ascii=False, indent=2))
