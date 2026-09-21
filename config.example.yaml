@@ -71,3 +71,6 @@ platforms:
   #     access_token: ${ONEBOT_ACCESS_TOKEN}
   #     enable_private: true
   #     enable_group: true
+  #     context_scope: group_member   # 按群成员隔离, 旧配置省略时保留原用户映射
+  #     group_whitelist: []   # 留空允许所有群, 非空填写群 ID 字符串
+  #     wake_words: []   # 留空仅响应真实 @机器人, 配置后匹配当前正文

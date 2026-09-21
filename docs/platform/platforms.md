@@ -41,6 +41,10 @@ platforms:
       room_enabled: false
 ```
 
+每个 OneBot 实例只绑定一个机器人账号: 配置 `self_id` 时必须匹配该账号, 留空时使用首条合法来源消息的账号。后续不同账号和自身发出的回声消息不会入队。消息按账号、会话类型、群或私聊目标及平台消息 ID 去重, 每实例至多保留 4096 条标识, 120 秒后过期; 不缓存正文。转换失败、取消或队列满不会将消息记为已接收。此去重不跨进程重启持久化, 无消息 ID 的输入不参与去重。健康状态 `ingress` 提供各类拒绝计数和缓存容量。
+
+OneBot 发送方法返回 `SendReceipt`: `success` 表示收到平台消息 ID, `partial` 表示部分块成功后明确失败, `failed` 表示明确未完成, `unknown` 表示动作结果无法确认。回执保留已确认的 `message_ids`, 分块失败位置和固定错误原因, 不回显供应商响应正文。事件的 `last_send_receipt` 保存最近一次回执; 部分成功或未知结果阻止调度器兜底重发全文。其他平台旧式 `None` 返回继续按原契约处理, 不伪造平台确认。本契约当前覆盖普通发送与已有流式降级, 按长度拆分及回复引用策略仍待后续实现。
+
 常用 settings:
 
 | 字段 | 说明 |
@@ -67,9 +71,15 @@ platforms:
       access_token: ${ONEBOT_ACCESS_TOKEN}
       enable_private: true
       enable_group: true
+      group_whitelist: []
+      wake_words: ["小助手"]
 ```
 
 `type` 可以使用 `onebot` 或 `aiocqhttp`。
+
+群消息默认仅由真实 @机器人或 `wake_words` 中的文本触发; 唤醒词区分大小写, 匹配当前顶层正文中的子串, 不扫描引用、转发和附件。@全体、@其他人及单独附件不触发, 私聊保持直接处理。未唤醒群消息不会消耗模型调用限流额度或产生限流反馈。
+
+`group_whitelist` 为群 ID 列表, 空列表允许所有群, 非空仅处理列出的群, 仍服从 `enable_group`。群 ID 推荐写为字符串。范围同时限制群消息接收和主动发送, 不限制私聊。平台页面支持逐行编辑群 ID 和唤醒词; 已启动 OneBot 的唤醒词、群范围、上下文范围和私聊/群聊开关可通过重载在线应用; 连接、执行容量及会话绑定变更通过定向替换实例应用, 启动失败时恢复旧实例。页面分别显示保存和生效版本。引用唤醒与高级参与规则尚未在本批次实现。
 
 常用 settings:
 
@@ -122,3 +132,54 @@ class MyPlatformAdapter(PlatformAdapter):
 ```
 
 接收到平台消息时, 适配器应构造统一事件并提交到事件队列。发送消息时, 优先实现 `send_message()`, 最低也要实现 `send_text()`。
+
+
+## 事件执行容量
+
+平台 settings 可配置 `event_queue_capacity` (默认 256)、`event_pending_capacity` (默认 256)、`event_concurrency` (默认 8) 和 `event_queue_ttl` (默认 120 秒)。容量与并发数必须是正整数, TTL 必须是有限正数。保存后重载会定向重建该实例以应用执行容量变更。
+
+同一来源会话按顺序处理, 不同来源会话可并发; 路由到相同最终 Session 的模型调用与回复发送保持串行。队列满时静默丢弃最新消息并记录计数, 过期待处理消息不会再调用模型。运行状态中的 `event_queue` 包含队列容量、排队/执行数量、丢弃及过期计数。关闭分发器会取消执行任务并清理等待事件的临时资产。
+
+
+## OneBot 上下文范围
+
+`settings.context_scope` 支持以下值:
+
+| 值 | 会话范围 |
+| --- | --- |
+| `legacy_user` | 保留旧映射, 同一成员在同一适配器的多个群可能共享上下文 |
+| `group_member` | 按适配器、机器人账号、群和成员隔离 |
+| `group` | 显式按适配器、机器人账号和群共享, 群成员共享模型上下文 |
+
+省略字段的旧配置继续使用 `legacy_user`; 前端新建 OneBot 实例默认选择 `group_member`。私聊仍使用原用户路由。切换范围使用独立映射并保留旧会话, 切回原范围可继续访问原映射, 不复制或合并历史。
+
+群共享会话不归属于首位发言者的用户会话列表, 成员身份仍随每次请求保留。Provider 的 context_key 在成员范围使用真实用户 ID, 群共享范围使用群 ID; 独立的会话标识不作为用户 ID 注入 Provider。管理工具的逐次权限上下文仍将在后续批次接入。
+
+
+## 配置保存与生效
+
+从 YAML/JSON 启动时, 后端记录实际文件路径, 重载时重新读取该文件的平台配置。以字典构造的嵌入式后端使用内存配置, 不猜测默认配置文件。`/api/config/reload` 的 `platforms` 与健康响应的 `platform_config` 返回各实例的 `saved_revision`、`active_revision` 和 `status`。
+
+当前支持 OneBot 策略在线应用, 事件持有接收时的策略副本; 群范围在执行/发送前仍检查当前权限。文件读取或校验失败保留旧生效值, 返回 `failed`。连接、会话绑定、容量以及新增/删除/停用实例通过定向生命周期协调应用, 不打断其他平台工作器。新实例确认就绪后才更新生效版本, 失败时恢复旧实例; 如果旧实例也恢复失败, 生效版本返回空且状态为 failed。后端未运行或没有分发器时保留 pending_restart。
+
+OneBot 就绪探针核验当前实例的独立本地 HTTP 标识, 不将端口被其他服务占用当成启动成功。该检查仅验证 Satrap 监听服务, 不表示 SnowLuma 或 QQ 已连通。
+# 自动参与的群与时段覆盖
+
+OneBot 默认使用 `wake_mode: explicit`, 只处理明确唤醒。可选 `frequency` 按正文数量触发, 或 `necessity` 按本地必要性评分触发。`wake_message_threshold` 默认 3, `wake_cooldown` 默认 30 秒, `wake_score_threshold` 默认 0.65。单独附件和 @全体不计数。
+
+以下示例在本机时间 23:00 至次日 07:00 停止自动参与, 但群 123 使用独立的评分策略。显式 @机器人不受自动参与时段和冷却阻挡。
+
+```yaml
+wake_mode: frequency
+wake_time_rules:
+  - start: "23:00"
+    end: "07:00"
+    settings:
+      wake_mode: explicit
+wake_group_overrides:
+  "123":
+    wake_mode: necessity
+    wake_score_threshold: 0.8
+```
+
+优先级为平台默认值、时段设置、群级设置; 重叠时段按列表顺序覆盖。群级规则只改变唤醒参数, 不改变白名单、权限和会话范围。
