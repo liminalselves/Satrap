@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 import asyncio
 
-from satrap.core.components import BaseMessageComponent, PlatformComponentType, Plain
+from satrap.core.components import BaseMessageComponent, Forward, Node, Nodes, PlatformComponentType, Plain
 from satrap.core.type import safe_getattr_str
 
 
@@ -58,6 +58,58 @@ def split_components(components: list[BaseMessageComponent], limit: int) -> list
     if current:
         chunks.append(current)
     return chunks
+
+
+def split_forward_turns(components: list[BaseMessageComponent]) -> list[tuple[str, list[BaseMessageComponent]]]:
+    """
+    在 Node/Nodes 边界把消息链拆为普通段与转发段, 相邻同类合并
+
+    参数:
+    - components: 原始组件, 不原地修改
+
+    返回:
+    - list[tuple[str, list]]: 按原顺序排列的 ("normal", 组件) 与 ("forward", Node 列表),
+      不隐式把整条链包装成转发
+    """
+    turns: list[tuple[str, list[BaseMessageComponent]]] = []
+    normal: list[BaseMessageComponent] = []
+    nodes: list[BaseMessageComponent] = []
+    for component in components:
+        if isinstance(component, (Node, Nodes)):
+            if normal:
+                turns.append(("normal", normal))
+                normal = []
+            nodes.extend(component.nodes if isinstance(component, Nodes) else [component])
+        else:
+            if nodes:
+                turns.append(("forward", nodes))
+                nodes = []
+            normal.append(component)
+    if nodes:
+        turns.append(("forward", nodes))
+    if normal:
+        turns.append(("normal", normal))
+    return turns
+
+
+def flatten_forward_nodes(nodes: list[Node]) -> list[BaseMessageComponent]:
+    """
+    将转发节点展开为普通组件序列, 供不支持转发接口的实现降级分段发送
+
+    参数:
+    - nodes: 待展开的 Node 组件
+
+    返回:
+    - list: 节点正文按原顺序拼接, 嵌套转发组件替换为占位文本
+    """
+    flat: list[BaseMessageComponent] = []
+    for node in nodes:
+        for component in node.content:
+            if isinstance(component, (Node, Nodes, Forward)):
+                flat.append(Plain("[转发]"))
+            else:
+                flat.append(component)
+    return flat
 
 
 class OutboundTurns:

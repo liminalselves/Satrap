@@ -484,6 +484,28 @@ class PlatformAdapter(ABC):
         """
         return None
 
+    async def fetch_forward_message(self, forward_id: str, session_id: str) -> list[Any] | None:
+        """
+        回源一条合并转发的节点列表, 默认不支持
+
+        参数:
+        - forward_id: 平台转发消息 ID
+        - session_id: 当前事件的平台会话 ID, 用于校验转发所属会话仍在允许范围
+
+        返回:
+        - list[Any] | None: 已归一的 Node 组件列表, 不支持或失败时返回 None
+        """
+        return None
+
+    def admin_capabilities(self) -> dict[str, str]:
+        """
+        查询平台管理能力矩阵, 默认没有任何已知管理能力
+
+        返回:
+        - dict[str, str]: 动作名到状态 (supported/unsupported/unavailable), 空表表示全部未知
+        """
+        return {}
+
     async def get_group(self, group_id: str | None = None) -> Group | None:
         """
         获取群聊信息, 默认返回 None
@@ -712,6 +734,31 @@ class PlatformAdapterManager:
         for adapter in self._adapters.values():
             if adapter.started:
                 await adapter.terminate()
+
+
+_current_adapter_manager: PlatformAdapterManager | None = None
+"""进程级当前适配器管理器, 由后端装配时登记"""
+
+
+def set_current_adapter_manager(manager: PlatformAdapterManager | None) -> None:
+    """
+    登记或清除进程级适配器管理器, 仅供后端启动/关闭调用
+
+    参数:
+    - manager: 当前管理器实例, None 表示清除
+    """
+    global _current_adapter_manager
+    _current_adapter_manager = manager
+
+
+def current_adapter_manager() -> PlatformAdapterManager | None:
+    """
+    读取进程级适配器管理器, 供平台工具在调用边界解析来源适配器
+
+    返回:
+    - PlatformAdapterManager | None: 未启动后端时为 None
+    """
+    return _current_adapter_manager
 
 
 class EventDispatcher:

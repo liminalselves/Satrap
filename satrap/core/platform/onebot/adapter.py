@@ -24,14 +24,17 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_private_session,
     message_chain_to_onebot_segments,
     onebot_segments_to_components,
+    parse_forward_nodes,
     private_session_id,
     normalize_segments,
     group_session_id,
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
-from satrap.core.platform.onebot.outbound import OutboundTurns, split_components
-from satrap.core.platform.notices import build_onebot_notice
+from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
+from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, OneBotAdmin
+from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendReceipt, combine_receipts
+from satrap.core.components import Node
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
 from satrap.core.type import PlatformMessage, safe_getattr_callable
@@ -91,9 +94,11 @@ class OneBotAdapter(PlatformAdapter):
         self._seen_messages: OrderedDict[tuple[str, str, str, str], float] = OrderedDict()
         self._ingress_rejections: dict[str, int] = {"account": 0, "self_echo": 0, "duplicate": 0}
         self._bot: Any = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._message_lookup_slots = asyncio.Semaphore(4)
         self._outbound = OutboundTurns()
+        self.admin = OneBotAdmin(self, _action_failures)
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
 
     def meta(self) -> PlatformMetadata:
@@ -124,6 +129,7 @@ class OneBotAdapter(PlatformAdapter):
         if self.secret:
             kwargs["secret"] = self.secret
         self._bot = CQHttp(**kwargs)
+        self._loop = asyncio.get_running_loop()
         async def ready() -> str:
             """返回当前实例的就绪标识, 供本机启动探针核验"""
             return self._ready_path
@@ -289,6 +295,40 @@ class OneBotAdapter(PlatformAdapter):
             "time": int(raw_time) if isinstance(raw_time, (int, float)) and not isinstance(raw_time, bool) else 0,
         }
 
+    async def fetch_forward_message(self, forward_id: str, session_id: str) -> list[Node] | None:
+        """
+        有界回源合并转发节点, 不递归展开嵌套转发, 不下载附件
+
+        参数:
+        - forward_id: OneBot 转发消息 ID
+        - session_id: 当前事件的平台会话 ID, 用于校验群范围
+
+        返回:
+        - list[Node] | None: 至多 20 个已归一节点; 越界, 超时, 格式不符或群范围外返回 None
+        """
+        if self._bot is None or not forward_id:
+            return None
+        if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
+            return None
+
+        async def lookup() -> Any:
+            """等待并发槽位计入总超时"""
+            async with self._message_lookup_slots:
+                return await self._bot.get_forward_msg(id=forward_id)
+        try:
+            result = await asyncio.wait_for(lookup(), timeout=5)
+        except Exception:
+            return None
+        if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 262144:
+            return None
+        result = cast(dict[str, Any], result)
+        if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
+            return None
+        raw_messages = result.get("messages", result.get("message"))
+        if not isinstance(raw_messages, list):
+            return None
+        return parse_forward_nodes(cast(list[Any], raw_messages))
+
     async def _handle_message_event(self, event: dict[str, Any]) -> None:
         """
         将 OneBot 消息事件转换并提交到 Satrap 管线
@@ -368,10 +408,15 @@ class OneBotAdapter(PlatformAdapter):
             return
         # 群范围外的通知静默丢弃, 好友请求等无群事件不受白名单影响
         session_id = group_session_id(payload.group_id) if payload.group_id else private_session_id(payload.user_id) if payload.user_id else ""
+        extras: dict[str, Any] = {"payload": payload}
+        attachment = notice_attachment(payload)
+        if attachment is not None:
+            # 群文件上传归一为附件事件, 下载与模型处理留给会话触发策略
+            extras["attachment"] = attachment
         await self.emit_event(PlatformEvent(
             platform_id=self.config.id, platform_type=self.config.type, event_type=event_type,
             session_id=session_id, user_id=payload.user_id, group_id=payload.group_id,
-            raw_event=raw, timestamp=float(payload.time or time()), extras={"payload": payload},
+            raw_event=raw, timestamp=float(payload.time or time()), extras=extras,
         ))
 
     async def convert_message(self, raw_event: dict[str, Any]) -> PlatformMessage:
@@ -417,7 +462,17 @@ class OneBotAdapter(PlatformAdapter):
         return {**super().get_stats(), "ingress": {
             **self._ingress_rejections, "dedup_entries": len(self._seen_messages),
             "dedup_capacity": 4096, "dedup_ttl": 120,
-        }}
+        }, "capabilities": self.admin_capabilities()}
+
+    def admin_capabilities(self) -> dict[str, str]:
+        """
+        返回 OneBot v11 标准管理动作的支持状态, 不执行写动作探测
+
+        返回:
+        - dict[str, str]: 动作名到状态; 客户端未连接时全部为 unavailable
+        """
+        status = "supported" if self._bot is not None else "unavailable"
+        return {name: status for name in ADMIN_CAPABILITIES}
 
     async def send_text(self, session_id: str, text: str) -> SendReceipt:
         """
@@ -461,19 +516,110 @@ class OneBotAdapter(PlatformAdapter):
         - SendReceipt: 首次失败即停止的聚合结果
         """
         limit = int(self.config.settings.get("message_text_limit", 2000))
-        chunks = split_components(message.components, limit)
-        if len(chunks) == 1:
-            return await self._send_chunk(session_id, MessageChain(chunks[0]))
+        turns = split_forward_turns(message.components)
+        if len(turns) == 1 and turns[0][0] == "normal":
+            chunks = split_components(turns[0][1], limit)
+            if len(chunks) == 1:
+                return await self._send_chunk(session_id, MessageChain(chunks[0]))
         receipts: list[SendReceipt] = []
-        for chunk in chunks:
-            try:
-                result = await self._send_chunk(session_id, MessageChain(chunk))
-            except PermissionError:
-                if not receipts:
-                    raise
-                result = SendReceipt("failed", reason="target_unavailable")
-            except Exception:
-                result = SendReceipt("failed", reason="message_conversion_failed")
+        for kind, payload in turns:
+            if kind == "forward":
+                nodes = [component for component in payload if isinstance(component, Node)]
+                try:
+                    result = await self._send_forward(session_id, nodes, limit)
+                except PermissionError:
+                    if not receipts:
+                        raise
+                    result = SendReceipt("failed", reason="target_unavailable")
+                except Exception:
+                    result = SendReceipt("failed", reason="message_conversion_failed")
+                receipts.append(result)
+                if result.status != "success":
+                    break
+                continue
+            for chunk in split_components(payload, limit):
+                try:
+                    result = await self._send_chunk(session_id, MessageChain(chunk))
+                except PermissionError:
+                    if not receipts:
+                        raise
+                    result = SendReceipt("failed", reason="target_unavailable")
+                except Exception:
+                    result = SendReceipt("failed", reason="message_conversion_failed")
+                receipts.append(result)
+                if result.status != "success":
+                    break
+            if receipts[-1].status != "success":
+                break
+        return combine_receipts(receipts)
+
+    async def _send_forward(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
+        """
+        通过专用转发接口发送合并转发节点, 实现不支持时降级为分段发送
+
+        参数:
+        - session_id: 平台会话 ID
+        - nodes: 待发送的合并转发节点
+        - limit: 降级分段时的每块文本字符上限
+
+        返回:
+        - SendReceipt: 平台确认或失败状态, 无回包不视为成功
+        """
+        if not self._bot:
+            logger.error("[OneBotAdapter] 客户端未初始化, 无法发送消息")
+            return SendReceipt("failed", reason="client_unavailable")
+        if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
+            raise PermissionError("目标群不在当前适配器允许范围内")
+        if not nodes:
+            return SendReceipt("failed", reason="empty_message")
+
+        messages = [await node.to_dict() for node in nodes]
+        try:
+            if is_private_session(session_id):
+                result = await self._bot.send_private_forward_msg(
+                    user_id=int(extract_private_user_id(session_id)), messages=messages,
+                )
+            elif is_group_session(session_id):
+                result = await self._bot.send_group_forward_msg(
+                    group_id=int(extract_group_id(session_id)), messages=messages,
+                )
+            else:
+                return SendReceipt("failed", reason="invalid_session")
+        except _action_failures as error:
+            raw_result = getattr(error, "result", None)
+            result_payload = cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
+            retcode = result_payload.get("retcode")
+            if retcode not in (10002, 1404):
+                return SendReceipt("failed", reason="action_rejected")
+            logger.info("[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送")
+            return await self._send_forward_degraded(session_id, nodes, limit)
+        except Exception:
+            return SendReceipt("unknown", reason="action_unconfirmed")
+        # 动作提交后异常无法证明平台未发送, 不向上层提供自动重试依据
+        if isinstance(result, dict):
+            message_id = cast(dict[str, Any], result).get("message_id")
+            if isinstance(message_id, (str, int)) and not isinstance(message_id, bool) and str(message_id):
+                return SendReceipt("success", (str(message_id),))
+        return SendReceipt("unknown", reason="missing_message_id")
+
+    async def _send_forward_degraded(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
+        """
+        将转发节点展开为普通分段发送, 嵌套转发保留占位文本
+
+        参数:
+        - session_id: 平台会话 ID
+        - nodes: 待展开的转发节点
+        - limit: 每块文本字符上限
+
+        返回:
+        - SendReceipt: 首次失败即停止的聚合结果
+        """
+        components = flatten_forward_nodes(nodes)
+        if not components:
+            return SendReceipt("failed", reason="empty_message")
+        receipts: list[SendReceipt] = []
+        for chunk in split_components(components, limit):
+            result = await self._send_chunk(session_id, MessageChain(chunk))
             receipts.append(result)
             if result.status != "success":
                 break
@@ -613,6 +759,7 @@ class OneBotAdapter(PlatformAdapter):
         await self._outbound.close()
         await super().terminate()
         self._bot = None
+        self._loop = None
         self._seen_messages.clear()
 
     def get_client(self) -> Any:

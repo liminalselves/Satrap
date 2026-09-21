@@ -29,7 +29,7 @@ from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
-from satrap.core.pipeline.input_projection import project_input, resolve_quotes
+from satrap.core.pipeline.input_projection import project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
@@ -175,8 +175,10 @@ class PipelineScheduler:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     return
 
-            # Step.4 限流通过后按预算补全引用原文并投影模型输入
-            projected = project_input(event, await resolve_quotes(event))
+            # Step.4 限流通过后按预算补全引用与转发原文并投影模型输入
+            quote_status = await resolve_quotes(event)
+            forward_status = await resolve_forwards(event)
+            projected = project_input(event, quote_status, forward_status)
             event.set_extra("input_projection", projected)
             message, images, videos = projected.message, list(projected.images), list(projected.videos)
             if not message and not images and not videos:

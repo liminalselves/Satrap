@@ -5,10 +5,25 @@ import asyncio
 
 import pytest
 
-from satrap.core.platform.notices import NoticePayload, PlatformEventHub, build_onebot_notice
+from satrap.core.platform.notices import (
+    NoticePayload,
+    PlatformEventHub,
+    build_onebot_notice,
+    notice_attachment,
+    set_current_hub,
+)
+from satrap.core.components.message import File
 from satrap.core.config.platform_policy import validate_wake_policy
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig, PlatformEvent
+
+
+@pytest.fixture(autouse=True)
+def _reset_current_hub():
+    """每个用例前后复位进程级通知 hub, 隔离其他测试文件的 BackendManager 残留"""
+    set_current_hub(None)
+    yield
+    set_current_hub(None)
 
 
 def raw_notice(**extra: object) -> dict[str, Any]:
@@ -171,3 +186,54 @@ async def test_backend_registers_hub_for_plugins_and_reports_stats(tmp_path: Pat
     finally:
         await manager.stop()
     assert current_hub() is None
+
+
+def upload_notice(**extra: object) -> dict[str, Any]:
+    return {"post_type": "notice", "notice_type": "group_upload", "self_id": 10000, "group_id": 456,
+            "user_id": 321, "time": 1700000000,
+            "file": {"id": "/file/abc", "name": "报表.xlsx", "size": 2048, "busid": 102, "url": "https://dl.example.com/f"},
+            **extra}
+
+
+def test_notice_attachment_normalizes_group_upload_only():
+    payload = build_onebot_notice(upload_notice(), "10000")
+    assert payload is not None
+    attachment = notice_attachment(payload)
+    assert isinstance(attachment, File)
+    assert attachment.name == "报表.xlsx" and attachment.file_ == "/file/abc"
+    assert attachment.url == "https://dl.example.com/f"
+    assert payload.file.get("size") == 2048 and payload.file.get("busid") == 102
+
+    other = build_onebot_notice(raw_notice(), "10000")
+    assert other is not None and notice_attachment(other) is None
+    request = build_onebot_notice({"post_type": "request", "request_type": "friend", "user_id": 5, "flag": "f"}, "10000")
+    assert request is not None and notice_attachment(request) is None
+
+
+def test_notice_attachment_requires_remote_handle_and_tolerates_missing_fields():
+    no_file = build_onebot_notice(upload_notice(file=None), "10000")
+    assert no_file is not None and no_file.file == {}
+    assert notice_attachment(no_file) is None
+    no_handle = build_onebot_notice(upload_notice(file={"name": "x.txt", "size": 1}), "10000")
+    assert no_handle is not None and notice_attachment(no_handle) is None
+    id_only = build_onebot_notice(upload_notice(file={"id": 42}), "10000")
+    assert id_only is not None
+    attachment = notice_attachment(id_only)
+    assert attachment is not None and attachment.name == "file" and attachment.file_ == "42" and not attachment.url
+
+
+@pytest.mark.asyncio
+async def test_group_upload_notice_carries_attachment_component():
+    received: list[PlatformEvent] = []
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}), event_handler=received.append)
+    adapter.bot_self_id = "10000"
+    await adapter._handle_notice(upload_notice())
+    assert len(received) == 1
+    event = received[0]
+    assert event.event_type == "notice.group_upload" and event.session_id == "group%456"
+    attachment = event.extras.get("attachment")
+    assert isinstance(attachment, File) and attachment.name == "报表.xlsx"
+    assert adapter._event_queue.empty()
+
+    await adapter._handle_notice(raw_notice())
+    assert "attachment" not in received[-1].extras

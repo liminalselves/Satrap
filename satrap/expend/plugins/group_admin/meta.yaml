@@ -1,0 +1,45 @@
+name: group_admin
+version: 0.1.0
+author: Satrap Team
+description: "OneBot 群信息查询, 群成员管理, 请求审批与消息撤回工具; 写操作默认关闭, 由用户显式开启"
+
+config_schema:
+  write_tools_enabled:
+    type: checkbox
+    default: false
+    description: "允许执行踢人, 禁言, 管理员, 名片, 群名, 头衔, 退群与请求审批等写操作; 默认关闭"
+  allowed_callers:
+    type: textarea
+    default: ""
+    description: "允许触发管理动作的成员 QQ, 每行一个; 留空不限制调用者, 仍受写操作开关限制"
+  allowed_groups:
+    type: textarea
+    default: ""
+    description: "允许执行管理动作的群号, 每行一个; 留空不额外限制, 平台实例群白名单始终生效"
+
+tools:
+  group_admin_list_groups: "列出机器人所在群"
+  group_admin_get_group_info: "查看群信息"
+  group_admin_list_members: "列出群成员"
+  group_admin_get_member: "查看群成员信息"
+  group_admin_get_honors: "查看群荣誉信息"
+  group_admin_recall_message: "撤回指定消息"
+  group_admin_kick: "移出群成员"
+  group_admin_ban: "禁言或解除禁言群成员"
+  group_admin_whole_ban: "开启或解除全员禁言"
+  group_admin_ban_anonymous: "禁言匿名成员"
+  group_admin_set_admin: "设置或取消群管理员"
+  group_admin_set_anonymous: "开启或关闭群匿名"
+  group_admin_set_card: "设置群成员名片"
+  group_admin_set_name: "修改群名"
+  group_admin_set_title: "设置群成员专属头衔"
+  group_admin_leave: "退出或解散群"
+  group_admin_handle_friend_request: "批准或拒绝好友添加请求"
+  group_admin_handle_group_request: "批准或拒绝加群请求或邀请"
+
+compatibility:
+  satrap: ">=0.1,<0.2"
+
+applicability:
+  session_types: [platform]
+  platforms: [onebot, aiocqhttp]

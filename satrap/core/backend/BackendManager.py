@@ -45,6 +45,7 @@ from satrap.core.platform import (
     PlatformAdapterRegistry,
     PlatformConfig,
     registry as global_registry,
+    set_current_adapter_manager,
 )
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
@@ -913,6 +914,7 @@ class BackendManager:
                     await self._adapter_mgr.stop_all()
                     await self.platform_events.close()
                     set_current_hub(None)
+                    set_current_adapter_manager(None)
                 except Exception as e:
                     logger.warning(f"[BackendManager] 停止适配器失败: {e}")
 
@@ -1164,6 +1166,7 @@ class BackendManager:
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
         set_current_hub(self.platform_events)
+        set_current_adapter_manager(self._adapter_mgr)
 
         for pcfg in self.config.platforms:
             pid = str(pcfg.get("id", ""))

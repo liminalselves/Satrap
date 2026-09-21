@@ -252,5 +252,33 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - BackendManager 创建与替换适配器时注入同一 hub, 关闭时 close 并清除进程级引用; 健康响应新增 `platform_events` 统计
 - 前端订阅类型多行输入与归一化, 配置示例/文档同步
 - 新增 `tests/unit/test_platform_notices.py` 13 passed (载荷收窄/外账号拒绝, 去重键, 单次派发与去重, 无订阅计数与异常隔离, 并行上限与关闭, OneBot 过滤与白名单, 不进入消息管线, 后端装配); 相关运行时/手动唤醒/管理回归 50 passed; 修改模块 Pyright 0 errors / 0 warnings
+- 修复顺序依赖缺陷: `test_multi_adapter_routing.py` 两个用例调用 `_init_platforms` 后未 `stop`, 进程级 hub 泄漏导致本文件装配用例在全量运行时失败; 已补 try/finally `stop` 清理, 本文件另加 autouse 复位 fixture 防御; 修复后完整单元测试 1695 passed / 19 skipped / 0 failed (164 秒)
 
 撤回事件使引用缓存失效目前无需处理 (引用回源不缓存); 群文件上传 notice 到附件事件的转换与群管理工具留待后续批次。
+
+## P2 合并转发入站与出站分流
+
+- 入站 `forward` 段映射为 `Forward(id, nodes=None)`, 实现内联 `content` 时直接解析节点; `parse_forward_nodes` 归一 `type/data` 包装与直接字段两种形态, 兼容 `content`/`message` 与字符串正文, 每条至多 20 节点, 嵌套转发保留占位不再展开
+- 适配器新增 `fetch_forward_message` (基类默认 None): `get_forward_msg` 与引用回源共用 4 并发槽位, 5 秒/256 KiB 预算, 核验机器人账号与群范围, 兼容 `messages`/`message` 响应字段
+- `input_projection.resolve_forwards` 每事件最多回源 2 条顶层转发, `forward_lookup` 布尔配置默认开启可群覆盖; 投影渲染 `[转发消息 N 条: - 昵称: 摘要]` 块, 单条截断 2000 字符, 转发媒体与引用共享 4 个预算, 未解析保留 `[转发]` 占位; scheduler Step.4 接入
+- 出站 `split_forward_turns` 在 Node/Nodes 边界拆分, 普通段与转发段按原顺序分送 (Plain A/转发 B/Plain C), 不隐式整链包装; `send_private/group_forward_msg` 返回 message_id 计入回执, 动作未找到 (retcode 10002/1404) 降级为 `flatten_forward_nodes` 分段发送, 其他动作拒绝不重试; 转发段复用同一逻辑回复执行权与失败即停止语义
+- 前端补 `forward_lookup` 开关与归一化, 配置示例与 platforms.md 同步
+- 新增 `tests/unit/test_onebot_forward.py` 26 passed (解析形态/节点上限/嵌套占位, 回源账号/白名单/预算, 投影渲染/共享预算/截断/不回源未唤醒消息, 混合链顺序/私群 API 选择/降级/业务拒绝/无 ID 未知/白名单); 相关管线/出站/引用/事件回归 157 passed; 修改模块 Pyright 0 errors / 0 warnings (顺带修复 input_projection 存量 reportOptionalMemberAccess 1 处); 前端 vitest 69 passed, tsc/eslint 通过; 完整单元测试 1721 passed / 19 skipped / 0 failed (180 秒)
+
+群文件上传 notice 转附件事件仍待后续批次。
+
+## P2 群管理动作与工具插件
+
+- `satrap/core/platform/onebot/admin.py` 新增 `OneBotAdmin` 动作集, 登记 18 个 OneBot v11 标准管理动作 (5 读 + 13 写); 统一 10 秒超时, 群号/QQ 号纯数字校验, 群动作先过实例群白名单, 列表响应收窄白名单字段 (群列表 ≤512, 成员 ≤2048); 错误归一 `UnsupportedAdminAction` (retcode 10002/1404 或方法缺失) / `AdminActionRejected` (业务拒绝) / `AdminActionUnconfirmed` (超时与传输异常, 不假定成功)
+- 适配器持有 `admin` 与 `_loop` 字段, `admin_capabilities()` 客户端在连时报全支持否则全不可用, 随 `get_stats` 的 `capabilities` 键暴露; 进程级 `set_current_adapter_manager`/`current_adapter_manager` 访问器在 `_init_platforms`/`stop` 中绑定与清理, 与 `set_current_hub` 同生命周期
+- 内置 `group_admin` 插件 (仅 `session_type: platform`) 暴露 18 个同名模型工具; 执行时按 `CallOrigin` 解析来源实例, 不缓存适配器引用; 写操作要求 `write_tools_enabled: true` (默认关) 且可选 `allowed_callers`/`allowed_groups` 逐行收窄, 私聊必须显式 `group_id`; 布尔参数严格校验拒绝真值语义; 读工具 `recovery_policy=retry`, 写工具 `manual`; 同步工具经 `run_coroutine_threadsafe` 桥接到适配器事件循环 (15 秒上限), 循环未就绪直接报错不创建协程
+- `platforms.md` 新增"群管理动作与能力矩阵"章节, 逐项登记动作/工具名/读写/参数/响应收窄与重试策略
+- 新增 `tests/unit/test_onebot_admin.py` + `tests/unit/test_group_admin_plugin.py` 共 24 passed (参数边界/白名单/字段收窄/动作参数归一/错误三类归一/能力上报, 插件 meta 与定义一致性/权限门槛/私聊显式群/同步桥接/未知平台); 相关回归 (plugin_spec/session_providers/plugin_compatibility/module_loading/notices/multi_adapter/forward) 128 passed; 修改模块 Pyright 0 errors / 0 warnings; 完整单元测试 1745 passed / 19 skipped / 0 failed (184 秒)
+
+## P2 群文件上传通知转附件事件
+
+- `notices.notice_attachment` 将 `notice.group_upload` 载荷归一为 `File` 组件 (name 文件名, file 远端文件 ID, url 实现下载地址可为空), 缺 ID 与 URL 时不生成; 大小与 busid 保留在 `payload.file`; 只携带远端元信息不触发下载, 下载与模型处理留给 P3 的会话触发策略
+- 适配器 `_emit_notice` 把附件放入事件 `extras["attachment"]`, 事件仍走 `notice.group_upload` 轻量分发路径, 不进入消息管线; platforms.md 通知章节同步, 并修正"管理工具待后续批次"的过期表述
+- `tests/unit/test_platform_notices.py` 新增 3 用例共 16 passed (仅 group_upload 归一/缺字段与无远端句柄容忍/适配器事件携带附件且不进队列); 修改模块 Pyright 0 errors / 0 warnings
+
+P2 全部完成, P3 文件提取与 ASR 待后续批次。

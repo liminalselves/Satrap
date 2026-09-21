@@ -15,6 +15,7 @@ from typing import Any, cast
 import asyncio
 
 from satrap.core.platform import PlatformEvent
+from satrap.core.components.message import File
 
 from satrap.core.log import logger
 
@@ -247,6 +248,29 @@ def build_onebot_notice(raw: dict[str, Any], self_id: str) -> NoticePayload | No
         time=int(raw_time) if isinstance(raw_time, (int, float)) and not isinstance(raw_time, bool) else 0,
         file=file,
     )
+
+
+def notice_attachment(payload: NoticePayload) -> File | None:
+    """
+    将群文件上传通知归一为 File 附件组件, 只携带远端元信息, 不触发下载
+
+    参数:
+    - payload: 归一化后的通知载荷
+
+    返回:
+    - File | None: 非群文件上传或缺少文件信息时返回 None; file 字段为远端文件 ID, url 可能为空
+    """
+    if payload.category != "notice" or payload.kind != "group_upload" or not payload.file:
+        return None
+    raw_name = payload.file.get("name")
+    name = str(raw_name).strip() if isinstance(raw_name, str) else ""
+    raw_id = payload.file.get("id")
+    file_id = str(raw_id) if isinstance(raw_id, (int, str)) and not isinstance(raw_id, bool) else ""
+    raw_url = payload.file.get("url")
+    url = str(raw_url) if isinstance(raw_url, str) else ""
+    if not file_id and not url:
+        return None
+    return File(name=name or "file", file=file_id, url=url)
 
 
 _current_hub: PlatformEventHub | None = None

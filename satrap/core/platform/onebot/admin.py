@@ -1,0 +1,468 @@
+"""
+OneBot 群管理与请求审批动作封装
+
+每个动作统一参数校验, 群范围检查, 超时与错误归一;
+只负责协议 I/O 和边界收窄, 不决定调用者权限
+"""
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
+import asyncio
+
+
+class PlatformAdminError(Exception):
+    """管理动作失败的基类, message 为不含平台响应正文的用户可读说明"""
+
+
+class UnsupportedAdminAction(PlatformAdminError):
+    """目标实现缺少对应动作接口"""
+
+
+class AdminActionRejected(PlatformAdminError):
+    """平台明确拒绝执行, 不自动重试"""
+
+
+class AdminActionUnconfirmed(PlatformAdminError):
+    """动作结果未知 (超时或传输异常), 不假定成功也不自动重试"""
+
+
+ADMIN_TIMEOUT = 10
+"""单个管理动作含等待的最长秒数"""
+
+ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
+    "get_group_list": ("read", "获取机器人所在群列表"),
+    "get_group_info": ("read", "获取群信息"),
+    "get_group_member_list": ("read", "获取群成员列表"),
+    "get_group_member_info": ("read", "获取群成员信息"),
+    "get_group_honor_info": ("read", "获取群荣誉信息"),
+    "recall_message": ("write", "撤回消息 (delete_msg)"),
+    "kick_group_member": ("write", "移出群成员"),
+    "ban_group_member": ("write", "禁言或解除禁言群成员"),
+    "set_group_whole_ban": ("write", "全员禁言开关"),
+    "ban_anonymous": ("write", "禁言匿名成员"),
+    "set_group_admin": ("write", "设置或取消群管理员"),
+    "set_group_anonymous": ("write", "群匿名开关"),
+    "set_group_card": ("write", "设置群名片"),
+    "set_group_name": ("write", "修改群名"),
+    "set_group_special_title": ("write", "设置专属头衔"),
+    "leave_group": ("write", "退出或解散群"),
+    "handle_friend_request": ("write", "批准或拒绝好友请求"),
+    "handle_group_request": ("write", "批准或拒绝加群请求/邀请"),
+}
+"""OneBot v11 标准管理动作登记表: 名称到读写属性与说明"""
+
+
+def normalize_group_id(value: Any) -> str:
+    """
+    校验并归一化群 ID
+
+    参数:
+    - value: 外部输入
+
+    返回:
+    - str: 纯数字群 ID 字符串
+    """
+    text = str(value).strip()
+    if not text or not text.isdecimal():
+        raise ValueError("群 ID 必须为纯数字字符串")
+    return text
+
+
+def normalize_user_id(value: Any) -> str:
+    """
+    校验并归一化用户 ID
+
+    参数:
+    - value: 外部输入
+
+    返回:
+    - str: 纯数字用户 ID 字符串
+    """
+    text = str(value).strip()
+    if not text or not text.isdecimal():
+        raise ValueError("用户 ID 必须为纯数字字符串")
+    return text
+
+
+def normalize_flag(value: Any) -> str:
+    """
+    校验请求审批 flag
+
+    参数:
+    - value: request 事件上报的 flag
+
+    返回:
+    - str: 非空且不含空白字符的 flag
+    """
+    text = str(value).strip()
+    if not text or any(ch.isspace() for ch in text):
+        raise ValueError("请求标识 flag 非法")
+    return text
+
+
+class OneBotAdmin:
+    """
+    OneBot v11 群管理动作集
+
+    通过适配器持有的 aiocqhttp 客户端调用动作接口,
+    群动作在执行前检查实例群白名单; ActionFailed 按 retcode 区分
+    接口缺失 (10002/1404) 与业务拒绝, 不读取响应正文作为错误细节
+    """
+
+    def __init__(self, adapter: Any, action_failures: tuple[type[Exception], ...] = ()) -> None:
+        """
+        初始化动作集
+
+        参数:
+        - adapter: OneBotAdapter 实例
+        - action_failures: 视为平台明确拒绝的异常类型 (如 aiocqhttp ActionFailed)
+        """
+        self._adapter = adapter
+        self._action_failures = action_failures
+
+    async def _call(self, action: str, timeout: float = ADMIN_TIMEOUT, **params: Any) -> Any:
+        """
+        统一执行动作并归一化错误
+
+        参数:
+        - action: aiocqhttp 动作方法名
+        - timeout: 最长等待秒数
+        - params: 动作参数
+
+        返回:
+        - Any: 动作返回的数据字段, 无数据返回空字典
+        """
+        bot = self._adapter.get_client()
+        if bot is None:
+            raise AdminActionUnconfirmed("平台客户端未连接")
+        method = getattr(bot, action, None)
+        if not callable(method):
+            raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
+        call = cast(Callable[..., Awaitable[Any]], method)
+        try:
+            return await asyncio.wait_for(call(**params), timeout)
+        except asyncio.TimeoutError as error:
+            raise AdminActionUnconfirmed(f"动作 {action} 超时, 结果未知") from error
+        except PlatformAdminError:
+            raise
+        except Exception as error:
+            if self._action_failures and isinstance(error, self._action_failures):
+                raw_result = getattr(error, "result", None)
+                payload = cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
+                retcode = payload.get("retcode")
+                if retcode in (10002, 1404):
+                    raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
+                raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
+            raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
+
+    def _check_group(self, group_id: str) -> None:
+        """
+        校验目标群在当前实例允许范围内
+
+        参数:
+        - group_id: 已归一化群 ID
+        """
+        if not self._adapter.allows_group(group_id):
+            raise AdminActionRejected("目标群不在当前实例允许范围内")
+
+    async def get_group_list(self) -> list[dict[str, Any]]:
+        """
+        获取机器人所在群列表
+
+        返回:
+        - list[dict]: 收窄后的群信息 (group_id/group_name/member_count/max_member_count)
+        """
+        result = await self._call("get_group_list")
+        if not isinstance(result, list):
+            raise AdminActionUnconfirmed("群列表响应格式不符")
+        groups: list[dict[str, Any]] = []
+        for item in cast(list[Any], result)[:512]:
+            if not isinstance(item, dict):
+                continue
+            data = cast(dict[str, Any], item)
+            groups.append({key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count")})
+        return groups
+
+    async def get_group_info(self, group_id: Any) -> dict[str, Any]:
+        """
+        获取群信息
+
+        参数:
+        - group_id: 目标群
+
+        返回:
+        - dict: 收窄后的群信息
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        result = await self._call("get_group_info", group_id=int(gid))
+        if not isinstance(result, dict):
+            raise AdminActionUnconfirmed("群信息响应格式不符")
+        data = cast(dict[str, Any], result)
+        return {key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count", "group_create_time", "group_level")}
+
+    async def get_group_member_list(self, group_id: Any) -> list[dict[str, Any]]:
+        """
+        获取群成员列表
+
+        参数:
+        - group_id: 目标群
+
+        返回:
+        - list[dict]: 收窄后的成员信息, 至多 2048 条
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        result = await self._call("get_group_member_list", group_id=int(gid))
+        if not isinstance(result, list):
+            raise AdminActionUnconfirmed("成员列表响应格式不符")
+        members: list[dict[str, Any]] = []
+        for item in cast(list[Any], result)[:2048]:
+            if not isinstance(item, dict):
+                continue
+            data = cast(dict[str, Any], item)
+            members.append({key: data.get(key) for key in (
+                "user_id", "nickname", "card", "role", "join_time", "last_sent_time",
+                "title", "level", "sex", "age", "area", "unfriendly", "card_changeable",
+            )})
+        return members
+
+    async def get_group_member_info(self, group_id: Any, user_id: Any) -> dict[str, Any]:
+        """
+        获取群成员信息
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+
+        返回:
+        - dict: 收窄后的成员信息
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        result = await self._call("get_group_member_info", group_id=int(gid), user_id=int(uid))
+        if not isinstance(result, dict):
+            raise AdminActionUnconfirmed("成员信息响应格式不符")
+        data = cast(dict[str, Any], result)
+        return {key: data.get(key) for key in (
+            "group_id", "user_id", "nickname", "card", "role", "join_time",
+            "last_sent_time", "title", "level", "sex", "shut_up_timestamp",
+        )}
+
+    async def get_group_honor_info(self, group_id: Any, honor_type: str = "all") -> dict[str, Any]:
+        """
+        获取群荣誉信息
+
+        参数:
+        - group_id: 目标群
+        - honor_type: talkative/performer/legend/strong_newbie/emotion 或 all
+
+        返回:
+        - dict: 实现返回的荣誉数据
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        if honor_type not in {"talkative", "performer", "legend", "strong_newbie", "emotion", "all"}:
+            raise ValueError("荣誉类型非法")
+        result = await self._call("get_group_honor_info", group_id=int(gid), type=honor_type)
+        if not isinstance(result, dict):
+            raise AdminActionUnconfirmed("荣誉信息响应格式不符")
+        return cast(dict[str, Any], result)
+
+    async def recall_message(self, message_id: Any) -> None:
+        """
+        撤回一条消息
+
+        参数:
+        - message_id: 平台消息 ID
+        """
+        text = str(message_id).strip()
+        if not text or not text.lstrip("-").isdecimal():
+            raise ValueError("消息 ID 必须为整数")
+        await self._call("delete_msg", message_id=int(text))
+
+    async def kick_group_member(self, group_id: Any, user_id: Any, reject_add_request: bool = False) -> None:
+        """
+        移出群成员
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+        - reject_add_request: 是否拒绝其后续加群请求
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        await self._call("set_group_kick", group_id=int(gid), user_id=int(uid), reject_add_request=bool(reject_add_request))
+
+    async def ban_group_member(self, group_id: Any, user_id: Any, duration: Any = 1800) -> None:
+        """
+        禁言群成员, 时长 0 表示解除
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+        - duration: 禁言秒数, 0 到 2592000
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        seconds = int(duration)
+        if isinstance(duration, bool) or not 0 <= seconds <= 2592000:
+            raise ValueError("禁言时长必须为 0 到 2592000 秒")
+        await self._call("set_group_ban", group_id=int(gid), user_id=int(uid), duration=seconds)
+
+    async def set_group_whole_ban(self, group_id: Any, enable: Any) -> None:
+        """
+        开启或解除全员禁言
+
+        参数:
+        - group_id: 目标群
+        - enable: 是否开启
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        if not isinstance(enable, bool):
+            raise ValueError("enable 必须为布尔值")
+        await self._call("set_group_whole_ban", group_id=int(gid), enable=enable)
+
+    async def ban_anonymous(self, group_id: Any, flag: Any, duration: Any = 1800) -> None:
+        """
+        禁言匿名成员
+
+        参数:
+        - group_id: 目标群
+        - flag: 匿名消息上报的 anonymous flag
+        - duration: 禁言秒数, 0 到 2592000
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        seconds = int(duration)
+        if isinstance(duration, bool) or not 0 <= seconds <= 2592000:
+            raise ValueError("禁言时长必须为 0 到 2592000 秒")
+        await self._call("set_group_anonymous_ban", group_id=int(gid), flag=normalize_flag(flag), duration=seconds)
+
+    async def set_group_admin(self, group_id: Any, user_id: Any, enable: Any) -> None:
+        """
+        设置或取消群管理员
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+        - enable: 是否设置为管理员
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        if not isinstance(enable, bool):
+            raise ValueError("enable 必须为布尔值")
+        await self._call("set_group_admin", group_id=int(gid), user_id=int(uid), enable=enable)
+
+    async def set_group_anonymous(self, group_id: Any, enable: Any) -> None:
+        """
+        开启或关闭群匿名
+
+        参数:
+        - group_id: 目标群
+        - enable: 是否允许匿名
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        if not isinstance(enable, bool):
+            raise ValueError("enable 必须为布尔值")
+        await self._call("set_group_anonymous", group_id=int(gid), enable=enable)
+
+    async def set_group_card(self, group_id: Any, user_id: Any, card: Any = "") -> None:
+        """
+        设置群成员名片
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+        - card: 新名片, 空字符串表示删除
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        text = str(card)
+        if len(text) > 60:
+            raise ValueError("群名片长度不能超过 60 字符")
+        await self._call("set_group_card", group_id=int(gid), user_id=int(uid), card=text)
+
+    async def set_group_name(self, group_id: Any, name: Any) -> None:
+        """
+        修改群名
+
+        参数:
+        - group_id: 目标群
+        - name: 新群名
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        text = str(name).strip()
+        if not text or len(text) > 60:
+            raise ValueError("群名必须为 1 到 60 字符")
+        await self._call("set_group_name", group_id=int(gid), group_name=text)
+
+    async def set_group_special_title(self, group_id: Any, user_id: Any, title: Any, duration: Any = -1) -> None:
+        """
+        设置群成员专属头衔
+
+        参数:
+        - group_id: 目标群
+        - user_id: 目标成员
+        - title: 头衔文本, 空字符串表示删除
+        - duration: 有效期秒数, -1 表示永久
+        """
+        gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
+        self._check_group(gid)
+        text = str(title)
+        if len(text) > 18:
+            raise ValueError("专属头衔长度不能超过 18 字符")
+        await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=int(duration))
+
+    async def leave_group(self, group_id: Any, dismiss: Any = False) -> None:
+        """
+        退出或解散群 (解散仅群主可用)
+
+        参数:
+        - group_id: 目标群
+        - dismiss: 是否解散
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        if not isinstance(dismiss, bool):
+            raise ValueError("dismiss 必须为布尔值")
+        await self._call("set_group_leave", group_id=int(gid), is_dismiss=dismiss)
+
+    async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "") -> None:
+        """
+        处理好友添加请求
+
+        参数:
+        - flag: request 事件上报的标识
+        - approve: 是否同意
+        - remark: 同意后的好友备注
+        """
+        if not isinstance(approve, bool):
+            raise ValueError("approve 必须为布尔值")
+        text = str(remark)
+        if len(text) > 60:
+            raise ValueError("备注长度不能超过 60 字符")
+        await self._call("set_friend_add_request", flag=normalize_flag(flag), approve=approve, remark=text)
+
+    async def handle_group_request(self, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
+        """
+        处理加群请求或邀请
+
+        参数:
+        - flag: request 事件上报的标识
+        - sub_type: add 或 invite, 必须与事件一致
+        - approve: 是否同意
+        - reason: 拒绝理由
+        """
+        if sub_type not in {"add", "invite"}:
+            raise ValueError("sub_type 必须为 add 或 invite")
+        if not isinstance(approve, bool):
+            raise ValueError("approve 必须为布尔值")
+        text = str(reason)
+        if len(text) > 120:
+            raise ValueError("理由长度不能超过 120 字符")
+        await self._call("set_group_add_request", flag=normalize_flag(flag), sub_type=sub_type, approve=approve, reason=text)

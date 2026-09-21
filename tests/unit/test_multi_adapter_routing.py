@@ -247,9 +247,13 @@ async def test_backend_awaits_platform_start_once(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(PlatformAdapterManager, "start_all", start_all)
     backend = BackendManager(BackendConfig(platforms=[]))
 
-    await backend._init_platforms()
+    try:
+        await backend._init_platforms()
 
-    assert calls == 1
+        assert calls == 1
+    finally:
+        # _init_platforms 登记进程级通知 hub, 必须 stop 清理避免泄漏到其他用例
+        await backend.stop()
 
 
 @pytest.mark.asyncio
@@ -268,8 +272,12 @@ async def test_backend_propagates_platform_start_failure(
     monkeypatch.setattr(PlatformAdapterManager, "start_all", start_all)
     backend = BackendManager(BackendConfig(platforms=[]))
 
-    with pytest.raises(RuntimeError, match="platform start failed"):
-        await backend._init_platforms()
+    try:
+        with pytest.raises(RuntimeError, match="platform start failed"):
+            await backend._init_platforms()
+    finally:
+        # 启动失败前 hub 已登记, 由 stop 负责清除
+        await backend.stop()
 
 
 def test_configured_adapter_ids_reads_backend_config_platforms():

@@ -57,6 +57,45 @@ OneBot 发送方法返回 `SendReceipt`: `success` 表示收到平台消息 ID, 
 
 `settings.wake_on_quote_self` 默认 `false`, 可按群覆盖。开启后, 未被 @/唤醒词/别名命中的群消息若引用了消息, 会在唤醒阶段用同一回源预算确认被引用者: 是机器人账号则视为明确唤醒 (决策 `quote_self`, 不受自动参与冷却限制), 引用他人或回源失败保持未唤醒且不消耗模型额度; 该次回源结果直接复用于后续输入投影, 不重复请求。
 
+### 合并转发入站与出站
+
+入站 `forward` 消息段转换为 `Forward(id)` 组件, 正文占位为 `[转发]`; 实现随消息段内联 `content` 节点列表时直接解析为 `Forward.nodes`, 不再回源。`settings.forward_lookup` 默认 `true`, 可按群覆盖。已唤醒且通过限流的消息若顶层含未解析的 Forward, 管线调用适配器的 `fetch_forward_message` 回源: OneBot 使用 `get_forward_msg`, 与引用回源共用 4 个并发槽位, 含等待的总超时 5 秒, 响应上限 256 KiB, 每事件最多回源 2 条转发, 每条至多 20 个节点; 核验机器人账号, 群白名单收紧后不再回源; 不递归展开节点内的嵌套转发, 不下载附件。兼容 `messages`/`message` 两种响应字段与 `type/data` 包装或直接字段两种节点形态。
+
+输入投影把已解析转发渲染为 `[转发消息 N 条: - <昵称>: <摘要> …]` 前置到当前正文, 单条转发投影截断到 2000 字符; 节点内图片/视频与引用共享 4 个媒体预算进入 `img_urls/video_urls`; 未解析的转发保留 `[转发]` 占位。转发内容作为用户提供的资料, 不参与唤醒判断或命令解析。
+
+出站消息链在 `Node/Nodes` 边界拆分为普通段与转发段并按原顺序发送: 普通段走 `send_private_msg`/`send_group_msg`, 转发段走 `send_private_forward_msg`/`send_group_forward_msg`, 不隐式把整条链包装成转发。例如 `Plain(A), Nodes(B), Plain(C)` 依次发送普通 A、转发 B、普通 C。转发接口返回动作未找到 (retcode 10002/1404) 时降级为逐块普通分段发送, 嵌套转发保留 `[转发]` 占位; 其他动作拒绝返回 `failed/action_rejected`。转发段与普通块共用同一逻辑回复的执行权与失败即停止语义, 回执聚合保留已确认消息 ID。
+
+### 群管理动作与能力矩阵
+
+OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aiocqhttp 客户端执行管理动作, 每个动作含等待最长 10 秒。群号/QQ 号只接受纯数字字符串, 群动作执行前校验实例群白名单; 响应数据收窄为白名单字段, 不回显平台响应正文。错误归一为三类: 接口缺失 (retcode 10002/1404 或方法不存在) 报 `UnsupportedAdminAction`, 平台明确拒绝报 `AdminActionRejected`, 超时或传输异常报 `AdminActionUnconfirmed` (结果未知, 不假定成功)。适配器 `admin_capabilities()` 返回各动作 `supported`/`unavailable` 状态并随 `get_stats` 的 `capabilities` 字段暴露; 客户端未连接时全部记为不可用。
+
+内置 `group_admin` 插件把动作暴露为模型工具 (仅 `session_type: platform` 会话)。执行时按入站 `CallOrigin` 解析来源实例与调用者身份, 私聊上下文必须显式指定 `group_id`, 群聊默认当前群。权限门槛: 写操作要求插件配置 `write_tools_enabled: true` (默认关闭); `allowed_callers` 逐行列出允许触发写操作的 QQ, 留空不限制; `allowed_groups` 逐行收窄可用群, 平台实例群白名单始终生效。工具不缓存适配器引用, 实例重载后按来源 ID 重新解析。读工具 `recovery_policy` 为 `retry` (可安全重试), 写工具为 `manual` (结果未知时不自动重试, 避免重复踢人/审批)。
+
+能力矩阵 (全部为 OneBot v11 标准动作):
+
+| OneBot 动作 | 工具名 | 读写 | 主要参数 | 响应收窄 |
+| --- | --- | --- | --- | --- |
+| get_group_list | group_admin_list_groups | 读 | 无 | 至多 512 条, 群号/群名/人数 |
+| get_group_info | group_admin_get_group_info | 读 | group_id 可选 | 群号/群名/人数/创建时间/等级 |
+| get_group_member_list | group_admin_list_members | 读 | group_id 可选 | 至多 2048 条, QQ/昵称/名片/角色/入群时间等 |
+| get_group_member_info | group_admin_get_member | 读 | user_id, group_id 可选 | QQ/昵称/名片/角色/禁言时间等 |
+| get_group_honor_info | group_admin_get_honors | 读 | group_id 可选, honor_type | 实现返回的荣誉数据 |
+| delete_msg | group_admin_recall_message | 写 | message_id | 无返回 |
+| set_group_kick | group_admin_kick | 写 | user_id, reject_add_request, group_id 可选 | 无返回 |
+| set_group_ban | group_admin_ban | 写 | user_id, duration 0-2592000 秒, group_id 可选 | 无返回 |
+| set_group_whole_ban | group_admin_whole_ban | 写 | enable, group_id 可选 | 无返回 |
+| set_group_anonymous_ban | group_admin_ban_anonymous | 写 | flag, duration, group_id 可选 | 无返回 |
+| set_group_admin | group_admin_set_admin | 写 | user_id, enable, group_id 可选 | 无返回 |
+| set_group_anonymous | group_admin_set_anonymous | 写 | enable, group_id 可选 | 无返回 |
+| set_group_card | group_admin_set_card | 写 | user_id, card ≤60 字符, group_id 可选 | 无返回 |
+| set_group_name | group_admin_set_name | 写 | name 1-60 字符, group_id 可选 | 无返回 |
+| set_group_special_title | group_admin_set_title | 写 | user_id, title ≤18 字符, group_id 可选 | 无返回 |
+| set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
+| set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
+| set_group_add_request | group_admin_handle_group_request | 写 | flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
+
+好友/加群请求的 `flag` 来自通知事件 (见文末"通知与请求事件"), 工具只做显式审批, 不做任何自动同意或拒绝。布尔参数严格校验, 拒绝真值语义; 写操作被平台拒绝或结果未知时按 `manual` 策略交由用户确认, 不自动重放。
+
 ### 长消息拆分与发送顺序
 
 `settings.message_text_limit` (默认 2000, 允许 64-32000 的整数) 限制每条消息的文本字符数。超长回复在适配器实际发送前拆分: 优先在段落 (`
@@ -218,4 +257,6 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 
 处理中心用平台实例、账号、类别、类型及稳定载荷字段构造去重键 (容量 4096, TTL 120 秒), 每个事件只派发一次; 处理器在独立小任务中执行 (同时至多 64 个, 超出丢弃并计数), 不排在模型调用之后, 异常互相隔离。没有订阅者的事件只计数。健康响应的 `platform_events` 提供 received/duplicate/dropped/dispatched/failed/unsubscribed 计数。
 
-插件可在 `build_tools`/`build_handlers` 等工厂中调用 `satrap.core.platform.notices.current_hub()` 获取处理中心并 `subscribe(event_type, handler)`, 返回的注销函数应在插件 `cleanup` 中调用; 后端未运行时返回 None。默认不把任何入退群、撤回或请求转成模型调用, 也不自动审批请求; 需要审批或群管理动作时使用后续批次提供的管理工具。
+群文件上传 (`notice.group_upload`) 额外归一为附件事件: `extras["attachment"]` 携带 `File` 组件 (name 为文件名, file 为远端文件 ID, url 为实现返回的下载地址, 可能为空), 文件大小与 busid 保留在 `payload.file`; 缺少文件 ID 和 URL 时不生成附件。归一只携带远端元信息, 不触发下载; 下载与模型处理仍须遵守目标会话的触发策略。
+
+插件可在 `build_tools`/`build_handlers` 等工厂中调用 `satrap.core.platform.notices.current_hub()` 获取处理中心并 `subscribe(event_type, handler)`, 返回的注销函数应在插件 `cleanup` 中调用; 后端未运行时返回 None。默认不把任何入退群、撤回或请求转成模型调用, 也不自动审批请求; 审批与群管理动作由 `group_admin` 插件的工具按来源身份显式执行 (见"群管理动作与能力矩阵"), 请求审批所需的 `flag` 即来自这里的 request 事件载荷。

@@ -11,8 +11,10 @@ from satrap.core.components import (
     BaseMessageComponent,
     Face,
     File,
+    Forward,
     Image,
     Json,
+    Node,
     Plain,
     Record,
     Reply,
@@ -24,6 +26,8 @@ from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMess
 
 PRIVATE_SESSION_PREFIX = "private%"
 GROUP_SESSION_PREFIX = "group%"
+FORWARD_NODE_LIMIT = 20
+"""单条合并转发进入组件层的最大节点数"""
 
 
 def private_session_id(user_id: Any) -> str:
@@ -176,6 +180,11 @@ def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[
         elif seg_type == "reply":
             components.append(Reply(id=str(data.get("id", ""))))
             text_parts.append("[回复]")
+        elif seg_type == "forward":
+            inline = data.get("content")
+            nodes = parse_forward_nodes(cast(list[Any], inline)) if isinstance(inline, list) else None
+            components.append(Forward(id=str(data.get("id", "")), nodes=nodes))
+            text_parts.append("[转发]")
         elif seg_type == "json":
             json_data = data.get("data", {})
             try:
@@ -188,6 +197,44 @@ def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[
             text_parts.append(f"[{seg_type or 'unknown'}]")
 
     return components, "".join(text_parts)
+
+
+def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT) -> list[Node]:
+    """
+    将标准或实现特定的转发节点字段归一为 Node 列表
+
+    参数:
+    - items: get_forward_msg 响应 messages 字段或消息段内联 content 字段
+    - limit: 保留的最大节点数, 超出部分丢弃
+
+    返回:
+    - list[Node]: 按原顺序排列的节点; 节点正文递归复用消息段转换, 嵌套转发不再展开
+    """
+    nodes: list[Node] = []
+    for item in items[:max(0, limit)]:
+        if not isinstance(item, dict):
+            continue
+        entry = cast(dict[str, Any], item)
+        raw = entry.get("data") if str(entry.get("type", "")).lower() == "node" else entry
+        data = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+        content = data.get("content", data.get("message"))
+        components: list[BaseMessageComponent]
+        if isinstance(content, list):
+            components = onebot_segments_to_components(
+                [seg for seg in cast(list[Any], content) if isinstance(seg, dict)]
+            )[0]
+        elif isinstance(content, str):
+            components = [Plain(content)]
+        else:
+            components = []
+        raw_time = data.get("time")
+        nodes.append(Node(
+            components,
+            name=str(data.get("nickname") or data.get("name") or ""),
+            uin=str(data.get("user_id") or data.get("uin") or ""),
+            time=int(raw_time) if isinstance(raw_time, (int, float)) and not isinstance(raw_time, bool) else 0,
+        ))
+    return nodes
 
 
 async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[str, Any]:

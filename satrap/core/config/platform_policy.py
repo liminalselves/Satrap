@@ -38,7 +38,7 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     text_limit = settings.get("message_text_limit", 2000)
     if isinstance(text_limit, bool) or not isinstance(text_limit, int) or not 64 <= text_limit <= 32000:
         raise ValueError("message_text_limit 必须为 64 到 32000 的整数")
-    for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self"):
+    for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup"):
         if key in settings and not isinstance(settings[key], bool):
             raise ValueError(f"{key} 必须为布尔值")
     notice_types = settings.get("notice_types")
