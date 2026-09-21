@@ -74,3 +74,4 @@ platforms:
   #     context_scope: group_member   # 按群成员隔离, 旧配置省略时保留原用户映射
   #     group_whitelist: []   # 留空允许所有群, 非空填写群 ID 字符串
   #     wake_words: []   # 留空仅响应真实 @机器人, 配置后匹配当前正文
+  #     message_text_limit: 2000   # 每条消息文本上限 (64-32000), 超长回复优先按段落/换行拆分为多条

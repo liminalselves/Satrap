@@ -1,6 +1,6 @@
 # Issue #10 实施记录
 
-更新日期: 2026-09-21
+更新日期: 2026-09-21 (P1 长消息批次补记)
 
 目标仍为完整实施 [主方案](issue-10-plan.md), 本记录不将首批改动视为议题整体完成。
 
@@ -206,3 +206,12 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - 完整单元测试 1642 passed / 7 skipped / 2 failed (169.75 秒); 两个失败仍为 test_document_upload.py 中 control/chat 大文件上传读取超时, 与前序基线记录一致, 不宣称完整回归全绿
 
 接续仍需完成手动唤醒 UI 验收及 control 路径, P1 引用补全/回复策略/长消息/状态展示, P2 事件和管理工具, P3 ASR 与文件, P4 真实模型和发行验证。高级规则编辑器、试算、持久化状态等主方案缺口同样保留, 整体目标未完成。
+
+## P1 长消息拆分与每会话发送串行
+
+- 新增 `onebot/outbound.py`: `split_components` 按段落 → 换行 → 硬切拆分文本, 非文本组件不切开且保序, 不修改原消息链; `OutboundTurns` 每实例至多 64 个逻辑回复, 同目标串行, 等待执行权 30 秒, 关闭时取消未完成任务
+- `message_text_limit` (默认 2000, 64-32000) 由平台策略校验与前端表单接入; 多块发送首个非 success 后停止, 聚合为 partial/unknown 并保留 failed_index, 不重发已确认块; 队列不可用返回 failed/send_queue_unavailable 且不提交动作
+- 此批次代码在上一轮分享对话中断处已写入但缺少测试与文档, 本轮补齐: 新增 `tests/unit/test_onebot_outbound.py` 17 passed, 覆盖拆分边界、配置校验、多块顺序/部分失败/未知结果、同目标串行与跨目标不阻塞、满载与关闭拒绝
+- 配置示例与 `platforms.md` 同步; 修改模块 Pyright 0 errors / 0 warnings
+
+回复引用/@ 策略、引用回源、合并转发发送分流仍未实现; 发送队列与分块目前只在 OneBot 落地, 其他适配器保持旧契约。
