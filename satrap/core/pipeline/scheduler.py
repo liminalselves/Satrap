@@ -144,7 +144,7 @@ class PipelineScheduler:
             automatic = False
             if manual_ticket is not None:
                 event.is_wake = True
-            elif not event.is_private_chat() and self._automatic_policy_current(event) and event.policy_settings.get("wake_mode", "explicit") in {"frequency", "necessity"}:
+            elif not event.is_private_chat() and event.policy_settings.get("wake_mode", "explicit") in {"frequency", "necessity"} and self._automatic_policy_current(event):
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
                 if not event.is_wake_up() and not event.is_at_or_wake_command:
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)

@@ -67,6 +67,58 @@ def validate_wake_overrides(settings: Mapping[str, object]) -> None:
         validate_wake_policy(cast(dict[str, object], override))
 
 
+class _PreparedPolicy:
+    """按 settings 对象预解析的策略视图, 配置对象替换后自动失效"""
+
+    __slots__ = ("base", "periods", "groups")
+
+    def __init__(self, settings: Mapping[str, Any]) -> None:
+        self.base: dict[str, Any] = dict(settings)
+        self.periods: list[tuple[int, int, dict[str, Any]]] = []
+        rules = settings.get("wake_time_rules", [])
+        for period in cast(list[Any], rules) if isinstance(rules, list) else []:
+            if not isinstance(period, dict):
+                continue
+            entry = cast(dict[str, Any], period)
+            try:
+                start, end = _minute(entry["start"]), _minute(entry["end"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            overrides = entry.get("settings")
+            if isinstance(overrides, dict):
+                self.periods.append((start, end, dict(cast(dict[str, Any], overrides))))
+        groups = settings.get("wake_group_overrides", {})
+        self.groups: dict[str, dict[str, Any]] = {
+            str(group): dict(cast(dict[str, Any], override))
+            for group, override in cast(dict[Any, Any], groups).items() if isinstance(override, dict)
+        } if isinstance(groups, dict) else {}
+
+
+_PREPARED: dict[int, tuple[Any, _PreparedPolicy]] = {}
+_PREPARED_LIMIT = 64
+
+
+def _prepared(settings: Mapping[str, Any]) -> _PreparedPolicy:
+    """
+    取得 settings 对象的预解析视图
+
+    参数:
+    - settings: 平台策略, 热更新时整体替换为新对象, 因此按对象身份缓存
+
+    返回:
+    - _PreparedPolicy: 缓存或新建的视图; 缓存持有原对象引用以防 id 复用
+    """
+    key = id(settings)
+    cached = _PREPARED.get(key)
+    if cached is not None and cached[0] is settings:
+        return cached[1]
+    if len(_PREPARED) >= _PREPARED_LIMIT:
+        _PREPARED.clear()
+    prepared = _PreparedPolicy(settings)
+    _PREPARED[key] = (settings, prepared)
+    return prepared
+
+
 def resolve_wake_settings(settings: Mapping[str, Any], group_id: str, now: datetime | None = None) -> dict[str, Any]:
     """
     按平台, 时段, 群的顺序冻结有效配置
@@ -79,26 +131,20 @@ def resolve_wake_settings(settings: Mapping[str, Any], group_id: str, now: datet
     返回:
     - dict[str, Any]: 独立配置副本, 重叠时段以列表后项为准
     """
-    resolved = deepcopy(dict(settings))
-    if not group_id:
-        return resolved
-    now = datetime.now().astimezone() if now is None else now
-    minute = now.hour * 60 + now.minute
-    rules = settings.get("wake_time_rules", [])
-    for period in cast(list[Any], rules) if isinstance(rules, list) else []:
-        if not isinstance(period, dict):
-            continue
-        entry = cast(dict[str, Any], period)
-        try:
-            start, end = _minute(entry["start"]), _minute(entry["end"])
-        except (KeyError, ValueError, TypeError):
-            continue
-        matches = start <= minute < end if start < end else minute >= start or minute < end
-        overrides = entry.get("settings")
-        if matches and isinstance(overrides, dict):
-            resolved.update(deepcopy(cast(dict[str, Any], overrides)))
-    groups = settings.get("wake_group_overrides", {})
-    override: Any = cast(dict[str, Any], groups).get(group_id) if isinstance(groups, dict) else None
-    if isinstance(override, dict):
-        resolved.update(deepcopy(cast(dict[str, Any], override)))
+    prepared = _prepared(settings)
+    resolved = dict(prepared.base)
+    if group_id:
+        now = datetime.now().astimezone() if now is None else now
+        minute = now.hour * 60 + now.minute
+        for start, end, overrides in prepared.periods:
+            matches = start <= minute < end if start < end else minute >= start or minute < end
+            if matches:
+                resolved.update(overrides)
+        override = prepared.groups.get(group_id)
+        if override is not None:
+            resolved.update(override)
+    for key, value in resolved.items():
+        if isinstance(value, (list, dict)):
+            resolved[key] = deepcopy(cast(object, value))
+    # 只对容器值复制, 标量共享; 避免整份配置 deepcopy 的常量开销
     return resolved

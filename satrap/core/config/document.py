@@ -190,7 +190,15 @@ def load_config_document(path: str | Path, *, locked: bool = False) -> dict[str,
             text = config_path.read_text(encoding="utf-8")
     else:
         text = config_path.read_text(encoding="utf-8")
-    data = safe_yaml_load(text)
+    # JSON 是 YAML 子集, 但标准库 json 解析快得多; 解析失败再回退 YAML 以兼容带注释的 .json
+    data: object
+    if config_path.suffix.lower() == ".json":
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = safe_yaml_load(text)
+    else:
+        data = safe_yaml_load(text)
     if data is None:
         return {}
     if not isinstance(data, dict):

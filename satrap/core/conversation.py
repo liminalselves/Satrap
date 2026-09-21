@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 import hashlib
 import json
 
@@ -25,9 +26,9 @@ class ConversationRoute:
         if self.scope != "legacy_user" and (not self.self_id or not self.group_id):
             raise ValueError("群上下文隔离需要机器人账号和群 ID")
 
-    @property
+    @cached_property
     def key(self) -> str | None:
-        """返回独立命名空间的上下文键, 旧范围返回 None 以保留旧键"""
+        """返回独立命名空间的上下文键, 旧范围返回 None 以保留旧键; 路由不可变, 结果按实例缓存"""
         if self.scope == "legacy_user":
             return None
         return "scoped:v1:" + json.dumps(
@@ -36,7 +37,7 @@ class ConversationRoute:
             ensure_ascii=True, separators=(",", ":"),
         )
 
-    @property
+    @cached_property
     def context_value(self) -> str:
         """返回供 Provider 创建会话的稳定标识, 不使用成员身份冒充共享群"""
         key = self.key

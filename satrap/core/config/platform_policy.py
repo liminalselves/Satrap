@@ -1,7 +1,7 @@
 """平台入站策略配置校验, 供配置保存与适配器启动共用"""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import cast
 import math
 import re
@@ -77,7 +77,50 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
             raise ValueError(f"{key} 必须为 0 到 1 的有限数值")
 
 
+_NORMALIZED_CACHE: dict[tuple[str, int], tuple[object, list[str]]] = {}
+_NORMALIZED_CACHE_LIMIT = 256
+
+
+def _cached_normalize(kind: str, value: object, compute: Callable[[object], list[str]]) -> list[str]:
+    """
+    按列表对象身份缓存归一化结果, 配置替换后自动失效
+
+    参数:
+    - kind: 缓存类别
+    - value: 原始配置列表
+    - compute: 归一化函数, 非法输入抛 ValueError 且不缓存
+
+    返回:
+    - list[str]: 归一化结果的独立副本
+    """
+    if not isinstance(value, list):
+        return compute(value)
+    items = cast(list[object], value)
+    key = (kind, id(items))
+    cached = _NORMALIZED_CACHE.get(key)
+    if cached is not None and cached[0] is items:
+        return list(cached[1])
+    result = compute(items)
+    if len(_NORMALIZED_CACHE) >= _NORMALIZED_CACHE_LIMIT:
+        _NORMALIZED_CACHE.clear()
+    _NORMALIZED_CACHE[key] = (items, result)
+    return list(result)
+
+
 def normalize_group_whitelist(value: object) -> list[str]:
+    """
+    校验群范围并归一化群 ID, 同一配置列表重复调用命中缓存
+
+    参数:
+    - value: 群 ID 列表, 空列表表示不限制群范围
+
+    返回:
+    - 去重后的十进制群 ID 列表, 非法输入抛出 ValueError
+    """
+    return _cached_normalize("group_whitelist", value, _normalize_group_whitelist)
+
+
+def _normalize_group_whitelist(value: object) -> list[str]:
     """
     校验群范围并归一化群 ID
 
@@ -104,7 +147,7 @@ def normalize_group_whitelist(value: object) -> list[str]:
 
 def normalize_wake_words(value: object) -> list[str]:
     """
-    校验显式唤醒词列表
+    校验显式唤醒词列表, 同一配置列表重复调用命中缓存
 
     参数:
     - value: 非空文本组成的列表, 空列表表示仅使用真实提及
@@ -112,6 +155,10 @@ def normalize_wake_words(value: object) -> list[str]:
     返回:
     - 去重后的唤醒词列表, 非法输入抛出 ValueError
     """
+    return _cached_normalize("wake_words", value, _normalize_wake_words)
+
+
+def _normalize_wake_words(value: object) -> list[str]:
     if not isinstance(value, list):
         raise ValueError("wake_words 必须是非空文本列表")
     result: list[str] = []

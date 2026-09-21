@@ -35,6 +35,7 @@ class WakeWindow:
         if min(max_routes, max_messages, max_chars) <= 0 or ttl <= 0:
             raise ValueError("窗口容量和 TTL 必须为正数")
         self.max_routes, self.max_messages, self.max_chars, self.ttl = max_routes, max_messages, max_chars, ttl
+        self._last_sweep = float("-inf")
         self._pending: OrderedDict[tuple[str, ...], list[PendingText]] = OrderedDict()
         self._submitted: OrderedDict[tuple[str, ...], float] = OrderedDict()
         self._activity: OrderedDict[tuple[str, ...], list[tuple[float, bool]]] = OrderedDict()
@@ -67,15 +68,13 @@ class WakeWindow:
         - tuple[PendingText, ...]: 当前路由有效文本
         """
         now = monotonic() if now is None else now
-        for key in list(self._pending):
-            self._pending[key] = [item for item in self._pending[key] if now - item.received_at < self.ttl]
-            if not self._pending[key]:
-                del self._pending[key]
+        self._sweep(now)
         key = self.key(event)
         text = "".join(item.text for item in event.get_messages() if isinstance(item, Plain)).strip()
         if not text:
             return ()
         origin = event.call_origin
+        self._expire_route(key, now)
         rows = self._pending.setdefault(key, [])
         if not any(item.request_id == origin.request_id or (origin.source_message_id and item.message_id == origin.source_message_id) for item in rows):
             rows.append(PendingText(origin.request_id, origin.actor_id, origin.source_message_id, text[:self.max_chars], now))
@@ -86,6 +85,39 @@ class WakeWindow:
         while len(self._pending) > self.max_routes:
             self._pending.popitem(last=False)
         return tuple(rows)
+
+    def _expire_route(self, key: tuple[str, ...], now: float) -> list[PendingText]:
+        """
+        只清理当前路由的过期正文, 避免每事件全表重建
+
+        参数:
+        - key: 目标路由
+        - now: 单调时钟
+
+        返回:
+        - list[PendingText]: 该路由仍有效的正文列表, 空列表时已从窗口移除
+        """
+        rows = self._pending.get(key)
+        if rows is None:
+            return []
+        if rows and now - rows[0].received_at >= self.ttl:
+            rows[:] = [item for item in rows if now - item.received_at < self.ttl]
+        if not rows:
+            del self._pending[key]
+        return rows
+
+    def _sweep(self, now: float) -> None:
+        """
+        低频全表清扫, 每 ttl/4 至多一次, 释放长期没有新消息的路由
+
+        参数:
+        - now: 单调时钟
+        """
+        if now - self._last_sweep < self.ttl / 4:
+            return
+        self._last_sweep = now
+        for key in list(self._pending):
+            self._expire_route(key, now)
 
     def _record_activity(self, key: tuple[str, ...], now: float, submitted: bool) -> None:
         """

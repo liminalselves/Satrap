@@ -8,6 +8,9 @@ from __future__ import annotations
 from typing import Any, TextIO, cast
 import yaml
 
+_SAFE_LOADER: Any = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+# libyaml 可用时用 C 解析器, 配置文档较大时快一个量级; 语义与 SafeLoader 一致
+
 
 def safe_yaml_load(stream: str | TextIO) -> object:
     """
@@ -19,7 +22,7 @@ def safe_yaml_load(stream: str | TextIO) -> object:
     返回:
     - object: 解析结果, 结构由调用方校验 (根节点可能为 None)
     """
-    return cast(object, cast(Any, yaml).safe_load(stream))
+    return cast(object, cast(Any, yaml).load(stream, Loader=_SAFE_LOADER))
 
 
 def safe_yaml_dump(data: Any) -> str:
