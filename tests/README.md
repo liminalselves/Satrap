@@ -69,6 +69,7 @@ Windows 无创建符号链接权限时会跳过对应测试; 缺少 reportlab �
 
 ```powershell
 python -B tests/benchmark/benchmark_backend.py --output tests/benchmark/results/backend/local.json --repeats 9
+python -B tests/benchmark/benchmark_platform_ingress.py --output tests/benchmark/results/platform/local.json --repeats 3   # 平台入站/自动参与窗口/出站拆分/配置重载/手动唤醒幂等
 ```
 
 脚本自动清理临时负载, 拒绝覆盖已有输出。保留的 `baseline.json`、`after.json` 和 `after-stability.json` 为同机原始样本, 包含环境、脚本与源文件指纹; 只测热缓存、受控阻塞负载与 Python 分配峰值, 不代表公网延迟或进程 RSS。验收结论见[后端修复记录](../docs/backend-repair-report.md)。
