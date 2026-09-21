@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -369,7 +369,12 @@ function readFileAsBase64(file: File): Promise<string> {
     reader.onerror = () => reject(new Error('读取文件失败'));
     reader.onload = () => {
       const result = String(reader.result ?? '');
-      resolve(result.slice(result.indexOf(',') + 1));
+      const separator = result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('无法读取音频内容'));
+        return;
+      }
+      resolve(result.slice(separator + 1));
     };
     reader.readAsDataURL(file);
   });
@@ -381,8 +386,10 @@ function AsrTestModal({ name, onClose }: { name: string | null; onClose: () => v
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<AsrTestResult | null>(null);
   const [error, setError] = useState<string>('');
+  const requestSeq = useRef(0);
 
   useEffect(() => {
+    requestSeq.current += 1;
     setFile(null);
     setResult(null);
     setError('');
@@ -395,21 +402,25 @@ function AsrTestModal({ name, onClose }: { name: string | null; onClose: () => v
       setError('音频超过 8 MiB 测试上限');
       return;
     }
+    const seq = ++requestSeq.current;
     setRunning(true);
     setError('');
     setResult(null);
     try {
       const audio = await readFileAsBase64(file);
       const response = await controlApi.testAsrConfig(name, file.name, audio);
+      // 切换配置或关闭弹窗后到达的迟到响应不再写入当前视图
+      if (seq !== requestSeq.current) return;
       if (response.ok === false) {
         setError(response.error || '转录失败');
       } else {
         setResult(response);
       }
     } catch (e) {
+      if (seq !== requestSeq.current) return;
       setError(e instanceof Error ? e.message : '转录请求失败');
     } finally {
-      setRunning(false);
+      if (seq === requestSeq.current) setRunning(false);
     }
   }, [file, name]);
 

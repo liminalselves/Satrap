@@ -304,6 +304,8 @@ export const controlApi = {
       return response.data;
     } catch (error) {
       // 服务端以 4xx/5xx 返回结构化错误时保留其 error 文案, 便于页面直接呈现拒绝原因
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status === 401 || status === 403) throw error;
       if (axios.isAxiosError(error) && error.response?.data && typeof error.response.data === 'object') {
         const data = error.response.data as Partial<AsrTestResult>;
         return { ok: false, error: data.error || error.message };

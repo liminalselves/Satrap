@@ -7,6 +7,18 @@ export function classNameToConfigName(className: string): string {
   return className.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase().replace(/_session$/, '');
 }
 
+// 布尔字段只接受真正的 boolean 或明确的 true/false 字符串, 避免 Boolean('false') 反转语义
+function toBoolean(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (text === 'true' || text === '1' || text === 'yes' || text === 'on') return true;
+    if (text === 'false' || text === '0' || text === 'no' || text === 'off' || text === '') return false;
+  }
+  if (typeof value === 'number') return value !== 0;
+  return fallback;
+}
+
 export function normalizePlatformSettings(
   type: string,
   settings: Record<string, unknown>,
@@ -19,11 +31,11 @@ export function normalizePlatformSettings(
       port: Number(settings.port ?? 8080),
       access_token: String(settings.access_token ?? ''),
       secret: String(settings.secret ?? ''),
-      enable_private: Boolean(settings.enable_private ?? true),
-      enable_group: Boolean(settings.enable_group ?? true),
+      enable_private: toBoolean(settings.enable_private, true),
+      enable_group: toBoolean(settings.enable_group, true),
     };
-    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup', 'attachment_extract']) {
-      if (settings[key] !== undefined) normalized[key] = Boolean(settings[key]);
+    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup', 'attachment_extract', 'media_insecure_tls']) {
+      if (settings[key] !== undefined) normalized[key] = toBoolean(settings[key], false);
     }
     for (const key of ['group_whitelist', 'wake_words', 'wake_aliases']) {
       const value = settings[key];

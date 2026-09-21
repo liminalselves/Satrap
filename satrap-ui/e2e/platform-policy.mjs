@@ -16,7 +16,7 @@ try {
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
-  let platforms = [{ id: 'legacy-bot', type: 'aiocqhttp', settings: { extension: 'keep', access_token: 'test-secret-not-for-summary', group_whitelist: ['123'], wake_words: ['小助手'] } }];
+  let platforms = [{ id: 'legacy-bot', type: 'aiocqhttp', settings: { extension: 'keep', access_token: 'test-secret-not-for-summary', group_whitelist: ['123'], wake_words: ['小助手'], wake_message_threshold: 5, message_text_limit: 1500 } }];
   let revision = 1;
   const writes = [];
   let applications = [];
@@ -65,6 +65,9 @@ try {
   const scope = dialog.getByLabel('上下文范围', { exact: false });
   assert.equal(await scope.inputValue(), 'legacy_user');
   assert.equal(await dialog.getByLabel('群白名单', { exact: false }).inputValue(), '123');
+  // 已保存的数字策略在编辑时必须回填, 否则空白显示会让用户误以为未设置
+  assert.equal(await dialog.getByLabel('自动参与消息阈值', { exact: false }).inputValue(), '5');
+  assert.equal(await dialog.getByLabel('每条消息文本上限', { exact: false }).inputValue(), '1500');
   await scope.selectOption('group_member');
   await dialog.getByLabel('群白名单', { exact: false }).fill('123\n456');
   await dialog.getByLabel('唤醒词', { exact: false }).fill('小助手\n hello bot ');
