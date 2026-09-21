@@ -267,6 +267,8 @@ export function Platforms() {
         { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区，JSON）', type: 'textarea', rows: 3, placeholder: '[{"start":"23:00","end":"07:00","settings":{"wake_mode":"explicit"}}]' },
         { key: 'settings.wake_cooldown', label: '自动参与冷却秒数', type: 'number', placeholder: '默认 30, 明确唤醒不受此限制' },
         { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
+        { key: 'settings.reply_with_quote', label: '群聊回复引用原消息', type: 'checkbox', placeholder: '默认关闭; 仅对有来源消息 ID 的群聊回复添加引用' },
+        { key: 'settings.reply_with_mention', label: '群聊回复 @发送者', type: 'checkbox', placeholder: '默认关闭; 已有 @ 时不重复, 私聊不受影响' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
       ];
     }
@@ -310,6 +312,8 @@ export function Platforms() {
     'settings.enable_private': formData.settings.enable_private ?? true,
     'settings.context_scope': formData.settings.context_scope ?? (editingPlatform ? 'legacy_user' : 'group_member'),
     'settings.enable_group': formData.settings.enable_group ?? true,
+    'settings.reply_with_quote': formData.settings.reply_with_quote ?? false,
+    'settings.reply_with_mention': formData.settings.reply_with_mention ?? false,
     'settings.group_whitelist': Array.isArray(formData.settings.group_whitelist) ? formData.settings.group_whitelist.join('\n') : formData.settings.group_whitelist ?? '',
     'settings.wake_aliases': Array.isArray(formData.settings.wake_aliases) ? formData.settings.wake_aliases.join('\n') : formData.settings.wake_aliases ?? '',
     'settings.wake_group_overrides': typeof formData.settings.wake_group_overrides === 'string' ? formData.settings.wake_group_overrides : JSON.stringify(formData.settings.wake_group_overrides ?? {}, null, 2),

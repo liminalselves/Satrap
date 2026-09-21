@@ -223,3 +223,13 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - 控制端 (control) 服务本身只负责配置与后端生命周期, 手动唤醒属于运行时操作, 因此不在 control 端增加代理路由, 页面与 CLI 均直连后端 API
 
 幂等记录仍为进程内; 路由歧义体验与更友好的拒绝原因文案未进一步扩展。
+
+## P1 回复引用与 @发送者策略
+
+- 新增 `reply_with_quote` / `reply_with_mention` (默认关闭, 布尔校验), 允许群级覆盖, 时段规则禁止修改; MessageEvent.decorate_reply 在调用适配器前为群聊回复前置 Reply/At 并在 @ 后补空格
+- 已有 Reply 或同发送者 At 不重复, 对他人的 @ 不受影响; 私聊、无来源消息 ID (prompt 手动唤醒) 不加引用; 流式只装饰首个非空块并跳过空块, 长消息拆分后只有首块携带引用/@; 原消息链不被修改
+- 装饰位于事件层, 覆盖 scheduler 兜底、错误反馈、插件显式 send 与流式降级; 适配器主动发送不经过事件, 保持无装饰
+- 前端补两个开关与布尔归一化; 配置示例与 platforms.md 同步
+- 新增 `tests/unit/test_reply_decoration.py` 14 passed; 事件/OneBot/调度/手动唤醒/覆盖/Misskey 相关回归 124 passed; 前端 vitest 7 passed, lint/tsc 通过, platform-policy 浏览器回归通过; 修改模块 Pyright 0 errors / 0 warnings
+
+引用回源 (get_msg 填充 Reply) 与输入投影仍待下一批; 错误反馈是否引用目前与普通回复共用同一开关, 尚未单独配置。

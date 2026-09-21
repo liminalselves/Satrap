@@ -75,3 +75,5 @@ platforms:
   #     group_whitelist: []   # 留空允许所有群, 非空填写群 ID 字符串
   #     wake_words: []   # 留空仅响应真实 @机器人, 配置后匹配当前正文
   #     message_text_limit: 2000   # 每条消息文本上限 (64-32000), 超长回复优先按段落/换行拆分为多条
+  #     reply_with_quote: false   # 群聊回复是否引用触发消息, 私聊与无来源消息 ID 的手动唤醒不添加
+  #     reply_with_mention: false   # 群聊回复是否 @发送者, 已有 @ 不重复; 可在 wake_group_overrides 中按群覆盖

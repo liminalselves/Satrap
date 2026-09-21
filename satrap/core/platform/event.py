@@ -20,7 +20,7 @@ import re
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.call_context import CallOrigin
-from satrap.core.components import BaseMessageComponent, PlatformComponentType
+from satrap.core.components import BaseMessageComponent, PlatformComponentType, Plain, At, Reply
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
 
@@ -816,7 +816,7 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                result = await self.adapter.send_message(self.session_id, message)
+                result = await self.adapter.send_message(self.session_id, self.decorate_reply(message))
                 self._record_send_result(result)
             except Exception as e:
                 logger.error(
@@ -839,7 +839,7 @@ class MessageEvent:
         if isinstance(self.adapter, PlatformAdapter):
             try:
                 result = await self.adapter.send_stream(
-                    self.session_id, generator, use_fallback=use_fallback
+                    self.session_id, self._decorate_stream(generator), use_fallback=use_fallback
                 )
                 self._record_send_result(result)
             except Exception as e:
@@ -847,6 +847,58 @@ class MessageEvent:
                     f"[MessageEvent.send_streaming] 流式发送消息失败: session_id={self.session_id}, "
                     f"错误={e}",
                 )
+
+    def decorate_reply(self, message: MessageChain) -> MessageChain:
+        """
+        按当前有效策略为回复添加引用与 @发送者, 返回新消息链
+
+        参数:
+        - message: 原始回复, 不原地修改
+
+        返回:
+        - MessageChain: 群聊且策略开启时前置 Reply/At; 已有同类组件, 私聊或缺少来源消息 ID 时保持原样
+        """
+        components = list(message.components)
+        if not components or self.is_private_chat():
+            return MessageChain(components)
+        origin = self._call_origin
+        prefix: list[BaseMessageComponent] = []
+        has_reply = any(c.type == PlatformComponentType.Reply for c in components)
+        has_mention = any(
+            c.type == PlatformComponentType.At and safe_getattr_str(c, "qq") == origin.actor_id for c in components
+        )
+        if self.policy_settings.get("reply_with_quote") is True and origin.source_message_id and not has_reply:
+            prefix.append(Reply(id=origin.source_message_id))
+        if self.policy_settings.get("reply_with_mention") is True and origin.actor_id and not has_mention:
+            prefix.append(At(qq=origin.actor_id))
+            first_text = safe_getattr_str(components[0], "text") if components[0].type == PlatformComponentType.Plain else ""
+            if first_text and not first_text[0].isspace():
+                components[0] = Plain(" " + first_text)
+        # @ 后补空格防止与正文粘连; 手动唤醒等无来源消息 ID 的事件不添加引用
+        return MessageChain(prefix + components)
+
+    async def _decorate_stream(
+        self, generator: AsyncGenerator[MessageChain, None],
+    ) -> AsyncGenerator[MessageChain, None]:
+        """
+        只装饰流式回复的首个非空块
+
+        参数:
+        - generator: 原始消息块生成器
+
+        返回:
+        - AsyncGenerator: 跳过空块, 首个非空块含引用/@ 的生成器
+        """
+        decorated = False
+        async for chain in generator:
+            if not chain.components:
+                continue
+            if decorated:
+                yield chain
+            else:
+                decorated = True
+                yield self.decorate_reply(chain)
+        # 空块不进入适配器, 避免降级路径把空消息当作明确失败而中断后续块
 
     def _record_send_result(self, result: object) -> None:
         """

@@ -21,6 +21,8 @@ describe('管理前端迁移逻辑', () => {
       enable_group: true,
       extension: true,
     });
+    expect(normalizePlatformSettings('onebot', { reply_with_quote: true })).toMatchObject({ reply_with_quote: true });
+    expect('reply_with_mention' in normalizePlatformSettings('onebot', {})).toBe(false);
     expect(normalizePlatformSettings('misskey', {})).toMatchObject({
       chat_enabled: true,
       room_enabled: false,
