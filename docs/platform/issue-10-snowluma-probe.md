@@ -28,3 +28,5 @@ python -m scripts.probe_snowluma --installation F:\other\SnowLuma-v1.14.17-win-x
 本结果验证实际 SnowLuma 网络层兼容性, 不等同于完整 SnowLuma 应用启动、真实 QQ、真实模型、ASR 或所有 OneBot 动作验收。脚本按该版本发行包标记提取, 后续发行版改变打包结构时需复核挂接点。WebUI 密码不用于 OneBot 鉴权; 本次使用随机临时 access token, 通过进程标准输入传递, 不保存到文档或命令行。
 
 2026-09-21 接续实现 SendReceipt 后再次执行同一命令, 全部探针检查通过。发送断言现检查 success 状态与平台 message_ids, 验证新回执与实际网络回包关联兼容; 安装包摘要和 QQ 模拟边界不变。
+
+2026-09-21 P4 收官前 (P3 附件批次 78218c0 之后) 第三次执行同一命令, 全部探针检查通过, 包摘要不变。真实 ASR/LLM 验收单独记录于 `issue-10-progress.md` P4 节, 与本探针相互独立。

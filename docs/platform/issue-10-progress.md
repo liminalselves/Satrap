@@ -1,6 +1,6 @@
 # Issue #10 实施记录
 
-更新日期: 2026-09-21 (P1 长消息批次补记)
+更新日期: 2026-09-21 (P4 收官)
 
 目标仍为完整实施 [主方案](issue-10-plan.md), 本记录不将首批改动视为议题整体完成。
 
@@ -302,3 +302,15 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 新增 `tests/unit/test_attachments.py` 14 passed (转写与投影/冻结复用, 未绑定 ASR 与配置缺失 disabled 且不下载, 404/私网/file 协议/格式不支持降级, 文件提取与临时文件清理, 不支持类型/关闭/数量上限 partial, 端到端 UserCall 携带转写, 未唤醒不下载, 渲染与解析器, 策略校验); 相关管线/引用/转发/调度/运行时回归 146 passed; 修改模块 Pyright 0 errors / 0 warnings; 前端 vitest 69 passed, tsc/eslint 与 platform-policy 浏览器回归通过
 
 本批以受控替身验证下载与转写协议路径, 真实 ASR/LLM 调用留在 P4 验收记录。音频格式转换未实现: 不在 ASR 接口支持范围内的语音 (如 amr/silk) 标记为不支持而非转换。
+
+## P4 真实模型与 SnowLuma 汇总验收
+
+按 [主方案](issue-10-plan.md) 第 6 节三层验收记录, 凭据仅在运行时从 `.toolkit` 读取, 未写入版本库、文档、测试夹具或命令行。
+
+- 真实 ASR + LLM 全链路 (2026-09-21): 用系统 TTS 生成 4 秒中文 wav (211 KB), 经本地回环 HTTP 作为 OneBot `record` 附件 URL (`media_trusted_hosts` 登记 127.0.0.1), 走原始群消息 payload → OneBotAdapter → PipelineScheduler → `resolve_attachments` → 真实 SiliconFlow XingChenASR 转写 → 投影进 UserCall → 真实 DeepSeek 兼容接口 `AsyncLLM.chat` → 回复回传 `send_group_msg`。转写结果 "今天天气不错 / 我们一起去公园散步" (分段说话人格式, 个别字有识别误差), `attachment_status=resolved`, 模型回复为一句相关中文并成功回传。结论: 语音内容进入后续模型输入, 真实 LLM 回复经出站路径送达
+- SnowLuma 实际网络通信: 复跑 `python -m scripts.probe_snowluma --installation F:\other\SnowLuma-v1.14.17-win-x64`, 错误 token 403、Universal 握手、2 次入站往返、4 次乱序回包关联、断线重连全部通过, 包摘要 `79732efb…0981` 与首次记录一致; QQ 侧仍为模拟, 不启动 QQ
+- 协议与模拟层: 引用/转发/通知/管理动作/上传附件/文件提取由单元与协议测试覆盖 (受控替身), 见前述各批次
+- 前端: `npm run build` 成功, 构建产物含 ASR 模型管理与平台策略表单; vitest 69 passed, tsc/eslint 通过, Playwright `platform-policy`/`manual-wake`/`asr` 脚本各批次显式执行通过; 后端以 `satrap-ui/dist` 托管构建产物, 仓库与发行内容不含 SnowLuma
+- 完整回归: `python -m pytest tests/unit -q` 1778 passed / 19 skipped (跳过为显式集成开关、Windows 符号链接权限等既有原因)
+
+未完成或明确不在本轮范围: 真实 QQ 全链路 (方案裁定为模拟); 非 ASR 接口支持格式 (amr/silk) 的音频转换; SnowLuma 发行版更新后探针挂接点需复核。以上不影响议题内已裁定范围的关闭。
