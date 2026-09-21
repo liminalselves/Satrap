@@ -23,6 +23,8 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_group_session,
     is_private_session,
     message_chain_to_onebot_segments,
+    onebot_segments_to_components,
+    normalize_segments,
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, split_components
@@ -236,6 +238,53 @@ class OneBotAdapter(PlatformAdapter):
         if not self.allows_group(group_id):
             raise PermissionError("消息来源已停用")
         return {**result, "self_id": self.bot_self_id, "user_id": user_id, "post_type": "message"}
+
+    async def fetch_quoted_message(self, message_id: str, session_id: str) -> dict[str, Any] | None:
+        """
+        有界回源被引用消息并核验会话归属, 不递归回源二级引用, 不下载附件
+
+        参数:
+        - message_id: OneBot 消息 ID
+        - session_id: 当前事件的平台会话 ID
+
+        返回:
+        - dict[str, Any] | None: 已转换的组件与元信息; 越界, 超时, 格式不符或群范围外返回 None
+        """
+        if self._bot is None or not message_id.lstrip("-").isdecimal():
+            return None
+        if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
+            return None
+        async def lookup() -> Any:
+            """等待并发槽位计入总超时"""
+            async with self._message_lookup_slots:
+                return await self._bot.get_msg(message_id=int(message_id))
+        try:
+            result = await asyncio.wait_for(lookup(), timeout=5)
+        except Exception:
+            return None
+        if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 65536:
+            return None
+        result = cast(dict[str, Any], result)
+        if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
+            return None
+        sender = result.get("sender", {})
+        sender = cast(dict[str, Any], sender) if isinstance(sender, dict) else {}
+        sender_id = str(sender.get("user_id") or result.get("user_id") or "")
+        if is_group_session(session_id):
+            if str(result.get("group_id", "")) != extract_group_id(session_id):
+                return None
+        elif is_private_session(session_id):
+            if str(result.get("group_id", "")) or sender_id not in {extract_private_user_id(session_id), self.bot_self_id}:
+                return None
+        else:
+            return None
+        components, message_str = onebot_segments_to_components(normalize_segments(result.get("message")))
+        raw_time = result.get("time")
+        return {
+            "components": components, "message_str": message_str, "sender_id": sender_id,
+            "sender_nickname": str(sender.get("card") or sender.get("nickname") or ""),
+            "time": int(raw_time) if isinstance(raw_time, (int, float)) and not isinstance(raw_time, bool) else 0,
+        }
 
     async def _handle_message_event(self, event: dict[str, Any]) -> None:
         """

@@ -269,6 +269,7 @@ export function Platforms() {
         { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
         { key: 'settings.reply_with_quote', label: '群聊回复引用原消息', type: 'checkbox', placeholder: '默认关闭; 仅对有来源消息 ID 的群聊回复添加引用' },
         { key: 'settings.reply_with_mention', label: '群聊回复 @发送者', type: 'checkbox', placeholder: '默认关闭; 已有 @ 时不重复, 私聊不受影响' },
+        { key: 'settings.quote_lookup', label: '回源被引用消息原文', type: 'checkbox', placeholder: '默认开启; 唤醒后按预算 get_msg 获取引用原文作为上下文, 关闭后仅标记引用' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
       ];
     }
@@ -314,6 +315,7 @@ export function Platforms() {
     'settings.enable_group': formData.settings.enable_group ?? true,
     'settings.reply_with_quote': formData.settings.reply_with_quote ?? false,
     'settings.reply_with_mention': formData.settings.reply_with_mention ?? false,
+    'settings.quote_lookup': formData.settings.quote_lookup ?? true,
     'settings.group_whitelist': Array.isArray(formData.settings.group_whitelist) ? formData.settings.group_whitelist.join('\n') : formData.settings.group_whitelist ?? '',
     'settings.wake_aliases': Array.isArray(formData.settings.wake_aliases) ? formData.settings.wake_aliases.join('\n') : formData.settings.wake_aliases ?? '',
     'settings.wake_group_overrides': typeof formData.settings.wake_group_overrides === 'string' ? formData.settings.wake_group_overrides : JSON.stringify(formData.settings.wake_group_overrides ?? {}, null, 2),

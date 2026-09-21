@@ -233,3 +233,12 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - 新增 `tests/unit/test_reply_decoration.py` 14 passed; 事件/OneBot/调度/手动唤醒/覆盖/Misskey 相关回归 124 passed; 前端 vitest 7 passed, lint/tsc 通过, platform-policy 浏览器回归通过; 修改模块 Pyright 0 errors / 0 warnings
 
 引用回源 (get_msg 填充 Reply) 与输入投影仍待下一批; 错误反馈是否引用目前与普通回复共用同一开关, 尚未单独配置。
+
+## P1 引用回源与模型输入投影
+
+- PlatformAdapter 新增 `fetch_quoted_message` 默认 None; OneBot 实现复用 get_msg 并发槽位与 5 秒/64 KiB 预算, 核验账号、群或私聊双方归属, 白名单收紧后拒绝, 不递归不下载附件
+- 新增 `pipeline/input_projection.py`: `resolve_quotes` 在唤醒与限流之后填充顶层首个 Reply 字段, 每事件最多一次回源; `project_input` 组装 `[引用 … 的消息: …]` 标记、合并引用内媒体 (上限 4)、截断引用文本 (2000 字符), 失败时标记不可获取并保留当前问题
+- scheduler 在 Step.4 接入, 仅含引用的已唤醒消息也进入模型; `quote_lookup` 布尔配置 (默认开启) 支持群覆盖, 前端开关与归一化, 配置示例/文档同步
+- 新增 `tests/unit/test_quote_projection.py` 13 passed (端到端 UserCall 携带引用上下文, 未唤醒不回源, 跨群/外账号/私聊他人拒绝, 超时/超长/关闭/白名单, 媒体与文本预算, 不递归, 引用机器人标注且不当作唤醒); 相关管线/OneBot/路由/运行时回归 156 passed; 修改模块 Pyright 0 errors / 0 warnings
+
+引用机器人可选唤醒仍未实现 (默认关闭的独立规则, 需在唤醒阶段用同一预算查发送者); 转发 (forward) 入站回源与合并转发发送分流留在 P2。

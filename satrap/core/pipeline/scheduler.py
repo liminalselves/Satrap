@@ -24,10 +24,12 @@ from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
+from satrap.core.components import PlatformComponentType
 from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import evaluate_wake
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
+from satrap.core.pipeline.input_projection import project_input, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
@@ -154,7 +156,8 @@ class PipelineScheduler:
             message = event.get_message_str()
             images = self._extract_img_urls(event)
             videos = self._extract_img_urls(event, "video")
-            if not message and not images and not videos:
+            has_quote = any(c.type == PlatformComponentType.Reply for c in event.get_messages())
+            if not message and not images and not videos and not has_quote:
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -170,7 +173,14 @@ class PipelineScheduler:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     return
 
-            # Step.4 通过 UserManager 解析目标会话
+            # Step.4 限流通过后按预算补全引用原文并投影模型输入
+            projected = project_input(event, await resolve_quotes(event))
+            event.set_extra("input_projection", projected)
+            message, images, videos = projected.message, list(projected.images), list(projected.videos)
+            if not message and not images and not videos:
+                return
+
+            # Step.5 通过 UserManager 解析目标会话
             session_id = event.session_id
             route: ConversationRoute | None = None
             settings = event.policy_settings
@@ -226,7 +236,7 @@ class PipelineScheduler:
                     if batch:
                         self.wake_timers.cancel_route(event)
                         user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
-                # Step.5 执行会话并限制等待时间
+                # Step.6 执行会话并限制等待时间
                 try:
                     response = await asyncio.wait_for(
                         session_manager.handle_call_async(user_call),

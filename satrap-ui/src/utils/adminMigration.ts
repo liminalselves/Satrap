@@ -22,7 +22,7 @@ export function normalizePlatformSettings(
       enable_private: Boolean(settings.enable_private ?? true),
       enable_group: Boolean(settings.enable_group ?? true),
     };
-    for (const key of ['reply_with_quote', 'reply_with_mention']) {
+    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup']) {
       if (settings[key] !== undefined) normalized[key] = Boolean(settings[key]);
     }
     for (const key of ['group_whitelist', 'wake_words', 'wake_aliases']) {

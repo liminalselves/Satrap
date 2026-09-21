@@ -471,6 +471,19 @@ class PlatformAdapter(ABC):
         """
         await self.send_text(session_id, emoji)
 
+    async def fetch_quoted_message(self, message_id: str, session_id: str) -> dict[str, Any] | None:
+        """
+        回源一条被引用的消息, 默认不支持
+
+        参数:
+        - message_id: 平台消息 ID
+        - session_id: 当前事件的平台会话 ID, 用于校验被引用消息属于同一会话
+
+        返回:
+        - dict[str, Any] | None: 含 components/message_str/sender_id/sender_nickname/time 的已核验结果, 不支持或失败时返回 None
+        """
+        return None
+
     async def get_group(self, group_id: str | None = None) -> Group | None:
         """
         获取群聊信息, 默认返回 None
