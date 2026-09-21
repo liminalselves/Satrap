@@ -119,7 +119,10 @@ satrap platform show misskey1
 satrap platform add misskey1 --type misskey --session-type assistant --set base_url=https://misskey.example.com api_token=${MISSKEY_API_TOKEN}
 satrap platform update misskey1 --type misskey --session-type assistant --set chat_enabled=true
 satrap platform remove misskey1
+satrap platform wake qq_bot --group 20000 --user 30000 --prompt "请总结刚才的讨论"
 ```
+
+`platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内的待处理正文; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
 
 ## 自定义适配器
 

@@ -140,6 +140,18 @@ class DaemonClient:
         """
         return self._request("POST", "/api/config/reload")
 
+    def wake_platform(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        提交平台手动唤醒, 操作者身份由服务端认证边界决定
+
+        参数:
+        - payload: adapter_id, group_id, user_id, request_id 及可选 prompt/message_id/reason
+
+        返回:
+        - dict[str, Any]: accepted, already_pending 或 no_pending 结果; rejected 以 DaemonError 抛出
+        """
+        return self._request("POST", "/api/platforms/wake", payload)
+
     def shutdown(self) -> dict[str, Any]:
         """
         关闭

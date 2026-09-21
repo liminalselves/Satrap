@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from typing import Any, cast
 import json
+import uuid
 
 from satrap.core.config.document import (
     config_document_revision,
@@ -13,8 +14,9 @@ from satrap.core.config.document import (
     upsert_platform,
     validate_platforms,
 )
-from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table
+from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
+from satrap.cli.client import DaemonError
 from satrap.core.type import safe_getattr
 
 
@@ -160,6 +162,41 @@ def cmd_platform_remove(args: argparse.Namespace):
     info("平台实例变更需要重启后端后生效")
 
 
+def cmd_platform_wake(args: argparse.Namespace):
+    """
+    向运行中的后端提交 OneBot 群手动唤醒
+
+    参数:
+    - args: adapter id, 群号, 路由成员 ID, 可选 prompt/message-id/reason/request-id
+    """
+    if args.prompt and args.message_id:
+        raise CliError("--prompt 与 --message-id 只能指定一个")
+    payload: dict[str, Any] = {
+        "adapter_id": args.id, "group_id": args.group, "user_id": args.user,
+        "request_id": args.request_id or f"cli-{uuid.uuid4().hex}",
+    }
+    for key in ("prompt", "message_id", "reason"):
+        value = getattr(args, key, None)
+        if value:
+            payload[key] = value
+    client = daemon_client_from_args(args, timeout=10)
+    client.require_alive()
+    try:
+        result = client.wake_platform(payload)
+    except DaemonError as error:
+        raise CliError(f"手动唤醒被拒绝: {error}") from error
+    status = str(result.get("status", ""))
+    if status == "accepted":
+        ok(f"已接受手动唤醒, request_id={result.get('request_id', payload['request_id'])}")
+    elif status == "already_pending":
+        info(f"相同请求已在处理, 状态: {result.get('state', '')}")
+    elif status == "no_pending":
+        info("该群与成员范围内没有待处理正文, 未提交模型调用")
+    else:
+        raise CliError(f"手动唤醒未接受: {status or '未知状态'} {result.get('reason', '')}".rstrip())
+    print_json(result)
+
+
 def dispatch(args: argparse.Namespace):
     """
     分派命令
@@ -173,4 +210,5 @@ def dispatch(args: argparse.Namespace):
         "add": cmd_platform_upsert,
         "update": cmd_platform_upsert,
         "remove": cmd_platform_remove,
+        "wake": cmd_platform_wake,
     }, args)

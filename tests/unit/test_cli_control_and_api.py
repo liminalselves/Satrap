@@ -417,3 +417,56 @@ async def test_http_model_write_routes(tmp_path: Path):
     status, data = await server._route("DELETE", "/api/config/models/llm/test", b"")
     assert status == 200
     assert data == {"ok": True}
+
+
+def test_platform_parser_accepts_wake_command():
+    """平台 wake 子命令提供群/成员必填项与互斥可选正文"""
+    parser = _build_parser()
+    args = parser.parse_args(["platform", "wake", "ob", "--group", "20000", "--user", "30000", "--prompt", "处理"])
+    assert (args.action, args.id, args.group, args.user, args.prompt) == ("wake", "ob", "20000", "30000", "处理")
+    assert args.message_id == "" and args.request_id == ""
+
+
+def test_platform_wake_command_posts_payload_and_reports_status(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]):
+    """wake 命令只发送允许字段, 拒绝转为 CliError, 不从参数读取操作者"""
+    from argparse import Namespace
+    from satrap.cli import cmd_platform
+    from satrap.cli.output import CliError
+
+    sent: list[dict[str, object]] = []
+
+    class _Client:
+        def require_alive(self) -> None:
+            pass
+
+        def wake_platform(self, payload: dict[str, object]) -> dict[str, object]:
+            sent.append(payload)
+            return {"status": "accepted", "request_id": payload["request_id"]}
+
+    def _make_client(args: Namespace, timeout: float = 2) -> _Client:
+        return _Client()
+
+    monkeypatch.setattr(cmd_platform, "daemon_client_from_args", _make_client)
+    ns = Namespace(id="ob", group="20000", user="30000", prompt="处理", message_id="", reason="", request_id="r1")
+    cmd_platform.cmd_platform_wake(ns)
+    assert sent == [{"adapter_id": "ob", "group_id": "20000", "user_id": "30000", "request_id": "r1", "prompt": "处理"}]
+    assert "accepted" in capsys.readouterr().out
+
+    ns.request_id = ""
+    cmd_platform.cmd_platform_wake(ns)
+    assert sent[1]["request_id"] != sent[0]["request_id"]
+
+    with pytest.raises(CliError, match="只能指定一个"):
+        cmd_platform.cmd_platform_wake(Namespace(id="ob", group="1", user="2", prompt="a", message_id="3", reason="", request_id=""))
+
+    class _Rejecting(_Client):
+        def wake_platform(self, payload: dict[str, object]) -> dict[str, object]:
+            from satrap.cli.client import DaemonError
+            raise DaemonError("HTTP 409: Conflict")
+
+    def _make_rejecting(args: Namespace, timeout: float = 2) -> _Rejecting:
+        return _Rejecting()
+
+    monkeypatch.setattr(cmd_platform, "daemon_client_from_args", _make_rejecting)
+    with pytest.raises(CliError, match="被拒绝"):
+        cmd_platform.cmd_platform_wake(Namespace(id="ob", group="1", user="2", prompt="", message_id="", reason="", request_id=""))

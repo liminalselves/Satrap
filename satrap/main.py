@@ -186,6 +186,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p = plat_sub.add_parser("remove", help="删除平台配置")
     p.add_argument("id"); add_config_flag(p)
     add_mode_flags(p)
+    p = plat_sub.add_parser("wake", help="向运行中的后端提交 OneBot 群手动唤醒")
+    p.add_argument("id", help="平台实例 ID")
+    p.add_argument("--group", required=True, help="目标群号")
+    p.add_argument("--user", required=True, help="用于会话路由的群成员 ID")
+    p.add_argument("--prompt", default="", help="唤醒正文, 与 --message-id 互斥; 均省略时处理待处理窗口")
+    p.add_argument("--message-id", default="", help="回源处理的平台消息 ID")
+    p.add_argument("--reason", default="", help="记录用途的原因说明")
+    p.add_argument("--request-id", default="", help="幂等请求标识, 省略时自动生成")
+    add_config_flag(p)
 
     p_plug = subparsers.add_parser("plugin", help="聊天插件管理")
     # satrap plugin 命令

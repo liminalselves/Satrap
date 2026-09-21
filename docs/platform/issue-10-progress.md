@@ -215,3 +215,11 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - 配置示例与 `platforms.md` 同步; 修改模块 Pyright 0 errors / 0 warnings
 
 回复引用/@ 策略、引用回源、合并转发发送分流仍未实现; 发送队列与分块目前只在 OneBot 落地, 其他适配器保持旧契约。
+
+## 手动唤醒浏览器验收与 CLI 入口
+
+- 实际执行 `npm run test:e2e:wake` 通过: 弹窗失败保留输入、相同表单重试复用幂等 ID、请求不携带 operator、no_pending 提示保持弹窗; 已查看 390px 窄屏截图, 布局与提示可读, 截图不入库
+- 新增 `satrap platform wake <id> --group --user [--prompt|--message-id] [--reason] [--request-id]`, 经 DaemonClient.wake_platform 调用同一 HTTP 契约, 拒绝转为非零退出; CLI 解析与命令行为测试 14 passed, 修改模块 Pyright 新增 0 errors / 0 warnings (client.py/main.py 存量警告未变)
+- 控制端 (control) 服务本身只负责配置与后端生命周期, 手动唤醒属于运行时操作, 因此不在 control 端增加代理路由, 页面与 CLI 均直连后端 API
+
+幂等记录仍为进程内; 路由歧义体验与更友好的拒绝原因文案未进一步扩展。
