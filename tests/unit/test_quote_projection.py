@@ -176,3 +176,45 @@ async def test_quote_of_bot_message_is_labelled_and_not_treated_as_wake():
 def test_quote_lookup_must_be_boolean(value: object):
     with pytest.raises(ValueError, match="quote_lookup"):
         validate_wake_policy({"quote_lookup": value})
+
+
+@pytest.mark.asyncio
+async def test_quote_self_wake_is_opt_in_and_uses_single_lookup():
+    segments: list[dict[str, object]] = [{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "继续说"}}]
+    adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
+    adapter._bot.get_msg.return_value = quoted(sender=10000)
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    await PipelineScheduler(manager).execute(event)
+    assert manager.handle_call_async.await_count == 1
+    assert adapter._bot.get_msg.await_count == 1
+    assert event.get_extra("wake_decision").rule == "quote_self"
+    assert manager.handle_call_async.call_args.args[0].message.startswith("[引用 机器人自己 的消息: 原文]")
+
+
+@pytest.mark.asyncio
+async def test_quote_of_other_user_or_failed_lookup_does_not_wake():
+    segments: list[dict[str, object]] = [{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "继续说"}}]
+    adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
+    adapter._bot.get_msg.return_value = quoted(sender=321)
+    manager = AsyncMock()
+    await PipelineScheduler(manager).execute(event)
+    manager.handle_call_async.assert_not_awaited()
+    adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
+    adapter._bot.get_msg.side_effect = RuntimeError("down")
+    await PipelineScheduler(manager).execute(event)
+    manager.handle_call_async.assert_not_awaited()
+    assert event.get_extra("wake_decision").rule == "no_match"
+
+
+@pytest.mark.asyncio
+async def test_quote_self_wake_respects_whitelist_and_does_not_lookup_when_disabled():
+    segments: list[dict[str, object]] = [{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "继续说"}}]
+    adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
+    adapter.config.settings["group_whitelist"] = ["789"]
+    adapter._bot.get_msg.return_value = quoted(sender=10000)
+    manager = AsyncMock()
+    await PipelineScheduler(manager).execute(event)
+    adapter._bot.get_msg.assert_not_awaited()
+    manager.handle_call_async.assert_not_awaited()
+    # 白名单收紧后, 已排队事件在 Step.1 来源检查被拒绝, 不消耗回源预算

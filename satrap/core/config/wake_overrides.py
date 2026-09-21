@@ -12,7 +12,7 @@ AUTOMATIC_KEYS = frozenset({
     "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_score_threshold", "wake_max_wait",
     "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty",
 })
-GROUP_KEYS = AUTOMATIC_KEYS | {"wake_words", "wake_aliases", "reply_with_quote", "reply_with_mention", "quote_lookup"}
+GROUP_KEYS = AUTOMATIC_KEYS | {"wake_words", "wake_aliases", "reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self"}
 
 
 def _minute(value: object) -> int:

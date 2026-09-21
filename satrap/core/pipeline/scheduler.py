@@ -26,7 +26,7 @@ from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import PlatformComponentType
 from satrap.core.conversation import ConversationRoute
-from satrap.core.pipeline.wake_policy import evaluate_wake
+from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.input_projection import project_input, resolve_quotes
@@ -136,6 +136,8 @@ class PipelineScheduler:
 
             # Step.2 评估独立唤醒规则并记录命中原因
             self._apply_wake_policy(event)
+            if not event.is_private_chat() and not event.is_wake_up() and event.policy_settings.get("wake_on_quote_self") is True:
+                await self._apply_quote_wake(event)
             pending = manual_ticket.snapshot if manual_ticket is not None else ()
             automatic = False
             if manual_ticket is not None:
@@ -331,6 +333,24 @@ class PipelineScheduler:
         current = resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
         keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
         return all(current.get(key) == event.policy_settings.get(key) for key in keys)
+
+    @staticmethod
+    async def _apply_quote_wake(event: MessageEvent) -> None:
+        """
+        用引用回源预算确认被引用者是否为机器人, 是则视为明确唤醒
+
+        参数:
+        - event: 未被其他规则唤醒且开启 wake_on_quote_self 的群消息
+        """
+        if not any(c.type == PlatformComponentType.Reply for c in event.get_messages()):
+            return
+        status = await resolve_quotes(event)
+        reply = next(c for c in event.get_messages() if c.type == PlatformComponentType.Reply)
+        if status == "resolved" and safe_getattr_str(reply, "sender_id") == event.call_origin.self_id:
+            event.is_wake = True
+            event.is_at_or_wake_command = True
+            event.set_extra("wake_decision", WakeDecision(True, "quote_self", "引用了机器人的消息", event.call_origin.self_id))
+        # 回源结果保留在 Reply 字段上, 后续投影不重复请求; 失败或引用他人不改变未唤醒状态
 
     @staticmethod
     def _apply_wake_policy(event: MessageEvent) -> None:
