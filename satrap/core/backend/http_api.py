@@ -358,7 +358,7 @@ class BackendHTTPServer(MiniHTTPServer):
                     raise ValueError("expected_config_revision 必须是非空字符串")
             except (ValueError, json.JSONDecodeError) as error:
                 return 400, {"ok": False, "error": str(error)}
-            return 200, await backend.reload_config(revision) if revision is not None else await backend.reload_config()
+            return 200, await backend.reload_config(revision)
         # 接口: POST /api/config/reload
 
         return None

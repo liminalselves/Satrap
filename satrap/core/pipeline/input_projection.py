@@ -42,7 +42,7 @@ class ProjectedInput:
     notes: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _media_sources(components: list[BaseMessageComponent], media_type: str) -> list[str]:
+def media_sources(components: list[BaseMessageComponent], media_type: str) -> list[str]:
     """
     从组件列表提取指定类型媒体来源
 
@@ -183,6 +183,31 @@ def _components_brief_text(components: list[BaseMessageComponent]) -> str:
     return "".join(parts)
 
 
+class _MediaBudget:
+    """引用与转发媒体共享的数量预算, 超出时记录一次诊断说明"""
+
+    def __init__(self, limit: int, images: list[str], videos: list[str], notes: list[str]) -> None:
+        self.remaining = limit
+        self.images, self.videos, self.notes = images, videos, notes
+
+    def merge(self, components: list[BaseMessageComponent], note: str) -> None:
+        """
+        把组件中的图片与视频并入顶层媒体列表
+
+        参数:
+        - components: 引用或转发节点的组件
+        - note: 预算耗尽时写入的说明
+        """
+        for media_type, target in (("image", self.images), ("video", self.videos)):
+            for url in media_sources(components, media_type):
+                if self.remaining <= 0:
+                    self.notes.append(note)
+                    return
+                if url not in target:
+                    target.append(url)
+                    self.remaining -= 1
+
+
 def project_input(
     event: MessageEvent, quote_status: str, forward_status: str = "none", attachments: tuple[AttachmentResult, ...] = (),
 ) -> ProjectedInput:
@@ -199,11 +224,11 @@ def project_input(
     - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹
     """
     top = event.get_messages()
-    images = _media_sources(top, "image")
-    videos = _media_sources(top, "video")
+    images = media_sources(top, "image")
+    videos = media_sources(top, "video")
     message = event.get_message_str()
     notes: list[str] = []
-    media_budget = QUOTE_MEDIA_LIMIT
+    budget = _MediaBudget(QUOTE_MEDIA_LIMIT, images, videos, notes)
     replies = [c for c in top if c.type == PlatformComponentType.Reply]
     if replies:
         message = message.replace("[回复]", "", 1).lstrip()
@@ -219,22 +244,7 @@ def project_input(
             sender = safe_getattr_str(reply, "sender_nickname") or safe_getattr_str(reply, "sender_id") or "未知"
             own = safe_getattr_str(reply, "sender_id") == event.get_self_id()
             label = "机器人自己" if own else sender
-            quote_media = _media_sources(quoted_components, "image")
-            quote_videos = _media_sources(quoted_components, "video")
-            for url in quote_media:
-                if media_budget <= 0:
-                    notes.append("quote_media_truncated")
-                    break
-                if url not in images:
-                    images.append(url)
-                    media_budget -= 1
-            for url in quote_videos:
-                if media_budget <= 0:
-                    notes.append("quote_media_truncated")
-                    break
-                if url not in videos:
-                    videos.append(url)
-                    media_budget -= 1
+            budget.merge(quoted_components, "quote_media_truncated")
             quoted_display = quoted_text or "(仅含附件)"
             message = f"[引用 {label} 的消息: {quoted_display}]\n{message}".rstrip("\n")
         elif quote_status in {"unavailable", "disabled"}:
@@ -253,20 +263,7 @@ def project_input(
             content = safe_getattr(node, "content")
             node_components = [c for c in cast(list[Any], content) if isinstance(c, BaseMessageComponent)] if isinstance(content, list) else []
             lines.append(f"- {name}: {_components_brief_text(node_components) or '(仅含附件)'}")
-            for url in _media_sources(node_components, "image"):
-                if media_budget <= 0:
-                    notes.append("forward_media_truncated")
-                    break
-                if url not in images:
-                    images.append(url)
-                    media_budget -= 1
-            for url in _media_sources(node_components, "video"):
-                if media_budget <= 0:
-                    notes.append("forward_media_truncated")
-                    break
-                if url not in videos:
-                    videos.append(url)
-                    media_budget -= 1
+            budget.merge(node_components, "forward_media_truncated")
         block = "\n".join(lines)
         if len(block) > FORWARD_TEXT_LIMIT:
             block = block[:FORWARD_TEXT_LIMIT] + "…"

@@ -1,9 +1,8 @@
 import { create } from 'zustand';
 import { modelApi } from '@/api/model';
 import { sessionApi } from '@/api/session';
-import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, SessionClassConfig } from '@/api/types';
+import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelConfig, ModelType, SessionClassConfig } from '@/api/types';
 
-type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
 
 interface ConfigState {
   // 模型配置
@@ -19,8 +18,8 @@ interface ConfigState {
   fetchModels: (type: ModelType) => Promise<void>;
   fetchAllModels: () => Promise<void>;
   fetchSessionClasses: () => Promise<void>;
-  createModel: (type: ModelType, name: string, config: Partial<LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig>) => Promise<boolean>;
-  updateModel: (type: ModelType, name: string, config: Partial<LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig>) => Promise<boolean>;
+  createModel: (type: ModelType, name: string, config: Partial<ModelConfig>) => Promise<boolean>;
+  updateModel: (type: ModelType, name: string, config: Partial<ModelConfig>) => Promise<boolean>;
   deleteModel: (type: ModelType, name: string) => Promise<boolean>;
 }
 

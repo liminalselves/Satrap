@@ -29,7 +29,7 @@ def evaluate_wake(event: MessageEvent) -> WakeDecision:
     """
     if event.is_private_chat():
         return WakeDecision(True, "private", "私聊")
-    if event.is_wake_up() or event.is_at_or_wake_command:
+    if event.is_wake_up():
         return WakeDecision(True, "upstream", "上游明确唤醒")
     self_id = event.call_origin.self_id
     components = event.get_messages()

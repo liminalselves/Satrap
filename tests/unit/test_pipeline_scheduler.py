@@ -406,7 +406,8 @@ def test_extract_img_urls_from_components():
     event = _message_event(adapter)
     event.platform_message = message
 
-    urls = PipelineScheduler._extract_img_urls(event)
+    from satrap.core.pipeline.input_projection import media_sources
+    urls = media_sources(event.get_messages(), "image")
     assert urls == ["http://x/1.png", "local.png"]
 
 

@@ -867,3 +867,9 @@ def safe_getattr_callable(obj: Any, name: str) -> Callable[..., Any] | None:
     val = getattr(obj, name, None)
     return val if callable(val) else None
 
+
+
+MODEL_CONFIG_CLASSES: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig] | type[ASRConfig]] = {
+    "llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig, "asr": ASRConfig,
+}
+"""模型配置类型名到数据类的唯一映射, 新增模型类型只需在此登记"""

@@ -15,9 +15,7 @@ import { PageHeader, FormModal, FormField, EmptyState } from '@/components/commo
 import { Plus, Edit2, Trash2, Eye, EyeOff, Mic } from 'lucide-react';
 import { Modal } from '@/components/ui/Modal';
 import { controlApi, type AsrTestResult } from '@/api/control';
-import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig } from '@/api/types';
-
-type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
+import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelType } from '@/api/types';
 
 interface ModelFormData {
   name: string;

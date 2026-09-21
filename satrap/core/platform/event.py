@@ -365,7 +365,6 @@ class MessageEvent:
 
         self.role = "member"
         self.is_wake = False
-        self.is_at_or_wake_command = False
 
         self._result: MessageEventResult | None = None
         self.created_at = time()

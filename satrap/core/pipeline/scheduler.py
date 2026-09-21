@@ -14,7 +14,6 @@ from typing import (
     Awaitable,
     Callable,
     List,
-    TypeVar,
     cast,
 )
 
@@ -30,7 +29,7 @@ from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
-from satrap.core.pipeline.input_projection import project_input, resolve_forwards, resolve_quotes
+from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
@@ -38,7 +37,6 @@ from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 from satrap.core.log import logger
 
 
-_T = TypeVar("_T")
 
 
 class PipelineScheduler:
@@ -86,7 +84,7 @@ class PipelineScheduler:
         添加预处理器, 在权限与唤醒检查前依次调用; 返回 False 则丢弃事件
 
         参数:
-        - fn: 待调用函数, 支持同步或异步 (返回值经 _await_if_needed 统一处理)
+        - fn: 待调用函数, 支持同步或异步, 返回值为可等待对象时自动等待
         """
         self.preprocessors.append(fn)
 
@@ -126,7 +124,10 @@ class PipelineScheduler:
             for processor in self.preprocessors:
                 if event.is_stopped() or not event.call_llm:
                     return
-                if not await self._await_if_needed(processor(event)):
+                verdict = processor(event)
+                if inspect.isawaitable(verdict):
+                    verdict = await cast(Awaitable[bool], verdict)
+                if not verdict:
                     logger.debug(f"[PipelineScheduler] preprocessor 丢弃事件: {event.session_id}")
                     return
 
@@ -146,25 +147,24 @@ class PipelineScheduler:
                 event.is_wake = True
             elif not event.is_private_chat() and event.policy_settings.get("wake_mode", "explicit") in {"frequency", "necessity"} and self._automatic_policy_current(event):
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
-                if not event.is_wake_up() and not event.is_at_or_wake_command:
+                if not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
                     event.set_extra("wake_decision", decision)
                     if decision.triggered:
                         automatic = True
                         event.is_wake = True
-            if not event.is_private_chat() and not event.is_wake_up() and not event.is_at_or_wake_command:
+            if not event.is_private_chat() and not event.is_wake_up():
                 # 到期复查未触发时同样重排, 让残留正文仍有兜底机会
                 self.wake_timers.schedule(event)
                 return
 
             message = event.get_message_str()
-            images = self._extract_img_urls(event)
-            videos = self._extract_img_urls(event, "video")
+            top_components = event.get_messages()
             has_context = any(
                 c.type in {PlatformComponentType.Reply, PlatformComponentType.Forward, PlatformComponentType.Record, PlatformComponentType.File}
-                for c in event.get_messages()
+                for c in top_components
             )
-            if not message and not images and not videos and not has_context:
+            if not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -359,7 +359,6 @@ class PipelineScheduler:
         reply = next(c for c in event.get_messages() if c.type == PlatformComponentType.Reply)
         if status == "resolved" and safe_getattr_str(reply, "sender_id") == event.call_origin.self_id:
             event.is_wake = True
-            event.is_at_or_wake_command = True
             event.set_extra("wake_decision", WakeDecision(True, "quote_self", "引用了机器人的消息", event.call_origin.self_id))
         # 回源结果保留在 Reply 字段上, 后续投影不重复请求; 失败或引用他人不改变未唤醒状态
 
@@ -375,7 +374,6 @@ class PipelineScheduler:
         event.set_extra("wake_decision", decision)
         if decision.triggered and not event.is_private_chat():
             event.is_wake = True
-            event.is_at_or_wake_command = True
 
     async def _check_permission(self, event: MessageEvent) -> bool:
         """
@@ -416,35 +414,3 @@ class PipelineScheduler:
         if not source_adapter_id:
             return "", None
         return source_adapter_id, {"adapter_id": source_adapter_id}
-
-    @staticmethod
-    def _extract_img_urls(event: MessageEvent, media_type: str = "image") -> list[str]:
-        """
-        从 event 中提取指定类型的媒体来源
-
-        参数:
-        - event: 事件
-        - media_type: image 或 video, 默认 image 保持既有调用含义
-
-        返回:
-        - list[str]: 对应媒体的 URL 或文件路径列表
-        """
-        urls: list[str] = []
-        try:
-            for comp in event.get_messages():
-                ctype = safe_getattr(comp, 'type')
-                if ctype is not None:
-                    ctype_str = ctype.value if hasattr(ctype, 'value') else str(ctype)
-                    if ctype_str.lower() == media_type:
-                        url = safe_getattr_str(comp, 'url') or safe_getattr_str(comp, 'file')
-                        if url:
-                            urls.append(str(url))
-        except Exception:
-            pass
-        return urls
-
-    @staticmethod
-    async def _await_if_needed(value: Awaitable[_T] | _T) -> _T:
-        if inspect.isawaitable(value):
-            return await cast(Awaitable[_T], value)
-        return value

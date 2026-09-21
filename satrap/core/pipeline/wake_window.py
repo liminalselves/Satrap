@@ -179,23 +179,6 @@ class WakeWindow:
         reason = f"问题={question:g}, 指向性={addressed:g}, 积压={backlog:.2f}, 近期提交占比={ratio:.2f}, 阈值={threshold:g}"
         return WakeDecision(score >= threshold, "necessity", reason, score=score)
 
-    def ready(self, event: MessageEvent, count: int, now: float | None = None) -> bool:
-        """
-        判断频率阈值和自动回复冷却
-
-        参数:
-        - event: 当前事件
-        - count: 当前有效消息数
-        - now: 单调时钟, 默认读取当前时间
-
-        返回:
-        - bool: 是否达到自动触发条件
-        """
-        now = monotonic() if now is None else now
-        last = self._submitted.get(self.key(event))
-        return count >= int(event.policy_settings.get("wake_message_threshold", 3)) and (
-            last is None or now - last >= float(event.policy_settings.get("wake_cooldown", 30))
-        )
 
     def claim(self, event: MessageEvent, snapshot: tuple[PendingText, ...], automatic: bool, now: float | None = None, *, deadline: bool = False) -> tuple[PendingText, ...]:
         """

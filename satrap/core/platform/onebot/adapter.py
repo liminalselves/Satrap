@@ -31,7 +31,7 @@ from satrap.core.platform.onebot.onebot_utils import (
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
-from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, OneBotAdmin
+from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendReceipt, combine_receipts
 from satrap.core.components import Node
@@ -574,32 +574,17 @@ class OneBotAdapter(PlatformAdapter):
 
         messages = [await node.to_dict() for node in nodes]
         try:
-            if is_private_session(session_id):
-                result = await self._bot.send_private_forward_msg(
-                    user_id=int(extract_private_user_id(session_id)), messages=messages,
-                )
-            elif is_group_session(session_id):
-                result = await self._bot.send_group_forward_msg(
-                    group_id=int(extract_group_id(session_id)), messages=messages,
-                )
-            else:
-                return SendReceipt("failed", reason="invalid_session")
+            result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
+        except ValueError:
+            return SendReceipt("failed", reason="invalid_session")
         except _action_failures as error:
-            raw_result = getattr(error, "result", None)
-            result_payload = cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
-            retcode = result_payload.get("retcode")
-            if retcode not in (10002, 1404):
+            if not is_missing_action_error(error):
                 return SendReceipt("failed", reason="action_rejected")
             logger.info("[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送")
             return await self._send_forward_degraded(session_id, nodes, limit)
         except Exception:
             return SendReceipt("unknown", reason="action_unconfirmed")
-        # 动作提交后异常无法证明平台未发送, 不向上层提供自动重试依据
-        if isinstance(result, dict):
-            message_id = cast(dict[str, Any], result).get("message_id")
-            if isinstance(message_id, (str, int)) and not isinstance(message_id, bool) and str(message_id):
-                return SendReceipt("success", (str(message_id),))
-        return SendReceipt("unknown", reason="missing_message_id")
+        return self._receipt_from_result(result)
 
     async def _send_forward_degraded(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """
@@ -648,21 +633,45 @@ class OneBotAdapter(PlatformAdapter):
             return SendReceipt("failed", reason="empty_message")
 
         try:
-            if is_private_session(session_id):
-                result = await self._bot.send_private_msg(
-                    user_id=int(extract_private_user_id(session_id)), message=segments,
-                )
-            elif is_group_session(session_id):
-                result = await self._bot.send_group_msg(
-                    group_id=int(extract_group_id(session_id)), message=segments,
-                )
-            else:
-                return SendReceipt("failed", reason="invalid_session")
+            result = await self._dispatch_action(session_id, "send_private_msg", "send_group_msg", message=segments)
+        except ValueError:
+            return SendReceipt("failed", reason="invalid_session")
         except _action_failures:
             return SendReceipt("failed", reason="action_rejected")
         except Exception:
             return SendReceipt("unknown", reason="action_unconfirmed")
-        # 动作提交后异常无法证明平台未发送, 不向上层提供自动重试依据
+        return self._receipt_from_result(result)
+
+    async def _dispatch_action(self, session_id: str, private_action: str, group_action: str, **params: Any) -> Any:
+        """
+        按会话类型选择私聊或群动作并附上目标 ID
+
+        参数:
+        - session_id: 平台会话 ID
+        - private_action: 私聊动作名
+        - group_action: 群动作名
+        - params: 动作其余参数
+
+        返回:
+        - Any: 平台原始响应; 会话格式非法时抛出 ValueError
+        """
+        if is_private_session(session_id):
+            return await getattr(self._bot, private_action)(user_id=int(extract_private_user_id(session_id)), **params)
+        if is_group_session(session_id):
+            return await getattr(self._bot, group_action)(group_id=int(extract_group_id(session_id)), **params)
+        raise ValueError("invalid_session")
+
+    @staticmethod
+    def _receipt_from_result(result: Any) -> SendReceipt:
+        """
+        从平台响应提取消息 ID
+
+        参数:
+        - result: 动作响应
+
+        返回:
+        - SendReceipt: 含 message_id 时成功, 否则结果未知; 动作已提交, 不提供自动重试依据
+        """
         if isinstance(result, dict):
             message_id = cast(dict[str, Any], result).get("message_id")
             if isinstance(message_id, (str, int)) and not isinstance(message_id, bool) and str(message_id):

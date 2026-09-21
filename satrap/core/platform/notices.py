@@ -21,11 +21,6 @@ from satrap.core.log import logger
 
 NoticeHandler = Callable[[PlatformEvent], Awaitable[Any] | Any]
 
-NOTICE_EVENT_TYPES = frozenset({
-    "group_upload", "group_admin", "group_decrease", "group_increase", "group_ban",
-    "friend_add", "group_recall", "friend_recall", "notify", "essence", "group_card",
-})
-REQUEST_EVENT_TYPES = frozenset({"friend", "group"})
 
 
 @dataclass(frozen=True)

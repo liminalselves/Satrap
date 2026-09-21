@@ -53,36 +53,50 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
 """OneBot v11 标准管理动作登记表: 名称到读写属性与说明"""
 
 
-def normalize_group_id(value: Any) -> str:
+MISSING_ACTION_RETCODES = frozenset({10002, 1404})
+"""OneBot 实现未提供该动作时常见的 retcode (go-cqhttp 1404 / Lagrange 10002)"""
+
+
+def is_missing_action_error(error: BaseException) -> bool:
     """
-    校验并归一化群 ID
+    判断动作失败是否因为当前实现不提供该接口
+
+    参数:
+    - error: 平台客户端抛出的动作失败异常
+
+    返回:
+    - bool: retcode 属于缺失动作集合时为 True
+    """
+    raw_result = getattr(error, "result", None)
+    payload = cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
+    return payload.get("retcode") in MISSING_ACTION_RETCODES
+
+
+def _normalize_decimal(value: Any, label: str) -> str:
+    """
+    校验并归一化纯数字平台 ID
 
     参数:
     - value: 外部输入
+    - label: 错误文案中的对象名
 
     返回:
-    - str: 纯数字群 ID 字符串
+    - str: 纯数字字符串
     """
     text = str(value).strip()
     if not text or not text.isdecimal():
-        raise ValueError("群 ID 必须为纯数字字符串")
+        raise ValueError(f"{label} 必须为纯数字字符串")
     return text
+
+
+def normalize_group_id(value: Any) -> str:
+    """校验并归一化群 ID"""
+    return _normalize_decimal(value, "群 ID")
 
 
 def normalize_user_id(value: Any) -> str:
-    """
-    校验并归一化用户 ID
-
-    参数:
-    - value: 外部输入
-
-    返回:
-    - str: 纯数字用户 ID 字符串
-    """
-    text = str(value).strip()
-    if not text or not text.isdecimal():
-        raise ValueError("用户 ID 必须为纯数字字符串")
-    return text
+    """校验并归一化用户 ID"""
+    return _normalize_decimal(value, "用户 ID")
 
 
 def normalize_flag(value: Any) -> str:
@@ -148,11 +162,10 @@ class OneBotAdmin:
             raise
         except Exception as error:
             if self._action_failures and isinstance(error, self._action_failures):
-                raw_result = getattr(error, "result", None)
-                payload = cast(dict[str, Any], raw_result) if isinstance(raw_result, dict) else {}
-                retcode = payload.get("retcode")
-                if retcode in (10002, 1404):
+                if is_missing_action_error(error):
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
+                raw_result = getattr(error, "result", None)
+                retcode = cast(dict[str, Any], raw_result).get("retcode") if isinstance(raw_result, dict) else None
                 raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
 

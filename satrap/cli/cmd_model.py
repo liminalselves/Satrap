@@ -7,7 +7,7 @@ import json
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, ok, print_json, print_table, render_data
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr_callable
+from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
 
 
 TYPE_MAP = {
@@ -16,7 +16,7 @@ TYPE_MAP = {
     "rerank": ("list_rerank_configs", "get_rerank_config", "set_rerank_config", "update_rerank_config", "remove_rerank_config"),
     "asr": ("list_asr_configs", "get_asr_config", "set_asr_config", "update_asr_config", "remove_asr_config"),
 }
-CLS_MAP: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig] | type[ASRConfig]] = {"llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig, "asr": ASRConfig}
+CLS_MAP = MODEL_CONFIG_CLASSES
 
 
 def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:

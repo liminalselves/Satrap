@@ -40,7 +40,9 @@ def build_model_client(kind: str, config: Any, *, async_: bool = False) -> Any:
     if kind == "llm":
         return build_llm_from_config(config, async_=async_)
     if kind == "asr":
-        return build_asr_from_config(config, async_=async_)
+        client = build_asr_from_config(config, async_=async_)
+        client.suppress_error = False
+        return client
     values = {key: value for key, value in asdict(config).items() if key != "name" and value is not None}
     if kind in {"embed", "embedding"}:
         values["suppress_error"] = False

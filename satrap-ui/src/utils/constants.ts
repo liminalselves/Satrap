@@ -144,7 +144,3 @@ export function getThinkingOptions(config?: {
 export const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const;
 
 export const PLATFORM_TYPES = ['misskey', 'onebot', 'aiocqhttp'] as const;
-
-export type ModelType = (typeof MODEL_TYPES)[number]['value'];
-export type LogLevel = (typeof LOG_LEVELS)[number];
-export type PlatformType = (typeof PLATFORM_TYPES)[number];

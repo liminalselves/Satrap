@@ -9,11 +9,9 @@ import type {
   EdictumSessionConfig,
   EdictumAvailablePlugin,
   EdictumTypeDefinition,
-  ASRConfig,
-  EmbeddingConfig,
-  LLMConfig,
+  ModelConfig,
+  ModelType,
   PlatformConfig,
-  ReRankConfig,
   RuntimeSession,
   SessionClassConfig,
 } from './types';
@@ -85,8 +83,6 @@ export interface PlatformConfigResult extends ControlResult {
   exists?: boolean;
 }
 
-type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
-type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
 
 export interface AsrTestResult extends ControlResult {
   text?: string;

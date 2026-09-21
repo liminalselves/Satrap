@@ -8,21 +8,13 @@ from typing import Any, cast
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
 from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
-from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig, validate_thinking_levels
+from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
 
 ASR_TEST_MAX_AUDIO_BYTES = 8 * 1024 * 1024
 """ASR 转录测试接受的解码后音频字节上限"""
 
 
-_CONFIG_CLASSES: dict[
-    ConfigTarget,
-    type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig] | type[ASRConfig],
-] = {
-    "llm": LLMConfig,
-    "embedding": EmbeddingConfig,
-    "rerank": ReRankConfig,
-    "asr": ASRConfig,
-}
+_CONFIG_CLASSES = MODEL_CONFIG_CLASSES
 """模型配置类型到数据类的映射"""
 
 

@@ -77,6 +77,7 @@ export interface ASRConfig {
 }
 
 export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
+export type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
 
 export interface SessionClassConfig {
     name?: string;
