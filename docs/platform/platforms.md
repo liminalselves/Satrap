@@ -80,7 +80,7 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | get_group_member_list | group_admin_list_members | 读 | group_id 可选 | 至多 2048 条, QQ/昵称/名片/角色/入群时间等 |
 | get_group_member_info | group_admin_get_member | 读 | user_id, group_id 可选 | QQ/昵称/名片/角色/禁言时间等 |
 | get_group_honor_info | group_admin_get_honors | 读 | group_id 可选, honor_type | 实现返回的荣誉数据 |
-| delete_msg | group_admin_recall_message | 写 | message_id | 无返回 |
+| delete_msg | group_admin_recall_message | 写 | group_id (默认当前群, 受实例白名单与插件 allowed_groups 限制), message_id | 无返回 |
 | set_group_kick | group_admin_kick | 写 | user_id, reject_add_request, group_id 可选 | 无返回 |
 | set_group_ban | group_admin_ban | 写 | user_id, duration 0-2592000 秒, group_id 可选 | 无返回 |
 | set_group_whole_ban | group_admin_whole_ban | 写 | enable, group_id 可选 | 无返回 |
@@ -92,7 +92,7 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_group_special_title | group_admin_set_title | 写 | user_id, title ≤18 字符, group_id 可选 | 无返回 |
 | set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
 | set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
-| set_group_add_request | group_admin_handle_group_request | 写 | flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
+| set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
 
 好友/加群请求的 `flag` 来自通知事件 (见文末"通知与请求事件"), 工具只做显式审批, 不做任何自动同意或拒绝。布尔参数严格校验, 拒绝真值语义; 写操作被平台拒绝或结果未知时按 `manual` 策略交由用户确认, 不自动重放。
 
@@ -269,7 +269,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 - 语音: `settings.asr_model` 指向一个已保存的 ASR 模型配置 (留空关闭), 后端按名称解析并用 `AsyncASR` 转写; 下载上限 16 MiB, 单次转写 60 秒超时, 扩展名必须在 OpenAI 兼容接口支持范围内 (无法判断时按 wav 处理)。转写结果冻结到 `Record.text`, 同一事件不重复调用; 投影为 `[语音 转写内容: …]` (至多 4000 字符)
 - 文件: `settings.attachment_extract` 默认开启, 只处理 `documents.SUPPORTED_EXTENSIONS` 内的类型; 经受限下载写入临时文件 (登记到事件, 事件结束自动删除), 在线程池中调用 `extract_text` (32 MiB / 20000 字符上限), 投影为 `[文件 <名> 内容:
 …]`。群文件上传 notice 生成的 File 附件同样只在其被明确转为会话消息时才会下载
-- 下载使用出站防护 `safe_async_get`: 只接受 http/https, 私网地址默认拒绝, 需要访问 SnowLuma 内网下载地址时在 `settings.media_trusted_hosts` 登记主机名; 不把平台上报的本地路径当作 Satrap 主机上的可信文件
+- 下载使用出站防护 `safe_async_get`: 只接受 http/https, 私网地址默认拒绝, 需要访问 SnowLuma 内网下载地址时在 `settings.media_trusted_hosts` 登记主机名; 默认校验 TLS 证书且重定向限制在同源, 自签证书的内网 https 需显式开启 `settings.media_insecure_tls: true`; 不把平台上报的本地路径当作 Satrap 主机上的可信文件
 - 失败降级: 未配置 ASR、格式不支持、下载/转写/提取失败均保留可识别标记 (`[语音: 未启用转写]`、`[文件 x: 不支持的格式]`、`[…: 获取或处理失败]`) 并继续处理当前问题, 不把未知二进制送入文本模型; `input_projection` extra 的 `attachment_status` 为 resolved/partial/failed, notes 记录各项原因
 
 上述内容作为用户提供的资料进入模型输入, 不提升为系统指令, 不参与唤醒判定或命令解析。

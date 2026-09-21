@@ -84,3 +84,4 @@ platforms:
   #     asr_model: ""   # 语音转写使用的 ASR 模型配置名 (satrap model set asr <name> ...), 留空不转写
   #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
   #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记
+  #     media_insecure_tls: false   # 仅在媒体下载地址使用自签证书时开启, 关闭 TLS 校验

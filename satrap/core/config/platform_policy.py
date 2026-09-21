@@ -49,8 +49,9 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
         not isinstance(item, str) or not item.strip() or len(item) > 253 for item in cast(list[object], hosts)
     ):
         raise ValueError("media_trusted_hosts 必须是最多 32 项的主机名列表")
-    if "attachment_extract" in settings and not isinstance(settings["attachment_extract"], bool):
-        raise ValueError("attachment_extract 必须为布尔值")
+    for key in ("attachment_extract", "media_insecure_tls"):
+        if key in settings and not isinstance(settings[key], bool):
+            raise ValueError(f"{key} 必须为布尔值")
     notice_types = settings.get("notice_types")
     if notice_types is not None:
         if not isinstance(notice_types, list) or len(cast(list[object], notice_types)) > 64 or any(

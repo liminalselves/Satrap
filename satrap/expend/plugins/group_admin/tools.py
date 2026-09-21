@@ -29,9 +29,9 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "目标群号, 可选, 默认当前群"),
         "honor_type": ("string", "talkative/performer/legend/strong_newbie/emotion 之一, 默认 all"),
     }, [], False, True),
-    "group_admin_recall_message": ("撤回一条消息", {
-        "message_id": ("string", "平台消息 ID"),
-    }, ["message_id"], True, False),
+    "group_admin_recall_message": ("撤回当前群的一条消息", {
+        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    }, ["message_id"], True, True),
     "group_admin_kick": ("将成员移出群聊", {
         "user_id": ("string", "目标成员 QQ"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
         "reject_add_request": ("boolean", "是否拒绝其后续加群请求, 默认 false"),
@@ -76,7 +76,8 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
     "group_admin_handle_group_request": ("批准或拒绝加群请求或邀请, 不自动审批", {
         "flag": ("string", "请求事件上报的标识"), "sub_type": ("string", "add 或 invite, 必须与事件一致"),
         "approve": ("boolean", "true 同意, false 拒绝"), "reason": ("string", "拒绝理由, 可选"),
-    }, ["flag", "sub_type", "approve"], True, False),
+        "group_id": ("string", "请求所属群号, 可选, 默认当前群"),
+    }, ["flag", "sub_type", "approve"], True, True),
 }
 
 
@@ -171,7 +172,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     if name == "group_admin_get_honors":
         return admin.get_group_honor_info(gid, str(kwargs.get("honor_type") or "all"))
     if name == "group_admin_recall_message":
-        return admin.recall_message(kwargs.get("message_id", ""))
+        return admin.recall_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_kick":
         return admin.kick_group_member(gid, kwargs.get("user_id", ""), _as_bool(kwargs.get("reject_add_request", False), "reject_add_request"))
     if name == "group_admin_ban":
@@ -194,7 +195,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         return admin.leave_group(gid, _as_bool(kwargs.get("dismiss", False), "dismiss"))
     if name == "group_admin_handle_friend_request":
         return admin.handle_friend_request(kwargs.get("flag", ""), _as_bool(kwargs.get("approve"), "approve"), str(kwargs.get("remark", "")))
-    return admin.handle_group_request(kwargs.get("flag", ""), str(kwargs.get("sub_type", "")), _as_bool(kwargs.get("approve"), "approve"), str(kwargs.get("reason", "")))
+    return admin.handle_group_request(gid, kwargs.get("flag", ""), str(kwargs.get("sub_type", "")), _as_bool(kwargs.get("approve"), "approve"), str(kwargs.get("reason", "")))
 
 
 class _GroupAdminMixin:

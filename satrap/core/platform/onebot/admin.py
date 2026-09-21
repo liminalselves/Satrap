@@ -270,13 +270,15 @@ class OneBotAdmin:
             raise AdminActionUnconfirmed("荣誉信息响应格式不符")
         return cast(dict[str, Any], result)
 
-    async def recall_message(self, message_id: Any) -> None:
+    async def recall_message(self, group_id: Any, message_id: Any) -> None:
         """
-        撤回一条消息
+        撤回一条群消息
 
         参数:
+        - group_id: 消息所在群, 必须在当前实例允许范围内
         - message_id: 平台消息 ID
         """
+        self._check_group(normalize_group_id(group_id))
         text = str(message_id).strip()
         if not text or not text.lstrip("-").isdecimal():
             raise ValueError("消息 ID 必须为整数")
@@ -448,16 +450,18 @@ class OneBotAdmin:
             raise ValueError("备注长度不能超过 60 字符")
         await self._call("set_friend_add_request", flag=normalize_flag(flag), approve=approve, remark=text)
 
-    async def handle_group_request(self, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
+    async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
         """
         处理加群请求或邀请
 
         参数:
+        - group_id: 请求所属群, 必须在当前实例允许范围内
         - flag: request 事件上报的标识
         - sub_type: add 或 invite, 必须与事件一致
         - approve: 是否同意
         - reason: 拒绝理由
         """
+        self._check_group(normalize_group_id(group_id))
         if sub_type not in {"add", "invite"}:
             raise ValueError("sub_type 必须为 add 或 invite")
         if not isinstance(approve, bool):

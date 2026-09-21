@@ -536,6 +536,25 @@ class BackendManager:
         }
 
     @staticmethod
+    def _normalized_platform_snapshot(config: dict[str, Any]) -> dict[str, Any]:
+        """
+        生成与保存路径同口径的平台配置快照, 启动配置未经校验时按原样保留
+
+        参数:
+        - config: 启动或热更新使用的平台配置
+
+        返回:
+        - 归一化后的独立副本, 校验失败时为原配置的深拷贝
+        """
+        from satrap.core.config.document import validate_platforms
+        # 延迟导入配置边界, 避免配置文档依赖 BackendConfig 形成循环
+        try:
+            return validate_platforms([deepcopy(config)])[0]
+        except Exception as error:
+            logger.warning(f"[BackendManager] 平台配置 {config.get('id', '')} 未通过校验, 生效指纹按原样计算: {type(error).__name__}")
+            return deepcopy(config)
+
+    @staticmethod
     def _platform_revision(config: dict[str, Any] | None) -> str | None:
         """
         计算配置指纹, 不向调用方返回配置正文或密钥
@@ -579,7 +598,7 @@ class BackendManager:
             except Exception as error:
                 self._platform_config_results = [{
                     "id": platform_id, "saved_revision": None,
-                    "active_revision": self._platform_revision(validate_platforms([active])[0]), "status": "failed",
+                    "active_revision": self._platform_revision(self._normalized_platform_snapshot(active)), "status": "failed",
                     "error": f"平台配置读取或校验失败: {type(error).__name__}",
                 } for platform_id, active in self._platform_active_configs.items()]
                 if not self._platform_config_results:
@@ -591,7 +610,7 @@ class BackendManager:
                 self._platform_config_results = [{
                     "id": platform_id, "status": "failed", "reason": "source_revision_mismatch",
                     "saved_revision": self._platform_revision(candidate_map.get(platform_id)),
-                    "active_revision": self._platform_revision(validate_platforms([self._platform_active_configs[platform_id]])[0])
+                    "active_revision": self._platform_revision(self._normalized_platform_snapshot(self._platform_active_configs[platform_id]))
                     if platform_id in self._platform_active_configs else None,
                     "error": "后端实际配置与本次保存的修订不一致, 未应用平台变更",
                 } for platform_id in sorted(set(candidate_map) | set(self._platform_active_configs) or {""})]
@@ -603,7 +622,7 @@ class BackendManager:
             for platform_id in sorted(set(desired) | set(self._platform_active_configs)):
                 candidate = desired.get(platform_id)
                 active = self._platform_active_configs.get(platform_id)
-                normalized_active = validate_platforms([active])[0] if active is not None else None
+                normalized_active = self._normalized_platform_snapshot(active) if active is not None else None
                 saved_revision = self._platform_revision(candidate)
                 active_revision = self._platform_revision(normalized_active)
                 result: dict[str, Any] = {"id": platform_id, "saved_revision": saved_revision,
@@ -914,10 +933,11 @@ class BackendManager:
                 try:
                     await self._adapter_mgr.stop_all()
                     await self.platform_events.close()
-                    set_current_hub(None)
-                    set_current_adapter_manager(None)
                 except Exception as e:
                     logger.warning(f"[BackendManager] 停止适配器失败: {e}")
+                finally:
+                    set_current_hub(None)
+                    set_current_adapter_manager(None)
 
             for platform_id, (session_manager, _) in self._platform_runtimes.items():
                 try:
@@ -1167,6 +1187,8 @@ class BackendManager:
             pass
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
+        if self.platform_events.closed:
+            self.platform_events = PlatformEventHub()
         set_current_hub(self.platform_events)
         set_current_adapter_manager(self._adapter_mgr)
 
@@ -1219,7 +1241,7 @@ class BackendManager:
             )
             adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
             if adapter:
-                self._platform_active_configs[pid] = deepcopy(pcfg)
+                self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
                 logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
             else:
                 logger.error(f"[BackendManager] 创建平台适配器失败: {pid} ({ptype})")

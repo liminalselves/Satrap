@@ -38,10 +38,10 @@ def asr_config() -> ASRConfig:
 
 
 def fake_download(payload: dict[str, bytes]):
-    calls: list[tuple[str, int]] = []
+    calls: list[tuple[str, int, bool, bool]] = []
 
-    async def download(url: str, *, timeout: float, max_response_bytes: int, trusted_hosts: tuple[str, ...], ssl_verify: bool) -> OutboundHTTPResponse:
-        calls.append((url, max_response_bytes))
+    async def download(url: str, *, timeout: float, max_response_bytes: int, trusted_hosts: tuple[str, ...], ssl_verify: bool, restrict_redirects_to_origin: bool) -> OutboundHTTPResponse:
+        calls.append((url, max_response_bytes, ssl_verify, restrict_redirects_to_origin))
         if url not in payload:
             return OutboundHTTPResponse(url=url, status_code=404, headers={}, content=b"")
         return OutboundHTTPResponse(url=url, status_code=200, headers={}, content=payload[url])
@@ -70,6 +70,41 @@ async def test_voice_is_transcribed_and_projected(monkeypatch: pytest.MonkeyPatc
     assert projected.attachment_status == "resolved"
     again = await resolve_attachments(event, lambda name: asr_config())
     assert again[0].text == "你好世界" and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_download_verifies_tls_unless_explicitly_disabled(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([file_segment()])
+    download, calls = fake_download({"https://files.example.com/notes.txt": b"hello"})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    await resolve_attachments(event, None)
+    assert calls[0][2:] == (True, True)
+    adapter, event = await make_event([file_segment()], {"media_insecure_tls": True})
+    await resolve_attachments(event, None)
+    assert calls[1][2:] == (False, True)
+
+
+@pytest.mark.asyncio
+async def test_temp_file_is_tracked_even_when_write_fails(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([file_segment()])
+    download, _ = fake_download({"https://files.example.com/notes.txt": b"hello"})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    tracked: list[str] = []
+    monkeypatch.setattr(event, "track_temporary_local_file", tracked.append)
+
+    class _Broken:
+        name = os.path.join(os.getcwd(), "never-created.txt")
+
+        def write(self, data: bytes) -> None:
+            raise OSError("disk full")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(module.tempfile, "NamedTemporaryFile", lambda **kwargs: _Broken())
+    results = await resolve_attachments(event, None)
+    assert results[0].status == "failed" and results[0].reason == "OSError"
+    assert tracked == [_Broken.name]
 
 
 @pytest.mark.asyncio

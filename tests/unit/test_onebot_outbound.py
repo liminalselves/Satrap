@@ -83,6 +83,25 @@ async def test_long_message_sends_chunks_in_order_and_aggregates_ids():
 
 
 @pytest.mark.asyncio
+async def test_empty_message_returns_failed_receipt_without_calling_platform():
+    adapter = _adapter()
+    receipt = await adapter.send_message("group%456", MessageChain.from_text(""))
+    assert receipt.status == "failed" and receipt.reason == "empty_message"
+    adapter._bot.send_group_msg.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminate_then_restart_can_send_again():
+    adapter = _adapter()
+    adapter._bot.send_group_msg.return_value = {"message_id": 1}
+    await adapter.terminate()
+    adapter._bot = AsyncMock()
+    adapter._bot.send_group_msg.return_value = {"message_id": 2}
+    receipt = await adapter.send_message("group%456", MessageChain.from_text("回滚后"))
+    assert receipt.status == "success" and receipt.message_ids == ("2",)
+
+
+@pytest.mark.asyncio
 async def test_long_message_stops_after_first_failed_chunk_without_resend():
     adapter = _adapter(message_text_limit=64)
     adapter._bot.send_group_msg.side_effect = [{"message_id": 1}, ActionFailed({"retcode": 100}), {"message_id": 3}]

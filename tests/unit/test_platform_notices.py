@@ -186,6 +186,14 @@ async def test_backend_registers_hub_for_plugins_and_reports_stats(tmp_path: Pat
     finally:
         await manager.stop()
     assert current_hub() is None
+    closed_hub = manager.platform_events
+    assert closed_hub.closed
+    await manager._init_platforms()
+    try:
+        assert manager.platform_events is not closed_hub and not manager.platform_events.closed
+        assert current_hub() is manager.platform_events
+    finally:
+        await manager.stop()
 
 
 def upload_notice(**extra: object) -> dict[str, Any]:

@@ -48,6 +48,18 @@ def test_meta_declares_exactly_the_implemented_tools():
     assert set(meta["tools"]) == set(_DEFINITIONS)
 
 
+def test_meta_write_switch_parses_to_real_bool():
+    from pathlib import Path
+    from typing import Any, cast
+    from satrap.edictum.plugin_config import parse_config_schema
+    meta_path = Path(__file__).parent.parent.parent / "satrap" / "expend" / "plugins" / "group_admin" / "meta.yaml"
+    schema = parse_config_schema(cast(dict[str, Any], yaml.safe_load(meta_path.read_text(encoding="utf-8"))))
+    field = schema["write_tools_enabled"]
+    assert field.type == "bool"
+    assert field.validate(True) is True and field.validate(False) is False
+    assert field.validate(None) is False
+
+
 def _async_tools(config: dict[str, object]) -> list:
     """构造异步工具实例, 模拟 async_simple 会话"""
     from satrap.edictum import AsyncSimpleSession
@@ -169,8 +181,10 @@ class TestExecution:
         config = {"write_tools_enabled": True}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-            bad = await tool.execute(flag="f1", sub_type="other", approve=True)
-            ok = await tool.execute(flag="f1", sub_type="add", approve=False, reason="拒绝")
+            missing = await tool.execute(flag="f1", sub_type="add", approve=True)
+            bad = await tool.execute(flag="f1", sub_type="other", approve=True, group_id="456")
+            ok = await tool.execute(flag="f1", sub_type="add", approve=False, reason="拒绝", group_id="456")
+        assert missing["status"] == "error" and "group_id" in missing["error"]
         assert bad["status"] == "error" and "sub_type" in bad["error"]
         assert ok == {"status": "ok"}
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=False, reason="拒绝")

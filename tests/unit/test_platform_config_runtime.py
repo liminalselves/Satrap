@@ -125,6 +125,19 @@ async def test_invalid_connection_retains_runtime(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reload_survives_unvalidated_active_config(tmp_path):
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    backend._platform_active_configs["bot"] = {"id": "bot", "type": "onebot", "enable": "yes", "settings": {"group_whitelist": "oops"}}
+    platform["settings"]["port"] = "invalid"
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "failed" and result["active_revision"]
+    platform["settings"]["port"] = 6789
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    assert (await backend.reload_platform_policies())[0]["status"] in {"applied", "pending_restart"}
+
+
+@pytest.mark.asyncio
 async def test_targeted_replace_rollback_disable_and_delete(tmp_path):
     import asyncio
     from types import SimpleNamespace

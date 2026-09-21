@@ -17,7 +17,7 @@ from satrap.core.utils.outbound import UnsafeOutboundURLError, safe_async_get
 from satrap.core.APICall.ASRCall.utils import ALLOWED_AUDIO_SUFFIXES
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
-from satrap.core.components import PlatformComponentType
+from satrap.core.components import PlatformComponentType, Record
 from satrap.core.utils.documents import SUPPORTED_EXTENSIONS, extract_text
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import ASRConfig, safe_getattr, safe_getattr_str
@@ -75,7 +75,7 @@ def _suffix_of(name: str, url: str) -> str:
     return ""
 
 
-async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...]) -> bytes:
+async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...], verify_tls: bool = True) -> bytes:
     """
     经出站防护下载远端附件, 只接受 http/https
 
@@ -83,13 +83,17 @@ async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...]) -> byt
     - url: 平台上报的下载地址
     - limit: 最大字节数
     - trusted_hosts: 允许访问私网的显式主机名
+    - verify_tls: 是否校验证书, 仅在用户显式开启 media_insecure_tls 时关闭
 
     返回:
     - bytes: 响应正文, 超限或不安全地址时抛出异常
     """
     if not url.lower().startswith(("http://", "https://")):
         raise UnsafeOutboundURLError("附件地址不是 http/https URL")
-    response = await safe_async_get(url, timeout=FETCH_TIMEOUT, max_response_bytes=limit, trusted_hosts=trusted_hosts, ssl_verify=False)
+    response = await safe_async_get(
+        url, timeout=FETCH_TIMEOUT, max_response_bytes=limit, trusted_hosts=trusted_hosts,
+        ssl_verify=verify_tls, restrict_redirects_to_origin=True,
+    )
     response.raise_for_status()
     return response.content
 
@@ -128,11 +132,12 @@ async def _extract_file(data: bytes, suffix: str, event: MessageEvent) -> str:
     - str: 提取正文, 已按 FILE_TEXT_LIMIT 截断
     """
     handle = tempfile.NamedTemporaryFile(prefix="satrap-attach-", suffix=suffix, delete=False)
+    event.track_temporary_local_file(handle.name)
+    # 先登记再写入, 写入失败时仍由事件统一清理
     try:
         handle.write(data)
     finally:
         handle.close()
-    event.track_temporary_local_file(handle.name)
     return await EXTRACT_WORKERS.run(extract_text, handle.name, max_length=FILE_TEXT_LIMIT, max_file_size=FILE_MAX_BYTES)
 
 
@@ -149,6 +154,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
     """
     settings = event.policy_settings
     trusted = tuple(str(item) for item in cast(list[object], settings.get("media_trusted_hosts", []) or []))
+    verify_tls = settings.get("media_insecure_tls", False) is not True
     asr_name = str(settings.get("asr_model", "") or "")
     extract_enabled = settings.get("attachment_extract", True) is not False
     results: list[AttachmentResult] = []
@@ -181,14 +187,14 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
                 results.append(AttachmentResult(kind, display, "unsupported", reason=f"audio_format{suffix}"))
                 continue
             try:
-                data = await _download(url, AUDIO_MAX_BYTES, trusted)
+                data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls)
                 text = await _transcribe(data, f"voice{suffix}", config)
             except Exception as error:
                 results.append(AttachmentResult(kind, display, "failed", reason=type(error).__name__))
                 logger.warning(f"[attachments] 语音转写失败: {type(error).__name__}")
                 continue
-            if isinstance(comp, object) and hasattr(comp, "text"):
-                setattr(comp, "text", text)
+            if isinstance(comp, Record):
+                comp.text = text
             # 转写结果冻结在组件上, 同一事件的后续消费者不重复调用 ASR
             results.append(AttachmentResult(kind, display, "resolved", text[:TRANSCRIPT_LIMIT]))
             continue
@@ -203,7 +209,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
             results.append(AttachmentResult(kind, display, "failed", reason="no_remote_url"))
             continue
         try:
-            data = await _download(url, FILE_MAX_BYTES, trusted)
+            data = await _download(url, FILE_MAX_BYTES, trusted, verify_tls)
             text = await _extract_file(data, suffix, event)
         except Exception as error:
             results.append(AttachmentResult(kind, display, "failed", reason=type(error).__name__))

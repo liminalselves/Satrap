@@ -5,7 +5,7 @@ description: "OneBot 群信息查询, 群成员管理, 请求审批与消息撤�
 
 config_schema:
   write_tools_enabled:
-    type: checkbox
+    type: bool
     default: false
     description: "允许执行踢人, 禁言, 管理员, 名片, 群名, 头衔, 退群与请求审批等写操作; 默认关闭"
   allowed_callers:

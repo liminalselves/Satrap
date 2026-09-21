@@ -549,7 +549,7 @@ class OneBotAdapter(PlatformAdapter):
                 receipts.append(result)
                 if result.status != "success":
                     break
-            if receipts[-1].status != "success":
+            if receipts and receipts[-1].status != "success":
                 break
         return combine_receipts(receipts)
 
@@ -757,6 +757,8 @@ class OneBotAdapter(PlatformAdapter):
         """终止 OneBot 适配器并释放资源"""
         self._running = False
         await self._outbound.close()
+        # 回滚复用同一实例时需要可再次发送, 关闭后的队列不可逆, 直接重建
+        self._outbound = OutboundTurns()
         await super().terminate()
         self._bot = None
         self._loop = None

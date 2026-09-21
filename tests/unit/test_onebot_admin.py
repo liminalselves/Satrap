@@ -63,11 +63,11 @@ class TestOneBotAdminValidation:
         with pytest.raises(ValueError, match="荣誉类型"):
             await admin.get_group_honor_info("456", "unknown")
         with pytest.raises(ValueError, match="消息 ID"):
-            await admin.recall_message("abc")
+            await admin.recall_message("456", "abc")
         with pytest.raises(ValueError, match="flag"):
             await admin.handle_friend_request("a b", True)
         with pytest.raises(ValueError, match="sub_type"):
-            await admin.handle_group_request("f1", "other", True)
+            await admin.handle_group_request("456", "f1", "other", True)
 
 
 class TestOneBotAdminCalls:
@@ -88,11 +88,11 @@ class TestOneBotAdminCalls:
         info = await adapter.admin.get_group_member_info("456", "123")
         adapter._bot.get_group_member_info.assert_awaited_once_with(group_id=456, user_id=123)
         assert "raw_extra" not in info and info["role"] == "member"
-        await adapter.admin.recall_message("77")
+        await adapter.admin.recall_message("456", "77")
         adapter._bot.delete_msg.assert_awaited_once_with(message_id=77)
         await adapter.admin.handle_friend_request("flag-1", True, "备注")
         adapter._bot.set_friend_add_request.assert_awaited_once_with(flag="flag-1", approve=True, remark="备注")
-        await adapter.admin.handle_group_request("flag-2", "invite", False, "理由")
+        await adapter.admin.handle_group_request("456", "flag-2", "invite", False, "理由")
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="flag-2", sub_type="invite", approve=False, reason="理由")
         await adapter.admin.leave_group("456", True)
         adapter._bot.set_group_leave.assert_awaited_once_with(group_id=456, is_dismiss=True)
