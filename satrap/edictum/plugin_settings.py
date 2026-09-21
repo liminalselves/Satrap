@@ -90,7 +90,7 @@ def model_options(models: Any) -> dict[str, list[dict[str, str]]]:
     return {
         kind: [{"value": name, "label": name, "model": str(value.get("model") or "")}
                for name, value in getattr(models, f"list_{target}_configs")(mask_api_key=True).items()]
-        for kind, target in {"llm": "llm", "embed": "embedding", "rerank": "rerank"}.items()
+        for kind, target in {"llm": "llm", "embed": "embedding", "rerank": "rerank", "asr": "asr"}.items()
     }
 
 

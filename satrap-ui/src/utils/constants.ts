@@ -86,6 +86,7 @@ export const MODEL_TYPES = [
   { value: 'llm', label: 'LLM 配置' },
   { value: 'embedding', label: 'Embedding 配置' },
   { value: 'rerank', label: 'ReRank 配置' },
+  { value: 'asr', label: 'ASR 配置' },
 ] as const;
 
 export const THINKING_FIELD_OPTIONS = [

@@ -89,6 +89,7 @@ satrap model remove llm default
 - `llm`
 - `embedding`
 - `rerank`
+- `asr` (OpenAI 兼容语音转录, 见下文)
 
 `SessionManager` 创建 Session 时, 会从 Session 参数中的 `model_name` 读取模型配置名称, 默认使用 `default`。
 
@@ -171,3 +172,22 @@ satrap session enable assistant
 跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/api-token` 提交到版本库或写入前端构建变量。
 
 内置 HTTP 服务默认限制 256 个并发连接和 64 个 WebSocket 连接。WebSocket 每 30 秒发送 ping, 连续 5 分钟未收到客户端帧时主动关闭; 客户端单帧上限为 64 KiB。前端静态产物可在鉴权前访问以支持登录引导, 因此构建目录仅应包含公开文件; 服务会拒绝隐藏文件和 source map。
+
+### ASR 配置字段
+
+`asr` 类型使用 OpenAI 兼容的 `/audio/transcriptions` 协议, 本地与云端服务共用同一套字段, 不针对特定本地推理框架做适配:
+
+| 字段 | 说明 |
+| --- | --- |
+| `model` | 转录模型名称, 不限定为 OpenAI 官方模型 |
+| `base_url` | 服务地址, 非回环 HTTP 地址需要显式 `allow_insecure_base_url=true` |
+| `api_key` | 密钥, 只在后端读取, 控制面板与 CLI 默认脱敏展示 |
+| `language` | 可选默认语言, 留空由服务端检测 |
+| `prompt` | 可选提示词, 按服务端能力透传 |
+| `timeout` | 请求超时秒数, 默认 60 |
+
+```bash
+satrap model set asr default --set api_key=sk-xxx base_url=http://127.0.0.1:9000/v1 model=whisper-1 language=zh
+```
+
+控制面板「模型配置 → ASR 配置」提供同样的增删改查, 卡片上的「测试转录」上传一段不超过 8 MiB 的短音频, 由后端调用 `POST /config/models/asr/<name>/test` 完成一次真实转录并返回文本、语言、音频时长与耗时; 浏览器不会直接访问转录服务商。

@@ -360,6 +360,40 @@ class ReRankConfig:
     """是否显式允许非回环 HTTP API 地址"""
 
 @dataclass
+class ASRConfig:
+    """ASR 配置数据结构"""
+    name: Optional[str] = None
+    """ASR 名称"""
+    model: Optional[str] = None
+    """ASR 模型"""
+    base_url: Optional[str] = None
+    """ASR 基础 URL"""
+    api_key: Optional[str] = None
+    """ASR API 密钥"""
+    language: Optional[str] = None
+    """默认识别语言, 为空由服务端自动检测"""
+    prompt: Optional[str] = None
+    """默认提示词, 按服务端能力透传"""
+    timeout: Optional[int] = None
+    """请求超时秒数, 为空使用客户端默认值"""
+    lock_api_key: bool = True
+    """是否锁定 API 密钥的获取以防止泄露"""
+    allow_insecure_base_url: bool = False
+    """是否显式允许非回环 HTTP API 地址"""
+
+@dataclass
+class ASRResponse:
+    """一次语音转录的类型化结果"""
+    text: str
+    """转录文本, 空字符串表示服务端确认无语音内容, 与失败区分"""
+    model: str
+    """实际请求使用的模型名"""
+    language: str = ""
+    """服务端返回的识别语言, 可能为空"""
+    duration: float = 0.0
+    """服务端返回的音频秒数, 0 表示未提供"""
+
+@dataclass
 class SessionConfig:
     """会话配置数据结构"""
     session_id: Optional[str] = None

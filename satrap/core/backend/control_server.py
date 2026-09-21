@@ -20,12 +20,14 @@ import dataclasses
 import subprocess
 import argparse
 import asyncio
+import binascii
 from pathlib import Path
 import secrets
 import atexit
 import ctypes
 import signal
 from typing import Any, cast
+import base64
 import json
 import sys
 import os
@@ -41,7 +43,7 @@ from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
-from satrap.core.config.model_service import ModelConfigService
+from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
@@ -117,6 +119,9 @@ _CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control
 
 CONTROL_MAX_BODY_BYTES = 1024 * 1024
 """控制服务 JSON 请求体最大字节数"""
+
+ASR_TEST_MAX_BODY_BYTES = ASR_TEST_MAX_AUDIO_BYTES * 2
+"""ASR 转录测试请求体上限, 覆盖 base64 膨胀与 JSON 包装"""
 
 CONTROL_MAX_CONNECTIONS = 256
 """控制服务最大并发连接数"""
@@ -1412,6 +1417,33 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.path.startswith("/config/models/"):
         parts = ctx.path.removeprefix("/config/models/").split("/", 1)
+        if len(parts) == 2 and parts[0] == "asr" and parts[1].endswith("/test"):
+            # ASR 转录测试: POST /config/models/asr/{name}/test, 请求体 {filename, audio_base64}
+            if ctx.method != "POST":
+                return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+            name = urllib.parse.unquote(parts[1][: -len("/test")])
+            try:
+                body = await read_request_body(
+                    ctx.reader, ctx.raw_request,
+                    max_bytes=ASR_TEST_MAX_BODY_BYTES, timeout=DEFAULT_BODY_TIMEOUT, required=True,
+                )
+                payload: object = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("请求体必须是 JSON 对象")
+                data = cast(dict[str, Any], payload)
+                filename = data.get("filename")
+                audio_base64 = data.get("audio_base64")
+                if not isinstance(filename, str) or not filename.strip():
+                    raise ValueError("缺少音频文件名")
+                if not isinstance(audio_base64, str) or not audio_base64:
+                    raise ValueError("缺少 audio_base64 音频内容")
+                audio = base64.b64decode(audio_base64, validate=True)
+                result = await _model_config_service().test_asr_config(name, filename.strip(), audio)
+                return 200, {"ok": True, **result}
+            except (HTTPRequestError, binascii.Error, UnicodeDecodeError, ValueError) as e:
+                return 400, {"ok": False, "error": str(e)}
+            except Exception as e:
+                return 502, {"ok": False, "error": f"{type(e).__name__}: {e}"}
         if len(parts) != 2:
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
         model_type = urllib.parse.unquote(parts[0])

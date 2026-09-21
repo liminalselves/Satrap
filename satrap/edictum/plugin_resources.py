@@ -10,13 +10,14 @@ import json
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
 from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding
+from satrap.core.APICall.ASRCall import build_asr_from_config
 from satrap.edictum.plugin_config import ConfigField
 from satrap.core.APICall.LLMCall import build_llm_from_config
 
 from satrap.core.log import logger
 
 
-MODEL_TYPES: dict[str, ConfigTarget] = {"llm": "llm", "embed": "embedding", "rerank": "rerank"}
+MODEL_TYPES: dict[str, ConfigTarget] = {"llm": "llm", "embed": "embedding", "rerank": "rerank", "asr": "asr"}
 
 
 def named_model_config(manager: ModelConfigManager, kind: str, name: str) -> Any:
@@ -38,6 +39,8 @@ def build_model_client(kind: str, config: Any, *, async_: bool = False) -> Any:
     """完整传递后端声明参数, 模型调用错误由工具显式处理"""
     if kind == "llm":
         return build_llm_from_config(config, async_=async_)
+    if kind == "asr":
+        return build_asr_from_config(config, async_=async_)
     values = {key: value for key, value in asdict(config).items() if key != "name" and value is not None}
     if kind in {"embed", "embedding"}:
         values["suppress_error"] = False

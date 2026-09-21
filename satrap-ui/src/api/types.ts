@@ -66,7 +66,17 @@ export interface ReRankConfig {
   min_score?: number;
 }
 
-export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
+export interface ASRConfig {
+  name: string;
+  model?: string;
+  base_url?: string;
+  api_key?: string;
+  language?: string;
+  prompt?: string;
+  timeout?: number;
+}
+
+export type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
 
 export interface SessionClassConfig {
     name?: string;

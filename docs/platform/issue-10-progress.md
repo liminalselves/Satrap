@@ -282,3 +282,14 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - `tests/unit/test_platform_notices.py` 新增 3 用例共 16 passed (仅 group_upload 归一/缺字段与无远端句柄容忍/适配器事件携带附件且不进队列); 修改模块 Pyright 0 errors / 0 warnings
 
 P2 全部完成, P3 文件提取与 ASR 待后续批次。
+
+## P3 ASR 基础: APICall/ASRCall, 配置层, 控制端点与前端
+
+- 新增 `satrap/core/APICall/ASRCall/` (base/sync/async_/utils/__init__), 与 LLMCall/EmbedCall/ReRankCall 同层: OpenAI 兼容 `audio.transcriptions.create`, ASR/AsyncASR 对称入口, `prepare_audio_input` 校验后缀与大小, `parse_transcription` 归一为 ASRResponse(text/model/language/duration), suppress_error 语义与其他 API Call 一致; `build_asr_from_config` 由 ASRConfig 构造
+- ASRConfig 加入 core/type; ModelConfigManager 新增 asr 增删改查与脱敏列表; ModelConfigService 支持 asr 目标并提供 `test_asr_config` (读取已存密钥, 8 MiB 上限, 不落临时文件, 请求后关闭客户端); control 新增 `POST /config/models/asr/<name>/test` (base64 音频, 请求体上限双倍); 插件 config_schema 与 plugin-model-options 识别 asr 类型
+- CLI `satrap model` 四个子命令 choices 加入 asr, cmd_model 映射完成; 文档 `getting-started/configuration.md` 补 ASR 字段与测试说明
+- 前端: types/control/model API 与 store 增加 asr, Models 页新增 ASR 标签、表单字段、卡片「测试转录」按钮与 AsrTestModal (文件选择 → base64 → 后端测试, 4xx 错误保留服务端原因, 成功显示文本/模型/语言/时长/耗时); `testAsrConfig` 把结构化 HTTP 错误转为 ok=false
+- 新增 `satrap-ui/e2e/asr-models.mjs` (`npm run test:e2e:asr`) 并实际执行通过: 新增配置写入、密钥不回显、测试失败与成功两种呈现, 请求不携带密钥; 截图已查看
+- 测试: `test_asr_call.py` 13 passed (接手模型编写), 新增 `test_model_config_service.py` 2 用例 (asr CRUD/脱敏/客户端构造, 测试端点使用已存密钥并拒绝空/超限/缺配置、关闭客户端), CLI 解析新增 1 用例; 相关 61 passed; 前端 vitest 69 passed, tsc/eslint 通过; 修改模块 Pyright 0 errors / 0 warnings (cmd_model 2 警告为存量)
+
+本批未调用真实 ASR 服务。语音 Record 组件进入内容补全层并投影到模型输入, 以及文件附件提取, 留在下一批。

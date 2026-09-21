@@ -9,6 +9,7 @@ import type {
   EdictumSessionConfig,
   EdictumAvailablePlugin,
   EdictumTypeDefinition,
+  ASRConfig,
   EmbeddingConfig,
   LLMConfig,
   PlatformConfig,
@@ -84,8 +85,16 @@ export interface PlatformConfigResult extends ControlResult {
   exists?: boolean;
 }
 
-type ModelType = 'llm' | 'embedding' | 'rerank';
-type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
+type ModelType = 'llm' | 'embedding' | 'rerank' | 'asr';
+type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
+
+export interface AsrTestResult extends ControlResult {
+  text?: string;
+  model?: string;
+  language?: string;
+  duration?: number;
+  elapsed_ms?: number;
+}
 
 export interface SessionClassConfigPayload {
   name: string;
@@ -283,6 +292,24 @@ export const controlApi = {
       `/config/models/${type}/${encodeURIComponent(name)}`,
     );
     return response.data;
+  },
+
+  testAsrConfig: async (name: string, filename: string, audioBase64: string): Promise<AsrTestResult> => {
+    try {
+      const response = await controlClient.post<AsrTestResult>(
+        `/config/models/asr/${encodeURIComponent(name)}/test`,
+        { filename, audio_base64: audioBase64 },
+        { timeout: 120000 },
+      );
+      return response.data;
+    } catch (error) {
+      // 服务端以 4xx/5xx 返回结构化错误时保留其 error 文案, 便于页面直接呈现拒绝原因
+      if (axios.isAxiosError(error) && error.response?.data && typeof error.response.data === 'object') {
+        const data = error.response.data as Partial<AsrTestResult>;
+        return { ok: false, error: data.error || error.message };
+      }
+      throw error;
+    }
   },
 
   listSessionClasses: async (): Promise<Record<string, SessionClassConfig>> => {

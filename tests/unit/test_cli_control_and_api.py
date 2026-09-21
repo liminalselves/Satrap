@@ -470,3 +470,10 @@ def test_platform_wake_command_posts_payload_and_reports_status(monkeypatch: pyt
     monkeypatch.setattr(cmd_platform, "daemon_client_from_args", _make_rejecting)
     with pytest.raises(CliError, match="被拒绝"):
         cmd_platform.cmd_platform_wake(Namespace(id="ob", group="1", user="2", prompt="", message_id="", reason="", request_id=""))
+
+
+def test_model_parser_accepts_asr_type():
+    """模型命令的四类 choices 均包含 asr"""
+    parser = _build_parser()
+    for argv in (["model", "list", "asr"], ["model", "show", "asr", "speech"], ["model", "set", "asr", "speech", "--set", "model=whisper-1"], ["model", "remove", "asr", "speech"]):
+        assert parser.parse_args(argv).type == "asr"
