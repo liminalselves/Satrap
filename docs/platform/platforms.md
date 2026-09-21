@@ -208,3 +208,14 @@ wake_group_overrides:
 ```
 
 优先级为平台默认值、时段设置、群级设置; 重叠时段按列表顺序覆盖。群级规则只改变唤醒参数, 不改变白名单、权限和会话范围。
+
+
+## 通知与请求事件
+
+OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `PlatformEvent` 并经 `emit_event` 交给后端的 `PlatformEventHub`。事件类型为 `notice.<notice_type>` 或 `request.<request_type>`, `extras["payload"]` 是类型化的 `NoticePayload` (category, kind, sub_type, self_id, group_id, user_id, operator_id, target_id, message_id, flag, comment, duration, time, 受限的 file 字段), `raw_event` 保留原始载荷。账号与已绑定 self_id 不一致的事件被丢弃并计入 ingress.account。
+
+`settings.notice_types` 省略时派发全部类型, 否则只派发列出的类别 (`notice`/`request`) 或具体类型 (如 `notice.group_increase`), 最多 64 项。带 group_id 的通知在群白名单之外时静默丢弃; 好友请求等无群事件不受白名单影响。
+
+处理中心用平台实例、账号、类别、类型及稳定载荷字段构造去重键 (容量 4096, TTL 120 秒), 每个事件只派发一次; 处理器在独立小任务中执行 (同时至多 64 个, 超出丢弃并计数), 不排在模型调用之后, 异常互相隔离。没有订阅者的事件只计数。健康响应的 `platform_events` 提供 received/duplicate/dropped/dispatched/failed/unsubscribed 计数。
+
+插件可在 `build_tools`/`build_handlers` 等工厂中调用 `satrap.core.platform.notices.current_hub()` 获取处理中心并 `subscribe(event_type, handler)`, 返回的注销函数应在插件 `cleanup` 中调用; 后端未运行时返回 None。默认不把任何入退群、撤回或请求转成模型调用, 也不自动审批请求; 需要审批或群管理动作时使用后续批次提供的管理工具。

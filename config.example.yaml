@@ -79,3 +79,4 @@ platforms:
   #     reply_with_mention: false   # 群聊回复是否 @发送者, 已有 @ 不重复; 可在 wake_group_overrides 中按群覆盖
   #     quote_lookup: true   # 唤醒后是否回源被引用消息原文 (get_msg, 5 秒/64KiB 预算, 不递归), 作为引用上下文进入模型输入
   #     wake_on_quote_self: false   # 引用机器人消息是否视为唤醒; 需先回源确认被引用者, 引用他人或回源失败不唤醒
+  #     # notice_types: [notice.group_increase, notice.group_recall, request]   # 省略表示派发全部 notice/request; 群通知受 group_whitelist 限制, 默认不触发模型

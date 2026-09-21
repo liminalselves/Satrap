@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 import math
+import re
 
 from satrap.core.config.wake_overrides import validate_wake_overrides
 
@@ -40,6 +41,12 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self"):
         if key in settings and not isinstance(settings[key], bool):
             raise ValueError(f"{key} 必须为布尔值")
+    notice_types = settings.get("notice_types")
+    if notice_types is not None:
+        if not isinstance(notice_types, list) or len(cast(list[object], notice_types)) > 64 or any(
+            not isinstance(item, str) or not re.fullmatch(r"(notice|request)(\.[a-z_]+)?", item) for item in cast(list[object], notice_types)
+        ):
+            raise ValueError("notice_types 必须是最多 64 项的 notice/request 或 notice.<类型>/request.<类型> 列表")
     mode = settings.get("wake_mode", "explicit")
     if not isinstance(mode, str) or mode not in {"explicit", "frequency", "necessity"}:
         raise ValueError("wake_mode 必须为 explicit, frequency 或 necessity")

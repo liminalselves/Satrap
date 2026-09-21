@@ -29,6 +29,11 @@ export function normalizePlatformSettings(
       const value = settings[key];
       if (typeof value === 'string') normalized[key] = value.split('\n').map((item) => item.trim()).filter(Boolean);
     }
+    if (typeof settings.notice_types === 'string') {
+      const items = settings.notice_types.split('\n').map((item) => item.trim()).filter(Boolean);
+      if (items.length) normalized.notice_types = items;
+      else delete normalized.notice_types;
+    }
     for (const key of ['message_text_limit', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait']) {
       const value = settings[key];
       if (value === '' || value === undefined) delete normalized[key];

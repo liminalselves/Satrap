@@ -271,6 +271,7 @@ export function Platforms() {
         { key: 'settings.reply_with_mention', label: '群聊回复 @发送者', type: 'checkbox', placeholder: '默认关闭; 已有 @ 时不重复, 私聊不受影响' },
         { key: 'settings.quote_lookup', label: '回源被引用消息原文', type: 'checkbox', placeholder: '默认开启; 唤醒后按预算 get_msg 获取引用原文作为上下文, 关闭后仅标记引用' },
         { key: 'settings.wake_on_quote_self', label: '引用机器人消息时唤醒', type: 'checkbox', placeholder: '默认关闭; 开启后用同一回源预算确认被引用者是机器人再唤醒' },
+        { key: 'settings.notice_types', label: '订阅的通知/请求类型（留空全部）', type: 'textarea', rows: 2, placeholder: '每行一个, 如 notice.group_increase / request.friend / notice; 群通知仍受白名单限制, 默认不触发模型' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
       ];
     }
@@ -320,6 +321,7 @@ export function Platforms() {
     'settings.wake_on_quote_self': formData.settings.wake_on_quote_self ?? false,
     'settings.group_whitelist': Array.isArray(formData.settings.group_whitelist) ? formData.settings.group_whitelist.join('\n') : formData.settings.group_whitelist ?? '',
     'settings.wake_aliases': Array.isArray(formData.settings.wake_aliases) ? formData.settings.wake_aliases.join('\n') : formData.settings.wake_aliases ?? '',
+    'settings.notice_types': Array.isArray(formData.settings.notice_types) ? formData.settings.notice_types.join('\n') : formData.settings.notice_types ?? '',
     'settings.wake_group_overrides': typeof formData.settings.wake_group_overrides === 'string' ? formData.settings.wake_group_overrides : JSON.stringify(formData.settings.wake_group_overrides ?? {}, null, 2),
     'settings.wake_time_rules': typeof formData.settings.wake_time_rules === 'string' ? formData.settings.wake_time_rules : JSON.stringify(formData.settings.wake_time_rules ?? [], null, 2),
     'settings.wake_mode': formData.settings.wake_mode ?? 'explicit',

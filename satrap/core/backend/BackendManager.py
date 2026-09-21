@@ -37,6 +37,7 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.config import EdictumConfigManager
+from satrap.core.platform.notices import PlatformEventHub, set_current_hub
 from satrap.core.platform import (
     EventDispatcher,
     PlatformAdapter,
@@ -196,6 +197,7 @@ class BackendManager:
         self._scheduler: PipelineScheduler | None = None
         self._adapter_mgr: PlatformAdapterManager | None = None
         self._dispatcher: EventDispatcher | None = None
+        self.platform_events = PlatformEventHub()
 
         self._http_server: BackendHTTPServer | None = None
         self._dispatch_task: asyncio.Task[Any] | None = None
@@ -690,7 +692,7 @@ class BackendManager:
             replacement = manager.registry.create(PlatformConfig(
                 id=platform_id, type=platform_type, session_provider=provider, session_type=session_type,
                 enable=bool(candidate.get("enable", True)), settings=deepcopy(candidate.get("settings", {})),
-            ), event_handler=old.event_handler if old else None)
+            ), event_handler=old.event_handler if old else self.platform_events)
             if replacement is None:
                 raise ValueError("平台类型不可用")
         try:
@@ -909,6 +911,8 @@ class BackendManager:
             if self._adapter_mgr:
                 try:
                     await self._adapter_mgr.stop_all()
+                    await self.platform_events.close()
+                    set_current_hub(None)
                 except Exception as e:
                     logger.warning(f"[BackendManager] 停止适配器失败: {e}")
 
@@ -969,6 +973,7 @@ class BackendManager:
             "pipeline": self._scheduler is not None,
             "adapters": adapters,
             "platform_config": deepcopy(self._platform_config_results),
+            "platform_events": dict(self.platform_events.stats),
             "platform_count": len(self._adapter_mgr.list_adapters()) if self._adapter_mgr else 0,
             "dispatch": {
                 "status": self._dispatch_state,
@@ -1158,6 +1163,7 @@ class BackendManager:
             pass
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
+        set_current_hub(self.platform_events)
 
         for pcfg in self.config.platforms:
             pid = str(pcfg.get("id", ""))
@@ -1206,7 +1212,7 @@ class BackendManager:
                 enable=bool(pcfg.get("enable", True)),
                 settings=settings,
             )
-            adapter = self._adapter_mgr.add_adapter(platform_config)
+            adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
             if adapter:
                 self._platform_active_configs[pid] = deepcopy(pcfg)
                 logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")

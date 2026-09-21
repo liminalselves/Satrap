@@ -244,3 +244,13 @@ Provider 测试验证工具注册表与工作流身份传递, 不宣称已实现
 - 补充 `wake_on_quote_self` (默认关闭, 可群覆盖): 唤醒阶段用同一回源预算确认被引用者为机器人后视为明确唤醒, 引用他人/回源失败不唤醒不耗额度, 回源结果复用于投影; 前端开关/配置/文档同步, 测试增至 16 passed
 
 转发 (forward) 入站回源与合并转发发送分流留在 P2。
+
+## P2 通知/请求事件分发基础
+
+- 新增 `platform/notices.py`: NoticePayload 类型化载荷与稳定去重键, PlatformEventHub 订阅/注销/通配、有界 TTL 去重 (4096/120s)、独立小任务分发 (至多 64 并行)、统计与关闭; `current_hub()` 供插件在工厂中订阅
+- OneBot `_handle_notice/_handle_request` 归一为 PlatformEvent 经 emit_event 派发, 不入消息队列; `notice_types` 列表过滤 (校验最多 64 项), 群通知受白名单限制, 外账号事件计入 ingress.account
+- BackendManager 创建与替换适配器时注入同一 hub, 关闭时 close 并清除进程级引用; 健康响应新增 `platform_events` 统计
+- 前端订阅类型多行输入与归一化, 配置示例/文档同步
+- 新增 `tests/unit/test_platform_notices.py` 13 passed (载荷收窄/外账号拒绝, 去重键, 单次派发与去重, 无订阅计数与异常隔离, 并行上限与关闭, OneBot 过滤与白名单, 不进入消息管线, 后端装配); 相关运行时/手动唤醒/管理回归 50 passed; 修改模块 Pyright 0 errors / 0 warnings
+
+撤回事件使引用缓存失效目前无需处理 (引用回源不缓存); 群文件上传 notice 到附件事件的转换与群管理工具留待后续批次。

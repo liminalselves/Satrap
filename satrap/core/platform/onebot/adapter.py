@@ -13,7 +13,7 @@ import inspect
 import secrets
 import aiohttp
 from typing import Any, cast
-from time import monotonic
+from time import monotonic, time
 import json
 
 from satrap.core.platform.onebot.onebot_utils import (
@@ -24,13 +24,16 @@ from satrap.core.platform.onebot.onebot_utils import (
     is_private_session,
     message_chain_to_onebot_segments,
     onebot_segments_to_components,
+    private_session_id,
     normalize_segments,
+    group_session_id,
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, split_components
+from satrap.core.platform.notices import build_onebot_notice
 from satrap.core.platform.receipt import SendReceipt, combine_receipts
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
-from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, register_platform_adapter
+from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
 from satrap.core.type import PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
@@ -330,21 +333,46 @@ class OneBotAdapter(PlatformAdapter):
 
     async def _handle_notice(self, event: dict[str, Any]) -> None:
         """
-        记录暂未接入会话管线的 notice 事件
+        将 notice 归一为 PlatformEvent 并派发, 不进入会话管线
 
         参数:
-        - event: 事件
+        - event: OneBot 原始 notice
         """
-        logger.debug(f"[OneBotAdapter] notice 事件暂未处理: {event.get('notice_type')}")
+        await self._emit_notice(event)
 
     async def _handle_request(self, event: dict[str, Any]) -> None:
         """
-        记录暂未接入会话管线的 request 事件
+        将 request 归一为 PlatformEvent 并派发, 不自动审批
 
         参数:
-        - event: 事件
+        - event: OneBot 原始 request
         """
-        logger.debug(f"[OneBotAdapter] request 事件暂未处理: {event.get('request_type')}")
+        await self._emit_notice(event)
+
+    async def _emit_notice(self, raw: dict[str, Any]) -> None:
+        """
+        按订阅类型与群范围过滤后提交通知事件
+
+        参数:
+        - raw: notice 或 request 原始事件
+        """
+        payload = build_onebot_notice(raw, self.bot_self_id)
+        if payload is None:
+            self._ingress_rejections["account"] += 1
+            return
+        event_type = f"{payload.category}.{payload.kind}"
+        enabled = self.config.settings.get("notice_types")
+        if isinstance(enabled, list) and event_type not in cast(list[object], enabled) and payload.category not in cast(list[object], enabled):
+            return
+        if payload.group_id and not self.allows_group(payload.group_id):
+            return
+        # 群范围外的通知静默丢弃, 好友请求等无群事件不受白名单影响
+        session_id = group_session_id(payload.group_id) if payload.group_id else private_session_id(payload.user_id) if payload.user_id else ""
+        await self.emit_event(PlatformEvent(
+            platform_id=self.config.id, platform_type=self.config.type, event_type=event_type,
+            session_id=session_id, user_id=payload.user_id, group_id=payload.group_id,
+            raw_event=raw, timestamp=float(payload.time or time()), extras={"payload": payload},
+        ))
 
     async def convert_message(self, raw_event: dict[str, Any]) -> PlatformMessage:
         """
