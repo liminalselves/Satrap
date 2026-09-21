@@ -11,11 +11,15 @@ from dataclasses import dataclass, field
 import asyncio
 from typing import Any
 from enum import Enum
-from time import time
+from time import time, monotonic
+from copy import deepcopy
 import uuid
 import os
 import re
 
+from satrap.core.config.wake_overrides import resolve_wake_settings
+from satrap.core.platform.receipt import SendReceipt
+from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
@@ -342,6 +346,8 @@ class MessageEvent:
         self.platform_message = platform_message
         self.platform_meta = platform_meta
         self.adapter = adapter
+        self.queued_at = monotonic()
+        self.policy_settings = resolve_wake_settings(adapter.config.settings, self.get_group_id()) if isinstance(adapter, PlatformAdapter) else {}
         self.session_provider = session_provider
         self.session_type = session_type
 
@@ -351,6 +357,11 @@ class MessageEvent:
             message_type=mt,
             session_id=session_id,
         )
+        self._call_origin = CallOrigin(
+            adapter_id=platform_meta.id, self_id=self.get_self_id(), chat_type=mt,
+            chat_id=self.get_group_id() or self.get_sender_id(), actor_id=self.get_sender_id(),
+            source_message_id=safe_getattr_str(platform_message, "message_id"), request_id=uuid.uuid4().hex,
+        )
 
         self.role = "member"
         self.is_wake = False
@@ -359,10 +370,21 @@ class MessageEvent:
         self._result: MessageEventResult | None = None
         self.created_at = time()
         self._has_send_oper = False
+        self.last_send_receipt: SendReceipt | None = None
         self.call_llm = True
         self._temporary_local_files: list[str] = []
         self.plugins_name: list[str] | None = None
         self._extras: dict[str, Any] = {}
+
+    @property
+    def call_origin(self) -> CallOrigin:
+        """
+        获取事件创建时冻结的来源
+
+        返回:
+        - CallOrigin: 不随消息预处理和会话路由变化的身份
+        """
+        return self._call_origin
 
     @property
     def unified_msg_origin(self) -> str:
@@ -794,8 +816,8 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                await self.adapter.send_message(self.session_id, message)
-                self._has_send_oper = True
+                result = await self.adapter.send_message(self.session_id, message)
+                self._record_send_result(result)
             except Exception as e:
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
@@ -816,15 +838,29 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                await self.adapter.send_stream(
+                result = await self.adapter.send_stream(
                     self.session_id, generator, use_fallback=use_fallback
                 )
-                self._has_send_oper = True
+                self._record_send_result(result)
             except Exception as e:
                 logger.error(
                     f"[MessageEvent.send_streaming] 流式发送消息失败: session_id={self.session_id}, "
                     f"错误={e}",
                 )
+
+    def _record_send_result(self, result: object) -> None:
+        """
+        保存明确回执并维护逻辑回复的去重标记
+
+        参数:
+        - result: 新适配器的 SendReceipt 或旧适配器的兼容返回值
+        """
+        if isinstance(result, SendReceipt):
+            self.last_send_receipt = result
+            self._has_send_oper = self._has_send_oper or result.suppress_fallback
+        else:
+            self._has_send_oper = True
+        # 旧适配器返回 None 仍表示调用已完成, 不伪造平台确认回执
 
     async def send_typing(self) -> None:
         """发送"输入中"状态指示"""

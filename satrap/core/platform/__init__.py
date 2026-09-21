@@ -11,6 +11,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.config.platform_policy import validate_event_limits
 from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -98,7 +99,15 @@ class PlatformAdapter(ABC):
         self.started = False
 
         self.client_self_id = uuid.uuid4().hex
-        self._event_queue = event_queue or asyncio.Queue[Any]()
+        validate_event_limits(config.settings)
+        capacity = int(config.settings.get("event_queue_capacity", 256))
+        if capacity <= 0:
+            raise ValueError("event_queue_capacity 必须大于 0")
+        self._event_queue = event_queue if event_queue is not None else asyncio.Queue[Any](maxsize=capacity)
+        self.dropped_events = 0
+        self.expired_events = 0
+        self.active_events = 0
+        self.pending_events = 0
         self._status: PlatformStatus = PlatformStatus.PENDING
         self._errors: list[PlatformError] = []
         self._started_at: datetime | None = None
@@ -243,6 +252,20 @@ class PlatformAdapter(ABC):
             f"(task={id(self._run_task)})"
         )
 
+    async def wait_ready(self, timeout: float = 5.0) -> None:
+        """
+        检查启动任务仍存活, 具体适配器可补充协议就绪验证
+
+        参数:
+        - timeout: 具体实现的最长就绪等待时间
+        """
+        await asyncio.sleep(0)
+        if self._run_task is not None and self._run_task.done():
+            self._run_task.result()
+            raise RuntimeError("平台启动任务已退出")
+        if not self.started or self._run_task is None:
+            raise RuntimeError("平台启动任务未保持运行")
+
     async def stop(self) -> None:
         """停止平台并释放资源"""
         if self._run_task and not self._run_task.done():
@@ -258,18 +281,35 @@ class PlatformAdapter(ABC):
     async def terminate(self) -> None:
         """终止平台 (stop + 清理错误记录)"""
         await self.stop()
+        while not self._event_queue.empty():
+            event = self._event_queue.get_nowait()
+            cleanup = getattr(event, "cleanup_temporary_local_files", None)
+            if callable(cleanup):
+                cleanup()
+            self._event_queue.task_done()
         self._errors.clear()
 
     # ---------- 事件队列 ----------
 
-    def commit_event(self, event: MessageEvent) -> None:
+    def commit_event(self, event: MessageEvent) -> bool:
         """
         提交 MessageEvent 到事件队列
 
         参数:
         - event: 事件
+
+        返回:
+        - bool: 入队成功返回 True, 队列满时返回 False
         """
-        self._event_queue.put_nowait(event)
+        event.queued_at = time.monotonic()
+        try:
+            self._event_queue.put_nowait(event)
+            return True
+        except asyncio.QueueFull:
+            self.dropped_events += 1
+            event.cleanup_temporary_local_files()
+            logger.warning(f"[PlatformAdapter] 入站队列已满, 平台={self.config.id}, 累计丢弃={self.dropped_events}")
+            return False
 
     # ---------- 客户端访问 ----------
 
@@ -318,6 +358,11 @@ class PlatformAdapter(ABC):
             "status": self._status.value,
             "started": self.started,
             "started_at": self._started_at.isoformat() if self._started_at else None,
+            "event_queue": {
+                "queued": self._event_queue.qsize(), "capacity": self._event_queue.maxsize,
+                "active": self.active_events, "pending": self.pending_events,
+                "dropped": self.dropped_events, "expired": self.expired_events,
+            },
             "error_count": len(self._errors),
             "last_error": str(self._errors[-1]) if self._errors else None,
             "client_self_id": self.client_self_id,
@@ -673,45 +718,149 @@ class EventDispatcher:
         """
         self.manager = manager
         self.scheduler = scheduler
+        self._workers: dict[str, asyncio.Task[None]] = {}
+        self._changed = asyncio.Event()
+        self._active = False
+
+    async def attach_adapter(self, adapter: PlatformAdapter) -> None:
+        """
+        为新增或替换实例启动独立工作器
+
+        参数:
+        - adapter: 已就绪的目标适配器
+        """
+        if self._active and adapter.config.enable:
+            if adapter.config.id in self._workers:
+                raise ValueError("平台工作器已存在")
+            self._workers[adapter.config.id] = asyncio.create_task(
+                self._adapter_dispatch_loop(adapter), name=f"platform-dispatch-{adapter.config.id}",
+            )
+            self._changed.set()
+
+    async def detach_adapter(self, platform_id: str) -> None:
+        """
+        取消单个实例的工作器并等待其资产清理
+
+        参数:
+        - platform_id: 目标实例 ID
+        """
+        worker = self._workers.pop(platform_id, None)
+        if worker is not None:
+            worker.cancel()
+            await asyncio.gather(worker, return_exceptions=True)
+        self._changed.set()
 
     async def dispatch_loop(self) -> None:
-        """为每个平台启动阻塞队列工作器, 平台内保序且平台间并发"""
-        workers = [
-            asyncio.create_task(
-                self._adapter_dispatch_loop(adapter),
-                name=f"platform-dispatch-{adapter.config.id}",
-            )
-            for adapter in self.manager._adapters.values()
-        ]
-        if not workers:
-            logger.warning("[EventDispatcher] 没有可分发的平台适配器")
-            await asyncio.Future[None]()
-            return
+        """监督动态实例工作器, 替换单个平台时保留其他平台任务"""
+        self._active = True
+        change_task: asyncio.Task[bool] | None = None
         try:
-            await asyncio.gather(*workers)
+            for adapter in self.manager._adapters.values():
+                await self.attach_adapter(adapter)
+            while True:
+                self._changed.clear()
+                change_task = asyncio.create_task(self._changed.wait())
+                await asyncio.wait({*self._workers.values(), change_task}, return_when=asyncio.FIRST_COMPLETED)
+                change_task.cancel()
+                await asyncio.gather(change_task, return_exceptions=True)
+                change_task = None
+                for worker in list(self._workers.values()):
+                    if worker.done():
+                        await worker
+                        raise RuntimeError("平台工作器意外退出")
         finally:
+            self._active = False
+            if change_task is not None:
+                change_task.cancel()
+                await asyncio.gather(change_task, return_exceptions=True)
+            workers = list(self._workers.values())
+            self._workers.clear()
             for worker in workers:
                 worker.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
 
     async def _adapter_dispatch_loop(self, adapter: PlatformAdapter) -> None:
         """
-        阻塞等待单个平台队列并按入队顺序处理
+        按来源会话保序执行, 使用有界等待区避免慢会话阻塞其他群
 
         参数:
         - adapter: 提供独立事件队列的平台适配器
         """
-        while True:
-            event = await adapter._event_queue.get()
+        concurrency = int(adapter.config.settings.get("event_concurrency", 8))
+        capacity = int(adapter.config.settings.get("event_pending_capacity", 256))
+        ttl = float(adapter.config.settings.get("event_queue_ttl", 120))
+        if concurrency <= 0 or capacity <= 0 or ttl <= 0:
+            raise ValueError("事件并发数, 等待容量和 TTL 必须大于 0")
+        pending: list[MessageEvent] = []
+        running: dict[asyncio.Task[None], MessageEvent] = {}
+        receiver: asyncio.Task[MessageEvent] | None = None
+
+        async def process(event: MessageEvent) -> None:
+            """
+            执行事件并隔离单个请求异常
+
+            参数:
+            - event: 已获得来源会话执行权的事件
+            """
             try:
                 await self._process_event(event)
             except asyncio.CancelledError:
                 raise
             except Exception as error:
-                logger.error(
-                    f"[EventDispatcher] 平台 {adapter.config.id} 事件处理失败: {type(error).__name__}"
-                )
-            finally:
+                logger.error(f"[EventDispatcher] 平台 {adapter.config.id} 处理失败: {type(error).__name__}")
+
+        try:
+            while True:
+                # Step.1 回收已完成任务, 释放来源会话的执行位置
+                for task in list(running):
+                    if task.done():
+                        await task
+                        completed = running.pop(task)
+                        completed.cleanup_temporary_local_files()
+                        adapter._event_queue.task_done()
+                active = {event.session_id for event in running.values()}
+                remaining: list[MessageEvent] = []
+                for event in pending:
+                    # Step.2 排除过期请求, 只调度没有在执行的来源会话
+                    if time.monotonic() - event.queued_at > ttl:
+                        adapter.expired_events += 1
+                        event.cleanup_temporary_local_files()
+                        adapter._event_queue.task_done()
+                    elif len(running) < concurrency and event.session_id not in active:
+                        task = asyncio.create_task(process(event))
+                        running[task] = event
+                        active.add(event.session_id)
+                    else:
+                        remaining.append(event)
+                pending = remaining
+                adapter.active_events = len(running)
+                adapter.pending_events = len(pending)
+                if receiver is None and len(pending) < capacity:
+                    receiver = asyncio.create_task(adapter._event_queue.get())
+                waiting: set[asyncio.Task[Any]] = set(running)
+                if receiver is not None:
+                    waiting.add(receiver)
+                await asyncio.wait(waiting, return_when=asyncio.FIRST_COMPLETED)
+                if receiver is not None and receiver.done():
+                    pending.append(receiver.result())
+                    receiver = None
+        finally:
+            # Step.3 取消接收与执行任务, 清理所有尚未执行的事件资产
+            if receiver is not None:
+                receiver.cancel()
+                await asyncio.gather(receiver, return_exceptions=True)
+                if not receiver.cancelled() and receiver.exception() is None:
+                    pending.append(receiver.result())
+            for task in running:
+                task.cancel()
+            await asyncio.gather(*running, return_exceptions=True)
+            adapter.active_events = 0
+            adapter.pending_events = 0
+            pending.extend(running.values())
+            while not adapter._event_queue.empty():
+                pending.append(adapter._event_queue.get_nowait())
+            for event in pending:
+                event.cleanup_temporary_local_files()
                 adapter._event_queue.task_done()
 
     async def _process_event(self, event: MessageEvent) -> None:

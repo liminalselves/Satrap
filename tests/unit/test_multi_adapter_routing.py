@@ -318,3 +318,186 @@ def test_backend_isolates_same_session_id_between_platform_databases(tmp_path: P
     (first_root / "uploads").mkdir(parents=True)
     (first_root / "uploads" / "document.txt").write_text("私有文档", encoding="utf-8")
     assert not second_root.exists()
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_same_platform_parallel_groups_and_order():
+    registry = PlatformAdapterRegistry()
+    registry.register("dummy", _DummyAdapter)
+    manager = PlatformAdapterManager(registry=registry)
+    adapter = manager.add_adapter(PlatformConfig(id="bot", type="dummy", settings={"event_concurrency": 2}))
+    assert adapter is not None
+    entered = asyncio.Event()
+    other_done = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    class Scheduler:
+        async def execute(self, event):
+            calls.append(event.message_str)
+            if event.message_str == "a1":
+                entered.set()
+                await release.wait()
+            if event.message_str == "b1":
+                other_done.set()
+
+    dispatcher = EventDispatcher(manager, cast(PipelineScheduler, Scheduler()))
+    task = asyncio.create_task(dispatcher.dispatch_loop())
+    try:
+        for group, text in [("a", "a1"), ("a", "a2"), ("b", "b1")]:
+            event = _message_event("bot")
+            event.session_id = group
+            event.message_str = text
+            adapter.commit_event(event)
+        await asyncio.wait_for(entered.wait(), 1)
+        await asyncio.wait_for(other_done.wait(), 1)
+        assert calls == ["a1", "b1"]
+        release.set()
+        await asyncio.wait_for(adapter._event_queue.join(), 1)
+        assert calls == ["a1", "b1", "a2"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_expiry_overload_and_cleanup(tmp_path):
+    registry = PlatformAdapterRegistry()
+    registry.register("dummy", _DummyAdapter)
+    manager = PlatformAdapterManager(registry=registry)
+    adapter = manager.add_adapter(PlatformConfig(id="bot", type="dummy", settings={"event_queue_capacity": 1, "event_queue_ttl": 1}))
+    assert adapter is not None
+    expired = _message_event("bot")
+    adapter.commit_event(expired)
+    expired.queued_at -= 10
+    dropped = _message_event("bot")
+    asset = tmp_path / "pending.txt"
+    asset.write_text("temporary", encoding="utf-8")
+    dropped.track_temporary_local_file(str(asset))
+    adapter.commit_event(dropped)
+    assert adapter.dropped_events == 1
+    assert not asset.exists()
+    from unittest.mock import AsyncMock
+    scheduler = AsyncMock()
+    dispatcher = EventDispatcher(manager, scheduler)
+    task = asyncio.create_task(dispatcher.dispatch_loop())
+    try:
+        await asyncio.wait_for(adapter._event_queue.join(), 1)
+        scheduler.execute.assert_not_awaited()
+        assert adapter.expired_events == 1
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wait_for(adapter._event_queue.join(), 1)
+
+
+@pytest.mark.asyncio
+async def test_dispatcher_cancel_cleans_running_and_pending(tmp_path):
+    registry = PlatformAdapterRegistry()
+    registry.register("dummy", _DummyAdapter)
+    manager = PlatformAdapterManager(registry=registry)
+    adapter = manager.add_adapter(PlatformConfig(id="bot", type="dummy", settings={"event_concurrency": 1}))
+    assert adapter is not None
+    started = asyncio.Event()
+
+    class Scheduler:
+        async def execute(self, event):
+            started.set()
+            await asyncio.Future()
+
+    assets = []
+    for index in range(4):
+        event = _message_event("bot")
+        asset = tmp_path / f"{index}.txt"
+        asset.write_text("temporary", encoding="utf-8")
+        event.track_temporary_local_file(str(asset))
+        assets.append(asset)
+        adapter.commit_event(event)
+    task = asyncio.create_task(EventDispatcher(manager, cast(PipelineScheduler, Scheduler())).dispatch_loop())
+    await asyncio.wait_for(started.wait(), 1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.wait_for(adapter._event_queue.join(), 1)
+    assert all(not asset.exists() for asset in assets)
+
+
+@pytest.mark.parametrize("scope", ["group_member", "group"])
+def test_scoped_routes_isolate_groups_accounts_and_preserve_legacy(tmp_path, scope):
+    from satrap.core.conversation import ConversationRoute
+
+    scm = _session_class_mgr(tmp_path)
+    sm = _session_manager(tmp_path, scm)
+    um = UserManager(sm, db_path=tmp_path / "users.db")
+    legacy = um.resolve_session("123", "bot", "dummy", scm)
+
+    def resolve(user="123", group="456", account="10000", selected=scope):
+        route = ConversationRoute(user, "bot", "dummy", scope=selected, self_id=account, group_id=group)
+        session_id = um.resolve_session(user, "bot", "dummy", scm, route=route)
+        return route, session_id
+
+    route, first = resolve()
+    assert first != legacy
+    assert resolve()[1] == first
+    assert resolve(group="789")[1] != first
+    assert resolve(account="20000")[1] != first
+    other = resolve(user="321")[1]
+    assert (other == first) == (scope == "group")
+    assert um.resolve_session("123", "bot", "dummy", scm) == legacy
+    assert resolve(selected="group" if scope == "group_member" else "group_member")[1] != first
+    restored = UserManager(sm, db_path=tmp_path / "users.db")
+    assert restored.resolve_session("123", "bot", "dummy", scm, route=route) == first
+    record = restored.store.get_context_session("123", "bot", "dummy", context_key=route.key)
+    assert record is not None and record.user_id == ("" if scope == "group" else "123")
+    if scope == "group":
+        assert first not in restored.store.list_user_sessions("123")
+        assert first not in restored.store.list_user_sessions("321")
+
+
+@pytest.mark.asyncio
+async def test_scheduler_routes_group_members_without_changing_actor(tmp_path):
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+    from satrap.core.type import UserCall
+
+    scm = _session_class_mgr(tmp_path)
+    sm = _session_manager(tmp_path, scm)
+    um = UserManager(sm, db_path=tmp_path / "users.db")
+    calls: list[UserCall] = []
+
+    class RecordingManager:
+        class_cfg_mgr = scm
+
+        async def handle_call_async(self, call):
+            calls.append(call)
+            return ""
+
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", session_type="dummy", settings={"context_scope": "group_member"}))
+    scheduler = PipelineScheduler(cast(SessionManager, RecordingManager()), user_manager=um)
+    for group in [456, 789, 456]:
+        await adapter._handle_group_message({
+            "self_id": 10000, "user_id": 123, "group_id": group,
+            "message_type": "group", "message": [{"type": "at", "data": {"qq": "10000"}}],
+        })
+        await scheduler.execute(adapter._event_queue.get_nowait())
+    assert len(calls) == 3
+    assert calls[0].session_id == calls[2].session_id != calls[1].session_id
+    assert all(call.route is not None and call.route.user_id == "123" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_scoped_command_switch_updates_original_route(tmp_path, monkeypatch):
+    from satrap.core.conversation import ConversationRoute
+    from satrap.core.type import CommandAction, UserCall
+
+    scm = _session_class_mgr(tmp_path)
+    sm = _session_manager(tmp_path, scm)
+    um = UserManager(sm, db_path=tmp_path / "users.db")
+    sm._user_mgr = um
+    route = ConversationRoute("123", "bot", "dummy", scope="group_member", self_id="10000", group_id="456")
+    initial = um.resolve_session("123", "bot", "dummy", scm, route=route)
+    target = um.resolve_session("123", "bot", "dummy", scm)
+    monkeypatch.setattr(sm, "_invoke_sync_entry", lambda *args: CommandAction("switch_session", target, "switched"))
+    result = await sm.handle_call_async(UserCall(session_id=initial, message="switch", route=route))
+    assert result == "switched"
+    assert um.resolve_session("123", "bot", "dummy", scm, route=route) == target
+    untouched = ConversationRoute("123", "bot", "dummy", scope="group_member", self_id="10000", group_id="789")
+    assert um.resolve_session("123", "bot", "dummy", scm, route=untouched) != target
