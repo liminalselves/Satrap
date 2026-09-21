@@ -41,6 +41,16 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup"):
         if key in settings and not isinstance(settings[key], bool):
             raise ValueError(f"{key} 必须为布尔值")
+    asr_model = settings.get("asr_model", "")
+    if not isinstance(asr_model, str) or len(asr_model) > 128:
+        raise ValueError("asr_model 必须是不超过 128 字符的 ASR 配置名称, 留空关闭语音转写")
+    hosts = settings.get("media_trusted_hosts", [])
+    if not isinstance(hosts, list) or len(cast(list[object], hosts)) > 32 or any(
+        not isinstance(item, str) or not item.strip() or len(item) > 253 for item in cast(list[object], hosts)
+    ):
+        raise ValueError("media_trusted_hosts 必须是最多 32 项的主机名列表")
+    if "attachment_extract" in settings and not isinstance(settings["attachment_extract"], bool):
+        raise ValueError("attachment_extract 必须为布尔值")
     notice_types = settings.get("notice_types")
     if notice_types is not None:
         if not isinstance(notice_types, list) or len(cast(list[object], notice_types)) > 64 or any(

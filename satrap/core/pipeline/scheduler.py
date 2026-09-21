@@ -29,6 +29,7 @@ from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
+from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests
 from satrap.core.platform import PlatformAdapter
@@ -78,6 +79,7 @@ class PipelineScheduler:
         self.wake_window = WakeWindow()
         self.wake_timers = WakeTimers(self.wake_window)
         self.manual_wakes = ManualWakeRequests()
+        self.asr_resolver: AsrResolver | None = None
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
         """
@@ -158,8 +160,11 @@ class PipelineScheduler:
             message = event.get_message_str()
             images = self._extract_img_urls(event)
             videos = self._extract_img_urls(event, "video")
-            has_quote = any(c.type == PlatformComponentType.Reply for c in event.get_messages())
-            if not message and not images and not videos and not has_quote:
+            has_context = any(
+                c.type in {PlatformComponentType.Reply, PlatformComponentType.Forward, PlatformComponentType.Record, PlatformComponentType.File}
+                for c in event.get_messages()
+            )
+            if not message and not images and not videos and not has_context:
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -178,7 +183,8 @@ class PipelineScheduler:
             # Step.4 限流通过后按预算补全引用与转发原文并投影模型输入
             quote_status = await resolve_quotes(event)
             forward_status = await resolve_forwards(event)
-            projected = project_input(event, quote_status, forward_status)
+            attachments = await resolve_attachments(event, self.asr_resolver)
+            projected = project_input(event, quote_status, forward_status, attachments)
             event.set_extra("input_projection", projected)
             message, images, videos = projected.message, list(projected.images), list(projected.videos)
             if not message and not images and not videos:

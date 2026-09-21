@@ -37,6 +37,7 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.config import EdictumConfigManager
+from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
 from satrap.core.platform import (
     EventDispatcher,
@@ -1120,6 +1121,7 @@ class BackendManager:
             user_manager=self._user_mgr,
         )
         self._scheduler.set_platform_runtimes(self._platform_runtimes)
+        self._scheduler.asr_resolver = asr_resolver_from_manager(self._model_cfg)
         logger.info("[BackendManager] PipelineScheduler + RateLimiter + UserManager 就绪")
 
     def _resolve_platform_session_type(

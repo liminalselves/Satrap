@@ -25,6 +25,8 @@ describe('管理前端迁移逻辑', () => {
     expect('reply_with_mention' in normalizePlatformSettings('onebot', {})).toBe(false);
     expect(normalizePlatformSettings('onebot', { notice_types: 'notice.group_increase\n\nrequest' })).toMatchObject({ notice_types: ['notice.group_increase', 'request'] });
     expect('notice_types' in normalizePlatformSettings('onebot', { notice_types: '' })).toBe(false);
+    expect(normalizePlatformSettings('onebot', { media_trusted_hosts: 'a.local\n', asr_model: 'speech', attachment_extract: false })).toMatchObject({ media_trusted_hosts: ['a.local'], asr_model: 'speech', attachment_extract: false });
+    expect('asr_model' in normalizePlatformSettings('onebot', { asr_model: '  ' })).toBe(false);
     expect(normalizePlatformSettings('misskey', {})).toMatchObject({
       chat_enabled: true,
       room_enabled: false,

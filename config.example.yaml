@@ -81,3 +81,6 @@ platforms:
   #     forward_lookup: true   # 唤醒后是否回源合并转发节点 (get_forward_msg, 5 秒/256KiB 预算, 至多 20 节点, 不递归), 作为转发上下文进入模型输入
   #     wake_on_quote_self: false   # 引用机器人消息是否视为唤醒; 需先回源确认被引用者, 引用他人或回源失败不唤醒
   #     # notice_types: [notice.group_increase, notice.group_recall, request]   # 省略表示派发全部 notice/request; 群通知受 group_whitelist 限制, 默认不触发模型
+  #     asr_model: ""   # 语音转写使用的 ASR 模型配置名 (satrap model set asr <name> ...), 留空不转写
+  #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
+  #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记

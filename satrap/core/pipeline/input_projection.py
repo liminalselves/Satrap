@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from satrap.core.pipeline.attachments import AttachmentResult, render_attachments
 from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
@@ -35,6 +36,8 @@ class ProjectedInput:
     quote_status: str = "none"
     """none, resolved, unavailable 或 disabled"""
     forward_status: str = "none"
+    attachment_status: str = "none"
+    """none, resolved, partial 或 failed"""
     """none, resolved, partial, unavailable 或 disabled"""
     notes: tuple[str, ...] = field(default_factory=tuple)
 
@@ -180,7 +183,9 @@ def _components_brief_text(components: list[BaseMessageComponent]) -> str:
     return "".join(parts)
 
 
-def project_input(event: MessageEvent, quote_status: str, forward_status: str = "none") -> ProjectedInput:
+def project_input(
+    event: MessageEvent, quote_status: str, forward_status: str = "none", attachments: tuple[AttachmentResult, ...] = (),
+) -> ProjectedInput:
     """
     组装当前正文与引用/转发上下文, 合并顶层与补全内容的媒体
 
@@ -188,9 +193,10 @@ def project_input(event: MessageEvent, quote_status: str, forward_status: str = 
     - event: 已完成引用与转发补全的事件
     - quote_status: resolve_quotes 的结果
     - forward_status: resolve_forwards 的结果
+    - attachments: resolve_attachments 的结果, 语音转写与文件正文作为资料块前置
 
     返回:
-    - ProjectedInput: 文本与媒体来源, 引用与转发内容以明确标记包裹
+    - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹
     """
     top = event.get_messages()
     images = _media_sources(top, "image")
@@ -266,7 +272,21 @@ def project_input(event: MessageEvent, quote_status: str, forward_status: str = 
             block = block[:FORWARD_TEXT_LIMIT] + "…"
             notes.append("forward_truncated")
         message = f"[转发消息 {len(lines)} 条:\n{block}]\n{message}".rstrip("\n")
+    attachment_status = "none"
+    if attachments:
+        for placeholder in ("[语音]", "[文件]"):
+            for _ in range(sum(1 for item in attachments if (item.kind == "record") == (placeholder == "[语音]"))):
+                message = message.replace(placeholder, "", 1)
+        message = message.strip()
+        # 顶层占位符由附件块替代, 只移除与附件数量相同的次数
+        resolved = sum(1 for item in attachments if item.status == "resolved")
+        attachment_status = "resolved" if resolved == len(attachments) else "partial" if resolved else "failed"
+        for item in attachments:
+            if item.status != "resolved":
+                notes.append(f"attachment_{item.status}")
+        block = render_attachments(attachments)
+        message = (block + "\n" + message).strip("\n") if block else message
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),
-        quote_status=quote_status, forward_status=forward_status, notes=tuple(notes),
+        quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status, notes=tuple(notes),
     )

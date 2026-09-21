@@ -22,18 +22,21 @@ export function normalizePlatformSettings(
       enable_private: Boolean(settings.enable_private ?? true),
       enable_group: Boolean(settings.enable_group ?? true),
     };
-    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup']) {
+    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup', 'attachment_extract']) {
       if (settings[key] !== undefined) normalized[key] = Boolean(settings[key]);
     }
     for (const key of ['group_whitelist', 'wake_words', 'wake_aliases']) {
       const value = settings[key];
       if (typeof value === 'string') normalized[key] = value.split('\n').map((item) => item.trim()).filter(Boolean);
     }
-    if (typeof settings.notice_types === 'string') {
-      const items = settings.notice_types.split('\n').map((item) => item.trim()).filter(Boolean);
-      if (items.length) normalized.notice_types = items;
-      else delete normalized.notice_types;
+    for (const key of ['notice_types', 'media_trusted_hosts']) {
+      const value = settings[key];
+      if (typeof value !== 'string') continue;
+      const items = value.split('\n').map((item) => item.trim()).filter(Boolean);
+      if (items.length) normalized[key] = items;
+      else delete normalized[key];
     }
+    if (typeof settings.asr_model === 'string' && !settings.asr_model.trim()) delete normalized.asr_model;
     for (const key of ['message_text_limit', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait']) {
       const value = settings[key];
       if (value === '' || value === undefined) delete normalized[key];

@@ -18,7 +18,7 @@ import type { EdictumSessionConfig, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
   const { health, refreshHealth } = useBackendStore();
-  const { sessionClasses, fetchSessionClasses } = useConfigStore();
+  const { sessionClasses, fetchSessionClasses, asrConfigs, fetchModels } = useConfigStore();
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
@@ -66,8 +66,9 @@ export function Platforms() {
     loadPlatforms();
     loadEdictumConfigs();
     fetchSessionClasses();
+    fetchModels('asr').catch(() => undefined);
     refreshHealth();
-  }, [fetchSessionClasses, loadEdictumConfigs, loadPlatforms, refreshHealth]);
+  }, [fetchModels, fetchSessionClasses, loadEdictumConfigs, loadPlatforms, refreshHealth]);
 
   const handleAdd = useCallback(() => {
     setEditingPlatform(null);
@@ -273,6 +274,9 @@ export function Platforms() {
         { key: 'settings.forward_lookup', label: '回源合并转发内容', type: 'checkbox', placeholder: '默认开启; 唤醒后按预算 get_forward_msg 获取转发节点作为上下文, 关闭后仅保留占位' },
         { key: 'settings.wake_on_quote_self', label: '引用机器人消息时唤醒', type: 'checkbox', placeholder: '默认关闭; 开启后用同一回源预算确认被引用者是机器人再唤醒' },
         { key: 'settings.notice_types', label: '订阅的通知/请求类型（留空全部）', type: 'textarea', rows: 2, placeholder: '每行一个, 如 notice.group_increase / request.friend / notice; 群通知仍受白名单限制, 默认不触发模型' },
+        { key: 'settings.asr_model', label: '语音转写使用的 ASR 配置（留空关闭）', type: 'select', options: [{ value: '', label: '不转写语音' }, ...Object.keys(asrConfigs).map((name) => ({ value: name, label: name }))] },
+        { key: 'settings.attachment_extract', label: '提取文件附件正文', type: 'checkbox', placeholder: '默认开启; 仅对已唤醒消息中的受支持文档类型下载并提取, 上限 32 MiB / 20000 字符' },
+        { key: 'settings.media_trusted_hosts', label: '允许访问私网的媒体主机（可选）', type: 'textarea', rows: 2, placeholder: '每行一个主机名; SnowLuma 提供的内网下载地址需在此登记, 否则出站防护会拒绝' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
       ];
     }
@@ -299,7 +303,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, sessionClasses]);
+  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, sessionClasses]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -324,6 +328,9 @@ export function Platforms() {
     'settings.group_whitelist': Array.isArray(formData.settings.group_whitelist) ? formData.settings.group_whitelist.join('\n') : formData.settings.group_whitelist ?? '',
     'settings.wake_aliases': Array.isArray(formData.settings.wake_aliases) ? formData.settings.wake_aliases.join('\n') : formData.settings.wake_aliases ?? '',
     'settings.notice_types': Array.isArray(formData.settings.notice_types) ? formData.settings.notice_types.join('\n') : formData.settings.notice_types ?? '',
+    'settings.asr_model': formData.settings.asr_model ?? '',
+    'settings.attachment_extract': formData.settings.attachment_extract ?? true,
+    'settings.media_trusted_hosts': Array.isArray(formData.settings.media_trusted_hosts) ? formData.settings.media_trusted_hosts.join('\n') : formData.settings.media_trusted_hosts ?? '',
     'settings.wake_group_overrides': typeof formData.settings.wake_group_overrides === 'string' ? formData.settings.wake_group_overrides : JSON.stringify(formData.settings.wake_group_overrides ?? {}, null, 2),
     'settings.wake_time_rules': typeof formData.settings.wake_time_rules === 'string' ? formData.settings.wake_time_rules : JSON.stringify(formData.settings.wake_time_rules ?? [], null, 2),
     'settings.wake_mode': formData.settings.wake_mode ?? 'explicit',

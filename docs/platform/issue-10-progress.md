@@ -293,3 +293,12 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 测试: `test_asr_call.py` 13 passed (接手模型编写), 新增 `test_model_config_service.py` 2 用例 (asr CRUD/脱敏/客户端构造, 测试端点使用已存密钥并拒绝空/超限/缺配置、关闭客户端), CLI 解析新增 1 用例; 相关 61 passed; 前端 vitest 69 passed, tsc/eslint 通过; 修改模块 Pyright 0 errors / 0 warnings (cmd_model 2 警告为存量)
 
 本批未调用真实 ASR 服务。语音 Record 组件进入内容补全层并投影到模型输入, 以及文件附件提取, 留在下一批。
+
+## P3 语音转写与文件正文补全
+
+- 新增 `pipeline/attachments.py`: `resolve_attachments` 在引用/转发之后处理顶层 Record/File (每事件 ≤4), 经 `safe_async_get` 受限下载 (http/https, 私网需 `media_trusted_hosts` 登记), 语音按 `asr_model` 解析 ASRConfig 后调用 AsyncASR (16 MiB / 60s), 文件经临时文件 + 线程池 `extract_text` (32 MiB / 20000 字符), 临时文件登记到事件由其清理; 结果类型化 AttachmentResult, `render_attachments` 生成资料块, 所有失败降级为标记不阻塞
+- 转写结果冻结到 Record.text 避免重复调用; scheduler 由 BackendManager 注入 `asr_resolver` (来自 ModelConfigManager), 仅含附件的已唤醒消息也进入模型; `project_input` 新增 attachments 参数与 attachment_status
+- 策略校验新增 `asr_model` (≤128 字符)、`attachment_extract` (布尔)、`media_trusted_hosts` (≤32 主机名); 前端平台表单提供 ASR 配置下拉 (读取已保存 ASR 列表)、附件提取开关、媒体主机多行输入及归一化; 配置示例与 platforms.md 同步
+- 新增 `tests/unit/test_attachments.py` 14 passed (转写与投影/冻结复用, 未绑定 ASR 与配置缺失 disabled 且不下载, 404/私网/file 协议/格式不支持降级, 文件提取与临时文件清理, 不支持类型/关闭/数量上限 partial, 端到端 UserCall 携带转写, 未唤醒不下载, 渲染与解析器, 策略校验); 相关管线/引用/转发/调度/运行时回归 146 passed; 修改模块 Pyright 0 errors / 0 warnings; 前端 vitest 69 passed, tsc/eslint 与 platform-policy 浏览器回归通过
+
+本批以受控替身验证下载与转写协议路径, 真实 ASR/LLM 调用留在 P4 验收记录。音频格式转换未实现: 不在 ASR 接口支持范围内的语音 (如 amr/silk) 标记为不支持而非转换。
