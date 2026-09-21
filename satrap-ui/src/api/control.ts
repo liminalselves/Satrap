@@ -79,6 +79,7 @@ export interface ConfigResult {
 }
 
 export interface PlatformConfigResult extends ControlResult {
+  revision?: string;
   platforms?: PlatformConfig[];
   exists?: boolean;
 }
@@ -230,24 +231,26 @@ export const controlApi = {
   },
 
   // 创建平台配置
-  createPlatform: async (platform: PlatformConfig): Promise<PlatformConfigResult> => {
-    const response = await controlClient.post<PlatformConfigResult>('/config/platforms', platform);
+  createPlatform: async (platform: PlatformConfig, revision: string): Promise<PlatformConfigResult> => {
+    const response = await controlClient.post<PlatformConfigResult>('/config/platforms', platform, { params: { expected_revision: revision } });
     return response.data;
   },
 
   // 更新平台配置
-  updatePlatform: async (originalId: string, platform: PlatformConfig): Promise<PlatformConfigResult> => {
+  updatePlatform: async (originalId: string, platform: PlatformConfig, revision: string): Promise<PlatformConfigResult> => {
     const response = await controlClient.put<PlatformConfigResult>(
       `/config/platforms/${encodeURIComponent(originalId)}`,
       platform,
+      { params: { expected_revision: revision } },
     );
     return response.data;
   },
 
   // 删除平台配置
-  deletePlatform: async (platformId: string): Promise<PlatformConfigResult> => {
+  deletePlatform: async (platformId: string, revision: string): Promise<PlatformConfigResult> => {
     const response = await controlClient.delete<PlatformConfigResult>(
       `/config/platforms/${encodeURIComponent(platformId)}`,
+      { params: { expected_revision: revision } },
     );
     return response.data;
   },

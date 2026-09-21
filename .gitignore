@@ -237,3 +237,5 @@ satrap-ui/dist/
 satrap-ui/benchmarks/results/latest.json
 satrap-ui/benchmarks/results/smoke.json
 satrap-ui/benchmarks/results/traces/
+
+satrap-ui/test-results/

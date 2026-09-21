@@ -1,8 +1,18 @@
 // API 类型定义 - 与后端 Python 类型对应
 
+export interface PlatformConfigApplication {
+  id: string;
+  saved_revision: string | null;
+  active_revision: string | null;
+  status: 'applied' | 'pending_restart' | 'failed';
+  reason?: string;
+  error?: string;
+}
+
 export interface BackendHealth {
   running: boolean;
   adapters?: Record<string, AdapterInfo>;
+  platform_config?: PlatformConfigApplication[];
   error?: string;
 }
 
@@ -185,6 +195,7 @@ export interface EdictumSessionConfig {
   }
 
 export interface PlatformConfig {
+  enable?: boolean;
   id: string;
   type: string;
   session_provider?: string;

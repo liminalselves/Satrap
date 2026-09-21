@@ -49,3 +49,28 @@ describe('管理前端迁移逻辑', () => {
     expect(visibleLogs(buffered, snapshot, false)).toBe(buffered);
   });
 });
+
+
+describe('OneBot 策略表单保存', () => {
+  it('转换群与时段 JSON 配置, 非法输入拒绝保存', () => {
+    expect(normalizePlatformSettings('onebot', {
+      wake_group_overrides: '{"123":{"wake_mode":"necessity"}}',
+      wake_time_rules: '[{"start":"23:00","end":"07:00","settings":{"wake_mode":"explicit"}}]',
+    })).toMatchObject({
+      wake_group_overrides: { '123': { wake_mode: 'necessity' } },
+      wake_time_rules: [{ start: '23:00', end: '07:00', settings: { wake_mode: 'explicit' } }],
+    });
+    expect(() => normalizePlatformSettings('onebot', { wake_time_rules: 'invalid' })).toThrow();
+  });
+  it.each(['onebot', 'aiocqhttp'])('归一化 %s 的逐行配置并保留扩展字段', (type) => {
+    expect(normalizePlatformSettings(type, {
+      group_whitelist: ' 123\n\n456 ', wake_words: '小助手\n hello bot ', extension: true,
+    })).toMatchObject({
+      group_whitelist: ['123', '456'], wake_words: ['小助手', 'hello bot'], extension: true,
+    });
+    expect(normalizePlatformSettings(type, { group_whitelist: '', wake_words: '' })).toMatchObject({
+      group_whitelist: [], wake_words: [],
+    });
+    expect(normalizePlatformSettings(type, { group_whitelist: ['123'] }).group_whitelist).toEqual(['123']);
+  });
+});

@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useId } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -41,6 +41,7 @@ export const FormModal = memo(function FormModal({
   loading = false,
   size = 'md',
 }: FormModalProps) {
+  const formId = useId();
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSubmit();
@@ -53,6 +54,7 @@ export const FormModal = memo(function FormModal({
       case 'textarea':
         return (
           <textarea
+            id={`${formId}-${field.key}`}
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
             placeholder={field.placeholder}
@@ -64,6 +66,7 @@ export const FormModal = memo(function FormModal({
       case 'select':
         return (
           <select
+            id={`${formId}-${field.key}`}
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
             disabled={field.disabled}
@@ -79,6 +82,7 @@ export const FormModal = memo(function FormModal({
       case 'number':
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="number"
             step="any"
             value={(value as number) ?? ''}
@@ -91,6 +95,7 @@ export const FormModal = memo(function FormModal({
         return (
           <label className="flex cursor-pointer items-center gap-3 rounded-sm bg-glass px-3 py-2">
             <input
+              id={`${formId}-${field.key}`}
               type="checkbox"
               checked={Boolean(value)}
               onChange={(e) => onChange(field.key, e.target.checked)}
@@ -132,6 +137,7 @@ export const FormModal = memo(function FormModal({
       case 'password':
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="password"
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -142,6 +148,7 @@ export const FormModal = memo(function FormModal({
       default:
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="text"
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -158,7 +165,7 @@ export const FormModal = memo(function FormModal({
       <form onSubmit={handleSubmit} className="space-y-4">
         {fields.map((field) => (
           <div key={field.key}>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
+            <label htmlFor={field.type === 'checkbox-group' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">
               {field.label}
               {field.required && <span className="text-error ml-1">*</span>}
             </label>

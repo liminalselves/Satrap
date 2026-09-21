@@ -1,5 +1,5 @@
 import { apiClient } from './client';
-import type { BackendHealth } from './types';
+import type { BackendHealth, PlatformConfigApplication } from './types';
 
 export interface EdictumPluginReloadSessionResult {
   ok: boolean;
@@ -32,16 +32,19 @@ export interface EdictumPluginPreviewResult {
 }
 
 export interface ConfigReloadResult {
+  platforms?: PlatformConfigApplication[];
   ok: boolean;
   edictum_sessions: EdictumPluginReloadSessionResult[];
 }
 
 export const backendApi = {
+  wakePlatform: (payload: { adapter_id: string; group_id: string; user_id: string; request_id: string; prompt?: string; message_id?: string }) =>
+    apiClient.post<{ status: 'accepted' | 'already_pending' | 'no_pending' | 'rejected'; reason?: string; state?: string }>('/api/platforms/wake', payload),
   // 获取后端健康状态
   health: () => apiClient.get<BackendHealth>('/api/health'),
 
   // 重载配置
-  reloadConfig: () => apiClient.post<ConfigReloadResult>('/api/config/reload'),
+  reloadConfig: (revision?: string) => apiClient.post<ConfigReloadResult>('/api/config/reload', revision ? { expected_config_revision: revision } : undefined),
 
   // 预览 Edictum 插件变更对活跃会话的影响
   previewEdictumPlugins: (data: {

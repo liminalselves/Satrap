@@ -11,7 +11,7 @@ export function normalizePlatformSettings(
   type: string,
   settings: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (type === 'onebot') {
+  if (type === 'onebot' || type === 'aiocqhttp') {
     const selfId = String(settings.self_id ?? '').trim();
     const normalized: Record<string, unknown> = {
       ...settings,
@@ -22,6 +22,21 @@ export function normalizePlatformSettings(
       enable_private: Boolean(settings.enable_private ?? true),
       enable_group: Boolean(settings.enable_group ?? true),
     };
+    for (const key of ['group_whitelist', 'wake_words', 'wake_aliases']) {
+      const value = settings[key];
+      if (typeof value === 'string') normalized[key] = value.split('\n').map((item) => item.trim()).filter(Boolean);
+    }
+    for (const key of ['message_text_limit', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait']) {
+      const value = settings[key];
+      if (value === '' || value === undefined) delete normalized[key];
+      else normalized[key] = Number(value);
+    }
+    for (const key of ['wake_group_overrides', 'wake_time_rules']) {
+      const value = settings[key];
+      if (typeof value === 'string') {
+        normalized[key] = value.trim() ? JSON.parse(value) : key === 'wake_time_rules' ? [] : {};
+      }
+    }
     if (selfId) normalized.self_id = selfId;
     else delete normalized.self_id;
     return normalized;
@@ -59,4 +74,15 @@ export function filterLogs<T extends FilterableLog>(
 
 export function visibleLogs<T>(logs: T[], pausedLogs: T[], paused: boolean): T[] {
   return paused ? pausedLogs : logs;
+}
+
+
+export function platformSettingsSummary(type: string, settings: Record<string, unknown>): string {
+  if (type === 'onebot' || type === 'aiocqhttp') {
+    const count = Array.isArray(settings.group_whitelist) ? settings.group_whitelist.length : 0;
+    const scopes: Record<string, string> = { legacy_user: '旧用户映射', group_member: '群成员隔离', group: '群共享' };
+    const scope = scopes[String(settings.context_scope ?? 'legacy_user')] ?? '未知范围';
+    return `私聊${settings.enable_private === false ? '关闭' : '开启'} · 群聊${settings.enable_group === false ? '关闭' : '开启'} · ${count ? `${count} 个允许群` : '允许所有群'} · ${scope}`;
+  }
+  return `已配置 ${Object.keys(settings).length} 项设置`;
 }
