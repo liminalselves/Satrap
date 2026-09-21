@@ -450,3 +450,51 @@ def test_session_video_signature_adaptation():
     assert invoke(structured) == (call, {})
     with pytest.raises(ValueError, match="未提供视频"):
         invoke(lambda message: message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", [True, False])
+async def test_explicit_stop_prevents_model_and_rate_feedback(stop):
+    manager = _FakeSessionManager()
+    adapter = _RecorderAdapter()
+    event = _message_event(adapter)
+    scheduler = PipelineScheduler(_as_session_manager(manager), RateLimiter(rate=1, burst=0))
+    if stop:
+        scheduler.add_preprocessor(lambda current: current.stop_event() or True)
+    else:
+        scheduler.add_preprocessor(lambda current: current.should_call_llm(False) or True)
+    await scheduler.execute(event)
+    assert manager.calls == []
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_final_session_turn_orders_model_and_reply_and_reclaims_locks():
+    manager = _FakeSessionManager()
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    sending = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowAdapter(_RecorderAdapter):
+        async def send_message(self, session_id, message):
+            self.sent.append((session_id, message))
+            if len(self.sent) == 1:
+                sending.set()
+                await release.wait()
+
+    adapter = SlowAdapter()
+    first = asyncio.create_task(scheduler.execute(_message_event(adapter, message_str="first")))
+    await asyncio.wait_for(sending.wait(), 1)
+    later = asyncio.create_task(scheduler.execute(_message_event(adapter, message_str="second")))
+    try:
+        await asyncio.sleep(0)
+        assert len(manager.calls) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, later), 1)
+        assert [call.message for call in manager.calls] == ["first", "second"]
+        assert len(adapter.sent) == 2
+        assert scheduler._session_turns == {}
+    finally:
+        first.cancel()
+        later.cancel()
+        await asyncio.gather(first, later, return_exceptions=True)

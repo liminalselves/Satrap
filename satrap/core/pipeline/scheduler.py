@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 import asyncio
 import inspect
 from typing import (
@@ -17,9 +19,17 @@ from typing import (
 )
 
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.config.platform_policy import normalize_group_whitelist
+from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
+from satrap.core.conversation import ConversationRoute
+from satrap.core.pipeline.wake_policy import evaluate_wake
+from satrap.core.pipeline.wake_window import WakeWindow
+from satrap.core.pipeline.wake_timers import WakeTimers
+from satrap.core.pipeline.manual_wake import ManualWakeRequests
+from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -33,11 +43,10 @@ class PipelineScheduler:
     消息管线调度器
 
     接收 MessageEvent, 依次执行:
-    Stage 0: preprocessor 链
-    Stage 1a: 限流
-    Stage 1b: 唤醒词/@ 检查
-    Stage 1c: 权限检查
-    Stage 2: LLM 请求 (超时保护)
+    来源范围与 preprocessor 链
+    停止状态与权限检查
+    唤醒词/@ 检查与模型调用限流
+    会话路由与 LLM 请求 (超时保护)
     后处理: 兜底发送回复
     """
     def __init__(
@@ -62,11 +71,15 @@ class PipelineScheduler:
         self.error_feedback = error_feedback
         self.user_manager = user_manager
         self.preprocessors: List[Callable[[MessageEvent], Awaitable[bool] | bool]] = []
+        self._session_turns: dict[tuple[int, str], tuple[asyncio.Lock, int]] = {}
         self.platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
+        self.wake_window = WakeWindow()
+        self.wake_timers = WakeTimers(self.wake_window)
+        self.manual_wakes = ManualWakeRequests()
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
         """
-        添加预处理器, 在 stage 1a 前依次调用; 返回 False 则丢弃事件
+        添加预处理器, 在权限与唤醒检查前依次调用; 返回 False 则丢弃事件
 
         参数:
         - fn: 待调用函数, 支持同步或异步 (返回值经 _await_if_needed 统一处理)
@@ -93,17 +106,58 @@ class PipelineScheduler:
         - event: 消息事件
         """
         try:
+            manual_ticket = self.manual_wakes.tickets.get(event)
+            if manual_ticket is not None and manual_ticket.cancelled:
+                return
+            deadline_ticket = self.wake_timers.tickets.get(event)
+            if deadline_ticket is not None and deadline_ticket.cancelled:
+                return
             source_platform_id = event.get_platform_id()
             platform_runtime = self.platform_runtimes.get(source_platform_id)
             session_manager = platform_runtime[0] if platform_runtime else self.session_manager
             user_manager = platform_runtime[1] if platform_runtime else self.user_manager
 
+            if event.is_stopped() or not event.call_llm or not self._allows_source(event):
+                return
             for processor in self.preprocessors:
+                if event.is_stopped() or not event.call_llm:
+                    return
                 if not await self._await_if_needed(processor(event)):
                     logger.debug(f"[PipelineScheduler] preprocessor 丢弃事件: {event.session_id}")
                     return
-            # ---------- Stage 0: preprocessor 链 ----------
 
+            # Step.1 停止状态和权限先于唤醒及模型额度检查
+            if event.is_stopped() or not event.call_llm:
+                return
+            if not self._allows_source(event) or not await self._check_permission(event):
+                return
+
+            # Step.2 评估独立唤醒规则并记录命中原因
+            self._apply_wake_policy(event)
+            pending = manual_ticket.snapshot if manual_ticket is not None else ()
+            automatic = False
+            if manual_ticket is not None:
+                event.is_wake = True
+            elif not event.is_private_chat() and self._automatic_policy_current(event) and event.policy_settings.get("wake_mode", "explicit") in {"frequency", "necessity"}:
+                pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
+                if not event.is_wake_up() and not event.is_at_or_wake_command:
+                    decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
+                    event.set_extra("wake_decision", decision)
+                    if decision.triggered:
+                        automatic = True
+                        event.is_wake = True
+            if not event.is_private_chat() and not event.is_wake_up() and not event.is_at_or_wake_command:
+                if deadline_ticket is None:
+                    self.wake_timers.schedule(event)
+                return
+
+            message = event.get_message_str()
+            images = self._extract_img_urls(event)
+            videos = self._extract_img_urls(event, "video")
+            if not message and not images and not videos:
+                return
+
+            # Step.3 只有已唤醒且允许处理的请求消耗模型额度
             if self.rate_limiter:
                 rate_key = f"{source_platform_id}:{event.session_id}"
                 allowed, wait = await self.rate_limiter.check(rate_key)
@@ -115,26 +169,22 @@ class PipelineScheduler:
                     if self.error_feedback:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     return
-            # ---------- Stage 1a: 限流 ----------
 
-            if not event.is_private_chat() and not event.is_wake_up() and not event.is_at_or_wake_command:
-                return
-            # ---------- Stage 1b: 唤醒词/ @检查 ----------
-
-            if not await self._check_permission(event):
-                return
-            # ---------- Stage 1c: 权限检查 ----------
-
-            message = event.get_message_str()
-            images = self._extract_img_urls(event)
-            videos = self._extract_img_urls(event, "video")
-            if not message and not images and not videos:
-                return
-
+            # Step.4 通过 UserManager 解析目标会话
             session_id = event.session_id
-            # ---------- Stage 1d: 通过 UserManager 解析 session_id ----------
+            route: ConversationRoute | None = None
+            settings = event.policy_settings
+            scope = str(settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
+            if scope != "legacy_user" and (not user_manager or not event.session_type):
+                raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
             if user_manager and event.session_type:
                 platform_id, extra_params = self._resolve_route_adapter(event)
+                route = ConversationRoute(
+                    user_id=event.get_sender_id(), platform=platform_id,
+                    session_type=event.session_type, provider=event.session_provider,
+                    scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
+                )
+                route_args = {"route": route} if scope != "legacy_user" else {}
                 resolved = user_manager.resolve_session(
                     user_id=event.get_sender_id(),
                     platform=platform_id,
@@ -142,9 +192,11 @@ class PipelineScheduler:
                     session_type=event.session_type,
                     class_cfg_mgr=safe_getattr(session_manager, 'class_cfg_mgr'),
                     extra_params=extra_params,
+                    **route_args,
                 )
-                if resolved:
-                    session_id = resolved
+                if not resolved:
+                    return
+                session_id = resolved
 
             user_call = UserCall(
                 session_id=session_id,
@@ -153,33 +205,136 @@ class PipelineScheduler:
                 message=message,
                 img_urls=images,
                 video_urls=videos,
+                route=route,
+                origin=event.call_origin,
             )
-            # ---------- Stage 2: LLM 请求 via Session (带超时保护) ----------
-            try:
-                response = await asyncio.wait_for(
-                    session_manager.handle_call_async(user_call),
-                    timeout=self.llm_timeout,
-                )
-            except asyncio.TimeoutError:
-                logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
-                if self.error_feedback:
-                    await self._send_feedback(event, "请求超时, 请稍后重试")
-                return
+            async with self._session_turn(session_manager, session_id):
+                if event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
+                    return
+                if automatic and not self._automatic_policy_current(event):
+                    return
+                if deadline_ticket is not None and deadline_ticket.cancelled:
+                    return
+                if manual_ticket is not None and manual_ticket.cancelled:
+                    return
+                if pending:
+                    batch = self.wake_window.claim(event, pending, automatic, deadline=deadline_ticket is not None)
+                    if automatic and not batch:
+                        return
+                    if manual_ticket is not None and manual_ticket.snapshot and not batch:
+                        return
+                    if batch:
+                        self.wake_timers.cancel_route(event)
+                        user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
+                # Step.5 执行会话并限制等待时间
+                try:
+                    response = await asyncio.wait_for(
+                        session_manager.handle_call_async(user_call),
+                        timeout=self.llm_timeout,
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                    if self.error_feedback:
+                        await self._send_feedback(event, "请求超时, 请稍后重试")
+                    return
 
-            if response and not event.has_send_operation():
-                await event.send(MessageChain.from_text(response))
-            # ---------- 后处理: 兜底发送回复 ----------
-            # 如果 Session 内部已通过 content_callback 发送过消息
-            # event.has_send_operation() 返回 True, 避免重复发送
+                if response and not event.has_send_operation():
+                    await event.send(MessageChain.from_text(response))
+                # ---------- 后处理: 兜底发送回复 ----------
+                # 如果 Session 内部已通过 content_callback 发送过消息
+                # event.has_send_operation() 返回 True, 避免重复发送
 
         except Exception as e:
             logger.error(f"[PipelineScheduler] 管线执行错误: {e}")
             if self.error_feedback:
                 await self._send_feedback(event, "处理失败, 请稍后重试")
         finally:
+            ticket = self.manual_wakes.tickets.get(event)
+            if ticket is not None and ticket.status == "pending":
+                ticket.status = "processed"
             event.cleanup_temporary_local_files()
 
     # ---------- 可覆写钩子 ----------
+
+    @asynccontextmanager
+    async def _session_turn(self, manager: SessionManager, session_id: str) -> AsyncIterator[None]:
+        """
+        按最终会话串行执行模型和回复, 不保留空闲锁
+
+        参数:
+        - manager: 隔离的会话管理器
+        - session_id: 路由解析后的最终会话 ID
+
+        返回:
+        - 持有本轮执行权的异步上下文
+        """
+        key = (id(manager), session_id)
+        lock, users = self._session_turns.get(key, (asyncio.Lock(), 0))
+        self._session_turns[key] = (lock, users + 1)
+        try:
+            async with lock:
+                yield
+        finally:
+            _, users = self._session_turns[key]
+            if users == 1:
+                del self._session_turns[key]
+            else:
+                self._session_turns[key] = (lock, users - 1)
+
+    @staticmethod
+    def _allows_source(event: MessageEvent) -> bool:
+        """
+        检查平台启停与群范围, 包括绕过适配器入口的事件
+
+        参数:
+        - event: 待处理事件
+
+        返回:
+        - 是否允许进入模型管线
+        """
+        adapter = event.adapter
+        if not isinstance(adapter, PlatformAdapter):
+            return True
+        if not adapter.config.enable:
+            return False
+        settings = adapter.config.settings
+        if adapter.config.type not in {"onebot", "aiocqhttp"}:
+            return True
+        if event.is_private_chat():
+            return bool(settings.get("enable_private", True))
+        groups = normalize_group_whitelist(settings.get("group_whitelist", []))
+        return bool(settings.get("enable_group", True)) and (not groups or event.get_group_id() in groups)
+
+    @staticmethod
+    def _automatic_policy_current(event: MessageEvent) -> bool:
+        """
+        防止已失效的自动规则向新窗口提交内容
+
+        参数:
+        - event: 携带接收时策略快照的事件
+
+        返回:
+        - bool: 自动参与相关配置是否仍与当前实例一致
+        """
+        if not isinstance(event.adapter, PlatformAdapter):
+            return False
+        current = resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
+        keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
+        return all(current.get(key) == event.policy_settings.get(key) for key in keys)
+
+    @staticmethod
+    def _apply_wake_policy(event: MessageEvent) -> None:
+        """
+        根据可信组件设置唤醒标志并保留上游明确标志
+
+        参数:
+        - event: 待评估事件, 仅扫描顶层正文与提及
+        """
+        decision = evaluate_wake(event)
+        event.set_extra("wake_decision", decision)
+        if decision.triggered and not event.is_private_chat():
+            event.is_wake = True
+            event.is_at_or_wake_command = True
 
     async def _check_permission(self, event: MessageEvent) -> bool:
         """

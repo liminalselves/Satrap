@@ -18,6 +18,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.framework.Base import AsyncSession, Session
+from satrap.core.conversation import ConversationRoute
 from satrap.core.utils.paths import get_db_path
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, StorageScope
 from satrap.core.type import SessionConfig, UserCall, UserInfo
@@ -360,6 +361,7 @@ class UserInfoStore:
         session_type: str,
         session_id: str,
         provider_name: str = SESSION_CLASS_PROVIDER,
+        context_key: str | None = None,
     ) -> str:
         """
         创建或更新上下文会话记录
@@ -370,13 +372,14 @@ class UserInfoStore:
         - session_type: 会话类型
         - session_id: 会话 ID
         - provider_name: Provider 名称
+        - context_key: 显式范围键, None 沿用旧用户路由键
 
         返回: context_key (格式: "{session_type}:{platform}:{user_id}")
 
         返回:
         - str: 创建或更新上下文会话记录
         """
-        context_key = self._context_key(user_id, platform, session_type, provider_name)
+        context_key = context_key or self._context_key(user_id, platform, session_type, provider_name)
         now = time.time()
         with self._lock:
             with self._connect() as conn:
@@ -401,6 +404,7 @@ class UserInfoStore:
         platform: str,
         session_type: str,
         provider_name: str = SESSION_CLASS_PROVIDER,
+        context_key: str | None = None,
     ) -> Optional[ContextSession]:
         """
         查询上下文会话记录
@@ -410,11 +414,12 @@ class UserInfoStore:
         - platform: 平台名称
         - session_type: 会话类型
         - provider_name: Provider 名称
+        - context_key: 显式范围键, None 沿用旧用户路由键
 
         返回:
         - Optional[ContextSession]: 查询上下文会话记录
         """
-        context_key = self._context_key(user_id, platform, session_type, provider_name)
+        context_key = context_key or self._context_key(user_id, platform, session_type, provider_name)
         with self._lock:
             with self._connect() as conn:
                 row = conn.execute(
@@ -809,6 +814,7 @@ class UserManager:
         class_cfg_mgr: SessionClassConfigManager | None = None,
         extra_params: Optional[Dict[str, Any]] = None,
         session_provider: str = SESSION_CLASS_PROVIDER,
+        route: ConversationRoute | None = None,
     ) -> str:
         """
         解析用户+平台到 session_id, 不存在则自动创建
@@ -820,12 +826,15 @@ class UserManager:
         - class_cfg_mgr: SessionClassConfigManager 实例 (自动创建时需要)
         - extra_params: 补充/覆盖 params
         - session_provider: 会话 Provider 名称
+        - route: 显式群范围路由, None 保持旧映射
 
         返回: session_id (格式: "{session_type}:{platform}:{user_id}")
 
         返回:
         - str: 解析用户+平台到 session_id, 不存在则自动创建
         """
+        if route is not None and (route.user_id, route.platform, route.session_type, route.provider) != (user_id, platform, session_type, session_provider):
+            raise ValueError("路由身份与解析参数不一致")
         if self.get_or_create_user(user_id=user_id, platform=platform) is None:
             logger.warning(
                 f"[UserManager] resolve_session 跳过: 用户不存在且 auto_create=False, "
@@ -839,6 +848,7 @@ class UserManager:
             platform,
             session_type,
             provider_name,
+            context_key=route.key if route else None,
         )
         if existed is not None:
             return existed.session_id
@@ -851,7 +861,8 @@ class UserManager:
         session_id = self.sm.register_session_from_provider_context(
             provider_name=provider_name,
             definition_name=session_type,
-            context_value=user_id,
+            context_value=route.group_id if route and route.scope == "group" else user_id,
+            session_identity=route.context_value if route else None,
             platform=platform,
             extra_params=extra_params,
         ).session_id or ""
@@ -861,18 +872,20 @@ class UserManager:
                 self.storage_layout.bind_session(
                     StorageScope(
                         platform_id=self.platform_id,
-                        user_id=user_id,
+                        user_id=route.owner if route else user_id,
                         session_id=session_id,
                     )
                 )
             self.store.upsert_context_session(
-                user_id,
+                route.owner if route else user_id,
                 platform,
                 session_type,
                 session_id,
                 provider_name,
+                context_key=route.key if route else None,
             )
-            self.bind_session(user_id=user_id, session_id=session_id)
+            if route is None or route.owner:
+                self.bind_session(user_id=user_id, session_id=session_id)
 
         return session_id
 
