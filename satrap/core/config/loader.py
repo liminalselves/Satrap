@@ -143,7 +143,9 @@ class ConfigLoader:
                 data: object = safe_yaml_load(f)
             if not isinstance(data, dict):
                 raise ValueError("YAML 根节点必须是字典")
-            return BackendConfig.from_dict(cast(dict[str, Any], data))
+            config = BackendConfig.from_dict(cast(dict[str, Any], data))
+            config.source_path = str(path.resolve())
+            return config
         except ImportError:
             logger.error("[ConfigLoader] 需要 PyYAML 库: pip install pyyaml, 回退到 JSON")
             return ConfigLoader.from_json(path.with_suffix(".json"))
@@ -172,7 +174,9 @@ class ConfigLoader:
                 data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("JSON 根节点必须是字典")
-            return BackendConfig.from_dict(cast(dict[str, Any], data))
+            config = BackendConfig.from_dict(cast(dict[str, Any], data))
+            config.source_path = str(path.resolve())
+            return config
         except Exception as e:
             logger.error(f"[ConfigLoader] JSON 加载失败: {e}")
             return BackendConfig()

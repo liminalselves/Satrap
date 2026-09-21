@@ -2,15 +2,18 @@
 from __future__ import annotations
 
 import tempfile
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 import json
 import os
 import re
 
+from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, validate_event_limits
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
 from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
+from satrap.core.storage.file_lock import FileLock
 
 
 MASKED_SECRET = "********"
@@ -274,7 +277,10 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         if platform_id in seen:
             raise ValueError(f"平台 id 重复: {platform_id}")
         seen.add(platform_id)
+        if "enable" in item and not isinstance(item["enable"], bool):
+            raise ValueError("平台 enable 必须是布尔值")
         normalized = dict(item)
+        normalized["enable"] = item.get("enable", True)
         normalized["id"] = platform_id
         normalized["type"] = platform_type
         normalized["session_provider"] = session_provider
@@ -283,6 +289,13 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         else:
             normalized.pop("session_type", None)
         normalized["settings"] = dict(cast(dict[str, Any], settings))
+        validate_event_limits(normalized["settings"])
+        if platform_type in {"onebot", "aiocqhttp"}:
+            validate_wake_policy(normalized["settings"])
+            validate_context_scope(normalized["settings"].get("context_scope", "legacy_user"))
+            for key, validator in (("group_whitelist", normalize_group_whitelist), ("wake_words", normalize_wake_words), ("wake_aliases", normalize_wake_words)):
+                if key in normalized["settings"]:
+                    normalized["settings"][key] = validator(normalized["settings"][key])
         result.append(normalized)
     return result
 
@@ -305,19 +318,57 @@ def validate_config_document(data: object) -> dict[str, Any]:
     return normalized
 
 
-def save_config_document(path: str | Path, data: object) -> dict[str, Any]:
+class ConfigRevisionConflict(ValueError):
+    """配置已被其他写入者修改, 调用方应重新读取后合并"""
+
+
+def config_document_revision(data: object) -> str:
+    """
+    计算配置文档修订, 不返回配置正文
+
+    参数:
+    - data: 已读取的配置文档
+
+    返回:
+    - str: 与字段顺序无关的内容摘要
+    """
+    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def save_config_document(
+    path: str | Path, data: object, *, expected_revision: str | None = None,
+) -> dict[str, Any]:
     """
     校验并原子保存配置文档
 
     参数:
     - path: 配置文件路径
     - data: 待保存的配置文档
+    - expected_revision: 读取时的修订, 默认 None 兼容无条件保存
 
     返回:
     - dict[str, Any]: 已保存的规范化配置文档
     """
-    config_path = Path(path)
+    config_path = Path(path).resolve()
     normalized = validate_config_document(data)
+    with FileLock(config_path.with_name(f".{config_path.name}.lock")):
+        if expected_revision is not None:
+            current_revision = config_document_revision(load_config_document(config_path))
+            if current_revision != expected_revision:
+                raise ConfigRevisionConflict("配置已被其他操作修改, 请重新读取并合并后保存")
+        _write_config_document(config_path, normalized)
+    return normalized
+
+
+def _write_config_document(config_path: Path, normalized: dict[str, Any]) -> None:
+    """
+    在调用方持有配置锁时执行原子替换
+
+    参数:
+    - config_path: 配置文件路径
+    - normalized: 已校验的配置文档
+    """
     if config_path.suffix.lower() == ".json":
         dumped_value = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     else:
@@ -340,7 +391,6 @@ def save_config_document(path: str | Path, data: object) -> dict[str, Any]:
         if temporary_path.exists():
             temporary_path.unlink()
         raise
-    return normalized
 
 
 def create_default_config(path: str | Path, *, overwrite: bool = False) -> dict[str, Any]:

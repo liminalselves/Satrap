@@ -11,6 +11,8 @@ from typing import Optional, List, Dict, Any, Iterator, Callable, Tuple, TypeVar
 from enum import Enum
 import time
 
+from satrap.core.conversation import ConversationRoute
+from satrap.core.call_context import CallOrigin
 from satrap.core.components import BaseMessageComponent, PlatformComponentType
 
 THINKING_LEVEL_VALUES = ("low", "medium", "high", "xhigh", "max", "ultra")
@@ -261,6 +263,10 @@ class UserCall:
     """用户输入图片 URL 列表"""
     video_urls: Optional[List[str]] = None
     """用户输入视频 URL 列表"""
+    route: ConversationRoute | None = None
+    """平台来源路由, 用于显式更新会话映射"""
+    origin: CallOrigin | None = None
+    """本轮可信来源, 不从消息正文或模型参数解析"""
 
 @dataclass
 class LLMConfig:
