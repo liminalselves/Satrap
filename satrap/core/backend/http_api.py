@@ -308,6 +308,14 @@ class BackendHTTPServer(MiniHTTPServer):
         """UI 配置 / 健康检查 / 配置热加载 (精确路径)"""
         backend = self.backend
 
+        if method == "POST" and path == "/api/platforms/wake":
+            try:
+                payload = _parse_json_object(body)
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"status": "rejected", "error": str(error)}
+            result = await backend.wake_platform(payload, operator="management")
+            return (409 if result["status"] == "rejected" else 200), result
+
         if method == "GET" and path == "/ui-config.json":
             return 200, build_ui_config(
                 backend_host=backend.config.api_host,
@@ -321,7 +329,14 @@ class BackendHTTPServer(MiniHTTPServer):
         # 接口: GET /api/health
 
         if method == "POST" and path == "/api/config/reload":
-            return 200, await backend.reload_config()
+            try:
+                payload = _parse_json_object(body)
+                revision = payload.get("expected_config_revision")
+                if revision is not None and (not isinstance(revision, str) or not revision):
+                    raise ValueError("expected_config_revision 必须是非空字符串")
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"ok": False, "error": str(error)}
+            return 200, await backend.reload_config(revision) if revision is not None else await backend.reload_config()
         # 接口: POST /api/config/reload
 
         return None

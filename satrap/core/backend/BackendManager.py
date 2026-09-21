@@ -5,7 +5,8 @@ Satrap 后端服务组件的统一编排器
 负责后端的启动, 停止, 配置热重载与运行状态汇总
 """
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+import hashlib
 import asyncio
 from pathlib import Path
 import secrets
@@ -17,6 +18,8 @@ from typing import (
     List,
     Optional,
 )
+from copy import deepcopy
+import json
 import os
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -36,6 +39,7 @@ from satrap.edictum.registry import (
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.platform import (
     EventDispatcher,
+    PlatformAdapter,
     PlatformAdapterManager,
     PlatformAdapterRegistry,
     PlatformConfig,
@@ -55,6 +59,8 @@ class BackendConfig:
     所有路径为 None 时使用对应 Manager 的默认路径
     """
 
+    source_path: str | None = field(default=None, repr=False, kw_only=True)
+    # 仅加载器设置的实际源文件, 不接受配置正文覆盖
     model_config_path: str | None = None
     # 存储路径
     data_root: str | None = None
@@ -173,6 +179,9 @@ class BackendManager:
         - edictum_type_registry: 可选扩展类型注册表, 未提供时使用内置类型
         """
         self.config = config or BackendConfig()
+        self._platform_active_configs: dict[str, dict[str, Any]] = {}
+        self._platform_config_results: list[dict[str, Any]] = []
+        self._platform_apply_lock = asyncio.Lock()
 
         self._model_cfg: ModelConfigManager | None = None
         # 子管理器 (按依赖顺序)
@@ -420,12 +429,90 @@ class BackendManager:
             await self.stop()
             raise
 
-    async def reload_config(self) -> dict[str, Any]:
+    async def wake_platform(self, payload: dict[str, Any], *, operator: str) -> dict[str, Any]:
         """
-        热加载模型, 会话类和 Edictum 冷配置
+        向平台队列提交手动唤醒, 操作者必须来自可信应用调用边界
+
+        参数:
+        - payload: 目标平台, 群, 路由用户, prompt 和 request_id
+        - operator: 已认证的管理主体, 禁止从 payload 读取
 
         返回:
-        - dict[str, Any]: Edictum 活跃会话插件同步结果
+        - dict[str, Any]: accepted, already_pending, no_pending 或 rejected
+        """
+        from dataclasses import replace
+        from satrap.core.pipeline.manual_wake import ManualWakeTicket
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+        from satrap.core.platform.event import MessageEvent
+
+        allowed = {"adapter_id", "group_id", "user_id", "prompt", "message_id", "request_id", "reason"}
+        if set(payload) - allowed or not operator:
+            return {"status": "rejected", "reason": "invalid_fields_or_operator"}
+        request_id = payload.get("request_id")
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+            return {"status": "rejected", "reason": "invalid_request_id"}
+        if not self._running or self._scheduler is None or self._adapter_mgr is None:
+            return {"status": "rejected", "request_id": request_id, "reason": "backend_unavailable"}
+        adapter_id = payload.get("adapter_id")
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if isinstance(adapter_id, str) else None
+        if not isinstance(adapter, OneBotAdapter) or not adapter.config.enable or not adapter.started:
+            return {"status": "rejected", "request_id": request_id, "reason": "adapter_unavailable"}
+        group_id, user_id = payload.get("group_id"), payload.get("user_id")
+        if not all(isinstance(value, str) and value.isascii() and value.isdecimal() and int(value) > 0 for value in (group_id, user_id)):
+            return {"status": "rejected", "request_id": request_id, "reason": "explicit_group_and_route_user_required"}
+        if not adapter.allows_group(str(group_id)) or not adapter.bot_self_id:
+            return {"status": "rejected", "request_id": request_id, "reason": "source_unavailable"}
+        prompt = payload.get("prompt", "")
+        if not isinstance(prompt, str) or len(prompt) > 8192:
+            return {"status": "rejected", "request_id": request_id, "reason": "invalid_prompt"}
+        message_id = payload.get("message_id", "")
+        if not isinstance(message_id, str) or (message_id and (len(message_id) > 24 or not message_id.lstrip("-").isascii() or not message_id.lstrip("-").isdecimal())) or (message_id and prompt.strip()):
+            return {"status": "rejected", "request_id": request_id, "reason": "invalid_message_id_or_conflicting_prompt"}
+        requests = self._scheduler.manual_wakes
+        fingerprint = requests.fingerprint(payload, operator)
+        duplicate = requests.check(request_id, fingerprint)
+        if duplicate is not None:
+            return duplicate
+        raw_message: dict[str, Any] = {"self_id": adapter.bot_self_id, "group_id": group_id,
+            "user_id": user_id, "message_id": "", "message_type": "group", "post_type": "message",
+            "message": [{"type": "text", "data": {"text": prompt}}]}
+        if message_id:
+            try:
+                raw_message = await adapter.fetch_group_message(message_id, str(group_id), str(user_id))
+            except Exception:
+                return {"status": "rejected", "request_id": request_id, "reason": "message_lookup_failed_or_scope_mismatch"}
+        message = await adapter.convert_message(raw_message)
+        if message_id:
+            prompt = message.message_str
+        event = MessageEvent(prompt, message, adapter.meta(), message.session_id, adapter,
+                             adapter.config.session_provider, adapter.get_session_type())
+        snapshot = self._scheduler.wake_window.peek(event) if not prompt.strip() and not message_id else ()
+        if not prompt.strip() and not snapshot and not message_id:
+            return {"status": "no_pending", "request_id": request_id}
+        if snapshot:
+            event.message_str = "\n".join(item.text for item in snapshot)
+        event._call_origin = replace(event.call_origin, actor_id=operator, actor_kind="management", route_user_id=str(user_id), request_id=request_id)
+        duplicate = requests.check(request_id, fingerprint)
+        if duplicate is not None:
+            return duplicate
+        if self._adapter_mgr.get_adapter(str(adapter_id)) is not adapter or not adapter.started or not adapter.allows_group(str(group_id)):
+            return {"status": "rejected", "request_id": request_id, "reason": "adapter_changed"}
+        if adapter._event_queue.full():
+            return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
+        ticket = ManualWakeTicket(request_id, snapshot)
+        requests.register(event, fingerprint, ticket)
+        adapter.commit_event(event)
+        return {"status": "accepted", "request_id": request_id}
+
+    async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
+        """
+        重载模型与会话定义, 并应用可在线更新的平台策略
+
+        参数:
+        - expected_config_revision: 控制端保存的文档修订, 默认 None 不核对来源内容
+
+        返回:
+        - dict[str, Any]: 平台配置应用状态与 Edictum 活跃会话同步结果
         """
         if self._model_cfg:
             self._model_cfg.reload()
@@ -433,14 +520,216 @@ class BackendManager:
             self._session_cls_cfg.reload()
         if self._edictum_cfg:
             self._edictum_cfg.reload()
+        platform_results = await self.reload_platform_policies(expected_config_revision)
         edictum_results = await self.reconcile_edictum_runtime_async()
         for session_manager, _ in self._platform_runtimes.values():
             await session_manager.reload_model_configs_async()
         logger.info("[BackendManager] 配置已重载")
         return {
-            "ok": all(item.get("ok", False) for item in edictum_results),
+            "ok": all(item.get("ok", False) for item in edictum_results) and all(item["status"] == "applied" for item in platform_results),
+            "platforms": platform_results,
             "edictum_sessions": edictum_results,
         }
+
+    @staticmethod
+    def _platform_revision(config: dict[str, Any] | None) -> str | None:
+        """
+        计算配置指纹, 不向调用方返回配置正文或密钥
+
+        参数:
+        - config: 平台配置快照, None 表示不存在
+
+        返回:
+        - 配置摘要或 None
+        """
+        if config is None:
+            return None
+        payload = json.dumps(config, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    async def reload_platform_policies(self, expected_config_revision: str | None = None) -> list[dict[str, Any]]:
+        """
+        从实际启动文件读取平台配置, 在线应用策略或定向协调实例
+
+        参数:
+        - expected_config_revision: 控制端保存的文档修订, 默认 None 不核对来源内容
+
+        返回:
+        - 各实例保存/生效指纹与应用状态, 后端未运行时标为 pending_restart
+        """
+        from satrap.core.config.document import config_document_revision, load_config_document, validate_platforms
+        # 延迟导入配置边界, 避免配置文档依赖 BackendConfig 形成循环
+
+        async with self._platform_apply_lock:
+            source_revision = None
+            try:
+                if self.config.source_path:
+                    source = Path(self.config.source_path)
+                    if not source.is_file():
+                        raise FileNotFoundError("启动配置文件不存在")
+                    source_document = load_config_document(source)
+                    source_revision = config_document_revision(source_document)
+                    candidates = validate_platforms(source_document.get("platforms", []))
+                else:
+                    candidates = validate_platforms(deepcopy(self.config.platforms))
+            except Exception as error:
+                self._platform_config_results = [{
+                    "id": platform_id, "saved_revision": None,
+                    "active_revision": self._platform_revision(validate_platforms([active])[0]), "status": "failed",
+                    "error": f"平台配置读取或校验失败: {type(error).__name__}",
+                } for platform_id, active in self._platform_active_configs.items()]
+                if not self._platform_config_results:
+                    self._platform_config_results = [{"id": "", "saved_revision": None, "active_revision": None,
+                                                      "status": "failed", "error": "平台配置读取或校验失败"}]
+                return deepcopy(self._platform_config_results)
+            if expected_config_revision is not None and source_revision != expected_config_revision:
+                candidate_map = {str(item["id"]): item for item in candidates}
+                self._platform_config_results = [{
+                    "id": platform_id, "status": "failed", "reason": "source_revision_mismatch",
+                    "saved_revision": self._platform_revision(candidate_map.get(platform_id)),
+                    "active_revision": self._platform_revision(validate_platforms([self._platform_active_configs[platform_id]])[0])
+                    if platform_id in self._platform_active_configs else None,
+                    "error": "后端实际配置与本次保存的修订不一致, 未应用平台变更",
+                } for platform_id in sorted(set(candidate_map) | set(self._platform_active_configs) or {""})]
+                return deepcopy(self._platform_config_results)
+            self.config.platforms = deepcopy(candidates)
+            desired = {str(item["id"]): item for item in candidates}
+            results: list[dict[str, Any]] = []
+            hot_keys = {"wake_max_wait", "wake_group_overrides", "wake_time_rules", "wake_score_threshold", "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty", "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_aliases", "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private"}
+            for platform_id in sorted(set(desired) | set(self._platform_active_configs)):
+                candidate = desired.get(platform_id)
+                active = self._platform_active_configs.get(platform_id)
+                normalized_active = validate_platforms([active])[0] if active is not None else None
+                saved_revision = self._platform_revision(candidate)
+                active_revision = self._platform_revision(normalized_active)
+                result: dict[str, Any] = {"id": platform_id, "saved_revision": saved_revision,
+                                          "active_revision": active_revision, "status": "pending_restart"}
+                adapter = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
+                if candidate is not None and normalized_active is not None and adapter is not None:
+                    previous = deepcopy(normalized_active)
+                    proposed = deepcopy(candidate)
+                    old_settings = previous.pop("settings", {})
+                    new_settings = proposed.pop("settings", {})
+                    try:
+                        if candidate["type"] in {"onebot", "aiocqhttp"}:
+                            for settings in (old_settings, new_settings):
+                                settings["host"] = str(settings.get("host") or settings.get("listen_host") or "127.0.0.1")
+                                settings["port"] = int(settings.get("port") or settings.get("listen_port") or 8080)
+                                settings.pop("listen_host", None)
+                                settings.pop("listen_port", None)
+                                for name in ("access_token", "secret", "self_id"):
+                                    settings[name] = str(settings.get(name) or "")
+                    except (TypeError, ValueError):
+                        result["status"] = "failed"
+                        result["error"] = "连接参数校验失败, 保留旧配置"
+                        results.append(result)
+                        continue
+                    changed = {key for key in set(old_settings) | set(new_settings) if old_settings.get(key) != new_settings.get(key)}
+                    runtime_usable = not self._running or not adapter.config.enable or (adapter.started and adapter._run_task is not None and not adapter._run_task.done())
+                    if runtime_usable and previous == proposed and (not changed or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
+                        adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})))
+                        if self._scheduler is not None and old_settings != new_settings:
+                            self._scheduler.wake_window.clear_adapter(platform_id)
+                            self._scheduler.wake_timers.clear_adapter(platform_id)
+                            self._scheduler.manual_wakes.clear_adapter(platform_id)
+                        self._platform_active_configs[platform_id] = deepcopy(candidate)
+                        result["active_revision"] = saved_revision
+                        result["status"] = "applied"
+                    else:
+                        result["reason"] = "连接, 执行容量或会话绑定变更需要重建实例"
+                else:
+                    result["reason"] = "新增, 删除或未启动的平台需要协调生命周期"
+                if result["status"] == "pending_restart" and self._running and self._dispatcher is not None:
+                    try:
+                        await self._replace_platform_instance(platform_id, candidate)
+                        if candidate is None:
+                            self._platform_active_configs.pop(platform_id, None)
+                        else:
+                            self._platform_active_configs[platform_id] = deepcopy(candidate)
+                        result.update(status="applied", active_revision=saved_revision)
+                        result.pop("reason", None)
+                    except Exception as error:
+                        restored = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
+                        preserved = restored is adapter and restored is not None and (
+                            not restored.config.enable or (restored.started and restored._run_task is not None and not restored._run_task.done())
+                        )
+                        result.update(status="failed", error=f"平台应用失败: {type(error).__name__}", old_runtime_preserved=preserved)
+                        if not preserved:
+                            result["active_revision"] = None
+                        result.pop("reason", None)
+                results.append(result)
+            self._platform_config_results = results
+            return deepcopy(results)
+
+    async def _replace_platform_instance(self, platform_id: str, candidate: dict[str, Any] | None) -> None:
+        """
+        定向替换或移除平台, 新实例启动失败时恢复旧实例
+
+        参数:
+        - platform_id: 目标平台 ID
+        - candidate: 已校验的目标配置, None 表示删除
+        """
+        manager = self._adapter_mgr
+        dispatcher = self._dispatcher
+        if manager is None or dispatcher is None:
+            raise RuntimeError("平台运行时未初始化")
+        old = manager.get_adapter(platform_id)
+        old_config = old.config if old else None
+        old_started = bool(old and old.started)
+        replacement: PlatformAdapter | None = None
+        runtime = self._platform_runtimes.get(platform_id)
+        previous_environment = runtime[0].plugin_environment if runtime else None
+        if candidate is not None:
+            provider = str(candidate.get("session_provider", SESSION_CLASS_PROVIDER))
+            platform_type = str(candidate["type"])
+            session_type = self._resolve_platform_session_type(platform_type, str(candidate.get("session_type", "")), provider)
+            session_manager, _ = self._ensure_platform_runtime(platform_id)
+            definition = session_manager.provider_registry.resolve_definition(session_type, provider)
+            if definition is None or not definition[1].enabled:
+                raise ValueError("平台绑定的会话定义不可用")
+            replacement = manager.registry.create(PlatformConfig(
+                id=platform_id, type=platform_type, session_provider=provider, session_type=session_type,
+                enable=bool(candidate.get("enable", True)), settings=deepcopy(candidate.get("settings", {})),
+            ), event_handler=old.event_handler if old else None)
+            if replacement is None:
+                raise ValueError("平台类型不可用")
+        try:
+            if old is not None:
+                old.config = replace(old.config, enable=False)
+            await dispatcher.detach_adapter(platform_id)
+            if self._scheduler is not None:
+                self._scheduler.wake_window.clear_adapter(platform_id)
+                self._scheduler.wake_timers.clear_adapter(platform_id)
+                self._scheduler.manual_wakes.clear_adapter(platform_id)
+            if old is not None:
+                await old.terminate()
+            if replacement is not None:
+                if replacement.config.enable:
+                    await replacement.start()
+                    await replacement.wait_ready()
+                manager._adapters[platform_id] = replacement
+                self._platform_runtimes[platform_id][0].plugin_environment = PluginEnvironment("platform", replacement.config.type)
+                await dispatcher.attach_adapter(replacement)
+            else:
+                manager._adapters.pop(platform_id, None)
+            if self._scheduler is not None:
+                self._scheduler.set_platform_runtimes(self._platform_runtimes)
+        except BaseException:
+            if replacement is not None:
+                await dispatcher.detach_adapter(platform_id)
+                await replacement.terminate()
+            if old is not None and old_config is not None:
+                old.config = old_config
+                manager._adapters[platform_id] = old
+                if old_started:
+                    await old.start()
+                    await old.wait_ready()
+                await dispatcher.attach_adapter(old)
+            else:
+                manager._adapters.pop(platform_id, None)
+            if runtime is not None and previous_environment is not None:
+                runtime[0].plugin_environment = previous_environment
+            raise
 
     def preview_edictum_runtime_changes(
         self,
@@ -606,27 +895,30 @@ class BackendManager:
         if self._http_server:
             await self._http_server.stop()
 
-        if self._dispatch_task and not self._dispatch_task.done():
-            self._dispatch_task.cancel()
-            try:
-                await self._dispatch_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._dispatch_state = "stopped"
+        async with self._platform_apply_lock:
+            if self._dispatch_task and not self._dispatch_task.done():
+                self._dispatch_task.cancel()
+                try:
+                    await self._dispatch_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            self._dispatch_state = "stopped"
+            if self._scheduler is not None:
+                await self._scheduler.wake_timers.close()
 
-        if self._adapter_mgr:
-            try:
-                await self._adapter_mgr.stop_all()
-            except Exception as e:
-                logger.warning(f"[BackendManager] 停止适配器失败: {e}")
+            if self._adapter_mgr:
+                try:
+                    await self._adapter_mgr.stop_all()
+                except Exception as e:
+                    logger.warning(f"[BackendManager] 停止适配器失败: {e}")
 
-        for platform_id, (session_manager, _) in self._platform_runtimes.items():
-            try:
-                session_manager.cleanup_idle_sessions(max_idle_seconds=0)
-            except Exception as e:
-                logger.warning(f"[BackendManager] 清理会话失败: platform={platform_id}, 错误={e}")
+            for platform_id, (session_manager, _) in self._platform_runtimes.items():
+                try:
+                    session_manager.cleanup_idle_sessions(max_idle_seconds=0)
+                except Exception as e:
+                    logger.warning(f"[BackendManager] 清理会话失败: platform={platform_id}, 错误={e}")
 
-        logger.info("[BackendManager] 已关闭")
+            logger.info("[BackendManager] 已关闭")
 
     async def health(self) -> Dict[str, Any]:
         """
@@ -676,6 +968,7 @@ class BackendManager:
             "user_manager": self._user_mgr is not None,
             "pipeline": self._scheduler is not None,
             "adapters": adapters,
+            "platform_config": deepcopy(self._platform_config_results),
             "platform_count": len(self._adapter_mgr.list_adapters()) if self._adapter_mgr else 0,
             "dispatch": {
                 "status": self._dispatch_state,
@@ -910,11 +1203,12 @@ class BackendManager:
                 type=ptype,
                 session_provider=session_provider,
                 session_type=session_type,
-                enable=True,
+                enable=bool(pcfg.get("enable", True)),
                 settings=settings,
             )
             adapter = self._adapter_mgr.add_adapter(platform_config)
             if adapter:
+                self._platform_active_configs[pid] = deepcopy(pcfg)
                 logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
             else:
                 logger.error(f"[BackendManager] 创建平台适配器失败: {pid} ({ptype})")

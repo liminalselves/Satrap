@@ -48,6 +48,8 @@ from satrap.edictum.plugin_settings import PluginSettingsService, model_options,
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
+    ConfigRevisionConflict,
+    config_document_revision,
     create_default_config,
     delete_platform,
     find_config_path,
@@ -1316,6 +1318,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 "ok": True,
                 "platforms": redact_config_document(platforms),
                 "exists": CONFIG_PATH.exists(),
+                "revision": config_document_revision(config_data),
             }
         except (OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
@@ -1324,14 +1327,18 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             config_data = load_config_document(CONFIG_PATH)
+            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
             safe_payload = merge_masked_secrets({}, payload)
             config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已创建",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (json.JSONDecodeError, OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 
@@ -1345,18 +1352,22 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 (item for item in current_platforms if item["id"] == original_id),
                 cast(dict[str, Any], {}),
             )
+            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
             safe_payload = merge_masked_secrets(current_platform, payload)
             config_data["platforms"] = upsert_platform(
                 current_platforms,
                 safe_payload,
                 original_id=original_id,
             )
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已更新",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (json.JSONDecodeError, OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 
@@ -1364,13 +1375,17 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             platform_id = urllib.parse.unquote(ctx.path.removeprefix("/config/platforms/"))
             config_data = load_config_document(CONFIG_PATH)
+            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
             config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已删除",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 

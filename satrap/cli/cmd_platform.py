@@ -5,6 +5,7 @@ from typing import Any, cast
 import json
 
 from satrap.core.config.document import (
+    config_document_revision,
     delete_platform,
     find_config_path,
     load_config_document,
@@ -118,6 +119,7 @@ def cmd_platform_upsert(args: argparse.Namespace):
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
+    revision = config_document_revision(data)
     platforms = list(data.get("platforms", []) or [])
     try:
         platform: dict[str, Any] = {
@@ -134,7 +136,7 @@ def cmd_platform_upsert(args: argparse.Namespace):
             original_id=args.id if args.action == "update" else None,
         )
         data["platforms"] = validate_platforms(merged)
-        save_config_document(path, data)
+        save_config_document(path, data, expected_revision=revision)
     except Exception as e:
         raise CliError(f"保存失败: {e}") from e
     ok(f"平台配置已保存: {args.id}")
@@ -151,8 +153,9 @@ def cmd_platform_remove(args: argparse.Namespace):
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
+    revision = config_document_revision(data)
     data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
-    save_config_document(path, data)
+    save_config_document(path, data, expected_revision=revision)
     ok(f"平台配置已删除: {args.id}")
     info("平台实例变更需要重启后端后生效")
 
