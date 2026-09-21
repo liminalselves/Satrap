@@ -499,8 +499,7 @@ class OneBotAdapter(PlatformAdapter):
         - SendReceipt: 全部已尝试块的回执, 满载或等待超时为明确失败
         """
         try:
-            async with self._outbound.turn(session_id):
-                return await self._send_message(session_id, message)
+            return await self._outbound.run(session_id, lambda: self._send_message(session_id, message))
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
 
@@ -688,8 +687,7 @@ class OneBotAdapter(PlatformAdapter):
         - SendReceipt: 流式聚合回执, 等待失败不会提交动作
         """
         try:
-            async with self._outbound.turn(session_id):
-                return await self._send_stream(session_id, generator, use_fallback)
+            return await self._outbound.run(session_id, lambda: self._send_stream(session_id, generator, use_fallback))
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
 

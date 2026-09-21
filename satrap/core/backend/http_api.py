@@ -97,6 +97,28 @@ def _platform_db_path(backend: BackendManager, platform_id: str) -> str:
     return str(backend.checkpoint_db_path)
 
 
+_WAKE_INPUT_REASONS = frozenset({
+    "invalid_request_id", "invalid_prompt", "invalid_message_id_or_conflicting_prompt",
+    "explicit_group_and_route_user_required",
+})
+"""属于请求参数错误的手动唤醒拒绝原因, 返回 400 而非冲突类 409"""
+
+
+def _wake_status_code(result: dict[str, Any]) -> int:
+    """
+    把手动唤醒结果映射为 HTTP 状态码
+
+    参数:
+    - result: BackendManager.wake_platform 的返回
+
+    返回:
+    - int: 参数错误 400, 其他拒绝 409, 接受与重复 200
+    """
+    if result.get("status") != "rejected":
+        return 200
+    return 400 if result.get("reason") in _WAKE_INPUT_REASONS else 409
+
+
 class BackendHTTPServer(MiniHTTPServer):
     """
     内嵌 HTTP 服务器, 提供管理 API
@@ -314,7 +336,7 @@ class BackendHTTPServer(MiniHTTPServer):
             except (ValueError, json.JSONDecodeError) as error:
                 return 400, {"status": "rejected", "error": str(error)}
             result = await backend.wake_platform(payload, operator="management")
-            return (409 if result["status"] == "rejected" else 200), result
+            return _wake_status_code(result), result
 
         if method == "GET" and path == "/ui-config.json":
             return 200, build_ui_config(

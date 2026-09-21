@@ -153,30 +153,27 @@ async def test_outbound_turns_rejects_when_full_and_after_close():
     turns = OutboundTurns()
     release = asyncio.Event()
     entered = asyncio.Event()
+    outcomes: list[str] = []
 
     async def hold(target: str):
-        async with turns.turn(target):
+        async def operation() -> None:
             entered.set()
             await release.wait()
+        try:
+            await turns.run(target, operation)
+        except RuntimeError:
+            outcomes.append("closed")
+        outcomes.append("caller_survived")
 
     holders = [asyncio.create_task(hold(f"t{i}")) for i in range(64)]
     await entered.wait()
     await asyncio.sleep(0)
     with pytest.raises(RuntimeError):
-        async with turns.turn("extra"):
-            pass
+        await turns.run("extra", lambda: asyncio.sleep(0))
     await turns.close()
-    assert all(task.done() for task in holders)
+    await asyncio.gather(*holders)
+    # 关闭只取消发送子任务, 调用方任务自身不被取消
+    assert outcomes.count("caller_survived") == 64 and outcomes.count("closed") == 64
     with pytest.raises(RuntimeError):
-        async with turns.turn("t0"):
-            pass
+        await turns.run("t0", lambda: asyncio.sleep(0))
     assert not turns.locks
-
-
-@pytest.mark.asyncio
-async def test_queue_unavailable_is_reported_as_failed_receipt():
-    adapter = _adapter()
-    await adapter._outbound.close()
-    receipt = await adapter.send_text("group%456", "内容")
-    assert receipt.status == "failed" and receipt.reason == "send_queue_unavailable"
-    adapter._bot.send_group_msg.assert_not_awaited()

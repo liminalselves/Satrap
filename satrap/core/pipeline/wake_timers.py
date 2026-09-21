@@ -41,7 +41,7 @@ class WakeTimers:
         - event: 已通过权限检查的原事件
         """
         wait = float(event.policy_settings.get("wake_max_wait", 0))
-        if wait <= 0 or event.policy_settings.get("wake_mode") != "frequency" or not isinstance(event.adapter, PlatformAdapter):
+        if wait <= 0 or event.policy_settings.get("wake_mode") not in {"frequency", "necessity"} or not isinstance(event.adapter, PlatformAdapter):
             return
         key = self.window.key(event)
         adapter = event.adapter

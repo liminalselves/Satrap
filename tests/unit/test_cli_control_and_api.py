@@ -450,11 +450,20 @@ def test_platform_wake_command_posts_payload_and_reports_status(monkeypatch: pyt
     ns = Namespace(id="ob", group="20000", user="30000", prompt="处理", message_id="", reason="", request_id="r1")
     cmd_platform.cmd_platform_wake(ns)
     assert sent == [{"adapter_id": "ob", "group_id": "20000", "user_id": "30000", "request_id": "r1", "prompt": "处理"}]
-    assert "accepted" in capsys.readouterr().out
+    human = capsys.readouterr().out
+    assert "已接受手动唤醒" in human and '"status"' not in human
+    from satrap.cli.output import set_json_mode
+    set_json_mode(True)
+    try:
+        cmd_platform.cmd_platform_wake(ns)
+        machine = capsys.readouterr().out
+        assert '"status": "accepted"' in machine and "已接受" not in machine
+    finally:
+        set_json_mode(False)
 
     ns.request_id = ""
     cmd_platform.cmd_platform_wake(ns)
-    assert sent[1]["request_id"] != sent[0]["request_id"]
+    assert sent[2]["request_id"] != sent[0]["request_id"]
 
     with pytest.raises(CliError, match="只能指定一个"):
         cmd_platform.cmd_platform_wake(Namespace(id="ob", group="1", user="2", prompt="a", message_id="3", reason="", request_id=""))

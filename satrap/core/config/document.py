@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import hashlib
 from pathlib import Path
 from typing import Any, cast
@@ -169,12 +170,13 @@ def config_exists(cwd: str | Path | None = None) -> bool:
     return any(path.exists() for path in ConfigLoader.candidate_paths(cwd))
 
 
-def load_config_document(path: str | Path) -> dict[str, Any]:
+def load_config_document(path: str | Path, *, locked: bool = False) -> dict[str, Any]:
     """
     读取 YAML 配置文档
 
     参数:
     - path: 配置文件路径
+    - locked: 是否持有与保存相同的文件锁读取, 后端与控制端跨进程并发时使用
 
     返回:
     - dict[str, Any]: 配置文档, 文件不存在时返回空字典
@@ -182,7 +184,13 @@ def load_config_document(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
         return {}
-    data = safe_yaml_load(config_path.read_text(encoding="utf-8"))
+    if locked:
+        resolved = config_path.resolve()
+        with FileLock(resolved.with_name(f".{resolved.name}.lock")):
+            text = config_path.read_text(encoding="utf-8")
+    else:
+        text = config_path.read_text(encoding="utf-8")
+    data = safe_yaml_load(text)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -386,11 +394,31 @@ def _write_config_document(config_path: Path, normalized: dict[str, Any]) -> Non
             temporary_file.write(dumped_value)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, config_path)
+        _replace_with_retry(temporary_path, config_path)
     except Exception:
         if temporary_path.exists():
             temporary_path.unlink()
         raise
+
+
+def _replace_with_retry(source: Path, target: Path, attempts: int = 20, interval: float = 0.05) -> None:
+    """
+    原子替换配置文件, Windows 下目标被其他进程短暂读取时重试
+
+    参数:
+    - source: 临时文件
+    - target: 目标配置文件
+    - attempts: 最多尝试次数
+    - interval: 每次重试间隔秒数
+    """
+    for index in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if index == attempts - 1:
+                raise
+            time.sleep(interval)
 
 
 def create_default_config(path: str | Path, *, overwrite: bool = False) -> dict[str, Any]:

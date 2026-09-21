@@ -418,7 +418,10 @@ class OneBotAdmin:
         text = str(title)
         if len(text) > 18:
             raise ValueError("专属头衔长度不能超过 18 字符")
-        await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=int(duration))
+        seconds = int(duration)
+        if isinstance(duration, bool) or seconds != -1 and not 0 <= seconds <= 2592000:
+            raise ValueError("头衔有效期必须为 -1 或 0 到 2592000 秒")
+        await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=seconds)
 
     async def leave_group(self, group_id: Any, dismiss: Any = False) -> None:
         """

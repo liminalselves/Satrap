@@ -120,8 +120,22 @@ _CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control
 CONTROL_MAX_BODY_BYTES = 1024 * 1024
 """控制服务 JSON 请求体最大字节数"""
 
-ASR_TEST_MAX_BODY_BYTES = ASR_TEST_MAX_AUDIO_BYTES * 2
-"""ASR 转录测试请求体上限, 覆盖 base64 膨胀与 JSON 包装"""
+ASR_TEST_MAX_BODY_BYTES = ASR_TEST_MAX_AUDIO_BYTES * 4 // 3 + 4096
+"""ASR 转录测试请求体上限, 覆盖 base64 4/3 膨胀与 JSON 包装, 超出音频上限的请求在读取阶段即被拒绝"""
+
+
+def _expected_revision(ctx: "_RouteContext") -> str | None:
+    """
+    读取查询串中的 expected_revision
+
+    参数:
+    - ctx: 请求上下文
+
+    返回:
+    - str | None: 客户端读取时的修订; 未提供时为 None 表示无条件保存, 不用当前值伪造恒等比对
+    """
+    values = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision")
+    return values[0] if values else None
 
 CONTROL_MAX_CONNECTIONS = 256
 """控制服务最大并发连接数"""
@@ -1332,7 +1346,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             config_data = load_config_document(CONFIG_PATH)
-            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
+            expected_revision = _expected_revision(ctx)
             safe_payload = merge_masked_secrets({}, payload)
             config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
             saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
@@ -1357,7 +1371,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 (item for item in current_platforms if item["id"] == original_id),
                 cast(dict[str, Any], {}),
             )
-            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
+            expected_revision = _expected_revision(ctx)
             safe_payload = merge_masked_secrets(current_platform, payload)
             config_data["platforms"] = upsert_platform(
                 current_platforms,
@@ -1380,7 +1394,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             platform_id = urllib.parse.unquote(ctx.path.removeprefix("/config/platforms/"))
             config_data = load_config_document(CONFIG_PATH)
-            expected_revision = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision", [config_document_revision(config_data)])[0]
+            expected_revision = _expected_revision(ctx)
             config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
             saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {

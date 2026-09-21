@@ -27,6 +27,8 @@ from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMess
 PRIVATE_SESSION_PREFIX = "private%"
 GROUP_SESSION_PREFIX = "group%"
 FORWARD_NODE_LIMIT = 20
+FORWARD_DEPTH_LIMIT = 2
+"""内联转发内容的最大展开层数, 超出后保留占位不再解析"""
 """单条合并转发进入组件层的最大节点数"""
 
 
@@ -125,12 +127,13 @@ def normalize_segments(message: Any) -> list[dict[str, Any]]:
     return []
 
 
-def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[BaseMessageComponent], str]:
+def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0) -> tuple[list[BaseMessageComponent], str]:
     """
     将 OneBot 消息段转换为 Satrap 消息组件和可读文本
 
     参数:
     - segments: 消息段列表
+    - depth: 当前所处的转发嵌套层数, 达到 FORWARD_DEPTH_LIMIT 后内联转发只保留占位
 
     返回:
     - tuple[list[BaseMessageComponent], str]: 将 OneBot 消息段转换为 Satrap 消息组件和可读文本
@@ -182,7 +185,7 @@ def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[
             text_parts.append("[回复]")
         elif seg_type == "forward":
             inline = data.get("content")
-            nodes = parse_forward_nodes(cast(list[Any], inline)) if isinstance(inline, list) else None
+            nodes = parse_forward_nodes(cast(list[Any], inline), depth=depth + 1) if isinstance(inline, list) and depth < FORWARD_DEPTH_LIMIT else None
             components.append(Forward(id=str(data.get("id", "")), nodes=nodes))
             text_parts.append("[转发]")
         elif seg_type == "json":
@@ -199,13 +202,14 @@ def onebot_segments_to_components(segments: list[dict[str, Any]]) -> tuple[list[
     return components, "".join(text_parts)
 
 
-def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT) -> list[Node]:
+def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT, depth: int = 1) -> list[Node]:
     """
     将标准或实现特定的转发节点字段归一为 Node 列表
 
     参数:
     - items: get_forward_msg 响应 messages 字段或消息段内联 content 字段
     - limit: 保留的最大节点数, 超出部分丢弃
+    - depth: 当前节点所处的嵌套层数, 传递给正文转换以限制内联转发展开
 
     返回:
     - list[Node]: 按原顺序排列的节点; 节点正文递归复用消息段转换, 嵌套转发不再展开
@@ -221,7 +225,7 @@ def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT) -> li
         components: list[BaseMessageComponent]
         if isinstance(content, list):
             components = onebot_segments_to_components(
-                [seg for seg in cast(list[Any], content) if isinstance(seg, dict)]
+                [seg for seg in cast(list[Any], content) if isinstance(seg, dict)], depth=depth,
             )[0]
         elif isinstance(content, str):
             components = [Plain(content)]

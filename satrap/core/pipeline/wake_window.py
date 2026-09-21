@@ -126,10 +126,10 @@ class WakeWindow:
         last = self._submitted.get(self.key(event))
         if last is not None and now - last < float(settings.get("wake_cooldown", 30)):
             return WakeDecision(False, "cooldown", "自动参与冷却中")
+        max_wait = float(settings.get("wake_max_wait", 0))
+        if deadline and max_wait > 0 and now - snapshot[0].received_at >= max_wait:
+            return WakeDecision(True, "max_wait", "待处理正文达到最长等待时间")
         if mode == "frequency":
-            max_wait = float(settings.get("wake_max_wait", 0))
-            if deadline and max_wait > 0 and now - snapshot[0].received_at >= max_wait:
-                return WakeDecision(True, "max_wait", "待处理正文达到最长等待时间")
             triggered = len(snapshot) >= int(settings.get("wake_message_threshold", 3))
             return WakeDecision(triggered, "frequency", f"待处理正文 {len(snapshot)} 条")
         text = "\n".join(item.text for item in snapshot)

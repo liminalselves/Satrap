@@ -135,6 +135,24 @@ async def test_max_wait_enqueues_once_without_counting_or_repeating():
 
 
 @pytest.mark.asyncio
+async def test_max_wait_applies_to_necessity_mode():
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "necessity", "wake_score_threshold": 0.99, "wake_max_wait": 0.02,
+    }))
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    original = await event(adapter, "1", text="随便聊聊")
+    await scheduler.execute(original)
+    manager.handle_call_async.assert_not_awaited()
+    timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
+    await scheduler.execute(timed)
+    manager.handle_call_async.assert_awaited_once()
+    assert timed.get_extra("wake_decision").rule == "max_wait"
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
 async def test_max_wait_cancelled_on_close_and_queued_ticket_revoked():
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
         "wake_mode": "frequency", "wake_max_wait": 0.02,

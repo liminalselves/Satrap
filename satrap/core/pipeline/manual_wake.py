@@ -10,6 +10,10 @@ from satrap.core.pipeline.wake_window import PendingText
 from satrap.core.platform.event import MessageEvent
 
 
+PENDING_TTL = 600
+"""未被消费的手动请求在此秒数后视为已取消, 释放幂等容量"""
+
+
 @dataclass
 class ManualWakeTicket:
     """手动请求与可选待处理窗口快照"""
@@ -58,6 +62,9 @@ class ManualWakeRequests:
         for key, (_, created, ticket) in list(self.records.items()):
             if ticket.status == "pending" and ticket.event_ref is not None and ticket.event_ref() is None:
                 ticket.status = "cancelled"
+            if ticket.status == "pending" and now - created > PENDING_TTL:
+                ticket.status = "cancelled"
+                ticket.cancelled = True
             if now - created > 300 and ticket.status != "pending":
                 del self.records[key]
         previous = self.records.get(request_id)

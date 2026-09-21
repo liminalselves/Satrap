@@ -84,10 +84,21 @@ def resolve_wake_settings(settings: Mapping[str, Any], group_id: str, now: datet
         return resolved
     now = datetime.now().astimezone() if now is None else now
     minute = now.hour * 60 + now.minute
-    for period in settings.get("wake_time_rules", []):
-        start, end = _minute(period["start"]), _minute(period["end"])
+    rules = settings.get("wake_time_rules", [])
+    for period in cast(list[Any], rules) if isinstance(rules, list) else []:
+        if not isinstance(period, dict):
+            continue
+        entry = cast(dict[str, Any], period)
+        try:
+            start, end = _minute(entry["start"]), _minute(entry["end"])
+        except (KeyError, ValueError, TypeError):
+            continue
         matches = start <= minute < end if start < end else minute >= start or minute < end
-        if matches:
-            resolved.update(deepcopy(period["settings"]))
-    resolved.update(deepcopy(settings.get("wake_group_overrides", {}).get(group_id, {})))
+        overrides = entry.get("settings")
+        if matches and isinstance(overrides, dict):
+            resolved.update(deepcopy(cast(dict[str, Any], overrides)))
+    groups = settings.get("wake_group_overrides", {})
+    override: Any = cast(dict[str, Any], groups).get(group_id) if isinstance(groups, dict) else None
+    if isinstance(override, dict):
+        resolved.update(deepcopy(cast(dict[str, Any], override)))
     return resolved

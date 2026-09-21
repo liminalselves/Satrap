@@ -14,7 +14,7 @@ from satrap.core.config.document import (
     upsert_platform,
     validate_platforms,
 )
-from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table
+from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
 from satrap.cli.client import DaemonError
 from satrap.core.type import safe_getattr
@@ -186,15 +186,18 @@ def cmd_platform_wake(args: argparse.Namespace):
     except DaemonError as error:
         raise CliError(f"手动唤醒被拒绝: {error}") from error
     status = str(result.get("status", ""))
-    if status == "accepted":
-        ok(f"已接受手动唤醒, request_id={result.get('request_id', payload['request_id'])}")
-    elif status == "already_pending":
-        info(f"相同请求已在处理, 状态: {result.get('state', '')}")
-    elif status == "no_pending":
-        info("该群与成员范围内没有待处理正文, 未提交模型调用")
-    else:
+    if status not in {"accepted", "already_pending", "no_pending"}:
         raise CliError(f"手动唤醒未接受: {status or '未知状态'} {result.get('reason', '')}".rstrip())
-    print_json(result)
+
+    def _human() -> None:
+        if status == "accepted":
+            ok(f"已接受手动唤醒, request_id={result.get('request_id', payload['request_id'])}")
+        elif status == "already_pending":
+            info(f"相同请求已在处理, 状态: {result.get('state', '')}")
+        else:
+            info("该群与成员范围内没有待处理正文, 未提交模型调用")
+
+    render_data(result, _human)
 
 
 def dispatch(args: argparse.Namespace):

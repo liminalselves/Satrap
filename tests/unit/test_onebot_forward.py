@@ -75,6 +75,19 @@ class TestForwardParsing:
         assert isinstance(nodes[0].content[0], Plain) and nodes[0].content[0].text == "纯文本"
         assert isinstance(nodes[1].content[0], Forward) and nodes[1].content[0].id == "inner"
 
+    def test_deeply_nested_inline_forward_stops_expanding(self):
+        segment: dict = {"type": "text", "data": {"text": "最深"}}
+        for _ in range(12):
+            segment = {"type": "forward", "data": {"id": "x", "content": [{"type": "node", "data": {"name": "n", "content": [segment]}}]}}
+        components, _ = onebot_segments_to_components([segment])
+        depth = 0
+        current = components[0]
+        while isinstance(current, Forward) and current.nodes:
+            depth += 1
+            current = current.nodes[0].content[0]
+        assert isinstance(current, Forward) and current.nodes is None
+        assert depth == 2
+
     def test_non_dict_and_missing_content_nodes_are_skipped_or_empty(self):
         nodes = parse_forward_nodes(["bad", {"nickname": "无正文"}])
         assert len(nodes) == 1 and nodes[0].content == []

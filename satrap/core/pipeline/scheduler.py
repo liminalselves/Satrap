@@ -153,8 +153,8 @@ class PipelineScheduler:
                         automatic = True
                         event.is_wake = True
             if not event.is_private_chat() and not event.is_wake_up() and not event.is_at_or_wake_command:
-                if deadline_ticket is None:
-                    self.wake_timers.schedule(event)
+                # 到期复查未触发时同样重排, 让残留正文仍有兜底机会
+                self.wake_timers.schedule(event)
                 return
 
             message = event.get_message_str()
@@ -264,6 +264,9 @@ class PipelineScheduler:
                 # 如果 Session 内部已通过 content_callback 发送过消息
                 # event.has_send_operation() 返回 True, 避免重复发送
 
+        except (ValueError, TypeError, KeyError) as e:
+            # 配置或输入结构问题属于运维可见的日志, 不向每条消息的发送者刷反馈
+            logger.error(f"[PipelineScheduler] 管线配置或输入错误: {type(e).__name__}: {e}")
         except Exception as e:
             logger.error(f"[PipelineScheduler] 管线执行错误: {e}")
             if self.error_feedback:

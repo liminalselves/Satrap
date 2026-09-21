@@ -195,6 +195,8 @@ class ModelConfigService:
         normalized = str(name or "").strip()
         if not normalized:
             raise ValueError("模型配置名称不能为空")
+        if len(normalized) > 128 or "/" in normalized or "\\" in normalized or not normalized.isprintable():
+            raise ValueError("模型配置名称不能超过 128 字符且不能包含路径分隔符或控制字符")
         return normalized
 
     @staticmethod

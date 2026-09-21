@@ -132,3 +132,19 @@ async def test_manual_wake_real_http_requires_management_auth(unused_tcp_port):
             assert event.call_origin.actor_kind == "management"
     finally:
         await server.stop()
+
+
+def test_stale_pending_requests_release_capacity(monkeypatch: pytest.MonkeyPatch):
+    from satrap.core.pipeline import manual_wake as module
+    from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
+
+    requests = ManualWakeRequests()
+    clock = [1000.0]
+    monkeypatch.setattr(module, "monotonic", lambda: clock[0])
+    for index in range(512):
+        ticket = ManualWakeTicket(request_id=f"r{index}")
+        requests.records[ticket.request_id] = ("fp", clock[0], ticket)
+    assert requests.check("new", "fp")["reason"] == "request_capacity"
+    clock[0] += module.PENDING_TTL + 301
+    assert requests.check("new", "fp") is None
+    assert not requests.records

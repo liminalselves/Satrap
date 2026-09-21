@@ -78,6 +78,7 @@ class FileLock:
                 fcntl.flock(file.fileno(), fcntl.LOCK_UN)
         finally:
             file.close()
+        # 锁文件保留不删除: POSIX 下删除正被等待的锁文件会让后来者拿到另一个 inode, 造成双持有
 
 
 def session_storage_lock(layout: StorageLayout, platform_id: str, session_id: str) -> FileLock:

@@ -47,3 +47,12 @@ def test_overlapping_periods_apply_in_list_order():
     ]}
     validate_wake_policy(settings)
     assert resolve_wake_settings(settings, "123", datetime(2026, 9, 21, 12, 30))["wake_cooldown"] == 60
+
+
+def test_malformed_runtime_structures_are_ignored():
+    from satrap.core.config.wake_overrides import resolve_wake_settings
+    settings = {"wake_mode": "explicit", "wake_time_rules": "oops", "wake_group_overrides": ["bad"]}
+    assert resolve_wake_settings(settings, "123")["wake_mode"] == "explicit"
+    settings = {"wake_time_rules": [{"start": "bad", "end": "09:00", "settings": {"wake_mode": "frequency"}}, "x"],
+                "wake_group_overrides": {"123": "not-a-dict"}}
+    assert "wake_mode" not in resolve_wake_settings(settings, "123")

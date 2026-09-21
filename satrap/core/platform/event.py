@@ -870,10 +870,14 @@ class MessageEvent:
         if self.policy_settings.get("reply_with_quote") is True and origin.source_message_id and not has_reply:
             prefix.append(Reply(id=origin.source_message_id))
         if self.policy_settings.get("reply_with_mention") is True and origin.actor_id and not has_mention:
-            prefix.append(At(qq=origin.actor_id))
-            first_text = safe_getattr_str(components[0], "text") if components[0].type == PlatformComponentType.Plain else ""
-            if first_text and not first_text[0].isspace():
-                components[0] = Plain(" " + first_text)
+            # 已有 Reply 时 At 紧随其后, 多数 OneBot 实现要求 reply 段位于首位
+            insert_at = 1 if has_reply and components[0].type == PlatformComponentType.Reply else 0
+            components.insert(insert_at, At(qq=origin.actor_id))
+            following = insert_at + 1
+            if following < len(components) and components[following].type == PlatformComponentType.Plain:
+                first_text = safe_getattr_str(components[following], "text")
+                if first_text and not first_text[0].isspace():
+                    components[following] = Plain(" " + first_text)
         # @ 后补空格防止与正文粘连; 手动唤醒等无来源消息 ID 的事件不添加引用
         return MessageChain(prefix + components)
 

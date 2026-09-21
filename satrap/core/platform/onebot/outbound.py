@@ -6,12 +6,14 @@ OneBot 普通消息发送计划与执行串行化
 """
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
-from collections.abc import AsyncIterator
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 import asyncio
 
 from satrap.core.components import BaseMessageComponent, Forward, Node, Nodes, PlatformComponentType, Plain
 from satrap.core.type import safe_getattr_str
+
+T = TypeVar("T")
 
 
 def split_components(components: list[BaseMessageComponent], limit: int) -> list[list[BaseMessageComponent]]:
@@ -118,36 +120,36 @@ class OutboundTurns:
     def __init__(self) -> None:
         """初始化至多 64 个等待或执行中的逻辑回复"""
         self.locks: dict[str, tuple[asyncio.Lock, int]] = {}
-        self.tasks: set[asyncio.Task[object]] = set()
+        self.tasks: set[asyncio.Task[Any]] = set()
         self.closed = False
 
-    @asynccontextmanager
-    async def turn(self, target: str) -> AsyncIterator[None]:
+    async def run(self, target: str, operation: Callable[[], Awaitable[T]]) -> T:
         """
-        获取一个平台目标的有界发送机会
+        在一个平台目标的有界发送机会内执行发送
 
         参数:
         - target: 平台原生会话 ID
+        - operation: 已获取执行权后运行的发送协程工厂
 
         返回:
-        - AsyncIterator: 等待至多 30 秒的互斥发送作用域, 关闭或满载时拒绝
+        - T: 发送结果; 关闭或满载时抛出 RuntimeError, 等待超过 30 秒抛出 TimeoutError
+
+        发送在独立子任务中执行, 关闭时只取消子任务而不影响调用方所在的事件处理任务
         """
-        task = asyncio.current_task()
-        if self.closed or len(self.tasks) >= 64 or task is None:
+        if self.closed or len(self.tasks) >= 64:
             raise RuntimeError("发送队列不可用")
         lock, users = self.locks.get(target, (asyncio.Lock(), 0))
         self.locks[target] = (lock, users + 1)
+        task: asyncio.Task[T] = asyncio.create_task(self._guarded(lock, operation))
         self.tasks.add(task)
-        acquired = False
         try:
-            await asyncio.wait_for(lock.acquire(), 30)
-            acquired = True
-            if self.closed:
-                raise RuntimeError("发送队列已关闭")
-            yield
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.cancelled() or (task.done() and task.exception() is not None):
+                raise RuntimeError("发送队列已关闭") from None
+            task.cancel()
+            raise
         finally:
-            if acquired:
-                lock.release()
             self.tasks.discard(task)
             remaining = self.locks[target][1] - 1
             if remaining:
@@ -155,10 +157,20 @@ class OutboundTurns:
             else:
                 self.locks.pop(target)
 
+    async def _guarded(self, lock: asyncio.Lock, operation: Callable[[], Awaitable[T]]) -> T:
+        """等待目标锁后执行发送"""
+        await asyncio.wait_for(lock.acquire(), 30)
+        try:
+            if self.closed:
+                raise RuntimeError("发送队列已关闭")
+            return await operation()
+        finally:
+            lock.release()
+
     async def close(self) -> None:
-        """拒绝新回复并等待已有发送任务取消完成"""
+        """拒绝新回复并等待已有发送子任务取消完成"""
         self.closed = True
-        tasks = [task for task in self.tasks if task is not asyncio.current_task()]
+        tasks = list(self.tasks)
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

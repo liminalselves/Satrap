@@ -488,6 +488,8 @@ class BackendManager:
         message = await adapter.convert_message(raw_message)
         if message_id:
             prompt = message.message_str
+            if not prompt.strip():
+                return {"status": "no_pending", "request_id": request_id, "reason": "message_has_no_text"}
         event = MessageEvent(prompt, message, adapter.meta(), message.session_id, adapter,
                              adapter.config.session_provider, adapter.get_session_type())
         snapshot = self._scheduler.wake_window.peek(event) if not prompt.strip() and not message_id else ()
@@ -590,7 +592,7 @@ class BackendManager:
                     source = Path(self.config.source_path)
                     if not source.is_file():
                         raise FileNotFoundError("启动配置文件不存在")
-                    source_document = load_config_document(source)
+                    source_document = load_config_document(source, locked=True)
                     source_revision = config_document_revision(source_document)
                     candidates = validate_platforms(source_document.get("platforms", []))
                 else:
