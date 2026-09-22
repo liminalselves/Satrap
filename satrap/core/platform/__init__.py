@@ -244,6 +244,7 @@ class PlatformAdapter(ABC):
     async def start(self) -> None:
         """启动平台, 创建 run 任务并设置状态"""
         self._run_task = asyncio.create_task(self.run())
+        self._run_task.add_done_callback(self._on_run_task_done)
         self.started = True
         self._status = PlatformStatus.RUNNING
         self._started_at = datetime.now()
@@ -251,6 +252,21 @@ class PlatformAdapter(ABC):
             f"[PlatformAdapter] 平台已启动: {self.config.id} "
             f"(task={id(self._run_task)})"
         )
+
+    def _on_run_task_done(self, task: "asyncio.Task[None]") -> None:
+        """
+        主循环任务结束时同步状态, 让吞掉异常后正常返回的 run 也被标记为错误
+
+        参数:
+        - task: 已完成的 run 任务
+        """
+        if task.cancelled() or task is not self._run_task:
+            return
+        error = task.exception()
+        if error is not None:
+            self.record_error(f"[PlatformAdapter] 主循环异常退出: {type(error).__name__}: {error}")
+        elif self._status is PlatformStatus.RUNNING:
+            self.record_error("[PlatformAdapter] 主循环意外结束, 平台已停止接收消息")
 
     async def wait_ready(self, timeout: float = 5.0) -> None:
         """
@@ -724,16 +740,26 @@ class PlatformAdapterManager:
         await self.stop_adapter(adapter_id)
 
     async def start_all(self):
-        """启动所有启用的适配器"""
+        """启动所有启用的适配器, 单个失败不影响其余"""
         for adapter in self._adapters.values():
             if not adapter.started and adapter.config.enable:
-                await adapter.start()
+                try:
+                    await adapter.start()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    adapter.record_error(f"[PlatformAdapterManager] 启动失败: {type(error).__name__}: {error}")
 
     async def stop_all(self):
-        """停止所有已启动适配器"""
+        """停止所有已启动适配器, 单个失败不影响其余"""
         for adapter in self._adapters.values():
             if adapter.started:
-                await adapter.terminate()
+                try:
+                    await adapter.terminate()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    logger.warning(f"[PlatformAdapterManager] 停止 {adapter.config.id} 失败: {type(error).__name__}: {error}")
 
 
 _current_adapter_manager: PlatformAdapterManager | None = None

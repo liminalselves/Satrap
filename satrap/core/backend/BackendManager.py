@@ -17,6 +17,7 @@ from typing import (
     Dict,
     List,
     Optional,
+    cast,
 )
 from copy import deepcopy
 import json
@@ -45,6 +46,7 @@ from satrap.core.platform import (
     PlatformAdapterManager,
     PlatformAdapterRegistry,
     PlatformConfig,
+    PlatformStatus,
     registry as global_registry,
     set_current_adapter_manager,
 )
@@ -702,6 +704,7 @@ class BackendManager:
         old_config = old.config if old else None
         old_started = bool(old and old.started)
         replacement: PlatformAdapter | None = None
+        logger.info(f"[BackendManager] 开始{'删除' if candidate is None else '替换'}平台实例: {platform_id}")
         runtime = self._platform_runtimes.get(platform_id)
         previous_environment = runtime[0].plugin_environment if runtime else None
         if candidate is not None:
@@ -739,22 +742,27 @@ class BackendManager:
                 manager._adapters.pop(platform_id, None)
             if self._scheduler is not None:
                 self._scheduler.set_platform_runtimes(self._platform_runtimes)
-        except BaseException:
-            if replacement is not None:
-                await dispatcher.detach_adapter(platform_id)
-                await replacement.terminate()
-            if old is not None and old_config is not None:
-                old.config = old_config
-                manager._adapters[platform_id] = old
-                if old_started:
-                    await old.start()
-                    await old.wait_ready()
-                await dispatcher.attach_adapter(old)
-            else:
-                manager._adapters.pop(platform_id, None)
-            if runtime is not None and previous_environment is not None:
-                runtime[0].plugin_environment = previous_environment
+        except BaseException as error:
+            logger.warning(f"[BackendManager] 平台 {platform_id} 替换失败, 回滚旧实例: {type(error).__name__}: {error}")
+            try:
+                if replacement is not None:
+                    await dispatcher.detach_adapter(platform_id)
+                    await replacement.terminate()
+                if old is not None and old_config is not None:
+                    old.config = old_config
+                    manager._adapters[platform_id] = old
+                    if old_started:
+                        await old.start()
+                        await old.wait_ready()
+                    await dispatcher.attach_adapter(old)
+                else:
+                    manager._adapters.pop(platform_id, None)
+                if runtime is not None and previous_environment is not None:
+                    runtime[0].plugin_environment = previous_environment
+            except Exception as rollback_error:
+                logger.error(f"[BackendManager] 平台 {platform_id} 回滚失败, 平台可能处于停机状态: {type(rollback_error).__name__}: {rollback_error}")
             raise
+        logger.info(f"[BackendManager] 平台实例已{'删除' if candidate is None else '替换'}: {platform_id}")
 
     def preview_edictum_runtime_changes(
         self,
@@ -985,9 +993,14 @@ class BackendManager:
         dispatch_healthy = self._dispatcher is None or (
             self._dispatch_state == "running" and dispatch_task_running
         )
+        adapters_errored = sorted(
+            aid for aid, adapter in (self._adapter_mgr._adapters.items() if self._adapter_mgr else ())
+            if isinstance(adapter, PlatformAdapter) and adapter.config.enable and adapter.status is PlatformStatus.ERROR
+        )
         return {
             "running": self._running,
-            "healthy": self._running and dispatch_healthy,
+            "healthy": self._running and dispatch_healthy and not adapters_errored,
+            "adapters_errored": adapters_errored,
             "pid": os.getpid(),
             "runtime_id": self._runtime_id,
             "model_config": self._model_cfg is not None,
@@ -1174,6 +1187,39 @@ class BackendManager:
             return platform_type
         return self.config.default_session_type
 
+    def _init_platform(self, pid: str, ptype: str, pcfg: dict[str, Any]) -> None:
+        """
+        创建单个平台适配器, 配置或构造异常抛给调用方隔离处理
+
+        参数:
+        - pid: 平台 ID
+        - ptype: 平台类型
+        - pcfg: 原始平台配置
+        """
+        if self._adapter_mgr is None:
+            raise RuntimeError("平台运行时未初始化")
+        session_provider = str(pcfg.get("session_provider", SESSION_CLASS_PROVIDER)).strip() or SESSION_CLASS_PROVIDER
+        configured_session_type = str(pcfg.get("session_type", "")).strip()
+        raw_settings = pcfg.get("settings", {})
+        if not isinstance(raw_settings, dict):
+            raise ValueError("settings 必须是对象")
+        settings = dict(cast(dict[str, Any], raw_settings))
+        platform_session_manager, _ = self._ensure_platform_runtime(pid)
+        platform_session_manager.plugin_environment = PluginEnvironment("platform", ptype)
+        session_type = self._resolve_platform_session_type(ptype, configured_session_type, session_provider)
+        resolved = platform_session_manager.provider_registry.resolve_definition(session_type, session_provider)
+        if resolved is None or not resolved[1].enabled:
+            raise ValueError(f"会话定义不可用 provider={session_provider}, name={session_type}")
+        platform_config = PlatformConfig(
+            id=pid, type=ptype, session_provider=session_provider, session_type=session_type,
+            enable=bool(pcfg.get("enable", True)), settings=settings,
+        )
+        adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
+        if adapter is None:
+            raise ValueError("平台类型不可用")
+        self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
+        logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
+
     async def _init_platforms(self) -> None:
         """创建并启动配置中的平台适配器"""
         try:
@@ -1194,59 +1240,26 @@ class BackendManager:
         set_current_hub(self.platform_events)
         set_current_adapter_manager(self._adapter_mgr)
 
+        init_failures: list[dict[str, Any]] = []
         for pcfg in self.config.platforms:
+            if not isinstance(pcfg, dict):
+                logger.warning(f"[BackendManager] 跳过无效平台配置: 条目类型 {type(pcfg).__name__}")
+                continue
             pid = str(pcfg.get("id", ""))
             ptype = str(pcfg.get("type", ""))
-            session_provider = str(
-                pcfg.get("session_provider", SESSION_CLASS_PROVIDER)
-            ).strip() or SESSION_CLASS_PROVIDER
-            configured_session_type = str(pcfg.get("session_type", "")).strip()
-            settings = dict(pcfg.get("settings", {}))
             if not pid or not ptype:
-                logger.warning(f"[BackendManager] 跳过无效平台配置: {pcfg}")
+                logger.warning(f"[BackendManager] 跳过无效平台配置: id={pid!r} type={ptype!r}")
                 continue
-
-            platform_session_manager, _ = self._ensure_platform_runtime(pid)
-            platform_session_manager.plugin_environment = PluginEnvironment("platform", ptype)
-
-            session_type = self._resolve_platform_session_type(
-                ptype,
-                configured_session_type,
-                session_provider,
-            )
-
-            if platform_session_manager is not None:
-                try:
-                    resolved = platform_session_manager.provider_registry.resolve_definition(
-                        session_type,
-                        session_provider,
-                    )
-                except ValueError as error:
-                    logger.error(
-                        f"[BackendManager] 跳过平台配置 {pid}: {error}"
-                    )
-                    continue
-                if resolved is None or not resolved[1].enabled:
-                    logger.error(
-                        f"[BackendManager] 跳过平台配置 {pid}: 会话定义不可用 "
-                        f"provider={session_provider}, name={session_type}"
-                    )
-                    continue
-
-            platform_config = PlatformConfig(
-                id=pid,
-                type=ptype,
-                session_provider=session_provider,
-                session_type=session_type,
-                enable=bool(pcfg.get("enable", True)),
-                settings=settings,
-            )
-            adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
-            if adapter:
-                self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
-                logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
-            else:
-                logger.error(f"[BackendManager] 创建平台适配器失败: {pid} ({ptype})")
+            try:
+                self._init_platform(pid, ptype, pcfg)
+            except Exception as error:
+                logger.error(f"[BackendManager] 平台 {pid} ({ptype}) 初始化失败: {type(error).__name__}: {error}")
+                init_failures.append({
+                    "id": pid, "saved_revision": self._platform_revision(self._normalized_platform_snapshot(pcfg)),
+                    "active_revision": None, "status": "failed", "error": f"平台初始化失败: {type(error).__name__}: {error}",
+                })
+        if init_failures:
+            self._platform_config_results = init_failures
 
         if self._scheduler and self._adapter_mgr:
             self._scheduler.set_platform_runtimes(self._platform_runtimes)
