@@ -1,6 +1,6 @@
 """语音转写与文件正文的内容补全与投影"""
 from unittest.mock import AsyncMock
-from typing import Any
+from typing import Any, Callable
 import base64
 import os
 
@@ -347,3 +347,44 @@ def test_attachment_policy_validation(settings: dict[str, object]):
 
 def test_attachment_policy_accepts_valid():
     validate_wake_policy({"asr_model": "speech", "media_trusted_hosts": ["snowluma.local"], "attachment_extract": False, "voice_transcribe": "asr_then_platform"})
+
+
+class _CloseFailingClient:
+    async def close(self) -> None:
+        raise RuntimeError("close boom")
+
+
+class _StubASR:
+    def __init__(self, text: str | None = "你好", error: Exception | None = None) -> None:
+        self.suppress_error = False
+        self.client = _CloseFailingClient()
+        self._text = text
+        self._error = error
+
+    async def transcribe(self, data: bytes, filename: str | None = None) -> Any:
+        if self._error is not None:
+            raise self._error
+        from satrap.core.type import ASRResponse
+        return ASRResponse(text=self._text or "", model="m")
+
+
+def _stub_build(stub: _StubASR) -> Callable[..., _StubASR]:
+    """构造 build_asr_from_config 的定型替身"""
+    def build(config: ASRConfig, async_: bool = True) -> _StubASR:
+        return stub
+    return build
+
+
+@pytest.mark.asyncio
+async def test_transcribe_close_failure_does_not_mask_result(monkeypatch: pytest.MonkeyPatch):
+    """关闭客户端失败不覆盖成功的转写结果"""
+    monkeypatch.setattr(module, "build_asr_from_config", _stub_build(_StubASR()))
+    assert await module._transcribe(b"x", "a.wav", ASRConfig()) == "你好"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_close_failure_preserves_original_error(monkeypatch: pytest.MonkeyPatch):
+    """转写与关闭同时失败时抛出原始转写异常"""
+    monkeypatch.setattr(module, "build_asr_from_config", _stub_build(_StubASR(error=RuntimeError("transcribe boom"))))
+    with pytest.raises(RuntimeError, match="transcribe boom"):
+        await module._transcribe(b"x", "a.wav", ASRConfig())

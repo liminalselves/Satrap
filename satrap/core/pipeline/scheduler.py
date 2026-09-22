@@ -299,7 +299,12 @@ class PipelineScheduler:
         - 持有本轮执行权的异步上下文
         """
         key = (id(manager), session_id)
-        lock, users = self._session_turns.get(key, (asyncio.Lock(), 0))
+        existing = self._session_turns.get(key)
+        if existing is None:
+            lock, users = asyncio.Lock(), 0
+        else:
+            lock, users = existing
+        # get 默认值会每条消息实例化 Lock, 仅首次创建
         self._session_turns[key] = (lock, users + 1)
         try:
             async with lock:

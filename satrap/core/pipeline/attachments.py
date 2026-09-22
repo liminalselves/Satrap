@@ -121,7 +121,11 @@ async def _transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
     try:
         result = await asyncio.wait_for(client.transcribe(data, filename=filename), timeout=ASR_TIMEOUT)
     finally:
-        await client.client.close()
+        try:
+            await client.client.close()
+        except Exception as error:
+            logger.debug(f"[attachments] ASR 客户端关闭失败: {type(error).__name__}")
+            # 关闭异常不覆盖转写结果或原始异常
     return (result.text if result is not None else "") or ""
 
 

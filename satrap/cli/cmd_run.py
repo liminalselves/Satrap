@@ -95,7 +95,7 @@ async def cmd_run(args: argparse.Namespace):
             try:
                 loop.add_signal_handler(getattr(signal, sig_name), stop_event.set)   # 信号名运行时决定, 保留裸 getattr
             except (NotImplementedError, AttributeError):
-                pass
+                logger.debug(f"[CLI] 当前平台不支持注册 {sig_name} 信号处理器, 跳过")
 
         try:
             await stop_event.wait()

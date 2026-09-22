@@ -357,7 +357,15 @@ def main():
         sys.exit(1)
 
     if args.command == "run":
-        asyncio.run(cmd_run(args))
+        try:
+            asyncio.run(cmd_run(args))
+        except KeyboardInterrupt:
+            pass
+        except Exception as error:
+            import traceback
+            from satrap.core.log import logger
+            logger.error(f"[main] 后端运行异常退出: {type(error).__name__}: {error}\n{traceback.format_exc()}")
+            sys.exit(1)
         return
     if args.command == "reload":
         output.run_cli_action(lambda: cmd_reload(args))

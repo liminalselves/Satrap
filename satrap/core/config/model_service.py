@@ -14,9 +14,9 @@ from satrap.core.pipeline.audio_convert import AudioConvertError, convert_to_wav
 from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
 
 ASR_TEST_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+"""ASR 转录测试接受的解码后音频字节上限"""
 ASR_TEST_MAX_SECONDS = 120.0
 """测试音频本地转码允许的最长秒数"""
-"""ASR 转录测试接受的解码后音频字节上限"""
 
 
 _CONFIG_CLASSES = MODEL_CONFIG_CLASSES

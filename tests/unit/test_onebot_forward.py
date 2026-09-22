@@ -308,8 +308,8 @@ class TestOutboundForward:
     @pytest.mark.asyncio
     async def test_forward_respects_group_whitelist(self):
         adapter = self._adapter(group_whitelist=["789"])
-        with pytest.raises(PermissionError):
-            await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")])])]))
+        receipt = await adapter.send_message("group%456", MessageChain([Nodes([Node([Plain("甲")])])]))
+        assert receipt.status == "failed" and receipt.reason == "target_unavailable"
         adapter._bot.send_group_forward_msg.assert_not_awaited()
 
 

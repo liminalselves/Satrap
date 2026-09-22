@@ -245,3 +245,22 @@ async def test_group_upload_notice_carries_attachment_component():
 
     await adapter._handle_notice(raw_notice())
     assert "attachment" not in received[-1].extras
+
+
+@pytest.mark.asyncio
+async def test_dispatch_done_callback_retrieves_base_exception(caplog: pytest.LogCaptureFixture):
+    """处理任务以 BaseException 结束时由 done callback 取回并记录, 不留 GC 警告"""
+    import logging
+
+    hub = PlatformEventHub()
+
+    async def fail() -> None:
+        raise RuntimeError("boom")
+
+    task = asyncio.get_running_loop().create_task(fail())
+    while not task.done():
+        await asyncio.sleep(0)
+    with caplog.at_level(logging.ERROR):
+        hub._on_dispatch_done(task)
+    assert any("处理任务异常退出" in record.getMessage() and "RuntimeError" in record.getMessage() for record in caplog.records)
+    assert task not in hub._tasks

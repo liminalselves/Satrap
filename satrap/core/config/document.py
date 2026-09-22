@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import tempfile
 import time
+import errno
 import hashlib
 from pathlib import Path
 from typing import Any, cast
@@ -419,12 +420,13 @@ def _replace_with_retry(source: Path, target: Path, attempts: int = 20, interval
     - attempts: 最多尝试次数
     - interval: 每次重试间隔秒数
     """
+    retryable = {errno.EACCES, errno.EPERM, errno.EBUSY}
     for index in range(attempts):
         try:
             os.replace(source, target)
             return
-        except PermissionError:
-            if index == attempts - 1:
+        except OSError as error:
+            if error.errno not in retryable or index == attempts - 1:
                 raise
             time.sleep(interval)
 

@@ -241,3 +241,15 @@ async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptur
         await asyncio.sleep(0.05)
     assert any("到期复查提交失败" in record.getMessage() and "RuntimeError" in record.getMessage() for record in caplog.records)
     assert not scheduler.wake_timers.tasks
+
+
+@pytest.mark.asyncio
+async def test_necessity_mode_tolerates_zero_message_threshold():
+    """运行时阈值被改成 0 时必要性评分不除零"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={}))
+    current = await event(adapter, "1")
+    current.policy_settings = {"wake_mode": "necessity", "wake_message_threshold": 0}
+    window = WakeWindow()
+    snapshot = window.observe(current, 0)
+    decision = window.decide(current, snapshot, 1)
+    assert decision.rule == "necessity"

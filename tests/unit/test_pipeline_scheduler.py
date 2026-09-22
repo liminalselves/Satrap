@@ -517,3 +517,21 @@ async def test_final_session_turn_orders_model_and_reply_and_reclaims_locks():
         first.cancel()
         later.cancel()
         await asyncio.gather(first, later, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_session_turn_reuses_lock_while_active_and_serializes():
+    """并发轮次共享同一把锁串行执行, 结束后锁表清空"""
+    manager = _as_session_manager(object())
+    scheduler = PipelineScheduler(manager)
+    order: list[str] = []
+
+    async def turn(name: str) -> None:
+        async with scheduler._session_turn(manager, "s1"):
+            order.append(f"enter-{name}")
+            await asyncio.sleep(0.01)
+            order.append(f"exit-{name}")
+
+    await asyncio.gather(turn("a"), turn("b"))
+    assert order == ["enter-a", "exit-a", "enter-b", "exit-b"]
+    assert scheduler._session_turns == {}

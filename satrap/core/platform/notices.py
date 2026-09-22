@@ -138,7 +138,16 @@ class PlatformEventHub:
             return
         task = asyncio.get_running_loop().create_task(self._dispatch(event, handlers))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._on_dispatch_done)
+
+    def _on_dispatch_done(self, task: asyncio.Task[None]) -> None:
+        """回收完成任务并取回异常, 避免 BaseException 逃逸到 GC 警告"""
+        self._tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(f"[PlatformEventHub] 处理任务异常退出: {type(error).__name__}: {error}")
 
     def _accept(self, key: str) -> bool:
         """

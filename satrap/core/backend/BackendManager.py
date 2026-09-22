@@ -606,7 +606,8 @@ class BackendManager:
                     source = Path(self.config.source_path)
                     if not source.is_file():
                         raise FileNotFoundError("启动配置文件不存在")
-                    source_document = load_config_document(source, locked=True)
+                    source_document = await asyncio.to_thread(load_config_document, source, locked=True)
+                    # 持锁读取可能自旋等待, 移出事件循环避免冻结
                     source_revision = config_document_revision(source_document)
                     candidates = validate_platforms(source_document.get("platforms", []))
                 else:

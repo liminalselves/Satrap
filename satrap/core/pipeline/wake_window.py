@@ -167,7 +167,7 @@ class WakeWindow:
         text = "\n".join(item.text for item in snapshot)
         question = float(any(mark in text for mark in ("?", "？", "请问", "怎么", "如何", "为什么", "能否", "是否")))
         addressed = float(any(mark in text for mark in ("你觉得", "你能", "帮我", "帮忙", "请教")))
-        backlog = min(len(snapshot) / int(settings.get("wake_message_threshold", 3)), 1.0)
+        backlog = min(len(snapshot) / max(1, int(settings.get("wake_message_threshold", 3))), 1.0)
         history = [item for item in self._activity.get(self.key(event), []) if now - item[0] < self.ttl]
         ratio = sum(item[1] for item in history) / max(len(history), 1)
         score = max(0.0, min(1.0,

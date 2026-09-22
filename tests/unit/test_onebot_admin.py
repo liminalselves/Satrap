@@ -190,3 +190,16 @@ class TestAdminCapabilities:
     def test_stats_include_capabilities(self):
         adapter = _adapter()
         assert adapter.get_stats()["capabilities"]["get_group_list"] == "supported"
+
+
+class TestDurationNormalization:
+    @pytest.mark.asyncio
+    async def test_ban_duration_non_numeric_rejected_with_clear_message(self):
+        """非数字时长在 int() 转换前被类型校验拦截, 报错文案稳定"""
+        admin = _adapter().admin
+        with pytest.raises(ValueError, match="禁言时长"):
+            await admin.ban_group_member("456", "123", "abc")
+        with pytest.raises(ValueError, match="禁言时长"):
+            await admin.ban_anonymous("456", "flag", None)
+        with pytest.raises(ValueError, match="头衔有效期"):
+            await admin.set_group_special_title("456", "123", "t", "x")

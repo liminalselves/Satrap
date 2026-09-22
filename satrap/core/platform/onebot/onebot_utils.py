@@ -5,6 +5,8 @@ from typing import Any, cast
 import json
 import os
 
+from pydantic import ValidationError
+
 from satrap.core.components import (
     At,
     AtAll,
@@ -191,8 +193,11 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
         elif seg_type == "json":
             json_data = data.get("data", {})
             try:
-                components.append(Json(json.loads(json_data) if isinstance(json_data, str) else json_data))
-            except json.JSONDecodeError:
+                parsed = json.loads(json_data) if isinstance(json_data, str) else json_data
+                if not isinstance(parsed, dict):
+                    raise ValueError("JSON 段内容不是对象")
+                components.append(Json(cast(dict[str, Any], parsed)))
+            except (json.JSONDecodeError, ValueError, ValidationError):
                 components.append(Unknown(text=str(json_data)))
             text_parts.append("[JSON]")
         else:
@@ -302,7 +307,11 @@ def create_platform_message(raw_event: dict[str, Any], self_id: str) -> Platform
     message.raw_message = raw_event
     message.self_id = str(raw_event.get("self_id") or self_id or "")
     message.message_id = str(raw_event.get("message_id", ""))
-    message.timestamp = int(raw_event.get("time") or message.timestamp)
+    try:
+        message.timestamp = int(raw_event.get("time") or message.timestamp)
+    except (TypeError, ValueError):
+        pass
+    # time 字段非数字时保留默认时间戳, 不丢整条消息
 
     raw_sender = raw_event.get("sender")
     sender = cast(dict[str, Any], raw_sender) if isinstance(raw_sender, dict) else {}
@@ -345,6 +354,10 @@ def _normalize_file_source(source: str) -> str:
         return source
     if source.startswith(("http://", "https://", "file://", "base64://")):
         return source
-    if os.path.exists(source):
-        return f"file:///{os.path.abspath(source)}"
+    try:
+        if os.path.exists(source):
+            return f"file:///{os.path.abspath(source)}"
+    except ValueError:
+        pass
+    # 含 NUL 等非法路径按原样透传, 由平台侧报错
     return source

@@ -111,6 +111,31 @@ def normalize_group_id(value: Any) -> str:
     return _normalize_decimal(value, "群 ID")
 
 
+def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = False) -> int:
+    """
+    校验并归一化秒数时长, 类型校验先于 int() 转换
+
+    参数:
+    - value: 外部输入
+    - message: 错误文案
+    - allow_minus_one: 是否接受 -1 表示永久
+
+    返回:
+    - int: 合法秒数
+    """
+    if isinstance(value, bool):
+        raise ValueError(message)
+    try:
+        seconds = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(message) from None
+    if allow_minus_one and seconds == -1:
+        return seconds
+    if not 0 <= seconds <= 2592000:
+        raise ValueError(message)
+    return seconds
+
+
 def normalize_user_id(value: Any) -> str:
     """校验并归一化用户 ID"""
     return _normalize_decimal(value, "用户 ID")
@@ -396,9 +421,7 @@ class OneBotAdmin:
         """
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
-        seconds = int(duration)
-        if isinstance(duration, bool) or not 0 <= seconds <= 2592000:
-            raise ValueError("禁言时长必须为 0 到 2592000 秒")
+        seconds = _normalize_duration(duration, "禁言时长必须为 0 到 2592000 秒")
         await self._call("set_group_ban", group_id=int(gid), user_id=int(uid), duration=seconds)
 
     async def set_group_whole_ban(self, group_id: Any, enable: Any) -> None:
@@ -426,9 +449,7 @@ class OneBotAdmin:
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        seconds = int(duration)
-        if isinstance(duration, bool) or not 0 <= seconds <= 2592000:
-            raise ValueError("禁言时长必须为 0 到 2592000 秒")
+        seconds = _normalize_duration(duration, "禁言时长必须为 0 到 2592000 秒")
         await self._call("set_group_anonymous_ban", group_id=int(gid), flag=normalize_flag(flag), duration=seconds)
 
     async def set_group_admin(self, group_id: Any, user_id: Any, enable: Any) -> None:
@@ -506,9 +527,7 @@ class OneBotAdmin:
         text = str(title)
         if len(text) > 18:
             raise ValueError("专属头衔长度不能超过 18 字符")
-        seconds = int(duration)
-        if isinstance(duration, bool) or seconds != -1 and not 0 <= seconds <= 2592000:
-            raise ValueError("头衔有效期必须为 -1 或 0 到 2592000 秒")
+        seconds = _normalize_duration(duration, "头衔有效期必须为 -1 或 0 到 2592000 秒", allow_minus_one=True)
         await self._call("set_group_special_title", group_id=int(gid), user_id=int(uid), special_title=text, duration=seconds)
 
     async def leave_group(self, group_id: Any, dismiss: Any = False) -> None:

@@ -561,7 +561,7 @@ class OneBotAdapter(PlatformAdapter):
         if len(turns) == 1 and turns[0][0] == "normal":
             chunks = split_components(turns[0][1], limit)
             if len(chunks) == 1:
-                return await self._send_chunk(session_id, MessageChain(chunks[0]))
+                return await self._send_chunk_guarded(session_id, MessageChain(chunks[0]))
         receipts: list[SendReceipt] = []
         for kind, payload in turns:
             if kind == "forward":
@@ -569,8 +569,6 @@ class OneBotAdapter(PlatformAdapter):
                 try:
                     result = await self._send_forward(session_id, nodes, limit)
                 except PermissionError:
-                    if not receipts:
-                        raise
                     result = SendReceipt("failed", reason="target_unavailable")
                 except Exception:
                     result = SendReceipt("failed", reason="message_conversion_failed")
@@ -579,20 +577,31 @@ class OneBotAdapter(PlatformAdapter):
                     break
                 continue
             for chunk in split_components(payload, limit):
-                try:
-                    result = await self._send_chunk(session_id, MessageChain(chunk))
-                except PermissionError:
-                    if not receipts:
-                        raise
-                    result = SendReceipt("failed", reason="target_unavailable")
-                except Exception:
-                    result = SendReceipt("failed", reason="message_conversion_failed")
+                result = await self._send_chunk_guarded(session_id, MessageChain(chunk))
                 receipts.append(result)
                 if result.status != "success":
                     break
             if receipts and receipts[-1].status != "success":
                 break
         return combine_receipts(receipts)
+
+    async def _send_chunk_guarded(self, session_id: str, chain: MessageChain) -> SendReceipt:
+        """
+        发送单个分块, 把范围拒绝与转换异常归一为失败回执而不是抛给调用方
+
+        参数:
+        - session_id: 目标会话
+        - chain: 单个分块的消息链
+
+        返回:
+        - SendReceipt: 平台确认或失败状态
+        """
+        try:
+            return await self._send_chunk(session_id, chain)
+        except PermissionError:
+            return SendReceipt("failed", reason="target_unavailable")
+        except Exception:
+            return SendReceipt("failed", reason="message_conversion_failed")
 
     async def _send_forward(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """

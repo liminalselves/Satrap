@@ -1299,7 +1299,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             current_config = load_config_document(CONFIG_PATH)
             submitted_config = await _read_json_body(ctx.reader, ctx.raw_request)
             merged_config = merge_masked_secrets(current_config, submitted_config)
-            config_data = save_config_document(CONFIG_PATH, merged_config)
+            config_data = await asyncio.to_thread(save_config_document, CONFIG_PATH, merged_config)
             return 200, {
                 "ok": True,
                 "message": "配置已保存",
@@ -1350,7 +1350,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             expected_revision = _expected_revision(ctx)
             safe_payload = merge_masked_secrets({}, payload)
             config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
-            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
@@ -1379,7 +1379,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 safe_payload,
                 original_id=original_id,
             )
-            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
@@ -1397,7 +1397,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             config_data = load_config_document(CONFIG_PATH)
             expected_revision = _expected_revision(ctx)
             config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
-            saved_config = save_config_document(CONFIG_PATH, config_data, expected_revision=expected_revision)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),

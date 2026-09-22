@@ -134,3 +134,40 @@ def test_platform_update_preserves_list_position():
 
     assert [item["id"] for item in updated] == ["first", "second"]
     assert updated[0]["settings"]["base_url"] == "https://example.test"
+
+
+def test_replace_with_retry_retries_transient_busy(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """EACCES/EPERM/EBUSY 类瞬时占用会重试直至成功"""
+    import errno
+    import os
+    from satrap.core.config import document
+
+    attempts: list[int] = []
+    real_replace = os.replace
+
+    def flaky(source: str, target: str) -> None:
+        attempts.append(1)
+        if len(attempts) < 3:
+            raise OSError(errno.EBUSY, "busy")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    source = tmp_path / "a.tmp"
+    target = tmp_path / "b.json"
+    source.write_text("x", encoding="utf-8")
+    document._replace_with_retry(source, target, attempts=5, interval=0)
+    assert target.read_text(encoding="utf-8") == "x" and len(attempts) == 3
+
+
+def test_replace_with_retry_does_not_retry_other_errors(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """非占用类错误立即抛出, 不做无谓重试"""
+    import errno
+    import os
+    from satrap.core.config import document
+
+    def always_missing(source: str, target: str) -> None:
+        raise OSError(errno.ENOENT, "missing")
+
+    monkeypatch.setattr(os, "replace", always_missing)
+    with pytest.raises(OSError):
+        document._replace_with_retry(tmp_path / "a.tmp", tmp_path / "b.json", attempts=5, interval=0)

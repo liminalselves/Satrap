@@ -218,3 +218,32 @@ async def test_quote_self_wake_respects_whitelist_and_does_not_lookup_when_disab
     adapter._bot.get_msg.assert_not_awaited()
     manager.handle_call_async.assert_not_awaited()
     # 白名单收紧后, 已排队事件在 Step.1 来源检查被拒绝, 不消耗回源预算
+
+
+@pytest.mark.asyncio
+async def test_quote_with_non_numeric_time_is_still_resolved(monkeypatch: pytest.MonkeyPatch):
+    """回源结果的 time 非数字时引用仍解析, time 回退为 0"""
+    adapter, event = await make_event()
+
+    async def fake_fetch(message_id: str, session_id: str) -> dict[str, object]:
+        return {"components": [], "message_str": "原文", "sender_id": "321", "sender_nickname": "小明", "time": "abc"}
+
+    monkeypatch.setattr(adapter, "fetch_quoted_message", fake_fetch)
+    status = await resolve_quotes(event)
+    assert status == "resolved"
+    reply = event.get_messages()[0]
+    assert isinstance(reply, Reply) and reply.time == 0 and reply.message_str == "原文"
+
+
+def test_media_budget_checks_videos_after_images_exhausted():
+    """图片耗尽预算只跳过图片, 视频仍按预算检查并记录说明"""
+    from satrap.core.components import Image, Video
+    from satrap.core.pipeline.input_projection import _MediaBudget
+
+    images: list[str] = []
+    videos: list[str] = []
+    notes: list[str] = []
+    budget = _MediaBudget(1, images, videos, notes)
+    budget.merge([Image(file="img1"), Image(file="img2"), Video(file="vid1")], "note")
+    assert images == ["img1"] and videos == []
+    assert notes == ["note", "note"]

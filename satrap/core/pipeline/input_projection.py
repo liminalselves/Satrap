@@ -26,6 +26,14 @@ FORWARD_RESOLVE_LIMIT = 2
 """每事件最多回源的顶层转发数"""
 
 
+def _safe_int(value: Any, default: int = 0) -> int:
+    """把平台回源字段收窄为 int, 非数字时返回默认值而不是抛出"""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 @dataclass(frozen=True)
 class ProjectedInput:
     """一次请求的模型输入投影"""
@@ -103,7 +111,7 @@ async def resolve_quotes(event: MessageEvent) -> str:
         reply.message_str = str(data.get("message_str", ""))
         reply.sender_id = str(data.get("sender_id", ""))
         reply.sender_nickname = str(data.get("sender_nickname", ""))
-        reply.time = int(data.get("time", 0) or 0)
+        reply.time = _safe_int(data.get("time"), 0)
     return "resolved"
     # 仅填充顶层首个引用, 引用内的引用保留占位, 避免无界递归回源
 
@@ -205,7 +213,8 @@ class _MediaBudget:
             for url in media_sources(components, media_type):
                 if self.remaining <= 0:
                     self.notes.append(note)
-                    return
+                    break
+                # 预算耗尽只跳过当前媒体类型, 另一类型仍须检查
                 if url not in target:
                     target.append(url)
                     self.remaining -= 1

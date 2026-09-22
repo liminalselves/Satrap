@@ -307,8 +307,8 @@ async def test_group_scope_guards_receive_and_send(groups, enabled, accepted):
     if accepted:
         await adapter.send_text(group_session_id("456"), "hi")
     else:
-        with pytest.raises(PermissionError):
-            await adapter.send_text(group_session_id("456"), "hi")
+        receipt = await adapter.send_text(group_session_id("456"), "hi")
+        assert receipt.status == "failed" and receipt.reason == "target_unavailable"
     await adapter.send_text(private_session_id("123"), "hi")
     assert adapter._bot.calls[-1][0] == "send_private_msg"
 
@@ -344,3 +344,32 @@ async def test_queued_group_cannot_bypass_tightened_scope():
     manager.handle_call_async.assert_not_awaited()
     processor.assert_not_awaited()
     assert adapter._bot.calls == []
+
+
+def test_json_segment_with_non_object_payload_degrades_to_unknown():
+    """JSON 段内容不是对象时降级为 Unknown, 不丢整条消息"""
+    components, text = onebot_segments_to_components(
+        [
+            {"type": "text", "data": {"text": "前文"}},
+            {"type": "json", "data": {"data": "[1, 2, 3]"}},
+            {"type": "text", "data": {"text": "后文"}},
+        ]
+    )
+    assert isinstance(components[0], Plain)
+    assert isinstance(components[1], Unknown)
+    assert isinstance(components[2], Plain)
+    assert "前文" in text and "[JSON]" in text and "后文" in text
+
+
+def test_create_platform_message_tolerates_non_numeric_time():
+    """time 字段非数字时保留默认时间戳, 消息不丢"""
+    message = create_platform_message(
+        {"self_id": 1, "message_id": 7, "time": "not-a-number", "message_type": "private",
+         "user_id": 2, "message": [{"type": "text", "data": {"text": "hi"}}]}, "1")
+    assert message.message_str == "hi" and isinstance(message.timestamp, int)
+
+
+def test_normalize_file_source_tolerates_embedded_nul():
+    """含 NUL 的非法路径按原样透传, 不在路径检查处抛出"""
+    from satrap.core.platform.onebot.onebot_utils import _normalize_file_source
+    assert _normalize_file_source("bad\0path") == "bad\0path"
