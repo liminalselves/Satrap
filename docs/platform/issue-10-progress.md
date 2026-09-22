@@ -1,6 +1,6 @@
 # Issue #10 实施记录
 
-更新日期: 2026-09-22 (审计整改)
+更新日期: 2026-09-23 (异常/日志整改收官)
 
 目标仍为完整实施 [主方案](issue-10-plan.md), 本记录不将首批改动视为议题整体完成。
 
@@ -329,3 +329,15 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 策略校验新增 `voice_transcribe` 枚举; 热更新键补入 `asr_model`/`voice_transcribe`/`attachment_extract`/`media_trusted_hosts`/`media_insecure_tls` (均为逐事件读取, 无需重建实例)
 - `ModelConfigService.test_asr_config` 与入站共用探测: SILK/未知格式返回明确 400 文案, amr 本地转码后附 `converted_from`; 前端 ASR 测试弹窗显示转码提示, 平台表单新增"语音转写来源"下拉, `adminMigration` 默认值 `asr` 不写入配置
 - `setup.py` extras `audio = ["av>=15,<19"]`; README/config.example/platforms.md 同步
+
+## 2026-09-23 异常传播与日志覆盖整改 (五批收官)
+
+依据 [异常/日志审计](issue-10-exception-logging-audit-2026-09-22.md) 与 [整改方案](issue-10-exception-logging-fix-plan.md), 按批次 1-5 全部落地, 逐项状态映射见审计报告文末"整改状态"。
+
+- 批次 1 `fd9a4af`: 平台初始化/启动/停止逐实例隔离, 坏配置不再拖垮整个后端; `_run_task` done callback 把主循环异常退出与静默返回置 ERROR; health 暴露 `adapters_errored` 与逐平台 failed 状态; 替换实例回滚独立兜底并全程留日志
+- 批次 2 `282426c`: WakeTimers 到期复查提交兜底, 复查事件按剩余冷却重排不再零延迟忙循环; 四个 aiocqhttp handler 顶层兜底 (单条坏事件只计数不置 ERROR); OutboundTurns 区分外部取消与 close 取消; 顺带修复既有 benchmark frequency 场景设计缺陷
+- 批次 3 `0600cd6`: admin/outbound/group_admin 零日志补齐, 发送失败回执/连接绑定/回源降级/reload 失败/手动拒绝/两处兜底 500 全部落日志, 高频路径限频 (`_warn_once`); 顺带清零批次 2 引入的 `type: ignore` 与测试辅助函数类型
+- 批次 4 `e7e11ea`: 无效平台配置告警只打 id/type, ASR 错误日志只记类型/状态码/request_id 不落响应体, 探针脱敏补 URL 编码形式; 敏感字段回归测试 (caplog 不含 token/响应体)
+- 批次 5 `b4b3f64`: 配置持锁读写移出事件循环 (`to_thread`), `_replace_with_retry` 扩 errno 白名单; 发送路径 PermissionError 归一为回执 (原"首块上抛"契约废止, 两处测试改断言); json 段非对象降级不丢消息; 回源 time 非数字不丢消息; admin 时长类型校验前移; ASR 客户端关闭异常不覆盖转写结果; 通知分发任务异常不再逃向 GC; 等 14 项
+
+验收: 改动文件 pyright 与 HEAD 基线逐项 diff 无新增 error/warning; benchmark 无回退; SnowLuma 1.14.17 探针复跑通过且实际观察到连接日志; 坏端口平台真实冒烟 (后端保持启动, /api/health 报告 failed, 正常关闭); 全量单测 1849 passed / 19 skipped。对外行为变化: 群范围外主动发送由抛 PermissionError 改为返回 `failed/target_unavailable` 回执。自动重连与 FileLock 异步化按方案裁定不做。

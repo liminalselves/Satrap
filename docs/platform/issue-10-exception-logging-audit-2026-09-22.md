@@ -2,6 +2,8 @@
 
 范围: `git diff 1ecb13c..HEAD -- satrap/ scripts/` 涉及的 50 个 Python 文件, 按入站/适配器层, 流水线/附件层, 后端/配置/CLI/插件层三组逐函数审读。审计目标只有两项: (A) 未捕获异常是否会让进程, 主循环或长期任务停止; (B) logger 覆盖是否足够 (每个 except 有日志, 级别合适, 无敏感字段, 无刷屏)。本文只记录结论, 未修改代码。
 
+> 整改状态见文末"整改状态 (2026-09-23)"; 正文为审计当时快照, 条目内容未回改。
+
 ## 0. 结论摘要
 
 **没有发现"一条坏消息把进程搞没"的路径。** 事件级异常在 `PipelineScheduler.execute` → `EventDispatcher.process` → `_adapter_dispatch_loop` → `BackendManager._dispatch_loop` (带退避重启) 四层都有兜底; 所有 `except Exception` 都不会误吞 `asyncio.CancelledError` (Py3.8+ 为 BaseException); 线程池 (`BoundedAsyncWorker`) 的异常沿 await 路径正确回传。
@@ -111,3 +113,27 @@
 3. **平台动作与状态日志**: `admin._call` 失败 warning, 发送回执失败 warning, 连接绑定 info, 替换/重载失败 warning, `group_admin` 写动作 info, HTTP 兜底 500 error, `except UnsupportedAdminAction` 降为 debug 日志。
 4. **敏感字段**: 1206 行只打 id/type; ASRCall 错误只记 status/type/request_id。
 5. **中低项择机**: 事件循环内同步等锁改 `to_thread`, `OutboundTurns.run` 取消语义, 单块快路径回执归一, json 段 ValidationError, `reply.time` 安全转换, `cmd_platform remove` 包 CliError, docstring 顺序。
+
+---
+
+## 5. 整改状态 (2026-09-23)
+
+按 `issue-10-exception-logging-fix-plan.md` 五批全部落地, 本节为唯一状态权威, 上文条目保持审计当时快照。
+
+| 批次 | 提交 | 覆盖条目 |
+|---|---|---|
+| 1 平台生命周期隔离 | `fd9a4af` | A1, A2, A3, A7; `start_all/stop_all` 隔离; health 增加 `adapters_errored` 与 `platform_config` 失败项 (UI 既有"应用失败"渲染, 未新增 init_error 字段) |
+| 2 定时器与 handler 入口 | `282426c` | A4, A5, A6, outbound 取消语义; 顺带修复既有 benchmark frequency 场景设计缺陷 (250 条消息超阈值误触发, 与改动无关) |
+| 3 平台动作与状态日志 | `0600cd6` | B 类缺日志全表 (admin/outbound/group_admin/回执/连接绑定/回源/附件上下文/reload/手动唤醒/两处 500/会话未解析/cmd_platform remove) 与级别不当项 (`_warn_once` 限频, 转发降级首 info 后 debug) |
+| 4 敏感字段 | `e7e11ea` | `BackendManager` 跳过无效配置只打 id/type (批次 1 已落地); ASRCall 只记类型/状态码/request_id; probe 脱敏补 URL 编码形式 (token 为随机值, base64 形式裁定不覆盖) |
+| 5 中低项 | `b4b3f64` | 事件循环内同步等锁改 `to_thread` (BackendManager 持锁读 + 控制端四处保存); 单块快路径与分块循环共用 `_send_chunk_guarded`, PermissionError/Exception 归一回执 (含 forward 首块, 原"首块上抛"契约废止并改测试); json 段 ValidationError/非对象降级 Unknown; `reply.time` 与 `create_platform_message` 时间戳安全转换; `_normalize_file_source` NUL 容忍; admin 时长类型校验前移 (`_normalize_duration`); `_replace_with_retry` 扩至 EACCES/EPERM/EBUSY; `_transcribe` close 独立兜底; notices done callback 取回异常; `wake_window` 阈值钳制; 会话锁首次才创建; `run` 顶层异常记录后退出 1; 信号注册失败 debug; `model_service` docstring 归位 |
+
+明确维持原判/不做的项: `OneBotAdapter.run` 不做自动重连 (由 done callback 置 ERROR + health 暴露); `FileLock` 不改异步实现; revision 对含密钥文档哈希保留。`wait_ready` 超时丢失最后原因 (`adapter.py:757-759`, 级别低) 与回源重复请求 (`scheduler.py:142`/`input_projection.py:82`) 未在本方案范围, 保持原状。
+
+验收执行记录:
+
+1. 每批门禁: 改动文件 pyright 0 新增 error/warning (批次 5 收尾时改动文件集合 2 error / 40 warning, 与 HEAD 基线逐项 diff 一致, 2 error 为 `test_onebot_forward.py` 存量); `git diff --check` 通过。
+2. 批次 2 后 benchmark: frequency 270.7µs → 233.3µs, explicit 152µs → 148µs, 无回退 (同脚本 HEAD 对比)。
+3. 真实 SnowLuma 探针复跑通过 (1.14.17, 包摘要 `79732efb…0981` 不变): 错误 token 403、Universal 握手、2 次入站往返、4 次乱序回包、断线重连; 批次 3 新增的连接日志 (`OneBot 客户端已连接 adapter=… self_id=…`) 实际出现在探针输出。
+4. 坏端口平台冒烟 (临时配置 `port: "abc"` + 一个停用平台, 真实 BackendManager + HTTP API): 后端正常启动并通过会话引导访问 `GET /api/health` 200, `platform_config` 报告 `bad-port status=failed` 及错误类型, 正常关闭; 该数据结构即 UI 平台页"应用失败"渲染的来源。
+5. 全量单测收官: 1849 passed / 19 skipped (跳过为集成开关与 Windows 符号链接权限等既有原因)。
