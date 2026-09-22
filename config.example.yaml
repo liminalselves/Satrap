@@ -86,3 +86,4 @@ platforms:
   #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
   #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记
   #     media_insecure_tls: false   # 仅对 media_trusted_hosts 登记的主机关闭 TLS 校验 (自签证书场景), 公网下载始终校验
+  #     media_plaintext_http: false   # 允许公网明文 http 附件下载 (明文可被窃听篡改, 默认关闭; media_trusted_hosts 登记主机不受影响)

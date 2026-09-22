@@ -27,7 +27,7 @@ from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import PlatformComponentType
 from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
-from satrap.core.pipeline.wake_window import WakeWindow
+from satrap.core.pipeline.wake_window import PendingText, WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
@@ -186,17 +186,7 @@ class PipelineScheduler:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     return
 
-            # Step.4 限流通过后按预算补全引用与转发原文并投影模型输入
-            quote_status = await resolve_quotes(event)
-            forward_status = await resolve_forwards(event)
-            attachments = await resolve_attachments(event, self.asr_resolver)
-            projected = project_input(event, quote_status, forward_status, attachments)
-            event.set_extra("input_projection", projected)
-            message, images, videos = projected.message, list(projected.images), list(projected.videos)
-            if not message and not images and not videos:
-                return
-
-            # Step.5 通过 UserManager 解析目标会话
+            # Step.5 通过 UserManager 解析目标会话 (路由不依赖投影, 仍在会话锁外)
             session_id = event.session_id
             route: ConversationRoute | None = None
             settings = event.policy_settings
@@ -225,16 +215,6 @@ class PipelineScheduler:
                     return
                 session_id = resolved
 
-            user_call = UserCall(
-                session_id=session_id,
-                session_provider=event.session_provider,
-                session_type=event.session_type,
-                message=message,
-                img_urls=images,
-                video_urls=videos,
-                route=route,
-                origin=event.call_origin,
-            )
             async with self._session_turn(session_manager, session_id):
                 if event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
                     return
@@ -244,6 +224,7 @@ class PipelineScheduler:
                     return
                 if manual_ticket is not None and manual_ticket.cancelled:
                     return
+                batch: tuple[PendingText, ...] = ()
                 if pending:
                     batch = self.wake_window.claim(event, pending, automatic, deadline=deadline_ticket is not None)
                     if automatic and not batch:
@@ -252,7 +233,27 @@ class PipelineScheduler:
                         return
                     if batch:
                         self.wake_timers.cancel_route(event)
-                        user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
+                # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
+                quote_status = await resolve_quotes(event)
+                forward_status = await resolve_forwards(event)
+                attachments = await resolve_attachments(event, self.asr_resolver)
+                projected = project_input(event, quote_status, forward_status, attachments)
+                event.set_extra("input_projection", projected)
+                message, images, videos = projected.message, list(projected.images), list(projected.videos)
+                if not message and not images and not videos:
+                    return
+                user_call = UserCall(
+                    session_id=session_id,
+                    session_provider=event.session_provider,
+                    session_type=event.session_type,
+                    message=message,
+                    img_urls=images,
+                    video_urls=videos,
+                    route=route,
+                    origin=event.call_origin,
+                )
+                if batch:
+                    user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
                 # Step.6 执行会话并限制等待时间
                 try:
                     response = await asyncio.wait_for(

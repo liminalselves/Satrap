@@ -1723,7 +1723,8 @@ async def _route_rag(ctx: _RouteContext) -> ControlResponse | None:
         return error.status, {"error": str(error), "stage": error.stage}
     except WorkerBusyError as error:
         return 503, {"error": str(error)}
-    except (OSError, TypeError, ValueError, TimeoutError) as error:
+    except (OSError, TypeError, ValueError, asyncio.TimeoutError) as error:
+        # asyncio.TimeoutError 兼容 3.10 的 concurrent.futures 系超时 (3.11+ 为内置别名)
         return 400, {"error": str(error)}
 
 

@@ -7,7 +7,7 @@ import struct
 import pytest
 
 from satrap.core.pipeline import audio_convert as module
-from satrap.core.pipeline.audio_convert import AudioConvertError, AudioTooLong, convert_to_wav, probe_audio
+from satrap.core.pipeline.audio_convert import AudioConvertError, AudioTooLong, convert_to_wav, probe_audio, probe_duration
 
 
 def _wav_bytes(seconds: float = 0.5, rate: int = 8000) -> bytes:
@@ -76,3 +76,16 @@ def test_conversion_rejects_overlong_and_garbage():
         convert_to_wav(_amr_bytes(seconds=1.0), max_seconds=0.2)
     with pytest.raises(AudioConvertError):
         convert_to_wav(b"#!AMR\n" + b"\xff" * 64, max_seconds=10)
+
+
+def test_probe_duration_reads_wav_and_tolerates_garbage():
+    short_duration = probe_duration(_wav_bytes(2.0), "wav")
+    if short_duration is None:
+        raise AssertionError("wav 时长应可探测")
+    assert 1.99 < short_duration < 2.01
+    long_duration = probe_duration(_wav_bytes(301.0), "wav")
+    if long_duration is None:
+        raise AssertionError("wav 时长应可探测")
+    assert long_duration > 300
+    assert probe_duration(b"not-a-wav", "wav") is None
+    assert probe_duration(b"OggS" + bytes(64), "ogg") is None

@@ -29,9 +29,9 @@ from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMess
 PRIVATE_SESSION_PREFIX = "private%"
 GROUP_SESSION_PREFIX = "group%"
 FORWARD_NODE_LIMIT = 20
+"""单条合并转发进入组件层的最大节点数"""
 FORWARD_DEPTH_LIMIT = 2
 """内联转发内容的最大展开层数, 超出后保留占位不再解析"""
-"""单条合并转发进入组件层的最大节点数"""
 
 
 def private_session_id(user_id: Any) -> str:

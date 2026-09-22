@@ -535,3 +535,30 @@ async def test_session_turn_reuses_lock_while_active_and_serializes():
     await asyncio.gather(turn("a"), turn("b"))
     assert order == ["enter-a", "exit-a", "enter-b", "exit-b"]
     assert scheduler._session_turns == {}
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_automatic_batch_skips_resolution(monkeypatch: pytest.MonkeyPatch):
+    """自动唤醒竞争认领失败时直接退出, 不做引用回源或附件下载"""
+    from unittest.mock import AsyncMock
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "message": [{"type": "reply", "data": {"id": "5"}},
+                                             {"type": "text", "data": {"text": "看看"}}]})
+    event = adapter._event_queue.get_nowait()
+
+    def no_batch(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        return ()
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", no_batch)
+    await scheduler.execute(event)
+    adapter._bot.get_msg.assert_not_called()
+    manager.handle_call_async.assert_not_awaited()

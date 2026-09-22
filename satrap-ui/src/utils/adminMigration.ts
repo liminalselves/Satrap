@@ -34,7 +34,7 @@ export function normalizePlatformSettings(
       enable_private: toBoolean(settings.enable_private, true),
       enable_group: toBoolean(settings.enable_group, true),
     };
-    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup', 'attachment_extract', 'media_insecure_tls']) {
+    for (const key of ['reply_with_quote', 'reply_with_mention', 'quote_lookup', 'wake_on_quote_self', 'forward_lookup', 'attachment_extract', 'media_insecure_tls', 'media_plaintext_http']) {
       if (settings[key] !== undefined) normalized[key] = toBoolean(settings[key], false);
     }
     for (const key of ['group_whitelist', 'wake_words', 'wake_aliases']) {

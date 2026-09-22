@@ -229,7 +229,8 @@ class BackendHTTPServer(MiniHTTPServer):
             while not reader.at_eof():
                 try:
                     entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
-                except TimeoutError:
+                except asyncio.TimeoutError:
+                    # 3.10 中 wait_for 抛 asyncio.TimeoutError 而非内置 TimeoutError
                     continue
                 await self._ws_send(writer, {
                     "type": "log",

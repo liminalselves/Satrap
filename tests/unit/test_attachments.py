@@ -11,7 +11,7 @@ from satrap.core.pipeline import audio_convert
 from satrap.core.pipeline.attachments import AttachmentResult, asr_resolver_from_manager, render_attachments, resolve_attachments
 from satrap.core.pipeline.input_projection import project_input
 from satrap.core.config.platform_policy import validate_wake_policy
-from satrap.core.utils.outbound import OutboundHTTPResponse
+from satrap.core.utils.outbound import OutboundHTTPResponse, UnsafeOutboundURLError
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed, UnsupportedAdminAction
 from aiocqhttp.exceptions import ActionFailed
@@ -450,3 +450,101 @@ async def test_attachment_total_budget_marks_remaining(monkeypatch: pytest.Monke
     assert len(calls) == 1
     rendered = render_attachments(results)
     assert "附件处理超时" in rendered
+
+
+@pytest.mark.asyncio
+async def test_frozen_transcript_is_truncated(monkeypatch: pytest.MonkeyPatch):
+    """长转写冻结进组件时同样按 TRANSCRIPT_LIMIT 截断"""
+    adapter, event = await make_event([record()], {"asr_model": "speech"})
+    download, _ = fake_download({"https://media.example.com/voice.amr.wav": b"RIFF"})
+    monkeypatch.setattr(module, "safe_async_get", download)
+
+    async def transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
+        return "长" * (module.TRANSCRIPT_LIMIT + 100)
+
+    monkeypatch.setattr(module, "_transcribe", transcribe)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert len(results[0].text) == module.TRANSCRIPT_LIMIT
+    record_comp = event.get_messages()[1]
+    assert len(record_comp.text) == module.TRANSCRIPT_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_display_name_is_sanitized(monkeypatch: pytest.MonkeyPatch):
+    """平台上报文件名的换行与 ANSI 转义不进入结果与渲染块"""
+    evil = "evil\x1b[31m\nname.txt"
+    adapter, event = await make_event([file_segment(evil, "https://files.example.com/x.txt")])
+    download, _ = fake_download({"https://files.example.com/x.txt": b"hello"})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    results = await resolve_attachments(event, None)
+    assert results[0].name == "evil [31m name.txt"
+    assert "\n" not in results[0].name and "\x1b" not in results[0].name
+    rendered = render_attachments(results)
+    assert "\x1b" not in rendered
+    label_line = rendered.splitlines()[0]
+    assert "evil [31m name.txt" in label_line
+    assert module._safe_display("长" * 100) == "长" * 80
+
+
+@pytest.mark.asyncio
+async def test_accepted_voice_over_duration_is_rejected(monkeypatch: pytest.MonkeyPatch):
+    """直收 wav 时长超过 AUDIO_MAX_SECONDS 时标记 audio_too_long, 不送 ASR"""
+    import io
+    import wave
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(8000)
+        handle.writeframes(bytes(2 * 8000 * int(module.AUDIO_MAX_SECONDS + 30)))
+    adapter, event = await make_event([record()], {"asr_model": "speech"})
+    download, _ = fake_download({"https://media.example.com/voice.amr.wav": buffer.getvalue()})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "unsupported" and results[0].reason == "audio_too_long"
+
+
+@pytest.mark.asyncio
+async def test_plaintext_http_requires_user_switch(monkeypatch: pytest.MonkeyPatch):
+    """公网明文 http 默认拒绝, 开启 media_plaintext_http 或登记主机后放行"""
+    calls: list[str] = []
+
+    class _Resp:
+        content = b"x"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    async def fake_get(url: str, **kwargs: Any) -> Any:
+        calls.append(url)
+        return _Resp()
+
+    monkeypatch.setattr(module, "safe_async_get", fake_get)
+    with pytest.raises(UnsafeOutboundURLError, match="https"):
+        await module._download("http://public.example.com/a.png", 100, ())
+    with pytest.raises(UnsafeOutboundURLError, match="https"):
+        await module._download("http://nas.local/a.png", 100, ())
+    await module._download("http://nas.local/a.png", 100, ("nas.local",))
+    await module._download("http://public.example.com/a.png", 100, (), allow_plaintext=True)
+    assert calls == ["http://nas.local/a.png", "http://public.example.com/a.png"]
+
+
+@pytest.mark.asyncio
+async def test_plaintext_http_setting_flows_through_resolve(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event(
+        [file_segment("notes.txt", "http://files.example.com/notes.txt")])
+    download, calls = fake_download({"http://files.example.com/notes.txt": b"hello"})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    results = await resolve_attachments(event, None)
+    assert results[0].status == "failed" and results[0].reason == "UnsafeOutboundURLError"
+    adapter, event = await make_event(
+        [file_segment("notes.txt", "http://files.example.com/notes.txt")], {"media_plaintext_http": True})
+    results = await resolve_attachments(event, None)
+    assert results[0].status == "resolved"
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("settings", [{"media_plaintext_http": "yes"}, {"media_plaintext_http": 1}])
+def test_plaintext_http_policy_must_be_boolean(settings: dict[str, object]):
+    with pytest.raises(ValueError, match="media_plaintext_http"):
+        validate_wake_policy(settings)

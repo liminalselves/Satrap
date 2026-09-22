@@ -130,6 +130,10 @@ class TestVoiceActions:
             await adapter.admin.get_record("abc.amr", "silk", max_bytes=1024)
         with pytest.raises(ValueError, match="语音标识"):
             await adapter.admin.get_record("  ", "wav", max_bytes=1024)
+        with pytest.raises(ValueError, match="语音标识"):
+            await adapter.admin.get_record("bad" + chr(0) + "id", "wav", max_bytes=1024)
+        with pytest.raises(ValueError, match="语音标识"):
+            await adapter.admin.get_record("x" * 513, "wav", max_bytes=1024)
 
     @pytest.mark.asyncio
     async def test_get_record_rejects_oversize_missing_and_invalid_payload(self):

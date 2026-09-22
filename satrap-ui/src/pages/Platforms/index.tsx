@@ -277,7 +277,8 @@ export function Platforms() {
         { key: 'settings.asr_model', label: '语音转写使用的 ASR 配置（留空关闭）', type: 'select', options: [{ value: '', label: '不转写语音' }, ...Object.keys(asrConfigs).map((name) => ({ value: name, label: name }))] },
         { key: 'settings.voice_transcribe', label: '语音转写来源（ASR 路径依次尝试实现转码 get_record → 直接下载 → 本地 av 转码）', type: 'select', options: [{ value: 'asr', label: 'ASR 配置 (默认)' }, { value: 'asr_then_platform', label: 'ASR 失败后回退平台原生转写' }, { value: 'platform', label: '仅平台原生转写 (fetch_ptt_text)' }, { value: 'off', label: '关闭语音转写' }] },
         { key: 'settings.attachment_extract', label: '提取文件附件正文', type: 'checkbox', placeholder: '默认开启; 仅对已唤醒消息中的受支持文档类型下载并提取, 上限 32 MiB / 20000 字符' },
-        { key: 'settings.media_insecure_tls', label: '媒体下载跳过 TLS 证书校验', type: 'checkbox', placeholder: '默认关闭; 仅当 SnowLuma 等内网下载地址使用自签证书时开启' },
+        { key: 'settings.media_insecure_tls', label: '媒体下载跳过 TLS 证书校验', type: 'checkbox', placeholder: '默认关闭; 仅对下方登记的主机生效 (自签证书场景), 公网下载始终校验' },
+        { key: 'settings.media_plaintext_http', label: '允许公网明文 HTTP 媒体下载', type: 'checkbox', placeholder: '默认关闭; 开启后公网 http:// 附件地址也允许下载, 明文传输可被窃听篡改; 登记主机不受影响' },
         { key: 'settings.media_trusted_hosts', label: '允许访问私网的媒体主机（可选）', type: 'textarea', rows: 2, placeholder: '每行一个主机名; SnowLuma 提供的内网下载地址需在此登记, 否则出站防护会拒绝' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
       ];
@@ -343,6 +344,7 @@ export function Platforms() {
     'settings.wake_cooldown': formData.settings.wake_cooldown ?? '',
     'settings.message_text_limit': formData.settings.message_text_limit ?? '',
     'settings.media_insecure_tls': formData.settings.media_insecure_tls ?? false,
+    'settings.media_plaintext_http': formData.settings.media_plaintext_http ?? false,
     'settings.wake_words': Array.isArray(formData.settings.wake_words) ? formData.settings.wake_words.join('\n') : formData.settings.wake_words ?? '',
     'settings.base_url': formData.settings.base_url,
     'settings.api_token': formData.settings.api_token,

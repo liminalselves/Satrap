@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any, NamedTuple
 import importlib
 import io
+import wave
 
 from satrap.core.APICall.ASRCall.utils import ALLOWED_AUDIO_SUFFIXES
 
@@ -139,6 +140,45 @@ def probe_audio(data: bytes, suffix: str = "") -> AudioProbe:
         available = converter_available()
         return AudioProbe(codec, False, available, "" if available else "av_missing")
     return AudioProbe(codec, False, False, "unknown_codec")
+
+
+def probe_duration(data: bytes, codec: str) -> float | None:
+    """
+    探测已接受编码的音频时长, 供免转码路径执行时长预算
+
+    wav 用标准库 wave 读帧数/帧率; 其他编码在 PyAV 可用时读容器或流时长;
+    无法判断时返回 None, 由字节数上限兜底
+
+    参数:
+    - data: 音频字节
+    - codec: probe_audio 识别的编码
+
+    返回:
+    - float | None: 秒数, 无法判断为 None
+    """
+    if codec == "wav":
+        try:
+            with wave.open(io.BytesIO(data)) as handle:
+                rate = handle.getframerate()
+                if rate <= 0:
+                    return None
+                return handle.getnframes() / rate
+        except (wave.Error, EOFError, OSError):
+            return None
+    av = _load_av()
+    if av is None:
+        return None
+    try:
+        with av.open(io.BytesIO(data)) as container:
+            if container.duration is not None:
+                # av 容器时长单位是微秒
+                return float(container.duration) / 1_000_000
+            for stream in container.streams.audio:
+                if stream.duration is not None and stream.time_base is not None:
+                    return float(stream.duration * stream.time_base)
+    except Exception:
+        return None
+    return None
 
 
 def convert_to_wav(data: bytes, *, max_seconds: float) -> bytes:

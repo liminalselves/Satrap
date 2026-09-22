@@ -11,6 +11,7 @@ from typing import Any, cast
 import asyncio
 import base64
 import binascii
+import unicodedata
 
 from satrap.core.log import logger
 
@@ -330,6 +331,9 @@ class OneBotAdmin:
         source = str(file).strip()
         if not source:
             raise ValueError("语音标识不能为空")
+        if len(source) > 512 or any(unicodedata.category(ch) == "Cc" for ch in source):
+            # 合法值是实现自定义的文件 ID 或 URL, 不做路径语义假设, 只挡控制字符与异常长度
+            raise ValueError("语音标识超长或含控制字符")
         result = await self._call("get_record", timeout=ADMIN_TIMEOUT * 3, file=source, out_format=out_format)
         payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
         encoded = payload.get("base64")

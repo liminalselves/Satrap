@@ -15,9 +15,10 @@ from urllib.parse import urlsplit
 import asyncio
 import os
 import tempfile
+import unicodedata
 
 from satrap.core.utils.outbound import UnsafeOutboundURLError, normalize_hostname, safe_async_get
-from satrap.core.pipeline.audio_convert import AudioTooLong, convert_to_wav, probe_audio
+from satrap.core.pipeline.audio_convert import AudioTooLong, convert_to_wav, probe_audio, probe_duration
 from satrap.core.platform.onebot.admin import PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
@@ -55,6 +56,22 @@ EXTRACT_WORKERS = BoundedAsyncWorker("satrap-attachments", workers=2, capacity=8
 AsrResolver = Callable[[str], ASRConfig | None]
 
 
+def _safe_display(value: str) -> str:
+    """
+    消毒进入日志与投影标记的展示名
+
+    平台上报的文件名可含换行/控制字符/ANSI 转义, 统一替换为空格后折叠空白并截断 80 字符
+
+    参数:
+    - value: 原始展示名
+
+    返回:
+    - str: 单行消毒结果, 可能为空串由调用方回退
+    """
+    cleaned = "".join(" " if unicodedata.category(ch) == "Cc" else ch for ch in value)
+    return " ".join(cleaned.split())[:80]
+
+
 @dataclass(frozen=True)
 class AttachmentResult:
     """单个附件的补全结果"""
@@ -86,7 +103,9 @@ def _suffix_of(name: str, url: str) -> str:
     return ""
 
 
-async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...], verify_tls: bool = True) -> bytes:
+async def _download(
+    url: str, limit: int, trusted_hosts: tuple[str, ...], verify_tls: bool = True, allow_plaintext: bool = False,
+) -> bytes:
     """
     经出站防护下载远端附件, 只接受 http/https
 
@@ -95,6 +114,7 @@ async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...], verify
     - limit: 最大字节数
     - trusted_hosts: 允许访问私网的显式主机名
     - verify_tls: 是否校验证书; 用户开启 media_insecure_tls 时为 False, 且仅对 trusted_hosts 登记的主机生效, 公网下载始终校验
+    - allow_plaintext: 用户开启 media_plaintext_http 时为 True, 放行公网明文 http; 登记主机不受此限
 
     返回:
     - bytes: 响应正文, 超限或不安全地址时抛出异常
@@ -103,6 +123,10 @@ async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...], verify
         raise UnsafeOutboundURLError("附件地址不是 http/https URL")
     host = normalize_hostname(urlsplit(url).hostname or "")
     trusted = {normalize_hostname(item) for item in trusted_hosts}
+    if url.lower().startswith("http://") and host not in trusted:
+        if not allow_plaintext:
+            raise UnsafeOutboundURLError("公网附件地址必须使用 https, 或显式开启 media_plaintext_http")
+        logger.debug(f"[attachments] 公网明文 http 下载已由用户开启: host={host}")
     effective_verify = verify_tls or host not in trusted
     response = await safe_async_get(
         url, timeout=FETCH_TIMEOUT, max_response_bytes=limit, trusted_hosts=trusted_hosts,
@@ -145,6 +169,13 @@ class VoiceUnsupported(Exception):
         self.reason = reason
 
 
+def _check_duration(data: bytes, codec: str) -> None:
+    """免转码语音的时长预算检查, 可探测且超时抛 VoiceUnsupported"""
+    duration = probe_duration(data, codec)
+    if duration is not None and duration > AUDIO_MAX_SECONDS:
+        raise VoiceUnsupported("audio_too_long")
+
+
 def _admin_action(event: MessageEvent, name: str) -> Callable[..., Any] | None:
     """
     取适配器 admin 上的可调用动作, 适配器或实现不提供时返回 None
@@ -158,7 +189,9 @@ def _admin_action(event: MessageEvent, name: str) -> Callable[..., Any] | None:
     return action if callable(action) else None
 
 
-async def _fetch_voice(event: MessageEvent, url: str, suffix: str, trusted: tuple[str, ...], verify_tls: bool) -> tuple[bytes, str]:
+async def _fetch_voice(
+    event: MessageEvent, url: str, suffix: str, trusted: tuple[str, ...], verify_tls: bool, allow_plaintext: bool,
+) -> tuple[bytes, str]:
     """
     三级获取 ASR 可接受的语音字节
 
@@ -170,7 +203,7 @@ async def _fetch_voice(event: MessageEvent, url: str, suffix: str, trusted: tupl
     - event: 当前事件, 提供适配器
     - url: 上报的 file 或 url 字段
     - suffix: 从名称或地址推断的扩展名
-    - trusted / verify_tls: 出站下载参数
+    - trusted / verify_tls / allow_plaintext: 出站下载参数
 
     返回:
     - tuple[bytes, str]: 音频字节与送入 ASR 的文件名; 无法处理时抛 VoiceUnsupported
@@ -180,15 +213,17 @@ async def _fetch_voice(event: MessageEvent, url: str, suffix: str, trusted: tupl
         try:
             data = cast(bytes, await get_record(url, "wav", AUDIO_MAX_BYTES))
             if probe_audio(data, ".wav").codec == "wav":
+                _check_duration(data, "wav")
                 return data, "voice.wav"
             logger.warning("[attachments] get_record 返回内容不是 wav, 回退直接下载")
         except UnsupportedAdminAction:
             logger.debug("[attachments] get_record 不受当前实现支持, 回退直接下载")
         except PlatformAdminError as error:
             logger.warning(f"[attachments] get_record 失败, 回退直接下载: {type(error).__name__}")
-    data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls)
+    data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls, allow_plaintext)
     probe = probe_audio(data, suffix)
     if probe.accepted:
+        _check_duration(data, probe.codec)
         return data, f"voice.{probe.codec}"
     if not probe.convertible:
         raise VoiceUnsupported(probe.reason or f"audio_format{suffix or '_unknown'}")
@@ -221,7 +256,7 @@ async def _transcribe_platform(event: MessageEvent) -> str:
 
 async def _resolve_record(
     event: MessageEvent, url: str, suffix: str, mode: str, config: ASRConfig | None,
-    trusted: tuple[str, ...], verify_tls: bool,
+    trusted: tuple[str, ...], verify_tls: bool, allow_plaintext: bool,
 ) -> tuple[str, str, str]:
     """
     按 voice_transcribe 模式获取单条语音的转写
@@ -236,7 +271,7 @@ async def _resolve_record(
     asr_reason = ""
     if mode != "platform" and config is not None:
         try:
-            data, filename = await _fetch_voice(event, url, suffix, trusted, verify_tls)
+            data, filename = await _fetch_voice(event, url, suffix, trusted, verify_tls, allow_plaintext)
             return "resolved", await _transcribe(data, filename, config), ""
         except VoiceUnsupported as error:
             asr_reason = error.reason
@@ -317,6 +352,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
     settings = event.policy_settings
     trusted = tuple(str(item) for item in cast(list[object], settings.get("media_trusted_hosts", []) or []))
     verify_tls = settings.get("media_insecure_tls", False) is not True
+    allow_plaintext = settings.get("media_plaintext_http", False) is True
     asr_name = str(settings.get("asr_model", "") or "")
     voice_mode = str(settings.get("voice_transcribe", "asr") or "asr")
     extract_enabled = settings.get("attachment_extract", True) is not False
@@ -329,7 +365,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
         kind = "record" if comp.type == PlatformComponentType.Record else "file"
         name = safe_getattr_str(comp, "name") or ""
         url = safe_getattr_str(comp, "url") or safe_getattr_str(comp, "file") or safe_getattr_str(comp, "file_") or ""
-        display = name or Path(url.split("?", 1)[0]).name or kind
+        display = _safe_display(name or Path(url.split("?", 1)[0]).name) or kind
         if handled >= ATTACHMENT_LIMIT:
             results.append(AttachmentResult(kind, display, "skipped", reason="attachment_limit"))
             continue
@@ -357,9 +393,9 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
                 if not url:
                     results.append(AttachmentResult(kind, display, "failed", reason="no_remote_url"))
                     continue
-            status, text, reason = await _resolve_record(event, url, _suffix_of(name, url), voice_mode, config, trusted, verify_tls)
+            status, text, reason = await _resolve_record(event, url, _suffix_of(name, url), voice_mode, config, trusted, verify_tls, allow_plaintext)
             if status == "resolved" and isinstance(comp, Record):
-                comp.text = text
+                comp.text = text[:TRANSCRIPT_LIMIT]
             # 转写结果冻结在组件上, 同一事件的后续消费者不重复调用 ASR
             results.append(AttachmentResult(kind, display, status, text[:TRANSCRIPT_LIMIT], reason))
             continue
@@ -374,7 +410,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
             results.append(AttachmentResult(kind, display, "failed", reason="no_remote_url"))
             continue
         try:
-            data = await _download(url, FILE_MAX_BYTES, trusted, verify_tls)
+            data = await _download(url, FILE_MAX_BYTES, trusted, verify_tls, allow_plaintext)
             text = await _extract_file(data, suffix, event)
         except Exception as error:
             results.append(AttachmentResult(kind, display, "failed", reason=type(error).__name__))

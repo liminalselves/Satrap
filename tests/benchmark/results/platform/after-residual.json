@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-22T19:13:56.703557+00:00",
+  "environment": {
+    "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 204 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "dependencies": {
+      "aiocqhttp": "1.4.4",
+      "pytest": "9.1.1"
+    },
+    "git_head": "eb3b71281c0709cd14ecadcabe787673a797d029",
+    "source_sha256": {
+      "satrap/core/pipeline/scheduler.py": "4862a65708299fa51fd00f40713fa21437ae799f7792d072367edb984596bd03",
+      "satrap/core/pipeline/wake_policy.py": "715576339d151580f6ea67997259ea4b60eefe5f6b15c0624a227840ca33e505",
+      "satrap/core/pipeline/wake_window.py": "a73b415dd2fc414546f5c70e6495fcdf1eb2065e1a1f65f133c0a9311cf85a99",
+      "satrap/core/platform/event.py": "c0e176230b7abfc20997289278ebf3cf9d98c966d317c74678405688d399c5cd",
+      "satrap/core/platform/onebot/adapter.py": "777796bd97d96e15ff77ac302064eecd954482948c4ed00bceb6e4f9d7eace6e",
+      "satrap/core/platform/onebot/outbound.py": "9eb6372faf3d3f5c61228f05472c6cb995f1b62d9b8ebe0ac9a7dce2ab2526f9",
+      "satrap/core/config/wake_overrides.py": "9fc78b83b35b51886456944b1ef55c2d5825ba731a0be63cf4dd978ae28ae44c",
+      "satrap/core/config/platform_policy.py": "e2d380a924f53e3672889c1b35b6beecc005ab8af5b27e408f6b5351304843e2",
+      "satrap/core/backend/BackendManager.py": "bc19a94964e88d512697175f0c0cefda9fbe302e667843d7fec8abf5b168fea6",
+      "satrap/core/pipeline/manual_wake.py": "1f115538bd601f9424f344027f34c50eace90ace0445f7add80cc6bad19311e1"
+    },
+    "benchmark_sha256": "900b8209b170f191dd449b0c256d841943572d76ee77e53842b4d61f51bfdaca"
+  },
+  "method": {
+    "repeats": 3,
+    "warmup_messages": 200,
+    "messages": 2000,
+    "aggregation": "median across repeats",
+    "network": "none; OneBot bot mocked"
+  },
+  "scenarios": {
+    "ingress_explicit": {
+      "mean_us": 115.74650036345702,
+      "p50_us": 105.50001752562821,
+      "p95_us": 167.9000270087272,
+      "count": 2000,
+      "calls_per_message": {
+        "resolve_wake_settings": 1.0,
+        "normalize_group_whitelist": 2.0,
+        "normalize_wake_words": 2.0
+      }
+    },
+    "ingress_frequency": {
+      "mean_us": 107.79139999067411,
+      "p50_us": 97.80001710169017,
+      "p95_us": 160.39999900385737,
+      "count": 500,
+      "calls_per_message": {
+        "resolve_wake_settings": 1.0,
+        "normalize_group_whitelist": 2.0,
+        "normalize_wake_words": 2.0
+      }
+    },
+    "window_observe": {
+      "mean_us": 4.829249941394664,
+      "p50_us": 4.5000051613897085,
+      "p95_us": 5.700014298781753,
+      "count": 2000
+    },
+    "outbound_split": {
+      "mean_us": 37.20650012837723,
+      "p50_us": 31.69997944496572,
+      "p95_us": 55.60001591220498,
+      "count": 200,
+      "chunks": 15.0
+    },
+    "config_reload": {
+      "mean_us": 42871.49999872781,
+      "p50_us": 42906.599992420524,
+      "p95_us": 44551.89997679554,
+      "count": 5,
+      "platforms": 50.0
+    },
+    "manual_wake_check": {
+      "mean_us": 58.02619997120928,
+      "p50_us": 55.99998985417187,
+      "p95_us": 74.0000104997307,
+      "count": 2000
+    }
+  }
+}
