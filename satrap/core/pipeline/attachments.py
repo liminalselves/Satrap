@@ -14,12 +14,14 @@ import asyncio
 import tempfile
 
 from satrap.core.utils.outbound import UnsafeOutboundURLError, safe_async_get
-from satrap.core.APICall.ASRCall.utils import ALLOWED_AUDIO_SUFFIXES
+from satrap.core.pipeline.audio_convert import AudioTooLong, convert_to_wav, probe_audio
+from satrap.core.platform.onebot.admin import PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
 from satrap.core.components import PlatformComponentType, Record
 from satrap.core.utils.documents import SUPPORTED_EXTENSIONS, extract_text
 from satrap.core.platform.event import MessageEvent
+from satrap.core.platform import PlatformAdapter
 from satrap.core.type import ASRConfig, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -38,6 +40,10 @@ FETCH_TIMEOUT = 20.0
 """单个附件下载超时秒数"""
 ASR_TIMEOUT = 60.0
 """单次转写总超时秒数"""
+AUDIO_MAX_SECONDS = 300.0
+"""本地转码接受的最长语音秒数"""
+VOICE_TRANSCRIBE_MODES = ("off", "asr", "platform", "asr_then_platform")
+"""voice_transcribe 允许值: 关闭, 仅 ASR, 仅平台原生转写, ASR 失败后回退平台"""
 EXTRACT_WORKERS = BoundedAsyncWorker("satrap-attachments", workers=2, capacity=8)
 """文档提取线程池, 不阻塞事件循环"""
 
@@ -119,6 +125,125 @@ async def _transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
     return (result.text if result is not None else "") or ""
 
 
+class VoiceUnsupported(Exception):
+    """语音格式无法转成 ASR 可接受的输入, reason 进入降级标记"""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _admin_action(event: MessageEvent, name: str) -> Callable[..., Any] | None:
+    """
+    取适配器 admin 上的可调用动作, 适配器或实现不提供时返回 None
+
+    参数:
+    - event: 当前事件
+    - name: 动作名
+    """
+    admin = safe_getattr(event.adapter, "admin") if isinstance(event.adapter, PlatformAdapter) else None
+    action = safe_getattr(admin, name) if admin is not None else None
+    return action if callable(action) else None
+
+
+async def _fetch_voice(event: MessageEvent, url: str, suffix: str, trusted: tuple[str, ...], verify_tls: bool) -> tuple[bytes, str]:
+    """
+    三级获取 ASR 可接受的语音字节
+
+    1. 实现服务端转码 (OneBot get_record out_format=wav), 覆盖 QQ SILK 语音
+    2. 直接下载并按魔数探测, 已是 ASR 接受格式时原样使用
+    3. 本地 PyAV 转码 ffmpeg 可解的编码 (amr 等), 面向不提供 get_record 的实现
+
+    参数:
+    - event: 当前事件, 提供适配器
+    - url: 上报的 file 或 url 字段
+    - suffix: 从名称或地址推断的扩展名
+    - trusted / verify_tls: 出站下载参数
+
+    返回:
+    - tuple[bytes, str]: 音频字节与送入 ASR 的文件名; 无法处理时抛 VoiceUnsupported
+    """
+    get_record = _admin_action(event, "get_record")
+    if get_record is not None:
+        try:
+            data = cast(bytes, await get_record(url, "wav", AUDIO_MAX_BYTES))
+            if probe_audio(data, ".wav").codec == "wav":
+                return data, "voice.wav"
+            logger.warning("[attachments] get_record 返回内容不是 wav, 回退直接下载")
+        except UnsupportedAdminAction:
+            pass
+        except PlatformAdminError as error:
+            logger.warning(f"[attachments] get_record 失败, 回退直接下载: {type(error).__name__}")
+    data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls)
+    probe = probe_audio(data, suffix)
+    if probe.accepted:
+        return data, f"voice.{probe.codec}"
+    if not probe.convertible:
+        raise VoiceUnsupported(probe.reason or f"audio_format{suffix or '_unknown'}")
+    try:
+        converted = await EXTRACT_WORKERS.run(convert_to_wav, data, max_seconds=AUDIO_MAX_SECONDS)
+    except AudioTooLong as error:
+        raise VoiceUnsupported("audio_too_long") from error
+    return converted, "voice.wav"
+
+
+async def _transcribe_platform(event: MessageEvent) -> str:
+    """
+    经实现的原生语音转文字 (OneBot fetch_ptt_text) 获取转写
+
+    参数:
+    - event: 当前事件, 需要源消息 ID
+
+    返回:
+    - str: 转写文本; 实现不支持时抛 VoiceUnsupported
+    """
+    message_id = event.call_origin.source_message_id
+    fetch = _admin_action(event, "fetch_ptt_text")
+    if fetch is None or not message_id:
+        raise VoiceUnsupported("platform_transcribe_unavailable")
+    try:
+        return cast(str, await fetch(message_id))
+    except UnsupportedAdminAction as error:
+        raise VoiceUnsupported("platform_transcribe_unavailable") from error
+
+
+async def _resolve_record(
+    event: MessageEvent, url: str, suffix: str, mode: str, config: ASRConfig | None,
+    trusted: tuple[str, ...], verify_tls: bool,
+) -> tuple[str, str, str]:
+    """
+    按 voice_transcribe 模式获取单条语音的转写
+
+    参数:
+    - mode: asr, platform 或 asr_then_platform
+    - config: 已校验的 ASR 配置, platform 模式可为 None
+
+    返回:
+    - tuple[str, str, str]: (status, text, reason)
+    """
+    asr_reason = ""
+    if mode != "platform" and config is not None:
+        try:
+            data, filename = await _fetch_voice(event, url, suffix, trusted, verify_tls)
+            return "resolved", await _transcribe(data, filename, config), ""
+        except VoiceUnsupported as error:
+            asr_reason = error.reason
+            if mode == "asr":
+                return "unsupported", "", asr_reason
+        except Exception as error:
+            asr_reason = type(error).__name__
+            logger.warning(f"[attachments] 语音转写失败: {asr_reason}")
+            if mode == "asr":
+                return "failed", "", asr_reason
+    try:
+        return "resolved", await _transcribe_platform(event), ""
+    except VoiceUnsupported as error:
+        return "unsupported", "", asr_reason or error.reason
+    except Exception as error:
+        logger.warning(f"[attachments] 平台语音转写失败: {type(error).__name__}")
+        return "failed", "", asr_reason or type(error).__name__
+
+
 async def _extract_file(data: bytes, suffix: str, event: MessageEvent) -> str:
     """
     写入临时文件后在线程中提取正文, 临时文件登记到事件
@@ -156,6 +281,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
     trusted = tuple(str(item) for item in cast(list[object], settings.get("media_trusted_hosts", []) or []))
     verify_tls = settings.get("media_insecure_tls", False) is not True
     asr_name = str(settings.get("asr_model", "") or "")
+    voice_mode = str(settings.get("voice_transcribe", "asr") or "asr")
     extract_enabled = settings.get("attachment_extract", True) is not False
     results: list[AttachmentResult] = []
     handled = 0
@@ -175,28 +301,26 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
             if existing:
                 results.append(AttachmentResult(kind, display, "resolved", existing[:TRANSCRIPT_LIMIT]))
                 continue
-            if not asr_name or asr_resolver is None:
-                results.append(AttachmentResult(kind, display, "disabled", reason="asr_not_configured"))
+            if voice_mode == "off":
+                results.append(AttachmentResult(kind, display, "disabled", reason="voice_transcribe_off"))
                 continue
-            config = asr_resolver(asr_name)
-            if config is None or not config.model or not config.api_key:
-                results.append(AttachmentResult(kind, display, "disabled", reason="asr_config_missing"))
-                continue
-            suffix = _suffix_of(name, url) or ".wav"
-            if suffix not in ALLOWED_AUDIO_SUFFIXES:
-                results.append(AttachmentResult(kind, display, "unsupported", reason=f"audio_format{suffix}"))
-                continue
-            try:
-                data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls)
-                text = await _transcribe(data, f"voice{suffix}", config)
-            except Exception as error:
-                results.append(AttachmentResult(kind, display, "failed", reason=type(error).__name__))
-                logger.warning(f"[attachments] 语音转写失败: {type(error).__name__}")
-                continue
-            if isinstance(comp, Record):
+            config: ASRConfig | None = None
+            if voice_mode != "platform":
+                if not asr_name or asr_resolver is None:
+                    results.append(AttachmentResult(kind, display, "disabled", reason="asr_not_configured"))
+                    continue
+                config = asr_resolver(asr_name)
+                if config is None or not config.model or not config.api_key:
+                    results.append(AttachmentResult(kind, display, "disabled", reason="asr_config_missing"))
+                    continue
+                if not url:
+                    results.append(AttachmentResult(kind, display, "failed", reason="no_remote_url"))
+                    continue
+            status, text, reason = await _resolve_record(event, url, _suffix_of(name, url), voice_mode, config, trusted, verify_tls)
+            if status == "resolved" and isinstance(comp, Record):
                 comp.text = text
             # 转写结果冻结在组件上, 同一事件的后续消费者不重复调用 ASR
-            results.append(AttachmentResult(kind, display, "resolved", text[:TRANSCRIPT_LIMIT]))
+            results.append(AttachmentResult(kind, display, status, text[:TRANSCRIPT_LIMIT], reason))
             continue
         if not extract_enabled:
             results.append(AttachmentResult(kind, display, "disabled", reason="attachment_extract_off"))
@@ -219,6 +343,15 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
     return tuple(results)
 
 
+_UNSUPPORTED_HINTS = {
+    "silk_needs_platform_transcode": "QQ SILK 语音需要实现提供 get_record 转码或平台原生转写",
+    "av_missing": "该语音格式需要本地转码, 未安装 av 包",
+    "audio_too_long": "语音过长, 已跳过转写",
+    "platform_transcribe_unavailable": "当前实现不提供原生语音转写",
+}
+"""unsupported 状态的原因说明, 未列出的原因使用通用文案"""
+
+
 def render_attachments(results: tuple[AttachmentResult, ...]) -> str:
     """
     把附件结果渲染为标记块, 作为用户提供的资料而非指令
@@ -238,7 +371,7 @@ def render_attachments(results: tuple[AttachmentResult, ...]) -> str:
         elif item.status == "disabled":
             blocks.append(f"[{label}: 未启用{'转写' if item.kind == 'record' else '正文提取'}]")
         elif item.status == "unsupported":
-            blocks.append(f"[{label}: 不支持的格式]")
+            blocks.append(f"[{label}: {_UNSUPPORTED_HINTS.get(item.reason, '不支持的格式')}]")
         elif item.status == "skipped":
             blocks.append(f"[{label}: 超出附件处理数量]")
         else:

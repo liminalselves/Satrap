@@ -49,6 +49,7 @@ export function normalizePlatformSettings(
       else delete normalized[key];
     }
     if (typeof settings.asr_model === 'string' && !settings.asr_model.trim()) delete normalized.asr_model;
+    if (settings.voice_transcribe === undefined || settings.voice_transcribe === 'asr') delete normalized.voice_transcribe;
     for (const key of ['message_text_limit', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait']) {
       const value = settings[key];
       if (value === '' || value === undefined) delete normalized[key];

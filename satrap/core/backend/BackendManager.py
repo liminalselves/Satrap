@@ -620,7 +620,7 @@ class BackendManager:
             self.config.platforms = deepcopy(candidates)
             desired = {str(item["id"]): item for item in candidates}
             results: list[dict[str, Any]] = []
-            hot_keys = {"wake_max_wait", "wake_group_overrides", "wake_time_rules", "wake_score_threshold", "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty", "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_aliases", "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private"}
+            hot_keys = {"wake_max_wait", "wake_group_overrides", "wake_time_rules", "wake_score_threshold", "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty", "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_aliases", "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private", "asr_model", "voice_transcribe", "attachment_extract", "media_trusted_hosts", "media_insecure_tls"}
             for platform_id in sorted(set(desired) | set(self._platform_active_configs)):
                 candidate = desired.get(platform_id)
                 active = self._platform_active_configs.get(platform_id)

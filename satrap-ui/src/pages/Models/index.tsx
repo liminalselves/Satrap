@@ -442,7 +442,7 @@ function AsrTestModal({ name, onClose }: { name: string | null; onClose: () => v
         {result && (
           <div className="rounded bg-glass p-3 text-sm space-y-1" role="status">
             <div className="text-text-tertiary">
-              模型 {result.model || '-'} · 语言 {result.language || '自动'} · 音频 {result.duration ?? '-'} 秒 · 耗时 {result.elapsed_ms ?? '-'} ms
+              模型 {result.model || '-'} · 语言 {result.language || '自动'} · 音频 {result.duration ?? '-'} 秒 · 耗时 {result.elapsed_ms ?? '-'} ms{result.converted_from ? ` · 已由 ${result.converted_from} 本地转码为 wav` : ''}
             </div>
             <pre className="whitespace-pre-wrap break-words text-text-primary">{result.text || '(空转录结果)'}</pre>
           </div>

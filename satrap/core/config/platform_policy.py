@@ -44,6 +44,9 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     asr_model = settings.get("asr_model", "")
     if not isinstance(asr_model, str) or len(asr_model) > 128:
         raise ValueError("asr_model 必须是不超过 128 字符的 ASR 配置名称, 留空关闭语音转写")
+    voice_mode = settings.get("voice_transcribe", "asr")
+    if not isinstance(voice_mode, str) or voice_mode not in {"off", "asr", "platform", "asr_then_platform"}:
+        raise ValueError("voice_transcribe 必须为 off, asr, platform 或 asr_then_platform")
     hosts = settings.get("media_trusted_hosts", [])
     if not isinstance(hosts, list) or len(cast(list[object], hosts)) > 32 or any(
         not isinstance(item, str) or not item.strip() or len(item) > 253 for item in cast(list[object], hosts)

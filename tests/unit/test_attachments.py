@@ -1,16 +1,20 @@
 """语音转写与文件正文的内容补全与投影"""
 from unittest.mock import AsyncMock
 from typing import Any
+import base64
 import os
 
 import pytest
 
 from satrap.core.pipeline import attachments as module
+from satrap.core.pipeline import audio_convert
 from satrap.core.pipeline.attachments import AttachmentResult, asr_resolver_from_manager, render_attachments, resolve_attachments
 from satrap.core.pipeline.input_projection import project_input
 from satrap.core.config.platform_policy import validate_wake_policy
 from satrap.core.utils.outbound import OutboundHTTPResponse
 from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.platform.onebot.admin import AdminActionUnconfirmed, UnsupportedAdminAction
+from aiocqhttp.exceptions import ActionFailed
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformConfig
 from satrap.core.type import ASRConfig
@@ -20,6 +24,9 @@ async def make_event(segments: list[dict[str, object]], settings: dict[str, obje
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=dict(settings or {})))
     adapter._bot = AsyncMock()
     adapter._bot.send_group_msg.return_value = {"message_id": 1}
+    # 默认模拟不提供 get_record/fetch_ptt_text 的实现, 需要时由测试覆盖 return_value
+    adapter._bot.get_record.side_effect = ActionFailed({"retcode": 1404})
+    adapter._bot.fetch_ptt_text.side_effect = ActionFailed({"retcode": 1404})
     await adapter._handle_group_message({"self_id": 10000, "user_id": 123, "group_id": 456, "message_id": 77, "message_type": "group",
         "message": [{"type": "at", "data": {"qq": "10000"}}, *segments]})
     return adapter, adapter._event_queue.get_nowait()
@@ -136,8 +143,110 @@ async def test_voice_download_or_asr_failure_degrades_without_raising(monkeypatc
     results = await resolve_attachments(event, lambda name: asr_config())
     assert results[0].status == "failed" and results[0].reason == "UnsafeOutboundURLError"
     adapter, event = await make_event([record("https://media.example.com/voice.xyz")], {"asr_model": "speech"})
+    download, _ = fake_download({"https://media.example.com/voice.xyz": b"\x00\x01garbage"})
+    monkeypatch.setattr(module, "safe_async_get", download)
     results = await resolve_attachments(event, lambda name: asr_config())
-    assert results[0].status == "unsupported"
+    assert results[0].status == "unsupported" and results[0].reason == "unknown_codec"
+
+
+@pytest.mark.asyncio
+async def test_voice_prefers_platform_transcode_via_get_record(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([record()], {"asr_model": "speech"})
+    wav = b"RIFF" + bytes(4) + b"WAVEfmt "
+    adapter._bot.get_record.side_effect = None
+    adapter._bot.get_record.return_value = {"base64": base64.b64encode(wav).decode()}
+    download, calls = fake_download({})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    seen: dict[str, Any] = {}
+
+    async def transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
+        seen.update(data=data, filename=filename)
+        return "平台转码"
+
+    monkeypatch.setattr(module, "_transcribe", transcribe)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "resolved" and results[0].text == "平台转码"
+    assert seen == {"data": wav, "filename": "voice.wav"} and not calls
+    adapter._bot.get_record.assert_awaited_once_with(file="https://media.example.com/voice.amr.wav", out_format="wav")
+
+
+@pytest.mark.asyncio
+async def test_voice_get_record_failure_falls_back_to_download(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([record()], {"asr_model": "speech"})
+    adapter._bot.get_record.side_effect = RuntimeError("network")
+    download, calls = fake_download({"https://media.example.com/voice.amr.wav": b"OggS" + bytes(16)})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    seen: dict[str, Any] = {}
+
+    async def transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
+        seen["filename"] = filename
+        return "ok"
+
+    monkeypatch.setattr(module, "_transcribe", transcribe)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "resolved" and seen["filename"] == "voice.ogg" and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_silk_voice_without_platform_transcode_is_marked(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([record("https://media.example.com/abc.amr")], {"asr_model": "speech"})
+    download, _ = fake_download({"https://media.example.com/abc.amr": b"\x02#!SILK_V3" + bytes(8)})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "unsupported" and results[0].reason == "silk_needs_platform_transcode"
+    assert "SILK" in render_attachments(results)
+
+
+@pytest.mark.asyncio
+async def test_amr_voice_is_converted_locally(monkeypatch: pytest.MonkeyPatch):
+    adapter, event = await make_event([record("https://media.example.com/abc.amr")], {"asr_model": "speech"})
+    download, _ = fake_download({"https://media.example.com/abc.amr": b"#!AMR\n" + bytes(32)})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    def _convert(data: bytes, *, max_seconds: float) -> bytes:
+        return b"RIFFconverted"
+
+    monkeypatch.setattr(module, "convert_to_wav", _convert)
+    seen: dict[str, Any] = {}
+
+    async def transcribe(data: bytes, filename: str, config: ASRConfig) -> str:
+        seen.update(data=data, filename=filename)
+        return "本地转码"
+
+    monkeypatch.setattr(module, "_transcribe", transcribe)
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].text == "本地转码" and seen == {"data": b"RIFFconverted", "filename": "voice.wav"}
+    monkeypatch.setitem(audio_convert._AV_STATE, "module", None)
+    adapter, event = await make_event([record("https://media.example.com/abc.amr")], {"asr_model": "speech"})
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "unsupported" and results[0].reason == "av_missing"
+    assert "av 包" in render_attachments(results)
+
+
+@pytest.mark.asyncio
+async def test_voice_transcribe_modes(monkeypatch: pytest.MonkeyPatch):
+    download, calls = fake_download({})
+    monkeypatch.setattr(module, "safe_async_get", download)
+    adapter, event = await make_event([record()], {"asr_model": "speech", "voice_transcribe": "off"})
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "disabled" and results[0].reason == "voice_transcribe_off"
+    adapter, event = await make_event([record()], {"voice_transcribe": "platform"})
+    adapter._bot.fetch_ptt_text.side_effect = None
+    adapter._bot.fetch_ptt_text.return_value = {"text": "原生转写"}
+    results = await resolve_attachments(event, None)
+    assert results[0].status == "resolved" and results[0].text == "原生转写" and not calls
+    adapter._bot.fetch_ptt_text.assert_awaited_once_with(message_id=77)
+    adapter, event = await make_event([record()], {"voice_transcribe": "platform"})
+    results = await resolve_attachments(event, None)
+    assert results[0].status == "unsupported" and results[0].reason == "platform_transcribe_unavailable"
+    adapter, event = await make_event([record()], {"asr_model": "speech", "voice_transcribe": "asr_then_platform"})
+    adapter._bot.fetch_ptt_text.side_effect = None
+    adapter._bot.fetch_ptt_text.return_value = {"text": "兜底"}
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "resolved" and results[0].text == "兜底" and len(calls) == 1
+    adapter, event = await make_event([record()], {"asr_model": "speech", "voice_transcribe": "asr_then_platform"})
+    adapter._bot.fetch_ptt_text.side_effect = AdminActionUnconfirmed("timeout")
+    results = await resolve_attachments(event, lambda name: asr_config())
+    assert results[0].status == "failed" and results[0].reason == "OutboundHTTPError"
 
 
 @pytest.mark.asyncio
@@ -230,11 +339,11 @@ def test_render_and_resolver_from_manager():
     assert asr_resolver_from_manager(object()) is None
 
 
-@pytest.mark.parametrize("settings", [{"asr_model": 1}, {"asr_model": "x" * 129}, {"media_trusted_hosts": "host"}, {"media_trusted_hosts": [""]}, {"attachment_extract": "no"}])
+@pytest.mark.parametrize("settings", [{"asr_model": 1}, {"asr_model": "x" * 129}, {"media_trusted_hosts": "host"}, {"media_trusted_hosts": [""]}, {"attachment_extract": "no"}, {"voice_transcribe": "auto"}, {"voice_transcribe": 1}])
 def test_attachment_policy_validation(settings: dict[str, object]):
     with pytest.raises(ValueError):
         validate_wake_policy(settings)
 
 
 def test_attachment_policy_accepts_valid():
-    validate_wake_policy({"asr_model": "speech", "media_trusted_hosts": ["snowluma.local"], "attachment_extract": False})
+    validate_wake_policy({"asr_model": "speech", "media_trusted_hosts": ["snowluma.local"], "attachment_extract": False, "voice_transcribe": "asr_then_platform"})

@@ -44,6 +44,9 @@ extras_require = {
     "vector": [
         "faiss-cpu>=1.7.4",
     ],
+    "audio": [
+        "av>=15,<19",
+    ],
 }
 extras_require["all"] = sorted({dep for deps in extras_require.values() for dep in deps})
 

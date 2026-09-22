@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, cast
 import asyncio
+import base64
+import binascii
 
 
 class PlatformAdminError(Exception):
@@ -28,6 +30,10 @@ class AdminActionUnconfirmed(PlatformAdminError):
 
 
 ADMIN_TIMEOUT = 10
+PTT_TEXT_TIMEOUT = 25
+"""fetch_ptt_text 等待秒数, 覆盖 SnowLuma/NapCat 内部 20 秒转写等待"""
+RECORD_OUT_FORMATS = frozenset({"mp3", "amr", "wma", "m4a", "spx", "ogg", "wav", "flac"})
+"""get_record out_format 允许值, 与 NapCat/SnowLuma 一致"""
 """单个管理动作含等待的最长秒数"""
 
 ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
@@ -36,6 +42,8 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "get_group_member_list": ("read", "获取群成员列表"),
     "get_group_member_info": ("read", "获取群成员信息"),
     "get_group_honor_info": ("read", "获取群荣誉信息"),
+    "get_record": ("read", "获取语音并由实现服务端转码 (get_record out_format)"),
+    "fetch_ptt_text": ("read", "QQ 原生语音转文字 (fetch_ptt_text)"),
     "recall_message": ("write", "撤回消息 (delete_msg)"),
     "kick_group_member": ("write", "移出群成员"),
     "ban_group_member": ("write", "禁言或解除禁言群成员"),
@@ -262,6 +270,56 @@ class OneBotAdmin:
             "group_id", "user_id", "nickname", "card", "role", "join_time",
             "last_sent_time", "title", "level", "sex", "shut_up_timestamp",
         )}
+
+    async def get_record(self, file: str, out_format: str, max_bytes: int) -> bytes:
+        """
+        请求实现把缓存语音转码为指定格式并返回字节
+
+        参数:
+        - file: 上报 record 段的 file 或 url 字段
+        - out_format: 目标格式, 见 RECORD_OUT_FORMATS
+        - max_bytes: 解码后允许的最大字节数
+
+        返回:
+        - bytes: 转码结果; 实现不支持该动作时抛 UnsupportedAdminAction
+        """
+        if out_format not in RECORD_OUT_FORMATS:
+            raise ValueError("out_format 不在支持范围")
+        source = str(file).strip()
+        if not source:
+            raise ValueError("语音标识不能为空")
+        result = await self._call("get_record", timeout=ADMIN_TIMEOUT * 3, file=source, out_format=out_format)
+        payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        encoded = payload.get("base64")
+        if not isinstance(encoded, str) or not encoded:
+            raise UnsupportedAdminAction("实现未返回转码后的 base64 内容")
+        if len(encoded) > max_bytes * 4 // 3 + 4:
+            raise AdminActionRejected("转码后语音超过大小上限")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except binascii.Error as error:
+            raise AdminActionUnconfirmed("转码结果不是合法 base64") from error
+        if len(data) > max_bytes:
+            raise AdminActionRejected("转码后语音超过大小上限")
+        return data
+
+    async def fetch_ptt_text(self, message_id: Any) -> str:
+        """
+        用实现提供的原生语音转文字获取转写
+
+        参数:
+        - message_id: 含语音的平台消息 ID
+
+        返回:
+        - str: 转写文本, 空字符串表示实现返回空结果
+        """
+        text = str(message_id).strip()
+        if not text or not text.lstrip("-").isdecimal():
+            raise ValueError("消息 ID 必须为整数")
+        result = await self._call("fetch_ptt_text", timeout=PTT_TEXT_TIMEOUT, message_id=int(text))
+        payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        value = payload.get("text", "")
+        return value if isinstance(value, str) else ""
 
     async def get_group_honor_info(self, group_id: Any, honor_type: str = "all") -> dict[str, Any]:
         """

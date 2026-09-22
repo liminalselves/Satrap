@@ -98,6 +98,9 @@ try {
   await dialog.getByLabel('自动参与模式', { exact: true }).selectOption('necessity');
   await dialog.getByLabel('必要性评分阈值', { exact: false }).fill('0.75');
   await dialog.getByLabel('频率模式最长等待秒数', { exact: false }).fill('45');
+  const voice = dialog.getByLabel('语音转写来源', { exact: false });
+  assert.equal(await voice.inputValue(), 'asr');
+  await voice.selectOption('asr_then_platform');
   for (const theme of ['dark', 'light']) {
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
     await scope.scrollIntoViewIfNeeded();
@@ -117,6 +120,8 @@ try {
   assert.equal(writes.at(-1).settings.wake_mode, 'necessity');
   assert.equal(writes.at(-1).settings.wake_score_threshold, 0.75);
   assert.equal(writes.at(-1).settings.wake_max_wait, 45);
+  assert.equal(writes.at(-1).settings.voice_transcribe, 'asr_then_platform');
+  assert.equal('voice_transcribe' in writes[0].settings, false);
   await page.getByText('应用失败', { exact: true }).first().waitFor();
   await page.getByTitle('编辑', { exact: true }).first().click();
   await dialog.getByLabel('唤醒词', { exact: false }).fill('保留我的草稿');

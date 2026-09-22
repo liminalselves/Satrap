@@ -90,6 +90,7 @@ export interface AsrTestResult extends ControlResult {
   language?: string;
   duration?: number;
   elapsed_ms?: number;
+  converted_from?: string;
 }
 
 export interface SessionClassConfigPayload {

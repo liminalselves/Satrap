@@ -243,4 +243,45 @@ async def test_asr_test_endpoint_uses_saved_secret_and_rejects_bad_input(tmp_pat
     assert result["text"] == "你好" and result["model"] == "whisper-1" and result["duration"] == 1.5
     assert isinstance(result["elapsed_ms"], int)
     assert seen == {"api_key": "asr-secret", "audio": b"RIFF", "filename": "clip.wav", "suppress": False}
+    assert "converted_from" not in result
     fake.client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_asr_test_endpoint_probes_and_converts_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """测试音频按魔数判定: SILK 明确拒绝, amr 本地转码后附 converted_from, 未知格式拒绝"""
+    from unittest.mock import AsyncMock
+    from satrap.core.config import model_service as module
+    from satrap.core.pipeline import audio_convert
+    from satrap.core.type import ASRResponse
+
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    service.create("asr", "speech", {"model": "whisper-1", "api_key": "asr-secret"})
+    with pytest.raises(ValueError, match="SILK"):
+        await service.test_asr_config("speech", "a.amr", b"#!SILK_V3" + bytes(8))
+    with pytest.raises(ValueError, match="无法识别"):
+        await service.test_asr_config("speech", "a.bin", bytes(16))
+    seen: dict[str, object] = {}
+
+    class _FakeClient:
+        suppress_error = True
+        client = AsyncMock()
+
+        async def transcribe(self, audio: bytes, filename: str | None = None) -> ASRResponse:
+            seen["audio"], seen["filename"] = audio, filename
+            return ASRResponse(text="ok", model="whisper-1", language="zh", duration=1.0)
+
+    def _build(cfg: object, *, async_: bool = False) -> _FakeClient:
+        return _FakeClient()
+
+    def _convert(data: bytes, *, max_seconds: float) -> bytes:
+        return b"RIFFconverted"
+
+    monkeypatch.setattr(module, "build_asr_from_config", _build)
+    monkeypatch.setattr(module, "convert_to_wav", _convert)
+    result = await service.test_asr_config("speech", "a.amr", b"#!AMR\n" + bytes(8))
+    assert result["converted_from"] == "amr" and seen == {"audio": b"RIFFconverted", "filename": "test.wav"}
+    monkeypatch.setitem(audio_convert._AV_STATE, "module", None)
+    with pytest.raises(ValueError, match="pip install av"):
+        await service.test_asr_config("speech", "a.amr", b"#!AMR\n" + bytes(8))

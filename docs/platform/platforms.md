@@ -266,7 +266,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 
 已唤醒且通过限流的消息中, 顶层 `Record` 与 `File` 组件由 `pipeline/attachments.py` 在引用/转发补全之后处理, 每事件至多 4 个附件, 其余标记为“超出附件处理数量”。未唤醒的普通消息不会下载任何附件。
 
-- 语音: `settings.asr_model` 指向一个已保存的 ASR 模型配置 (留空关闭), 后端按名称解析并用 `AsyncASR` 转写; 下载上限 16 MiB, 单次转写 60 秒超时, 扩展名必须在 OpenAI 兼容接口支持范围内 (无法判断时按 wav 处理)。转写结果冻结到 `Record.text`, 同一事件不重复调用; 投影为 `[语音 转写内容: …]` (至多 4000 字符)
+- 语音: `settings.voice_transcribe` 选择转写来源, 默认 `asr`; `settings.asr_model` 指向一个已保存的 ASR 模型配置, 后端按名称解析并用 `AsyncASR` 转写 (16 MiB / 60 秒超时)。`asr` 路径按三级获取 ASR 可接受的音频: ① 请求实现服务端转码 (`get_record out_format=wav`, SnowLuma/NapCat 支持, 覆盖 QQ 原生 SILK 语音); ② 实现不提供时直接下载并按魔数探测, wav/ogg/flac/mp3/webm/m4a 原样送 ASR; ③ amr 等 ffmpeg 可解码格式在线程池中经 PyAV 本地转 16 kHz 单声道 wav (需 `pip install -e .[audio]`, 最长 300 秒), 面向不提供 `get_record` 的实现。SILK 裸流无法本地转码, 标记 `unsupported/silk_needs_platform_transcode`; 缺 av 包标记 `av_missing`。`platform` 只调用实现的原生转写 `fetch_ptt_text` (不需要 `asr_model`); `asr_then_platform` 在 ASR 路径失败后回退到它; `off` 关闭。转写结果冻结到 `Record.text`, 同一事件不重复调用; 投影为 `[语音 转写内容: …]` (至多 4000 字符), 不支持时给出具体原因文案
 - 文件: `settings.attachment_extract` 默认开启, 只处理 `documents.SUPPORTED_EXTENSIONS` 内的类型; 经受限下载写入临时文件 (登记到事件, 事件结束自动删除), 在线程池中调用 `extract_text` (32 MiB / 20000 字符上限), 投影为 `[文件 <名> 内容:
 …]`。群文件上传 notice 生成的 File 附件同样只在其被明确转为会话消息时才会下载
 - 下载使用出站防护 `safe_async_get`: 只接受 http/https, 私网地址默认拒绝, 需要访问 SnowLuma 内网下载地址时在 `settings.media_trusted_hosts` 登记主机名; 默认校验 TLS 证书且重定向限制在同源, 自签证书的内网 https 需显式开启 `settings.media_insecure_tls: true`; 不把平台上报的本地路径当作 Satrap 主机上的可信文件

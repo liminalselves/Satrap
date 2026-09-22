@@ -301,7 +301,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 策略校验新增 `asr_model` (≤128 字符)、`attachment_extract` (布尔)、`media_trusted_hosts` (≤32 主机名); 前端平台表单提供 ASR 配置下拉 (读取已保存 ASR 列表)、附件提取开关、媒体主机多行输入及归一化; 配置示例与 platforms.md 同步
 - 新增 `tests/unit/test_attachments.py` 14 passed (转写与投影/冻结复用, 未绑定 ASR 与配置缺失 disabled 且不下载, 404/私网/file 协议/格式不支持降级, 文件提取与临时文件清理, 不支持类型/关闭/数量上限 partial, 端到端 UserCall 携带转写, 未唤醒不下载, 渲染与解析器, 策略校验); 相关管线/引用/转发/调度/运行时回归 146 passed; 修改模块 Pyright 0 errors / 0 warnings; 前端 vitest 69 passed, tsc/eslint 与 platform-policy 浏览器回归通过
 
-本批以受控替身验证下载与转写协议路径, 真实 ASR/LLM 调用留在 P4 验收记录。音频格式转换未实现: 不在 ASR 接口支持范围内的语音 (如 amr/silk) 标记为不支持而非转换。
+本批以受控替身验证下载与转写协议路径, 真实 ASR/LLM 调用留在 P4 验收记录。音频格式转换当时未实现, 已在 2026-09-22 语音转写批次补齐 (见文末)。
 
 ## P4 真实模型与 SnowLuma 汇总验收
 
@@ -313,8 +313,19 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 前端: `npm run build` 成功, 构建产物含 ASR 模型管理与平台策略表单; vitest 69 passed, tsc/eslint 通过, Playwright `platform-policy`/`manual-wake`/`asr` 脚本各批次显式执行通过; 后端以 `satrap-ui/dist` 托管构建产物, 仓库与发行内容不含 SnowLuma
 - 完整回归: `python -m pytest tests/unit -q` 1778 passed / 19 skipped (跳过为显式集成开关、Windows 符号链接权限等既有原因)
 
-未完成或明确不在本轮范围: 真实 QQ 全链路 (方案裁定为模拟); 非 ASR 接口支持格式 (amr/silk) 的音频转换; SnowLuma 发行版更新后探针挂接点需复核。以上不影响议题内已裁定范围的关闭。
+未完成或明确不在本轮范围: 真实 QQ 全链路 (方案裁定为模拟); SnowLuma 发行版更新后探针挂接点需复核。音频格式转换已于 2026-09-22 补齐 (见文末)。以上不影响议题内已裁定范围的关闭。
 
 ## 2026-09-22 代码审计与整改
 
 对 fix/issue10 全部改动做三视角只读审计 (管线/唤醒, 平台/OneBot/出站, 后端/配置/前端), 方案与逐项验证见 [issue-10-audit-2026-09-22.md](issue-10-audit-2026-09-22.md)。6 批提交 (`d1d4116`…`265db30`) 修复 3 项严重 (群管理写开关不可开启, 平台 reload 异常路径自毁, 空消息 IndexError)、20 项中等与十余项低优先级缺陷, 新增平台入站/配置面 benchmark 并完成热路径优化 (每消息 −58%, 满窗 observe −96%, 50 平台 reload −85%), 清理死代码并合并 5 份模型类型映射。对外行为变化: 附件下载默认校验 TLS (新增 `media_insecure_tls`), `enable_private/enable_group` 保存时校验布尔, 手动唤醒参数错误返回 400。收官回归 1787 passed, 前端全绿, SnowLuma 探针复跑通过。
+
+## 2026-09-22 语音转写来源与格式兜底
+
+方案见 `issue-10-audio-convert-plan.md`。事实基础: SnowLuma 1.14.17 上报的 record 段文件名为 `<md5>.amr` 但内容是 SILK v3, PyAV 不含 SILK 解码器; SnowLuma/NapCat 提供 `get_record out_format` 服务端转码与 `fetch_ptt_text` 原生转写。
+
+- `pipeline/audio_convert.py`: `probe_audio` 按魔数 (优先 SILK 签名, 再 amr/wav/ogg/flac/mp3/webm/ftyp) 与扩展名判定编码, 返回 accepted/convertible/reason; `convert_to_wav` 用 PyAV (延迟导入, 缺包缓存为 None) 解码重采样为 16 kHz 单声道 s16 wav, 超过 `max_seconds` 抛 `AudioTooLong`
+- `OneBotAdmin` 新增只读动作 `get_record(file, out_format, max_bytes)` (校验 out_format 枚举, base64 解码, 大小双重上限) 与 `fetch_ptt_text(message_id)` (25 秒超时); 登记 `ADMIN_CAPABILITIES` 但不暴露为群管理工具
+- `attachments.py`: 新增 `voice_transcribe` (`off`/`asr` 默认/`platform`/`asr_then_platform`); `asr` 路径 `_fetch_voice` 三级: `get_record` → 下载+探测 → 线程池本地转码 (`AUDIO_MAX_SECONDS=300`); 移除下载前的扩展名白名单, 按真实内容判定; `render_attachments` 对 `silk_needs_platform_transcode`/`av_missing`/`audio_too_long`/`platform_transcribe_unavailable` 给出具体文案
+- 策略校验新增 `voice_transcribe` 枚举; 热更新键补入 `asr_model`/`voice_transcribe`/`attachment_extract`/`media_trusted_hosts`/`media_insecure_tls` (均为逐事件读取, 无需重建实例)
+- `ModelConfigService.test_asr_config` 与入站共用探测: SILK/未知格式返回明确 400 文案, amr 本地转码后附 `converted_from`; 前端 ASR 测试弹窗显示转码提示, 平台表单新增"语音转写来源"下拉, `adminMigration` 默认值 `asr` 不写入配置
+- `setup.py` extras `audio = ["av>=15,<19"]`; README/config.example/platforms.md 同步

@@ -1,5 +1,6 @@
 """OneBot 群管理动作封装的参数校验, 群范围与错误归一"""
 from unittest.mock import AsyncMock
+import base64
 
 from aiocqhttp.exceptions import ActionFailed
 import pytest
@@ -115,6 +116,51 @@ class TestOneBotAdminCalls:
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
         with pytest.raises(AdminActionUnconfirmed, match="未连接"):
             await adapter.admin.get_group_list()
+
+
+class TestVoiceActions:
+    @pytest.mark.asyncio
+    async def test_get_record_decodes_base64_and_validates_params(self):
+        adapter = _adapter()
+        wav = b"RIFF" + bytes(4) + b"WAVEfmt "
+        adapter._bot.get_record.return_value = {"base64": base64.b64encode(wav).decode(), "out_format": "wav"}
+        assert await adapter.admin.get_record("abc.amr", "wav", max_bytes=1024) == wav
+        adapter._bot.get_record.assert_awaited_once_with(file="abc.amr", out_format="wav")
+        with pytest.raises(ValueError, match="out_format"):
+            await adapter.admin.get_record("abc.amr", "silk", max_bytes=1024)
+        with pytest.raises(ValueError, match="语音标识"):
+            await adapter.admin.get_record("  ", "wav", max_bytes=1024)
+
+    @pytest.mark.asyncio
+    async def test_get_record_rejects_oversize_missing_and_invalid_payload(self):
+        adapter = _adapter()
+        adapter._bot.get_record.return_value = {"base64": base64.b64encode(b"x" * 20).decode()}
+        with pytest.raises(AdminActionRejected, match="上限"):
+            await adapter.admin.get_record("f", "wav", max_bytes=10)
+        adapter._bot.get_record.return_value = {"file": "/tmp/x.wav"}
+        with pytest.raises(UnsupportedAdminAction, match="base64"):
+            await adapter.admin.get_record("f", "wav", max_bytes=10)
+        adapter._bot.get_record.return_value = {"base64": "@@@@"}
+        with pytest.raises(AdminActionUnconfirmed, match="base64"):
+            await adapter.admin.get_record("f", "wav", max_bytes=10)
+        adapter._bot.get_record.side_effect = ActionFailed({"retcode": 1404})
+        with pytest.raises(UnsupportedAdminAction):
+            await adapter.admin.get_record("f", "wav", max_bytes=10)
+
+    @pytest.mark.asyncio
+    async def test_fetch_ptt_text_returns_text_or_empty(self):
+        adapter = _adapter()
+        adapter._bot.fetch_ptt_text.return_value = {"text": "你好"}
+        assert await adapter.admin.fetch_ptt_text("123") == "你好"
+        adapter._bot.fetch_ptt_text.assert_awaited_once_with(message_id=123)
+        adapter._bot.fetch_ptt_text.return_value = {"text": None}
+        assert await adapter.admin.fetch_ptt_text(-5) == ""
+        with pytest.raises(ValueError, match="消息 ID"):
+            await adapter.admin.fetch_ptt_text("abc")
+
+    def test_voice_actions_are_read_capabilities(self):
+        assert ADMIN_CAPABILITIES["get_record"][0] == "read"
+        assert ADMIN_CAPABILITIES["fetch_ptt_text"][0] == "read"
 
 
 class TestAdminCapabilities:

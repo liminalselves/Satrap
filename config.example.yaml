@@ -82,6 +82,7 @@ platforms:
   #     wake_on_quote_self: false   # 引用机器人消息是否视为唤醒; 需先回源确认被引用者, 引用他人或回源失败不唤醒
   #     # notice_types: [notice.group_increase, notice.group_recall, request]   # 省略表示派发全部 notice/request; 群通知受 group_whitelist 限制, 默认不触发模型
   #     asr_model: ""   # 语音转写使用的 ASR 模型配置名 (satrap model set asr <name> ...), 留空不转写
+  #     voice_transcribe: asr   # 语音转写来源: asr (默认, 依次尝试实现转码 get_record → 直接下载 → 本地 av 转码) / asr_then_platform (ASR 失败后回退 fetch_ptt_text) / platform (仅平台原生转写, 不需要 asr_model) / off
   #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
   #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记
   #     media_insecure_tls: false   # 仅在媒体下载地址使用自签证书时开启, 关闭 TLS 校验
