@@ -180,3 +180,19 @@ def test_set_parameters_updates_defaults(monkeypatch: pytest.MonkeyPatch):
     asr.transcribe(b"audio-bytes", filename="voice.mp3")
     request = calls[0][0]
     assert request["model"] == "m2" and request["language"] == "en" and request["prompt"] == "pp"
+
+
+@pytest.mark.asyncio
+async def test_suppressed_api_error_log_omits_response_body(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """抑制模式下的 API 错误日志只含类型/状态/request_id, 不含服务端响应体"""
+    import logging
+    import httpx
+    error = APIError("Error code: 400 - secret-body-echo", request=httpx.Request("POST", "http://x"), body={"echo": "secret-body-echo"})
+    sync_client, async_client, _ = _pair(monkeypatch, error=error, suppress_error=True)
+    with caplog.at_level(logging.ERROR):
+        assert sync_client.transcribe(b"RIFF", filename="a.wav") is None
+        assert await async_client.transcribe(b"RIFF", filename="a.wav") is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert len([m for m in messages if "转录 API 错误" in m]) >= 2
+    assert not any("secret-body-echo" in m for m in messages)
+    assert any("APIError status=None request_id=None" in m for m in messages)

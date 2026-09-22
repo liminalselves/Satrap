@@ -96,6 +96,25 @@ async def test_init_platforms_isolates_bad_config_and_reports_it(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_invalid_platform_config_log_omits_settings_secrets(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """跳过无效平台配置的警告只带 id/type, 不泄露 settings 中的凭据"""
+    monkeypatch.setattr(PlatformAdapterManager, "start_all", AsyncMock())
+    platforms: list[Any] = [
+        {"id": "", "type": "onebot", "settings": {"access_token": "tok-secret", "secret": "tok-secret"}},
+        "garbage-tok-secret",
+    ]
+    backend = BackendManager(BackendConfig(platforms=platforms))
+    try:
+        with caplog.at_level(logging.WARNING):
+            await backend._init_platforms()
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("跳过无效平台配置" in message for message in messages)
+        assert not any("tok-secret" in message for message in messages)
+    finally:
+        await backend.stop()
+
+
+@pytest.mark.asyncio
 async def test_health_reflects_errored_adapters(monkeypatch: pytest.MonkeyPatch):
     backend = BackendManager(BackendConfig(platforms=[]))
     backend._running = True

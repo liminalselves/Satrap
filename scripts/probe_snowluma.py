@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import asyncio
 import secrets
+import urllib.parse
 import socket
 import json
 import re
@@ -174,7 +175,7 @@ async def probe(installation: Path) -> dict[str, object]:
                 await process.wait()
             if process is not None and process.returncode:
                 assert process.stderr
-                error = (await process.stderr.read()).decode("utf-8", errors="replace").replace(token, "[redacted]")
+                error = (await process.stderr.read()).decode("utf-8", errors="replace").replace(token, "[redacted]").replace(urllib.parse.quote(token, safe=""), "[redacted]")
                 print(error[:3000])
             await adapter.terminate()
 

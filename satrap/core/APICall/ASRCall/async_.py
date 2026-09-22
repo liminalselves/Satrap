@@ -50,10 +50,13 @@ class AsyncASR(_ASRBase[AsyncOpenAI]):
         except APIError as e:
             if not self.suppress_error:
                 raise e
-            logger.error(f"[AsyncASR] 转录 API 错误: {e}")
+            # 只记状态码与请求 ID, 不落服务端响应体 (可能回显请求内容)
+            status = getattr(e, "status_code", None)
+            request_id = getattr(e, "request_id", None)
+            logger.error(f"[AsyncASR] 转录 API 错误: {type(e).__name__} status={status} request_id={request_id}")
             return None
         except Exception as e:
             if not self.suppress_error:
                 raise e
-            logger.error(f"[AsyncASR] 转录过程发生异常: {type(e).__name__}: {e}")
+            logger.error(f"[AsyncASR] 转录过程发生异常: {type(e).__name__}")
             return None
