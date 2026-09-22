@@ -8,9 +8,10 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.platform import PlatformConfig
+from satrap.core.platform.event import MessageEvent
 
 
-async def event(adapter, message_id, actor="30", group="20", text="正文"):
+async def event(adapter: OneBotAdapter, message_id: str, actor: str = "30", group: str = "20", text: str = "正文") -> MessageEvent:
     """从实际 OneBot 解析构造轻量入站事件"""
     await adapter._handle_group_message({"self_id": 10, "group_id": group, "user_id": actor,
         "message_id": message_id, "message_type": "group", "message": [{"type": "text", "data": {"text": text}}]})
@@ -89,7 +90,7 @@ async def test_necessity_score_explains_question_and_recent_submission_penalty()
     snapshot = window.observe(second, 1)
     next_decision = window.decide(second, snapshot, 1)
     assert not next_decision.triggered
-    assert next_decision.score < decision.score
+    assert next_decision.score is not None and decision.score is not None and next_decision.score < decision.score
     assert not window.claim(second, snapshot, True, 1)
     assert window.claim(second, snapshot, False, 1)
 
@@ -168,4 +169,75 @@ async def test_max_wait_cancelled_on_close_and_queued_ticket_revoked():
     await scheduler.wake_timers.close()
     await asyncio.sleep(0.05)
     assert adapter._event_queue.empty()
+    assert not scheduler.wake_timers.tasks
+
+
+@pytest.mark.asyncio
+async def test_deadline_recheck_in_cooldown_reschedules_after_cooldown_not_immediately(monkeypatch: pytest.MonkeyPatch):
+    """到期复查命中冷却时, 重排不早于冷却结束且有最小延迟, 不形成零延迟忙循环"""
+    from satrap.core.pipeline import wake_timers as timers_module
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.02, "wake_cooldown": 5,
+    }))
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    first = await event(adapter, "1", text="第一批")
+    await scheduler.execute(first)
+    timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
+    await scheduler.execute(timed)
+    manager.handle_call_async.assert_awaited_once()
+    # 冷却期内新正文到达并再次到期
+    second = await event(adapter, "2", text="第二批")
+    await scheduler.execute(second)
+    timed2 = await asyncio.wait_for(adapter._event_queue.get(), 1)
+    sleeps: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def spy_sleep(delay: float, *args: object, **kwargs: object) -> None:
+        sleeps.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(timers_module.asyncio, "sleep", spy_sleep)
+    await scheduler.execute(timed2)
+    assert timed2.get_extra("wake_decision").rule == "cooldown"
+    await asyncio.sleep(0.01)
+    assert sleeps and sleeps[-1] >= 4.5, sleeps
+    assert manager.handle_call_async.await_count == 1
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
+async def test_deadline_recheck_not_rescheduled_when_policy_changed():
+    """到期复查因策略失效未触发时不再重排"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.02,
+    }))
+    manager = AsyncMock()
+    scheduler = PipelineScheduler(manager)
+    await scheduler.execute(await event(adapter, "1", text="正文"))
+    timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
+    adapter.config.settings = {"wake_mode": "explicit"}
+    await scheduler.execute(timed)
+    manager.handle_call_async.assert_not_awaited()
+    assert not scheduler.wake_timers.tasks
+
+
+@pytest.mark.asyncio
+async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptureFixture):
+    import logging
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.01,
+    }))
+    scheduler = PipelineScheduler(AsyncMock())
+    original = await event(adapter, "1", text="正文")
+
+    def broken_commit(_event: object) -> bool:
+        raise RuntimeError("queue gone")
+
+    adapter.commit_event = broken_commit  # type: ignore[method-assign]
+    with caplog.at_level(logging.WARNING):
+        await scheduler.execute(original)
+        await asyncio.sleep(0.05)
+    assert any("到期复查提交失败" in record.getMessage() and "RuntimeError" in record.getMessage() for record in caplog.records)
     assert not scheduler.wake_timers.tasks

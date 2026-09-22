@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import asyncio
+from time import monotonic
 import inspect
 from typing import (
     Awaitable,
@@ -154,8 +155,13 @@ class PipelineScheduler:
                         automatic = True
                         event.is_wake = True
             if not event.is_private_chat() and not event.is_wake_up():
-                # 到期复查未触发时同样重排, 让残留正文仍有兜底机会
-                self.wake_timers.schedule(event)
+                if deadline_ticket is None:
+                    self.wake_timers.schedule(event)
+                else:
+                    # 到期复查未触发: 仅冷却中才重排, 且不早于冷却结束, 避免零延迟忙循环
+                    decision = event.get_extra("wake_decision")
+                    if isinstance(decision, WakeDecision) and decision.rule == "cooldown":
+                        self.wake_timers.schedule(event, earliest=monotonic() + self.wake_window.cooldown_remaining(event))
                 return
 
             message = event.get_message_str()

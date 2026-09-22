@@ -6,7 +6,7 @@ OneBot 平台事件与消息收发适配器
 """
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from collections import OrderedDict
 import asyncio
 import inspect
@@ -92,7 +92,7 @@ class OneBotAdapter(PlatformAdapter):
         self.bot_self_id = str(settings.get("self_id") or "")
         self.client_self_id = self.bot_self_id
         self._seen_messages: OrderedDict[tuple[str, str, str, str], float] = OrderedDict()
-        self._ingress_rejections: dict[str, int] = {"account": 0, "self_echo": 0, "duplicate": 0}
+        self._ingress_rejections: dict[str, int] = {"account": 0, "self_echo": 0, "duplicate": 0, "handler_error": 0}
         self._bot: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
@@ -157,10 +157,31 @@ class OneBotAdapter(PlatformAdapter):
         if not self._bot:
             return
 
-        self._bot.on_message("private")(self._handle_private_message)
-        self._bot.on_message("group")(self._handle_group_message)
-        self._register_optional_handler("on_notice", self._handle_notice)
-        self._register_optional_handler("on_request", self._handle_request)
+        self._bot.on_message("private")(self._guard_handler("private_message", self._handle_private_message))
+        self._bot.on_message("group")(self._guard_handler("group_message", self._handle_group_message))
+        self._register_optional_handler("on_notice", self._guard_handler("notice", self._handle_notice))
+        self._register_optional_handler("on_request", self._guard_handler("request", self._handle_request))
+
+    def _guard_handler(self, name: str, handler: Callable[[dict[str, Any]], Awaitable[None]]) -> Callable[[dict[str, Any]], Awaitable[None]]:
+        """
+        为 aiocqhttp 回调加顶层兜底: aiocqhttp 用无回调的 create_task 派发, 异常否则只在 GC 时可见
+
+        参数:
+        - name: 日志中的处理器名
+        - handler: 原始处理协程
+
+        返回:
+        - 包装后的处理协程, 单条坏事件只计数与记日志, 不改变适配器状态
+        """
+        async def guarded(event: dict[str, Any]) -> None:
+            try:
+                await handler(event)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                self._ingress_rejections["handler_error"] += 1
+                logger.error(f"[OneBotAdapter] {name} 处理异常: {type(error).__name__}: {error}")
+        return guarded
 
     def _register_optional_handler(self, method_name: str, handler: Any) -> None:
         """

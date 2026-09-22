@@ -6,7 +6,7 @@
 
 场景:
 - ingress_explicit  : explicit 模式, 未唤醒群消息, 50 群白名单 + 50 条群覆盖 + 3 条时段规则, 2000 条/轮
-- ingress_frequency : frequency 模式同上, 窗口预灌满 512 路由 × 32 条
+- ingress_frequency : frequency 模式同上, 窗口预灌满 512 路由 × 32 条, 测量消息按 31 条/路由轮换避免达到阈值
 - window_observe    : 预灌满 WakeWindow(512, 32) 后单次 observe
 - outbound_split    : split_components 32000 字符含非文本组件
 - config_reload     : 50 平台配置文件的 reload_platform_policies (后端未运行, 仅校验与指纹)
@@ -139,7 +139,8 @@ async def bench_ingress(mode: str, messages: int, prefill_window: bool) -> dict[
     samples: list[float] = []
     try:
         for index in range(messages):
-            payload = group_payload(index)
+            # frequency 模式每路由至多 31 条, 低于无覆盖阈值 32, 保证基线消息永不触发自动参与
+            payload = group_payload(index, group=str(300000 + index // 31)) if prefill_window else group_payload(index)
             started = time.perf_counter()
             await adapter._handle_group_message(payload)
             event = adapter._event_queue.get_nowait()

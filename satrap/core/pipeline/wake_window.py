@@ -212,6 +212,23 @@ class WakeWindow:
                 self._submitted.popitem(last=False)
         return selected
 
+    def cooldown_remaining(self, event: MessageEvent, now: float | None = None) -> float:
+        """
+        该路由距离自动参与冷却结束的剩余秒数
+
+        参数:
+        - event: 目标事件
+        - now: 参考时刻
+
+        返回:
+        - float: 剩余秒数, 不在冷却中返回 0
+        """
+        now = monotonic() if now is None else now
+        last = self._submitted.get(self.key(event))
+        if last is None:
+            return 0.0
+        return max(0.0, float(event.policy_settings.get("wake_cooldown", 30)) - (now - last))
+
     def peek(self, event: MessageEvent, now: float | None = None) -> tuple[PendingText, ...]:
         """
         读取未过期正文, 不增加计数或延长有效期

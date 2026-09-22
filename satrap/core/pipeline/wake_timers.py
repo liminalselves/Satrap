@@ -9,6 +9,10 @@ from satrap.core.pipeline.wake_window import WakeWindow, PendingText
 from satrap.core.platform.event import MessageEvent
 from satrap.core.components import Plain
 from satrap.core.platform import PlatformAdapter
+from satrap.core.log import logger
+
+MIN_RESCHEDULE_DELAY = 0.5
+"""复查重排的最小延迟秒数, 防止到期时间已过导致零延迟忙循环"""
 
 
 @dataclass
@@ -33,12 +37,13 @@ class WakeTimers:
         self.tasks: dict[tuple[str, ...], asyncio.Task[None]] = {}
         self.tickets: WeakKeyDictionary[MessageEvent, DeadlineTicket] = WeakKeyDictionary()
 
-    def schedule(self, event: MessageEvent) -> None:
+    def schedule(self, event: MessageEvent, *, earliest: float | None = None) -> None:
         """
         按最早正文的到期时间安排一次复查, 不持有附件资源
 
         参数:
         - event: 已通过权限检查的原事件
+        - earliest: 到期时间下限 (monotonic), 到期复查未触发时由调用方传入剩余冷却
         """
         wait = float(event.policy_settings.get("wake_max_wait", 0))
         if wait <= 0 or event.policy_settings.get("wake_mode") not in {"frequency", "necessity"} or not isinstance(event.adapter, PlatformAdapter):
@@ -61,6 +66,8 @@ class WakeTimers:
         ticket = DeadlineTicket()
         self.tickets[lightweight] = ticket
         due = snapshot[0].received_at + wait
+        if earliest is not None:
+            due = max(due, earliest, monotonic() + MIN_RESCHEDULE_DELAY)
 
         async def enqueue() -> None:
             """到期后回到平台队列, 不直接调用模型"""
@@ -69,6 +76,12 @@ class WakeTimers:
                 ticket.snapshot = self.window.peek(lightweight)
                 if ticket.snapshot and not ticket.cancelled and adapter.config.enable:
                     adapter.commit_event(lightweight)
+                else:
+                    logger.debug(f"[WakeTimers] 到期复查跳过 adapter={adapter.config.id} cancelled={ticket.cancelled} pending={len(ticket.snapshot)}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(f"[WakeTimers] 到期复查提交失败 adapter={adapter.config.id}: {type(error).__name__}: {error}")
             finally:
                 if self.tasks.get(key) is asyncio.current_task():
                     self.tasks.pop(key, None)

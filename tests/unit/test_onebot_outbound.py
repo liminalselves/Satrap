@@ -177,3 +177,26 @@ async def test_outbound_turns_rejects_when_full_and_after_close():
     with pytest.raises(RuntimeError):
         await turns.run("t0", lambda: asyncio.sleep(0))
     assert not turns.locks
+
+
+@pytest.mark.asyncio
+async def test_outbound_turns_external_cancel_keeps_cancelled_error_and_child_failure_keeps_cause():
+    turns = OutboundTurns()
+    started = asyncio.Event()
+
+    async def slow() -> None:
+        started.set()
+        await asyncio.sleep(10)
+
+    caller = asyncio.create_task(turns.run("t", slow))
+    await started.wait()
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    assert not turns.tasks and not turns.locks
+
+    async def failing() -> None:
+        raise ValueError("platform said no")
+
+    with pytest.raises(ValueError, match="platform said no"):
+        await turns.run("t", failing)

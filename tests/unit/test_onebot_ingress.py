@@ -1,3 +1,4 @@
+from typing import Any
 import asyncio
 
 import pytest
@@ -6,7 +7,7 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig
 
 
-def payload(message_id=10, self_id=10000, user_id=123, group_id=456):
+def payload(message_id: int | None = 10, self_id: int | None = 10000, user_id: int = 123, group_id: int = 456) -> dict[str, Any]:
     return {"self_id": self_id, "user_id": user_id, "group_id": group_id,
             "message_id": message_id, "message_type": "group",
             "message": [{"type": "text", "data": {"text": "测试正文"}}]}
@@ -24,7 +25,7 @@ async def test_account_binding_and_echo_filter_do_not_poison_dedup():
     assert adapter.bot_self_id == adapter.client_self_id == "10000"
     assert adapter._event_queue.qsize() == 2
     assert adapter.get_stats()["ingress"] == {
-        "account": 2, "self_echo": 1, "duplicate": 0, "dedup_entries": 2,
+        "account": 2, "self_echo": 1, "duplicate": 0, "handler_error": 0, "dedup_entries": 2,
         "dedup_capacity": 4096, "dedup_ttl": 120,
     }
 
@@ -113,3 +114,25 @@ async def test_missing_message_id_is_not_a_shared_dedup_key():
         await adapter._handle_group_message(payload(message_id=None))
     assert adapter._event_queue.qsize() == 2
     assert not adapter._seen_messages
+
+
+@pytest.mark.asyncio
+async def test_guarded_handler_isolates_exception_and_counts(caplog: pytest.LogCaptureFixture):
+    """aiocqhttp 回调入口异常被兜底记录, 不改变适配器状态"""
+    import logging
+    from unittest.mock import AsyncMock, Mock
+    from satrap.core.platform import PlatformStatus
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
+    seen: list[str] = []
+    adapter._bot = Mock(spec=["on_message"])
+    adapter._bot.on_message = lambda kind: (lambda handler: seen.append(kind) or handler)
+    adapter._register_handlers()
+    assert seen == ["private", "group"]
+    guarded = adapter._guard_handler("group_message", AsyncMock(side_effect=ValueError("bad whitelist")))
+    with caplog.at_level(logging.ERROR):
+        await guarded(payload())
+    assert adapter._ingress_rejections["handler_error"] == 1
+    assert adapter.status is not PlatformStatus.ERROR
+    assert any("group_message 处理异常" in record.getMessage() and "ValueError" in record.getMessage() for record in caplog.records)
+    with pytest.raises(asyncio.CancelledError):
+        await adapter._guard_handler("x", AsyncMock(side_effect=asyncio.CancelledError()))(payload())

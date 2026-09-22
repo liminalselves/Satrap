@@ -145,8 +145,11 @@ class OutboundTurns:
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
-            if task.cancelled() or (task.done() and task.exception() is not None):
+            if self.closed and task.cancelled():
                 raise RuntimeError("发送队列已关闭") from None
+            if task.done() and not task.cancelled() and task.exception() is not None:
+                raise RuntimeError("发送子任务失败") from task.exception()
+            # 调用方自身被取消: 连带取消子任务并保留取消语义
             task.cancel()
             raise
         finally:
