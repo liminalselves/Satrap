@@ -9,6 +9,7 @@ import yaml
 
 from satrap.expend.plugins.group_admin.tools import _DEFINITIONS, AsyncGroupAdminTool, get_tools
 from satrap.core.call_context import CallOrigin, bind_call_origin
+from satrap.core.framework.Base import Session
 from satrap.core.platform import (
     PlatformAdapterManager,
     PlatformAdapterRegistry,
@@ -46,7 +47,7 @@ def _clear_manager():
 def test_meta_declares_exactly_the_implemented_tools():
     from pathlib import Path
     meta_path = Path(__file__).parent.parent.parent / "satrap" / "expend" / "plugins" / "group_admin" / "meta.yaml"
-    meta = yaml.safe_load(meta_path.read_text(encoding="utf-8"))
+    meta = cast(dict[str, Any], yaml.safe_load(meta_path.read_text(encoding="utf-8")))
     assert set(meta["tools"]) == set(_DEFINITIONS)
 
 
@@ -75,7 +76,7 @@ def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
 
 class TestToolConstruction:
     def test_sync_session_gets_sync_tools(self):
-        tools = get_tools(object(), {})
+        tools = get_tools(cast(Session, object()), {})
         assert len(tools) == len(_DEFINITIONS) == 18
         assert not any(isinstance(t, type) for t in tools)
         ban = next(t for t in tools if t.tool_name == "group_admin_ban")
@@ -96,7 +97,7 @@ class TestPermissionGate:
     @pytest.mark.asyncio
     async def test_missing_origin_is_rejected(self):
         _setup_adapter()
-        tool = next(t for t in get_tools(object(), {}) if t.tool_name == "group_admin_get_group_info")
+        tool = next(t for t in get_tools(cast(Session, object()), {}) if t.tool_name == "group_admin_get_group_info")
         result = await asyncio.get_running_loop().run_in_executor(None, lambda: tool.execute())
         assert result["status"] == "error" and "来源身份" in result["error"]
 
@@ -157,7 +158,7 @@ class TestExecution:
         adapter._loop = asyncio.get_running_loop()
         adapter._bot.set_group_kick.return_value = {}
         config = {"write_tools_enabled": True}
-        tool = next(t for t in get_tools(object(), config) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
 
         def run() -> dict[str, object]:
             with bind_call_origin(_origin()):
@@ -171,7 +172,7 @@ class TestExecution:
     async def test_sync_tool_without_loop_reports_error(self):
         _setup_adapter()
         config = {"write_tools_enabled": True}
-        tool = next(t for t in get_tools(object(), config) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await asyncio.to_thread(tool.execute, user_id="321")
         assert result["status"] == "error" and "事件循环" in result["error"]
@@ -257,7 +258,7 @@ class TestLoggingAndTimeout:
             return future
 
         monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", fast_timeout)
-        tool = next(t for t in get_tools(cast(Any, object()), {"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in get_tools(cast(Session, object()), {"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
 
         def run() -> Any:
             with bind_call_origin(_origin()):

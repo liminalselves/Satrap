@@ -27,6 +27,14 @@ def runtime():
     return backend, adapter, manager
 
 
+def _scheduler(backend: BackendManager) -> PipelineScheduler:
+    """取运行时装配的调度器, 缺失视为装配错误"""
+    scheduler = backend._scheduler
+    if scheduler is None:
+        raise AssertionError("运行时装配缺失调度器")
+    return scheduler
+
+
 @pytest.mark.asyncio
 async def test_prompt_manual_wake_keeps_management_actor_separate_and_is_idempotent():
     backend, adapter, manager = runtime()
@@ -40,7 +48,7 @@ async def test_prompt_manual_wake_keeps_management_actor_separate_and_is_idempot
     assert event.call_origin.actor_kind == "management"
     assert event.call_origin.actor_id == "management"
     assert event.call_origin.route_user_id == "30"
-    await backend._scheduler.execute(event)
+    await _scheduler(backend).execute(event)
     manager.handle_call_async.assert_awaited_once()
     assert manager.handle_call_async.call_args.args[0].message == "手动处理"
     assert (await backend.wake_platform(payload, operator="management"))["state"] == "processed"
@@ -53,18 +61,18 @@ async def test_manual_pending_window_and_stop_guard():
     await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
         "message_type": "group", "message": [{"type": "text", "data": {"text": "等待处理"}}]})
     original = adapter._event_queue.get_nowait()
-    await backend._scheduler.execute(original)
+    await _scheduler(backend).execute(original)
     payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "request_id": "pending"}
     assert (await backend.wake_platform(payload, operator="management"))["status"] == "accepted"
     event = adapter._event_queue.get_nowait()
-    await backend._scheduler.execute(event)
+    await _scheduler(backend).execute(event)
     manager.handle_call_async.assert_awaited_once()
     assert "等待处理" in manager.handle_call_async.call_args.args[0].message
     assert (await backend.wake_platform({**payload, "request_id": "empty"}, operator="management"))["status"] == "no_pending"
     assert (await backend.wake_platform({**payload, "request_id": "stop", "prompt": "不能越过停止"}, operator="management"))["status"] == "accepted"
     event = adapter._event_queue.get_nowait()
     event.call_llm = False
-    await backend._scheduler.execute(event)
+    await _scheduler(backend).execute(event)
     assert manager.handle_call_async.await_count == 1
 
 
@@ -144,7 +152,10 @@ def test_stale_pending_requests_release_capacity(monkeypatch: pytest.MonkeyPatch
     for index in range(512):
         ticket = ManualWakeTicket(request_id=f"r{index}")
         requests.records[ticket.request_id] = ("fp", clock[0], ticket)
-    assert requests.check("new", "fp")["reason"] == "request_capacity"
+    rejected = requests.check("new", "fp")
+    if rejected is None:
+        raise AssertionError("容量满时应拒绝")
+    assert rejected["reason"] == "request_capacity"
     clock[0] += module.PENDING_TTL + 301
     assert requests.check("new", "fp") is None
     assert not requests.records

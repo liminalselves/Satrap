@@ -9,11 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, cast
+from urllib.parse import urlsplit
 import asyncio
+import os
 import tempfile
 
-from satrap.core.utils.outbound import UnsafeOutboundURLError, safe_async_get
+from satrap.core.utils.outbound import UnsafeOutboundURLError, normalize_hostname, safe_async_get
 from satrap.core.pipeline.audio_convert import AudioTooLong, convert_to_wav, probe_audio
 from satrap.core.platform.onebot.admin import PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.async_worker import BoundedAsyncWorker
@@ -40,6 +43,8 @@ FETCH_TIMEOUT = 20.0
 """单个附件下载超时秒数"""
 ASR_TIMEOUT = 60.0
 """单次转写总超时秒数"""
+ATTACHMENT_TOTAL_TIMEOUT = 90.0
+"""每事件附件处理总预算秒数, 超出后其余附件标记 attachment_budget_exceeded 不再获取"""
 AUDIO_MAX_SECONDS = 300.0
 """本地转码接受的最长语音秒数"""
 VOICE_TRANSCRIBE_MODES = ("off", "asr", "platform", "asr_then_platform")
@@ -89,16 +94,19 @@ async def _download(url: str, limit: int, trusted_hosts: tuple[str, ...], verify
     - url: 平台上报的下载地址
     - limit: 最大字节数
     - trusted_hosts: 允许访问私网的显式主机名
-    - verify_tls: 是否校验证书, 仅在用户显式开启 media_insecure_tls 时关闭
+    - verify_tls: 是否校验证书; 用户开启 media_insecure_tls 时为 False, 且仅对 trusted_hosts 登记的主机生效, 公网下载始终校验
 
     返回:
     - bytes: 响应正文, 超限或不安全地址时抛出异常
     """
     if not url.lower().startswith(("http://", "https://")):
         raise UnsafeOutboundURLError("附件地址不是 http/https URL")
+    host = normalize_hostname(urlsplit(url).hostname or "")
+    trusted = {normalize_hostname(item) for item in trusted_hosts}
+    effective_verify = verify_tls or host not in trusted
     response = await safe_async_get(
         url, timeout=FETCH_TIMEOUT, max_response_bytes=limit, trusted_hosts=trusted_hosts,
-        ssl_verify=verify_tls, restrict_redirects_to_origin=True,
+        ssl_verify=effective_verify, restrict_redirects_to_origin=True,
     )
     response.raise_for_status()
     return response.content
@@ -248,9 +256,36 @@ async def _resolve_record(
         return "failed", "", asr_reason or type(error).__name__
 
 
+def _write_and_extract(data: bytes, suffix: str) -> tuple[str, str]:
+    """
+    线程内写入临时文件并提取正文 (由 EXTRACT_WORKERS 调用, 不占用事件循环)
+
+    参数:
+    - data: 文件字节
+    - suffix: 扩展名
+
+    返回:
+    - tuple[str, str]: (临时文件路径, 提取正文); 失败时临时文件已在内部清理, 不向事件登记
+    """
+    handle = tempfile.NamedTemporaryFile(prefix="satrap-attach-", suffix=suffix, delete=False)
+    path = handle.name
+    try:
+        try:
+            handle.write(data)
+        finally:
+            handle.close()
+        return path, extract_text(path, max_length=FILE_TEXT_LIMIT, max_file_size=FILE_MAX_BYTES)
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError as error:
+            logger.debug(f"[attachments] 临时文件清理失败 path={path}: {type(error).__name__}")
+        raise
+
+
 async def _extract_file(data: bytes, suffix: str, event: MessageEvent) -> str:
     """
-    写入临时文件后在线程中提取正文, 临时文件登记到事件
+    在线程中写入临时文件并提取正文, 成功后临时文件登记到事件
 
     参数:
     - data: 文件字节
@@ -260,19 +295,17 @@ async def _extract_file(data: bytes, suffix: str, event: MessageEvent) -> str:
     返回:
     - str: 提取正文, 已按 FILE_TEXT_LIMIT 截断
     """
-    handle = tempfile.NamedTemporaryFile(prefix="satrap-attach-", suffix=suffix, delete=False)
-    event.track_temporary_local_file(handle.name)
-    # 先登记再写入, 写入失败时仍由事件统一清理
-    try:
-        handle.write(data)
-    finally:
-        handle.close()
-    return await EXTRACT_WORKERS.run(extract_text, handle.name, max_length=FILE_TEXT_LIMIT, max_file_size=FILE_MAX_BYTES)
+    path, text = await EXTRACT_WORKERS.run(_write_and_extract, data, suffix)
+    # 提取成功后登记, 由事件统一清理; 失败路径已在 _write_and_extract 内部清理
+    event.track_temporary_local_file(path)
+    return text
 
 
 async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | None) -> tuple[AttachmentResult, ...]:
     """
     处理顶层 Record 与 File 组件, 每事件至多 ATTACHMENT_LIMIT 个
+
+    全程受 ATTACHMENT_TOTAL_TIMEOUT 总预算约束, 预算耗尽后其余附件直接标记失败, 不再发起下载或转写
 
     参数:
     - event: 已唤醒且已通过限流的事件
@@ -287,6 +320,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
     asr_name = str(settings.get("asr_model", "") or "")
     voice_mode = str(settings.get("voice_transcribe", "asr") or "asr")
     extract_enabled = settings.get("attachment_extract", True) is not False
+    deadline = monotonic() + ATTACHMENT_TOTAL_TIMEOUT
     results: list[AttachmentResult] = []
     handled = 0
     for comp in event.get_messages():
@@ -298,6 +332,9 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
         display = name or Path(url.split("?", 1)[0]).name or kind
         if handled >= ATTACHMENT_LIMIT:
             results.append(AttachmentResult(kind, display, "skipped", reason="attachment_limit"))
+            continue
+        if monotonic() >= deadline:
+            results.append(AttachmentResult(kind, display, "failed", reason="attachment_budget_exceeded"))
             continue
         handled += 1
         if kind == "record":
@@ -355,6 +392,11 @@ _UNSUPPORTED_HINTS = {
 }
 """unsupported 状态的原因说明, 未列出的原因使用通用文案"""
 
+_FAILED_HINTS = {
+    "attachment_budget_exceeded": "附件处理超时, 已跳过",
+}
+"""failed 状态的原因说明, 未列出的原因使用通用文案"""
+
 
 def render_attachments(results: tuple[AttachmentResult, ...]) -> str:
     """
@@ -379,7 +421,7 @@ def render_attachments(results: tuple[AttachmentResult, ...]) -> str:
         elif item.status == "skipped":
             blocks.append(f"[{label}: 超出附件处理数量]")
         else:
-            blocks.append(f"[{label}: 获取或处理失败]")
+            blocks.append(f"[{label}: {_FAILED_HINTS.get(item.reason, '获取或处理失败')}]")
     return "\n".join(blocks)
 
 

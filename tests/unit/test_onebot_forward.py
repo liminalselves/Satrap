@@ -1,4 +1,5 @@
 """合并转发入站解析, 回源投影与出站发送分流"""
+from typing import cast
 from unittest.mock import AsyncMock
 
 from aiocqhttp.exceptions import ActionFailed
@@ -247,7 +248,7 @@ class TestOutboundForward:
     def test_flatten_replaces_nested_forward_with_placeholder(self):
         flat = flatten_forward_nodes([Node([Plain("甲"), Forward(id="f9")]), Node([Plain("乙")])])
         assert [type(c) for c in flat] == [Plain, Plain, Plain]
-        assert flat[1].text == "[转发]"
+        assert cast(Plain, flat[1]).text == "[转发]"
 
     @pytest.mark.asyncio
     async def test_mixed_chain_sends_normal_forward_normal_in_order(self):
@@ -321,5 +322,5 @@ def test_forward_lookup_must_be_boolean(value: object):
 
 def test_forward_component_keeps_resolved_nodes():
     forward = Forward(id="f", nodes=[Node([Plain("x")])])
-    assert forward.nodes is not None and forward.nodes[0].content[0].text == "x"
+    assert forward.nodes is not None and cast(Plain, forward.nodes[0].content[0]).text == "x"
     assert Forward(id="g").nodes is None

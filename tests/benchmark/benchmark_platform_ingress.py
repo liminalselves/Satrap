@@ -62,7 +62,7 @@ def source_hashes() -> dict[str, str]:
     return {name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in SOURCE_FILES}
 
 
-def summarize(samples: list[float]) -> dict[str, float]:
+def summarize(samples: list[float]) -> dict[str, object]:
     ordered = sorted(samples)
     return {
         "mean_us": statistics.fmean(ordered) * 1e6,

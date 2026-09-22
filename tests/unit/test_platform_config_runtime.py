@@ -1,4 +1,5 @@
 from copy import deepcopy
+from typing import Any, cast
 from unittest.mock import AsyncMock
 import json
 from pathlib import Path
@@ -9,8 +10,24 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.config.loader import ConfigLoader
-from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.platform import PlatformAdapter, PlatformAdapterManager, PlatformConfig
 from satrap.core.config.document import config_document_revision, load_config_document
+
+
+def _require_adapter(manager: PlatformAdapterManager, adapter_id: str) -> PlatformAdapter:
+    """取管理器中的适配器, 缺失视为装配错误"""
+    adapter = manager.get_adapter(adapter_id)
+    if adapter is None:
+        raise AssertionError(f"适配器缺失: {adapter_id}")
+    return adapter
+
+
+def _require_manager(backend: BackendManager) -> PlatformAdapterManager:
+    """取后端装配的适配器管理器, 缺失视为装配错误"""
+    manager = backend._adapter_mgr
+    if manager is None:
+        raise AssertionError("运行时装配缺失适配器管理器")
+    return manager
 
 
 def setup_runtime(tmp_path):
@@ -156,28 +173,33 @@ async def test_targeted_replace_rollback_disable_and_delete(tmp_path):
 
     backend, _, path, platform = setup_runtime(tmp_path)
     platform["type"] = "test-runtime"
-    backend._adapter_mgr.registry.register("test-runtime", Adapter)
+    mgr = _require_manager(backend)
+    mgr.registry.register("test-runtime", Adapter)
     old = Adapter(PlatformConfig(id="bot", type="test-runtime", settings=deepcopy(platform["settings"])))
     other = Adapter(PlatformConfig(id="other", type="test-runtime"))
-    backend._adapter_mgr._adapters = {"bot": old, "other": other}
+    adapters: dict[str, PlatformAdapter] = {"bot": old, "other": other}
+    mgr._adapters = adapters
     backend._platform_active_configs = {"bot": deepcopy(platform)}
     registry = SimpleNamespace(resolve_definition=lambda *args: (None, SimpleNamespace(enabled=True)))
     runtime = SimpleNamespace(provider_registry=registry, plugin_environment=None)
-    backend._platform_runtimes["bot"] = (runtime, None)
+    # 鸭子类型替身: 运行时只读 provider_registry/plugin_environment
+    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
     backend._running = True
-    backend._dispatcher = EventDispatcher(backend._adapter_mgr, AsyncMock())
+    backend._dispatcher = EventDispatcher(mgr, AsyncMock())
     await old.start()
     await other.start()
     await old.wait_ready()
     dispatch = asyncio.create_task(backend._dispatcher.dispatch_loop())
     await asyncio.sleep(0)
     unrelated = other._run_task
+    if unrelated is None:
+        raise AssertionError("适配器主循环任务缺失")
     try:
         platform["settings"]["port"] = 6790
         path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
         first = (await backend.reload_platform_policies())[0]
         assert first["status"] == "applied"
-        current = backend._adapter_mgr.get_adapter("bot")
+        current = _require_adapter(mgr, "bot")
         assert current is not old and current.started and not old.started
         assert other._run_task is unrelated and not unrelated.done()
         platform["settings"]["fail"] = True
@@ -186,30 +208,30 @@ async def test_targeted_replace_rollback_disable_and_delete(tmp_path):
         assert failed["status"] == "failed"
         assert failed["old_runtime_preserved"] is True
         assert failed["active_revision"] == first["active_revision"]
-        assert backend._adapter_mgr.get_adapter("bot") is current and current.started
+        assert mgr.get_adapter("bot") is current and current.started
         assert not current.config.settings.get("fail")
         platform["settings"].pop("fail")
         platform["enable"] = False
         path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
         assert (await backend.reload_platform_policies())[0]["status"] == "applied"
-        assert not backend._adapter_mgr.get_adapter("bot").started
+        assert not _require_adapter(mgr, "bot").started
         assert "bot" not in backend._dispatcher._workers
         platform["enable"] = True
         path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
         assert (await backend.reload_platform_policies())[0]["status"] == "applied"
-        assert backend._adapter_mgr.get_adapter("bot").started
+        assert _require_adapter(mgr, "bot").started
         path.write_text('{"platforms": []}', encoding="utf-8")
         deleted = (await backend.reload_platform_policies())[0]
         assert deleted["status"] == "applied" and deleted["active_revision"] is None
-        assert backend._adapter_mgr.get_adapter("bot") is None
+        assert mgr.get_adapter("bot") is None
         path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
         assert (await backend.reload_platform_policies())[0]["status"] == "applied"
-        assert backend._adapter_mgr.get_adapter("bot").started
+        assert _require_adapter(mgr, "bot").started
         assert other._run_task is unrelated and not unrelated.done()
     finally:
         dispatch.cancel()
         await asyncio.gather(dispatch, return_exceptions=True)
-        for adapter in backend._adapter_mgr._adapters.values():
+        for adapter in mgr._adapters.values():
             await adapter.terminate()
 
 
@@ -222,7 +244,10 @@ async def test_onebot_readiness_checks_own_listener(unused_tcp_port):
         assert adapter.started
     finally:
         await adapter.terminate()
-    assert adapter._run_task.done()
+    run_task = adapter._run_task
+    if run_task is None:
+        raise AssertionError("适配器主循环任务缺失")
+    assert run_task.done()
 
 
 @pytest.mark.asyncio

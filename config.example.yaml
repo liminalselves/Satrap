@@ -85,4 +85,4 @@ platforms:
   #     voice_transcribe: asr   # 语音转写来源: asr (默认, 依次尝试实现转码 get_record → 直接下载 → 本地 av 转码) / asr_then_platform (ASR 失败后回退 fetch_ptt_text) / platform (仅平台原生转写, 不需要 asr_model) / off
   #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
   #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记
-  #     media_insecure_tls: false   # 仅在媒体下载地址使用自签证书时开启, 关闭 TLS 校验
+  #     media_insecure_tls: false   # 仅对 media_trusted_hosts 登记的主机关闭 TLS 校验 (自签证书场景), 公网下载始终校验

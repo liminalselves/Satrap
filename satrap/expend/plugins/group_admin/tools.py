@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from collections.abc import Coroutine
-from typing import Any, cast
+from typing import Any, TypeVar, cast, overload
 
 import asyncio
 
@@ -288,13 +288,26 @@ class AsyncGroupAdminTool(_GroupAdminMixin, AsyncTool):
             return {"status": "error", "error": str(error)}
 
 
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool | AsyncGroupAdminTool]:
-    """平台管理工具不依赖会话状态, 权限与适配器在执行时按来源身份解析"""
-    base = AsyncGroupAdminTool if isinstance(session, AsyncSimpleSession) else GroupAdminTool
-    result: list[GroupAdminTool | AsyncGroupAdminTool] = []
+_AnyGroupAdminTool = TypeVar("_AnyGroupAdminTool", GroupAdminTool, AsyncGroupAdminTool)
+
+
+def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list[_AnyGroupAdminTool]:
+    """按工具基类批量构造定义表中的工具"""
+    result: list[_AnyGroupAdminTool] = []
     for name, (description, params, _, _, _) in _DEFINITIONS.items():
-        tool = base(name, description, params)
+        tool = kind(name, description, params)
         tool.recovery_policy = "retry" if not _DEFINITIONS[name][3] else "manual"
         tool.config = config
         result.append(tool)
     return result
+
+
+@overload
+def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: Any = None) -> list[AsyncGroupAdminTool]: ...
+@overload
+def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
+    """平台管理工具不依赖会话状态, 权限与适配器在执行时按来源身份解析"""
+    if isinstance(session, AsyncSimpleSession):
+        return _build_tools(AsyncGroupAdminTool, config)
+    return _build_tools(GroupAdminTool, config)

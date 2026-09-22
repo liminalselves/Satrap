@@ -103,7 +103,18 @@ class ConfigField:
             return self.validate_strict(value)
         try:
             if self.type == "bool":
-                return bool(value)
+                # 显式映射, 避免 bool("false") == True 的 fail-open
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)) and value in (0, 1):
+                    return bool(value)
+                if isinstance(value, str):
+                    mapped = {"true": True, "1": True, "yes": True, "on": True,
+                              "false": False, "0": False, "no": False, "off": False}.get(value.strip().lower())
+                    if mapped is not None:
+                        return mapped
+                logger.warning(f"[插件配置] {self.name} 布尔值 {value!r} 无法识别, 回退默认 {self.default!r}")
+                return self.default
             if self.type == "number":
                 if isinstance(value, bool):
                     return self.default

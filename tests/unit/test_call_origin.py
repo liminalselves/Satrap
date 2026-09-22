@@ -1,9 +1,11 @@
 """验证逐次来源隔离, 清理及工具参数不能覆盖身份"""
 from dataclasses import FrozenInstanceError
+from typing import cast
 import asyncio
 
 import pytest
 
+from satrap.core.framework.Base import AsyncSession, Session as FrameworkSession
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.utils.TCBuilder.async_tool import AsyncTool
@@ -36,7 +38,8 @@ async def test_concurrent_shared_session_calls_keep_actor_and_ignore_model_ident
         async def run(self, message):
             return await tool(actor_id="forged-admin", origin={"actor_id": "forged-admin"})
 
-    session = SharedSession()
+    # 鸭子类型替身: 只实现 run, 不经框架基类构造
+    session = cast(AsyncSession, SharedSession())
     results = await asyncio.gather(*[
         SessionManager._invoke_async_session(session, UserCall(message="hello", origin=origin(actor)))
         for actor in ["admin", "member"]
@@ -61,7 +64,7 @@ async def test_background_task_cannot_reuse_identity_after_turn_finishes():
             tasks.append(asyncio.create_task(delayed()))
             return "done"
 
-    await SessionManager._invoke_async_session(Session(), UserCall(message="hello", origin=origin("admin")))
+    await SessionManager._invoke_async_session(cast(AsyncSession, Session()), UserCall(message="hello", origin=origin("admin")))
     release.set()
     assert await tasks[0] is None
 
@@ -82,7 +85,7 @@ async def test_cancellation_revokes_child_context():
             started.set()
             await asyncio.Event().wait()
 
-    task = asyncio.create_task(SessionManager._invoke_async_session(Session(), UserCall(origin=origin("admin"))))
+    task = asyncio.create_task(SessionManager._invoke_async_session(cast(AsyncSession, Session()), UserCall(origin=origin("admin"))))
     await started.wait()
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -99,9 +102,9 @@ def test_sync_entry_masks_outer_identity_and_resets_after_failure():
 
     actor = origin("admin")
     with pytest.raises(FrozenInstanceError):
-        actor.actor_id = "other"
+        setattr(actor, "actor_id", "other")
     with bind_call_origin(actor):
-        assert SessionManager._invoke_sync_session(Session(), UserCall(message="hello")) == ""
+        assert SessionManager._invoke_sync_session(cast(FrameworkSession, Session()), UserCall(message="hello")) == ""
         assert current_call_origin() == actor
     assert current_call_origin() is None
 

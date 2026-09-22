@@ -338,7 +338,8 @@ class OneBotAdmin:
         if len(encoded) > max_bytes * 4 // 3 + 4:
             raise AdminActionRejected("转码后语音超过大小上限")
         try:
-            data = base64.b64decode(encoded, validate=True)
+            # 大体积解码是 CPU 密集操作, 移出事件循环
+            data = await asyncio.to_thread(base64.b64decode, encoded, validate=True)
         except binascii.Error as error:
             raise AdminActionUnconfirmed("转码结果不是合法 base64") from error
         if len(data) > max_bytes:

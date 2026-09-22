@@ -80,19 +80,27 @@ async def test_voice_is_transcribed_and_projected(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_download_verifies_tls_unless_explicitly_disabled(monkeypatch: pytest.MonkeyPatch):
+async def test_download_verifies_tls_unless_host_is_trusted(monkeypatch: pytest.MonkeyPatch):
+    # 默认始终校验
     adapter, event = await make_event([file_segment()])
     download, calls = fake_download({"https://files.example.com/notes.txt": b"hello"})
     monkeypatch.setattr(module, "safe_async_get", download)
     await resolve_attachments(event, None)
     assert calls[0][2:] == (True, True)
+    # media_insecure_tls 对未登记主机不生效, 仍校验
     adapter, event = await make_event([file_segment()], {"media_insecure_tls": True})
     await resolve_attachments(event, None)
-    assert calls[1][2:] == (False, True)
+    assert calls[1][2:] == (True, True)
+    # 主机登记进 media_trusted_hosts 后才关闭校验
+    adapter, event = await make_event(
+        [file_segment()], {"media_insecure_tls": True, "media_trusted_hosts": ["files.example.com"]})
+    await resolve_attachments(event, None)
+    assert calls[2][2:] == (False, True)
 
 
 @pytest.mark.asyncio
-async def test_temp_file_is_tracked_even_when_write_fails(monkeypatch: pytest.MonkeyPatch):
+async def test_temp_file_is_cleaned_up_when_write_fails(monkeypatch: pytest.MonkeyPatch):
+    """写入在提取线程内完成, 失败时由辅助函数内部清理, 不向事件登记"""
     adapter, event = await make_event([file_segment()])
     download, _ = fake_download({"https://files.example.com/notes.txt": b"hello"})
     monkeypatch.setattr(module, "safe_async_get", download)
@@ -111,7 +119,7 @@ async def test_temp_file_is_tracked_even_when_write_fails(monkeypatch: pytest.Mo
     monkeypatch.setattr(module.tempfile, "NamedTemporaryFile", lambda **kwargs: _Broken())
     results = await resolve_attachments(event, None)
     assert results[0].status == "failed" and results[0].reason == "OSError"
-    assert tracked == [_Broken.name]
+    assert tracked == []
 
 
 @pytest.mark.asyncio
@@ -388,3 +396,57 @@ async def test_transcribe_close_failure_preserves_original_error(monkeypatch: py
     monkeypatch.setattr(module, "build_asr_from_config", _stub_build(_StubASR(error=RuntimeError("transcribe boom"))))
     with pytest.raises(RuntimeError, match="transcribe boom"):
         await module._transcribe(b"x", "a.wav", ASRConfig())
+
+
+@pytest.mark.asyncio
+async def test_insecure_tls_only_applies_to_trusted_hosts(monkeypatch: pytest.MonkeyPatch):
+    """media_insecure_tls 只对登记主机关闭校验, 公网主机始终校验"""
+    calls: list[dict[str, Any]] = []
+
+    class _Resp:
+        content = b"x"
+
+        def raise_for_status(self) -> None:
+            return None
+
+    async def fake_get(url: str, **kwargs: Any) -> Any:
+        calls.append({"url": url, **kwargs})
+        return _Resp()
+
+    monkeypatch.setattr(module, "safe_async_get", fake_get)
+    await module._download("https://public.example.com/a.png", 100, ("nas.local",), verify_tls=False)
+    await module._download("https://nas.local/a.png", 100, ("nas.local",), verify_tls=False)
+    await module._download("https://other.local/a.png", 100, ("nas.local",), verify_tls=False)
+    assert calls[0]["ssl_verify"] is True
+    assert calls[1]["ssl_verify"] is False
+    assert calls[2]["ssl_verify"] is True
+
+
+@pytest.mark.asyncio
+async def test_attachment_total_budget_marks_remaining(monkeypatch: pytest.MonkeyPatch):
+    """事件级总预算耗尽后, 其余附件标记 attachment_budget_exceeded 且不再下载"""
+    now = [0.0]
+    monkeypatch.setattr(module, "monotonic", lambda: now[0])
+    payload = {
+        "https://files.example.com/a.txt": b"a",
+        "https://files.example.com/b.txt": b"b",
+        "https://files.example.com/c.txt": b"c",
+    }
+    download, calls = fake_download(payload)
+
+    async def slow_download(url: str, **kwargs: Any) -> OutboundHTTPResponse:
+        now[0] += 100.0
+        return await download(url, **kwargs)
+
+    monkeypatch.setattr(module, "safe_async_get", slow_download)
+    adapter, event = await make_event([
+        file_segment("a.txt", "https://files.example.com/a.txt"),
+        file_segment("b.txt", "https://files.example.com/b.txt"),
+        file_segment("c.txt", "https://files.example.com/c.txt"),
+    ])
+    results = await resolve_attachments(event, None)
+    assert [item.status for item in results] == ["resolved", "failed", "failed"]
+    assert results[1].reason == results[2].reason == "attachment_budget_exceeded"
+    assert len(calls) == 1
+    rendered = render_attachments(results)
+    assert "附件处理超时" in rendered
