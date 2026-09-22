@@ -341,3 +341,18 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 批次 5 `b4b3f64`: 配置持锁读写移出事件循环 (`to_thread`), `_replace_with_retry` 扩 errno 白名单; 发送路径 PermissionError 归一为回执 (原"首块上抛"契约废止, 两处测试改断言); json 段非对象降级不丢消息; 回源 time 非数字不丢消息; admin 时长类型校验前移; ASR 客户端关闭异常不覆盖转写结果; 通知分发任务异常不再逃向 GC; 等 14 项
 
 验收: 改动文件 pyright 与 HEAD 基线逐项 diff 无新增 error/warning; benchmark 无回退; SnowLuma 1.14.17 探针复跑通过且实际观察到连接日志; 坏端口平台真实冒烟 (后端保持启动, /api/health 报告 failed, 正常关闭); 全量单测 1849 passed / 19 skipped。对外行为变化: 群范围外主动发送由抛 PermissionError 改为返回 `failed/target_unavailable` 回执。自动重连与 FileLock 异步化按方案裁定不做。
+
+## 2026-09-23 残留复核整改 (A/B 两批收官)
+
+依据独立复核意见 (写开关 fail-open / pyright 全库口径 / TLS 全局生效 / 附件总预算 / 事件循环阻塞 / 3.10 超时兼容等) 出具 [修复方案](issue-10-residual-review-fix-plan.md), 批次 A `eb3b712` 与批次 B `8f8f8ae` 全部落地, 逐项状态见方案文末"实施状态"。
+
+- N1 写开关 fail-open 修复: `ConfigField.validate` bool 宽松分支改显式映射 ("false"/"0"/"no"/"off" → False), 无法识别回退默认值并告警; 经 `load_global` 加载的字符串 "false" 不再被 `bool()` 判真
+- `media_insecure_tls` 收敛: 仅对 `media_trusted_hosts` 登记主机关闭校验, 公网下载始终校验 (原全局生效)
+- 附件事件级总预算 `ATTACHMENT_TOTAL_TIMEOUT=90s`: 耗尽后其余附件标记 `attachment_budget_exceeded` 不再获取, 最坏路径 ~320s 收敛到 90s+单项收尾; 临时文件写入与 `get_record` base64 解码移出事件循环
+- pyright 全库 48 error 清零 (含 P2 批次遗留的 14 个测试文件错误), 当前 0 errors / 1586 warnings; `get_tools` 增 overload 区分同步/异步返回
+- N2 Python 3.10 兼容: `except asyncio.TimeoutError` (http_api 日志流 / control_server 兜底)
+- 公网明文 http: 新增 `media_plaintext_http` 开关 (默认关闭, 平台设置界面勾选后写入配置文件, 已入热更新键); 用户裁定由"默认放行+文档"改为"把选择权给用户"; `media_trusted_hosts` 登记主机不受限
+- `get_record` source 形态校验 (≤512 字符, 无控制字符); `probe_duration` 时长探测 (wav 标准库 / 其他 PyAV 容器时长), 免转码路径超 300s 拒收; `comp.text` 冻结截断至 TRANSCRIPT_LIMIT
+- 引用/转发/附件解析移入会话锁 claim 成功之后: 并发未认领批次不再浪费下载与转写, 锁持有上限即 90s 附件预算; 平台上报文件名消毒 `_safe_display`; FORWARD_NODE_LIMIT 说明字符串归位 (N3)
+
+验收: 全量单测 1862 passed / 19 skipped; pyright 全库 0 errors / 1586 warnings (不增); 前端 tsc 0 error + vitest 69 绿; 附件 benchmark 复跑 (get_record 路径 +0.5ms 为 to_thread 预期开销); 入站 benchmark 在 B6 重排后无回退 (结果存 `tests/benchmark/results/platform/after-residual.json` 与 `audio-after-residual.json`)。至此独立复核意见全部闭环, fix/issue10 待合回 main。

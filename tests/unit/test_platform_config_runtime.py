@@ -30,9 +30,9 @@ def _require_manager(backend: BackendManager) -> PlatformAdapterManager:
     return manager
 
 
-def setup_runtime(tmp_path):
+def setup_runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter, Path, dict[str, Any]]:
     config_path = tmp_path / "custom.json"
-    platform = {"id": "bot", "type": "onebot", "settings": {"wake_words": ["old"], "port": 6789}}
+    platform: dict[str, Any] = {"id": "bot", "type": "onebot", "settings": {"wake_words": ["old"], "port": 6789}}
     config_path.write_text(json.dumps({"data_root": str(tmp_path / "data"), "platforms": [platform]}), encoding="utf-8")
     backend = BackendManager(ConfigLoader.from_json(config_path))
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=deepcopy(platform["settings"])))
@@ -288,3 +288,14 @@ async def test_reload_failures_are_logged(tmp_path: Path, caplog: pytest.LogCapt
     with caplog.at_level(logging.WARNING):
         await backend.reload_platform_policies(expected_config_revision="deadbeef")
     assert any("修订与本次保存不一致" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_media_plaintext_http_toggle_is_hot_applied(tmp_path: Path):
+    """media_plaintext_http 逐事件读取, 开关切换热生效不触发实例重建"""
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    platform["settings"]["media_plaintext_http"] = True
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "applied"
+    assert adapter.config.settings["media_plaintext_http"] is True
