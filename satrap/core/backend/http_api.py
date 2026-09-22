@@ -147,7 +147,7 @@ class BackendHTTPServer(MiniHTTPServer):
         super().__init__(
             host=host,
             port=port,
-            log_errors=False,
+            log_errors=True,
             session_namespace="backend",
         )
         self.backend = backend

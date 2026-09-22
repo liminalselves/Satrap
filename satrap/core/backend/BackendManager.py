@@ -485,9 +485,14 @@ class BackendManager:
         if message_id:
             try:
                 raw_message = await adapter.fetch_group_message(message_id, str(group_id), str(user_id))
-            except Exception:
+            except Exception as error:
+                logger.warning(f"[BackendManager] 手动唤醒回源失败 request_id={request_id} adapter={adapter_id} operator={operator}: {type(error).__name__}")
                 return {"status": "rejected", "request_id": request_id, "reason": "message_lookup_failed_or_scope_mismatch"}
-        message = await adapter.convert_message(raw_message)
+        try:
+            message = await adapter.convert_message(raw_message)
+        except Exception as error:
+            logger.warning(f"[BackendManager] 手动唤醒消息转换失败 request_id={request_id} adapter={adapter_id}: {type(error).__name__}")
+            return {"status": "rejected", "request_id": request_id, "reason": "message_convert_failed"}
         if message_id:
             prompt = message.message_str
             if not prompt.strip():
@@ -509,7 +514,10 @@ class BackendManager:
             return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
         ticket = ManualWakeTicket(request_id, snapshot)
         requests.register(event, fingerprint, ticket)
-        adapter.commit_event(event)
+        if not adapter.commit_event(event):
+            logger.warning(f"[BackendManager] 手动唤醒入队失败 request_id={request_id} adapter={adapter_id}")
+            return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
+        logger.info(f"[BackendManager] 手动唤醒已接受 request_id={request_id} adapter={adapter_id} group={group_id} operator={operator} pending={len(snapshot)}")
         return {"status": "accepted", "request_id": request_id}
 
     async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
@@ -532,7 +540,11 @@ class BackendManager:
         edictum_results = await self.reconcile_edictum_runtime_async()
         for session_manager, _ in self._platform_runtimes.values():
             await session_manager.reload_model_configs_async()
-        logger.info("[BackendManager] 配置已重载")
+        failed_platforms = [str(item.get("id") or "配置文件") for item in platform_results if item.get("status") == "failed"]
+        if failed_platforms:
+            logger.warning(f"[BackendManager] 配置已重载, 但 {len(failed_platforms)} 个平台应用失败: {', '.join(failed_platforms)}")
+        else:
+            logger.info("[BackendManager] 配置已重载")
         return {
             "ok": all(item.get("ok", False) for item in edictum_results) and all(item["status"] == "applied" for item in platform_results),
             "platforms": platform_results,
@@ -600,6 +612,7 @@ class BackendManager:
                 else:
                     candidates = validate_platforms(deepcopy(self.config.platforms))
             except Exception as error:
+                logger.warning(f"[BackendManager] 平台配置读取或校验失败: {type(error).__name__}: {error}")
                 self._platform_config_results = [{
                     "id": platform_id, "saved_revision": None,
                     "active_revision": self._platform_revision(self._normalized_platform_snapshot(active)), "status": "failed",
@@ -610,6 +623,7 @@ class BackendManager:
                                                       "status": "failed", "error": "平台配置读取或校验失败"}]
                 return deepcopy(self._platform_config_results)
             if expected_config_revision is not None and source_revision != expected_config_revision:
+                logger.warning("[BackendManager] 平台配置修订与本次保存不一致, 未应用平台变更")
                 candidate_map = {str(item["id"]): item for item in candidates}
                 self._platform_config_results = [{
                     "id": platform_id, "status": "failed", "reason": "source_revision_mismatch",
@@ -676,6 +690,7 @@ class BackendManager:
                         result.update(status="applied", active_revision=saved_revision)
                         result.pop("reason", None)
                     except Exception as error:
+                        logger.warning(f"[BackendManager] 平台 {platform_id} 应用失败: {type(error).__name__}: {error}")
                         restored = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
                         preserved = restored is adapter and restored is not None and (
                             not restored.config.enable or (restored.started and restored._run_task is not None and not restored._run_task.done())

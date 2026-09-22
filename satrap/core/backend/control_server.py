@@ -33,6 +33,7 @@ import sys
 import os
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
+from satrap.core.log import logger
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.BackGroundManager import ModelConfigManager
@@ -2202,7 +2203,8 @@ async def _handle_request(
 
     except HTTPRequestError as error:
         await _send_control_json(writer, error.status, {"error": error.message}, origin)
-    except Exception:
+    except Exception as error:
+        logger.error(f"[ControlServer] 未处理异常: {type(error).__name__}: {error}")
         await _send_control_json(writer, 500, {"error": "internal server error"}, origin)
     finally:
         _CONTROL_ACTIVE_CONNECTIONS -= 1

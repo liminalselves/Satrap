@@ -148,3 +148,19 @@ def test_stale_pending_requests_release_capacity(monkeypatch: pytest.MonkeyPatch
     clock[0] += module.PENDING_TTL + 301
     assert requests.check("new", "fp") is None
     assert not requests.records
+
+
+@pytest.mark.asyncio
+async def test_manual_wake_logs_acceptance_and_lookup_failure(caplog: pytest.LogCaptureFixture):
+    import logging
+    backend, adapter, _ = runtime()
+    payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "prompt": "手动处理", "request_id": "log1"}
+    with caplog.at_level(logging.INFO):
+        assert (await backend.wake_platform(payload, operator="op"))["status"] == "accepted"
+        adapter._bot = AsyncMock()
+        adapter._bot.get_msg.side_effect = RuntimeError("gone")
+        rejected = await backend.wake_platform({"adapter_id": "bot", "group_id": "20", "user_id": "30", "message_id": "77", "request_id": "log2"}, operator="op")
+    assert rejected["status"] == "rejected"
+    messages = [r.getMessage() for r in caplog.records if not r.name.endswith("_file")]
+    assert any("手动唤醒已接受 request_id=log1 adapter=bot group=20 operator=op" in m for m in messages)
+    assert any("手动唤醒回源失败 request_id=log2" in m for m in messages)

@@ -224,7 +224,7 @@ async def test_deadline_recheck_not_rescheduled_when_policy_changed():
 
 
 @pytest.mark.asyncio
-async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptureFixture):
+async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):
     import logging
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
         "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.01,
@@ -235,7 +235,7 @@ async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptur
     def broken_commit(_event: object) -> bool:
         raise RuntimeError("queue gone")
 
-    adapter.commit_event = broken_commit  # type: ignore[method-assign]
+    monkeypatch.setattr(adapter, "commit_event", broken_commit)
     with caplog.at_level(logging.WARNING):
         await scheduler.execute(original)
         await asyncio.sleep(0.05)

@@ -156,8 +156,11 @@ def cmd_platform_remove(args: argparse.Namespace):
     path = find_config_path()
     data = load_config_document(path)
     revision = config_document_revision(data)
-    data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
-    save_config_document(path, data, expected_revision=revision)
+    try:
+        data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
+        save_config_document(path, data, expected_revision=revision)
+    except Exception as e:
+        raise CliError(f"删除失败: {e}") from e
     ok(f"平台配置已删除: {args.id}")
     info("平台实例变更需要重启后端后生效")
 

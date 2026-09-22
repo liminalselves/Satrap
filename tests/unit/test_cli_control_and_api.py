@@ -486,3 +486,24 @@ def test_model_parser_accepts_asr_type():
     parser = _build_parser()
     for argv in (["model", "list", "asr"], ["model", "show", "asr", "speech"], ["model", "set", "asr", "speech", "--set", "model=whisper-1"], ["model", "remove", "asr", "speech"]):
         assert parser.parse_args(argv).type == "asr"
+
+
+def test_platform_remove_wraps_save_errors_as_cli_error(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """删除平台时锁超时/权限错误转为 CliError, 与 upsert 一致"""
+    from argparse import Namespace
+    from satrap.cli import cmd_platform
+    from satrap.cli.output import CliError
+    path = tmp_path / "config.json"
+    path.write_text('{"platforms": [{"id": "ob", "type": "onebot", "settings": {}}]}', encoding="utf-8")
+    monkeypatch.setattr(cmd_platform, "find_config_path", lambda: path)
+    def _no_warn(args: object) -> None:
+        return None
+
+    monkeypatch.setattr(cmd_platform, "_warn_if_backend_running", _no_warn)
+
+    def broken_save(*args: object, **kwargs: object) -> None:
+        raise PermissionError("locked by another process")
+
+    monkeypatch.setattr(cmd_platform, "save_config_document", broken_save)
+    with pytest.raises(CliError, match="删除失败"):
+        cmd_platform.cmd_platform_remove(Namespace(id="ob"))

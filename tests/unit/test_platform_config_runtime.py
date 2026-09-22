@@ -1,6 +1,7 @@
 from copy import deepcopy
 from unittest.mock import AsyncMock
 import json
+from pathlib import Path
 
 import pytest
 
@@ -247,3 +248,18 @@ async def test_onebot_occupied_port_is_not_ready(unused_tcp_port):
         await adapter.terminate()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_reload_failures_are_logged(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    import logging
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    path.write_text("[", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        assert (await backend.reload_platform_policies())[0]["status"] == "failed"
+    assert any("平台配置读取或校验失败" in r.getMessage() for r in caplog.records)
+    caplog.clear()
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        await backend.reload_platform_policies(expected_config_revision="deadbeef")
+    assert any("修订与本次保存不一致" in r.getMessage() for r in caplog.records)

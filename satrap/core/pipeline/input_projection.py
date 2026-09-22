@@ -14,6 +14,7 @@ from satrap.core.pipeline.attachments import AttachmentResult, render_attachment
 from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
+from satrap.core.log import logger
 
 QUOTE_TEXT_LIMIT = 2000
 """单条引用原文进入模型输入的最大字符数"""
@@ -90,7 +91,8 @@ async def resolve_quotes(event: MessageEvent) -> str:
         return "unavailable"
     try:
         result = await fetch(message_id, event.session_id)
-    except Exception:
+    except Exception as error:
+        logger.debug(f"[input_projection] 引用回源异常 message_id={message_id}: {type(error).__name__}")
         result = None
     if not isinstance(result, dict):
         return "unavailable"
@@ -136,7 +138,8 @@ async def resolve_forwards(event: MessageEvent) -> str:
         attempts += 1
         try:
             nodes = await fetch(forward_id, event.session_id)
-        except Exception:
+        except Exception as error:
+            logger.debug(f"[input_projection] 转发回源异常 forward_id={forward_id}: {type(error).__name__}")
             nodes = None
         if isinstance(nodes, list):
             forward.nodes = [n for n in cast(list[Any], nodes) if isinstance(n, Node)]

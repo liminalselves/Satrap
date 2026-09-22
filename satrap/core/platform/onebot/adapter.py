@@ -12,7 +12,7 @@ import asyncio
 import inspect
 import secrets
 import aiohttp
-from typing import Any, cast
+from typing import Any, Literal, cast
 from time import monotonic, time
 import json
 
@@ -97,6 +97,7 @@ class OneBotAdapter(PlatformAdapter):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
         self._message_lookup_slots = asyncio.Semaphore(4)
+        self._warned_at: dict[str, float] = {}
         self._outbound = OutboundTurns()
         self.admin = OneBotAdmin(self, _action_failures)
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
@@ -161,6 +162,22 @@ class OneBotAdapter(PlatformAdapter):
         self._bot.on_message("group")(self._guard_handler("group_message", self._handle_group_message))
         self._register_optional_handler("on_notice", self._guard_handler("notice", self._handle_notice))
         self._register_optional_handler("on_request", self._guard_handler("request", self._handle_request))
+
+    def _warn_limited(self, key: str, message: str, interval: float = 60.0) -> None:
+        """
+        同一类告警在 interval 秒内只输出一次, 其余降为 debug, 防止持续故障期间刷屏
+
+        参数:
+        - key: 告警类别
+        - message: 日志内容
+        - interval: 抑制窗口秒数
+        """
+        now = monotonic()
+        if now - self._warned_at.get(key, float("-inf")) >= interval:
+            self._warned_at[key] = now
+            logger.warning(message)
+        else:
+            logger.debug(message)
 
     def _guard_handler(self, name: str, handler: Callable[[dict[str, Any]], Awaitable[None]]) -> Callable[[dict[str, Any]], Awaitable[None]]:
         """
@@ -290,9 +307,10 @@ class OneBotAdapter(PlatformAdapter):
                 return await self._bot.get_msg(message_id=int(message_id))
         try:
             result = await asyncio.wait_for(lookup(), timeout=5)
-        except Exception:
-            return None
-        if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 65536:
+            if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 65536:
+                return None
+        except Exception as error:
+            logger.debug(f"[OneBotAdapter] 引用回源失败 message_id={message_id}: {type(error).__name__}")
             return None
         result = cast(dict[str, Any], result)
         if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
@@ -338,9 +356,10 @@ class OneBotAdapter(PlatformAdapter):
                 return await self._bot.get_forward_msg(id=forward_id)
         try:
             result = await asyncio.wait_for(lookup(), timeout=5)
-        except Exception:
-            return None
-        if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 262144:
+            if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 262144:
+                return None
+        except Exception as error:
+            logger.debug(f"[OneBotAdapter] 转发回源失败 forward_id={forward_id}: {type(error).__name__}")
             return None
         result = cast(dict[str, Any], result)
         if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
@@ -361,6 +380,8 @@ class OneBotAdapter(PlatformAdapter):
         if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
             self._ingress_rejections["account"] += 1
             return
+        if not self.bot_self_id:
+            logger.info(f"[OneBotAdapter] OneBot 客户端已连接 adapter={self.config.id} self_id={incoming_self}")
         self.bot_self_id = incoming_self
         self.client_self_id = incoming_self
         if str(event.get("user_id")) == incoming_self:
@@ -586,7 +607,7 @@ class OneBotAdapter(PlatformAdapter):
         - SendReceipt: 平台确认或失败状态, 无回包不视为成功
         """
         if not self._bot:
-            logger.error("[OneBotAdapter] 客户端未初始化, 无法发送消息")
+            self._warn_limited("client_unavailable", "[OneBotAdapter] 客户端未初始化, 无法发送消息")
             return SendReceipt("failed", reason="client_unavailable")
         if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
             raise PermissionError("目标群不在当前适配器允许范围内")
@@ -597,15 +618,30 @@ class OneBotAdapter(PlatformAdapter):
         try:
             result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
         except ValueError:
-            return SendReceipt("failed", reason="invalid_session")
+            return self._failed_receipt(session_id, "forward", "invalid_session")
         except _action_failures as error:
             if not is_missing_action_error(error):
-                return SendReceipt("failed", reason="action_rejected")
-            logger.info("[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送")
+                return self._failed_receipt(session_id, "forward", "action_rejected", error)
+            self._warn_limited("forward_degraded", "[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送", interval=600)
             return await self._send_forward_degraded(session_id, nodes, limit)
-        except Exception:
-            return SendReceipt("unknown", reason="action_unconfirmed")
+        except Exception as error:
+            return self._failed_receipt(session_id, "forward", "action_unconfirmed", error, status="unknown")
         return self._receipt_from_result(result)
+
+    def _failed_receipt(self, session_id: str, action: str, reason: str, error: BaseException | None = None, *, status: Literal["failed", "unknown"] = "failed") -> SendReceipt:
+        """
+        构造失败回执并记录 warning, 让发送失败对运维可见
+
+        参数:
+        - session_id: 目标会话
+        - action: 发送类型
+        - reason: 回执原因
+        - error: 触发异常, 只记类型名
+        - status: 回执状态
+        """
+        detail = f" {type(error).__name__}" if error is not None else ""
+        logger.warning(f"[OneBotAdapter] 发送失败 action={action} session={session_id} reason={reason}{detail}")
+        return SendReceipt(status, reason=reason)
 
     async def _send_forward_degraded(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """
@@ -642,7 +678,7 @@ class OneBotAdapter(PlatformAdapter):
         - SendReceipt: 平台确认或失败状态, 无回包不视为成功
         """
         if not self._bot:
-            logger.error("[OneBotAdapter] 客户端未初始化, 无法发送消息")
+            self._warn_limited("client_unavailable", "[OneBotAdapter] 客户端未初始化, 无法发送消息")
             return SendReceipt("failed", reason="client_unavailable")
 
         if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
@@ -656,11 +692,11 @@ class OneBotAdapter(PlatformAdapter):
         try:
             result = await self._dispatch_action(session_id, "send_private_msg", "send_group_msg", message=segments)
         except ValueError:
-            return SendReceipt("failed", reason="invalid_session")
-        except _action_failures:
-            return SendReceipt("failed", reason="action_rejected")
-        except Exception:
-            return SendReceipt("unknown", reason="action_unconfirmed")
+            return self._failed_receipt(session_id, "message", "invalid_session")
+        except _action_failures as error:
+            return self._failed_receipt(session_id, "message", "action_rejected", error)
+        except Exception as error:
+            return self._failed_receipt(session_id, "message", "action_unconfirmed", error, status="unknown")
         return self._receipt_from_result(result)
 
     async def _dispatch_action(self, session_id: str, private_action: str, group_action: str, **params: Any) -> Any:

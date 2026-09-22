@@ -11,6 +11,7 @@ from typing import Any, TypeVar
 import asyncio
 
 from satrap.core.components import BaseMessageComponent, Forward, Node, Nodes, PlatformComponentType, Plain
+from satrap.core.log import logger
 from satrap.core.type import safe_getattr_str
 
 T = TypeVar("T")
@@ -137,6 +138,7 @@ class OutboundTurns:
         发送在独立子任务中执行, 关闭时只取消子任务而不影响调用方所在的事件处理任务
         """
         if self.closed or len(self.tasks) >= 64:
+            logger.warning(f"[OutboundTurns] 发送队列不可用 closed={self.closed} inflight={len(self.tasks)} target={target}")
             raise RuntimeError("发送队列不可用")
         lock, users = self.locks.get(target, (asyncio.Lock(), 0))
         self.locks[target] = (lock, users + 1)
@@ -174,6 +176,8 @@ class OutboundTurns:
         """拒绝新回复并等待已有发送子任务取消完成"""
         self.closed = True
         tasks = list(self.tasks)
+        if tasks:
+            logger.info(f"[OutboundTurns] 关闭发送队列, 取消 {len(tasks)} 个在途发送")
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)

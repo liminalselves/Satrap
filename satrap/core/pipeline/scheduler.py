@@ -221,6 +221,7 @@ class PipelineScheduler:
                     **route_args,
                 )
                 if not resolved:
+                    logger.warning(f"[PipelineScheduler] 未解析到会话, 消息丢弃 session={event.session_id} provider={event.session_provider}")
                     return
                 session_id = resolved
 
@@ -272,9 +273,9 @@ class PipelineScheduler:
 
         except (ValueError, TypeError, KeyError) as e:
             # 配置或输入结构问题属于运维可见的日志, 不向每条消息的发送者刷反馈
-            logger.error(f"[PipelineScheduler] 管线配置或输入错误: {type(e).__name__}: {e}")
+            logger.error(f"[PipelineScheduler] 管线配置或输入错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
         except Exception as e:
-            logger.error(f"[PipelineScheduler] 管线执行错误: {e}")
+            logger.error(f"[PipelineScheduler] 管线执行错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
             if self.error_feedback:
                 await self._send_feedback(event, "处理失败, 请稍后重试")
         finally:

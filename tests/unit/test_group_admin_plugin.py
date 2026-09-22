@@ -1,11 +1,13 @@
 """group_admin 插件工具的身份, 开关, 群范围与执行链路"""
 from unittest.mock import AsyncMock
+from typing import Any, cast
 import asyncio
 
+from aiocqhttp.exceptions import ActionFailed
 import pytest
 import yaml
 
-from satrap.expend.plugins.group_admin.tools import _DEFINITIONS, get_tools
+from satrap.expend.plugins.group_admin.tools import _DEFINITIONS, AsyncGroupAdminTool, get_tools
 from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.core.platform import (
     PlatformAdapterManager,
@@ -60,7 +62,7 @@ def test_meta_write_switch_parses_to_real_bool():
     assert field.validate(None) is False
 
 
-def _async_tools(config: dict[str, object]) -> list:
+def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
     """构造异步工具实例, 模拟 async_simple 会话"""
     from satrap.edictum import AsyncSimpleSession
 
@@ -68,7 +70,7 @@ def _async_tools(config: dict[str, object]) -> list:
         def __init__(self) -> None:
             pass
 
-    return get_tools(_FakeAsync(), config)
+    return [tool for tool in get_tools(_FakeAsync(), config) if isinstance(tool, AsyncGroupAdminTool)]
 
 
 class TestToolConstruction:
@@ -212,3 +214,56 @@ class TestExecution:
         with bind_call_origin(_origin()):
             result = await tool.execute()
         assert result["status"] == "unsupported"
+
+
+class TestLoggingAndTimeout:
+    @pytest.mark.asyncio
+    async def test_write_action_audit_and_failure_logged(self, caplog: pytest.LogCaptureFixture):
+        import logging
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        tool = next(t for t in _async_tools({"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+        with caplog.at_level(logging.DEBUG), bind_call_origin(_origin()):
+            assert (await tool.execute(user_id="321"))["status"] == "ok"
+            adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
+            assert (await tool.execute(user_id="321"))["status"] == "error"
+            denied = await next(t for t in _async_tools({}) if t.tool_name == "group_admin_kick").execute(user_id="321")
+        assert denied["status"] == "error"
+        messages = [r.getMessage() for r in caplog.records if not r.name.endswith("_file")]
+        assert any("写动作完成 tool=group_admin_kick actor=123 chat=456" in m for m in messages)
+        assert any("动作失败 tool=group_admin_kick" in m and "AdminActionRejected" in m for m in messages)
+        assert any("权限拒绝 tool=group_admin_kick" in m for m in messages)
+
+    @pytest.mark.asyncio
+    async def test_sync_tool_timeout_cancels_and_reports_unconfirmed(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+        import logging
+        from satrap.expend.plugins.group_admin import tools as module
+        adapter = _setup_adapter()
+        adapter._loop = asyncio.get_running_loop()
+        started = asyncio.Event()
+
+        async def slow(**kwargs: object) -> dict[str, object]:
+            started.set()
+            await asyncio.sleep(30)
+            return {}
+
+        adapter._bot.set_group_kick = slow
+        original = module.asyncio.run_coroutine_threadsafe
+
+        def fast_timeout(coro: Any, loop: Any) -> Any:
+            future: Any = original(coro, loop)
+            real_result = future.result
+            future.result = lambda timeout=None: real_result(timeout=0.05)
+            return future
+
+        monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", fast_timeout)
+        tool = next(t for t in get_tools(cast(Any, object()), {"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+
+        def run() -> Any:
+            with bind_call_origin(_origin()):
+                return tool.execute(user_id="321")
+
+        with caplog.at_level(logging.WARNING):
+            result = await asyncio.to_thread(run)
+        assert result["status"] == "unconfirmed"
+        assert any("动作超时已取消 tool=group_admin_kick" in r.getMessage() for r in caplog.records)

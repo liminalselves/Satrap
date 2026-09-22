@@ -358,6 +358,24 @@ async def test_execute_resolves_session_via_user_manager(monkeypatch: pytest.Mon
     assert sm.calls[0].session_id == "rec1:user-1:sid"
 
 
+@pytest.mark.asyncio
+async def test_unresolved_session_is_logged_and_dropped(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """resolve_session 返回空时消息丢弃且留下 warning"""
+    import logging
+    sm = _FakeSessionManager()
+    sched = PipelineScheduler(_as_session_manager(sm))
+
+    class _NoneUserManager:
+        def resolve_session(self, *args: Any, **kwargs: Any) -> str:
+            return ""
+
+    monkeypatch.setattr(sched, "user_manager", _NoneUserManager())
+    with caplog.at_level(logging.WARNING):
+        await sched.execute(_message_event(_RecorderAdapter()))
+    assert not sm.calls
+    assert any("未解析到会话, 消息丢弃" in r.getMessage() for r in caplog.records)
+
+
 def test_resolve_route_adapter_no_requested_uses_source():
     """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()

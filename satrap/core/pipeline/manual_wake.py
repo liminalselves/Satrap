@@ -8,6 +8,7 @@ import json
 
 from satrap.core.pipeline.wake_window import PendingText
 from satrap.core.platform.event import MessageEvent
+from satrap.core.log import logger
 
 
 PENDING_TTL = 600
@@ -62,9 +63,11 @@ class ManualWakeRequests:
         for key, (_, created, ticket) in list(self.records.items()):
             if ticket.status == "pending" and ticket.event_ref is not None and ticket.event_ref() is None:
                 ticket.status = "cancelled"
+                logger.debug(f"[ManualWake] 请求事件已释放, 标记取消 request_id={key}")
             if ticket.status == "pending" and now - created > PENDING_TTL:
                 ticket.status = "cancelled"
                 ticket.cancelled = True
+                logger.debug(f"[ManualWake] 请求超过 {PENDING_TTL}s 未处理, 标记取消 request_id={key}")
             if now - created > 300 and ticket.status != "pending":
                 del self.records[key]
         previous = self.records.get(request_id)

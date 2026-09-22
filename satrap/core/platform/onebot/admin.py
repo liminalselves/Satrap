@@ -12,6 +12,8 @@ import asyncio
 import base64
 import binascii
 
+from satrap.core.log import logger
+
 
 class PlatformAdminError(Exception):
     """管理动作失败的基类, message 为不含平台响应正文的用户可读说明"""
@@ -35,6 +37,13 @@ PTT_TEXT_TIMEOUT = 25
 RECORD_OUT_FORMATS = frozenset({"mp3", "amr", "wma", "m4a", "spx", "ogg", "wav", "flac"})
 """get_record out_format 允许值, 与 NapCat/SnowLuma 一致"""
 """单个管理动作含等待的最长秒数"""
+
+WRITE_ACTIONS = frozenset({
+    "delete_msg", "set_group_kick", "set_group_ban", "set_group_whole_ban", "set_group_anonymous_ban", "set_group_admin",
+    "set_group_anonymous", "set_group_card", "set_group_name", "set_group_special_title", "set_group_leave",
+    "set_friend_add_request", "set_group_add_request",
+})
+"""会改变平台状态的 OneBot 动作名, 执行成功记审计日志"""
 
 ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "get_group_list": ("read", "获取机器人所在群列表"),
@@ -163,19 +172,27 @@ class OneBotAdmin:
             raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
         call = cast(Callable[..., Awaitable[Any]], method)
         try:
-            return await asyncio.wait_for(call(**params), timeout)
+            result = await asyncio.wait_for(call(**params), timeout)
         except asyncio.TimeoutError as error:
+            logger.warning(f"[OneBotAdmin] {action} 超时 ({timeout}s), 结果未知")
             raise AdminActionUnconfirmed(f"动作 {action} 超时, 结果未知") from error
         except PlatformAdminError:
             raise
         except Exception as error:
             if self._action_failures and isinstance(error, self._action_failures):
                 if is_missing_action_error(error):
+                    logger.debug(f"[OneBotAdmin] 当前实现不支持动作 {action}")
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
                 raw_result = getattr(error, "result", None)
                 retcode = cast(dict[str, Any], raw_result).get("retcode") if isinstance(raw_result, dict) else None
+                logger.warning(f"[OneBotAdmin] {action} 被平台拒绝 retcode={retcode}")
                 raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
+            logger.warning(f"[OneBotAdmin] {action} 结果未知: {type(error).__name__}")
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
+        if action in WRITE_ACTIONS:
+            targets = {key: value for key, value in params.items() if key in {"group_id", "user_id", "message_id", "flag"}}
+            logger.info(f"[OneBotAdmin] 写动作已执行 {action} {targets}")
+        return result
 
     def _check_group(self, group_id: str) -> None:
         """

@@ -171,7 +171,7 @@ async def _fetch_voice(event: MessageEvent, url: str, suffix: str, trusted: tupl
                 return data, "voice.wav"
             logger.warning("[attachments] get_record 返回内容不是 wav, 回退直接下载")
         except UnsupportedAdminAction:
-            pass
+            logger.debug("[attachments] get_record 不受当前实现支持, 回退直接下载")
         except PlatformAdminError as error:
             logger.warning(f"[attachments] get_record 失败, 回退直接下载: {type(error).__name__}")
     data = await _download(url, AUDIO_MAX_BYTES, trusted, verify_tls)
@@ -232,7 +232,7 @@ async def _resolve_record(
                 return "unsupported", "", asr_reason
         except Exception as error:
             asr_reason = type(error).__name__
-            logger.warning(f"[attachments] 语音转写失败: {asr_reason}")
+            logger.warning(f"[attachments] 语音转写失败 session={event.session_id} asr={config.name}: {asr_reason}")
             if mode == "asr":
                 return "failed", "", asr_reason
     try:
@@ -240,7 +240,7 @@ async def _resolve_record(
     except VoiceUnsupported as error:
         return "unsupported", "", asr_reason or error.reason
     except Exception as error:
-        logger.warning(f"[attachments] 平台语音转写失败: {type(error).__name__}")
+        logger.warning(f"[attachments] 平台语音转写失败 session={event.session_id}: {type(error).__name__}")
         return "failed", "", asr_reason or type(error).__name__
 
 
@@ -337,7 +337,7 @@ async def resolve_attachments(event: MessageEvent, asr_resolver: AsrResolver | N
             text = await _extract_file(data, suffix, event)
         except Exception as error:
             results.append(AttachmentResult(kind, display, "failed", reason=type(error).__name__))
-            logger.warning(f"[attachments] 文件提取失败: {type(error).__name__}")
+            logger.warning(f"[attachments] 文件提取失败 session={event.session_id} file={display}: {type(error).__name__}")
             continue
         results.append(AttachmentResult(kind, display, "resolved", text[:FILE_TEXT_LIMIT]))
     return tuple(results)

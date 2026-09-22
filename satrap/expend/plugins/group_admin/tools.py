@@ -12,6 +12,7 @@ from satrap.core.call_context import CallOrigin, require_call_origin
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
+from satrap.core.log import logger
 
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
     # 工具名: (描述, 参数, 必填参数, 是否写操作, 是否需要群上下文)
@@ -217,6 +218,8 @@ class _GroupAdminMixin:
         write = _DEFINITIONS[name][3]
         adapter, origin, allowed = _resolve(self.config, write)
         result = await _build_call(name, adapter.admin, origin, allowed, kwargs)
+        if write:
+            logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
         return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
@@ -229,13 +232,26 @@ class _GroupAdminMixin:
                 raise ValueError("平台事件循环不可用")
             coro = _build_call(name, adapter.admin, origin, allowed, kwargs)
             future = asyncio.run_coroutine_threadsafe(coro, loop)
-            result = future.result(timeout=15)
+            try:
+                result = future.result(timeout=15)
+            except TimeoutError:
+                # 超时后取消协程, 避免写动作在平台循环里继续生效却被报为失败
+                future.cancel()
+                logger.warning(f"[group_admin] 动作超时已取消 tool={name} actor={origin.actor_id}")
+                return {"status": "unconfirmed", "error": "动作超时, 结果未知"}
+            if write:
+                logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
             return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
         except UnsupportedAdminAction as error:
             return {"status": "unsupported", "error": str(error)}
+        except PermissionError as error:
+            logger.debug(f"[group_admin] 权限拒绝 tool={self.tool_name}: {error}")
+            return {"status": "error", "error": str(error)}
         except PlatformAdminError as error:
+            logger.warning(f"[group_admin] 动作失败 tool={self.tool_name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
         except Exception as error:
+            logger.warning(f"[group_admin] 动作异常 tool={self.tool_name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
 
 
@@ -261,9 +277,14 @@ class AsyncGroupAdminTool(_GroupAdminMixin, AsyncTool):
             return await self._run(**kwargs)
         except UnsupportedAdminAction as error:
             return {"status": "unsupported", "error": str(error)}
+        except PermissionError as error:
+            logger.debug(f"[group_admin] 权限拒绝 tool={name}: {error}")
+            return {"status": "error", "error": str(error)}
         except PlatformAdminError as error:
+            logger.warning(f"[group_admin] 动作失败 tool={name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
         except Exception as error:
+            logger.warning(f"[group_admin] 动作异常 tool={name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
 
 
