@@ -18,12 +18,14 @@ from satrap.core.log import logger
 
 QUOTE_TEXT_LIMIT = 2000
 """单条引用原文进入模型输入的最大字符数"""
-QUOTE_MEDIA_LIMIT = 4
-"""引用与转发内图片/视频合计进入模型输入的最大数量"""
 FORWARD_TEXT_LIMIT = 2000
 """单条转发投影进入模型输入的最大字符数"""
 FORWARD_RESOLVE_LIMIT = 2
 """每事件最多回源的顶层转发数"""
+DEFAULT_INPUT_TEXT_LIMIT = 20000
+"""一次模型输入的默认字符总额度, 由平台设置 input_text_limit 覆盖"""
+DEFAULT_INPUT_MEDIA_LIMIT = 8
+"""一次模型输入的默认媒体总数额度, 由平台设置 input_media_limit 覆盖"""
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -194,6 +196,74 @@ def _components_brief_text(components: list[BaseMessageComponent]) -> str:
     return "".join(parts)
 
 
+@dataclass
+class _ContextBlock:
+    """一段待拼接的上下文: 来源标记头与资料内容分离计价, 内容为空时只保留标记头"""
+
+    kind: str
+    """quote, forward 或 attachment, 用于截断诊断说明"""
+    header: str
+    content: str
+    suffix: str = ""
+
+
+class ProjectionBudget:
+    """
+    模型输入文本总额度记账, 标记头, 分隔符与截断提示全部计入
+
+    固定优先级: 当前问题正文 (保前缀) > 来源标记头 > 资料块内容;
+    额度不足时按优先级截断并记录 notes, 最终拼接结果不超过总额度
+    """
+
+    def __init__(self, limit: int) -> None:
+        """以 limit 为拼接结果的最大字符数, 必须为正整数"""
+        if limit <= 0:
+            raise ValueError("输入总额度必须为正数")
+        self.limit = limit
+
+    def assemble(self, body: str, blocks: list[_ContextBlock], notes: list[str]) -> str:
+        """
+        在总额度内拼接上下文块与正文
+
+        参数:
+        - body: 当前问题正文, 优先级最高, 超限时保留前缀
+        - blocks: 按最终展示顺序排列的上下文块
+        - notes: 诊断说明列表, 截断与丢弃就地追加
+
+        返回:
+        - str: 总长度不超过 limit 的拼接结果
+        """
+        if len(body) > self.limit:
+            body = body[: self.limit - 1] + "…"
+            notes.append("body_budget_truncated")
+        used = len(body)
+        kept: list[tuple[_ContextBlock, str]] = []
+        for block in blocks:
+            fixed = len(block.header) + len(block.suffix) + 1 + (1 if block.content else 0)
+            # 计价含块标记, 与正文的分隔符与内容截断提示占位
+            if used + fixed <= self.limit:
+                used += fixed
+                kept.append((block, ""))
+            else:
+                notes.append(f"{block.kind}_budget_dropped")
+        rendered: list[str] = []
+        for block, _ in kept:
+            if not block.content:
+                rendered.append(block.header + block.suffix)
+                continue
+            allowance = self.limit - used + 1
+            # 完整内容可挪用截断提示的预留位
+            if len(block.content) <= allowance:
+                used += len(block.content) - 1
+                rendered.append(block.header + block.content + block.suffix)
+                continue
+            take = self.limit - used
+            used += take
+            rendered.append(block.header + block.content[:take] + "…" + block.suffix)
+            notes.append(f"{block.kind}_budget_truncated")
+        return "\n".join([*rendered, body]).rstrip("\n")
+
+
 class _MediaBudget:
     """引用与转发媒体共享的数量预算, 超出时记录一次诊断说明"""
 
@@ -233,14 +303,24 @@ def project_input(
     - attachments: resolve_attachments 的结果, 语音转写与文件正文作为资料块前置
 
     返回:
-    - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹
+    - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹;
+      顶层媒体按 input_media_limit 实际裁剪, 文本总量按 input_text_limit 记账拼接
     """
     top = event.get_messages()
+    media_limit = int(event.policy_settings.get("input_media_limit", DEFAULT_INPUT_MEDIA_LIMIT))
     images = media_sources(top, "image")
     videos = media_sources(top, "video")
-    message = event.get_message_str()
     notes: list[str] = []
-    budget = _MediaBudget(QUOTE_MEDIA_LIMIT, images, videos, notes)
+    if len(images) + len(videos) > media_limit:
+        # 顶层存量实际截断列表本身, 余量再供引用/转发媒体消耗
+        videos = videos[: max(0, media_limit - len(images))]
+        images = images[: media_limit]
+        notes.append("top_media_truncated")
+    message = event.get_message_str()
+    budget = _MediaBudget(media_limit - len(images) - len(videos), images, videos, notes)
+    quote_blocks: list[_ContextBlock] = []
+    forward_blocks: list[_ContextBlock] = []
+    attachment_blocks: list[_ContextBlock] = []
     replies = [c for c in top if c.type == PlatformComponentType.Reply]
     if replies:
         message = message.replace("[回复]", "", 1).lstrip()
@@ -258,9 +338,9 @@ def project_input(
             label = "机器人自己" if own else sender
             budget.merge(quoted_components, "quote_media_truncated")
             quoted_display = quoted_text or "(仅含附件)"
-            message = f"[引用 {label} 的消息: {quoted_display}]\n{message}".rstrip("\n")
+            quote_blocks.append(_ContextBlock("quote", f"[引用 {label} 的消息: ", quoted_display, "]"))
         elif quote_status in {"unavailable", "disabled"}:
-            message = f"[引用了一条无法获取原文的消息]\n{message}".rstrip("\n")
+            quote_blocks.append(_ContextBlock("quote", "[引用了一条无法获取原文的消息]", ""))
             notes.append(f"quote_{quote_status}")
     for forward in [c for c in top if c.type == PlatformComponentType.Forward and isinstance(c, Forward)]:
         nodes = forward.nodes
@@ -280,7 +360,7 @@ def project_input(
         if len(block) > FORWARD_TEXT_LIMIT:
             block = block[:FORWARD_TEXT_LIMIT] + "…"
             notes.append("forward_truncated")
-        message = f"[转发消息 {len(lines)} 条:\n{block}]\n{message}".rstrip("\n")
+        forward_blocks.append(_ContextBlock("forward", f"[转发消息 {len(lines)} 条:\n", block, "]"))
     attachment_status = "none"
     if attachments:
         for placeholder in ("[语音]", "[文件]"):
@@ -294,7 +374,10 @@ def project_input(
             if item.status != "resolved":
                 notes.append(f"attachment_{item.status}")
         block = render_attachments(attachments)
-        message = (block + "\n" + message).strip("\n") if block else message
+        if block:
+            attachment_blocks.append(_ContextBlock("attachment", "", block))
+    text_limit = int(event.policy_settings.get("input_text_limit", DEFAULT_INPUT_TEXT_LIMIT))
+    message = ProjectionBudget(text_limit).assemble(message, [*attachment_blocks, *forward_blocks, *quote_blocks], notes)
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),
         quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status, notes=tuple(notes),

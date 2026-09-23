@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import asyncio
 from time import monotonic
 import inspect
@@ -254,10 +255,15 @@ class PipelineScheduler:
                 )
                 if batch:
                     window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
+                    text_limit = int(event.policy_settings.get("input_text_limit", 20000))
+                    window_note: str | None = None
                     if window_synthetic:
                         # 窗口类合成事件 (待处理手动唤醒/定时补偿): projected 正文来自快照拼接或陈旧副本,
                         # 以实际成功 claim 的内容为唯一输入, 不叠加 projected 避免重复整段窗口
                         user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
+                        if len(user_call.message) > text_limit:
+                            user_call.message = user_call.message[: text_limit - 1] + "…"
+                            window_note = "window_budget_truncated"
                     else:
                         # 真实当前消息: 保留引用/转发/附件补全投影, 批次剔除自身后作为先前窗口上下文追加
                         current_request_id = event.call_origin.request_id
@@ -265,7 +271,17 @@ class PipelineScheduler:
                         if others:
                             lines = "\n".join(f"- [用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in others)
                             window_block = f"[先前窗口消息 {len(others)} 条:\n{lines}]"
-                            user_call.message = f"{user_call.message}\n{window_block}" if user_call.message else window_block
+                            # 窗口块消耗投影剩余额度, 分隔符与截断提示计入总量
+                            remaining = text_limit - len(user_call.message) - 1 if user_call.message else text_limit
+                            if remaining >= 2:
+                                if len(window_block) > remaining:
+                                    window_block = window_block[: remaining - 1] + "…"
+                                    window_note = "window_budget_truncated"
+                                user_call.message = f"{user_call.message}\n{window_block}" if user_call.message else window_block
+                            else:
+                                window_note = "window_budget_dropped"
+                    if window_note is not None:
+                        event.set_extra("input_projection", replace(projected, notes=(*projected.notes, window_note)))
                 # Step.6 执行会话并限制等待时间
                 try:
                     response = await asyncio.wait_for(

@@ -181,7 +181,7 @@ class TestResolveAndProjection:
     @pytest.mark.asyncio
     async def test_forward_media_shares_budget_and_text_truncated(self):
         big = "y" * (FORWARD_TEXT_LIMIT + 50)
-        adapter, event = await make_event(segments=[
+        adapter, event = await make_event({"input_media_limit": 4}, segments=[
             {"type": "reply", "data": {"id": "5"}},
             {"type": "forward", "data": {"id": "f1"}},
             {"type": "at", "data": {"qq": "10000"}},
@@ -244,6 +244,16 @@ class TestOutboundForward:
         assert turns[1][1] == [node_a, node_b]
         assert split_forward_turns([]) == []
         assert [kind for kind, _ in split_forward_turns([node_a])] == ["forward"]
+
+    def test_split_turns_diverts_files_without_merging(self):
+        from satrap.core.components import File
+
+        node = Node([Plain("一")])
+        file_a, file_b = File(name="a.bin"), File(name="b.bin")
+        turns = split_forward_turns([Plain("A"), file_a, file_b, node, Plain("B"), file_a])
+        assert [kind for kind, _ in turns] == ["normal", "file", "file", "forward", "normal", "file"]
+        assert turns[1][1] == [file_a] and turns[2][1] == [file_b]
+        assert turns[5][1] == [file_a]
 
     def test_flatten_replaces_nested_forward_with_placeholder(self):
         flat = flatten_forward_nodes([Node([Plain("甲"), Forward(id="f9")]), Node([Plain("乙")])])

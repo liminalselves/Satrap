@@ -140,11 +140,12 @@ async def test_lookup_timeout_and_oversized_payload_do_not_block():
 
 @pytest.mark.asyncio
 async def test_quoted_media_is_merged_with_budget_and_text_truncated():
-    adapter, event = await make_event()
+    adapter, event = await make_event({"input_media_limit": 4})
     media: list[dict[str, object]] = [{"type": "image", "data": {"url": f"http://x/{i}.png"}} for i in range(6)]
     adapter._bot.get_msg.return_value = {**quoted(text="y" * (QUOTE_TEXT_LIMIT + 10)), "message": media + [{"type": "text", "data": {"text": "y" * (QUOTE_TEXT_LIMIT + 10)}}]}
     status = await resolve_quotes(event)
     projected = project_input(event, status)
+    # 引用媒体与顶层共享 input_media_limit 总额度
     assert len(projected.images) == 4
     assert "quote_media_truncated" in projected.notes and "quote_truncated" in projected.notes
     header = projected.message.split(chr(10))[0]

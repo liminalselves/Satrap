@@ -38,6 +38,12 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     text_limit = settings.get("message_text_limit", 2000)
     if isinstance(text_limit, bool) or not isinstance(text_limit, int) or not 64 <= text_limit <= 32000:
         raise ValueError("message_text_limit 必须为 64 到 32000 的整数")
+    input_text = settings.get("input_text_limit", 20000)
+    if isinstance(input_text, bool) or not isinstance(input_text, int) or not 1 <= input_text <= 200000:
+        raise ValueError("input_text_limit 必须为 1 到 200000 的整数")
+    input_media = settings.get("input_media_limit", 8)
+    if isinstance(input_media, bool) or not isinstance(input_media, int) or not 1 <= input_media <= 32:
+        raise ValueError("input_media_limit 必须为 1 到 32 的整数")
     for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup", "enable_private", "enable_group"):
         if key in settings and not isinstance(settings[key], bool):
             raise ValueError(f"{key} 必须为布尔值")
@@ -78,6 +84,10 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
         value = settings.get(key, default)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError(f"{key} 必须为 0 到 1 的有限数值")
+    talk_value = settings.get("wake_talk_value")
+    if talk_value is not None:
+        if isinstance(talk_value, bool) or not isinstance(talk_value, (int, float)) or not math.isfinite(talk_value) or not 0 <= talk_value <= 1:
+            raise ValueError("wake_talk_value 必须为 0 到 1 的有限数值")
 
 
 _NORMALIZED_CACHE: dict[tuple[str, int], tuple[object, list[str]]] = {}

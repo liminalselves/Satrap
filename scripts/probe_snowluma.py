@@ -14,6 +14,7 @@ import re
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import MessageChain
+from satrap.core.components import File, Plain
 from satrap.core.platform import PlatformConfig
 
 
@@ -23,17 +24,47 @@ const input = createInterface({input: process.stdin});
 const lines = input[Symbol.asyncIterator]();
 const config = JSON.parse((await lines.next()).value);
 const {WsClientAdapter, buildDispatchPayload} = await import('./network.mjs');
+const actions = [];
 const ctx = {
   uin: '10000',
   buildLifecycleEvent: (sub_type) => ({time: 1, self_id: 10000, post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type}),
   buildHeartbeatEvent: () => ({time: 1, self_id: 10000, post_type: 'meta_event', meta_event_type: 'heartbeat', status: {online: true, good: true}, interval: 30000}),
   api: {isAcceptingActions: true, async processStreamRequest(text, send) {
     const request = JSON.parse(text);
-    if (request.action !== 'send_group_msg' || request.params.group_id !== 20000) throw new Error('unexpected action');
-    const body = request.params.message[0].data.text;
-    const id = body === 'probe-first' ? 101 : 102;
-    await new Promise(resolve => setTimeout(resolve, id === 101 ? 50 : 0));
-    await send(JSON.stringify({status:'ok', retcode:0, data:{message_id:id}, echo:request.echo}));
+    const params = request.params || {};
+    if (params.group_id !== undefined && params.group_id !== 20000) throw new Error('unexpected group');
+    if (request.action === 'send_group_msg') {
+      const first = params.message[0];
+      if (first.type === 'file') {
+        actions.push('file_segment:' + first.data.name);
+        await send(JSON.stringify({status:'ok', retcode:0, data:{message_id:301}, echo:request.echo}));
+        return;
+      }
+      const body = first.data.text;
+      actions.push('text:' + body);
+      const id = body === 'probe-first' ? 101 : 102;
+      await new Promise(resolve => setTimeout(resolve, id === 101 ? 50 : 0));
+      await send(JSON.stringify({status:'ok', retcode:0, data:{message_id:id}, echo:request.echo}));
+      return;
+    }
+    if (request.action === 'upload_group_file') {
+      actions.push('upload:' + params.name);
+      if (params.name === 'probe-reject.bin') {
+        await send(JSON.stringify({status:'failed', retcode:1200, wording:'rejected', echo:request.echo}));
+        return;
+      }
+      if (params.name === 'probe-missing.bin') {
+        await send(JSON.stringify({status:'failed', retcode:10002, wording:'unsupported', echo:request.echo}));
+        return;
+      }
+      if (params.name === 'probe-drop.bin') {
+        setTimeout(() => adapter.socket.terminate(), 10);
+        return;
+      }
+      await send(JSON.stringify({status:'ok', retcode:0, data:{file_id:'F-' + params.name}, echo:request.echo}));
+      return;
+    }
+    throw new Error('unexpected action ' + request.action);
   }},
 };
 const adapter = new WsClientAdapter('satrap-probe', {enabled:true, url:config.url, accessToken:config.token, role:'Universal', reconnectIntervalMs:1000}, ctx);
@@ -58,6 +89,10 @@ try {
   for await (const line of { [Symbol.asyncIterator]: () => lines }) {
     const command = JSON.parse(line);
     if (command.type === 'close') break;
+    if (command.type === 'dump_actions') {
+      console.log('ACTIONS ' + JSON.stringify(actions.splice(0, actions.length)));
+      continue;
+    }
     if (command.type === 'reconnect') {
       adapter.socket.terminate();
       await new Promise(resolve => setTimeout(resolve, 150));
@@ -164,10 +199,63 @@ async def probe(installation: Path) -> dict[str, object]:
                 assert all(response.status == "success" for response in responses)
                 assert [response.message_ids for response in responses] == [("101",), ("102",)]
                 adapter._event_queue.task_done()
+
+            # 混合链分流: Plain/File/Plain 按原序经真实网络层到达模拟 QQ 动作
+            await command({"type": "dump_actions"})
+            assert (await asyncio.wait_for(process.stdout.readline(), 5)).startswith(b"ACTIONS ")
+            mixed = MessageChain([
+                Plain("段一"), File(name="probe-ok.bin", url="https://example.invalid/probe-ok.bin"), Plain("段二"),
+            ])
+            receipt = await asyncio.wait_for(adapter.send_message("group%20000", mixed), 15)
+            assert receipt.status == "success", receipt
+            assert receipt.message_ids == ("102", "F-probe-ok.bin", "102"), receipt
+
+            # 上传被业务拒绝 (1200): 前文已确认, 链在文件处停止, 聚合为部分成功
+            partial = await asyncio.wait_for(adapter.send_message("group%20000", MessageChain([
+                Plain("段三"), File(name="probe-reject.bin", url="https://example.invalid/probe-reject.bin"), Plain("段四"),
+            ])), 15)
+            assert partial.status == "partial" and partial.message_ids == ("102",), partial
+
+            # 传输层断开: 动作应答永不到达, 由 aiocqhttp 默认 60 秒 API 超时收敛为 NetworkError,
+            # 适配器归一为 unknown 回执, 不假定成功; 客户端自动重连后链路恢复
+            unknown = await asyncio.wait_for(adapter.send_message("group%20000", MessageChain([
+                File(name="probe-drop.bin", url="https://example.invalid/probe-drop.bin"),
+            ])), 75)
+            assert unknown.status == "unknown", unknown
+            alive = None
+            for _ in range(20):
+                await asyncio.sleep(0.5)
+                candidate = await asyncio.wait_for(adapter.send_message("group%20000", MessageChain.from_text("probe-alive")), 10)
+                if candidate.status == "success":
+                    alive = candidate
+                    break
+            assert alive is not None, "断线重连后发送未恢复"
+
+            # 接口缺失 (10002): 记入能力缓存, 回落 file 段发送并标注未验证; 同连接代次不重复试错
+            for expected_ids in (("301",), ("301",)):
+                fallback = await asyncio.wait_for(adapter.send_message("group%20000", MessageChain([
+                    File(name="probe-missing.bin", url="https://example.invalid/probe-missing.bin"),
+                ])), 15)
+                assert fallback.status == "success" and fallback.reason.startswith("fallback_unverified"), fallback
+                assert fallback.message_ids == expected_ids, fallback
+
+            await command({"type": "dump_actions"})
+            actions_line = await asyncio.wait_for(process.stdout.readline(), 5)
+            assert actions_line.startswith(b"ACTIONS "), actions_line
+            observed = json.loads(actions_line[len(b"ACTIONS "):].decode("utf-8"))
+            assert observed == [
+                "text:段一", "upload:probe-ok.bin", "text:段二",
+                "text:段三", "upload:probe-reject.bin",
+                "upload:probe-drop.bin",
+                "text:probe-alive",
+                "upload:probe-missing.bin", "file_segment:probe-missing.bin",
+                "file_segment:probe-missing.bin",
+            ], observed
             await command({"type": "close"})
             assert await asyncio.wait_for(process.wait(), 5) == 0
             return {"version": json.loads((installation / "package.json").read_text(encoding="utf-8"))["version"],
                     "bundle_sha256": digest, "event_roundtrips": 2, "correlated_actions": 4, "reconnect": "passed", "wrong_token": "rejected",
+                    "mixed_chain": "ordered_upload_split", "partial": "confirmed_prefix", "drop": "unknown", "file_fallback": "fallback_unverified",
                     "transport": "installed WsClientAdapter and native websocket", "qq": "simulated"}
         finally:
             if process is not None and process.returncode is None:

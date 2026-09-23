@@ -77,7 +77,7 @@ def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
 class TestToolConstruction:
     def test_sync_session_gets_sync_tools(self):
         tools = get_tools(cast(Session, object()), {})
-        assert len(tools) == len(_DEFINITIONS) == 18
+        assert len(tools) == len(_DEFINITIONS) == 21
         assert not any(isinstance(t, type) for t in tools)
         ban = next(t for t in tools if t.tool_name == "group_admin_ban")
         assert ban.recovery_policy == "manual"
@@ -89,7 +89,7 @@ class TestToolConstruction:
 
     def test_async_session_gets_async_tools(self):
         tools = _async_tools({})
-        assert len(tools) == 18
+        assert len(tools) == 21
         assert all(asyncio.iscoroutinefunction(t.execute) for t in tools)
 
 
@@ -151,6 +151,63 @@ class TestExecution:
             result = await tool.execute()
         assert result["status"] == "ok" and result["data"]["group_name"] == "测试群"
         assert "secret" not in result["data"]
+
+    @pytest.mark.asyncio
+    async def test_send_forward_tool_uses_shared_outbound_path(self, monkeypatch: pytest.MonkeyPatch):
+        adapter = _setup_adapter()
+        adapter.bot_self_id = "10000"
+        adapter._running = True
+        adapter._bot.send_group_forward_msg.return_value = {"message_id": 555}
+        calls: list[str] = []
+        original_run = adapter._outbound.run
+
+        async def spy_run(target: str, operation: Any) -> Any:
+            calls.append(target)
+            return await original_run(target, operation)
+
+        monkeypatch.setattr(adapter._outbound, "run", spy_run)
+        tool = next(t for t in _async_tools({"write_tools_enabled": True}) if t.tool_name == "group_admin_send_forward")
+        with bind_call_origin(_origin()):
+            result = await tool.execute(nodes=[{"content": "第一段"}, {"content": "第二段", "name": "助手"}])
+        assert result["status"] == "ok"
+        assert result["data"]["status"] == "success" and result["data"]["message_ids"] == ["555"]
+        assert calls == ["group%456"]
+        adapter._bot.send_group_forward_msg.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_send_forward_write_switch_and_group_allowlist(self):
+        _setup_adapter()
+        denied = next(t for t in _async_tools({}) if t.tool_name == "group_admin_send_forward")
+        with bind_call_origin(_origin()):
+            result = await denied.execute(nodes=[{"content": "x"}])
+        assert result["status"] == "error" and "写操作" in result["error"]
+        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_groups": "789"}) if t.tool_name == "group_admin_send_forward")
+        with bind_call_origin(_origin()):
+            result = await tool.execute(nodes=[{"content": "x"}])
+        assert result["status"] == "error" and "目标群" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_message_tool_rejects_cross_group_read(self):
+        adapter = _setup_adapter()
+        adapter._bot.get_msg.return_value = {"message_type": "group", "group_id": 999}
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_message")
+        with bind_call_origin(_origin()):
+            result = await tool.execute(message_id="77")
+        assert result["status"] == "error" and "已拒绝读取" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_get_forward_tool_reads_nodes_without_write_enable(self):
+        adapter = _setup_adapter()
+        adapter._bot.get_forward_msg.return_value = {
+            "messages": [
+                {"user_id": 123, "nickname": "甲", "time": 1, "content": [{"type": "text", "data": {"text": "第一条"}}]},
+            ],
+        }
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_forward")
+        with bind_call_origin(_origin()):
+            result = await tool.execute(forward_id="fwd-1")
+        assert result["status"] == "ok"
+        assert result["data"] == [{"name": "甲", "uin": "123", "time": 1, "text": "第一条"}]
 
     @pytest.mark.asyncio
     async def test_sync_tool_bridges_to_platform_loop(self):

@@ -1,5 +1,6 @@
 """群聊唤醒规则与可解释决策, 不执行模型调用或内容回源"""
 from dataclasses import dataclass
+import sys
 
 from satrap.core.config.platform_policy import normalize_wake_words
 from satrap.core.platform.event import MessageEvent
@@ -15,6 +16,39 @@ class WakeDecision:
     reason: str
     matched: str = ""
     score: float | None = None
+
+
+NEVER_TRIGGER_THRESHOLD = sys.maxsize
+"""wake_talk_value 为 0 时的映射结果: 任何窗口长度都达不到, 自动参与不触发"""
+
+TALK_VALUE_LADDER: tuple[tuple[float, int], ...] = (
+    (1.0, 1),
+    (0.75, 2),
+    (0.5, 3),
+    (0.35, 5),
+    (0.2, 8),
+    (0.1, 13),
+)
+"""发言频率偏好到消息条数阈值的固定阶梯, 0.5 档由映射时的 base 参数替换, 低于 0.1 固定为 21"""
+
+
+def map_talk_value_threshold(talk_value: float, base: int = 3) -> int:
+    """
+    把发言频率偏好映射为频率模式的消息条数阈值
+
+    参数:
+    - talk_value: 0 到 1 的频率偏好, 越高越容易触发; 0 表示自动参与不触发
+    - base: 0.5 档映射的阈值, 默认 3
+
+    返回:
+    - int: 阈值条数, 随 talk_value 单调不增
+    """
+    if talk_value <= 0:
+        return NEVER_TRIGGER_THRESHOLD
+    for cutoff, threshold in TALK_VALUE_LADDER:
+        if talk_value >= cutoff:
+            return base if cutoff == 0.5 else threshold
+    return 21
 
 
 def evaluate_wake(event: MessageEvent) -> WakeDecision:

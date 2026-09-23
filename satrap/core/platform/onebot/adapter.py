@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from collections import OrderedDict
 import asyncio
 import inspect
+import os
 import secrets
 import aiohttp
 from typing import Any, Literal, cast
@@ -31,11 +32,11 @@ from satrap.core.platform.onebot.onebot_utils import (
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
-from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, OneBotAdmin, is_missing_action_error
+from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendReceipt, combine_receipts
-from satrap.core.components import Node
+from satrap.core.components import File, Node
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
 from satrap.core.type import PlatformMessage, safe_getattr_callable
@@ -103,6 +104,12 @@ class OneBotAdapter(PlatformAdapter):
         self.admin = OneBotAdmin(self, _action_failures)
         self.request_flags = RequestFlagRegistry()
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
+        self._capability_states: dict[str, tuple[int, str]] = {}
+        self._connection_generation = 0
+        self._client_connected = False
+        self._meta_hooked = False
+        self._heartbeats = 0
+        self._last_heartbeat_at = 0.0
 
     def meta(self) -> PlatformMetadata:
         """
@@ -164,6 +171,7 @@ class OneBotAdapter(PlatformAdapter):
         self._bot.on_message("group")(self._guard_handler("group_message", self._handle_group_message))
         self._register_optional_handler("on_notice", self._guard_handler("notice", self._handle_notice))
         self._register_optional_handler("on_request", self._guard_handler("request", self._handle_request))
+        self._meta_hooked = self._register_optional_handler("on_meta_event", self._guard_handler("meta_event", self._handle_meta))
 
     def _warn_limited(self, key: str, message: str, interval: float = 60.0) -> None:
         """
@@ -202,23 +210,78 @@ class OneBotAdapter(PlatformAdapter):
                 logger.error(f"[OneBotAdapter] {name} 处理异常: {type(error).__name__}: {error}")
         return guarded
 
-    def _register_optional_handler(self, method_name: str, handler: Any) -> None:
+    def _register_optional_handler(self, method_name: str, handler: Any) -> bool:
         """
         兼容不同 aiocqhttp 版本的可选事件装饰器
 
         参数:
         - method_name: method名称
         - handler: 处理器
+
+        返回:
+        - bool: 装饰器实际完成注册时返回 True
         """
         method = safe_getattr_callable(self._bot, method_name)
         if method is None:
-            return
+            return False
         try:
             decorator = method()
             if callable(decorator):
                 decorator(handler)
+                return True
         except TypeError:
             logger.debug(f"[OneBotAdapter] 当前 aiocqhttp 版本不支持空参数 {method_name}, 已跳过")
+        return False
+
+    async def _handle_meta(self, event: dict[str, Any]) -> None:
+        """
+        跟踪客户端连接生命周期与心跳, 能力学习按连接代次失效
+
+        参数:
+        - event: OneBot 原始 meta 事件
+
+        lifecycle/connect 开启新连接代次并清空已学习状态, 心跳只证明连接存活;
+        无法核验账号身份的 meta 事件不采纳
+        """
+        incoming_self = str(event.get("self_id") or "")
+        if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
+            self._ingress_rejections["account"] += 1
+            return
+        if not self.bot_self_id:
+            self.bot_self_id = incoming_self
+            self.client_self_id = incoming_self
+        meta_type = str(event.get("meta_event_type") or "")
+        if meta_type == "lifecycle":
+            sub_type = str(event.get("sub_type") or "")
+            if sub_type == "connect":
+                self._connection_generation += 1
+                self._client_connected = True
+                self._heartbeats = 0
+                self._last_heartbeat_at = 0.0
+                self._capability_states.clear()
+                # 新代次被动重新学习, 不沿用上一连接的任何结论
+                logger.info(f"[OneBotAdapter] OneBot 客户端已连接 adapter={self.config.id} self_id={incoming_self} generation={self._connection_generation}")
+            elif sub_type == "disable":
+                self._client_connected = False
+        elif meta_type == "heartbeat":
+            self._client_connected = True
+            self._heartbeats += 1
+            self._last_heartbeat_at = monotonic()
+
+    def note_action_outcome(self, action: str, supported: bool) -> None:
+        """
+        被动记录协议动作在当前连接代次的可用性, 不做主动探测
+
+        参数:
+        - action: OneBot 协议动作名
+        - supported: 动作成功执行为 True, 实现缺失 (10002/1404) 为 False
+        """
+        if len(self._capability_states) >= 128:
+            self._capability_states = {
+                key: value for key, value in self._capability_states.items()
+                if value[0] == self._connection_generation
+            }
+        self._capability_states[action] = (self._connection_generation, "supported" if supported else "unsupported")
 
     async def _handle_private_message(self, event: dict[str, Any]) -> None:
         """
@@ -361,8 +424,11 @@ class OneBotAdapter(PlatformAdapter):
             if not isinstance(result, dict) or len(json.dumps(result, ensure_ascii=False)) > 262144:
                 return None
         except Exception as error:
+            if _action_failures and isinstance(error, _action_failures) and is_missing_action_error(error):
+                self.note_action_outcome("get_forward_msg", False)
             logger.debug(f"[OneBotAdapter] 转发回源失败 forward_id={forward_id}: {type(error).__name__}")
             return None
+        self.note_action_outcome("get_forward_msg", True)
         result = cast(dict[str, Any], result)
         if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
             return None
@@ -539,13 +605,37 @@ class OneBotAdapter(PlatformAdapter):
 
     def admin_capabilities(self) -> dict[str, str]:
         """
-        返回 OneBot v11 标准管理动作的支持状态, 不执行写动作探测
+        返回管理动作的 unavailable/unknown/supported/unsupported 四态, 不执行写动作探测
 
         返回:
-        - dict[str, str]: 动作名到状态; 客户端未连接时全部为 unavailable
+        - dict[str, str]: 动作名到状态; 连接状态来自 meta 事件 (lifecycle/heartbeat),
+          当前 aiocqhttp 版本不支持 meta 订阅时无法判定连接, 保持 unknown;
+          单动作状态来自被动学习且按连接代次失效, 未学习到的动作一律 unknown
         """
-        status = "supported" if self._bot is not None else "unavailable"
-        return {name: status for name in ADMIN_CAPABILITIES}
+        if self._bot is None or not self._running:
+            return {name: "unavailable" for name in ADMIN_CAPABILITIES}
+        if self._meta_hooked:
+            connected = self._client_connected
+            if connected and self._heartbeats >= 2 and monotonic() - self._last_heartbeat_at > 90:
+                # 心跳流已建立却长期静默, 连接大概率已断开而服务端无从感知
+                connected = False
+            if not connected:
+                return {name: "unavailable" for name in ADMIN_CAPABILITIES}
+        generation = self._connection_generation
+        states: dict[str, str] = {}
+        for name in ADMIN_CAPABILITIES:
+            actions = _CAPABILITY_ACTIONS.get(name, ())
+            learned = [
+                entry[1] for action in actions
+                if (entry := self._capability_states.get(action)) is not None and entry[0] == generation
+            ]
+            if any(state == "unsupported" for state in learned):
+                states[name] = "unsupported"
+            elif actions and len(learned) == len(actions) and all(state == "supported" for state in learned):
+                states[name] = "supported"
+            else:
+                states[name] = "unknown"
+        return states
 
     async def send_text(self, session_id: str, text: str) -> SendReceipt:
         """
@@ -594,6 +684,7 @@ class OneBotAdapter(PlatformAdapter):
             if len(chunks) == 1:
                 return await self._send_chunk_guarded(session_id, MessageChain(chunks[0]))
         receipts: list[SendReceipt] = []
+        fallback_unverified = False
         for kind, payload in turns:
             if kind == "forward":
                 nodes = [component for component in payload if isinstance(component, Node)]
@@ -607,6 +698,21 @@ class OneBotAdapter(PlatformAdapter):
                 if result.status != "success":
                     break
                 continue
+            if kind == "file":
+                components = [component for component in payload if isinstance(component, File)]
+                if not components:
+                    continue
+                try:
+                    result = await self._send_file(session_id, components[0])
+                except PermissionError:
+                    result = SendReceipt("failed", reason="target_unavailable")
+                except Exception:
+                    result = SendReceipt("failed", reason="message_conversion_failed")
+                fallback_unverified = fallback_unverified or result.reason.startswith("fallback_unverified")
+                receipts.append(result)
+                if result.status != "success":
+                    break
+                continue
             for chunk in split_components(payload, limit):
                 result = await self._send_chunk_guarded(session_id, MessageChain(chunk))
                 receipts.append(result)
@@ -614,7 +720,12 @@ class OneBotAdapter(PlatformAdapter):
                     break
             if receipts and receipts[-1].status != "success":
                 break
-        return combine_receipts(receipts)
+        combined = combine_receipts(receipts)
+        if fallback_unverified:
+            # 兼容尝试标注必须穿透聚合, 调用方才能区分上传确认与未验证投递
+            note = f"fallback_unverified:{combined.reason}" if combined.reason else "fallback_unverified"
+            combined = SendReceipt(combined.status, combined.message_ids, combined.failed_index, reason=note)
+        return combined
 
     async def _send_chunk_guarded(self, session_id: str, chain: MessageChain) -> SendReceipt:
         """
@@ -655,6 +766,7 @@ class OneBotAdapter(PlatformAdapter):
             return SendReceipt("failed", reason="empty_message")
 
         messages = [await node.to_dict() for node in nodes]
+        forward_action = "send_group_forward_msg" if is_group_session(session_id) else "send_private_forward_msg"
         try:
             result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
         except ValueError:
@@ -662,11 +774,83 @@ class OneBotAdapter(PlatformAdapter):
         except _action_failures as error:
             if not is_missing_action_error(error):
                 return self._failed_receipt(session_id, "forward", "action_rejected", error)
+            self.note_action_outcome(forward_action, False)
             self._warn_limited("forward_degraded", "[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送", interval=600)
             return await self._send_forward_degraded(session_id, nodes, limit)
         except Exception as error:
             return self._failed_receipt(session_id, "forward", "action_unconfirmed", error, status="unknown")
+        self.note_action_outcome(forward_action, True)
         return self._receipt_from_result(result)
+
+    async def _send_file(self, session_id: str, component: File) -> SendReceipt:
+        """
+        按目标实现能力经 upload_group_file/upload_private_file 上传文件组件
+
+        参数:
+        - session_id: 平台会话 ID
+        - component: 文件组件, 本地路径优先, 其次 file 原始值或 URL, 由实现服务端处理
+
+        返回:
+        - SendReceipt: 无可用来源为明确失败; 上传成功响应含 file_id 不含 message_id,
+          不套用普通消息回执假设; 实现缺失上传接口时记入能力缓存并回落未验证兼容路径,
+          同连接代次内不重复试错
+        """
+        if not self._bot:
+            self._warn_limited("client_unavailable", "[OneBotAdapter] 客户端未初始化, 无法发送消息")
+            return SendReceipt("failed", reason="client_unavailable")
+        if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
+            raise PermissionError("目标群不在当前适配器允许范围内")
+        raw_file = (component.file_ or "").strip()
+        source = ""
+        if raw_file:
+            local_path = raw_file.removeprefix("file:///").removeprefix("file://")
+            source = os.path.abspath(local_path) if os.path.exists(local_path) else raw_file
+        elif component.url:
+            source = component.url.strip()
+        if not source:
+            return SendReceipt("failed", reason="empty_file")
+        name = (component.name or "").strip() or os.path.basename(source) or "file"
+
+        upload_action = "upload_group_file" if is_group_session(session_id) else "upload_private_file"
+        learned = self._capability_states.get(upload_action)
+        if learned is not None and learned[0] == self._connection_generation and learned[1] == "unsupported":
+            return await self._send_file_fallback(session_id, component)
+        try:
+            result = await self._dispatch_action(session_id, "upload_private_file", "upload_group_file", file=source, name=name)
+        except ValueError:
+            return self._failed_receipt(session_id, "file", "invalid_session")
+        except _action_failures as error:
+            if is_missing_action_error(error):
+                self.note_action_outcome(upload_action, False)
+                return await self._send_file_fallback(session_id, component)
+            return self._failed_receipt(session_id, "file", "action_rejected", error)
+        except Exception as error:
+            return self._failed_receipt(session_id, "file", "action_unconfirmed", error, status="unknown")
+        self.note_action_outcome(upload_action, True)
+        payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        raw_file_id = payload.get("file_id")
+        file_ids = (str(raw_file_id),) if isinstance(raw_file_id, (str, int)) and not isinstance(raw_file_id, bool) and str(raw_file_id) else ()
+        return SendReceipt("success", file_ids, reason="file_uploaded")
+
+    async def _send_file_fallback(self, session_id: str, component: File) -> SendReceipt:
+        """
+        未验证兼容尝试: 以 file 段普通消息发送, 回执标注 fallback_unverified
+
+        参数:
+        - session_id: 平台会话 ID
+        - component: 文件组件
+
+        返回:
+        - SendReceipt: 保留普通发送的状态与 ID, 该路径不构成文件送达的证据
+        """
+        self._warn_limited(
+            "file_fallback",
+            "[OneBotAdapter] 当前实现缺少文件上传接口, 尝试以 file 段普通消息发送 (兼容性未验证, 不构成文件送达证据)",
+            interval=600,
+        )
+        receipt = await self._send_chunk(session_id, MessageChain([component]))
+        note = f"fallback_unverified:{receipt.reason}" if receipt.reason else "fallback_unverified"
+        return SendReceipt(receipt.status, receipt.message_ids, receipt.failed_index, reason=note)
 
     def _failed_receipt(self, session_id: str, action: str, reason: str, error: BaseException | None = None, *, status: Literal["failed", "unknown"] = "failed") -> SendReceipt:
         """

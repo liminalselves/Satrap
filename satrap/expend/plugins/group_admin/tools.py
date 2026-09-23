@@ -30,6 +30,16 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "目标群号, 可选, 默认当前群"),
         "honor_type": ("string", "talkative/performer/legend/strong_newbie/emotion 之一, 默认 all"),
     }, [], False, True),
+    "group_admin_get_message": ("回源读取一条群消息的原文与发送者", {
+        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    }, ["message_id"], False, True),
+    "group_admin_get_forward": ("回源读取合并转发内容, 不展开嵌套转发", {
+        "forward_id": ("string", "合并转发消息 ID"), "group_id": ("string", "所在群号, 可选, 默认当前群"),
+    }, ["forward_id"], False, True),
+    "group_admin_send_forward": ("向群发送合并转发消息, 经统一发送通道按序投递", {
+        "nodes": ("array", "节点列表, 每项为 {content: 1 到 2000 字符文本, name: 可选昵称}, 共 1 到 30 项"),
+        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    }, ["nodes"], True, True),
     "group_admin_recall_message": ("撤回当前群的一条消息", {
         "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
     }, ["message_id"], True, True),
@@ -172,6 +182,12 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         return admin.get_group_member_info(gid, kwargs.get("user_id", ""))
     if name == "group_admin_get_honors":
         return admin.get_group_honor_info(gid, str(kwargs.get("honor_type") or "all"))
+    if name == "group_admin_get_message":
+        return admin.get_message(gid, kwargs.get("message_id", ""))
+    if name == "group_admin_get_forward":
+        return admin.get_forward_message(gid, kwargs.get("forward_id", ""))
+    if name == "group_admin_send_forward":
+        return admin.send_group_forward(gid, kwargs.get("nodes"))
     if name == "group_admin_recall_message":
         return admin.recall_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_kick":

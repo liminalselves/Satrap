@@ -253,3 +253,124 @@ async def test_necessity_mode_tolerates_zero_message_threshold():
     snapshot = window.observe(current, 0)
     decision = window.decide(current, snapshot, 1)
     assert decision.rule == "necessity"
+
+
+# ================= wake_talk_value 映射测试 =================
+
+
+def test_talk_value_mapping_is_monotone_with_boundaries():
+    from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, map_talk_value_threshold
+
+    assert map_talk_value_threshold(0) == NEVER_TRIGGER_THRESHOLD
+    assert map_talk_value_threshold(0.05) == 21
+    assert map_talk_value_threshold(0.1) == 13
+    assert map_talk_value_threshold(0.2) == 8
+    assert map_talk_value_threshold(0.35) == 5
+    assert map_talk_value_threshold(0.5) == 3
+    assert map_talk_value_threshold(0.75) == 2
+    assert map_talk_value_threshold(1.0) == 1
+    # 单调不增: 频率偏好越高, 阈值越低
+    grid = [map_talk_value_threshold(x / 100) for x in range(101)]
+    assert all(first >= second for first, second in zip(grid, grid[1:]))
+    # base 只替换 0.5 档, 其余阶梯固定
+    assert map_talk_value_threshold(0.5, base=5) == 5
+    assert map_talk_value_threshold(0.2, base=5) == 8
+
+
+@pytest.mark.asyncio
+async def test_talk_value_changes_frequency_trigger_without_explicit_threshold():
+    """未显式设置条数阈值时, wake_talk_value 映射决定触发点"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 1.0}))
+    window = WakeWindow()
+    first = await event(adapter, "1", text="一句")
+    decision = window.decide(first, window.observe(first, 0), 1)
+    assert decision.triggered is True
+    assert "wake_talk_value=1" in decision.reason and "映射" in decision.reason
+
+    low = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0.2}))
+    window2 = WakeWindow()
+    # 0.2 映射为 8 条: 前 7 条不触发, 第 8 条触发
+    for i in range(7):
+        item = await event(low, str(i + 1), text=f"第{i}句")
+        assert window2.decide(item, window2.observe(item, i), i + 1).triggered is False
+    item = await event(low, "8", text="第八句")
+    decision = window2.decide(item, window2.observe(item, 8), 9)
+    assert decision.triggered is True and "wake_talk_value=0.2" in decision.reason
+
+
+@pytest.mark.asyncio
+async def test_explicit_threshold_beats_talk_value():
+    """显式 wake_message_threshold 优先于 wake_talk_value 映射"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 1.0, "wake_message_threshold": 3}))
+    window = WakeWindow()
+    for i in range(2):
+        item = await event(adapter, str(i + 1))
+        decision = window.decide(item, window.observe(item, i), i + 1)
+        assert decision.triggered is False
+    assert "显式 wake_message_threshold" in decision.reason
+    item = await event(adapter, "3")
+    assert window.decide(item, window.observe(item, 3), 4).triggered is True
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_never_triggers_frequency_but_mention_still_wakes():
+    """talk_value=0 关闭频率触发, 显式 @ 不经 decide 自动路径, 不受连带关闭"""
+    from satrap.core.pipeline.wake_policy import evaluate_wake
+
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0}))
+    window = WakeWindow()
+    for i in range(6):
+        item = await event(adapter, str(i + 1))
+        decision = window.decide(item, window.observe(item, i), i + 1)
+        assert decision.triggered is False
+    assert "不触发" in decision.reason and "wake_talk_value=0" in decision.reason
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 99,
+        "message_type": "group", "message": [{"type": "at", "data": {"qq": "10"}}]})
+    assert evaluate_wake(adapter._event_queue.get_nowait()).triggered is True
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_does_not_block_necessity_mode():
+    """talk_value 映射只接入 frequency 分支, 必要性评分不受影响"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "necessity", "wake_cooldown": 0, "wake_talk_value": 0, "wake_score_threshold": 0.1}))
+    window = WakeWindow()
+    item = await event(adapter, "1", text="请问这个怎么解决?")
+    decision = window.decide(item, window.observe(item, 0), 1)
+    assert decision.rule == "necessity" and decision.triggered is True
+
+
+@pytest.mark.asyncio
+async def test_group_override_talk_value_applies_through_resolve():
+    """群覆盖的 wake_talk_value 经有效配置合并后生效"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0,
+        "wake_group_overrides": {"20": {"wake_talk_value": 1.0}},
+    }))
+    window = WakeWindow()
+    overridden = await event(adapter, "1", group="20")
+    assert window.decide(overridden, window.observe(overridden, 0), 1).triggered is True
+    plain = await event(adapter, "2", group="21")
+    assert window.decide(plain, window.observe(plain, 2), 3).triggered is False
+
+
+@pytest.mark.parametrize("value", [-0.1, 1.1, True, "0.5", float("nan")])
+def test_talk_value_validation_rejects_out_of_range(value: object):
+    from satrap.core.config.platform_policy import validate_wake_policy
+
+    with pytest.raises(ValueError, match="wake_talk_value"):
+        validate_wake_policy({"wake_talk_value": value})
+
+
+def test_talk_value_allowed_in_group_and_time_overrides():
+    from satrap.core.config.platform_policy import validate_wake_policy
+
+    overrides: dict[str, object] = {
+        "wake_group_overrides": {"456": {"wake_talk_value": 0.5}},
+        "wake_time_rules": [{"start": "08:00", "end": "09:00", "settings": {"wake_talk_value": 0.8}}],
+    }
+    validate_wake_policy(overrides)

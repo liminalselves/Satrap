@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 import asyncio
 
-from satrap.core.components import BaseMessageComponent, Forward, Node, Nodes, PlatformComponentType, Plain
+from satrap.core.components import BaseMessageComponent, File, Forward, Node, Nodes, PlatformComponentType, Plain
 from satrap.core.log import logger
 from satrap.core.type import safe_getattr_str
 
@@ -68,33 +68,44 @@ def split_components(components: list[BaseMessageComponent], limit: int) -> list
 
 def split_forward_turns(components: list[BaseMessageComponent]) -> list[tuple[str, list[BaseMessageComponent]]]:
     """
-    在 Node/Nodes 边界把消息链拆为普通段与转发段, 相邻同类合并
+    在 Node/Nodes 与 File 边界把消息链拆为普通段, 转发段与文件段, 相邻同类合并
 
     参数:
     - components: 原始组件, 不原地修改
 
     返回:
-    - list[tuple[str, list]]: 按原顺序排列的 ("normal", 组件) 与 ("forward", Node 列表),
-      不隐式把整条链包装成转发
+    - list[tuple[str, list]]: 按原顺序排列的 ("normal", 组件), ("forward", Node 列表)
+      与 ("file", 单个 File 组件), 不隐式把整条链包装成转发
     """
     turns: list[tuple[str, list[BaseMessageComponent]]] = []
     normal: list[BaseMessageComponent] = []
     nodes: list[BaseMessageComponent] = []
+
+    def flush() -> None:
+        """按普通段先于转发段的积累顺序收尾, 保持组件原序"""
+        nonlocal normal, nodes
+        if normal:
+            turns.append(("normal", normal))
+            normal = []
+        if nodes:
+            turns.append(("forward", nodes))
+            nodes = []
+
     for component in components:
         if isinstance(component, (Node, Nodes)):
             if normal:
                 turns.append(("normal", normal))
                 normal = []
             nodes.extend(component.nodes if isinstance(component, Nodes) else [component])
+        elif isinstance(component, File):
+            flush()
+            turns.append(("file", [component]))
         else:
             if nodes:
                 turns.append(("forward", nodes))
                 nodes = []
             normal.append(component)
-    if nodes:
-        turns.append(("forward", nodes))
-    if normal:
-        turns.append(("normal", normal))
+    flush()
     return turns
 
 

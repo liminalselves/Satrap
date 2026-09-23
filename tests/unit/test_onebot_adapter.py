@@ -13,7 +13,7 @@ from satrap.core.platform.onebot.onebot_utils import (
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.wake_policy import evaluate_wake
 from satrap.core.platform.event import MessageChain, MessageEvent
-from satrap.core.components import At, AtAll, Face, Image, Json, Plain, Reply, Unknown
+from satrap.core.components import At, AtAll, Face, File, Image, Json, Plain, Reply, Unknown
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
 from satrap.core.type import PlatformMessage, PlatformMessageType
 
@@ -21,6 +21,7 @@ from satrap.core.type import PlatformMessage, PlatformMessageType
 class FakeOneBotClient:
     def __init__(self):
         self.calls: list[Any] = []
+        self.upload_failures: dict[str, BaseException] = {}
 
     async def send_private_msg(self, **kwargs: Any):
         self.calls.append(("send_private_msg", kwargs))
@@ -29,6 +30,20 @@ class FakeOneBotClient:
     async def send_group_msg(self, **kwargs: Any):
         self.calls.append(("send_group_msg", kwargs))
         return {"message_id": 2}
+
+    async def upload_group_file(self, **kwargs: Any):
+        self.calls.append(("upload_group_file", kwargs))
+        error = self.upload_failures.get(str(kwargs.get("name", "")))
+        if error is not None:
+            raise error
+        return {"file_id": f"F-{kwargs.get('name', '')}"}
+
+    async def upload_private_file(self, **kwargs: Any):
+        self.calls.append(("upload_private_file", kwargs))
+        error = self.upload_failures.get(str(kwargs.get("name", "")))
+        if error is not None:
+            raise error
+        return {"file_id": f"F-{kwargs.get('name', '')}"}
 
 
 def make_adapter(settings: dict[str, Any] | None = None) -> OneBotAdapter:
@@ -373,3 +388,82 @@ def test_normalize_file_source_tolerates_embedded_nul():
     """含 NUL 的非法路径按原样透传, 不在路径检查处抛出"""
     from satrap.core.platform.onebot.onebot_utils import _normalize_file_source
     assert _normalize_file_source("bad\0path") == "bad\0path"
+
+
+class TestFileOutboundSplit:
+    """File 组件按实现能力分流上传, 混合链保持原序, 未验证回落显式标注"""
+
+    @pytest.mark.asyncio
+    async def test_mixed_chain_uploads_in_order(self, tmp_path: Any):
+        import os
+
+        target = tmp_path / "probe.bin"
+        target.write_bytes(b"x")
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([
+            Plain("段一"), File(name="probe.bin", file=str(target)), Plain("段二"),
+        ]))
+        assert receipt.status == "success"
+        assert receipt.message_ids == ("2", "F-probe.bin", "2")
+        calls = adapter._bot.calls
+        assert [name for name, _ in calls] == ["send_group_msg", "upload_group_file", "send_group_msg"]
+        upload = calls[1][1]
+        assert upload["group_id"] == 456 and upload["name"] == "probe.bin"
+        assert upload["file"] == os.path.abspath(str(target))
+
+    @pytest.mark.asyncio
+    async def test_private_file_uses_private_upload(self):
+        adapter = make_adapter()
+        receipt = await adapter.send_message("private%123", MessageChain([File(name="p.bin", url="https://example.invalid/p.bin")]))
+        assert receipt.status == "success" and receipt.message_ids == ("F-p.bin",)
+        name, kwargs = adapter._bot.calls[0]
+        assert name == "upload_private_file"
+        assert kwargs["user_id"] == 123 and kwargs["file"] == "https://example.invalid/p.bin"
+
+    @pytest.mark.asyncio
+    async def test_missing_upload_falls_back_once_per_generation(self):
+        from aiocqhttp.exceptions import ActionFailed
+
+        adapter = make_adapter()
+        adapter._running = True
+        adapter._bot.upload_failures["gone.bin"] = ActionFailed({"retcode": 10002})
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="gone.bin", url="https://example.invalid/gone.bin")]))
+        assert receipt.status == "success"
+        assert receipt.reason.startswith("fallback_unverified")
+        assert receipt.message_ids == ("2",)
+        assert [name for name, _ in adapter._bot.calls] == ["upload_group_file", "send_group_msg"]
+        assert adapter.admin_capabilities()["upload_file"] == "unsupported"
+        # 同连接代次内不重复试错: 后续文件直接走兼容路径
+        adapter._bot.calls.clear()
+        again = await adapter.send_message("group%456", MessageChain([File(name="other.bin", url="https://example.invalid/o.bin")]))
+        assert again.status == "success" and again.reason.startswith("fallback_unverified")
+        assert [name for name, _ in adapter._bot.calls] == ["send_group_msg"]
+
+    @pytest.mark.asyncio
+    async def test_upload_rejection_stops_chain_with_partial(self):
+        from aiocqhttp.exceptions import ActionFailed
+
+        adapter = make_adapter()
+        adapter._bot.upload_failures["no.bin"] = ActionFailed({"retcode": 1200})
+        receipt = await adapter.send_message("group%456", MessageChain([
+            Plain("前文"), File(name="no.bin", url="https://example.invalid/no.bin"), Plain("后文"),
+        ]))
+        assert receipt.status == "partial"
+        assert receipt.message_ids == ("2",)
+        assert [name for name, _ in adapter._bot.calls] == ["send_group_msg", "upload_group_file"]
+        # 上传拒绝不是接口缺失, 不写入能力缓存
+        assert "upload_group_file" not in adapter._capability_states
+
+    @pytest.mark.asyncio
+    async def test_upload_transport_error_is_unknown(self):
+        adapter = make_adapter()
+        adapter._bot.upload_failures["x.bin"] = RuntimeError("boom")
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="x.bin", url="https://example.invalid/x.bin")]))
+        assert receipt.status == "unknown" and receipt.reason == "action_unconfirmed"
+
+    @pytest.mark.asyncio
+    async def test_file_without_source_fails(self):
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="empty.bin")]))
+        assert receipt.status == "failed" and receipt.reason == "empty_file"
+        assert adapter._bot.calls == []

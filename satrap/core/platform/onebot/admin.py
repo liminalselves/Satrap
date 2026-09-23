@@ -11,8 +11,12 @@ from typing import Any, cast
 import asyncio
 import base64
 import binascii
+import json
 import unicodedata
 
+from satrap.core.components import BaseMessageComponent, Node, Plain
+from satrap.core.platform.event import MessageChain
+from satrap.core.platform.onebot.onebot_utils import group_session_id
 from satrap.core.log import logger
 
 
@@ -67,8 +71,40 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "leave_group": ("write", "退出或解散群"),
     "handle_friend_request": ("write", "批准或拒绝好友请求"),
     "handle_group_request": ("write", "批准或拒绝加群请求/邀请"),
+    "get_message": ("read", "回源读取群消息 (get_msg)"),
+    "get_forward_message": ("read", "回源读取合并转发 (get_forward_msg)"),
+    "send_forward": ("write", "发送合并转发 (经公共发送路径)"),
+    "upload_file": ("write", "上传群/私聊文件 (upload_group_file/upload_private_file)"),
 }
 """OneBot v11 标准管理动作登记表: 名称到读写属性与说明"""
+
+_CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
+    "get_group_list": ("get_group_list",),
+    "get_group_info": ("get_group_info",),
+    "get_group_member_list": ("get_group_member_list",),
+    "get_group_member_info": ("get_group_member_info",),
+    "get_group_honor_info": ("get_group_honor_info",),
+    "get_record": ("get_record",),
+    "fetch_ptt_text": ("fetch_ptt_text",),
+    "recall_message": ("delete_msg",),
+    "kick_group_member": ("set_group_kick",),
+    "ban_group_member": ("set_group_ban",),
+    "set_group_whole_ban": ("set_group_whole_ban",),
+    "ban_anonymous": ("set_group_anonymous_ban",),
+    "set_group_admin": ("set_group_admin",),
+    "set_group_anonymous": ("set_group_anonymous",),
+    "set_group_card": ("set_group_card",),
+    "set_group_name": ("set_group_name",),
+    "set_group_special_title": ("set_group_special_title",),
+    "leave_group": ("set_group_leave",),
+    "handle_friend_request": ("set_friend_add_request",),
+    "handle_group_request": ("set_group_add_request",),
+    "get_message": ("get_msg",),
+    "get_forward_message": ("get_forward_msg",),
+    "send_forward": ("send_group_forward_msg", "send_private_forward_msg"),
+    "upload_file": ("upload_group_file", "upload_private_file"),
+}
+"""能力登记名到底层协议动作名的映射, 供按连接代次的被动能力学习查询"""
 
 
 MISSING_ACTION_RETCODES = frozenset({10002, 1404})
@@ -195,6 +231,7 @@ class OneBotAdmin:
             raise AdminActionUnconfirmed("平台客户端未连接")
         method = getattr(bot, action, None)
         if not callable(method):
+            self._adapter.note_action_outcome(action, False)
             raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
         call = cast(Callable[..., Awaitable[Any]], method)
         try:
@@ -207,6 +244,7 @@ class OneBotAdmin:
         except Exception as error:
             if self._action_failures and isinstance(error, self._action_failures):
                 if is_missing_action_error(error):
+                    self._adapter.note_action_outcome(action, False)
                     logger.debug(f"[OneBotAdmin] 当前实现不支持动作 {action}")
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
                 raw_result = getattr(error, "result", None)
@@ -215,6 +253,7 @@ class OneBotAdmin:
                 raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
             logger.warning(f"[OneBotAdmin] {action} 结果未知: {type(error).__name__}")
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
+        self._adapter.note_action_outcome(action, True)
         if action in WRITE_ACTIONS:
             targets = {key: value for key, value in params.items() if key in {"group_id", "user_id", "message_id", "flag"}}
             logger.info(f"[OneBotAdmin] 写动作已执行 {action} {targets}")
@@ -388,6 +427,119 @@ class OneBotAdmin:
             raise AdminActionUnconfirmed("荣誉信息响应格式不符")
         return cast(dict[str, Any], result)
 
+    async def _verify_group_message(self, gid: str, message_id: Any, *, rejection: str) -> tuple[int, dict[str, Any]]:
+        """
+        回源并确认消息实际属于目标群
+
+        参数:
+        - gid: 已归一化且已通过群范围检查的目标群
+        - message_id: 平台消息 ID
+        - rejection: 归属无法确认时的拒绝文案
+
+        返回:
+        - tuple[int, dict]: 整数消息 ID 与 get_msg 响应; 无法确认归属时抛 AdminActionRejected
+        """
+        text = str(message_id).strip()
+        if not text or not text.lstrip("-").isdecimal():
+            raise ValueError("消息 ID 必须为整数")
+        info = await self._call("get_msg", message_id=int(text))
+        payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
+        raw_group = payload.get("group_id")
+        actual_group = str(raw_group).strip() if isinstance(raw_group, (int, str)) and not isinstance(raw_group, bool) else ""
+        if payload.get("message_type") != "group" or actual_group != gid:
+            raise AdminActionRejected(rejection)
+        return int(text), payload
+
+    async def get_message(self, group_id: Any, message_id: Any) -> dict[str, Any]:
+        """
+        回源读取一条群消息, 收窄字段后返回
+
+        参数:
+        - group_id: 消息所在群, 必须在当前实例允许范围内
+        - message_id: 平台消息 ID
+
+        返回:
+        - dict: 消息 ID, 时间, 发送者与原文; 归属无法确认或超界一律拒绝, 防借读工具跨群读消息
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        _, payload = await self._verify_group_message(gid, message_id, rejection="无法确认消息属于目标群, 已拒绝读取")
+        self._check_group(gid)
+        if len(json.dumps(payload, ensure_ascii=False, default=str)) > 65536:
+            raise AdminActionUnconfirmed("消息回源响应超过大小上限")
+        sender = payload.get("sender")
+        sender_data = cast(dict[str, Any], sender) if isinstance(sender, dict) else {}
+        return {
+            "message_id": payload.get("message_id"),
+            "time": payload.get("time"),
+            "message_type": payload.get("message_type"),
+            "group_id": payload.get("group_id"),
+            "sender": {key: sender_data.get(key) for key in ("user_id", "nickname", "card", "role")},
+            "message": payload.get("message"),
+        }
+
+    async def get_forward_message(self, group_id: Any, forward_id: Any) -> list[dict[str, Any]]:
+        """
+        回源读取合并转发内容, 不递归展开嵌套转发, 不下载附件
+
+        参数:
+        - group_id: 转发所在群, 必须在当前实例允许范围内
+        - forward_id: OneBot 转发消息 ID
+
+        返回:
+        - list[dict]: 节点昵称, 账号与文本摘要; 复用适配器已有的群范围校验与有界回源
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        fid = str(forward_id).strip()
+        if not fid or len(fid) > 128 or any(unicodedata.category(ch) == "Cc" for ch in fid):
+            raise ValueError("转发 ID 非法")
+        nodes = await self._adapter.fetch_forward_message(fid, group_session_id(gid))
+        if nodes is None:
+            raise AdminActionUnconfirmed("转发回源失败, 结果未知")
+        self._check_group(gid)
+        result: list[dict[str, Any]] = []
+        for node in nodes:
+            text = "".join(
+                component.text if isinstance(component, Plain) else f"[{component.type.value}]"
+                for component in node.content
+            )
+            if len(text) > 1000:
+                text = text[:1000] + "…"
+            result.append({"name": node.name or "", "uin": node.uin or "", "time": node.time or 0, "text": text})
+        return result
+
+    async def send_group_forward(self, group_id: Any, nodes: Any) -> dict[str, Any]:
+        """
+        经公共发送路径向群发送合并转发, 与 pipeline 回复共用拆分, 整轮排序与容量约束
+
+        参数:
+        - group_id: 目标群, 必须在当前实例允许范围内
+        - nodes: 节点列表, 每项 {content: 1 到 2000 字符文本, name: 可选昵称}, 1 到 30 项
+
+        返回:
+        - dict: 发送回执摘要 (status/message_ids/reason)
+        """
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
+        if not isinstance(nodes, list) or not 1 <= len(cast(list[Any], nodes)) <= 30:
+            raise ValueError("nodes 必须为 1 到 30 项的节点列表")
+        uin = str(self._adapter.bot_self_id or "")
+        if not uin.isdecimal():
+            raise AdminActionUnconfirmed("机器人账号未知, 无法构造转发节点")
+        built: list[BaseMessageComponent] = []
+        for raw in cast(list[Any], nodes):
+            if not isinstance(raw, dict):
+                raise ValueError("nodes 必须为 1 到 30 项的节点列表")
+            entry = cast(dict[str, Any], raw)
+            content = str(entry.get("content") or "")
+            if not content or len(content) > 2000:
+                raise ValueError("节点正文必须为 1 到 2000 字符")
+            name = str(entry.get("name") or "").strip()[:30] or "Satrap"
+            built.append(Node(Plain(content), name=name, uin=uin))
+        receipt = await self._adapter.send_message(group_session_id(gid), MessageChain(built))
+        return {"status": receipt.status, "message_ids": list(receipt.message_ids), "reason": receipt.reason}
+
     async def recall_message(self, group_id: Any, message_id: Any) -> None:
         """
         撤回一条群消息
@@ -401,17 +553,9 @@ class OneBotAdmin:
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        text = str(message_id).strip()
-        if not text or not text.lstrip("-").isdecimal():
-            raise ValueError("消息 ID 必须为整数")
-        info = await self._call("get_msg", message_id=int(text))
-        payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
-        raw_group = payload.get("group_id")
-        actual_group = str(raw_group).strip() if isinstance(raw_group, (int, str)) and not isinstance(raw_group, bool) else ""
-        if payload.get("message_type") != "group" or actual_group != gid:
-            raise AdminActionRejected("无法确认消息属于目标群, 已拒绝撤回")
+        message_int, _ = await self._verify_group_message(gid, message_id, rejection="无法确认消息属于目标群, 已拒绝撤回")
         self._check_group(gid)
-        await self._call("delete_msg", message_id=int(text))
+        await self._call("delete_msg", message_id=message_int)
 
     async def kick_group_member(self, group_id: Any, user_id: Any, reject_add_request: bool = False) -> None:
         """
