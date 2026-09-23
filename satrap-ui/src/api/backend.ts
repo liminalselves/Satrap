@@ -31,6 +31,31 @@ export interface EdictumPluginPreviewResult {
   edictum_sessions: EdictumPluginReloadSessionResult[];
 }
 
+export interface WakeStatusResult {
+  status: string;
+  request_id: string;
+  reason?: string;
+  adapter_id?: string;
+  target?: string;
+  operator?: string;
+  detail?: string;
+  created_at?: number;
+  updated_at?: number;
+}
+
+export interface WakeRejectionRecord {
+  recorded_at: string;
+  adapter_id: string;
+  session_id: string;
+  actor_id: string;
+  stage: string;
+  decision: string;
+  reason: string;
+  message_id: string;
+  request_id: string;
+  send_status: string;
+}
+
 export interface ConfigReloadResult {
   platforms?: PlatformConfigApplication[];
   ok: boolean;
@@ -40,6 +65,16 @@ export interface ConfigReloadResult {
 export const backendApi = {
   wakePlatform: (payload: { adapter_id: string; group_id: string; user_id: string; request_id: string; prompt?: string; message_id?: string }) =>
     apiClient.post<{ status: 'accepted' | 'already_pending' | 'no_pending' | 'rejected'; reason?: string; state?: string }>('/api/platforms/wake', payload),
+
+  // 手动唤醒请求状态查询 (批次三端点, 重启后可查)
+  getWakeStatus: (requestId: string, adapterId?: string) =>
+    apiClient.get<WakeStatusResult>(`/api/platforms/wake/${encodeURIComponent(requestId)}`, { params: adapterId ? { adapter_id: adapterId } : undefined }),
+
+  // 唤醒决策/限流拒绝记录, 最新在前
+  listWakeRejections: (adapterId?: string, limit = 20) =>
+    apiClient.get<{ records: WakeRejectionRecord[] }>('/api/platforms/wake/rejections', {
+      params: { ...(adapterId ? { adapter_id: adapterId } : {}), limit },
+    }),
   // 获取后端健康状态
   health: () => apiClient.get<BackendHealth>('/api/health'),
 

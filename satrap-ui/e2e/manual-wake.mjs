@@ -18,6 +18,7 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   const requests = [];
   let responseMode = 'error';
+  let statusCalls = 0;
   await page.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
     backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
   } }));
@@ -30,6 +31,20 @@ try {
       requests.push(request.postDataJSON());
       return route.fulfill({ headers, status: responseMode === 'error' ? 409 : 200,
         json: responseMode === 'error' ? { error: '目标群暂不可用' } : { status: responseMode } });
+    }
+    if (pathname === '/api/platforms/wake/rejections') {
+      return route.fulfill({ headers, json: { records: [
+        { adapter_id: 'onebot-test', session_id: 'group:20000', actor_id: '30000', stage: 'rate_limit', decision: '', reason: '请求频率限制, 需等待 3.0s', recorded_at: '2026-09-24T10:15:30', message_id: '', request_id: 'req-x', send_status: 'success' },
+        { adapter_id: 'onebot-test', session_id: 'group:20000', actor_id: '30000', stage: 'wake_decision', decision: 'skip', reason: 'frequency_cooldown: 冷却中', recorded_at: '2026-09-24T10:14:00', message_id: '', request_id: '', send_status: '' },
+      ] } });
+    }
+    const statusMatch = pathname.match(/^\/api\/platforms\/wake\/(.+)$/);
+    if (statusMatch && request.method() === 'GET') {
+      // StrictMode 下效应会双跑, 前两次都按执行中返回, 第三次起才进入终态
+      statusCalls += 1;
+      return route.fulfill({ headers, json: statusCalls <= 2
+        ? { status: 'executing', detail: '管线执行中', target: 'group:20000' }
+        : { status: 'sent', detail: '已发送 1 段', target: 'group:20000' } });
     }
     const responses = {
       '/api/health': { running: true, adapters: {} }, '/status': { running: true },
@@ -54,10 +69,21 @@ try {
   assert.equal(await dialog.getByLabel('唤醒正文', { exact: false }).inputValue(), '请处理这条消息');
   responseMode = 'accepted';
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
-  await dialog.waitFor({ state: 'hidden' });
+  // 受理后弹窗保留, 跟踪面板轮询至终态, 拒绝记录面板渲染受控记录
+  const statusPanel = dialog.getByTestId('wake-status-panel');
+  await statusPanel.waitFor();
+  await statusPanel.getByText('执行中', { exact: true }).waitFor();
+  await statusPanel.getByText('已送达', { exact: true }).waitFor({ timeout: 10000 });
+  const rejectionsPanel = dialog.getByTestId('wake-rejections-panel');
+  await rejectionsPanel.waitFor();
+  await rejectionsPanel.getByText(/请求频率限制/).waitFor();
+  await rejectionsPanel.getByText(/frequency_cooldown/).waitFor();
+  assert.equal(await dialog.isVisible(), true);
   assert.equal(requests[0].request_id, requests[1].request_id);
   assert.equal(requests[1].group_id, '20000');
   assert.equal('operator' in requests[1], false);
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '手动唤醒群聊', exact: true }).click();
   await dialog.getByLabel('平台实例', { exact: true }).selectOption('onebot-test');
   await dialog.getByLabel('目标群号').fill('20000');
@@ -71,7 +97,7 @@ try {
   await fs.mkdir(artifacts, { recursive: true });
   await page.screenshot({ path: path.join(artifacts, 'mobile.png'), animations: 'disabled' });
   assert.deepEqual(errors, []);
-  console.log('PASS: 手动唤醒页面, 错误保留输入, 幂等重试, 空窗口提示');
+  console.log('PASS: 手动唤醒页面, 错误保留输入, 幂等重试, 状态跟踪至终态, 拒绝记录列表, 空窗口提示');
 } finally {
   await browser?.close();
   await server.close();

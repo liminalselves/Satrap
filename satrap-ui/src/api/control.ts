@@ -24,6 +24,46 @@ import type {
   ChatHistoryTrashResult,
 } from './chat';
 
+// 唤醒策略试算 (POST /config/wake-dry-run)
+export interface WakeDryRunStep {
+  text?: string;
+  actor?: string;
+  advance_seconds?: number;
+  at_self?: boolean;
+  submit?: boolean;
+}
+
+export interface WakeDryRunRequest {
+  settings: Record<string, unknown>;
+  group_id?: string;
+  local_time?: string;
+  steps?: WakeDryRunStep[];
+  probe?: { text: string; at_self?: boolean; quote_self?: boolean };
+}
+
+export interface WakeDryRunDecision {
+  triggered: boolean | null;
+  rule: string;
+  reason: string;
+  matched?: string;
+  score?: number | null;
+}
+
+export interface WakeDryRunResult {
+  ok: boolean;
+  error?: string;
+  resolved?: Record<string, unknown>;
+  explicit?: WakeDryRunDecision;
+  automatic?: {
+    mode: string;
+    observed: number;
+    steps: Array<{ index: number; kind: string; observed?: number; claimed?: number; decision?: WakeDryRunDecision }>;
+    decision: WakeDryRunDecision;
+    deadline_decision: WakeDryRunDecision;
+    cooldown_remaining: number;
+  };
+}
+
 // 后端控制 API 客户端(独立于主后端)
 const controlClient = axios.create({
   timeout: 30000,
@@ -227,6 +267,12 @@ export const controlApi = {
   // 校验配置文件
   validateConfig: async (config: Record<string, unknown>): Promise<ConfigResult> => {
     const response = await controlClient.post<ConfigResult>('/config/validate', config);
+    return response.data;
+  },
+
+  // 唤醒策略试算: 隔离窗口 + 当前草稿, 不触碰线上状态
+  dryRunWake: async (payload: WakeDryRunRequest): Promise<WakeDryRunResult> => {
+    const response = await controlClient.post<WakeDryRunResult>('/config/wake-dry-run', payload);
     return response.data;
   },
 

@@ -1491,6 +1491,27 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+async def _route_wake_dry_run(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    唤醒策略试算区段: POST /config/wake-dry-run
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "POST" and ctx.path == "/config/wake-dry-run":
+        from satrap.core.pipeline.wake_dry_run import dry_run_wake
+
+        try:
+            result = await dry_run_wake(await _read_json_body(ctx.reader, ctx.raw_request))
+            return 200, result
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
+    return None
+
+
 async def _route_session_class_collection_get(ctx: _RouteContext) -> ControlResponse | None:
     """
     会话类集合读取区段: GET /config/session-classes
@@ -2174,6 +2195,7 @@ async def _handle_request(
             _route_lifecycle,
             _route_config_document,
             _route_models,
+            _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
             _route_edictum_metadata,

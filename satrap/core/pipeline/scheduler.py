@@ -10,7 +10,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import asyncio
-from time import monotonic
+from time import monotonic, time
 import inspect
 from typing import (
     Awaitable,
@@ -34,6 +34,7 @@ from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+from satrap.core.pipeline.wake_rejections import WakeRejection, WakeRejectionLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
@@ -83,6 +84,7 @@ class PipelineScheduler:
         self.wake_timers = WakeTimers(self.wake_window)
         self.manual_wakes = ManualWakeRequests()
         self.manual_wake_store: ManualWakeStore | None = None
+        self.wake_rejections = WakeRejectionLog()
         self.asr_resolver: AsrResolver | None = None
 
     def clear_manual_wakes(self, adapter_id: str) -> None:
@@ -95,6 +97,19 @@ class PipelineScheduler:
         self.manual_wakes.clear_adapter(adapter_id)
         if self.manual_wake_store is not None:
             self.manual_wake_store.adapter_stopped(adapter_id)
+        self.wake_rejections.clear_adapter(adapter_id)
+
+    def _record_rejection(self, event: MessageEvent, stage: str, reason: str, *, send_status: str = "") -> None:
+        """在决策/限流拒绝点就地采集环形记录, 采集失败不影响管线执行"""
+        try:
+            origin = event.call_origin
+            self.wake_rejections.record(WakeRejection(
+                adapter_id=origin.adapter_id, session_id=event.session_id, actor_id=event.get_sender_id(),
+                stage=stage, decision="dropped", reason=reason, recorded_at=time(),
+                message_id=origin.source_message_id, request_id=origin.request_id, send_status=send_status,
+            ))
+        except Exception as error:
+            logger.debug(f"[PipelineScheduler] 拒绝记录采集失败 stage={stage}: {type(error).__name__}")
 
     async def _update_manual_request(self, event: MessageEvent, ticket: ManualWakeTicket, status: str, detail: str) -> None:
         """持久化手动请求状态, 落盘失败不影响管线执行"""
@@ -182,11 +197,15 @@ class PipelineScheduler:
                         automatic = True
                         event.is_wake = True
             if not event.is_private_chat() and not event.is_wake_up():
+                decision = event.get_extra("wake_decision")
+                if isinstance(decision, WakeDecision):
+                    self._record_rejection(event, "wake_decision", f"{decision.rule}: {decision.reason}")
+                else:
+                    self._record_rejection(event, "wake_decision", "not_woken: 未命中唤醒条件")
                 if deadline_ticket is None:
                     self.wake_timers.schedule(event)
                 else:
                     # 到期复查未触发: 仅冷却中才重排, 且不早于冷却结束, 避免零延迟忙循环
-                    decision = event.get_extra("wake_decision")
                     if isinstance(decision, WakeDecision) and decision.rule == "cooldown":
                         self.wake_timers.schedule(event, earliest=monotonic() + self.wake_window.cooldown_remaining(event))
                 return
@@ -211,6 +230,11 @@ class PipelineScheduler:
                     )
                     if self.error_feedback:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
+                    receipt = event.last_send_receipt
+                    self._record_rejection(
+                        event, "rate_limit", f"请求频率限制, 需等待 {wait:.1f}s",
+                        send_status=receipt.status if receipt is not None else "",
+                    )
                     manual_detail = "rate_limited"
                     return
 

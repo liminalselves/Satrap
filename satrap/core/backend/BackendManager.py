@@ -569,6 +569,22 @@ class BackendManager:
             "created_at": record["created_at"], "updated_at": record["updated_at"],
         }
 
+    def wake_rejections(self, adapter_id: str | None = None, limit: int = 50) -> list[dict[str, object]]:
+        """
+        查询唤醒决策点与限流点的有界拒绝记录, 最新在前
+
+        参数:
+        - adapter_id: 可选适配器实例 ID, 缺省跨实例按时间合并
+        - limit: 返回条数上限
+
+        返回:
+        - list[dict[str, object]]: 拒绝记录; 调度器未装配时为空列表
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return []
+        return scheduler.wake_rejections.list(adapter_id, limit)
+
     async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
         """
         重载模型与会话定义, 并应用可在线更新的平台策略

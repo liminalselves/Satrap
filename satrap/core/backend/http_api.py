@@ -339,6 +339,18 @@ class BackendHTTPServer(MiniHTTPServer):
             result = await backend.wake_platform(payload, operator="management")
             return _wake_status_code(result), result
 
+        if method == "GET" and path.startswith("/api/platforms/wake/rejections"):
+            # 唤醒决策/限流拒绝记录: GET /api/platforms/wake/rejections[?adapter_id=...&limit=...]
+            # 必须先于通用 /api/platforms/wake/{request_id} 分支匹配, 避免被当作 request_id
+            query = parse_qs(urlsplit(path).query)
+            adapter_id = query.get("adapter_id", [None])[0]
+            raw_limit = query.get("limit", ["50"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return 400, {"error": "invalid_limit"}
+            return 200, {"records": backend.wake_rejections(adapter_id, limit)}
+
         if method == "GET" and path.startswith("/api/platforms/wake/"):
             # 手动唤醒状态查询: GET /api/platforms/wake/{request_id}[?adapter_id=...]
             parsed = urlsplit(path)

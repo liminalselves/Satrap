@@ -13,6 +13,9 @@ import { controlApi } from '@/api/control';
 import { backendApi } from '@/api/backend';
 import { edictumApi } from '@/api/edictum';
 import { normalizePlatformSettings, platformSettingsSummary } from '@/utils/adminMigration';
+import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { WakeOverrideEditor } from './WakeOverrideEditor';
+import { WakeDryRunPanel } from './WakeDryRunPanel';
 import type { FormField } from '@/components/common';
 import type { EdictumSessionConfig, PlatformConfig } from '@/api/types';
 
@@ -28,6 +31,7 @@ export function Platforms() {
   const [showModal, setShowModal] = useState(false);
   const [editingPlatform, setEditingPlatform] = useState<PlatformConfig | null>(null);
   const [rawSettings, setRawSettings] = useState('{}');
+  const [openSnapshot, setOpenSnapshot] = useState('');
   const [formData, setFormData] = useState({
     enable: true,
     id: '',
@@ -71,27 +75,38 @@ export function Platforms() {
   }, [fetchModels, fetchSessionClasses, loadEdictumConfigs, loadPlatforms, refreshHealth]);
 
   const handleAdd = useCallback(() => {
+    const initial = { enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', settings: {} as Record<string, unknown> };
     setEditingPlatform(null);
-    setFormData({ enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', settings: {} });
+    setFormData(initial);
     setRawSettings('{}');
+    setOpenSnapshot(JSON.stringify(initial));
     setDraftRevision(revision);
     setShowModal(true);
   }, [revision]);
 
   const handleEdit = useCallback((platform: PlatformConfig) => {
-    setEditingPlatform(platform);
-    setFormData({
+    const initial = {
       enable: platform.enable ?? true,
       id: platform.id,
       type: platform.type,
       session_provider: platform.session_provider || 'session_class',
       session_type: platform.session_type || '',
       settings: platform.settings,
-    });
+    };
+    setEditingPlatform(platform);
+    setFormData(initial);
     setRawSettings(JSON.stringify(platform.settings, null, 2));
+    setOpenSnapshot(JSON.stringify(initial));
     setDraftRevision(revision);
     setShowModal(true);
   }, [revision]);
+
+  // 脏状态: 表单内容与打开快照不一致; 关闭模态/路由切换/浏览器刷新三处拦截
+  const formDirty = showModal && JSON.stringify(formData) !== openSnapshot;
+  useDirtyGuard(formDirty);
+  const guardedClose = useCallback(() => {
+    if (!formDirty || confirmDiscard()) setShowModal(false);
+  }, [formDirty]);
 
   const applySavedPlatform = useCallback(async (id: string, savedRevision?: string) => {
     try {
@@ -193,6 +208,16 @@ export function Platforms() {
     }
   }, []);
 
+  // 试算预览使用的归一化草稿; 存在无法解析的配置时禁用试算
+  const previewSettings = useMemo(() => {
+    if (formData.type !== 'onebot' && formData.type !== 'aiocqhttp') return undefined;
+    try {
+      return normalizePlatformSettings(formData.type, formData.settings);
+    } catch {
+      return undefined;
+    }
+  }, [formData]);
+
   // 表单字段
   const formFields = useMemo<FormField[]>(() => {
     const typeOptions = new Set<string>(PLATFORM_TYPES);
@@ -264,8 +289,8 @@ export function Platforms() {
         { key: 'settings.wake_message_threshold', label: '自动参与消息阈值（1–32）', type: 'number', placeholder: '默认 3' },
         { key: 'settings.wake_score_threshold', label: '必要性评分阈值（0–1）', type: 'number', placeholder: '默认 0.65, 分值越高参与越少' },
         { key: 'settings.wake_max_wait', label: '频率模式最长等待秒数（可选）', type: 'number', placeholder: '默认 0 关闭; 大于 0 且小于 120, 仍遵守冷却和限流' },
-        { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（JSON，可选）', type: 'textarea', rows: 3, placeholder: '{"123": {"wake_mode": "frequency", "wake_message_threshold": 5}}' },
-        { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区，JSON）', type: 'textarea', rows: 3, placeholder: '[{"start":"23:00","end":"07:00","settings":{"wake_mode":"explicit"}}]' },
+        { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（可选）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="group" value={value} onChange={set} /> },
+        { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="time" value={value} onChange={set} /> },
         { key: 'settings.wake_cooldown', label: '自动参与冷却秒数', type: 'number', placeholder: '默认 30, 明确唤醒不受此限制' },
         { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
         { key: 'settings.reply_with_quote', label: '群聊回复引用原消息', type: 'checkbox', placeholder: '默认关闭; 仅对有来源消息 ID 的群聊回复添加引用' },
@@ -281,6 +306,7 @@ export function Platforms() {
         { key: 'settings.media_plaintext_http', label: '允许公网明文 HTTP 媒体下载', type: 'checkbox', placeholder: '默认关闭; 开启后公网 http:// 附件地址也允许下载, 明文传输可被窃听篡改; 登记主机不受影响' },
         { key: 'settings.media_trusted_hosts', label: '允许访问私网的媒体主机（可选）', type: 'textarea', rows: 2, placeholder: '每行一个主机名; SnowLuma 提供的内网下载地址需在此登记, 否则出站防护会拒绝' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
+        { key: 'settings.wake_dry_run_preview', label: '唤醒规则试算预览', type: 'custom', render: () => <WakeDryRunPanel settings={previewSettings} /> },
       ];
     }
 
@@ -306,7 +332,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, sessionClasses]);
+  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, previewSettings, sessionClasses]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -335,8 +361,9 @@ export function Platforms() {
     'settings.voice_transcribe': formData.settings.voice_transcribe ?? 'asr',
     'settings.attachment_extract': formData.settings.attachment_extract ?? true,
     'settings.media_trusted_hosts': Array.isArray(formData.settings.media_trusted_hosts) ? formData.settings.media_trusted_hosts.join('\n') : formData.settings.media_trusted_hosts ?? '',
-    'settings.wake_group_overrides': typeof formData.settings.wake_group_overrides === 'string' ? formData.settings.wake_group_overrides : JSON.stringify(formData.settings.wake_group_overrides ?? {}, null, 2),
-    'settings.wake_time_rules': typeof formData.settings.wake_time_rules === 'string' ? formData.settings.wake_time_rules : JSON.stringify(formData.settings.wake_time_rules ?? [], null, 2),
+    'settings.wake_group_overrides': formData.settings.wake_group_overrides ?? {},
+    'settings.wake_time_rules': formData.settings.wake_time_rules ?? [],
+    'settings.wake_dry_run_preview': undefined,
     'settings.wake_mode': formData.settings.wake_mode ?? 'explicit',
     'settings.wake_message_threshold': formData.settings.wake_message_threshold ?? '',
     'settings.wake_score_threshold': formData.settings.wake_score_threshold ?? '',
@@ -487,7 +514,7 @@ export function Platforms() {
       {/* 编辑/新增模态框 */}
       <FormModal
         open={showModal}
-        onClose={() => setShowModal(false)}
+        onClose={guardedClose}
         title={editingPlatform ? '编辑平台' : '添加平台'}
         fields={formFields}
         values={formValues}

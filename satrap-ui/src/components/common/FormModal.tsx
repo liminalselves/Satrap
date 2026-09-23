@@ -6,12 +6,14 @@ import { Input } from '@/components/ui/Input';
 export interface FormField {
   key: string;
   label: string;
-  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox' | 'checkbox-group';
+  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox' | 'checkbox-group' | 'custom';
   placeholder?: string;
   required?: boolean;
   disabled?: boolean;
   options?: { value: string; label: string }[];
   rows?: number;
+  // custom 类型的渲染器: 接收当前值与写回回调
+  render?: (value: unknown, onChange: (value: unknown) => void) => React.ReactNode;
 }
 
 export interface FormModalProps {
@@ -51,6 +53,8 @@ export const FormModal = memo(function FormModal({
     const value = values[field.key];
 
     switch (field.type) {
+      case 'custom':
+        return field.render ? field.render(value, (next) => onChange(field.key, next)) : null;
       case 'textarea':
         return (
           <textarea
@@ -165,7 +169,7 @@ export const FormModal = memo(function FormModal({
       <form onSubmit={handleSubmit} className="space-y-4">
         {fields.map((field) => (
           <div key={field.key}>
-            <label htmlFor={field.type === 'checkbox-group' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">
+            <label htmlFor={field.type === 'checkbox-group' || field.type === 'custom' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">
               {field.label}
               {field.required && <span className="text-error ml-1">*</span>}
             </label>
