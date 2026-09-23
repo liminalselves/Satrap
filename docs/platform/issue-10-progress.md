@@ -356,3 +356,16 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 引用/转发/附件解析移入会话锁 claim 成功之后: 并发未认领批次不再浪费下载与转写, 锁持有上限即 90s 附件预算; 平台上报文件名消毒 `_safe_display`; FORWARD_NODE_LIMIT 说明字符串归位 (N3)
 
 验收: 全量单测 1862 passed / 19 skipped; pyright 全库 0 errors / 1586 warnings (不增); 前端 tsc 0 error + vitest 69 绿; 附件 benchmark 复跑 (get_record 路径 +0.5ms 为 to_thread 预期开销); 入站 benchmark 在 B6 重排后无回退 (结果存 `tests/benchmark/results/platform/after-residual.json` 与 `audio-after-residual.json`)。至此独立复核意见全部闭环, fix/issue10 待合回 main。
+
+## 目标审计与复审 (2026-09-23)
+
+[issue-10-goal-audit-2026-09-23.md](issue-10-goal-audit-2026-09-23.md) 以"完整目标验收"为口径审计 (基线 `e683fce`), 结论不通过: 可复现缺陷 A1-A4 (跨群归属核验缺失/自动参与覆盖补全内容/取消清理竞态/无统一输入预算) 与交付缺口 A5-A8 (手动请求持久化/ASR 引用检查/能力状态语义/前端范围)。[issue-10-goal-audit-review-2026-09-23.md](issue-10-goal-audit-review-2026-09-23.md) 逐项复审全部属实, 并将 File 出站分流与 talk_value 映射两条证据不足项升级为"确认缺失"。用户裁定: 该两项补实现 (File 不断言现状必失败; talk_value 不做群活跃度采集), 历史验收记录与发行包核验搁置; 其余 10 项修复方案见 [issue-10-goal-audit-fix-plan.md](issue-10-goal-audit-fix-plan.md) (四批次, 待实施)。方案经 [issue-10-goal-audit-fix-plan-review-2026-09-23.md](issue-10-goal-audit-fix-plan-review-2026-09-23.md) 复审, R1-R8 八条意见全部采纳并修订 (A3 登记改由子任务终态驱动; A2 按事件类别区分合成/真实消息; A1 flag 原子占用与四态; A5 接受事务/降级/发送尝试记录; talk_value 改为配置来源接入 WakeWindow.decide; File/新工具走公共发送路径与连接代次能力缓存; A4 顶层媒体实际裁剪; A8 试算共用决策逻辑与决策点拒绝记录)。
+
+### 目标审计批次 1 (A1/A2/A3)
+
+- A1: 新增 `onebot/request_registry.py` — 群/好友请求分表的有界 flag 登记 (512 条/10 分钟), 状态 available→executing→completed/unknown 单向迁移, 重复入站不重置已占用状态; `adapter._handle_request` 在订阅过滤前登记 (先验 self_id 归属); `recall_message` 执行前 `get_msg` 回源验群并在回源后复查群范围; `handle_group_request`/`handle_friend_request` 先原子占用再动作, 超时/传输异常记 unknown 不可重放
+- A2: scheduler 合并替代覆盖——真实当前消息保留完整投影并按 request_id 去重后以"[先前窗口消息 N 条]"追加批次; 窗口类合成事件 (无 prompt 手动唤醒/定时补偿) 以实际 claim 结果为唯一输入, 不带入陈旧正文
+- A3: OutboundTurns 登记清理改由子任务 done 回调驱动 (`_settle` 幂等), 调用方取消时有界等待 (CANCEL_SETTLE_TIMEOUT=5s) 但不摘除未终态登记, 未终态任务继续占用容量且同目标锁保留排队; close 有界等待并明确报告未终态数量
+- 测试: 撤回归属/回源失败/复查收紧; flag 未登记/异群/异类/重放/超时 unknown/并发唯一胜出/群友分表/重复入站不重置; 登记 TTL 与容量; 真实消息合并/手动窗口/定时补偿三类输入组装; 取消清理顺序/超时保留/重复取消/close 覆盖清理中任务
+
+验收: 全量单测 1886 passed / 19 skipped; pyright 全库 0 errors / 1532 warnings (开工基线 0/1532, 不增); 入站 benchmark 与即时干净树对照差 ≤±3.3% (旧基线整体漂移为机器环境差异, 干净树复跑同幅, 结果存 `goal-batch1.json`/`goal-batch1-clean-tree.json`)。

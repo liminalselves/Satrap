@@ -181,6 +181,7 @@ class TestExecution:
     async def test_group_request_requires_matching_sub_type(self):
         adapter = _setup_adapter()
         adapter._bot.set_group_add_request.return_value = {}
+        adapter.request_flags.register("group", "f1", group_id="456", sub_type="add", user_id="1")
         config = {"write_tools_enabled": True}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):

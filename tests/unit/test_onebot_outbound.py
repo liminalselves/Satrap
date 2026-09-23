@@ -200,3 +200,127 @@ async def test_outbound_turns_external_cancel_keeps_cancelled_error_and_child_fa
 
     with pytest.raises(ValueError, match="platform said no"):
         await turns.run("t", failing)
+
+
+@pytest.mark.asyncio
+async def test_cancel_waits_for_cleanup_before_same_target_proceeds():
+    """调用方取消后, 同目标新发送必须等旧任务清理完成"""
+    turns = OutboundTurns()
+    log: list[str] = []
+    cleanup_release = asyncio.Event()
+
+    async def first_op() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            log.append("first_cleanup_started")
+            await cleanup_release.wait()
+            log.append("first_cleanup_done")
+
+    async def second_op() -> None:
+        log.append("second_started")
+
+    caller = asyncio.create_task(turns.run("t", first_op))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(turns.run("t", second_op))
+    caller.cancel()
+    await asyncio.sleep(0.05)
+    assert log == ["first_cleanup_started"]
+    cleanup_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    await second
+    assert log == ["first_cleanup_started", "first_cleanup_done", "second_started"]
+    assert not turns.tasks and not turns.locks
+
+
+@pytest.mark.asyncio
+async def test_cancel_settle_timeout_keeps_registry_until_child_finishes(monkeypatch: pytest.MonkeyPatch):
+    """清理超过有界等待时调用方先退出, 登记保留且同目标不并发"""
+    monkeypatch.setattr("satrap.core.platform.onebot.outbound.CANCEL_SETTLE_TIMEOUT", 0.2)
+    turns = OutboundTurns()
+    log: list[str] = []
+    cleanup_release = asyncio.Event()
+
+    async def slow_cleanup() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            log.append("cleanup_started")
+            await cleanup_release.wait()
+            log.append("cleanup_done")
+
+    async def second_op() -> None:
+        log.append("second_started")
+
+    caller = asyncio.create_task(turns.run("t", slow_cleanup))
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    # 调用方已退出, 子任务仍在清理: 登记保留
+    assert turns.tasks and turns.locks.get("t") is not None
+    second = asyncio.create_task(turns.run("t", second_op))
+    await asyncio.sleep(0.1)
+    assert "second_started" not in log
+    cleanup_release.set()
+    await second
+    assert log == ["cleanup_started", "cleanup_done", "second_started"]
+    assert not turns.tasks and not turns.locks
+
+
+@pytest.mark.asyncio
+async def test_double_cancel_during_settle_keeps_cancel_semantics(monkeypatch: pytest.MonkeyPatch):
+    """有界等待期间重复取消不改变取消语义与登记时机"""
+    monkeypatch.setattr("satrap.core.platform.onebot.outbound.CANCEL_SETTLE_TIMEOUT", 5.0)
+    turns = OutboundTurns()
+    cleanup_release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def slow_cleanup() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await cleanup_release.wait()
+            cleaned.set()
+
+    caller = asyncio.create_task(turns.run("t", slow_cleanup))
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    await asyncio.sleep(0.05)
+    caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+    # 重复取消让调用方立即退出, 但登记保持到子任务清理完成
+    assert turns.tasks
+    assert not cleaned.is_set()
+    cleanup_release.set()
+    await asyncio.sleep(0.05)
+    assert cleaned.is_set()
+    assert not turns.tasks
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_cleaning_task_and_reports_timeout(monkeypatch: pytest.MonkeyPatch):
+    """close 覆盖清理中的任务; 超时明确报告未终态"""
+    monkeypatch.setattr("satrap.core.platform.onebot.outbound.CANCEL_SETTLE_TIMEOUT", 0.2)
+    turns = OutboundTurns()
+    cleanup_release = asyncio.Event()
+
+    async def slow_cleanup() -> None:
+        try:
+            await asyncio.sleep(10)
+        finally:
+            await cleanup_release.wait()
+
+    caller = asyncio.create_task(turns.run("t", slow_cleanup))
+    await asyncio.sleep(0.05)
+    closer = asyncio.create_task(turns.close())
+    await asyncio.sleep(0.6)
+    assert closer.done()
+    assert turns.tasks, "超时后未终态任务必须保持登记"
+    cleanup_release.set()
+    await asyncio.sleep(0.1)
+    assert not turns.tasks
+    with pytest.raises(RuntimeError, match="已关闭"):
+        await caller

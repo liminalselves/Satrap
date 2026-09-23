@@ -562,3 +562,102 @@ async def test_unclaimed_automatic_batch_skips_resolution(monkeypatch: pytest.Mo
     await scheduler.execute(event)
     adapter._bot.get_msg.assert_not_called()
     manager.handle_call_async.assert_not_awaited()
+
+
+# ================= A2 窗口批次与投影合并测试 =================
+
+
+@pytest.mark.asyncio
+async def test_real_message_merges_window_without_losing_projection():
+    """frequency 模式下显式 @ + 引用: UserCall 同时保留引用块与先前窗口块, 当前消息不重复"""
+    from unittest.mock import AsyncMock
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 5, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "先聊着"}}]})
+    first = adapter._event_queue.get_nowait()
+    await scheduler.execute(first)
+    manager.handle_call_async.assert_not_awaited()
+
+    adapter._bot.get_msg.return_value = {"message_id": 5, "message_type": "group", "group_id": 20, "user_id": 31,
+        "message": [{"type": "text", "data": {"text": "QUOTED_SECRET_CONTEXT"}}], "sender": {"user_id": 31, "nickname": "甲"}}
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 2,
+        "message_type": "group", "message": [{"type": "reply", "data": {"id": "5"}},
+                                             {"type": "at", "data": {"qq": "10"}},
+                                             {"type": "text", "data": {"text": "please summarize"}}]})
+    second = adapter._event_queue.get_nowait()
+    await scheduler.execute(second)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert "QUOTED_SECRET_CONTEXT" in user_call.message
+    assert "[先前窗口消息" in user_call.message and "先聊着" in user_call.message
+    assert user_call.message.count("please summarize") == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyPatch):
+    """无 prompt 待处理手动唤醒: 输入仅为实际认领批次, 不叠加合成事件正文"""
+    from unittest.mock import AsyncMock
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={"self_id": "10"}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "窗口甲\n窗口乙"}}]})
+    event = adapter._event_queue.get_nowait()
+    snapshot = (PendingText("r1", "30", "1", "窗口甲", 0.0), PendingText("r2", "30", "2", "窗口乙", 0.0))
+    scheduler.manual_wakes.tickets[event] = ManualWakeTicket("req-1", snapshot)
+
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+        return snapshot
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
+    await scheduler.execute(event)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert user_call.message == "[用户 30, 消息 1] 窗口甲\n[用户 30, 消息 2] 窗口乙"
+
+
+@pytest.mark.asyncio
+async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyPatch):
+    """定时补偿唤醒: 以到期实际认领为准, 定时器保存的陈旧正文副本不进入输入"""
+    from unittest.mock import AsyncMock
+    from satrap.core.pipeline.wake_timers import DeadlineTicket
+    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "旧副本"}}]})
+    event = adapter._event_queue.get_nowait()
+    snapshot = (PendingText("r1", "30", "1", "实际认领", 0.0),)
+    scheduler.wake_timers.tickets[event] = DeadlineTicket(snapshot=snapshot)
+
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+        return snapshot
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
+    await scheduler.execute(event)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert user_call.message == "[用户 30, 消息 1] 实际认领"
+    assert "旧副本" not in user_call.message

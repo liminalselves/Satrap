@@ -395,11 +395,22 @@ class OneBotAdmin:
         参数:
         - group_id: 消息所在群, 必须在当前实例允许范围内
         - message_id: 平台消息 ID
+
+        执行前经 get_msg 回源确认消息实际属于目标群, 无法确认一律拒绝;
+        回源通过后复查群范围, 防止回源等待期间配置已被修改
         """
-        self._check_group(normalize_group_id(group_id))
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
         text = str(message_id).strip()
         if not text or not text.lstrip("-").isdecimal():
             raise ValueError("消息 ID 必须为整数")
+        info = await self._call("get_msg", message_id=int(text))
+        payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
+        raw_group = payload.get("group_id")
+        actual_group = str(raw_group).strip() if isinstance(raw_group, (int, str)) and not isinstance(raw_group, bool) else ""
+        if payload.get("message_type") != "group" or actual_group != gid:
+            raise AdminActionRejected("无法确认消息属于目标群, 已拒绝撤回")
+        self._check_group(gid)
         await self._call("delete_msg", message_id=int(text))
 
     async def kick_group_member(self, group_id: Any, user_id: Any, reject_add_request: bool = False) -> None:
@@ -554,29 +565,50 @@ class OneBotAdmin:
         处理好友添加请求
 
         参数:
-        - flag: request 事件上报的标识
+        - flag: request 事件上报的标识, 必须已在好友请求登记表中且未被占用
         - approve: 是否同意
         - remark: 同意后的好友备注
+
+        flag 校验与占用在首次网络等待前原子完成; 动作超时或传输异常记 unknown,
+        不自动重试, 同一 flag 不可重放
         """
         if not isinstance(approve, bool):
             raise ValueError("approve 必须为布尔值")
         text = str(remark)
         if len(text) > 60:
             raise ValueError("备注长度不能超过 60 字符")
-        await self._call("set_friend_add_request", flag=normalize_flag(flag), approve=approve, remark=text)
+        normalized = normalize_flag(flag)
+        registry = self._adapter.request_flags
+        try:
+            registry.occupy("friend", normalized)
+        except LookupError as error:
+            raise AdminActionRejected(str(error)) from None
+        try:
+            await self._call("set_friend_add_request", flag=normalized, approve=approve, remark=text)
+        except AdminActionUnconfirmed:
+            registry.settle("friend", normalized, "unknown")
+            raise
+        except Exception:
+            registry.settle("friend", normalized, "completed")
+            raise
+        registry.settle("friend", normalized, "completed")
 
     async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
         """
         处理加群请求或邀请
 
         参数:
-        - group_id: 请求所属群, 必须在当前实例允许范围内
-        - flag: request 事件上报的标识
-        - sub_type: add 或 invite, 必须与事件一致
+        - group_id: 请求所属群, 必须在当前实例允许范围内且与登记一致
+        - flag: request 事件上报的标识, 必须已在群请求登记表中且未被占用
+        - sub_type: add 或 invite, 必须与登记事件一致
         - approve: 是否同意
         - reason: 拒绝理由
+
+        flag 校验与占用在首次网络等待前原子完成; 动作超时或传输异常记 unknown,
+        不自动重试, 同一 flag 不可重放
         """
-        self._check_group(normalize_group_id(group_id))
+        gid = normalize_group_id(group_id)
+        self._check_group(gid)
         if sub_type not in {"add", "invite"}:
             raise ValueError("sub_type 必须为 add 或 invite")
         if not isinstance(approve, bool):
@@ -584,4 +616,18 @@ class OneBotAdmin:
         text = str(reason)
         if len(text) > 120:
             raise ValueError("理由长度不能超过 120 字符")
-        await self._call("set_group_add_request", flag=normalize_flag(flag), sub_type=sub_type, approve=approve, reason=text)
+        normalized = normalize_flag(flag)
+        registry = self._adapter.request_flags
+        try:
+            registry.occupy("group", normalized, group_id=gid, sub_type=cast(str, sub_type))
+        except LookupError as error:
+            raise AdminActionRejected(str(error)) from None
+        try:
+            await self._call("set_group_add_request", flag=normalized, sub_type=sub_type, approve=approve, reason=text)
+        except AdminActionUnconfirmed:
+            registry.settle("group", normalized, "unknown")
+            raise
+        except Exception:
+            registry.settle("group", normalized, "completed")
+            raise
+        registry.settle("group", normalized, "completed")

@@ -253,7 +253,19 @@ class PipelineScheduler:
                     origin=event.call_origin,
                 )
                 if batch:
-                    user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
+                    window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
+                    if window_synthetic:
+                        # 窗口类合成事件 (待处理手动唤醒/定时补偿): projected 正文来自快照拼接或陈旧副本,
+                        # 以实际成功 claim 的内容为唯一输入, 不叠加 projected 避免重复整段窗口
+                        user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
+                    else:
+                        # 真实当前消息: 保留引用/转发/附件补全投影, 批次剔除自身后作为先前窗口上下文追加
+                        current_request_id = event.call_origin.request_id
+                        others = tuple(item for item in batch if item.request_id != current_request_id)
+                        if others:
+                            lines = "\n".join(f"- [用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in others)
+                            window_block = f"[先前窗口消息 {len(others)} 条:\n{lines}]"
+                            user_call.message = f"{user_call.message}\n{window_block}" if user_call.message else window_block
                 # Step.6 执行会话并限制等待时间
                 try:
                     response = await asyncio.wait_for(

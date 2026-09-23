@@ -32,6 +32,7 @@ from satrap.core.platform.onebot.onebot_utils import (
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, OneBotAdmin, is_missing_action_error
+from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendReceipt, combine_receipts
 from satrap.core.components import Node
@@ -100,6 +101,7 @@ class OneBotAdapter(PlatformAdapter):
         self._warned_at: dict[str, float] = {}
         self._outbound = OutboundTurns()
         self.admin = OneBotAdmin(self, _action_failures)
+        self.request_flags = RequestFlagRegistry()
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
 
     def meta(self) -> PlatformMetadata:
@@ -429,7 +431,36 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: OneBot 原始 request
         """
+        self._register_request_flag(event)
         await self._emit_notice(event)
+
+    def _register_request_flag(self, event: dict[str, Any]) -> None:
+        """
+        登记 request 事件 flag 供审批动作核验归属, 可信账号身份核验先于登记
+
+        参数:
+        - event: OneBot 原始 request
+
+        登记是安全机制, 不依赖通知订阅与群白名单过滤; 账号不符或无法核验时不登记,
+        对应 flag 后续审批将因未登记被拒绝
+        """
+        incoming_self = str(event.get("self_id") or "")
+        if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
+            self._ingress_rejections["account"] += 1
+            return
+        flag = str(event.get("flag") or "").strip()
+        if not flag:
+            return
+        request_type = str(event.get("request_type") or "")
+        user_id = str(event.get("user_id") or "")
+        if request_type == "group":
+            sub_type = str(event.get("sub_type") or "")
+            group_id = str(event.get("group_id") or "")
+            if sub_type not in {"add", "invite"} or not group_id.isdecimal():
+                return
+            self.request_flags.register("group", flag, group_id=group_id, sub_type=sub_type, user_id=user_id)
+        elif request_type == "friend":
+            self.request_flags.register("friend", flag, user_id=user_id)
 
     async def _emit_notice(self, raw: dict[str, Any]) -> None:
         """
