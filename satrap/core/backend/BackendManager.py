@@ -29,6 +29,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
+from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
@@ -199,6 +200,8 @@ class BackendManager:
         self._platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
         self._rate_limiter: RateLimiter | None = None
         self._scheduler: PipelineScheduler | None = None
+        self._manual_wake_store: ManualWakeStore | None = None
+        self._wake_accept_lock = asyncio.Lock()
         self._adapter_mgr: PlatformAdapterManager | None = None
         self._dispatcher: EventDispatcher | None = None
         self.platform_events = PlatformEventHub()
@@ -455,7 +458,7 @@ class BackendManager:
         if set(payload) - allowed or not operator:
             return {"status": "rejected", "reason": "invalid_fields_or_operator"}
         request_id = payload.get("request_id")
-        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128:
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 128 or "\n" in request_id:
             return {"status": "rejected", "reason": "invalid_request_id"}
         if not self._running or self._scheduler is None or self._adapter_mgr is None:
             return {"status": "rejected", "request_id": request_id, "reason": "backend_unavailable"}
@@ -505,20 +508,66 @@ class BackendManager:
         if snapshot:
             event.message_str = "\n".join(item.text for item in snapshot)
         event._call_origin = replace(event.call_origin, actor_id=operator, actor_kind="management", route_user_id=str(user_id), request_id=request_id)
-        duplicate = requests.check(request_id, fingerprint)
-        if duplicate is not None:
-            return duplicate
-        if self._adapter_mgr.get_adapter(str(adapter_id)) is not adapter or not adapter.started or not adapter.allows_group(str(group_id)):
-            return {"status": "rejected", "request_id": request_id, "reason": "adapter_changed"}
-        if adapter._event_queue.full():
-            return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
-        ticket = ManualWakeTicket(request_id, snapshot)
-        requests.register(event, fingerprint, ticket)
-        if not adapter.commit_event(event):
-            logger.warning(f"[BackendManager] 手动唤醒入队失败 request_id={request_id} adapter={adapter_id}")
-            return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
+        store = self._manual_wake_store
+        # 接受事务: 查重 + 持久占位 + 入队由同一把异步锁保护, 成功落盘后才返回 accepted
+        async with self._wake_accept_lock:
+            duplicate = requests.check(request_id, fingerprint)
+            if duplicate is not None:
+                return duplicate
+            if store is not None:
+                if store.degraded:
+                    return {"status": "rejected", "request_id": request_id, "reason": "store_unavailable"}
+                record = await asyncio.to_thread(store.lookup_request, request_id, str(adapter_id))
+                if record is not None:
+                    if record["fingerprint"] == fingerprint:
+                        return {"status": "already_pending", "request_id": request_id, "state": record["status"], "reason": "duplicate"}
+                    return {"status": "rejected", "request_id": request_id, "reason": "request_id_conflict"}
+            if self._adapter_mgr.get_adapter(str(adapter_id)) is not adapter or not adapter.started or not adapter.allows_group(str(group_id)):
+                return {"status": "rejected", "request_id": request_id, "reason": "adapter_changed"}
+            if adapter._event_queue.full():
+                return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
+            if store is not None:
+                try:
+                    await asyncio.to_thread(store.accept_request, str(adapter_id), request_id, fingerprint, f"group:{group_id}", operator)
+                except ManualWakeStoreError as error:
+                    reason = "request_capacity" if error.reason == "capacity" else "store_unavailable"
+                    logger.warning(f"[BackendManager] 手动唤醒占位落盘失败 request_id={request_id} adapter={adapter_id}: {error}")
+                    return {"status": "rejected", "request_id": request_id, "reason": reason}
+            ticket = ManualWakeTicket(request_id, snapshot)
+            requests.register(event, fingerprint, ticket)
+            if not adapter.commit_event(event):
+                requests.records.pop(request_id, None)
+                if store is not None:
+                    await asyncio.to_thread(store.update_request, str(adapter_id), request_id, "failed", "queue_full")
+                logger.warning(f"[BackendManager] 手动唤醒入队失败 request_id={request_id} adapter={adapter_id}")
+                return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
         logger.info(f"[BackendManager] 手动唤醒已接受 request_id={request_id} adapter={adapter_id} group={group_id} operator={operator} pending={len(snapshot)}")
         return {"status": "accepted", "request_id": request_id}
+
+    async def manual_wake_status(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
+        """
+        查询手动唤醒请求的持久化状态, 重启后可查
+
+        参数:
+        - request_id: 客户端幂等标识
+        - adapter_id: 可选适配器实例 ID, 缺省跨实例按 request_id 查最新记录
+
+        返回:
+        - dict[str, Any]: 记录状态与明细; 未找到/存储不可用时给出明确原因
+        """
+        store = self._manual_wake_store
+        if store is None:
+            return {"status": "unknown", "request_id": request_id, "reason": "store_unavailable"}
+        if store.degraded:
+            return {"status": "unknown", "request_id": request_id, "reason": "store_degraded"}
+        record = await asyncio.to_thread(store.lookup_request, request_id, adapter_id)
+        if record is None:
+            return {"status": "unknown", "request_id": request_id, "reason": "not_found"}
+        return {
+            "status": record["status"], "request_id": record["request_id"], "adapter_id": record["adapter_id"],
+            "target": record["target"], "operator": record["operator"], "detail": record["detail"],
+            "created_at": record["created_at"], "updated_at": record["updated_at"],
+        }
 
     async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
         """
@@ -673,7 +722,7 @@ class BackendManager:
                         if self._scheduler is not None and old_settings != new_settings:
                             self._scheduler.wake_window.clear_adapter(platform_id)
                             self._scheduler.wake_timers.clear_adapter(platform_id)
-                            self._scheduler.manual_wakes.clear_adapter(platform_id)
+                            self._scheduler.clear_manual_wakes(platform_id)
                         self._platform_active_configs[platform_id] = deepcopy(candidate)
                         result["active_revision"] = saved_revision
                         result["status"] = "applied"
@@ -737,6 +786,7 @@ class BackendManager:
             ), event_handler=old.event_handler if old else self.platform_events)
             if replacement is None:
                 raise ValueError("平台类型不可用")
+            self._attach_send_attempt_recorder(replacement)
         try:
             if old is not None:
                 old.config = replace(old.config, enable=False)
@@ -744,7 +794,7 @@ class BackendManager:
             if self._scheduler is not None:
                 self._scheduler.wake_window.clear_adapter(platform_id)
                 self._scheduler.wake_timers.clear_adapter(platform_id)
-                self._scheduler.manual_wakes.clear_adapter(platform_id)
+                self._scheduler.clear_manual_wakes(platform_id)
             if old is not None:
                 await old.terminate()
             if replacement is not None:
@@ -1042,8 +1092,19 @@ class BackendManager:
     def _init_model_config(self):
         self._model_cfg = ModelConfigManager(
             storage_path=self.config.model_config_path,
+            asr_in_use_checker=self._check_asr_in_use,
         )
         logger.info("[BackendManager] ModelConfigManager 就绪")
+
+    def _check_asr_in_use(self, config_name: str) -> list[dict[str, str]]:
+        """后端运行时的 ASR 引用扫描, 平台绑定取当前已加载配置"""
+        from satrap.core.config.asr_references import list_asr_config_references
+
+        return list_asr_config_references(
+            config_name,
+            platforms=list(self.config.platforms),
+            layout=self._storage,
+        )
 
     def _init_session_class_config(self):
         self._session_cls_cfg = SessionClassConfigManager(
@@ -1171,9 +1232,25 @@ class BackendManager:
             error_feedback=self.config.error_feedback,
             user_manager=self._user_mgr,
         )
+        self._manual_wake_store = ManualWakeStore(self._storage.root / "manual_wake_store.json")
+        self._scheduler.manual_wake_store = self._manual_wake_store
+        if self._manual_wake_store.degraded:
+            logger.warning("[BackendManager] 手动唤醒状态存储已降级, 新手动请求将被拒绝, 其余功能照常")
         self._scheduler.set_platform_runtimes(self._platform_runtimes)
         self._scheduler.asr_resolver = asr_resolver_from_manager(self._model_cfg)
         logger.info("[BackendManager] PipelineScheduler + RateLimiter + UserManager 就绪")
+
+    def _attach_send_attempt_recorder(self, adapter: PlatformAdapter) -> None:
+        """
+        给支持发送尝试记录的适配器注入状态存储
+
+        参数:
+        - adapter: 平台适配器实例
+        """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        if isinstance(adapter, OneBotAdapter) and self._manual_wake_store is not None:
+            adapter.set_send_attempt_recorder(self._manual_wake_store)
 
     def _resolve_platform_session_type(
         self,
@@ -1233,6 +1310,7 @@ class BackendManager:
         adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
         if adapter is None:
             raise ValueError("平台类型不可用")
+        self._attach_send_attempt_recorder(adapter)
         self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
         logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
 

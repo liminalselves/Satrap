@@ -28,7 +28,14 @@ def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     - ModelConfigManager: 离线模型配置管理器
     """
     config = load_cli_config(args)
-    return ModelConfigManager(storage_path=config.model_config_path)
+
+    def _checker(config_name: str) -> list[dict[str, str]]:
+        from satrap.core.config.asr_references import list_asr_config_references
+        from satrap.core.storage import default_storage_layout
+
+        return list_asr_config_references(config_name, platforms=list(config.platforms), layout=default_storage_layout)
+
+    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=_checker)
 
 
 def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig) -> dict[str, Any]:

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Protocol
 
 
 @dataclass(frozen=True)
@@ -40,6 +40,13 @@ def combine_receipts(receipts: list[SendReceipt]) -> SendReceipt:
     返回:
     - SendReceipt: 保留所有已确认 ID 和首个失败位置, 空列表为明确失败
     """
+    if len(receipts) == 1:
+        # 单段发送不引入位置语义, 保留原始回执形状 (failed_index 不补 0)
+        only = receipts[0]
+        if only.status == "success":
+            return SendReceipt("success", only.message_ids)
+        status = "unknown" if only.status == "unknown" else "partial" if only.message_ids else "failed"
+        return SendReceipt(status, only.message_ids, only.failed_index, only.reason)
     ids = tuple(message_id for receipt in receipts for message_id in receipt.message_ids)
     index = 0
     for receipt in receipts:
@@ -48,3 +55,27 @@ def combine_receipts(receipts: list[SendReceipt]) -> SendReceipt:
             return SendReceipt(status, ids, index + (receipt.failed_index or 0), receipt.reason)
         index += max(1, len(receipt.message_ids))
     return SendReceipt("success", ids) if receipts else SendReceipt("failed", reason="empty_message")
+
+
+class SendAttemptRecorder(Protocol):
+    """发送尝试持久化记录器, 由管线层状态存储实现, 平台层只依赖该结构协议"""
+
+    @property
+    def degraded(self) -> bool:
+        """存储降级时调用方跳过记录, 发送功能不受影响"""
+        ...
+
+    def record_send_attempt(
+        self,
+        turn_id: str,
+        adapter_id: str,
+        target: str,
+        request_id: str,
+        segments: list[dict[str, Any]],
+    ) -> bool:
+        """在发送 I/O 之前持久化 submitted 占位, 返回是否已落盘"""
+        ...
+
+    def complete_send_attempt(self, turn_id: str, segment_statuses: list[str], status: str, detail: str = "") -> bool:
+        """回执到达后逐段更新并写终态 (sent/partial/failed/unknown)"""
+        ...

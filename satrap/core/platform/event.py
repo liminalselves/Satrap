@@ -815,7 +815,9 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                result = await self.adapter.send_message(self.session_id, self.decorate_reply(message))
+                result = await self.adapter.send_message(
+                    self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
+                )
                 self._record_send_result(result)
             except Exception as e:
                 logger.error(

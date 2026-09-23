@@ -417,13 +417,14 @@ class PlatformAdapter(ABC):
             f"[PlatformAdapter] {self.__class__.__name__} 未实现 send_text()"
         )
 
-    async def send_message(self, session_id: str, message: MessageChain) -> Any:
+    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
         """
         发送完整的消息链, 默认实现: 提取 Plain 组件拼接文本后调用 send_text
 
         参数:
         - session_id: 会话 ID
         - message: 要发送的消息链
+        - request_id: 可选的逻辑请求标识, 支持发送尝试记录的平台据此关联手动请求
 
         返回:
         - Any: 发送完整的消息链, 默认实现: 提取 Plain 组件拼接文本后调用 send_text

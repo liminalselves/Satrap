@@ -40,7 +40,7 @@ class _RecorderAdapter(PlatformAdapter):
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(name=self.config.id, id=self.config.id)
 
-    async def send_message(self, session_id: str, message: MessageChain) -> Any:
+    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
         self.sent.append((session_id, message))
         return None
 
@@ -259,7 +259,7 @@ async def test_event_send_records_and_flags():
 async def test_event_send_failure_silently_caught():
     """适配器发送失败被捕获, 不冒泡"""
     class _BoomAdapter(_RecorderAdapter):
-        async def send_message(self, session_id: str, message: MessageChain) -> Any:
+        async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
             raise RuntimeError("network down")
 
     adapter = _BoomAdapter()

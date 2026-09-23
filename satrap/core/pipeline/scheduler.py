@@ -32,13 +32,16 @@ from satrap.core.pipeline.wake_window import PendingText, WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
-from satrap.core.pipeline.manual_wake import ManualWakeRequests
+from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
+from satrap.core.pipeline.manual_wake_store import ManualWakeStore
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
 
 
+_RECEIPT_TO_REQUEST_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
+"""手动请求终态取自发送回执, 错误分支的 detail 优先于反馈消息回执"""
 
 
 class PipelineScheduler:
@@ -79,7 +82,29 @@ class PipelineScheduler:
         self.wake_window = WakeWindow()
         self.wake_timers = WakeTimers(self.wake_window)
         self.manual_wakes = ManualWakeRequests()
+        self.manual_wake_store: ManualWakeStore | None = None
         self.asr_resolver: AsrResolver | None = None
+
+    def clear_manual_wakes(self, adapter_id: str) -> None:
+        """
+        撤销平台残留手动请求并把持久化记录推进到停止语义
+
+        参数:
+        - adapter_id: 平台实例 ID
+        """
+        self.manual_wakes.clear_adapter(adapter_id)
+        if self.manual_wake_store is not None:
+            self.manual_wake_store.adapter_stopped(adapter_id)
+
+    async def _update_manual_request(self, event: MessageEvent, ticket: ManualWakeTicket, status: str, detail: str) -> None:
+        """持久化手动请求状态, 落盘失败不影响管线执行"""
+        store = self.manual_wake_store
+        if store is None:
+            return
+        try:
+            await asyncio.to_thread(store.update_request, event.call_origin.adapter_id, ticket.request_id, status, detail)
+        except Exception as error:
+            logger.debug(f"[PipelineScheduler] 手动请求状态回写失败 request_id={ticket.request_id}: {type(error).__name__}")
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
         """
@@ -109,6 +134,7 @@ class PipelineScheduler:
         参数:
         - event: 消息事件
         """
+        manual_detail: str | None = None
         try:
             manual_ticket = self.manual_wakes.tickets.get(event)
             if manual_ticket is not None and manual_ticket.cancelled:
@@ -185,6 +211,7 @@ class PipelineScheduler:
                     )
                     if self.error_feedback:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
+                    manual_detail = "rate_limited"
                     return
 
             # Step.5 通过 UserManager 解析目标会话 (路由不依赖投影, 仍在会话锁外)
@@ -242,6 +269,7 @@ class PipelineScheduler:
                 event.set_extra("input_projection", projected)
                 message, images, videos = projected.message, list(projected.images), list(projected.videos)
                 if not message and not images and not videos:
+                    manual_detail = "empty_message"
                     return
                 user_call = UserCall(
                     session_id=session_id,
@@ -283,6 +311,8 @@ class PipelineScheduler:
                     if window_note is not None:
                         event.set_extra("input_projection", replace(projected, notes=(*projected.notes, window_note)))
                 # Step.6 执行会话并限制等待时间
+                if manual_ticket is not None:
+                    await self._update_manual_request(event, manual_ticket, "executing", "")
                 try:
                     response = await asyncio.wait_for(
                         session_manager.handle_call_async(user_call),
@@ -292,6 +322,7 @@ class PipelineScheduler:
                     logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
                     if self.error_feedback:
                         await self._send_feedback(event, "请求超时, 请稍后重试")
+                    manual_detail = "llm_timeout"
                     return
 
                 if response and not event.has_send_operation():
@@ -303,14 +334,29 @@ class PipelineScheduler:
         except (ValueError, TypeError, KeyError) as e:
             # 配置或输入结构问题属于运维可见的日志, 不向每条消息的发送者刷反馈
             logger.error(f"[PipelineScheduler] 管线配置或输入错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
+            manual_detail = f"pipeline_input:{type(e).__name__}"
         except Exception as e:
             logger.error(f"[PipelineScheduler] 管线执行错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
+            manual_detail = f"pipeline_error:{type(e).__name__}"
             if self.error_feedback:
                 await self._send_feedback(event, "处理失败, 请稍后重试")
         finally:
             ticket = self.manual_wakes.tickets.get(event)
-            if ticket is not None and ticket.status == "pending":
-                ticket.status = "processed"
+            if ticket is not None:
+                if ticket.status == "pending":
+                    ticket.status = "processed"
+                if self.manual_wake_store is not None:
+                    receipt = event.last_send_receipt
+                    if ticket.cancelled:
+                        final_status, final_detail = "failed", "cancelled"
+                    elif manual_detail is not None:
+                        final_status, final_detail = "failed", manual_detail
+                    elif receipt is None:
+                        final_status, final_detail = "failed", "no_response"
+                    else:
+                        final_status = _RECEIPT_TO_REQUEST_STATUS[receipt.status]
+                        final_detail = receipt.reason
+                    await self._update_manual_request(event, ticket, final_status, final_detail)
             event.cleanup_temporary_local_files()
 
     # ---------- 可覆写钩子 ----------

@@ -339,6 +339,21 @@ class BackendHTTPServer(MiniHTTPServer):
             result = await backend.wake_platform(payload, operator="management")
             return _wake_status_code(result), result
 
+        if method == "GET" and path.startswith("/api/platforms/wake/"):
+            # 手动唤醒状态查询: GET /api/platforms/wake/{request_id}[?adapter_id=...]
+            parsed = urlsplit(path)
+            request_id = unquote(parsed.path.removeprefix("/api/platforms/wake/")).strip()
+            adapter_id = parse_qs(parsed.query).get("adapter_id", [None])[0]
+            if not request_id or len(request_id) > 128 or "\n" in request_id:
+                return 400, {"status": "rejected", "reason": "invalid_request_id"}
+            result = await backend.manual_wake_status(request_id, adapter_id)
+            reason = result.get("reason")
+            if reason == "not_found":
+                return 404, result
+            if reason in {"store_unavailable", "store_degraded"}:
+                return 503, result
+            return 200, result
+
         if method == "GET" and path == "/ui-config.json":
             return 200, build_ui_config(
                 backend_host=backend.config.api_host,

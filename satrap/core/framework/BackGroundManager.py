@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, fields
 import threading
 from pathlib import Path
-from typing import Any, Dict, Literal, TypeVar, cast
+from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
@@ -22,6 +22,17 @@ from satrap.core.log import logger
 ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
 ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
 TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+
+
+class ConfigInUseError(ValueError):
+    """命名配置仍被平台或插件引用, 禁止删除或重命名; references 为结构化引用清单"""
+
+    def __init__(self, target: str, name: str, references: list[dict[str, str]]) -> None:
+        summary = "; ".join(ref["summary"] for ref in references if ref.get("summary")) or "未知引用"
+        super().__init__(f"{target} 配置 {name} 仍被引用, 禁止删除或重命名: {summary}")
+        self.target = target
+        self.name = name
+        self.references = references
 
 
 class ModelConfigManager:
@@ -40,16 +51,23 @@ class ModelConfigManager:
 
     DEFAULT_NAME = "default"
 
-    def __init__(self, storage_path: str | Path | None = None, auto_create: bool = True):
+    def __init__(
+        self,
+        storage_path: str | Path | None = None,
+        auto_create: bool = True,
+        asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
+    ):
         """
         初始化 ModelConfigManager
 
         参数:
         - storage_path: 存储路径
         - auto_create: auto创建
+        - asr_in_use_checker: ASR 删除/重命名前的引用扫描, 返回引用清单; 未装配时不检查 (精简运行时)
         """
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
+        self._asr_in_use_checker = asr_in_use_checker
 
         self._llm_configs: Dict[str, LLMConfig] = {
             self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)
@@ -600,12 +618,26 @@ class ModelConfigManager:
             key = self._normalize_name(name)
             if key not in self._asr_configs:
                 return False
+            references = self._check_asr_in_use(key)
+            if references:
+                raise ConfigInUseError("asr", key, references)
             if len(self._asr_configs) <= 1:
                 self._asr_configs[key] = ASRConfig(name=key)
             else:
                 self._asr_configs.pop(key, None)
             self._save_locked()
             return True
+
+    def _check_asr_in_use(self, name: str) -> list[dict[str, str]]:
+        """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描失败按被引用处理 (fail-closed)"""
+        checker = self._asr_in_use_checker
+        if checker is None:
+            return []
+        try:
+            return checker(name)
+        except Exception as error:
+            logger.error(f"[ModelConfigManager] ASR 引用扫描失败, 拒绝变更 name={name}: {type(error).__name__}: {error}")
+            raise ConfigInUseError("asr", name, [{"kind": "scan_error", "summary": f"引用扫描失败: {type(error).__name__}"}]) from error
 
     # ---------- 公共配置 ----------
     def update_named_config(
@@ -633,6 +665,10 @@ class ModelConfigManager:
                 raise ValueError(f"模型配置不存在: {current_key}")
             if target_key != current_key and target_key in store:
                 raise ValueError(f"模型配置名称已存在: {target_key}")
+            if target == "asr" and target_key != current_key:
+                references = self._check_asr_in_use(current_key)
+                if references:
+                    raise ConfigInUseError("asr", current_key, references)
 
             payload = asdict(store[current_key])
             payload.update(changes)

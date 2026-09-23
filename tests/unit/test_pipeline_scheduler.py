@@ -40,7 +40,7 @@ class _RecorderAdapter(PlatformAdapter):
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(name=self.config.id, id=self.config.id)
 
-    async def send_message(self, session_id: str, message: MessageChain) -> Any:
+    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
         self.sent.append((session_id, message))
         return None
 
@@ -495,7 +495,7 @@ async def test_final_session_turn_orders_model_and_reply_and_reclaims_locks():
     release = asyncio.Event()
 
     class SlowAdapter(_RecorderAdapter):
-        async def send_message(self, session_id, message):
+        async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
             self.sent.append((session_id, message))
             if len(self.sent) == 1:
                 sending.set()

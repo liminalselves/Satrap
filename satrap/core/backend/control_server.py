@@ -36,7 +36,7 @@ from satrap.core.config.session_instance_service import SessionInstanceConfigSer
 from satrap.core.log import logger
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
-from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ModelConfigManager
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.framework.SessionManager import SessionConfigStore
@@ -606,6 +606,13 @@ def _is_control_api_path(path: str) -> bool:
     ))
 
 
+def _asr_in_use_checker(config_name: str) -> list[dict[str, str]]:
+    """删除/重命名 ASR 配置前扫描平台绑定与插件引用 (含会话覆盖)"""
+    from satrap.core.config.asr_references import list_asr_config_references
+
+    return list_asr_config_references(config_name, config_path=CONFIG_PATH, layout=_configured_storage_layout())
+
+
 def _model_config_service() -> ModelConfigService:
     """
     根据当前后端配置创建共享模型配置服务
@@ -620,7 +627,7 @@ def _model_config_service() -> ModelConfigService:
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    return ModelConfigService(ModelConfigManager(storage_path=storage_path))
+    return ModelConfigService(ModelConfigManager(storage_path=storage_path, asr_in_use_checker=_asr_in_use_checker))
 
 
 def _session_class_config_service() -> SessionClassConfigService:
@@ -1476,6 +1483,8 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
                     return 200, {"ok": True}
                 return 404, {"error": "not found"}
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except ConfigInUseError as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 

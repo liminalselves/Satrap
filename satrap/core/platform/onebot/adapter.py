@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from collections import OrderedDict
 import asyncio
+import hashlib
 import inspect
 import os
 import secrets
@@ -35,8 +36,8 @@ from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
-from satrap.core.platform.receipt import SendReceipt, combine_receipts
-from satrap.core.components import File, Node
+from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
+from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
 from satrap.core.type import PlatformMessage, safe_getattr_callable
@@ -55,6 +56,57 @@ try:
     _action_failures = (ApiNotAvailable, ActionFailed)
 except ImportError:   # pragma: no cover - 在安装依赖后走真实分支
     CQHttp = _MissingCQHttp
+
+
+_RECEIPT_TO_SEGMENT_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
+"""回执状态到发送尝试段状态的映射"""
+
+
+def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
+    """段摘要: 组件类型与关键字段的散列及正文字符数, 不落正文原文"""
+    parts: list[str] = []
+    chars = 0
+    for component in payload:
+        marker = component.type.value
+        text = ""
+        if isinstance(component, Plain):
+            text = component.text
+            chars += len(text)
+        elif isinstance(component, At):
+            text = str(component.qq)
+        elif isinstance(component, Reply):
+            text = str(component.id)
+        elif isinstance(component, File):
+            text = f"{component.name}|{component.file_}|{component.url}"
+        elif isinstance(component, Node):
+            inner = "".join(item.text for item in component.content if isinstance(item, Plain))
+            text = f"{component.name}|{inner}"
+            chars += len(inner)
+        parts.append(f"{marker}:{text}")
+    digest = hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:16]
+    return digest, chars
+
+
+def _plan_send_segments(turns: list[tuple[str, list[BaseMessageComponent]]], limit: int) -> list[dict[str, Any]]:
+    """把轮次计划展开为与发送循环一一对应的段摘要 (normal 轮按分块展开)"""
+    plan: list[dict[str, Any]] = []
+    for kind, payload in turns:
+        if kind == "forward":
+            nodes = [component for component in payload if isinstance(component, Node)]
+            digest, chars = _turn_signature(cast(list[BaseMessageComponent], nodes))
+            plan.append({"index": len(plan), "kind": "forward", "chars": chars, "digest": digest})
+            continue
+        if kind == "file":
+            files = [component for component in payload if isinstance(component, File)]
+            if not files:
+                continue
+            digest, _ = _turn_signature(cast(list[BaseMessageComponent], files[:1]))
+            plan.append({"index": len(plan), "kind": "file", "chars": 0, "digest": digest})
+            continue
+        for chunk in split_components(payload, limit):
+            digest, chars = _turn_signature(chunk)
+            plan.append({"index": len(plan), "kind": "chunk", "chars": chars, "digest": digest})
+    return plan
 
 
 @register_platform_adapter("aiocqhttp")
@@ -110,6 +162,16 @@ class OneBotAdapter(PlatformAdapter):
         self._meta_hooked = False
         self._heartbeats = 0
         self._last_heartbeat_at = 0.0
+        self._send_attempt_recorder: SendAttemptRecorder | None = None
+
+    def set_send_attempt_recorder(self, recorder: SendAttemptRecorder | None) -> None:
+        """
+        装配发送尝试持久化记录器 (由后端在适配器创建后注入)
+
+        参数:
+        - recorder: 状态存储, None 表示仅进程内回执 (测试与精简运行时)
+        """
+        self._send_attempt_recorder = recorder
 
     def meta(self) -> PlatformMetadata:
         """
@@ -650,39 +712,51 @@ class OneBotAdapter(PlatformAdapter):
         """
         return await self.send_message(session_id, MessageChain.from_text(text))
 
-    async def send_message(self, session_id: str, message: MessageChain) -> SendReceipt:
+    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> SendReceipt:
         """
         在有界队列中按顺序发送完整逻辑回复
 
         参数:
         - session_id: 平台会话 ID
         - message: 待发送消息链
+        - request_id: 可选的逻辑请求标识, 发送尝试记录据此关联手动唤醒请求
 
         返回:
         - SendReceipt: 全部已尝试块的回执, 满载或等待超时为明确失败
         """
         try:
-            return await self._outbound.run(session_id, lambda: self._send_message(session_id, message))
+            return await self._outbound.run(session_id, lambda: self._send_message(session_id, message, request_id=request_id))
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
 
-    async def _send_message(self, session_id: str, message: MessageChain) -> SendReceipt:
+    async def _send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> SendReceipt:
         """
-        为已获取执行权的逻辑回复创建并执行分块计划
+        为已获取执行权的逻辑回复创建并执行分块计划, 发送 I/O 之前持久化尝试记录
 
         参数:
         - session_id: 平台会话 ID
         - message: 待拆分组件
+        - request_id: 可选的逻辑请求标识
 
         返回:
         - SendReceipt: 首次失败即停止的聚合结果
         """
         limit = int(self.config.settings.get("message_text_limit", 2000))
         turns = split_forward_turns(message.components)
-        if len(turns) == 1 and turns[0][0] == "normal":
-            chunks = split_components(turns[0][1], limit)
-            if len(chunks) == 1:
-                return await self._send_chunk_guarded(session_id, MessageChain(chunks[0]))
+        plan = _plan_send_segments(turns, limit)
+        recorder = self._send_attempt_recorder
+        turn_id = ""
+        if recorder is not None and plan and not recorder.degraded:
+            turn_id = secrets.token_hex(12)
+            try:
+                recorded = await asyncio.to_thread(
+                    recorder.record_send_attempt, turn_id, self.config.id, session_id, request_id, plan,
+                )
+            except Exception as error:
+                logger.warning(f"[OneBotAdapter] 发送尝试落盘失败, 继续发送 turn={turn_id}: {type(error).__name__}")
+                recorded = False
+            if not recorded:
+                turn_id = ""
         receipts: list[SendReceipt] = []
         fallback_unverified = False
         for kind, payload in turns:
@@ -725,6 +799,17 @@ class OneBotAdapter(PlatformAdapter):
             # 兼容尝试标注必须穿透聚合, 调用方才能区分上传确认与未验证投递
             note = f"fallback_unverified:{combined.reason}" if combined.reason else "fallback_unverified"
             combined = SendReceipt(combined.status, combined.message_ids, combined.failed_index, reason=note)
+        if turn_id and recorder is not None:
+            segment_statuses = [
+                _RECEIPT_TO_SEGMENT_STATUS[receipt.status] for receipt in receipts
+            ] + ["skipped"] * (len(plan) - len(receipts))
+            try:
+                await asyncio.to_thread(
+                    recorder.complete_send_attempt, turn_id, segment_statuses,
+                    _RECEIPT_TO_SEGMENT_STATUS[combined.status], combined.reason,
+                )
+            except Exception as error:
+                logger.warning(f"[OneBotAdapter] 发送回执落盘失败 turn={turn_id}: {type(error).__name__}")
         return combined
 
     async def _send_chunk_guarded(self, session_id: str, chain: MessageChain) -> SendReceipt:
