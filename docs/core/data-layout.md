@@ -7,6 +7,8 @@ Satrap 的运行数据统一放在 `.satrap/data`。平台适配器实例是最�
 ├── rag/
 │   ├── indexes/            # 全局 (scope=global) RAG 知识库索引, 按库 ID 分目录
 │   └── locks/              # 知识库重建 / 写入文件锁
+├── manual_wake_store.json  # 手动唤醒请求与发送尝试记录 (清单 + 归档 + 锁文件见下)
+├── request_ledger.json     # request 审批身份账本
 └── platforms/
     └── <可读平台名>--<稳定哈希>/
         ├── platform.json
@@ -31,6 +33,15 @@ Satrap 的运行数据统一放在 `.satrap/data`。平台适配器实例是最�
                     ├── records.json  # 会话域数据库记录快照 (13 张表, 带 records_sha256 摘要)
                     └── manifest.json # 回收包清单 (layout_version / archive_version=2 / session_id / deleted_at)
 ```
+
+## 后端状态文件
+
+需要跨重启保留的后端状态以 JSON 文件放在数据根目录, 写入一律是同目录临时文件 + `os.replace` 的原子替换, 并在 `.` 前缀的锁文件内完成"读取-判定-写入"全过程 (锁文件保留不删除, 避免 POSIX 下双持有):
+
+- `manual_wake_store.json`: 手动唤醒请求与发送尝试记录。伴随 `manual_wake_store.manifest.json` 记录 `expected_files` (主文件 present/missing, 归档 absent/present/missing) 与 `degraded`; 容量轮转写归档 `manual_wake_store.json.1`
+- `request_ledger.json`: request 审批身份账本 (平台实例 + 已绑定账号 + 类别 + flag 摘要), 伴随 `request_ledger.manifest.json`
+
+两类文件共用同一套损坏处理: 清单缺失但主文件已存在时按旧数据迁移并补写清单, 不当作首次初始化; 文件损坏或身份/状态不一致时先在清单里持久记录 `degraded` 原因, 标记落盘成功后才把坏文件隔离为 `<名>.corrupt-<YYYYmmdd-HHMMSS>[-序号]` (原名保留原始字节供人工核对); 标记落盘失败则保留原文件不隔离。降级状态跨重启保持, 业务侧在降级期间拒绝登记与审批, 只有显式恢复接口在校验通过后解除降级, 恢复过程不清空既有记录。
 
 ## 平台数据库
 

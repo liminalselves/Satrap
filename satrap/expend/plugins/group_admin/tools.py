@@ -33,9 +33,11 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
     "group_admin_get_message": ("回源读取一条群消息的原文与发送者", {
         "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
     }, ["message_id"], False, True),
-    "group_admin_get_forward": ("回源读取合并转发内容, 不展开嵌套转发", {
-        "forward_id": ("string", "合并转发消息 ID"), "group_id": ("string", "所在群号, 可选, 默认当前群"),
-    }, ["forward_id"], False, True),
+    "group_admin_get_forward": ("回源读取合并转发内容, 不展开嵌套转发; 必须提供包含该转发的来源消息", {
+        "forward_id": ("string", "合并转发消息 ID"),
+        "source_message_id": ("string", "包含该转发的群消息 ID, 必须是当前群内的消息 (用于核验来源归属)"),
+        "group_id": ("string", "所在群号, 可选, 默认当前群"),
+    }, ["forward_id", "source_message_id"], False, True),
     "group_admin_send_forward": ("向群发送合并转发消息, 经统一发送通道按序投递", {
         "nodes": ("array", "节点列表, 每项为 {content: 1 到 2000 字符文本, name: 可选昵称}, 共 1 到 30 项"),
         "group_id": ("string", "目标群号, 可选, 默认当前群"),
@@ -185,7 +187,11 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     if name == "group_admin_get_message":
         return admin.get_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_get_forward":
-        return admin.get_forward_message(gid, kwargs.get("forward_id", ""))
+        source_id = str(kwargs.get("source_message_id") or "").strip()
+        if not source_id:
+            # 缺少来源消息 ID 时无法证明转发对象归属, 不提供不安全兼容放行
+            raise ValueError("必须提供 source_message_id: 该转发所在群消息的 ID")
+        return admin.get_forward_message(gid, kwargs.get("forward_id", ""), source_id)
     if name == "group_admin_send_forward":
         return admin.send_group_forward(gid, kwargs.get("nodes"))
     if name == "group_admin_recall_message":

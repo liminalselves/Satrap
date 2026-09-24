@@ -1,27 +1,36 @@
-"""手动唤醒请求与发送尝试的持久化状态存储 (FileLock + 原子替换)
+"""手动唤醒请求与发送尝试的持久化状态存储 (FileLock + 原子替换 + 版本化清单)
 
 记录语义:
 - 请求记录按 (adapter_id, request_id) 幂等, status ∈ accepted/executing/sent/partial/failed/unknown
 - 发送尝试按 turn_id 记录, 发送 I/O 之前落盘 submitted, 完成后逐段更新 (混合链允许 partial)
 - 重启时 accepted/executing/submitted 一律降级为 unknown, 不自动重发
-- 文件损坏 → 改名隔离并进入显式降级: 拒绝依赖去重的新手动请求, 其余功能照常
 - 未决记录 (accepted/executing/unknown 与 submitted) 不因容量被淘汰; 已满时 settled 记录轮转归档一代 (.1),
   归档也满则拒绝新记录并告警
+
+清单与降级语义:
+- 同目录清单 manual_wake_store.manifest.json 记录初始化状态, 应存在的文件与持久降级原因
+- 主文件, 归档与清单的读取, 查重, 修改和写入共用同一把存储锁; 任一写入点崩溃后只能恢复为完整旧/新状态或显式降级
+- 主文件或归档损坏时先持久记录降级, 再隔离坏文件; 标记写失败则保留原文件并一直拒绝依赖去重的新请求
+- 已初始化的存储缺失应有文件按损坏处理, 文件不存在不再无条件解释为空库
+- 降级只能经 recover() 校验主文件与归档一致后解除, 重启或隔离文件都不等于恢复
 """
 from __future__ import annotations
 
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
+import copy
 import json
-import os
-import tempfile
 import threading
 import time
 
 from satrap.core.log import logger
+from satrap.core.storage.persist import atomic_write_json, quarantine_file
 from satrap.core.storage.file_lock import FileLock
 
 STORE_VERSION = 1
+MANIFEST_VERSION = 1
 REQUEST_CAPACITY = 1024
 """当前文件中请求记录上限"""
 ATTEMPT_CAPACITY = 2048
@@ -33,8 +42,16 @@ RETENTION_SECONDS = 7 * 24 * 3600
 
 REQUEST_STATUSES = frozenset({"accepted", "executing", "sent", "partial", "failed", "unknown"})
 ATTEMPT_STATUSES = frozenset({"submitted", "sent", "partial", "failed", "unknown"})
+SEGMENT_STATUSES = frozenset({"submitted", "sent", "partial", "failed", "unknown", "skipped"})
+"""段状态缺省即旧格式未确认; skipped 表示该段未尝试, 不计入发送结果"""
+CONFIRMED_SEGMENT_STATUS = "sent"
 SETTLED_STATUSES = frozenset({"sent", "partial", "failed"})
 """可归档/可按保留期清理的确认终态; unknown 属于未决, 不静默淘汰"""
+
+MAIN_FILE_STATES = frozenset({"present", "missing"})
+"""主文件应存在 (present) 或已被隔离 (missing, 仅出现在降级清单中)"""
+ARCHIVE_FILE_STATES = frozenset({"absent", "present", "missing"})
+"""归档尚未创建 (absent), 已创建 (present), 或应存在但丢失 (missing)"""
 
 
 class RequestRecord(TypedDict):
@@ -65,6 +82,23 @@ class SendAttemptRecord(TypedDict):
     updated_at: float
 
 
+class ExpectedFiles(TypedDict):
+    """清单记录的应存在文件: main 为 present/missing, archive 为 absent/present/missing"""
+
+    main: str
+    archive: str
+
+
+class StoreManifest(TypedDict):
+    """版本化存储清单, 记录初始化状态, 应存在的文件与持久降级原因"""
+
+    version: int
+    initialized_at: float
+    updated_at: float
+    expected_files: ExpectedFiles
+    degraded: dict[str, Any] | None
+
+
 class ManualWakeStoreError(RuntimeError):
     """存储不可用或容量耗尽, 调用方按 reason 映射拒绝语义"""
 
@@ -73,45 +107,115 @@ class ManualWakeStoreError(RuntimeError):
         self.reason = reason
 
 
-def _validate_request(value: object) -> RequestRecord:
-    """逐字段校验请求记录, 任何结构问题都视为文件损坏"""
-    if not isinstance(value, dict):
-        raise ValueError("请求记录必须是对象")
-    raw = cast(dict[str, Any], value)
+def _validate_request(item: object, key: str, source: str) -> RequestRecord:
+    """逐字段校验请求记录, 身份不一致或结构问题都视为文件损坏"""
+    if not isinstance(item, dict):
+        raise ValueError(f"{source} 请求记录必须是对象")
+    raw = cast(dict[str, Any], item)
     strings = ("request_id", "fingerprint", "adapter_id", "target", "operator", "status", "detail")
-    if any(not isinstance(raw.get(key), str) for key in strings):
-        raise ValueError("请求记录字段类型非法")
-    if not isinstance(raw.get("created_at"), (int, float)) or not isinstance(raw.get("updated_at"), (int, float)):
-        raise ValueError("请求记录时间字段非法")
+    if any(not isinstance(raw.get(field), str) for field in strings):
+        raise ValueError(f"{source} 请求记录字段类型非法")
+    if not isinstance(raw.get("created_at"), (int, float)) or isinstance(raw.get("created_at"), bool):
+        raise ValueError(f"{source} 请求记录时间字段非法")
+    if not isinstance(raw.get("updated_at"), (int, float)) or isinstance(raw.get("updated_at"), bool):
+        raise ValueError(f"{source} 请求记录时间字段非法")
     if raw["status"] not in REQUEST_STATUSES:
-        raise ValueError(f"未知请求状态: {raw['status']}")
-    return {
+        raise ValueError(f"{source} 未知请求状态: {raw['status']}")
+    record: RequestRecord = {
         "request_id": raw["request_id"], "fingerprint": raw["fingerprint"], "adapter_id": raw["adapter_id"],
         "target": raw["target"], "operator": raw["operator"], "status": raw["status"], "detail": raw["detail"],
         "created_at": float(raw["created_at"]), "updated_at": float(raw["updated_at"]),
     }
+    if key != _request_key(record["adapter_id"], record["request_id"]) or not record["adapter_id"] or not record["request_id"]:
+        raise ValueError(f"{source} 请求记录身份与键不一致")
+    return record
 
 
-def _validate_attempt(value: object) -> SendAttemptRecord:
-    """逐字段校验发送尝试记录, 任何结构问题都视为文件损坏"""
-    if not isinstance(value, dict):
-        raise ValueError("发送尝试记录必须是对象")
-    raw = cast(dict[str, Any], value)
+def _validate_attempt(item: object, key: str, source: str) -> SendAttemptRecord:
+    """逐字段校验发送尝试记录, 身份, 段状态与聚合终态的一致性都视为损坏"""
+    if not isinstance(item, dict):
+        raise ValueError(f"{source} 发送尝试记录必须是对象")
+    raw = cast(dict[str, Any], item)
     strings = ("turn_id", "adapter_id", "target", "request_id", "status", "detail")
-    if any(not isinstance(raw.get(key), str) for key in strings):
-        raise ValueError("发送尝试字段类型非法")
-    if not isinstance(raw.get("created_at"), (int, float)) or not isinstance(raw.get("updated_at"), (int, float)):
-        raise ValueError("发送尝试时间字段非法")
+    if any(not isinstance(raw.get(field), str) for field in strings):
+        raise ValueError(f"{source} 发送尝试字段类型非法")
+    if not isinstance(raw.get("created_at"), (int, float)) or isinstance(raw.get("created_at"), bool):
+        raise ValueError(f"{source} 发送尝试时间字段非法")
+    if not isinstance(raw.get("updated_at"), (int, float)) or isinstance(raw.get("updated_at"), bool):
+        raise ValueError(f"{source} 发送尝试时间字段非法")
     if raw["status"] not in ATTEMPT_STATUSES:
-        raise ValueError(f"未知发送尝试状态: {raw['status']}")
+        raise ValueError(f"{source} 未知发送尝试状态: {raw['status']}")
     segments = raw.get("segments")
-    if not isinstance(segments, list) or any(not isinstance(item, dict) for item in cast(list[object], segments)):
-        raise ValueError("发送尝试段记录非法")
-    return {
+    if not isinstance(segments, list) or any(not isinstance(entry, dict) for entry in cast(list[object], segments)):
+        raise ValueError(f"{source} 发送尝试段记录非法")
+    copied: list[dict[str, Any]] = []
+    for entry in cast(list[object], segments):
+        segment = dict(cast(dict[str, Any], entry))
+        status = segment.get("status")
+        if status is not None:
+            if not isinstance(status, str) or status not in SEGMENT_STATUSES:
+                raise ValueError(f"{source} 未知发送段状态: {status!r}")
+            if raw["status"] == "sent" and status not in {CONFIRMED_SEGMENT_STATUS, "skipped"}:
+                raise ValueError(f"{source} 已确认发送尝试仍含未确认段")
+        copied.append(segment)
+    record: SendAttemptRecord = {
         "turn_id": raw["turn_id"], "adapter_id": raw["adapter_id"], "target": raw["target"],
-        "request_id": raw["request_id"], "segments": [dict(cast(dict[str, Any], item)) for item in cast(list[object], segments)],
-        "status": raw["status"], "detail": raw["detail"],
+        "request_id": raw["request_id"], "segments": copied, "status": raw["status"], "detail": raw["detail"],
         "created_at": float(raw["created_at"]), "updated_at": float(raw["updated_at"]),
+    }
+    if key != record["turn_id"] or not record["turn_id"]:
+        raise ValueError(f"{source} 发送尝试身份与键不一致")
+    return record
+
+
+def _validate_manifest(raw: object) -> StoreManifest:
+    """
+    校验清单结构, 任何结构问题都视为清单损坏
+
+    参数:
+    - raw: 清单 JSON 解析结果
+
+    返回:
+    - StoreManifest: 归一化后的清单, 降级字段为非空时保留原因
+
+    异常:
+    - ValueError: 版本, 文件状态或初始化状态不一致
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("清单必须是对象")
+    data = cast(dict[str, Any], raw)
+    if data.get("version") != MANIFEST_VERSION:
+        raise ValueError("清单版本非法")
+    expected_raw = data.get("expected_files")
+    if not isinstance(expected_raw, dict):
+        raise ValueError("清单缺少 expected_files")
+    expected = cast(dict[str, Any], expected_raw)
+    main_state, archive_state = expected.get("main"), expected.get("archive")
+    if main_state not in MAIN_FILE_STATES or archive_state not in ARCHIVE_FILE_STATES:
+        raise ValueError("清单文件状态非法")
+    raw_times = (data.get("initialized_at"), data.get("updated_at"))
+    if any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in raw_times):
+        raise ValueError("清单时间字段非法")
+    degraded_raw = data.get("degraded")
+    degraded: dict[str, Any] | None = None
+    if degraded_raw is not None:
+        if not isinstance(degraded_raw, dict):
+            raise ValueError("清单降级字段非法")
+        reason = cast(dict[str, Any], degraded_raw).get("reason")
+        if not isinstance(reason, str) or not reason:
+            raise ValueError("清单降级原因非法")
+        degraded = {"reason": reason, "at": float(cast(dict[str, Any], degraded_raw).get("at") or 0.0)}
+    if degraded is None and main_state != "present":
+        # 未降级的清单必须指向存在的主文件, 否则属于自相矛盾的状态
+        raise ValueError("清单声明主文件缺失但未降级")
+    initialized_at = float(cast(int | float, raw_times[0]))
+    updated_at = float(cast(int | float, raw_times[1]))
+    return {
+        "version": MANIFEST_VERSION,
+        "initialized_at": initialized_at,
+        "updated_at": updated_at,
+        "expected_files": {"main": cast(str, main_state), "archive": cast(str, archive_state)},
+        "degraded": degraded,
     }
 
 
@@ -120,39 +224,72 @@ def _copy_request(record: RequestRecord) -> RequestRecord:
     return cast(RequestRecord, dict(record))
 
 
-def _parse_payload(raw: object) -> tuple[dict[str, RequestRecord], dict[str, SendAttemptRecord]]:
-    """解析存储文件, 结构非法即抛 ValueError 由调用方隔离"""
-    if not isinstance(raw, dict) or cast(dict[str, Any], raw).get("version") != STORE_VERSION:
-        raise ValueError("存储版本或结构非法")
+def _copy_attempt(record: SendAttemptRecord) -> SendAttemptRecord:
+    """深复制发送尝试, 供写入失败时回滚段状态"""
+    return cast(SendAttemptRecord, copy.deepcopy(record))
+
+
+def _request_key(adapter_id: str, request_id: str) -> str:
+    """请求记录键, 归档与主文件共用同一身份规则"""
+    return f"{adapter_id}\n{request_id}"
+
+
+def _parse_payload(raw: object, source: str) -> tuple[dict[str, RequestRecord], dict[str, SendAttemptRecord]]:
+    """解析存储文件, 结构或身份非法即抛 ValueError 由调用方隔离"""
+    if not isinstance(raw, dict):
+        raise ValueError(f"{source} 不是对象")
     root = cast(dict[str, Any], raw)
+    version = root.get("version")
+    if version is not None and version != STORE_VERSION:
+        # 缺少版本字段的历史文件按当前版本校验, 通过后随迁移补齐
+        raise ValueError(f"{source} 存储版本非法: {version!r}")
     requests_raw, attempts_raw = root.get("requests"), root.get("attempts")
     if not isinstance(requests_raw, dict) or not isinstance(attempts_raw, dict):
-        raise ValueError("存储缺少 requests/attempts 段")
-    requests = {str(key): _validate_request(item) for key, item in cast(dict[str, Any], requests_raw).items()}
-    attempts = {str(key): _validate_attempt(item) for key, item in cast(dict[str, Any], attempts_raw).items()}
+        raise ValueError(f"{source} 缺少 requests/attempts 段")
+    requests = {
+        str(key): _validate_request(item, str(key), source)
+        for key, item in cast(dict[str, Any], requests_raw).items()
+    }
+    attempts = {
+        str(key): _validate_attempt(item, str(key), source)
+        for key, item in cast(dict[str, Any], attempts_raw).items()
+    }
     return requests, attempts
 
 
-def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    """同目录临时文件 + os.replace 原子落盘"""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, suffix=".tmp", encoding="utf-8", delete=False) as handle:
-            temporary = Path(handle.name)
-            json.dump(payload, handle, ensure_ascii=False, allow_nan=False)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+def _check_record_overlap(
+    primary: dict[str, Any],
+    secondary: dict[str, Any],
+    *,
+    label: str,
+    strict_duplicates: bool,
+) -> None:
+    """
+    检查主文件与归档的重复键, 运行期按主文件优先, 恢复校验按不一致拒绝
+
+    参数:
+    - primary: 主文件记录
+    - secondary: 归档记录
+    - label: 冲突告警中的记录类别
+    - strict_duplicates: True 时重复键抛 ValueError, False 时保留主文件记录并告警
+
+    异常:
+    - ValueError: strict_duplicates 为 True 且同一键在两侧同时出现
+    """
+    for key in secondary:
+        if key not in primary:
+            continue
+        if strict_duplicates:
+            raise ValueError(f"{label}在归档与主文件中重复: {key}")
+        logger.warning(f"[ManualWakeStore] {label}键在主文件与归档同时存在, 保留主文件记录: {key}")
 
 
 class ManualWakeStore:
-    """手动请求与发送尝试的 JSON 持久化, 进程内缓存为权威, FileLock 互斥跨进程写入"""
+    """手动请求与发送尝试的 JSON 持久化, 进程内缓存为权威, FileLock 互斥跨进程读改写"""
 
     def __init__(self, path: str | Path) -> None:
         """
-        初始化存储, 构造不抛异常: 文件损坏改名隔离并进入降级状态
+        初始化存储, 构造不抛异常: 文件损坏改名隔离并进入持久降级状态
 
         参数:
         - path: 存储 JSON 路径 (数据目录下)
@@ -161,60 +298,270 @@ class ManualWakeStore:
         self._lock_path = self._path.with_name(f".{self._path.name}.lock")
         self._archive_path = self._path.with_name(f"{self._path.name}.1")
         self._archive_lock_path = self._path.with_name(f".{self._path.name}.1.lock")
+        self._manifest_path = self._path.with_suffix(".manifest.json")
         self._mutex = threading.RLock()
         self.degraded = False
+        self.degraded_reason = ""
         self._requests: dict[str, RequestRecord] = {}
         self._attempts: dict[str, SendAttemptRecord] = {}
         self._archive_requests: dict[str, RequestRecord] | None = None
         self._archive_attempts: dict[str, SendAttemptRecord] | None = None
+        self._archive_quarantined = False
+        self._manifest: StoreManifest | None = None
         try:
-            self._load_or_quarantine()
+            with self._transaction(archive=True):
+                self._startup_locked()
         except Exception as error:
             logger.error(f"[ManualWakeStore] 初始化失败, 进入降级状态 path={self._path}: {type(error).__name__}: {error}")
-            self.degraded = True
+            try:
+                self._mark_degraded("init_failed", f"{type(error).__name__}: {error}")
+            except Exception as mark_error:
+                # 构造阶段不抛异常: 标记失败时仅在内存中保持降级
+                self.degraded = True
+                self.degraded_reason = "init_failed"
+                logger.error(f"[ManualWakeStore] 降级标记失败: {type(mark_error).__name__}: {mark_error}")
+
+    # ---------- 事务与清单 ----------
+
+    @contextmanager
+    def _transaction(self, *, archive: bool = False) -> Iterator[None]:
+        """
+        主文件, 归档与清单共用的存储锁
+
+        参数:
+        - archive: 是否同时涉及时归档文件, 叠加归档锁以兼容旧写入者
+        """
+        with FileLock(self._lock_path):
+            if not archive:
+                yield
+                return
+            with FileLock(self._archive_lock_path):
+                yield
+
+    def _fresh_manifest(self, *, initialized_at: float, archive_state: str) -> StoreManifest:
+        """构造未降级的清单骨架, 主文件按已初始化处理"""
+        now = time.time()
+        return {
+            "version": MANIFEST_VERSION,
+            "initialized_at": initialized_at,
+            "updated_at": now,
+            "expected_files": {"main": "present", "archive": archive_state},
+            "degraded": None,
+        }
+
+    def _read_manifest(self) -> StoreManifest | None:
+        """读取并校验清单, 文件不存在返回 None, 结构非法抛 ValueError"""
+        if not self._manifest_path.is_file():
+            return None
+        raw: object = json.loads(self._manifest_path.read_text(encoding="utf-8"))
+        return _validate_manifest(raw)
+
+    def _write_manifest(self, manifest: StoreManifest) -> None:
+        """原子写入清单, 调用方必须已持有存储锁"""
+        atomic_write_json(self._manifest_path, dict(manifest))
+
+    def _mark_degraded(self, reason: str, detail: str) -> bool:
+        """
+        记录持久降级原因, 不隔离文件也不丢弃记录
+
+        参数:
+        - reason: 脱敏原因码
+        - detail: 仅供日志的诊断说明
+
+        返回:
+        - bool: 降级标记已落盘为 True; 写失败时保留原文件, 调用方不得隔离
+        """
+        self.degraded = True
+        self.degraded_reason = reason
+        manifest = self._manifest or self._fresh_manifest(initialized_at=time.time(), archive_state="absent")
+        manifest["expected_files"]["archive"] = self._archive_state()
+        manifest["degraded"] = {"reason": reason, "at": time.time()}
+        manifest["updated_at"] = time.time()
+        persisted = True
+        try:
+            with self._transaction(archive=True):
+                self._write_manifest(manifest)
+            self._manifest = manifest
+        except (OSError, TimeoutError) as error:
+            persisted = False
+            logger.error(f"[ManualWakeStore] 降级标记写失败, 保留原文件不隔离: {type(error).__name__}: {error}")
+        logger.error(f"[ManualWakeStore] 状态存储降级 reason={reason}: {detail}")
+        return persisted
+
+    def _archive_state(self) -> str:
+        """归档当前应处的状态: 文件存在为 present, 已被隔离为 missing, 其余为从未创建"""
+        if self._archive_path.is_file():
+            return "present"
+        return "missing" if self._archive_quarantined else "absent"
+
+    def _quarantine(self, path: Path) -> None:
+        """改名隔离损坏文件, 隔离前必须已持久记录降级"""
+        target = quarantine_file(path)
+        if path == self._archive_path:
+            self._archive_quarantined = True
+        logger.error(f"[ManualWakeStore] 存储文件损坏, 已隔离为 {target.name}")
+
+    def _degrade(self, reason: str, detail: str, bad_files: Sequence[Path]) -> None:
+        """
+        先持久记录降级, 再隔离坏文件
+
+        参数:
+        - reason: 脱敏原因码
+        - detail: 仅供日志的诊断说明
+        - bad_files: 需要隔离的损坏文件, 标记写失败时全部保留
+        """
+        if not self._mark_degraded(reason, detail):
+            return
+        with self._transaction(archive=True):
+            for path in bad_files:
+                try:
+                    self._quarantine(path)
+                except OSError as error:
+                    logger.error(f"[ManualWakeStore] 损坏文件隔离失败 {path.name}: {type(error).__name__}: {error}")
+
+    def _quarantine_names(self) -> list[str]:
+        """目录中已隔离的损坏文件, 用于判定目录是否曾初始化"""
+        return sorted(item.name for item in self._path.parent.glob(f"{self._path.name}.corrupt-*"))
 
     # ---------- 加载与启动清扫 ----------
-
-    @staticmethod
-    def _request_key(adapter_id: str, request_id: str) -> str:
-        return f"{adapter_id}\n{request_id}"
 
     def _read_payload(self, path: Path) -> tuple[dict[str, RequestRecord], dict[str, SendAttemptRecord]]:
         if not path.is_file():
             return {}, {}
         with open(path, encoding="utf-8") as handle:
-            return _parse_payload(json.load(handle))
+            return _parse_payload(json.load(handle), path.name)
 
-    def _quarantine(self, path: Path) -> None:
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        target = path.with_name(f"{path.name}.corrupt-{stamp}")
-        suffix = 0
-        while target.exists():
-            suffix += 1
-            target = path.with_name(f"{path.name}.corrupt-{stamp}-{suffix}")
-        os.replace(path, target)
-        logger.error(f"[ManualWakeStore] 存储文件损坏, 已隔离为 {target.name}, 进入降级状态")
+    def _startup_locked(self) -> None:
+        """按清单, 目录痕迹与文件内容决定初始化, 迁移或降级"""
+        manifest: StoreManifest | None = None
+        manifest_error = ""
+        try:
+            manifest = self._read_manifest()
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            manifest_error = f"{type(error).__name__}: {error}"
+        main_exists = self._path.is_file()
+        if manifest is not None and manifest["degraded"] is not None:
+            info = cast(dict[str, Any], manifest["degraded"])
+            self._manifest = manifest
+            self.degraded = True
+            self.degraded_reason = str(info.get("reason") or "degraded")
+            logger.error(f"[ManualWakeStore] 存储保持降级状态 reason={self.degraded_reason}, 需经 recover() 显式恢复")
+            return
+        if manifest is None:
+            quarantined = self._quarantine_names()
+            if main_exists or self._archive_path.is_file() or quarantined:
+                # 目录已有存储痕迹时不得当作首次初始化
+                reason = "manifest_unreadable" if manifest_error else "manifest_missing_with_data"
+                self._adopt_existing(reason, manifest_error or f"已有文件: {', '.join(quarantined) or '主文件或归档'}")
+                return
+            self._initialize_fresh()
+            return
+        self._manifest = manifest
+        self._load_with_manifest(main_exists)
 
-    def _load_or_quarantine(self) -> None:
+    def _initialize_fresh(self) -> None:
+        """全新目录: 建立空主文件与清单, 失败即降级"""
+        manifest = self._fresh_manifest(initialized_at=time.time(), archive_state="absent")
+        try:
+            self._save_current_locked()
+            self._write_manifest(manifest)
+        except OSError as error:
+            self._degrade("init_io_failed", f"{type(error).__name__}: {error}", [])
+            return
+        self._manifest = manifest
+        logger.info(f"[ManualWakeStore] 已初始化全新状态存储 path={self._path.name}")
+
+    def _adopt_existing(self, reason: str, detail: str) -> None:
+        """
+        清单缺失或损坏但目录已有数据: 全量校验后迁移, 否则显式降级
+
+        参数:
+        - reason: 降级原因码
+        - detail: 诊断说明
+        """
+        if not self._path.is_file():
+            self._degrade("main_missing", f"主文件缺失但存在存储痕迹: {detail}", [])
+            return
+        bad: list[Path] = []
+        try:
+            main_requests, main_attempts = self._read_payload(self._path)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self._degrade(reason, f"主文件校验失败: {type(error).__name__}: {error}", [self._path])
+            return
+        archive_requests: dict[str, RequestRecord] = {}
+        archive_attempts: dict[str, SendAttemptRecord] = {}
+        if self._archive_path.is_file():
+            try:
+                archive_requests, archive_attempts = self._read_payload(self._archive_path)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                self._degrade(reason, f"归档校验失败: {type(error).__name__}: {error}", [self._archive_path])
+                return
+        try:
+            _check_record_overlap(main_requests, archive_requests, label="请求记录", strict_duplicates=False)
+            _check_record_overlap(main_attempts, archive_attempts, label="发送尝试", strict_duplicates=False)
+        except ValueError as error:
+            self._degrade(reason, str(error), [])
+            return
+        self._requests, self._attempts = main_requests, main_attempts
+        self._archive_requests, self._archive_attempts = archive_requests, archive_attempts
+        manifest = self._fresh_manifest(
+            initialized_at=time.time(),
+            archive_state="present" if self._archive_path.is_file() else "absent",
+        )
+        try:
+            self._write_manifest(manifest)
+        except OSError as error:
+            self._degrade(reason, f"清单写入失败: {type(error).__name__}: {error}", [])
+            return
+        self._manifest = manifest
+        logger.info(
+            f"[ManualWakeStore] 已迁移旧版存储 path={self._path.name} "
+            f"requests={len(self._requests)} attempts={len(self._attempts)} archive={manifest['expected_files']['archive']}"
+        )
+
+    def _load_with_manifest(self, main_exists: bool) -> None:
+        """清单有效时校验应存在文件与内容, 缺失或损坏按降级处理"""
+        manifest = self._manifest
+        if manifest is None:
+            raise RuntimeError("清单未加载")
+        expected = manifest["expected_files"]
+        if expected["main"] == "present" and not main_exists:
+            self._degrade("main_missing", "已初始化存储的主文件缺失", [])
+            return
+        if expected["archive"] == "present" and not self._archive_path.is_file():
+            self._degrade("archive_missing", "已初始化存储的归档文件缺失", [])
+            return
         try:
             self._requests, self._attempts = self._read_payload(self._path)
         except (OSError, ValueError, json.JSONDecodeError) as error:
-            logger.error(f"[ManualWakeStore] 读取存储失败 path={self._path}: {type(error).__name__}: {error}")
-            try:
-                self._quarantine(self._path)
-            except OSError as quarantine_error:
-                logger.error(f"[ManualWakeStore] 损坏文件隔离失败: {type(quarantine_error).__name__}: {quarantine_error}")
-            self.degraded = True
+            self._degrade("main_corrupt", f"{type(error).__name__}: {error}", [self._path])
             return
+        if expected["archive"] == "absent" and self._archive_path.is_file():
+            # 轮转在清单更新前中断: 归档已存在则按现有内容采纳
+            logger.warning("[ManualWakeStore] 归档在清单登记前出现, 按未完成的轮转采纳")
+        if self._archive_path.is_file():
+            try:
+                self._load_archive_locked()
+            except ManualWakeStoreError:
+                # 归档读取失败已在 _load_archive_locked 内持久记录降级并隔离坏文件
+                return
         if self._sweep_restart_residue():
             try:
                 self._save_current_locked()
             except OSError as error:
-                logger.error(f"[ManualWakeStore] 启动清扫落盘失败, 进入降级状态: {type(error).__name__}: {error}")
-                self.degraded = True
+                self._degrade("restart_sweep_failed", f"{type(error).__name__}: {error}", [])
+                return
+        archive_state = self._archive_state()
+        if archive_state != expected["archive"] and archive_state != "missing":
+            manifest["expected_files"]["archive"] = archive_state
+            manifest["updated_at"] = time.time()
+            try:
+                self._write_manifest(manifest)
+            except OSError as error:
+                logger.warning(f"[ManualWakeStore] 清单归档状态更新失败: {type(error).__name__}: {error}")
 
     def _sweep_restart_residue(self) -> bool:
-        """重启后无法确认的记录标 unknown, 不自动重发"""
+        """重启后无法确认的记录标 unknown, 不自动重发; 已确认段保持原状"""
         now = time.time()
         changed = False
         for record in self._requests.values():
@@ -234,33 +581,89 @@ class ManualWakeStore:
                 changed = True
         return changed
 
+    def recover(self) -> bool:
+        """
+        校验主文件与归档一致后解除持久降级, 不提供清空历史后继续
+
+        返回:
+        - bool: 主文件与归档均完整一致时为 True 并解除降级; 缺失, 结构非法, 身份冲突, 重复或状态不一致时为 False
+        """
+        with self._mutex, self._transaction(archive=True):
+            if not self._path.is_file():
+                logger.error("[ManualWakeStore] 恢复失败: 主文件不存在, 需先恢复原文件")
+                return False
+            try:
+                requests, attempts = self._read_payload(self._path)
+                archive_requests: dict[str, RequestRecord] = {}
+                archive_attempts: dict[str, SendAttemptRecord] = {}
+                if self._archive_path.is_file():
+                    archive_requests, archive_attempts = self._read_payload(self._archive_path)
+                _check_record_overlap(requests, archive_requests, label="请求记录", strict_duplicates=True)
+                _check_record_overlap(attempts, archive_attempts, label="发送尝试", strict_duplicates=True)
+            except (OSError, ValueError, json.JSONDecodeError) as error:
+                logger.error(f"[ManualWakeStore] 恢复校验失败, 保持降级: {type(error).__name__}: {error}")
+                return False
+            manifest = self._fresh_manifest(
+                initialized_at=self._manifest["initialized_at"] if self._manifest else time.time(),
+                archive_state="present" if self._archive_path.is_file() else "absent",
+            )
+            try:
+                self._write_manifest(manifest)
+            except OSError as error:
+                logger.error(f"[ManualWakeStore] 恢复写入清单失败, 保持降级: {type(error).__name__}: {error}")
+                return False
+            self._requests, self._attempts = requests, attempts
+            self._archive_requests, self._archive_attempts = archive_requests, archive_attempts
+            self._manifest = manifest
+            self.degraded = False
+            self.degraded_reason = ""
+            logger.info(f"[ManualWakeStore] 状态存储已恢复 requests={len(requests)} attempts={len(attempts)}")
+            return True
+
     # ---------- 落盘与归档 ----------
 
     def _save_current_locked(self) -> None:
-        with FileLock(self._lock_path):
-            _atomic_write(self._path, {"version": STORE_VERSION, "requests": self._requests, "attempts": self._attempts})
+        """写入主文件, 调用方已持有存储锁, 此处再加锁依赖 FileLock 可重入"""
+        with self._transaction():
+            atomic_write_json(self._path, {"version": STORE_VERSION, "requests": self._requests, "attempts": self._attempts})
 
     def _load_archive_locked(self) -> tuple[dict[str, RequestRecord], dict[str, SendAttemptRecord]]:
+        """读取归档; 文件不存在按空集合, 解析失败进入降级而不是按空归档继续"""
         if self._archive_requests is not None and self._archive_attempts is not None:
             return self._archive_requests, self._archive_attempts
-        try:
-            self._archive_requests, self._archive_attempts = self._read_payload(self._archive_path)
-        except (OSError, ValueError, json.JSONDecodeError) as error:
-            logger.error(f"[ManualWakeStore] 归档读取失败, 隔离后按空归档继续: {type(error).__name__}: {error}")
-            try:
-                self._quarantine(self._archive_path)
-            except OSError:
-                pass
+        if not self._archive_path.is_file():
+            # 缓存空集合保证轮转写入落到同一份数据, 文件是否曾创建由清单区分
             self._archive_requests, self._archive_attempts = {}, {}
-        return self._archive_requests, self._archive_attempts
+            return self._archive_requests, self._archive_attempts
+        try:
+            archive_requests, archive_attempts = self._read_payload(self._archive_path)
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            self._degrade("archive_corrupt", f"{type(error).__name__}: {error}", [self._archive_path])
+            raise ManualWakeStoreError("degraded", "归档读取失败, 状态存储降级") from error
+        self._archive_requests, self._archive_attempts = archive_requests, archive_attempts
+        return archive_requests, archive_attempts
 
     def _save_archive_locked(self) -> None:
-        with FileLock(self._archive_lock_path):
-            _atomic_write(self._archive_path, {
+        """写入归档, 调用方已持有存储锁"""
+        with self._transaction(archive=True):
+            atomic_write_json(self._archive_path, {
                 "version": STORE_VERSION,
                 "requests": self._archive_requests or {},
                 "attempts": self._archive_attempts or {},
             })
+            self._mark_archive_present_locked()
+
+    def _mark_archive_present_locked(self) -> None:
+        """归档落盘成功后更新清单, 保证崩溃后能按归档采纳而不是判定归档丢失"""
+        manifest = self._manifest
+        if manifest is None or manifest["expected_files"]["archive"] == "present":
+            return
+        manifest["expected_files"]["archive"] = "present"
+        manifest["updated_at"] = time.time()
+        try:
+            self._write_manifest(manifest)
+        except OSError as error:
+            logger.warning(f"[ManualWakeStore] 归档状态登记失败, 下次启动按未完成轮转采纳: {type(error).__name__}: {error}")
 
     def _sweep_expired(self, requests: dict[str, RequestRecord], attempts: dict[str, SendAttemptRecord], now: float) -> bool:
         """清理超过保留期的已终结记录, 未决记录 (accepted/executing/unknown/submitted) 不清理"""
@@ -304,10 +707,11 @@ class ManualWakeStore:
             if len(archive_section) >= archive_capacity:
                 logger.error(f"[ManualWakeStore] {section} 归档已满且当前文件容量耗尽, 拒绝新记录")
                 raise ManualWakeStoreError("capacity", "存储与归档均已满, 拒绝新记录")
-            key = self._request_key(record["adapter_id"], record["request_id"]) if section == "requests" else record["turn_id"]
+            key = _request_key(record["adapter_id"], record["request_id"]) if section == "requests" else record["turn_id"]
             archive_section[key] = records.pop(key)
             archive_changed = True
         if archive_changed:
+            # 先写归档再写主文件: 任一写入点中断都只留下归档超集, 不会丢记录
             self._save_archive_locked()
         if len(records) >= capacity:
             logger.error(f"[ManualWakeStore] {section} 未决记录占满容量 ({capacity}), 拒绝新记录")
@@ -321,16 +725,19 @@ class ManualWakeStore:
             if self.degraded:
                 return None
             if adapter_id is not None:
-                record = self._requests.get(self._request_key(adapter_id, request_id))
+                record = self._requests.get(_request_key(adapter_id, request_id))
                 if record is not None:
                     return _copy_request(record)
             else:
                 matches = [record for key, record in self._requests.items() if key.endswith(f"\n{request_id}")]
                 if matches:
                     return _copy_request(max(matches, key=lambda record: record["updated_at"]))
-            archive_requests, _ = self._load_archive_locked()
+            try:
+                archive_requests, _ = self._load_archive_locked()
+            except ManualWakeStoreError:
+                return None
             if adapter_id is not None:
-                record = archive_requests.get(self._request_key(adapter_id, request_id))
+                record = archive_requests.get(_request_key(adapter_id, request_id))
                 return _copy_request(record) if record is not None else None
             matches = [record for key, record in archive_requests.items() if key.endswith(f"\n{request_id}")]
             if not matches:
@@ -339,10 +746,10 @@ class ManualWakeStore:
 
     def accept_request(self, adapter_id: str, request_id: str, fingerprint: str, target: str, operator: str) -> None:
         """持久化 accepted 占位, 成功落盘才返回; 降级/容量/IO 失败均抛错由调用方拒绝"""
-        with self._mutex:
+        with self._mutex, self._transaction(archive=True):
             if self.degraded:
                 raise ManualWakeStoreError("degraded", "存储降级中, 无法保证去重")
-            key = self._request_key(adapter_id, request_id)
+            key = _request_key(adapter_id, request_id)
             archive_requests, _ = self._load_archive_locked()
             if key in self._requests or key in archive_requests:
                 raise ManualWakeStoreError("duplicate", "请求已存在")
@@ -360,51 +767,62 @@ class ManualWakeStore:
                 raise ManualWakeStoreError("io", f"存储落盘失败: {type(error).__name__}") from error
 
     def update_request(self, adapter_id: str, request_id: str, status: str, detail: str = "") -> bool:
-        """推进请求状态, 已终结记录不再回退; 写失败只告警不阻断业务"""
-        with self._mutex:
+        """推进请求状态, 已终结记录不再回退; 落盘失败回滚内存状态只告警不阻断业务"""
+        with self._mutex, self._transaction():
             if self.degraded or status not in REQUEST_STATUSES:
                 return False
-            record = self._requests.get(self._request_key(adapter_id, request_id))
+            key = _request_key(adapter_id, request_id)
+            record = self._requests.get(key)
             if record is None or record["status"] in SETTLED_STATUSES or record["status"] == "unknown":
                 return False
+            previous = _copy_request(record)
             record["status"] = status
             record["detail"] = detail
             record["updated_at"] = time.time()
             try:
                 self._save_current_locked()
             except OSError as error:
+                self._restore_record(self._requests, key, previous)
                 logger.error(f"[ManualWakeStore] 请求状态落盘失败 request_id={request_id}: {type(error).__name__}: {error}")
                 return False
             return True
 
+    @staticmethod
+    def _restore_record(records: dict[str, Any], key: str, previous: Any) -> None:
+        """写入失败时恢复内存快照, 不向查询展示未持久确认的终态"""
+        records[key] = previous
+
     def adapter_stopped(self, adapter_id: str) -> None:
         """平台停止: 未开始的请求判 failed, 执行中与未回执发送判 unknown"""
-        with self._mutex:
+        with self._mutex, self._transaction():
             if self.degraded:
                 return
             now = time.time()
-            changed = False
-            for record in self._requests.values():
+            rollback: list[tuple[dict[str, Any], str, Any]] = []
+            for key, record in self._requests.items():
                 if record["adapter_id"] != adapter_id:
                     continue
                 if record["status"] == "accepted":
+                    rollback.append((self._requests, key, _copy_request(record)))
                     record["status"], record["detail"], record["updated_at"] = "failed", "platform_stopped", now
-                    changed = True
                 elif record["status"] == "executing":
+                    rollback.append((self._requests, key, _copy_request(record)))
                     record["status"], record["detail"], record["updated_at"] = "unknown", "stopped_unconfirmed", now
-                    changed = True
-            for attempt in self._attempts.values():
+            for key, attempt in self._attempts.items():
                 if attempt["adapter_id"] == adapter_id and attempt["status"] == "submitted":
+                    rollback.append((self._attempts, key, _copy_attempt(attempt)))
                     attempt["status"], attempt["detail"], attempt["updated_at"] = "unknown", "stopped_unconfirmed", now
                     for segment in attempt["segments"]:
                         if segment.get("status") == "submitted":
                             segment["status"] = "unknown"
-                    changed = True
-            if changed:
-                try:
-                    self._save_current_locked()
-                except OSError as error:
-                    logger.error(f"[ManualWakeStore] 平台停止状态落盘失败 adapter={adapter_id}: {type(error).__name__}: {error}")
+            if not rollback:
+                return
+            try:
+                self._save_current_locked()
+            except OSError as error:
+                for records, key, previous in rollback:
+                    self._restore_record(records, key, previous)
+                logger.error(f"[ManualWakeStore] 平台停止状态落盘失败 adapter={adapter_id}: {type(error).__name__}: {error}")
 
     # ---------- 发送尝试记录 ----------
 
@@ -417,7 +835,7 @@ class ManualWakeStore:
         segments: list[dict[str, Any]],
     ) -> bool:
         """发送 I/O 之前持久化 submitted 占位; 失败只告警不阻断发送"""
-        with self._mutex:
+        with self._mutex, self._transaction(archive=True):
             if self.degraded:
                 return False
             if not segments or not turn_id:
@@ -443,12 +861,13 @@ class ManualWakeStore:
 
     def complete_send_attempt(self, turn_id: str, segment_statuses: list[str], status: str, detail: str = "") -> bool:
         """回执到达后逐段更新, 未到达的段由调用方标 skipped; 混合链允许 partial"""
-        with self._mutex:
+        with self._mutex, self._transaction():
             if self.degraded:
                 return False
             attempt = self._attempts.get(turn_id)
             if attempt is None or attempt["status"] != "submitted" or status not in ATTEMPT_STATUSES - {"submitted"}:
                 return False
+            previous = _copy_attempt(attempt)
             for index, segment_status in enumerate(segment_statuses):
                 if index >= len(attempt["segments"]):
                     break
@@ -459,18 +878,21 @@ class ManualWakeStore:
             try:
                 self._save_current_locked()
             except OSError as error:
+                self._restore_record(self._attempts, turn_id, previous)
                 logger.error(f"[ManualWakeStore] 发送回执落盘失败 turn={turn_id}: {type(error).__name__}: {error}")
                 return False
             return True
 
     # ---------- 测试与运维探针 ----------
 
-    def pending_counts(self) -> dict[str, int]:
-        """未决记录计数, 供健康检查与测试观察"""
+    def pending_counts(self) -> dict[str, Any]:
+        """未决记录计数与降级状态, 供健康检查与测试观察"""
         with self._mutex:
             return {
                 "requests_pending": sum(1 for record in self._requests.values() if record["status"] in {"accepted", "executing"}),
                 "requests_total": len(self._requests),
                 "attempts_submitted": sum(1 for attempt in self._attempts.values() if attempt["status"] == "submitted"),
                 "attempts_total": len(self._attempts),
+                "degraded": self.degraded,
+                "degraded_reason": self.degraded_reason,
             }

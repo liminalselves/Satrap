@@ -207,6 +207,33 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
     return components, "".join(text_parts)
 
 
+def forward_ids_in_message(message: Any, limit: int = 8) -> set[str]:
+    """
+    提取消息顶层组件中的合并转发 ID, 不递归推断嵌套转发
+
+    参数:
+    - message: OneBot message 字段, 支持 segment 列表与纯文本
+    - limit: 最多收集的 ID 数, 防止超长消息拖慢归属核验
+
+    返回:
+    - set[str]: 顶层 forward 段的 id 集合; 段类型按组件规范同样归一为小写, 空值不计入
+    """
+    ids: set[str] = set()
+    for segment in normalize_segments(message):
+        if str(segment.get("type", "")).lower() != "forward":
+            continue
+        data = segment.get("data")
+        if not isinstance(data, dict):
+            continue
+        raw = cast(dict[str, Any], data).get("id")
+        text = str(raw).strip() if isinstance(raw, (str, int)) and not isinstance(raw, bool) else ""
+        if text:
+            ids.add(text)
+        if len(ids) >= max(1, limit):
+            break
+    return ids
+
+
 def parse_forward_nodes(items: list[Any], limit: int = FORWARD_NODE_LIMIT, depth: int = 1) -> list[Node]:
     """
     将标准或实现特定的转发节点字段归一为 Node 列表

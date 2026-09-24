@@ -1,9 +1,14 @@
 """OneBot 群管理动作封装的参数校验, 群范围与错误归一"""
 from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from time import monotonic
 import asyncio
 import base64
+import json
+import threading
+import time
 
 from aiocqhttp.exceptions import ActionFailed
 import pytest
@@ -16,6 +21,13 @@ from satrap.core.platform.onebot.admin import (
     UnsupportedAdminAction,
 )
 from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.platform.onebot.request_registry import (
+    LEDGER_INSTANCE_CAPACITY,
+    LEDGER_TOTAL_CAPACITY,
+    REQUEST_FLAG_TTL,
+    RequestApprovalLedger,
+    RequestFlagRegistry,
+)
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform import PlatformAdapter, PlatformConfig
 
@@ -23,7 +35,31 @@ from satrap.core.platform import PlatformAdapter, PlatformConfig
 def _adapter(**settings: object) -> OneBotAdapter:
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings=dict(settings)))
     adapter._bot = AsyncMock()
+    if not adapter.bot_self_id:
+        adapter.bot_self_id = "10000"
     return adapter
+
+
+async def _register_flag(
+    adapter: OneBotAdapter, kind: str, flag: str, *,
+    group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None,
+) -> bool:
+    """测试辅助: 以当前绑定账号登记审批 flag"""
+    registry = adapter.request_flags
+    return await registry.register(
+        kind, flag, self_id=adapter.bot_self_id, group_id=group_id, sub_type=sub_type, user_id=user_id, now=now,
+    )
+
+
+async def _occupy_flag(
+    adapter: OneBotAdapter, kind: str, flag: str, *,
+    group_id: str = "", sub_type: str = "", now: float | None = None,
+) -> None:
+    """测试辅助: 以当前绑定账号占用审批 flag"""
+    registry = adapter.request_flags
+    await registry.occupy(
+        kind, flag, self_id=adapter.bot_self_id, group_id=group_id, sub_type=sub_type, now=now,
+    )
 
 
 class TestOneBotAdminValidation:
@@ -97,10 +133,10 @@ class TestOneBotAdminCalls:
         await adapter.admin.recall_message("456", "77")
         adapter._bot.get_msg.assert_awaited_once_with(message_id=77)
         adapter._bot.delete_msg.assert_awaited_once_with(message_id=77)
-        adapter.request_flags.register("friend", "flag-1", user_id="99")
+        await _register_flag(adapter, "friend", "flag-1", user_id="99")
         await adapter.admin.handle_friend_request("flag-1", True, "备注")
         adapter._bot.set_friend_add_request.assert_awaited_once_with(flag="flag-1", approve=True, remark="备注")
-        adapter.request_flags.register("group", "flag-2", group_id="456", sub_type="invite", user_id="98")
+        await _register_flag(adapter, "group", "flag-2", group_id="456", sub_type="invite", user_id="98")
         await adapter.admin.handle_group_request("456", "flag-2", "invite", False, "理由")
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="flag-2", sub_type="invite", approve=False, reason="理由")
         await adapter.admin.leave_group("456", True)
@@ -303,8 +339,13 @@ class TestReadAndForwardTools:
         scoped._bot.get_msg.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_get_forward_message_delegates_bounded_lookup(self):
+    async def test_get_forward_message_requires_source_proof(self):
         adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 456, "self_id": 10000,
+            "message": [{"type": "text", "data": {"text": "看这个"}}, {"type": "forward", "data": {"id": "fwd-1"}}],
+        }
         adapter._bot.get_forward_msg.return_value = {
             "messages": [
                 {"user_id": 123, "nickname": "甲", "time": 1,
@@ -313,7 +354,8 @@ class TestReadAndForwardTools:
                  "content": [{"type": "image", "data": {"file": "x.jpg"}}]},
             ],
         }
-        nodes = await adapter.admin.get_forward_message("456", "fwd-1")
+        nodes = await adapter.admin.get_forward_message("456", "fwd-1", "77")
+        adapter._bot.get_msg.assert_awaited_once_with(message_id=77)
         adapter._bot.get_forward_msg.assert_awaited_once_with(id="fwd-1")
         assert nodes[0]["name"] == "甲" and nodes[0]["text"] == "第一条"
         assert nodes[1]["text"] == "[Image]"
@@ -324,13 +366,131 @@ class TestReadAndForwardTools:
     @pytest.mark.asyncio
     async def test_get_forward_message_unknown_when_lookup_fails(self):
         adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 456,
+            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
+        }
         adapter._bot.get_forward_msg.side_effect = RuntimeError("network")
         with pytest.raises(AdminActionUnconfirmed, match="转发回源失败"):
-            await adapter.admin.get_forward_message("456", "fwd-1")
+            await adapter.admin.get_forward_message("456", "fwd-1", "77")
         scoped = _adapter(group_whitelist=["789"])
         with pytest.raises(AdminActionRejected, match="允许范围"):
-            await scoped.admin.get_forward_message("456", "fwd-1")
+            await scoped.admin.get_forward_message("456", "fwd-1", "77")
+        scoped._bot.get_msg.assert_not_called()
         scoped._bot.get_forward_msg.assert_not_called()
+
+
+class TestForwardSourceProof:
+    """合并转发读取必须证明来源消息与 forward_id 的关联 (B1 反例)"""
+
+    @pytest.mark.asyncio
+    async def test_source_message_from_other_group_is_rejected(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 999,
+            "message": [{"type": "forward", "data": {"id": "foreign-id"}}],
+        }
+        with pytest.raises(AdminActionRejected, match="来源消息属于目标群"):
+            await adapter.admin.get_forward_message("456", "foreign-id", "77")
+        adapter._bot.get_forward_msg.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_forward_id_absent_from_source_message_is_rejected(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        # 正文里出现相同字符串不构成授权, 只认顶层 forward 段
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 456,
+            "message": [{"type": "forward", "data": {"id": "other-id"}},
+                        {"type": "text", "data": {"text": "fwd-1"}}],
+        }
+        with pytest.raises(AdminActionRejected, match="未出现在来源消息"):
+            await adapter.admin.get_forward_message("456", "fwd-1", "77")
+        adapter._bot.get_forward_msg.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_nested_forward_does_not_authorize(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 456,
+            "message": [{"type": "forward", "data": {
+                "id": "outer-id",
+                "content": [{"type": "node", "data": {"user_id": 1, "content": [
+                    {"type": "forward", "data": {"id": "inner-id"}},
+                ]}}],
+            }}],
+        }
+        adapter._bot.get_forward_msg.return_value = {"messages": []}
+        with pytest.raises(AdminActionRejected, match="未出现在来源消息"):
+            await adapter.admin.get_forward_message("456", "inner-id", "77")
+        adapter._bot.get_forward_msg.assert_not_called()
+        # 顶层 ID 通过归属证明后才允许回源
+        assert await adapter.admin.get_forward_message("456", "outer-id", "77") == []
+        adapter._bot.get_forward_msg.assert_awaited_once_with(id="outer-id")
+
+    @pytest.mark.asyncio
+    async def test_account_and_message_id_mismatch_are_rejected(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 78, "message_type": "group", "group_id": 456, "self_id": 20000,
+            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
+        }
+        with pytest.raises(AdminActionRejected, match="账号与当前绑定账号不一致"):
+            await adapter.admin.get_forward_message("456", "fwd-1", "78")
+        adapter._bot.get_msg.return_value = {
+            "message_id": 78, "message_type": "group", "group_id": 456,
+            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
+        }
+        with pytest.raises(AdminActionRejected, match="请求消息 ID 不一致"):
+            await adapter.admin.get_forward_message("456", "fwd-1", "77")
+        adapter._bot.get_forward_msg.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_lookup_failure_and_stale_generation_block_read(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.side_effect = RuntimeError("network")
+        with pytest.raises(AdminActionUnconfirmed):
+            await adapter.admin.get_forward_message("456", "fwd-1", "77")
+        adapter._bot.get_forward_msg.assert_not_called()
+
+        stale = _adapter()
+        stale.bot_self_id = "10000"
+
+        async def reconnect(**_: object) -> dict[str, object]:
+            stale._connection_generation += 1
+            return {"message_id": 77, "message_type": "group", "group_id": 456,
+                    "message": [{"type": "forward", "data": {"id": "fwd-1"}}]}
+
+        stale._bot.get_msg.side_effect = reconnect
+        with pytest.raises(AdminActionUnconfirmed, match="来源证明失效"):
+            await stale.admin.get_forward_message("456", "fwd-1", "77")
+        stale._bot.get_forward_msg.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_response_with_contradictory_group_is_rejected(self):
+        adapter = _adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.get_msg.return_value = {
+            "message_id": 77, "message_type": "group", "group_id": 456,
+            "message": [{"type": "forward", "data": {"id": "fwd-1"}}],
+        }
+        adapter._bot.get_forward_msg.return_value = {"group_id": 999, "messages": [
+            {"user_id": 1, "nickname": "甲", "content": [{"type": "text", "data": {"text": "FOREIGN_SECRET"}}]},
+        ]}
+        with pytest.raises(AdminActionUnconfirmed, match="转发回源失败"):
+            await adapter.admin.get_forward_message("456", "fwd-1", "77")
+
+    @pytest.mark.asyncio
+    async def test_missing_source_message_id_is_a_parameter_error(self):
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="来源消息 ID 必须为整数"):
+            await adapter.admin.get_forward_message("456", "fwd-1", "")
+        adapter._bot.get_msg.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_send_group_forward_uses_public_send_path(self, monkeypatch: pytest.MonkeyPatch):
@@ -446,11 +606,11 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_wrong_group_or_sub_type_rejected(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "flag-g", group_id="456", sub_type="add", user_id="1")
+        await _register_flag(adapter, "group", "flag-g", group_id="456", sub_type="add", user_id="1")
         with pytest.raises(AdminActionRejected, match="不符"):
             await adapter.admin.handle_group_request("789", "flag-g", "add", True)
         adapter2 = _adapter(group_whitelist=["456", "789"])
-        adapter2.request_flags.register("group", "flag-h", group_id="456", sub_type="add", user_id="1")
+        await _register_flag(adapter2, "group", "flag-h", group_id="456", sub_type="add", user_id="1")
         with pytest.raises(AdminActionRejected, match="不符"):
             await adapter2.admin.handle_group_request("456", "flag-h", "invite", True)
         adapter._bot.set_group_add_request.assert_not_called()
@@ -459,7 +619,7 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_success_consumes_flag_and_replay_rejected(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "flag-r", group_id="456", sub_type="add", user_id="1")
+        await _register_flag(adapter, "group", "flag-r", group_id="456", sub_type="add", user_id="1")
         await adapter.admin.handle_group_request("456", "flag-r", "add", True)
         adapter._bot.set_group_add_request.assert_awaited_once()
         with pytest.raises(AdminActionRejected, match="已被处理"):
@@ -469,7 +629,7 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_timeout_marks_unknown_and_replay_rejected(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "flag-t", group_id="456", sub_type="add", user_id="1")
+        await _register_flag(adapter, "group", "flag-t", group_id="456", sub_type="add", user_id="1")
         adapter._bot.set_group_add_request.side_effect = asyncio.TimeoutError()
         with pytest.raises(AdminActionUnconfirmed):
             await adapter.admin.handle_group_request("456", "flag-t", "add", True)
@@ -480,7 +640,7 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_concurrent_occupy_has_single_winner(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "flag-c", group_id="456", sub_type="add", user_id="1")
+        await _register_flag(adapter, "group", "flag-c", group_id="456", sub_type="add", user_id="1")
         gate = asyncio.Event()
 
         async def slow_approve(**kwargs: object) -> None:
@@ -505,8 +665,8 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_friend_and_group_tables_are_separate(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "same-flag", group_id="456", sub_type="invite", user_id="1")
-        adapter.request_flags.register("friend", "same-flag", user_id="2")
+        await _register_flag(adapter, "group", "same-flag", group_id="456", sub_type="invite", user_id="1")
+        await _register_flag(adapter, "friend", "same-flag", user_id="2")
         await adapter.admin.handle_friend_request("same-flag", True)
         adapter._bot.set_friend_add_request.assert_awaited_once()
         await adapter.admin.handle_group_request("456", "same-flag", "invite", True)
@@ -515,51 +675,286 @@ class TestRequestFlagOccupancy:
     @pytest.mark.asyncio
     async def test_duplicate_inbound_does_not_reset_occupied_state(self):
         adapter = _adapter()
-        adapter.request_flags.register("group", "flag-d", group_id="456", sub_type="add", user_id="1")
-        adapter.request_flags.occupy("group", "flag-d", group_id="456", sub_type="add")
-        assert adapter.request_flags.register("group", "flag-d", group_id="456", sub_type="add", user_id="1") is False
+        await _register_flag(adapter, "group", "flag-d", group_id="456", sub_type="add", user_id="1")
+        await _occupy_flag(adapter, "group", "flag-d", group_id="456", sub_type="add")
+        assert await _register_flag(adapter, "group", "flag-d", group_id="456", sub_type="add", user_id="1") is False
         with pytest.raises(AdminActionRejected, match="已被处理"):
             await adapter.admin.handle_group_request("456", "flag-d", "add", True)
         adapter._bot.set_group_add_request.assert_not_called()
 
 
 class TestRequestFlagRegistryUnit:
-    def test_expired_flag_cannot_be_occupied(self):
-        from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
+    @pytest.mark.asyncio
+    async def test_expired_flag_cannot_be_occupied(self):
+        registry = RequestFlagRegistry("ob", limit=8, ttl=10.0)
+        await registry.register("group", "flag-old", self_id="10000", group_id="456", sub_type="add",
+                                user_id="1", now=1000.0)
+        with pytest.raises(LookupError, match="时限"):
+            await registry.occupy("group", "flag-old", self_id="10000", group_id="456", sub_type="add", now=1011.0)
 
-        registry = RequestFlagRegistry(limit=8, ttl=10.0)
-        registry.register("group", "flag-old", group_id="456", sub_type="add", user_id="1", now=1000.0)
-        with pytest.raises(LookupError, match="过期"):
-            registry.occupy("group", "flag-old", group_id="456", sub_type="add", now=1011.0)
+    @pytest.mark.asyncio
+    async def test_cache_eviction_keeps_ledger_identity(self):
+        """反例: 近期缓存淘汰只影响性能, 不得让已登记的 flag 掉出审批资格或变成可重复审批"""
+        registry = RequestFlagRegistry("ob", limit=1, ttl=600.0)
+        await registry.register("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1000.0)
+        await registry.register("group", "f2", self_id="10000", group_id="1", sub_type="add", now=1001.0)
+        assert registry.cached_state("group", "f1") is None    # 最旧一条已被淘汰
+        await registry.occupy("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1002.0)
+        assert await registry.ledger.occupy("ob", "10000", "group", "f2", group_id="1", sub_type="add",
+                                            now=1003.0) is not None
+        with pytest.raises(LookupError, match="已被处理"):
+            await registry.occupy("group", "f1", self_id="10000", group_id="1", sub_type="add", now=1004.0)
 
-    def test_capacity_evicts_oldest(self):
-        from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
-
-        registry = RequestFlagRegistry(limit=2, ttl=600.0)
-        registry.register("group", "f1", group_id="1", sub_type="add", now=1000.0)
-        registry.register("group", "f2", group_id="1", sub_type="add", now=1001.0)
-        registry.register("group", "f3", group_id="1", sub_type="add", now=1002.0)
-        with pytest.raises(LookupError):
-            registry.occupy("group", "f1", group_id="1", sub_type="add", now=1003.0)
-        registry.occupy("group", "f3", group_id="1", sub_type="add", now=1003.0)
-
-    def test_settle_only_from_executing_and_only_terminal(self):
-        from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
-
-        registry = RequestFlagRegistry()
-        registry.register("friend", "f", user_id="1")
-        registry.settle("friend", "f", "completed")
-        registry.occupy("friend", "f")
+    @pytest.mark.asyncio
+    async def test_settle_only_from_executing_and_only_terminal(self):
+        registry = RequestFlagRegistry("ob")
+        await registry.register("friend", "f", self_id="10000", now=1000.0)
+        await registry.settle("friend", "f", self_id="10000", state="completed")   # 未占用不生效
+        assert registry.cached_state("friend", "f") == "available"
+        await registry.occupy("friend", "f", self_id="10000", now=1000.0)
         with pytest.raises(ValueError):
-            registry.settle("friend", "f", "available")
-        registry.settle("friend", "f", "unknown")
+            await registry.settle("friend", "f", self_id="10000", state="available")
+        await registry.settle("friend", "f", self_id="10000", state="unknown")
+        assert registry.cached_state("friend", "f") == "unknown"
         with pytest.raises(LookupError):
-            registry.occupy("friend", "f")
+            await registry.occupy("friend", "f", self_id="10000", now=1000.0)
+
+
+class TestApprovalLedger:
+    """审批账本的持久反重放语义: 并发, 取消, 容量, 重启与损坏"""
+
+    def _ledger(
+        self, tmp_path: Path, *, ttl: float = REQUEST_FLAG_TTL, instance_capacity: int = LEDGER_INSTANCE_CAPACITY,
+        total_capacity: int = LEDGER_TOTAL_CAPACITY,
+    ) -> RequestApprovalLedger:
+        return RequestApprovalLedger(
+            tmp_path / "request_ledger.json",
+            ttl=ttl, instance_capacity=instance_capacity, total_capacity=total_capacity,
+        )
+
+    @staticmethod
+    def _ledger_states(tmp_path: Path) -> list[str]:
+        path = tmp_path / "request_ledger.json"
+        if not path.is_file():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        raw = cast(dict[str, Any], payload) if isinstance(payload, dict) else {}
+        entries = raw.get("entries")
+        if not isinstance(entries, dict):
+            return []
+        states: list[str] = []
+        for item in cast(dict[str, Any], entries).values():
+            state = cast(dict[str, Any], item).get("state") if isinstance(item, dict) else None
+            states.append(state if isinstance(state, str) else "")
+        return states
+
+    @pytest.mark.asyncio
+    async def test_dual_instance_concurrent_occupy_single_winner(self, tmp_path: Path):
+        """反例: 两个 store 实例并发占用同一 flag 时只允许一个成功"""
+        first, second = self._ledger(tmp_path), self._ledger(tmp_path)
+        results = await asyncio.gather(
+            first.register("ob", "10000", "group", "flag-x", group_id="456", sub_type="add", now=1000.0),
+            second.register("ob", "10000", "group", "flag-x", group_id="456", sub_type="add", now=1000.0),
+            return_exceptions=True,
+        )
+        assert "registered" in results
+        occupied = await asyncio.gather(
+            first.occupy("ob", "10000", "group", "flag-x", group_id="456", sub_type="add", now=1001.0),
+            second.occupy("ob", "10000", "group", "flag-x", group_id="456", sub_type="add", now=1001.0),
+            return_exceptions=True,
+        )
+        assert sum(1 for item in occupied if isinstance(item, LookupError)) == 1
+        assert sum(1 for item in occupied if isinstance(item, dict)) == 1
+        assert self._ledger_states(tmp_path) == ["executing"]
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_occupy_keeps_executing_and_sends_nothing(self, tmp_path: Path):
+        """反例: 占用落盘期间取消不得回滚成 available, 结果未知时不得再发网络动作"""
+        from satrap.core.storage.file_lock import FileLock
+
+        ledger = self._ledger(tmp_path)
+        await ledger.register("ob", "10000", "friend", "flag-c", user_id="7", now=1000.0)
+        hold, release = threading.Event(), threading.Event()
+
+        def _hold_lock() -> None:
+            with FileLock(tmp_path / ".request_ledger.json.lock"):
+                hold.set()
+                release.wait(10.0)
+
+        blocker = threading.Thread(target=_hold_lock, daemon=True)
+        blocker.start()
+        assert hold.wait(5.0)
+        gateway = AsyncMock()
+        task = asyncio.create_task(self._approve(ledger, gateway, "flag-c"))
+        await asyncio.sleep(0.2)     # 让工作线程停在文件锁上, 取消发生在占用落盘过程中
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        blocker.join(5.0)
+        assert gateway.await_count == 0
+        for _ in range(200):
+            if self._ledger_states(tmp_path) == ["executing"]:
+                break
+            await asyncio.sleep(0.01)
+        assert self._ledger_states(tmp_path) == ["executing"]
+        with pytest.raises(LookupError, match="结果未知"):
+            await ledger.occupy("ob", "10000", "friend", "flag-c", now=1002.0)
+
+    async def _approve(self, ledger: RequestApprovalLedger, gateway: AsyncMock, flag: str) -> None:
+        await ledger.occupy("ob", "10000", "friend", flag, now=1001.0)
+        await gateway(flag)
+
+    @pytest.mark.asyncio
+    async def test_restart_after_cancel_keeps_unknown_not_available(self, tmp_path: Path):
+        """反例: 取消后重启, 该 flag 仍不可审批"""
+        ledger = self._ledger(tmp_path)
+        await ledger.register("ob", "10000", "friend", "flag-a", user_id="7", now=1000.0)
+        await ledger.occupy("ob", "10000", "friend", "flag-a", now=1001.0)
+        revived = self._ledger(tmp_path)
+        with pytest.raises(LookupError, match="结果未知"):
+            await revived.occupy("ob", "10000", "friend", "flag-a", now=1002.0)
+
+    @pytest.mark.asyncio
+    async def test_capacity_refuses_new_and_old_identity_stays_consumed(self, tmp_path: Path):
+        """反例: 容量达限拒绝新登记, 不淘汰旧身份, 旧已消费身份不得回到可审批"""
+        ledger = self._ledger(tmp_path, instance_capacity=2)
+        await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1000.0)
+        await ledger.register("ob", "10000", "group", "k2", group_id="1", sub_type="add", now=1001.0)
+        assert await ledger.register("ob", "10000", "group", "k3", group_id="1", sub_type="add", now=1002.0) == "capacity"
+        await ledger.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1003.0)
+        await ledger.settle("ob", "10000", "group", "k1", "completed")
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1004.0) == "duplicate"
+        with pytest.raises(LookupError, match="已被处理"):
+            await ledger.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1005.0)
+        assert self._ledger_states(tmp_path) == ["completed", "available"]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_after_expiry_does_not_refresh_ttl(self, tmp_path: Path):
+        """反例: 重复入站不刷新可审批时限, 过期墓碑保持不可审批"""
+        ledger = self._ledger(tmp_path, ttl=10.0)
+        await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1000.0)
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1020.0) == "duplicate"
+        assert ledger.lookup("ob", "10000", "group", "k1") is not None
+        with pytest.raises(LookupError, match="拒绝"):
+            await ledger.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1021.0)
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1030.0) == "duplicate"
+        assert self._ledger_states(tmp_path) == ["expired"]
+
+    @pytest.mark.asyncio
+    async def test_restart_sweeps_executing_to_unknown(self, tmp_path: Path):
+        """反例: 重启后无法确认的占用不得回到可审批"""
+        ledger = self._ledger(tmp_path)
+        await ledger.register("ob", "10000", "friend", "k1", user_id="7", now=1000.0)
+        await ledger.occupy("ob", "10000", "friend", "k1", now=1001.0)
+        revived = self._ledger(tmp_path)
+        with pytest.raises(LookupError, match="结果未知"):
+            await revived.occupy("ob", "10000", "friend", "k1", now=1002.0)
+        assert self._ledger_states(tmp_path) == ["unknown"]
+
+    @pytest.mark.asyncio
+    async def test_same_key_conflict_rejected_and_kinds_isolated(self, tmp_path: Path):
+        """反例: 同 key 归属不符拒绝登记; 好友与群请求分域互不占用"""
+        ledger = self._ledger(tmp_path)
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "registered"
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="2", sub_type="add", now=1001.0) == "conflict"
+        await ledger.register("ob", "10000", "friend", "k1", user_id="7", now=1002.0)
+        await ledger.occupy("ob", "10000", "friend", "k1", now=1003.0)
+        group_entry = ledger.lookup("ob", "10000", "group", "k1")
+        assert group_entry is not None and group_entry["state"] == "available"
+
+    @pytest.mark.asyncio
+    async def test_unknown_account_not_registered(self, tmp_path: Path):
+        ledger = self._ledger(tmp_path)
+        assert await ledger.register("ob", "", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "unknown_account"
+        assert ledger.pending_counts()["entries_total"] == 0
+
+    @pytest.mark.asyncio
+    async def test_corrupt_ledger_degrades_and_survives_restart(self, tmp_path: Path):
+        """反例: 账本损坏按降级处理, 重启后仍是降级而不是空账本"""
+        path = tmp_path / "request_ledger.json"
+        path.write_text("{ 不是 JSON", encoding="utf-8")
+        ledger = self._ledger(tmp_path)
+        assert ledger.degraded is True
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "degraded"
+        with pytest.raises(LookupError, match="不可用"):
+            await ledger.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1001.0)
+        assert ledger.recover() is False     # 坏文件已隔离, 没有可校验的原文件
+        revived = self._ledger(tmp_path)
+        assert revived.degraded is True
+
+    @pytest.mark.asyncio
+    async def test_corrupt_ledger_keeps_degraded_after_repair(self, tmp_path: Path):
+        """反例: 补回合法账本后降级保持, 必须显式 recover 才能继续登记"""
+        path = tmp_path / "request_ledger.json"
+        path.write_text("{ 不是 JSON", encoding="utf-8")
+        ledger = self._ledger(tmp_path)
+        assert ledger.degraded is True
+        path.write_text(json.dumps({"version": 1, "entries": {}}), encoding="utf-8")
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1000.0) == "degraded"
+        assert ledger.recover() is True
+        assert ledger.degraded is False
+        assert await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1001.0) == "registered"
+
+    @pytest.mark.asyncio
+    async def test_missing_manifest_with_existing_file_is_migrated(self, tmp_path: Path):
+        """反例: 账本文件存在但清单缺失不得当作首次初始化, 应迁移并保留既有身份"""
+        ledger = self._ledger(tmp_path)
+        await ledger.register("ob", "10000", "group", "k1", group_id="1", sub_type="add", user_id="7", now=1000.0)
+        await ledger.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1001.0)
+        (tmp_path / "request_ledger.manifest.json").unlink()
+        migrated = self._ledger(tmp_path)
+        assert migrated.degraded is False
+        assert migrated.pending_counts()["entries_total"] == 1
+        assert self._ledger_states(tmp_path) == ["unknown"]     # 迁移时按重启规则结束无法确认的占用
+        with pytest.raises(LookupError, match="结果未知"):
+            await migrated.occupy("ob", "10000", "group", "k1", group_id="1", sub_type="add", now=1002.0)
+
+
+class TestApprovalAcrossRestart:
+    """适配器重启后同一 flag 不可重放, 且不得再发出网络动作"""
+
+    @pytest.mark.asyncio
+    async def test_occupied_flag_not_replayable_after_restart(self, tmp_path: Path):
+        """反例: 重启不得让已消费的 flag 回到可审批"""
+        ledger_path = tmp_path / "request_ledger.json"
+        first = _adapter(self_id="10000")
+        first.set_request_ledger(RequestApprovalLedger(ledger_path))
+        first._bot.set_group_add_request.return_value = {}
+        await first._handle_request({"self_id": 10000, "request_type": "group", "sub_type": "add",
+                                     "group_id": 456, "user_id": 77, "flag": "g-restart"})
+        await first.admin.handle_group_request("456", "g-restart", "add", True)
+        assert first._bot.set_group_add_request.await_count == 1
+
+        revived = _adapter(self_id="10000")
+        revived.set_request_ledger(RequestApprovalLedger(ledger_path))
+        with pytest.raises(AdminActionRejected, match="已被处理"):
+            await revived.admin.handle_group_request("456", "g-restart", "add", True)
+        revived._bot.set_group_add_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_degraded_ledger_refuses_approval_without_action(self, tmp_path: Path):
+        """反例: 账本降级时审批拒绝, 不得凭内存缓存放行动作"""
+        ledger_path = tmp_path / "request_ledger.json"
+        adapter = _adapter(self_id="10000")
+        adapter.set_request_ledger(RequestApprovalLedger(ledger_path))
+        adapter._bot.set_group_add_request.return_value = {}
+        await adapter._handle_request({"self_id": 10000, "request_type": "group", "sub_type": "add",
+                                       "group_id": 456, "user_id": 77, "flag": "g-degrade"})
+        ledger_path.write_text("{ 不是 JSON", encoding="utf-8")
+        degraded = RequestApprovalLedger(ledger_path)
+        assert degraded.degraded is True
+        adapter.set_request_ledger(degraded)
+        with pytest.raises(AdminActionRejected, match="不可用"):
+            await adapter.admin.handle_group_request("456", "g-degrade", "add", True)
+        adapter._bot.set_group_add_request.assert_not_called()
 
 
 class TestRequestRegistration:
     """入站 request 事件的 flag 登记"""
-
     @pytest.mark.asyncio
     async def test_handle_request_registers_group_and_friend_flags(self, monkeypatch: pytest.MonkeyPatch):
         adapter = _adapter(self_id="10")
@@ -568,8 +963,8 @@ class TestRequestRegistration:
         await adapter._handle_request({"self_id": 10, "request_type": "group", "sub_type": "add",
                                        "group_id": 456, "user_id": 77, "flag": "g-flag"})
         await adapter._handle_request({"self_id": 10, "request_type": "friend", "user_id": 88, "flag": "f-flag"})
-        adapter.request_flags.occupy("group", "g-flag", group_id="456", sub_type="add")
-        adapter.request_flags.occupy("friend", "f-flag")
+        await _occupy_flag(adapter, "group", "g-flag", group_id="456", sub_type="add")
+        await _occupy_flag(adapter, "friend", "f-flag")
         assert emit.await_count == 2
 
     @pytest.mark.asyncio
@@ -580,6 +975,6 @@ class TestRequestRegistration:
                                        "group_id": 456, "user_id": 77, "flag": "alien"})
         await adapter._handle_request({"request_type": "friend", "user_id": 88, "flag": "no-self"})
         with pytest.raises(LookupError):
-            adapter.request_flags.occupy("group", "alien", group_id="456", sub_type="add")
+            await _occupy_flag(adapter, "group", "alien", group_id="456", sub_type="add")
         with pytest.raises(LookupError):
-            adapter.request_flags.occupy("friend", "no-self")
+            await _occupy_flag(adapter, "friend", "no-self")

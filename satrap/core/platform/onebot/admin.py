@@ -16,7 +16,7 @@ import unicodedata
 
 from satrap.core.components import BaseMessageComponent, Node, Plain
 from satrap.core.platform.event import MessageChain
-from satrap.core.platform.onebot.onebot_utils import group_session_id
+from satrap.core.platform.onebot.onebot_utils import forward_ids_in_message, group_session_id
 from satrap.core.log import logger
 
 
@@ -146,6 +146,39 @@ def _normalize_decimal(value: Any, label: str) -> str:
 def normalize_group_id(value: Any) -> str:
     """校验并归一化群 ID"""
     return _normalize_decimal(value, "群 ID")
+
+
+def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数") -> str:
+    """
+    校验并归一化平台消息 ID
+
+    参数:
+    - value: 外部输入
+    - message: 错误文案
+
+    返回:
+    - str: 允许负号的十进制字符串 (群聊消息 ID 可为负数)
+    """
+    text = str(value).strip()
+    if not text or not text.lstrip("-").isdecimal():
+        raise ValueError(message)
+    return text
+
+
+def _normalize_forward_id(value: Any) -> str:
+    """
+    校验并归一化合并转发 ID
+
+    参数:
+    - value: 外部输入
+
+    返回:
+    - str: 去除首尾空白且不含控制字符的转发 ID
+    """
+    text = str(value).strip()
+    if not text or len(text) > 128 or any(unicodedata.category(ch) == "Cc" for ch in text):
+        raise ValueError("转发 ID 非法")
+    return text
 
 
 def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = False) -> int:
@@ -439,9 +472,7 @@ class OneBotAdmin:
         返回:
         - tuple[int, dict]: 整数消息 ID 与 get_msg 响应; 无法确认归属时抛 AdminActionRejected
         """
-        text = str(message_id).strip()
-        if not text or not text.lstrip("-").isdecimal():
-            raise ValueError("消息 ID 必须为整数")
+        text = _normalize_message_id(message_id)
         info = await self._call("get_msg", message_id=int(text))
         payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
         raw_group = payload.get("group_id")
@@ -478,26 +509,37 @@ class OneBotAdmin:
             "message": payload.get("message"),
         }
 
-    async def get_forward_message(self, group_id: Any, forward_id: Any) -> list[dict[str, Any]]:
+    async def get_forward_message(self, group_id: Any, forward_id: Any, source_message_id: Any) -> list[dict[str, Any]]:
         """
         回源读取合并转发内容, 不递归展开嵌套转发, 不下载附件
 
         参数:
         - group_id: 转发所在群, 必须在当前实例允许范围内
         - forward_id: OneBot 转发消息 ID
+        - source_message_id: 含该转发的来源群消息 ID, 用于证明转发对象确实来自目标群
 
         返回:
-        - list[dict]: 节点昵称, 账号与文本摘要; 复用适配器已有的群范围校验与有界回源
+        - list[dict]: 节点昵称, 账号与文本摘要; 缺少归属证明或证明失效一律拒绝
+
+        读取前回源来源消息, 要求其属于目标群, 账号与请求 ID 一致, 且顶层组件确实包含请求的转发 ID;
+        回源等待后复查群范围, 账号与连接代次, 不将旧账号或旧连接的证明用于新连接
         """
         gid = normalize_group_id(group_id)
         self._check_group(gid)
-        fid = str(forward_id).strip()
-        if not fid or len(fid) > 128 or any(unicodedata.category(ch) == "Cc" for ch in fid):
-            raise ValueError("转发 ID 非法")
-        nodes = await self._adapter.fetch_forward_message(fid, group_session_id(gid))
+        fid = _normalize_forward_id(forward_id)
+        generation, account = self._adapter.connection_generation(), self._adapter.bot_self_id
+        payload = await self._verify_forward_source(gid, source_message_id)
+        if fid not in forward_ids_in_message(payload.get("message")):
+            raise AdminActionRejected("请求的转发 ID 未出现在来源消息中, 已拒绝读取")
+        self._check_group(gid)
+        if self._adapter.connection_generation() != generation or self._adapter.bot_self_id != account:
+            raise AdminActionUnconfirmed("连接或账号已变更, 来源证明失效")
+        nodes = await self._adapter.fetch_forward_message(fid, group_session_id(gid), expect_group_id=gid)
         if nodes is None:
             raise AdminActionUnconfirmed("转发回源失败, 结果未知")
         self._check_group(gid)
+        if self._adapter.connection_generation() != generation or self._adapter.bot_self_id != account:
+            raise AdminActionUnconfirmed("连接或账号已变更, 来源证明失效")
         result: list[dict[str, Any]] = []
         for node in nodes:
             text = "".join(
@@ -508,6 +550,32 @@ class OneBotAdmin:
                 text = text[:1000] + "…"
             result.append({"name": node.name or "", "uin": node.uin or "", "time": node.time or 0, "text": text})
         return result
+
+    async def _verify_forward_source(self, gid: str, source_message_id: Any) -> dict[str, Any]:
+        """
+        回源来源消息并绑定目标群, 当前账号与请求消息 ID
+
+        参数:
+        - gid: 已归一化且已通过群范围检查的目标群
+        - source_message_id: 含该转发的群消息 ID
+
+        返回:
+        - dict: get_msg 响应; 归属, 账号或消息 ID 不一致时抛 AdminActionRejected
+        """
+        text = _normalize_message_id(source_message_id, "来源消息 ID 必须为整数")
+        info = await self._call("get_msg", message_id=int(text))
+        payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
+        raw_group = payload.get("group_id")
+        actual_group = str(raw_group).strip() if isinstance(raw_group, (int, str)) and not isinstance(raw_group, bool) else ""
+        if payload.get("message_type") != "group" or actual_group != gid:
+            raise AdminActionRejected("无法确认来源消息属于目标群, 已拒绝读取转发")
+        raw_self = payload.get("self_id")
+        if raw_self is not None and str(raw_self) != self._adapter.bot_self_id:
+            raise AdminActionRejected("来源消息账号与当前绑定账号不一致, 已拒绝读取转发")
+        raw_message = payload.get("message_id")
+        if raw_message is not None and str(raw_message) != text:
+            raise AdminActionRejected("来源消息回源结果与请求消息 ID 不一致, 已拒绝读取转发")
+        return payload
 
     async def send_group_forward(self, group_id: Any, nodes: Any) -> dict[str, Any]:
         """
@@ -704,16 +772,33 @@ class OneBotAdmin:
             raise ValueError("dismiss 必须为布尔值")
         await self._call("set_group_leave", group_id=int(gid), is_dismiss=dismiss)
 
+    async def _settle_request_flag(self, kind: str, flag: str, self_id: str, state: str) -> None:
+        """
+        回写审批 flag 终态, 落盘失败只告警
+
+        参数:
+        - kind: group 或 friend
+        - flag: 已占用的请求标识
+        - self_id: 已绑定机器人账号
+        - state: completed 或 unknown
+
+        写失败时标识保持 executing: 不可重放优先于终态精确
+        """
+        try:
+            await self._adapter.request_flags.settle(kind, flag, self_id=self_id, state=state)
+        except Exception as error:
+            logger.error(f"[OneBotAdmin] 审批终态写入失败 kind={kind} state={state}: {type(error).__name__}: {error}")
+
     async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "") -> None:
         """
         处理好友添加请求
 
         参数:
-        - flag: request 事件上报的标识, 必须已在好友请求登记表中且未被占用
+        - flag: request 事件上报的标识, 必须已在好友请求账本中且未被占用
         - approve: 是否同意
         - remark: 同意后的好友备注
 
-        flag 校验与占用在首次网络等待前原子完成; 动作超时或传输异常记 unknown,
+        flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
         不自动重试, 同一 flag 不可重放
         """
         if not isinstance(approve, bool):
@@ -723,19 +808,24 @@ class OneBotAdmin:
             raise ValueError("备注长度不能超过 60 字符")
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
+        self_id = self._adapter.bot_self_id
         try:
-            registry.occupy("friend", normalized)
+            await registry.occupy("friend", normalized, self_id=self_id)
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
         try:
             await self._call("set_friend_add_request", flag=normalized, approve=approve, remark=text)
         except AdminActionUnconfirmed:
-            registry.settle("friend", normalized, "unknown")
+            await self._settle_request_flag("friend", normalized, self_id, "unknown")
             raise
         except Exception:
-            registry.settle("friend", normalized, "completed")
+            await self._settle_request_flag("friend", normalized, self_id, "completed")
             raise
-        registry.settle("friend", normalized, "completed")
+        except BaseException:
+            # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
+            await self._settle_request_flag("friend", normalized, self_id, "unknown")
+            raise
+        await self._settle_request_flag("friend", normalized, self_id, "completed")
 
     async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
         """
@@ -743,12 +833,12 @@ class OneBotAdmin:
 
         参数:
         - group_id: 请求所属群, 必须在当前实例允许范围内且与登记一致
-        - flag: request 事件上报的标识, 必须已在群请求登记表中且未被占用
+        - flag: request 事件上报的标识, 必须已在群请求账本中且未被占用
         - sub_type: add 或 invite, 必须与登记事件一致
         - approve: 是否同意
         - reason: 拒绝理由
 
-        flag 校验与占用在首次网络等待前原子完成; 动作超时或传输异常记 unknown,
+        flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
         不自动重试, 同一 flag 不可重放
         """
         gid = normalize_group_id(group_id)
@@ -762,16 +852,21 @@ class OneBotAdmin:
             raise ValueError("理由长度不能超过 120 字符")
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
+        self_id = self._adapter.bot_self_id
         try:
-            registry.occupy("group", normalized, group_id=gid, sub_type=cast(str, sub_type))
+            await registry.occupy("group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type))
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
         try:
             await self._call("set_group_add_request", flag=normalized, sub_type=sub_type, approve=approve, reason=text)
         except AdminActionUnconfirmed:
-            registry.settle("group", normalized, "unknown")
+            await self._settle_request_flag("group", normalized, self_id, "unknown")
             raise
         except Exception:
-            registry.settle("group", normalized, "completed")
+            await self._settle_request_flag("group", normalized, self_id, "completed")
             raise
-        registry.settle("group", normalized, "completed")
+        except BaseException:
+            # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
+            await self._settle_request_flag("group", normalized, self_id, "unknown")
+            raise
+        await self._settle_request_flag("group", normalized, self_id, "completed")

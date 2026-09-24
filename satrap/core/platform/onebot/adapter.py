@@ -34,7 +34,7 @@ from satrap.core.platform.onebot.onebot_utils import (
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
-from satrap.core.platform.onebot.request_registry import RequestFlagRegistry
+from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
@@ -154,7 +154,7 @@ class OneBotAdapter(PlatformAdapter):
         self._warned_at: dict[str, float] = {}
         self._outbound = OutboundTurns()
         self.admin = OneBotAdmin(self, _action_failures)
-        self.request_flags = RequestFlagRegistry()
+        self.request_flags = RequestFlagRegistry(adapter_id=config.id)
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
         self._capability_states: dict[str, tuple[int, str]] = {}
         self._connection_generation = 0
@@ -172,6 +172,15 @@ class OneBotAdapter(PlatformAdapter):
         - recorder: 状态存储, None 表示仅进程内回执 (测试与精简运行时)
         """
         self._send_attempt_recorder = recorder
+
+    def set_request_ledger(self, ledger: RequestApprovalLedger | None) -> None:
+        """
+        装配跨重启的审批身份账本 (由后端在适配器创建后注入)
+
+        参数:
+        - ledger: 审批账本, None 表示回落到仅进程内账本 (测试与精简运行时)
+        """
+        self.request_flags.set_ledger(ledger if ledger is not None else RequestApprovalLedger())
 
     def meta(self) -> PlatformMetadata:
         """
@@ -345,6 +354,15 @@ class OneBotAdapter(PlatformAdapter):
             }
         self._capability_states[action] = (self._connection_generation, "supported" if supported else "unsupported")
 
+    def connection_generation(self) -> int:
+        """
+        返回当前连接代次, 供回源等待后的来源证明复查
+
+        返回:
+        - int: 连接代次, 未收到过连接生命周期事件时为 0
+        """
+        return self._connection_generation
+
     async def _handle_private_message(self, event: dict[str, Any]) -> None:
         """
         处理私聊消息
@@ -461,16 +479,17 @@ class OneBotAdapter(PlatformAdapter):
             "time": int(raw_time) if isinstance(raw_time, (int, float)) and not isinstance(raw_time, bool) else 0,
         }
 
-    async def fetch_forward_message(self, forward_id: str, session_id: str) -> list[Node] | None:
+    async def fetch_forward_message(self, forward_id: str, session_id: str, *, expect_group_id: str = "") -> list[Node] | None:
         """
         有界回源合并转发节点, 不递归展开嵌套转发, 不下载附件
 
         参数:
         - forward_id: OneBot 转发消息 ID
         - session_id: 当前事件的平台会话 ID, 用于校验群范围
+        - expect_group_id: 期望的群号, 非空时回包若明确携带其他群号即拒绝
 
         返回:
-        - list[Node] | None: 至多 20 个已归一节点; 越界, 超时, 格式不符或群范围外返回 None
+        - list[Node] | None: 至多 20 个已归一节点; 越界, 超时, 格式不符, 群范围外或群号矛盾返回 None
         """
         if self._bot is None or not forward_id:
             return None
@@ -493,6 +512,11 @@ class OneBotAdapter(PlatformAdapter):
         self.note_action_outcome("get_forward_msg", True)
         result = cast(dict[str, Any], result)
         if result.get("self_id") is not None and str(result["self_id"]) != self.bot_self_id:
+            return None
+        raw_group = result.get("group_id")
+        if expect_group_id and raw_group is not None and str(raw_group) != expect_group_id:
+            # 回包群号与来源证明矛盾时拒绝, 字段缺失不构成独立授权依据
+            logger.debug(f"[OneBotAdapter] 转发回源群号与来源不一致 forward_id={forward_id}")
             return None
         raw_messages = result.get("messages", result.get("message"))
         if not isinstance(raw_messages, list):
@@ -559,10 +583,10 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: OneBot 原始 request
         """
-        self._register_request_flag(event)
+        await self._register_request_flag(event)
         await self._emit_notice(event)
 
-    def _register_request_flag(self, event: dict[str, Any]) -> None:
+    async def _register_request_flag(self, event: dict[str, Any]) -> None:
         """
         登记 request 事件 flag 供审批动作核验归属, 可信账号身份核验先于登记
 
@@ -570,7 +594,7 @@ class OneBotAdapter(PlatformAdapter):
         - event: OneBot 原始 request
 
         登记是安全机制, 不依赖通知订阅与群白名单过滤; 账号不符或无法核验时不登记,
-        对应 flag 后续审批将因未登记被拒绝
+        对应 flag 后续审批将因未登记被拒绝; 登记写入持久账本, 失败只告警不阻断通知派发
         """
         incoming_self = str(event.get("self_id") or "")
         if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
@@ -581,14 +605,20 @@ class OneBotAdapter(PlatformAdapter):
             return
         request_type = str(event.get("request_type") or "")
         user_id = str(event.get("user_id") or "")
-        if request_type == "group":
-            sub_type = str(event.get("sub_type") or "")
-            group_id = str(event.get("group_id") or "")
-            if sub_type not in {"add", "invite"} or not group_id.isdecimal():
-                return
-            self.request_flags.register("group", flag, group_id=group_id, sub_type=sub_type, user_id=user_id)
-        elif request_type == "friend":
-            self.request_flags.register("friend", flag, user_id=user_id)
+        try:
+            if request_type == "group":
+                sub_type = str(event.get("sub_type") or "")
+                group_id = str(event.get("group_id") or "")
+                if sub_type not in {"add", "invite"} or not group_id.isdecimal():
+                    return
+                await self.request_flags.register(
+                    "group", flag, self_id=incoming_self, group_id=group_id, sub_type=sub_type, user_id=user_id,
+                )
+            elif request_type == "friend":
+                await self.request_flags.register("friend", flag, self_id=incoming_self, user_id=user_id)
+        except Exception as error:
+            # 登记失败的 flag 无法被审批, 保守行为是拒绝执行而不是放行
+            logger.error(f"[OneBotAdapter] request flag 登记失败: {type(error).__name__}: {error}")
 
     async def _emit_notice(self, raw: dict[str, Any]) -> None:
         """

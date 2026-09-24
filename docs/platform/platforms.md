@@ -93,6 +93,10 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
 | set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
 | set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
+| get_msg | group_admin_get_message | 读 | message_id, group_id 可选 | 消息 ID/时间/发送者/原文, 回源后核验属于目标群 |
+| get_forward_msg | group_admin_get_forward | 读 | forward_id, source_message_id (必填, 含该转发的群消息 ID), group_id 可选 | 至多 20 个节点 (昵称/账号/时间/≤1000 字符文本摘要) |
+
+`group_admin_get_forward` 必须提供来源消息 ID: 读取前经 `get_msg` 回源该消息, 要求它属于目标群、账号与请求消息 ID 一致, 且其顶层组件确实包含请求的转发 ID (不搜索正文, 不从嵌套节点推断); 回源等待后复查群范围、账号与连接代次, 通过后才调用 `get_forward_msg`, 回包若明确携带矛盾群号或账号则拒绝。缺少来源消息 ID 按参数错误返回, 不做不安全放行。
 
 好友/加群请求的 `flag` 来自通知事件 (见文末"通知与请求事件"), 工具只做显式审批, 不做任何自动同意或拒绝。布尔参数严格校验, 拒绝真值语义; 写操作被平台拒绝或结果未知时按 `manual` 策略交由用户确认, 不自动重放。
 
@@ -260,6 +264,15 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 群文件上传 (`notice.group_upload`) 额外归一为附件事件: `extras["attachment"]` 携带 `File` 组件 (name 为文件名, file 为远端文件 ID, url 为实现返回的下载地址, 可能为空), 文件大小与 busid 保留在 `payload.file`; 缺少文件 ID 和 URL 时不生成附件。归一只携带远端元信息, 不触发下载; 下载与模型处理仍须遵守目标会话的触发策略。
 
 插件可在 `build_tools`/`build_handlers` 等工厂中调用 `satrap.core.platform.notices.current_hub()` 获取处理中心并 `subscribe(event_type, handler)`, 返回的注销函数应在插件 `cleanup` 中调用; 后端未运行时返回 None。默认不把任何入退群、撤回或请求转成模型调用, 也不自动审批请求; 审批与群管理动作由 `group_admin` 插件的工具按来源身份显式执行 (见"群管理动作与能力矩阵"), 请求审批所需的 `flag` 即来自这里的 request 事件载荷。
+
+请求审批的身份由跨重启的审批账本 `.satrap/data/request_ledger.json` 决定 (见 [运行数据布局](../core/data-layout.md)):
+
+- 入站 request 事件按平台实例、已绑定账号、类别 (`group`/`friend`) 与 flag 摘要登记, 归属与首次接收时间在登记后不再变化; 重复入站不新增条目, 不改写状态, 也不刷新可审批时限 (默认 600 秒, 到期记为 `expired` 墓碑而不是删除身份)
+- 审批动作在文件锁内原子占用 `available → executing → completed/unknown`, 落盘成功后才发出网络动作; 动作超时、取消或传输异常记为 `unknown` 并保持不可重放, 同一 flag 永远不会回到可审批
+- 重启后无法确认的占用保守记为 `unknown`; 台账容量达限 (每"实例+账号"4096, 全表 16384) 拒绝新登记, 不淘汰旧身份
+- 进程内的近期 flag 缓存只用于跳过重复入站的磁盘访问, 不作为审批资格依据; 缓存淘汰不影响账本身份
+- 账本损坏或降级时审批直接拒绝执行, 需显式恢复并校验通过后才继续, 不提供"清空账本后继续"
+- 声明"处理了某个 flag"的调用必须与登记事件的账号和群一致, 归属不符按拒绝处理, 不落任何网络动作
 
 
 ## 语音转写与文件正文

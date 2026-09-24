@@ -99,9 +99,14 @@ class TestRequestStore:
         assert exc.value.reason == "degraded"
         assert store.lookup_request("r") is None
         assert store.record_send_attempt("t", "bot", "group%20", "", [{"index": 0}]) is False
-        # 其余功能照常: 同一路径可重建全新存储
+        # 降级状态已随清单持久化: 重启与隔离文件都不等于恢复去重能力
+        assert (tmp_path / "store.manifest.json").is_file()
         fresh = ManualWakeStore(path)
-        assert fresh.degraded is False
+        assert fresh.degraded is True
+        assert fresh.degraded_reason == "manifest_missing_with_data"
+        with pytest.raises(ManualWakeStoreError) as exc:
+            fresh.accept_request("bot", "r", "fp", "group:20", "op")
+        assert exc.value.reason == "degraded"
 
     def test_capacity_rotation_archive_and_pending_never_evicted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(store_module, "REQUEST_CAPACITY", 3)
@@ -180,6 +185,242 @@ class TestRequestStore:
         assert running is not None and running["status"] == "unknown" and running["detail"] == "stopped_unconfirmed"
         assert keep is not None and keep["status"] == "accepted"
         assert store._attempts["t1"]["status"] == "unknown"
+
+
+class TestPersistentDegradation:
+    """B2 反例: 主文件与归档的降级状态必须持久, 不能靠重启或隔离文件恢复去重能力"""
+
+    def test_corrupt_main_stays_degraded_across_restarts(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "keep", "fp", "group:20", "op")
+        store.update_request("bot", "keep", "sent")
+        path.write_text("{broken", encoding="utf-8")
+        first = ManualWakeStore(path)
+        assert first.degraded is True and first.degraded_reason == "main_corrupt"
+        assert list(tmp_path.glob("store.json.corrupt-*"))
+        for _ in range(2):
+            again = ManualWakeStore(path)
+            assert again.degraded is True and again.degraded_reason != ""
+            assert again.lookup_request("keep", "bot") is None
+            with pytest.raises(ManualWakeStoreError) as exc:
+                again.accept_request("bot", "keep", "fp", "group:20", "op")
+            assert exc.value.reason == "degraded"
+
+    def test_archive_corruption_degrades_without_empty_fallback(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "archived", "fp", "group:20", "op")
+        store.update_request("bot", "archived", "sent")
+        archive = tmp_path / "store.json.1"
+        archived_record = store.lookup_request("archived", "bot")
+        assert archived_record is not None
+        store._load_archive_locked()
+        assert store._archive_requests is not None
+        store._archive_requests["bot\narchived"] = archived_record
+        store._save_archive_locked()
+        assert archive.is_file()
+        archive.write_text("boom{", encoding="utf-8")
+        restarted = ManualWakeStore(path)
+        assert restarted.degraded is True and restarted.degraded_reason == "archive_corrupt"
+        assert list(tmp_path.glob("store.json.1.corrupt-*"))
+        # 归档损坏不再按空归档继续: 查询明确降级, 接受请求被拒
+        assert restarted.lookup_request("archived", "bot") is None
+        with pytest.raises(ManualWakeStoreError) as exc:
+            restarted.accept_request("bot", "r", "fp", "group:20", "op")
+        assert exc.value.reason == "degraded"
+
+    def test_missing_expected_files_are_corruption_not_empty_store(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        path.unlink()
+        missing_main = ManualWakeStore(path)
+        assert missing_main.degraded is True and missing_main.degraded_reason == "main_missing"
+        assert missing_main.lookup_request("r1", "bot") is None
+
+        store = ManualWakeStore(tmp_path / "second.json")
+        store.accept_request("bot", "r2", "fp", "group:20", "op")
+        store.update_request("bot", "r2", "sent")
+        store._load_archive_locked()
+        archive_record = store.lookup_request("r2", "bot")
+        assert store._archive_requests is not None and archive_record is not None
+        store._archive_requests["bot\nr2"] = archive_record
+        store._save_archive_locked()
+        (tmp_path / "second.json.1").unlink()
+        missing_archive = ManualWakeStore(tmp_path / "second.json")
+        assert missing_archive.degraded is True and missing_archive.degraded_reason == "archive_missing"
+
+    def test_manifest_corrupt_with_data_migrates_instead_of_resetting(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        (tmp_path / "store.manifest.json").write_text("not-json", encoding="utf-8")
+        restarted = ManualWakeStore(path)
+        assert restarted.degraded is False
+        record = restarted.lookup_request("r1", "bot")
+        assert record is not None and record["fingerprint"] == "fp" and record["status"] == "accepted"
+        manifest = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
+        assert manifest["expected_files"] == {"main": "present", "archive": "absent"}
+
+    def test_manifest_corrupt_and_main_unreadable_degrades_without_reset(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        path.write_text("not-json{", encoding="utf-8")
+        store = ManualWakeStore(path)
+        assert store.degraded is True and store.degraded_reason == "manifest_missing_with_data"
+        assert (tmp_path / "store.manifest.json").is_file()
+        # 上一轮的隔离文件保留在原目录, 新实例仍然判定为降级
+        quarantined = list(tmp_path.glob("store.json.corrupt-*"))
+        assert len(quarantined) == 1
+
+    def test_degrade_marker_write_failure_keeps_original_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        path = tmp_path / "store.json"
+        path.write_text("not-json{", encoding="utf-8")
+
+        def broken_write(self: object, manifest: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(ManualWakeStore, "_write_manifest", broken_write)
+        store = ManualWakeStore(path)
+        assert store.degraded is True
+        # 标记写失败: 保留原文件不隔离, 下次启动仍可重新判定
+        assert path.is_file() and path.read_text(encoding="utf-8") == "not-json{"
+        assert list(tmp_path.glob("store.json.corrupt-*")) == []
+        with pytest.raises(ManualWakeStoreError) as exc:
+            store.accept_request("bot", "r", "fp", "group:20", "op")
+        assert exc.value.reason == "degraded"
+
+    def test_legacy_files_migrate_without_record_loss(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        legacy_request: dict[str, Any] = {
+            "request_id": "old", "fingerprint": "fp-old", "adapter_id": "bot", "target": "group:20",
+            "operator": "op", "status": "sent", "detail": "", "created_at": 1.0, "updated_at": 2.0,
+        }
+        legacy_attempt: dict[str, Any] = {
+            "turn_id": "t-old", "adapter_id": "bot", "target": "group%20", "request_id": "old",
+            "segments": [{"index": 0, "kind": "chunk", "chars": 2, "digest": "ab", "status": "sent"}],
+            "status": "sent", "detail": "", "created_at": 1.0, "updated_at": 2.0,
+        }
+        # 旧版文件缺少 version 字段, 且目录中没有清单
+        path.write_text(json.dumps({"requests": {"bot\nold": legacy_request}, "attempts": {"t-old": legacy_attempt}}), encoding="utf-8")
+        store = ManualWakeStore(path)
+        assert store.degraded is False
+        record = store.lookup_request("old", "bot")
+        assert record is not None
+        assert record["fingerprint"] == "fp-old" and record["status"] == "sent" and record["operator"] == "op"
+        assert store._attempts["t-old"]["status"] == "sent"
+        manifest = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
+        assert manifest["expected_files"] == {"main": "present", "archive": "absent"}
+        with pytest.raises(ManualWakeStoreError, match="已存在"):
+            store.accept_request("bot", "old", "fp-old", "group:20", "op")
+
+    def test_rotation_crash_keeps_records_and_adopts_archive(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        main_record: dict[str, Any] = {
+            "request_id": "rot", "fingerprint": "fp", "adapter_id": "bot", "target": "group:20",
+            "operator": "op", "status": "sent", "detail": "", "created_at": 1.0, "updated_at": 2.0,
+        }
+        archive_only: dict[str, Any] = {**main_record, "request_id": "archived", "fingerprint": "fp2"}
+        # 轮转写入归档后进程中断: 主文件仍是旧内容, 归档已包含同一记录与更早的记录
+        path.write_text(json.dumps({"version": 1, "requests": {"bot\nrot": main_record}, "attempts": {}}), encoding="utf-8")
+        (tmp_path / "store.json.1").write_text(
+            json.dumps({"version": 1, "requests": {"bot\nrot": main_record, "bot\narchived": archive_only}, "attempts": {}}),
+            encoding="utf-8",
+        )
+        store = ManualWakeStore(path)
+        assert store.degraded is False
+        assert store.lookup_request("rot", "bot") is not None
+        archived = store.lookup_request("archived", "bot")
+        assert archived is not None and archived["fingerprint"] == "fp2"
+        manifest = json.loads((tmp_path / "store.manifest.json").read_text(encoding="utf-8"))
+        assert manifest["expected_files"]["archive"] == "present"
+        assert store.pending_counts()["degraded"] is False
+
+    def test_failed_persist_does_not_show_unconfirmed_terminal_state(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = ManualWakeStore(tmp_path / "store.json")
+        store.accept_request("bot", "r", "fp", "group:20", "op")
+        assert store.record_send_attempt("t1", "bot", "group%20", "r", [{"index": 0}, {"index": 1}]) is True
+
+        def broken_save() -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(store, "_save_current_locked", broken_save)
+        assert store.update_request("bot", "r", "sent") is False
+        record = store.lookup_request("r", "bot")
+        assert record is not None and record["status"] == "accepted"
+        assert store.complete_send_attempt("t1", ["sent", "failed"], "partial", "action_rejected") is False
+        attempt = store._attempts["t1"]
+        assert attempt["status"] == "submitted"
+        assert [segment["status"] for segment in attempt["segments"]] == ["submitted", "submitted"]
+        assert store.adapter_stopped("bot") is None
+        stopped = store.lookup_request("r", "bot")
+        assert stopped is not None and stopped["status"] == "accepted"
+
+
+class TestRecoveryEntry:
+    """B2 恢复入口: 只接受主文件与归档一致的完整记录集, 不提供清空历史后继续"""
+
+    @staticmethod
+    def _degrade_manifest(tmp_path: Path) -> None:
+        manifest_path = tmp_path / "store.manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["degraded"] = {"reason": "test", "at": 0.0}
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    def test_recover_requires_restored_original_file(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        path.write_text("not-json{", encoding="utf-8")
+        store = ManualWakeStore(path)
+        assert store.degraded is True
+        # 主文件已被隔离: 不能清空重建, 必须先恢复原文件
+        assert store.recover() is False
+        assert store.degraded is True
+        path.write_text(json.dumps({"version": 1, "requests": {}, "attempts": {}}), encoding="utf-8")
+        assert store.recover() is True
+        assert store.degraded is False and store.degraded_reason == ""
+        store.accept_request("bot", "r", "fp", "group:20", "op")
+        assert store.lookup_request("r", "bot") is not None
+
+    def test_recover_rejects_duplicate_records(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "dup", "fp", "group:20", "op")
+        record = store.lookup_request("dup", "bot")
+        assert record is not None
+        store._load_archive_locked()
+        assert store._archive_requests is not None
+        store._archive_requests["bot\ndup"] = record
+        store._save_archive_locked()
+        self._degrade_manifest(tmp_path)
+        degraded = ManualWakeStore(path)
+        assert degraded.degraded is True
+        assert degraded.recover() is False
+        assert degraded.degraded is True
+
+    def test_identity_mismatch_counts_as_corruption(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        mismatch: dict[str, Any] = {
+            "request_id": "r1", "fingerprint": "fp", "adapter_id": "other", "target": "group:20",
+            "operator": "op", "status": "sent", "detail": "", "created_at": 1.0, "updated_at": 2.0,
+        }
+        path.write_text(json.dumps({"version": 1, "requests": {"bot\nr1": mismatch}, "attempts": {}}), encoding="utf-8")
+        store = ManualWakeStore(path)
+        assert store.degraded is True and store.degraded_reason == "manifest_missing_with_data"
+        assert list(tmp_path.glob("store.json.corrupt-*"))
+
+    def test_sent_attempt_with_unconfirmed_segment_counts_as_corruption(self, tmp_path: Path):
+        path = tmp_path / "store.json"
+        attempt: dict[str, Any] = {
+            "turn_id": "t1", "adapter_id": "bot", "target": "group%20", "request_id": "r",
+            "segments": [{"index": 0, "status": "submitted"}], "status": "sent", "detail": "",
+            "created_at": 1.0, "updated_at": 2.0,
+        }
+        path.write_text(json.dumps({"version": 1, "requests": {}, "attempts": {"t1": attempt}}), encoding="utf-8")
+        store = ManualWakeStore(path)
+        assert store.degraded is True
+        with pytest.raises(ManualWakeStoreError) as exc:
+            store.accept_request("bot", "r", "fp", "group:20", "op")
+        assert exc.value.reason == "degraded"
 
 
 class TestAcceptTransaction:

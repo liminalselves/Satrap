@@ -29,6 +29,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
+from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
@@ -201,6 +202,7 @@ class BackendManager:
         self._rate_limiter: RateLimiter | None = None
         self._scheduler: PipelineScheduler | None = None
         self._manual_wake_store: ManualWakeStore | None = None
+        self._request_ledger: RequestApprovalLedger | None = None
         self._wake_accept_lock = asyncio.Lock()
         self._adapter_mgr: PlatformAdapterManager | None = None
         self._dispatcher: EventDispatcher | None = None
@@ -559,8 +561,11 @@ class BackendManager:
         if store is None:
             return {"status": "unknown", "request_id": request_id, "reason": "store_unavailable"}
         if store.degraded:
-            return {"status": "unknown", "request_id": request_id, "reason": "store_degraded"}
+            return {"status": "unknown", "request_id": request_id, "reason": "store_degraded", "detail": store.degraded_reason}
         record = await asyncio.to_thread(store.lookup_request, request_id, adapter_id)
+        if store.degraded:
+            # 查询期间归档读取失败会进入降级, 此时不能把结果报成未找到
+            return {"status": "unknown", "request_id": request_id, "reason": "store_degraded", "detail": store.degraded_reason}
         if record is None:
             return {"status": "unknown", "request_id": request_id, "reason": "not_found"}
         return {
@@ -803,6 +808,7 @@ class BackendManager:
             if replacement is None:
                 raise ValueError("平台类型不可用")
             self._attach_send_attempt_recorder(replacement)
+            self._attach_request_ledger(replacement)
         try:
             if old is not None:
                 old.config = replace(old.config, enable=False)
@@ -1268,6 +1274,28 @@ class BackendManager:
         if isinstance(adapter, OneBotAdapter) and self._manual_wake_store is not None:
             adapter.set_send_attempt_recorder(self._manual_wake_store)
 
+    def _attach_request_ledger(self, adapter: PlatformAdapter) -> None:
+        """
+        给支持审批动作的适配器注入跨重启的审批身份账本
+
+        参数:
+        - adapter: 平台适配器实例
+
+        账本按数据目录共用一份, 以适配器 ID 与已绑定账号区分条目; 注入失败时保持
+        适配器自带的仅进程内账本, 审批不会因此放宽
+        """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        if not isinstance(adapter, OneBotAdapter):
+            return
+        if self._request_ledger is None:
+            self._request_ledger = RequestApprovalLedger(self._storage.root / "request_ledger.json")
+            if self._request_ledger.degraded:
+                logger.warning(
+                    f"[BackendManager] 审批账本已降级, request 审批将拒绝执行: {self._request_ledger.degraded_reason}"
+                )
+        adapter.set_request_ledger(self._request_ledger)
+
     def _resolve_platform_session_type(
         self,
         platform_type: str,
@@ -1327,6 +1355,7 @@ class BackendManager:
         if adapter is None:
             raise ValueError("平台类型不可用")
         self._attach_send_attempt_recorder(adapter)
+        self._attach_request_ledger(adapter)
         self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
         logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")
 

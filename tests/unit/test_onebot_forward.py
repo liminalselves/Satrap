@@ -125,6 +125,16 @@ class TestFetchForwardMessage:
         adapter._bot.get_forward_msg.side_effect = RuntimeError("boom")
         assert await adapter.fetch_forward_message("fwd-1", event.session_id) is None
 
+    @pytest.mark.asyncio
+    async def test_fetch_rejects_contradictory_group_when_expected(self):
+        adapter, event = await make_event()
+        adapter._bot.get_forward_msg.return_value = {**forward_payload(), "group_id": 999}
+        # 未声明期望群号时保持既有行为 (入站补全不额外回源)
+        assert await adapter.fetch_forward_message("fwd-1", event.session_id) is not None
+        assert await adapter.fetch_forward_message("fwd-1", event.session_id, expect_group_id="456") is None
+        adapter._bot.get_forward_msg.return_value = {**forward_payload(), "group_id": 456}
+        assert await adapter.fetch_forward_message("fwd-1", event.session_id, expect_group_id="456") is not None
+
 
 class TestResolveAndProjection:
     @pytest.mark.asyncio
