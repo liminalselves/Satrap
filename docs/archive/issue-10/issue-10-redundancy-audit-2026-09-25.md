@@ -81,3 +81,26 @@
 - Pyright `python -m pyright -p .pyrightcfg`: 0 errors / 1532 warnings, 数量与记录的门禁基线一致。首次未指定项目配置的运行误扫 build/lib, 不作为本轮门禁结论
 
 未重新执行历史真实 ASR/LLM/SnowLuma 服务验收和发行静态资源部署验收; 本报告只审计本次冗余清理差异, 不将受控 API 页面回归当作上述验收证据
+
+## 6. 整改后独立复核 (2026-09-25)
+
+复核范围: `f3875a2..b9d9192`, 开始时工作区干净
+
+结论: 原三项 P2 的代码修复通过复核, 本轮未发现新增功能缺陷; 仍有一项已要求的回归覆盖未补齐, 因此区分“代码问题已修复”与“约定验收全部完成”
+
+- 项 1: FormModal 的 noValidate 默认 false, 只有 Platforms 编辑表单显式开启; 模型名称为空不发请求的真实页面测试通过。Users 的 user_id/session_id 与 Checkpoints 的分支名均继续使用默认原生 required 约束
+- 项 2: 账本清单保留顶层及 expected_files/degraded 的历史扩展字段, 不解释的 at 保留原值; 主动写入新降级标记时整体替换该标记, 其他扩展字段仍保留。MWS 的归一化丢弃规则未放宽; 真实账本降级写入和既有故障顺序测试通过
+- 项 3: 文本和列表元素均按码点计数; 共享 JSON 边界样例由两侧真实校验入口执行, BMP/非 BMP 混合边界通过
+
+剩余验收项 (低优先级, 非新功能缺陷): 上轮裁定要求补 Users 空 ID 与 Checkpoints 空分支名回归, 当前新增 `model-form-required.mjs` 只覆盖 Models。需补 user_id 为空、绑定 session_id 为空、分支名为空时不发对应写请求且弹窗保留, 并验证填写合法值后能提交; 保留为入库的页面回归用例
+
+本轮独立执行结果:
+
+- 后端针对性测试: `test_durability.py`、`test_manual_wake_store.py`、`test_policy_field_contract.py`, 157 passed
+- 前端 Vitest: 20 files / 195 tests passed
+- Playwright: model-form、platform-policy、manual-wake 三脚本 PASS
+- TypeScript `tsc --noEmit`、ESLint、契约同步 `--check` 与提交差异 whitespace 检查通过
+- Pyright `python -m pyright -p .pyrightcfg`: 0 errors / 1532 warnings
+- 本轮未重新执行全量 pytest; 执行侧记录的 2203 passed / 19 skipped 不计为本轮独立复测结果
+
+仅追加复核记录, 未修改业务代码或测试
