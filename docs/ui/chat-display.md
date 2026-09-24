@@ -173,4 +173,4 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 | 插件 | 插件清单与启停, 能力清单弹窗 (`PluginCapabilitiesModal`, 双层启停), 配置弹窗 (`PluginConfigModal`, 按 schema 渲染表单, 可跳转 `SessionPluginSettingsModal` 配置当前会话参数) |
 | 数据管理 | RAG 知识库 (`RagManager`)、长期记忆 (`MemoryPanel`)、会话历史 (`ChatHistoryManager`) 三个入口, 均叠层打开不关闭设置弹窗 |
 
-其他要点: `ChatHistoryManager` 分**历史 / 回收站**两栏, 支持搜索过滤、批量回收、恢复与永久删除, Chat 服务停止时自动回落控制服务冷管理; 记忆面板按 `session:<conversation_id>` 作用域读写, 添加表单的作用域固定为"当前会话"。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见 [前端迁移指南](../archive/frontend-migration.md) 与 `satrap-ui/DEVELOPMENT.md`。
+其他要点: `ChatHistoryManager` 分**历史 / 回收站**两栏, 支持搜索过滤、批量回收、恢复与永久删除, Chat 服务停止时自动回落控制服务冷管理; 记忆面板按 `session:<conversation_id>` 作用域读写, 添加表单的作用域固定为"当前会话"。服务地址由 `src/utils/constants.ts` 的 `CHAT_API_URL` 控制 (默认 `http://127.0.0.1:19872`, 可用环境变量 `VITE_CHAT_API_URL` 覆盖)。开发时经 Vite 代理转发, 见前端迁移指南 `docs/archive/frontend-migration.md` (本地留档, 不入库) 与 `satrap-ui/DEVELOPMENT.md`。

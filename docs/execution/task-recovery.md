@@ -103,4 +103,4 @@ Chat 的“执行记录与恢复”提供继续执行, 终止和未知工具步�
 
 相关测试位于 `test_run_store.py`, `test_recoverable_flow.py`, `test_recoverable_engine.py`, `test_display_service.py`. 覆盖工具未知副作用确认, 保存请求重用, 原子消息提交, 进程退出锁释放, 服务重启后续跑, retry 版本和 fork 作用域隔离
 
-真实后端进程终止验收与离线性能基准见 [恢复机制验收记录](../archive/recovery-validation.md)
+真实后端进程终止验收与离线性能基准见恢复机制验收记录 `docs/archive/recovery-validation.md` (本地留档, 不入库)
