@@ -31,7 +31,7 @@ from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
-from satrap.core.pipeline.wake_rejections import REJECTION_STAGES
+from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
@@ -589,7 +589,7 @@ class BackendManager:
         scheduler = self._scheduler
         if scheduler is None:
             return []
-        return scheduler.wake_rejections.list(adapter_id, limit, stages=REJECTION_STAGES)
+        return scheduler.request_diagnostics.list(adapter_id, limit, stages=REJECTION_STAGES)
 
     def request_diagnostics(
         self, adapter_id: str | None = None, *, stage: str = "", request_id: str = "", limit: int = 50,
@@ -610,11 +610,11 @@ class BackendManager:
         if scheduler is None:
             return {"records": [], "available": False, "reason": "scheduler_unavailable"}
         return {
-            "records": scheduler.wake_rejections.list_requests(
+            "records": scheduler.request_diagnostics.list_requests(
                 adapter_id, stage=stage, request_id=request_id, limit=limit,
             ),
             "available": True,
-            **scheduler.wake_rejections.stats(adapter_id),
+            **scheduler.request_diagnostics.stats(adapter_id),
         }
 
     def request_diagnostic_detail(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
@@ -631,7 +631,7 @@ class BackendManager:
         scheduler = self._scheduler
         if scheduler is None:
             return {"status": "unknown", "request_id": request_id, "reason": "scheduler_unavailable"}
-        detail = scheduler.wake_rejections.get_request(request_id, adapter_id)
+        detail = scheduler.request_diagnostics.get_request(request_id, adapter_id)
         if detail is None:
             return {"status": "unknown", "request_id": request_id, "reason": "not_found"}
         return detail

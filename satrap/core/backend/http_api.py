@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
 
-from satrap.core.pipeline.wake_rejections import DIAGNOSTIC_STAGES
+from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER

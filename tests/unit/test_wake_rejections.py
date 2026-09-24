@@ -10,13 +10,13 @@ from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
-from satrap.core.pipeline.wake_rejections import REJECTION_STAGES, WakeRejection, WakeRejectionLog
+from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES, RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 
-def _rejection(adapter: str, reason: str, at: float, request_id: str = "r") -> WakeRejection:
-    return WakeRejection(
+def _rejection(adapter: str, reason: str, at: float, request_id: str = "r") -> RequestDiagnostic:
+    return RequestDiagnostic(
         adapter_id=adapter, session_id="group%20", actor_id="30", stage="wake_decision",
         decision="dropped", reason=reason, recorded_at=at, message_id="1", request_id=request_id,
     )
@@ -54,7 +54,7 @@ async def _feed(adapter: OneBotAdapter, text: str, message_id: str = "1") -> Non
 
 class TestRejectionLog:
     def test_capacity_order_filter_and_clear(self):
-        log = WakeRejectionLog(per_adapter=3)
+        log = RequestDiagnosticLog(per_adapter=3)
         # 容量按请求计数: 每条记录都是独立请求, 同请求的同阶段记录会被合并
         for index in range(5):
             log.record(_rejection("bot", f"r{index}", 1_700_000_000.0 + index, request_id=f"req{index}"))
@@ -74,7 +74,7 @@ class TestRejectionLog:
         assert len(log.list("other")) == 1
 
     def test_record_fields_and_iso_time(self):
-        log = WakeRejectionLog()
+        log = RequestDiagnosticLog()
         log.record(_rejection("bot", "no_match: 未命中", 1_700_000_000.0))
         record = log.list()[0]
         assert record["stage"] == "wake_decision" and record["decision"] == "dropped"
@@ -93,7 +93,7 @@ class TestSchedulerCollection:
         # 验收关键案例: 消息未执行投影/未调用模型, 仍能查到拒绝原因
         manager.handle_call_async.assert_not_called()
         assert event.get_extra("input_projection") is None
-        records = scheduler.wake_rejections.list("bot")
+        records = scheduler.request_diagnostics.list("bot")
         assert len(records) == 1
         record = records[0]
         assert record["stage"] == "wake_decision" and record["decision"] == "dropped"
@@ -108,8 +108,8 @@ class TestSchedulerCollection:
         await scheduler.execute(event)
         manager.handle_call_async.assert_called_once()
         # 已唤醒请求不产生拒绝记录, 只留执行阶段诊断
-        assert scheduler.wake_rejections.list("bot", stages=REJECTION_STAGES) == []
-        stages = {item["stage"] for item in scheduler.wake_rejections.list("bot")}
+        assert scheduler.request_diagnostics.list("bot", stages=REJECTION_STAGES) == []
+        stages = {item["stage"] for item in scheduler.request_diagnostics.list("bot")}
         assert {"model", "send"} <= stages
 
     @pytest.mark.asyncio
@@ -130,7 +130,7 @@ class TestSchedulerCollection:
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
         manager.handle_call_async.assert_not_called()
-        records = scheduler.wake_rejections.list("bot", stages=REJECTION_STAGES)
+        records = scheduler.request_diagnostics.list("bot", stages=REJECTION_STAGES)
         assert len(records) == 1
         record = records[0]
         assert record["stage"] == "rate_limit" and "7.5" in str(record["reason"])
@@ -141,9 +141,9 @@ class TestSchedulerCollection:
         backend, adapter, manager, scheduler = runtime({})
         await _feed(adapter, "普通消息")
         await scheduler.execute(adapter._event_queue.get_nowait())
-        assert len(scheduler.wake_rejections.list("bot")) == 1
+        assert len(scheduler.request_diagnostics.list("bot")) == 1
         scheduler.clear_manual_wakes("bot")
-        assert scheduler.wake_rejections.list("bot") == []
+        assert scheduler.request_diagnostics.list("bot") == []
 
 
 class TestRejectionRoute:

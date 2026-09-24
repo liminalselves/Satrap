@@ -35,7 +35,7 @@ from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, SendAttemptRecord
-from satrap.core.pipeline.wake_rejections import WakeRejection, WakeRejectionLog
+from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
@@ -90,7 +90,7 @@ class PipelineScheduler:
         self.wake_timers = WakeTimers(self.wake_window)
         self.manual_wakes = ManualWakeRequests()
         self.manual_wake_store: ManualWakeStore | None = None
-        self.wake_rejections = WakeRejectionLog()
+        self.request_diagnostics = RequestDiagnosticLog()
         self.asr_resolver: AsrResolver | None = None
 
     def clear_manual_wakes(self, adapter_id: str) -> None:
@@ -103,7 +103,7 @@ class PipelineScheduler:
         self.manual_wakes.clear_adapter(adapter_id)
         if self.manual_wake_store is not None:
             self.manual_wake_store.adapter_stopped(adapter_id)
-        self.wake_rejections.clear_adapter(adapter_id)
+        self.request_diagnostics.clear_adapter(adapter_id)
 
     def _record_diagnostic(
         self, event: MessageEvent, stage: str, status: str, *, reason_code: str = "", reason: str = "",
@@ -128,7 +128,7 @@ class PipelineScheduler:
         """
         try:
             origin = event.call_origin
-            self.wake_rejections.record(WakeRejection(
+            self.request_diagnostics.record(RequestDiagnostic(
                 adapter_id=origin.adapter_id, session_id=event.session_id, actor_id=event.get_sender_id(),
                 stage=stage, decision=decision or status, reason=reason, recorded_at=time(), status=status,
                 reason_code=reason_code, attachments=attachments, notes=notes, turn_id=turn_id,

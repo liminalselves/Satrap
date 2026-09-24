@@ -30,7 +30,7 @@ REJECTION_STAGES = frozenset({"wake_decision", "rate_limit"})
 
 
 @dataclass(frozen=True)
-class WakeRejection:
+class RequestDiagnostic:
     """一次阶段事实: 拒绝 (未唤醒/限流) 或执行阶段结果 (补全/模型/发送)"""
 
     adapter_id: str
@@ -59,7 +59,7 @@ def _iso_time(recorded_at: float) -> str:
         return f"{recorded_at:.6f}"
 
 
-def _request_key(record: WakeRejection) -> str:
+def _request_key(record: RequestDiagnostic) -> str:
     """请求分组键: 优先 request_id, 退化为消息 ID 或时间戳占位"""
     if record.request_id:
         return record.request_id
@@ -68,14 +68,14 @@ def _request_key(record: WakeRejection) -> str:
     return f"anon:{record.recorded_at:.6f}"
 
 
-class WakeRejectionLog:
+class RequestDiagnosticLog:
     """按适配器与请求分隔的线程安全环形诊断, 进程内保存不持久化"""
 
     def __init__(self, per_adapter: int = REQUEST_CAPACITY) -> None:
         if per_adapter <= 0:
             raise ValueError("每适配器记录容量必须为正数")
         self._per_adapter = per_adapter
-        self._requests: dict[str, OrderedDict[str, list[WakeRejection]]] = {}
+        self._requests: dict[str, OrderedDict[str, list[RequestDiagnostic]]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -83,19 +83,19 @@ class WakeRejectionLog:
         """每适配器保留的请求数上限"""
         return self._per_adapter
 
-    def record(self, rejection: WakeRejection) -> None:
+    def record(self, entry: RequestDiagnostic) -> None:
         """
         追加一条阶段记录, 超出容量时淘汰最旧请求
 
         参数:
-        - rejection: 阶段位置采集的事实; 同阶段同原因码的重复采集覆盖前一条
+        - entry: 阶段位置采集的事实; 同阶段同原因码的重复采集覆盖前一条
         """
-        key = _request_key(rejection)
+        key = _request_key(entry)
         with self._lock:
-            requests = self._requests.get(rejection.adapter_id)
+            requests = self._requests.get(entry.adapter_id)
             if requests is None:
-                requests = OrderedDict[str, list[WakeRejection]]()
-                self._requests[rejection.adapter_id] = requests
+                requests = OrderedDict[str, list[RequestDiagnostic]]()
+                self._requests[entry.adapter_id] = requests
             rows = requests.get(key)
             if rows is None:
                 # 新请求: 超出容量先淘汰最旧请求, 持久账本中的发送证据不受影响
@@ -105,14 +105,14 @@ class WakeRejectionLog:
                 requests[key] = rows
             rows[:] = [
                 item for item in rows
-                if not (item.stage == rejection.stage and item.reason_code == rejection.reason_code)
+                if not (item.stage == entry.stage and item.reason_code == entry.reason_code)
             ]
-            rows.append(rejection)
+            rows.append(entry)
             del rows[:-RECORDS_PER_REQUEST]
             requests.move_to_end(key)
 
     @staticmethod
-    def _row(item: WakeRejection) -> dict[str, object]:
+    def _row(item: RequestDiagnostic) -> dict[str, object]:
         """可 JSON 序列化的单条记录, 含本机 ISO 时间"""
         return {
             "recorded_at": _iso_time(item.recorded_at),
@@ -123,7 +123,7 @@ class WakeRejectionLog:
             "turn_id": item.turn_id, "attachments": item.attachments, "notes": item.notes,
         }
 
-    def _selected(self, adapter_id: str | None, stages: frozenset[str] | None = None) -> list[WakeRejection]:
+    def _selected(self, adapter_id: str | None, stages: frozenset[str] | None = None) -> list[RequestDiagnostic]:
         """按适配器取全部记录 (调用方持锁), 可选只保留给定阶段"""
         if adapter_id is not None:
             groups = [self._requests.get(adapter_id, OrderedDict())]

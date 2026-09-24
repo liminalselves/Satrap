@@ -469,3 +469,14 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 - 本议题的 15 份已完成过程文档 (方案审查 / 语音转写方案 / 三轮审计与整改方案 / 目标审计链 / B1-B10 对照表 / 最终复核) 已移至 `docs/archive/issue-10/`, 仅反映当时状态; 本文件与 [实施方案](issue-10-plan.md), [SnowLuma 探针](issue-10-snowluma-probe.md), [平台接入](platforms.md) 保留在原文档夹作为合并前活文档
 - 审计发现的冗余方向核验与清理方案见 [冗余清理方案](issue-10-redundancy-plan.md) (诊断命名 / 弹窗双面板 / 策略字段契约 / 持久化清单组件)
+
+## 冗余清理 (R1-R5, 2026-09-24)
+
+依据 [冗余清理方案](issue-10-redundancy-plan.md), 按 R2 → R4 → R3+R5 → R1 四批次在 `fix/issue10` 推进, 每批一个提交。共同约束: 旧路由与兼容方法保留, 进程内死代码可删; unknown 语义与"先持久降级标记, 后隔离文件"顺序不变; pyright 不用 ignore 注释与 assert 收窄; 门禁为全量单测、pyright 0 error 且 warnings 不超过 1532、前端 tsc/eslint 0 且 vitest 绿、受影响的 Playwright 脚本 PASS。
+
+### 批次 1: R2 诊断命名归一
+
+- `satrap/core/pipeline/wake_rejections.py` 改名 `request_diagnostics.py`, `WakeRejectionLog` → `RequestDiagnosticLog`, `WakeRejection` → `RequestDiagnostic`; `record()` 的参数名改 `entry`。模块头文档、`DIAGNOSTIC_STAGES`、`REJECTION_STAGES`、容量常量与环形语义均未改
+- 生产引用面一次改清: `scheduler.py` 属性 `wake_rejections` → `request_diagnostics` (私有采集方法 `_record_diagnostic` / `_record_rejection` 名字保留, 后者确实只在拒绝点调用), `BackendManager.py` 与 `http_api.py` 只改导入路径
+- 兼容面按方案保留: 路由 `GET /api/platforms/wake/rejections`、`BackendManager.wake_rejections()` (兼容端点入口, 内部改用新属性名) 与 `REJECTION_STAGES` 常量名不变; 测试文件名 `test_wake_rejections.py` (兼容路由) 与 `test_request_diagnostics.py` (新接口) 均保留, 仅更新导入
+- 未做: 不为旧类名留别名 (进程内模块, 全库引用一次改清); 不合并两个测试文件

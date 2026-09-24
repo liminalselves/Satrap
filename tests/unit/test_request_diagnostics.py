@@ -23,7 +23,7 @@ from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform.event import PlatformMessage
 from satrap.core.platform.onebot.adapter import OneBotAdapter
-from satrap.core.pipeline.wake_rejections import REQUEST_CAPACITY, WakeRejection, WakeRejectionLog
+from satrap.core.pipeline.request_diagnostics import REQUEST_CAPACITY, RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.type import MessageMember, PlatformMessageType
 
 _NOW = 1_760_000_000.0
@@ -97,7 +97,7 @@ class TestDiagnosticCollection:
         await scheduler.execute(event)
         assert manager.handle_call_async.await_count == 0
         assert event.get_extra("input_projection") is None
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         assert [item["stage"] for item in _rows(detail)] == ["wake_decision"]
         record = _rows(detail)[0]
@@ -112,12 +112,12 @@ class TestDiagnosticCollection:
         limiter = RateLimiter(rate=0.0, burst=1)
         scheduler.rate_limiter = limiter
         event = _event(adapter)
-        scheduler.wake_rejections.record(WakeRejection(
+        scheduler.request_diagnostics.record(RequestDiagnostic(
             adapter_id="ob", session_id=event.session_id, actor_id="30", stage="wake_decision",
             decision="dropped", reason="not_woken", recorded_at=_NOW, request_id=event.call_origin.request_id,
         ))
         await scheduler.execute(event)
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
         # 限流拒绝与该事件其余阶段共用同一 request_id
@@ -136,7 +136,7 @@ class TestDiagnosticCollection:
         )
         event = _event(adapter)
         await scheduler.execute(event)
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
         assert stages["projection"]["status"] == "failed"
@@ -156,7 +156,7 @@ class TestDiagnosticCollection:
         assert store.mark_segment_submitted("t1", 0)
         assert store.record_segment_result("t1", 0, "sent", advance_to=1) is False
         await scheduler.execute(event)
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
         # 只有已提交未确认的段: 发送阶段为 unknown 且带关联 turn_id
@@ -178,7 +178,7 @@ class TestDiagnosticCollection:
         # 第 0 段确认送达, 第 1 段仍是 planned: 前缀已确认且后缀未尝试
         assert store.record_segment_result("t1", 0, "sent") is True
         await scheduler.execute(event)
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
         assert stages["send"]["status"] == "partial"
@@ -197,7 +197,7 @@ class TestDiagnosticCollection:
         cast(Any, scheduler.session_manager).handle_call_async = slow
         event = _event(adapter)
         await scheduler.execute(event)
-        detail = scheduler.wake_rejections.get_request(event.call_origin.request_id)
+        detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
         assert detail is not None
         stages = _stages(detail)
         assert stages["model"]["status"] == "unknown" and stages["model"]["reason_code"] == "llm_timeout"
@@ -205,9 +205,9 @@ class TestDiagnosticCollection:
 
 class TestDiagnosticBounds:
     def test_capacity_keeps_newest_requests_and_drops_oldest(self):
-        log = WakeRejectionLog(per_adapter=2)
+        log = RequestDiagnosticLog(per_adapter=2)
         for index in range(3):
-            log.record(WakeRejection(
+            log.record(RequestDiagnostic(
                 adapter_id="ob", session_id="s", actor_id="a", stage="wake_decision", decision="dropped",
                 reason="not_woken", recorded_at=_NOW + index, request_id=f"r{index}",
             ))
@@ -216,9 +216,9 @@ class TestDiagnosticBounds:
         assert log.stats("ob")["requests_total"] == 2 and log.stats("ob")["capacity"] == 2
 
     def test_records_per_request_are_bounded_and_deduped(self):
-        log = WakeRejectionLog()
+        log = RequestDiagnosticLog()
         for index in range(20):
-            log.record(WakeRejection(
+            log.record(RequestDiagnostic(
                 adapter_id="ob", session_id="s", actor_id="a", stage="model", decision="ok",
                 reason="x", recorded_at=_NOW + index, request_id="r1", reason_code=f"c{index}",
             ))
@@ -227,7 +227,7 @@ class TestDiagnosticBounds:
         assert detail is not None and len(_rows(detail)) == 16 and detail["truncated"] is True
         # 同阶段同原因码重复采集只保留最新一条
         for index in range(5):
-            log.record(WakeRejection(
+            log.record(RequestDiagnostic(
                 adapter_id="ob", session_id="s", actor_id="a", stage="send", decision="sent",
                 reason="x", recorded_at=_NOW + index, request_id="r2", status="sent", reason_code="all_segments_confirmed",
             ))
@@ -237,9 +237,9 @@ class TestDiagnosticBounds:
         assert len(send_rows) == 1 and send_rows[0]["reason_code"] == "all_segments_confirmed"
 
     def test_adapter_filter_is_exact(self):
-        log = WakeRejectionLog()
+        log = RequestDiagnosticLog()
         for name in ("ob-a", "ob-b"):
-            log.record(WakeRejection(
+            log.record(RequestDiagnostic(
                 adapter_id=name, session_id="s", actor_id="a", stage="wake_decision", decision="dropped",
                 reason="not_woken", recorded_at=_NOW, request_id=f"{name}-r",
             ))
@@ -248,12 +248,12 @@ class TestDiagnosticBounds:
         assert {item["adapter_id"] for item in log.list("ob-b")} == {"ob-b"}
 
     def test_stage_filter_selects_requests_with_that_stage(self):
-        log = WakeRejectionLog()
-        log.record(WakeRejection(
+        log = RequestDiagnosticLog()
+        log.record(RequestDiagnostic(
             adapter_id="ob", session_id="s", actor_id="a", stage="wake_decision", decision="dropped",
             reason="not_woken", recorded_at=_NOW, request_id="r1",
         ))
-        log.record(WakeRejection(
+        log.record(RequestDiagnostic(
             adapter_id="ob", session_id="s", actor_id="a", stage="send", decision="sent",
             reason="ok", recorded_at=_NOW + 1, request_id="r2", status="sent",
         ))
@@ -262,11 +262,11 @@ class TestDiagnosticBounds:
         assert log.list_requests("ob", request_id="r2")[0]["stages"] == ["send"]
 
     def test_diagnostics_never_carry_body_text(self, tmp_path: Path):
-        from satrap.core.pipeline.wake_rejections import RECORDS_PER_REQUEST
+        from satrap.core.pipeline.request_diagnostics import RECORDS_PER_REQUEST
 
         assert RECORDS_PER_REQUEST > 0
-        log = WakeRejectionLog(per_adapter=REQUEST_CAPACITY)
-        log.record(WakeRejection(
+        log = RequestDiagnosticLog(per_adapter=REQUEST_CAPACITY)
+        log.record(RequestDiagnostic(
             adapter_id="ob", session_id="s", actor_id="a", stage="model", decision="ok",
             reason="模型输出 12 字符", recorded_at=_NOW, request_id="r1", reason_code="completed",
         ))
@@ -300,7 +300,7 @@ class TestDiagnosticRoutes:
     @pytest.mark.asyncio
     async def test_list_and_detail_routes(self, tmp_path: Path):
         server, _, scheduler, adapter = self._server(tmp_path)
-        scheduler.wake_rejections.record(WakeRejection(
+        scheduler.request_diagnostics.record(RequestDiagnostic(
             adapter_id="ob", session_id="group%20", actor_id="30", stage="wake_decision", decision="dropped",
             reason="not_woken: 未命中唤醒条件", recorded_at=_NOW, request_id="r1", reason_code="not_woken",
             message_id="9",
@@ -341,7 +341,7 @@ class TestDiagnosticRoutes:
         def broken(record: Any) -> None:
             raise RuntimeError("diagnostics down")
 
-        monkeypatch.setattr(scheduler.wake_rejections, "record", broken)
+        monkeypatch.setattr(scheduler.request_diagnostics, "record", broken)
         event = _event(adapter)
         await scheduler.execute(event)
         assert event.last_business_receipt is None or event.last_business_receipt.status in {"success", "unknown"}
@@ -361,7 +361,7 @@ class TestDiagnosticRoutes:
         cast(ManualWakeStore, backend._manual_wake_store).accept_request("ob", "manual-1", "fp", "group%20", "op")
         await scheduler.execute(manual)
         for request_id in (plain.call_origin.request_id, "manual-1"):
-            detail = scheduler.wake_rejections.get_request(request_id)
+            detail = scheduler.request_diagnostics.get_request(request_id)
             assert detail is not None, request_id
             stages = set(_stages(detail))
             assert {"model", "send"} <= stages
