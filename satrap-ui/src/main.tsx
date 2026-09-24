@@ -1,6 +1,5 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import './styles/globals.css';
 import { loadRuntimeConfig } from '@/utils/constants';
@@ -13,9 +12,7 @@ async function bootstrap() {
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>
       <GlassReflectProvider>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <App />
       </GlassReflectProvider>
     </React.StrictMode>
   );

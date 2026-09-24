@@ -94,13 +94,14 @@ describe('parseOverrideJson', () => {
 });
 
 describe('toGroupRows', () => {
-  it('对象与 JSON 字符串都可解析, 非对象覆盖被丢弃', () => {
-    expect(toGroupRows({ '20': { wake_mode: 'frequency' }, bad: 3 })).toEqual([
-      { id: '20', override: { wake_mode: 'frequency' } },
-    ]);
-    expect(toGroupRows('{"20": {"wake_cooldown": 30}}')).toEqual([
-      { id: '20', override: { wake_cooldown: 30 } },
-    ]);
+  it('对象与 JSON 字符串都可解析, 非对象覆盖被丢弃, 每行带稳定 rowId', () => {
+    const rows = toGroupRows({ '20': { wake_mode: 'frequency' }, bad: 3 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe('20');
+    expect(rows[0].override).toEqual({ wake_mode: 'frequency' });
+    expect(rows[0].rowId).toBeTruthy();
+    const again = toGroupRows('{"20": {"wake_cooldown": 30}}');
+    expect(again[0].rowId).not.toBe(rows[0].rowId);
   });
 
   it('非对象输入回退为空行', () => {
@@ -111,30 +112,44 @@ describe('toGroupRows', () => {
 });
 
 describe('fromGroupRows', () => {
-  it('丢弃空号/非法号/重复号/全继承行', () => {
+  it('空号/非法号/重复号/起止保留为错误, 不静默丢弃也不进入提交值', () => {
     const result = fromGroupRows([
-      { id: '  ', override: { wake_mode: 'frequency' } },
-      { id: '0', override: { wake_mode: 'frequency' } },
-      { id: 'abc', override: { wake_mode: 'frequency' } },
-      { id: '12a', override: { wake_mode: 'frequency' } },
-      { id: '20', override: { wake_mode: 'frequency' } },
-      { id: '20', override: { wake_mode: 'necessity' } },
-      { id: '30', override: {} },
+      { rowId: 'r1', id: '  ', override: { wake_mode: 'frequency' } },
+      { rowId: 'r2', id: '0', override: { wake_mode: 'frequency' } },
+      { rowId: 'r3', id: 'abc', override: { wake_mode: 'frequency' } },
+      { rowId: 'r4', id: '12a', override: { wake_mode: 'frequency' } },
+      { rowId: 'r5', id: '20', override: { wake_mode: 'frequency' } },
+      { rowId: 'r6', id: '20', override: { wake_mode: 'necessity' } },
+      { rowId: 'r7', id: '30', override: {} },
     ]);
-    expect(result).toEqual({ '20': { wake_mode: 'frequency' } });
+    // 重复群号只保留首行, 第二行报错; 全继承行是显式删除覆盖的结果, 不计错误
+    expect(result.value).toEqual({ '20': { wake_mode: 'frequency' } });
+    expect(result.issues.map((issue) => issue.rowId)).toEqual(['r1', 'r2', 'r3', 'r4', 'r6']);
+    expect(result.issues.every((issue) => issue.field === 'id')).toBe(true);
+    expect(result.issues[0].message).toContain('群号');
   });
 
-  it('合法行保留显式关闭值', () => {
-    expect(fromGroupRows([{ id: '20', override: { wake_words: [] } }])).toEqual({ '20': { wake_words: [] } });
+  it('合法行保留显式关闭值且无错误', () => {
+    const result = fromGroupRows([{ rowId: 'r1', id: '20', override: { wake_words: [] } }]);
+    expect(result.value).toEqual({ '20': { wake_words: [] } });
+    expect(result.issues).toEqual([]);
+  });
+
+  it('群号前后空白被裁剪后仍视为合法', () => {
+    const result = fromGroupRows([{ rowId: 'r1', id: ' 20 ', override: { wake_mode: 'frequency' } }]);
+    expect(result.value).toEqual({ '20': { wake_mode: 'frequency' } });
+    expect(result.issues).toEqual([]);
   });
 });
 
 describe('toTimeRows', () => {
   it('数组解析并补齐缺失字段, 非对象项被丢弃', () => {
-    expect(toTimeRows([{ start: '08:00', end: '12:00', settings: { wake_cooldown: 30 } }, 'bad', { start: '09:00' }])).toEqual([
+    const rows = toTimeRows([{ start: '08:00', end: '12:00', settings: { wake_cooldown: 30 } }, 'bad', { start: '09:00' }]);
+    expect(rows.map(({ start, end, settings }) => ({ start, end, settings }))).toEqual([
       { start: '08:00', end: '12:00', settings: { wake_cooldown: 30 } },
       { start: '09:00', end: '', settings: {} },
     ]);
+    expect(new Set(rows.map((row) => row.rowId)).size).toBe(rows.length);
   });
 
   it('非数组输入回退为空行', () => {
@@ -144,21 +159,28 @@ describe('toTimeRows', () => {
 });
 
 describe('fromTimeRows', () => {
-  it('丢弃非法时间/起止相同/空设置行', () => {
+  it('非法时间/起止相同的行报错并保留, 不进入提交值', () => {
     const result = fromTimeRows([
-      { start: '8:00', end: '12:00', settings: { wake_cooldown: 30 } },
-      { start: '25:00', end: '12:00', settings: { wake_cooldown: 30 } },
-      { start: '08:00', end: '08:00', settings: { wake_cooldown: 30 } },
-      { start: '08:00', end: '12:00', settings: {} },
-      { start: '23:59', end: '23:58', settings: { wake_cooldown: 30 } },
+      { rowId: 't1', start: '8:00', end: '12:00', settings: { wake_cooldown: 30 } },
+      { rowId: 't2', start: '25:00', end: '12:00', settings: { wake_cooldown: 30 } },
+      { rowId: 't3', start: '08:00', end: '08:00', settings: { wake_cooldown: 30 } },
+      { rowId: 't4', start: '08:00', end: '12:00', settings: {} },
+      { rowId: 't5', start: '23:59', end: '23:58', settings: { wake_cooldown: 30 } },
     ]);
-    expect(result).toEqual([{ start: '23:59', end: '23:58', settings: { wake_cooldown: 30 } }]);
+    expect(result.value).toEqual([{ start: '23:59', end: '23:58', settings: { wake_cooldown: 30 } }]);
+    expect(result.issues.map((issue) => [issue.rowId, issue.field])).toEqual([
+      ['t1', 'start'],
+      ['t2', 'start'],
+      ['t3', 'end'],
+    ]);
+    // 空设置行是全部继承的合法结果, 不是错误
+    expect(result.issues.some((issue) => issue.rowId === 't4')).toBe(false);
   });
 
   it('合法行原样输出且时段规则字段集不含群专属字段', () => {
-    expect(fromTimeRows([{ start: '00:00', end: '06:00', settings: { wake_mode: 'explicit' } }])).toEqual([
-      { start: '00:00', end: '06:00', settings: { wake_mode: 'explicit' } },
-    ]);
+    const result = fromTimeRows([{ rowId: 't1', start: '00:00', end: '06:00', settings: { wake_mode: 'explicit' } }]);
+    expect(result.value).toEqual([{ start: '00:00', end: '06:00', settings: { wake_mode: 'explicit' } }]);
+    expect(result.issues).toEqual([]);
     expect(TIME_RULE_FIELDS.some((field) => field.groupOnly)).toBe(false);
   });
 });

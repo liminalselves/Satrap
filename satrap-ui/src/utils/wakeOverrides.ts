@@ -49,14 +49,45 @@ export const GROUP_OVERRIDE_FIELDS = OVERRIDE_FIELDS;
 export const TIME_RULE_FIELDS = OVERRIDE_FIELDS.filter((field) => !field.groupOnly);
 
 export interface GroupOverrideRow {
+  // 稳定本地行标识: 新增/删除/重排过程中不以数组下标作为身份
+  rowId: string;
   id: string;
   override: Record<string, unknown>;
 }
 
 export interface TimeRuleRow {
+  rowId: string;
   start: string;
   end: string;
   settings: Record<string, unknown>;
+}
+
+export interface RowIssue {
+  rowId: string;
+  field: string;
+  message: string;
+}
+
+export interface RowsConversion<T> {
+  // 可提交的规范化值: 只在没有 issue 时使用
+  value: T;
+  // 保留在草稿里的字段级错误: 有错误时阻止保存与试算, 但不删除行
+  issues: RowIssue[];
+}
+
+let rowSequence = 0;
+
+function nextRowId(kind: string): string {
+  rowSequence += 1;
+  return `${kind}-row-${rowSequence}`;
+}
+
+export function newGroupRow(): GroupOverrideRow {
+  return { rowId: nextRowId('group'), id: '', override: {} };
+}
+
+export function newTimeRow(): TimeRuleRow {
+  return { rowId: nextRowId('time'), start: '23:00', end: '07:00', settings: {} };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,18 +147,33 @@ export function toGroupRows(value: unknown): GroupOverrideRow[] {
   if (!isRecord(parsed)) return [];
   return Object.entries(parsed)
     .filter(([, override]) => isRecord(override))
-    .map(([id, override]) => ({ id, override: { ...(override as Record<string, unknown>) } }));
+    .map(([id, override]) => ({ rowId: nextRowId('group'), id, override: { ...(override as Record<string, unknown>) } }));
 }
 
-export function fromGroupRows(rows: GroupOverrideRow[]): Record<string, Record<string, unknown>> {
-  const result: Record<string, Record<string, unknown>> = {};
+const GROUP_ID_PATTERN = /^[1-9]\d*$/;
+
+export function fromGroupRows(rows: GroupOverrideRow[]): RowsConversion<Record<string, Record<string, unknown>>> {
+  const value: Record<string, Record<string, unknown>> = {};
+  const issues: RowIssue[] = [];
   for (const row of rows) {
     const id = row.id.trim();
-    if (!/^[1-9]\d*$/.test(id) || id in result) continue;
+    if (!id) {
+      issues.push({ rowId: row.rowId, field: 'id', message: '群号不能为空, 请补全或删除该行' });
+      continue;
+    }
+    if (!GROUP_ID_PATTERN.test(id)) {
+      issues.push({ rowId: row.rowId, field: 'id', message: '群号必须为正整数' });
+      continue;
+    }
+    if (id in value) {
+      issues.push({ rowId: row.rowId, field: 'id', message: `群号 ${id} 重复, 请删除其中一行` });
+      continue;
+    }
+    // 完整且全部字段继承的行允许规范化为不写覆盖
     if (Object.keys(row.override).length === 0) continue;
-    result[id] = row.override;
+    value[id] = row.override;
   }
-  return result;
+  return { value, issues };
 }
 
 export function toTimeRows(value: unknown): TimeRuleRow[] {
@@ -137,6 +183,7 @@ export function toTimeRows(value: unknown): TimeRuleRow[] {
   for (const item of parsed) {
     if (!isRecord(item)) continue;
     rows.push({
+      rowId: nextRowId('time'),
       start: typeof item.start === 'string' ? item.start : '',
       end: typeof item.end === 'string' ? item.end : '',
       settings: isRecord(item.settings) ? { ...item.settings } : {},
@@ -147,12 +194,21 @@ export function toTimeRows(value: unknown): TimeRuleRow[] {
 
 const TIME_PATTERN = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 
-export function fromTimeRows(rows: TimeRuleRow[]): Array<{ start: string; end: string; settings: Record<string, unknown> }> {
-  const result: Array<{ start: string; end: string; settings: Record<string, unknown> }> = [];
+export function fromTimeRows(rows: TimeRuleRow[]): RowsConversion<Array<{ start: string; end: string; settings: Record<string, unknown> }>> {
+  const value: Array<{ start: string; end: string; settings: Record<string, unknown> }> = [];
+  const issues: RowIssue[] = [];
   for (const row of rows) {
-    if (!TIME_PATTERN.test(row.start) || !TIME_PATTERN.test(row.end) || row.start === row.end) continue;
+    const startValid = TIME_PATTERN.test(row.start);
+    const endValid = TIME_PATTERN.test(row.end);
+    if (!startValid) issues.push({ rowId: row.rowId, field: 'start', message: '开始时间必须为 HH:MM' });
+    if (!endValid) issues.push({ rowId: row.rowId, field: 'end', message: '结束时间必须为 HH:MM' });
+    if (startValid && endValid && row.start === row.end) {
+      issues.push({ rowId: row.rowId, field: 'end', message: '开始与结束时间不能相同' });
+    }
+    if (!startValid || !endValid || row.start === row.end) continue;
+    // 完整且全部字段继承的行允许规范化为不写覆盖
     if (Object.keys(row.settings).length === 0) continue;
-    result.push({ start: row.start, end: row.end, settings: row.settings });
+    value.push({ start: row.start, end: row.end, settings: row.settings });
   }
-  return result;
+  return { value, issues };
 }

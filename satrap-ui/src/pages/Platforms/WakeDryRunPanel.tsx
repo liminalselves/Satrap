@@ -9,6 +9,8 @@ import type { WakeDryRunDecision, WakeDryRunResult, WakePolicySource } from '@/a
 interface WakeDryRunPanelProps {
   // 当前表单草稿归一化后的完整平台策略; 构造失败时传 undefined 并禁用试算
   settings?: Record<string, unknown>;
+  // 与保存共用的草稿校验错误: 有错误时试算同样被阻止, 不给出与保存不一致的结论
+  blockedReason?: string;
 }
 
 function DecisionBadge({ decision }: { decision: WakeDryRunDecision }) {
@@ -70,7 +72,7 @@ function SourceTable({ sources }: { sources: Record<string, WakePolicySource> })
   );
 }
 
-export function WakeDryRunPanel({ settings }: WakeDryRunPanelProps) {
+export function WakeDryRunPanel({ settings, blockedReason }: WakeDryRunPanelProps) {
   const [groupId, setGroupId] = useState('');
   const [localTime, setLocalTime] = useState('');
   const [samples, setSamples] = useState('');
@@ -81,6 +83,10 @@ export function WakeDryRunPanel({ settings }: WakeDryRunPanelProps) {
   const [result, setResult] = useState<WakeDryRunResult | null>(null);
 
   const run = async () => {
+    if (blockedReason) {
+      toast('error', blockedReason);
+      return;
+    }
     if (!settings) {
       toast('error', '当前草稿存在无法解析的配置, 请先修正后再试算');
       return;
@@ -154,10 +160,11 @@ export function WakeDryRunPanel({ settings }: WakeDryRunPanelProps) {
           <input type="checkbox" className="h-3 w-3 accent-accent" checked={atSelf} onChange={(event) => setAtSelf(event.target.checked)} />
           @机器人
         </label>
-        <Button type="button" variant="default" onClick={run} disabled={loading || !settings} className="ml-auto text-xs">
+        <Button type="button" variant="default" onClick={run} disabled={loading || !settings || !!blockedReason} className="ml-auto text-xs">
           {loading ? '试算中...' : '运行试算'}
         </Button>
       </div>
+      {blockedReason && <p className="text-xs text-error" data-testid="wake-dry-run-blocked">{blockedReason}</p>}
       {result && (
         <div className="space-y-1 border-t border-border/50 pt-2">
           {resolved && (

@@ -14,9 +14,12 @@ import { backendApi } from '@/api/backend';
 import { edictumApi } from '@/api/edictum';
 import { normalizePlatformSettings, platformSettingsSummary, talkValuePriorityHint, validatePlatformPolicyRanges } from '@/utils/adminMigration';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
+import { fromGroupRows, fromTimeRows, toGroupRows, toTimeRows } from '@/utils/wakeOverrides';
 import { WakeOverrideEditor } from './WakeOverrideEditor';
 import { WakeDryRunPanel } from './WakeDryRunPanel';
 import type { FormField } from '@/components/common';
+import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
 import type { EdictumSessionConfig, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
@@ -31,6 +34,9 @@ export function Platforms() {
   const [showModal, setShowModal] = useState(false);
   const [editingPlatform, setEditingPlatform] = useState<PlatformConfig | null>(null);
   const [rawSettings, setRawSettings] = useState('{}');
+  // 群/时段覆盖的草稿行由表单持有: 不完整行不会被静默丢弃, 也参与脏状态比较
+  const [groupDraftRows, setGroupDraftRows] = useState<GroupOverrideRow[]>([]);
+  const [timeDraftRows, setTimeDraftRows] = useState<TimeRuleRow[]>([]);
   const [openSnapshot, setOpenSnapshot] = useState('');
   const [formData, setFormData] = useState({
     enable: true,
@@ -43,6 +49,15 @@ export function Platforms() {
 
   // 从 health 中提取适配器信息
   const adapters = useMemo(() => health?.adapters || {}, [health?.adapters]);
+
+  // 诊断面板: 平台筛选来自运行中的适配器与已配置平台
+  const [diagnosticsAdapter, setDiagnosticsAdapter] = useState('');
+  // 刷新/删除平台后让诊断面板一起重取, 避免展示旧适配器的记录
+  const [diagnosticsRefreshKey, setDiagnosticsRefreshKey] = useState(0);
+  const diagnosticsAdapters = useMemo(
+    () => Array.from(new Set([...Object.keys(adapters), ...platforms.map((item) => item.id)])),
+    [adapters, platforms],
+  );
 
   const loadPlatforms = useCallback(async () => {
     setLoading(true);
@@ -76,10 +91,14 @@ export function Platforms() {
 
   const handleAdd = useCallback(() => {
     const initial = { enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', settings: {} as Record<string, unknown> };
+    const groups: GroupOverrideRow[] = [];
+    const times: TimeRuleRow[] = [];
     setEditingPlatform(null);
     setFormData(initial);
     setRawSettings('{}');
-    setOpenSnapshot(JSON.stringify(initial));
+    setGroupDraftRows(groups);
+    setTimeDraftRows(times);
+    setOpenSnapshot(JSON.stringify({ form: initial, groups, times }));
     setDraftRevision(revision);
     setShowModal(true);
   }, [revision]);
@@ -93,16 +112,39 @@ export function Platforms() {
       session_type: platform.session_type || '',
       settings: platform.settings,
     };
+    const groups = toGroupRows(platform.settings?.wake_group_overrides);
+    const times = toTimeRows(platform.settings?.wake_time_rules);
     setEditingPlatform(platform);
     setFormData(initial);
     setRawSettings(JSON.stringify(platform.settings, null, 2));
-    setOpenSnapshot(JSON.stringify(initial));
+    setGroupDraftRows(groups);
+    setTimeDraftRows(times);
+    setOpenSnapshot(JSON.stringify({ form: initial, groups, times }));
     setDraftRevision(revision);
     setShowModal(true);
   }, [revision]);
 
-  // 脏状态: 表单内容与打开快照不一致; 关闭模态/路由切换/浏览器刷新三处拦截
-  const formDirty = showModal && JSON.stringify(formData) !== openSnapshot;
+  // 群/时段草稿行的字段级校验: 保存与试算使用同一结果
+  const groupConversion = useMemo(() => fromGroupRows(groupDraftRows), [groupDraftRows]);
+  const timeConversion = useMemo(() => fromTimeRows(timeDraftRows), [timeDraftRows]);
+  const draftIssues = useMemo<RowIssue[]>(
+    () => [...groupConversion.issues, ...timeConversion.issues],
+    [groupConversion, timeConversion],
+  );
+  const draftError = draftIssues.length > 0 ? `群级/时段规则有误: ${draftIssues.map((issue) => issue.message).join('; ')}` : '';
+
+  // 可提交草稿: 草稿行合入 settings; 试算与保存读取同一个值
+  const settingsDraft = useMemo(
+    () => ({
+      ...formData.settings,
+      wake_group_overrides: groupConversion.value,
+      wake_time_rules: timeConversion.value,
+    }),
+    [formData.settings, groupConversion.value, timeConversion.value],
+  );
+
+  // 脏状态: 表单内容与草稿行都与打开快照一致才算未修改; 关闭模态/路由切换/浏览器刷新三处拦截
+  const formDirty = showModal && JSON.stringify({ form: formData, groups: groupDraftRows, times: timeDraftRows }) !== openSnapshot;
   useDirtyGuard(formDirty);
   const guardedClose = useCallback(() => {
     if (!formDirty || confirmDiscard()) setShowModal(false);
@@ -150,8 +192,13 @@ export function Platforms() {
       return;
     }
     if (formData.type === 'onebot' || formData.type === 'aiocqhttp') {
+      // 草稿行的字段级错误优先于范围校验: 保留的行必须先补全或删除
+      if (draftError) {
+        toast('error', draftError);
+        return;
+      }
       // 输入预算与频率字段先做范围校验, 避免把非法值交给后端才报错
-      const rangeError = validatePlatformPolicyRanges(formData.settings);
+      const rangeError = validatePlatformPolicyRanges(settingsDraft);
       if (rangeError) {
         toast('error', rangeError);
         return;
@@ -160,7 +207,7 @@ export function Platforms() {
     setSaving(true);
     try {
       if (!draftRevision) throw new Error('请刷新平台配置后重新打开编辑表单');
-      let settings = formData.settings;
+      let settings = formData.type === 'onebot' || formData.type === 'aiocqhttp' ? settingsDraft : formData.settings;
       if (formData.type !== 'onebot' && formData.type !== 'aiocqhttp' && formData.type !== 'misskey') {
         const parsed = JSON.parse(rawSettings) as unknown;
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
@@ -185,6 +232,9 @@ export function Platforms() {
       if (!result.ok) throw new Error(result.error || '保存失败');
       setPlatforms(result.platforms || []);
       setRevision(result.revision || '');
+      // 保存成功才重建草稿行: 其余情况保留用户的输入 (含未完成行)
+      setGroupDraftRows(toGroupRows(platform.settings?.wake_group_overrides));
+      setTimeDraftRows(toTimeRows(platform.settings?.wake_time_rules));
       setShowModal(false);
       if (health?.running) {
         await applySavedPlatform(platform.id, result.revision);
@@ -196,9 +246,18 @@ export function Platforms() {
     } finally {
       setSaving(false);
     }
-  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftRevision]);
+  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftError, draftRevision, settingsDraft]);
 
   const handleFieldChange = useCallback((key: string, value: unknown) => {
+    // 草稿行由表单持有, 不落回 settings, 避免未完成行被规范化吞掉
+    if (key === 'settings.wake_group_overrides') {
+      setGroupDraftRows(value as GroupOverrideRow[]);
+      return;
+    }
+    if (key === 'settings.wake_time_rules') {
+      setTimeDraftRows(value as TimeRuleRow[]);
+      return;
+    }
     if (key.startsWith('settings.')) {
       const settingKey = key.replace('settings.', '');
       setFormData((prev) => ({
@@ -216,15 +275,16 @@ export function Platforms() {
     }
   }, []);
 
-  // 试算预览使用的归一化草稿; 存在无法解析的配置时禁用试算
+  // 试算预览使用的归一化草稿; 草稿行有误或存在无法解析的配置时禁用试算
   const previewSettings = useMemo(() => {
     if (formData.type !== 'onebot' && formData.type !== 'aiocqhttp') return undefined;
+    if (draftError) return undefined;
     try {
-      return normalizePlatformSettings(formData.type, formData.settings);
+      return normalizePlatformSettings(formData.type, settingsDraft);
     } catch {
       return undefined;
     }
-  }, [formData]);
+  }, [draftError, formData.type, settingsDraft]);
 
   // talk_value 与显式阈值的优先级提示随阈值输入实时更新
   const talkValueHint = useMemo(() => talkValuePriorityHint(formData.settings), [formData.settings]);
@@ -300,8 +360,8 @@ export function Platforms() {
         { key: 'settings.wake_message_threshold', label: '自动参与消息阈值（1–32）', type: 'number', placeholder: '默认 3' },
         { key: 'settings.wake_score_threshold', label: '必要性评分阈值（0–1）', type: 'number', placeholder: '默认 0.65, 分值越高参与越少' },
         { key: 'settings.wake_max_wait', label: '频率模式最长等待秒数（可选）', type: 'number', placeholder: '默认 0 关闭; 大于 0 且小于 120, 仍遵守冷却和限流' },
-        { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（可选）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="group" value={value} onChange={set} /> },
-        { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="time" value={value} onChange={set} /> },
+        { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（可选）', type: 'custom', render: () => <WakeOverrideEditor kind="group" rows={groupDraftRows} onChange={setGroupDraftRows} issues={groupConversion.issues} /> },
+        { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区）', type: 'custom', render: () => <WakeOverrideEditor kind="time" rows={timeDraftRows} onChange={setTimeDraftRows} issues={timeConversion.issues} /> },
         { key: 'settings.wake_cooldown', label: '自动参与冷却秒数', type: 'number', placeholder: '默认 30, 明确唤醒不受此限制' },
         { key: 'settings.wake_talk_value', label: '发言频率偏好 talk_value（0–1, 留空不设置）', type: 'number', placeholder: talkValueHint },
         { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
@@ -320,7 +380,7 @@ export function Platforms() {
         { key: 'settings.media_plaintext_http', label: '允许公网明文 HTTP 媒体下载', type: 'checkbox', placeholder: '默认关闭; 开启后公网 http:// 附件地址也允许下载, 明文传输可被窃听篡改; 登记主机不受影响' },
         { key: 'settings.media_trusted_hosts', label: '允许访问私网的媒体主机（可选）', type: 'textarea', rows: 2, placeholder: '每行一个主机名; SnowLuma 提供的内网下载地址需在此登记, 否则出站防护会拒绝' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
-        { key: 'settings.wake_dry_run_preview', label: '唤醒规则试算预览', type: 'custom', render: () => <WakeDryRunPanel settings={previewSettings} /> },
+        { key: 'settings.wake_dry_run_preview', label: '唤醒规则试算预览', type: 'custom', render: () => <WakeDryRunPanel settings={previewSettings} blockedReason={draftError} /> },
       ];
     }
 
@@ -346,7 +406,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, previewSettings, sessionClasses, talkValueHint]);
+  }, [adapters, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_provider, formData.type, groupConversion, groupDraftRows, platforms, previewSettings, sessionClasses, talkValueHint, timeConversion, timeDraftRows]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -375,8 +435,8 @@ export function Platforms() {
     'settings.voice_transcribe': formData.settings.voice_transcribe ?? 'asr',
     'settings.attachment_extract': formData.settings.attachment_extract ?? true,
     'settings.media_trusted_hosts': Array.isArray(formData.settings.media_trusted_hosts) ? formData.settings.media_trusted_hosts.join('\n') : formData.settings.media_trusted_hosts ?? '',
-    'settings.wake_group_overrides': formData.settings.wake_group_overrides ?? {},
-    'settings.wake_time_rules': formData.settings.wake_time_rules ?? [],
+    'settings.wake_group_overrides': groupDraftRows,
+    'settings.wake_time_rules': timeDraftRows,
     'settings.wake_dry_run_preview': undefined,
     'settings.wake_mode': formData.settings.wake_mode ?? 'explicit',
     'settings.wake_message_threshold': formData.settings.wake_message_threshold ?? '',
@@ -399,7 +459,7 @@ export function Platforms() {
     'settings.misskey_default_visibility': formData.settings.misskey_default_visibility ?? 'public',
     'settings.misskey_local_only': formData.settings.misskey_local_only ?? false,
     settings_json: rawSettings,
-  }), [editingPlatform, formData, rawSettings]);
+  }), [editingPlatform, formData, groupDraftRows, rawSettings, timeDraftRows]);
 
   return (
     <div className="space-y-6">
@@ -414,6 +474,7 @@ export function Platforms() {
                 refreshHealth();
                 loadPlatforms();
                 loadEdictumConfigs();
+                setDiagnosticsRefreshKey((key) => key + 1);
               }}
               disabled={loading}
             >
@@ -483,6 +544,17 @@ export function Platforms() {
           </div>
         </Card>
       )}
+
+      {/* 请求阶段诊断: 普通事件与手动请求共用同一近期诊断接口 */}
+      <Card>
+        <h3 className="text-lg font-semibold text-text-primary mb-2">请求阶段诊断</h3>
+        <RequestDiagnosticsPanel
+          adapterId={diagnosticsAdapter}
+          adapterOptions={diagnosticsAdapters}
+          onAdapterChange={setDiagnosticsAdapter}
+          refreshKey={diagnosticsRefreshKey}
+        />
+      </Card>
 
       {/* 配置中的平台 */}
       <Card>

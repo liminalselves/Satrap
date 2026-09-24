@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { useBlocker } from 'react-router-dom';
 
 export const DISCARD_MESSAGE = '当前表单有未保存的修改, 确定放弃吗?';
 
@@ -8,13 +9,21 @@ export function confirmDiscard(): boolean {
 }
 
 /**
- * 脏状态保护: 浏览器关闭/刷新 (beforeunload)。
- * 应用内路由切换由弹窗遮罩独占保证: 弹窗打开时侧栏链接不可点, 任何点击落在遮罩上
- * 都会经过调用方的 guardedClose (confirmDiscard); 弹窗关闭后表单即非脏, 可正常导航。
- * 非数据路由 (BrowserRouter) 下 history.block 已被 @remix-run/router 移除, useBlocker 不可用;
- * 浏览器前进/后退跳过确认属于已知边界, 需迁移数据路由才能补齐。
+ * 脏状态保护:
+ * - 浏览器关闭/刷新 (beforeunload): 交给浏览器原生确认;
+ * - 站内导航 (侧栏链接/代码跳转) 与浏览器前进/后退: 数据路由的 useBlocker 统一拦截,
+ *   确认后按原意图继续跳转, 拒绝则留在当前页面且草稿保持。
+ * 确认只决定是否离开, 不改写草稿; 草稿不写入 localStorage/sessionStorage。
  */
 export function useDirtyGuard(active: boolean): void {
+  const blocker = useBlocker(active);
+
+  useEffect(() => {
+    if (blocker.state !== 'blocked') return;
+    if (confirmDiscard()) blocker.proceed();
+    else blocker.reset();
+  }, [blocker]);
+
   useEffect(() => {
     if (!active) return;
     const handler = (event: BeforeUnloadEvent) => {

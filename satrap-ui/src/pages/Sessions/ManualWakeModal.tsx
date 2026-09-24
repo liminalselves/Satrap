@@ -5,6 +5,7 @@ import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/components/ui/Toast';
 import { backendApi } from '@/api/backend';
 import { controlApi } from '@/api/control';
+import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
 import type { WakeRejectionRecord, WakeStatusResult } from '@/api/backend';
 import type { FormField } from '@/components/common';
 import type { PlatformConfig } from '@/api/types';
@@ -25,10 +26,14 @@ function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info'
 function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: string; adapterId: string; onSettled: () => void }) {
   const [record, setRecord] = useState<WakeStatusResult | null>(null);
   const [note, setNote] = useState('');
+  const [timedOut, setTimedOut] = useState(false);
+  // 手动刷新计数: 超时后由用户按钮触发一次真实重取, 而不仅仅提示"稍后手动刷新"
+  const [manualKey, setManualKey] = useState(0);
   useEffect(() => {
     let cancelled = false;
     let timer = 0;
     const started = Date.now();
+    setTimedOut(false);
     const tick = async () => {
       try {
         const result = await backendApi.getWakeStatus(requestId, adapterId);
@@ -40,30 +45,41 @@ function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: strin
         }
       } catch (error) {
         if (cancelled) return;
-        if (isAxiosError(error) && error.response?.data && typeof error.response.data === 'object') {
-          const reason = (error.response.data as { reason?: string }).reason;
-          setNote(reason === 'not_found' ? '未找到该请求记录' : reason === 'store_degraded' ? '状态存储降级中' : '状态存储不可用');
-        } else {
-          setNote('状态查询失败, 将重试');
-        }
+        // apiClient 会把 axios 错误包装成 ApiError (保留 status), 不能再按 axios 错误对象判断
+        const status = isAxiosError(error) ? error.response?.status : (error as { status?: number } | null)?.status;
+        if (status === 404) setNote('未找到该请求记录');
+        else if (status === 503) setNote('状态存储降级中, 请稍后刷新; 不确定的结果不会自动重发');
+        else setNote('状态查询失败, 将重试');
       }
       if (!cancelled && Date.now() - started < 60000) timer = window.setTimeout(tick, 2000);
-      else if (!cancelled) setNote('查询超时, 请稍后手动刷新');
+      else if (!cancelled) { setNote('查询窗口已结束, 可点刷新继续查看'); setTimedOut(true); }
     };
     tick();
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [requestId, adapterId, onSettled]);
+  }, [requestId, adapterId, onSettled, manualKey]);
 
+  const unknown = record?.status === 'unknown';
   return (
     <div className="rounded-sm bg-glass p-3 text-xs space-y-1" data-testid="wake-status-panel">
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <span className="text-text-secondary">request_id</span>
         <span className="font-mono break-all">{requestId}</span>
         {record && <Badge variant={statusVariant(record.status)}>{STATUS_LABELS[record.status] || record.status}</Badge>}
+        {unknown && <Badge variant="warning">不确定, 不自动重发</Badge>}
+        {(timedOut || !!note) && (
+          <button type="button" className="text-accent hover:underline" onClick={() => setManualKey((key) => key + 1)}>
+            刷新状态
+          </button>
+        )}
       </div>
       {record?.detail && <div className="text-text-secondary">明细: {record.detail}</div>}
       {record?.target && <div className="text-text-secondary">目标: {record.target}</div>}
       {note && <div className="text-text-secondary">{note}</div>}
+      {unknown && (
+        <div className="text-text-secondary">
+          结果不确定: 可能已发送也可能未发送, 系统不会自动重发; 请按下方阶段诊断确认后再决定是否重新提交。
+        </div>
+      )}
       {!record && !note && <div className="text-text-secondary">查询中...</div>}
     </div>
   );
@@ -160,6 +176,19 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
   fields.push({
     key: 'wake_rejections', label: '近期拒绝记录', type: 'custom',
     render: () => <WakeRejectionsPanel refreshKey={refreshKey} />,
+  });
+  // 普通自动事件与手动请求共用同一阶段诊断: 手动跟踪时聚焦当前 request_id
+  fields.push({
+    key: 'wake_diagnostics', label: '请求阶段诊断', type: 'custom',
+    render: () => (
+      <RequestDiagnosticsPanel
+        adapterId={tracking?.adapterId || form.adapter_id}
+        adapterOptions={platforms.map((item) => item.id)}
+        requestId={tracking?.requestId || ''}
+        refreshKey={refreshKey}
+        allowPolling={!!tracking}
+      />
+    ),
   });
 
   return <FormModal open onClose={onClose} title="手动唤醒群聊" size="lg" loading={saving} submitText="提交唤醒"
