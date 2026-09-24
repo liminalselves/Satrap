@@ -29,8 +29,15 @@ import threading
 import time
 
 from satrap.core.log import logger
-from satrap.core.storage.persist import atomic_write_json, quarantine_file
+from satrap.core.storage.persist import atomic_write_json
 from satrap.core.storage.file_lock import FileLock
+from satrap.core.storage.durability import (
+    DegradeOutcome,
+    DurabilityManifest,
+    Manifest,
+    ManifestSpec,
+    validate_manifest,
+)
 
 STORE_VERSION = 1
 MANIFEST_VERSION = 1
@@ -94,21 +101,15 @@ class SendAttemptRecord(TypedDict):
     updated_at: float
 
 
-class ExpectedFiles(TypedDict):
-    """清单记录的应存在文件: main 为 present/missing, archive 为 absent/present/missing"""
-
-    main: str
-    archive: str
-
-
-class StoreManifest(TypedDict):
-    """版本化存储清单, 记录初始化状态, 应存在的文件与持久降级原因"""
-
-    version: int
-    initialized_at: float
-    updated_at: float
-    expected_files: ExpectedFiles
-    degraded: dict[str, Any] | None
+MANIFEST_SPEC = ManifestSpec(
+    version=MANIFEST_VERSION,
+    expected_files={"main": MAIN_FILE_STATES, "archive": ARCHIVE_FILE_STATES},
+    # 清单只写记录字段: 业务交叉校验放在 _validate_manifest, 额外键不进入写回载荷
+    keep_extra_keys=False,
+    degraded_requires_reason=True,
+    normalize_degraded_at=True,
+)
+"""存储清单格式: 主文件 present/missing, 归档 absent/present/missing, 降级原因必须非空"""
 
 
 class ManualWakeStoreError(RuntimeError):
@@ -238,55 +239,24 @@ def _validate_attempt(item: object, key: str, source: str) -> SendAttemptRecord:
 
 
 
-def _validate_manifest(raw: object) -> StoreManifest:
+def _validate_manifest(raw: object) -> Manifest:
     """
-    校验清单结构, 任何结构问题都视为清单损坏
+    校验清单: 基础结构委托 durability 组件, 业务交叉校验留在本函数
 
     参数:
     - raw: 清单 JSON 解析结果
 
     返回:
-    - StoreManifest: 归一化后的清单, 降级字段为非空时保留原因
+    - Manifest: 归一化后的清单, 降级字段为非空时保留原因
 
     异常:
     - ValueError: 版本, 文件状态或初始化状态不一致
     """
-    if not isinstance(raw, dict):
-        raise ValueError("清单必须是对象")
-    data = cast(dict[str, Any], raw)
-    if data.get("version") != MANIFEST_VERSION:
-        raise ValueError("清单版本非法")
-    expected_raw = data.get("expected_files")
-    if not isinstance(expected_raw, dict):
-        raise ValueError("清单缺少 expected_files")
-    expected = cast(dict[str, Any], expected_raw)
-    main_state, archive_state = expected.get("main"), expected.get("archive")
-    if main_state not in MAIN_FILE_STATES or archive_state not in ARCHIVE_FILE_STATES:
-        raise ValueError("清单文件状态非法")
-    raw_times = (data.get("initialized_at"), data.get("updated_at"))
-    if any(not isinstance(value, (int, float)) or isinstance(value, bool) for value in raw_times):
-        raise ValueError("清单时间字段非法")
-    degraded_raw = data.get("degraded")
-    degraded: dict[str, Any] | None = None
-    if degraded_raw is not None:
-        if not isinstance(degraded_raw, dict):
-            raise ValueError("清单降级字段非法")
-        reason = cast(dict[str, Any], degraded_raw).get("reason")
-        if not isinstance(reason, str) or not reason:
-            raise ValueError("清单降级原因非法")
-        degraded = {"reason": reason, "at": float(cast(dict[str, Any], degraded_raw).get("at") or 0.0)}
-    if degraded is None and main_state != "present":
+    manifest = validate_manifest(raw, MANIFEST_SPEC)
+    if manifest.degraded is None and manifest.expected["main"] != "present":
         # 未降级的清单必须指向存在的主文件, 否则属于自相矛盾的状态
         raise ValueError("清单声明主文件缺失但未降级")
-    initialized_at = float(cast(int | float, raw_times[0]))
-    updated_at = float(cast(int | float, raw_times[1]))
-    return {
-        "version": MANIFEST_VERSION,
-        "initialized_at": initialized_at,
-        "updated_at": updated_at,
-        "expected_files": {"main": cast(str, main_state), "archive": cast(str, archive_state)},
-        "degraded": degraded,
-    }
+    return manifest
 
 
 def _copy_request(record: RequestRecord) -> RequestRecord:
@@ -368,7 +338,6 @@ class ManualWakeStore:
         self._lock_path = self._path.with_name(f".{self._path.name}.lock")
         self._archive_path = self._path.with_name(f"{self._path.name}.1")
         self._archive_lock_path = self._path.with_name(f".{self._path.name}.1.lock")
-        self._manifest_path = self._path.with_suffix(".manifest.json")
         self._mutex = threading.RLock()
         self.degraded = False
         self.degraded_reason = ""
@@ -377,7 +346,13 @@ class ManualWakeStore:
         self._archive_requests: dict[str, RequestRecord] | None = None
         self._archive_attempts: dict[str, SendAttemptRecord] | None = None
         self._archive_quarantined = False
-        self._manifest: StoreManifest | None = None
+        self._manifest: Manifest | None = None
+        self._durability = DurabilityManifest(
+            self._path, MANIFEST_SPEC,
+            transaction=lambda: self._transaction(archive=True),
+            validate=_validate_manifest,
+            log_prefix="[ManualWakeStore]",
+        )
         try:
             with self._transaction(archive=True):
                 self._startup_locked()
@@ -408,27 +383,24 @@ class ManualWakeStore:
             with FileLock(self._archive_lock_path):
                 yield
 
-    def _fresh_manifest(self, *, initialized_at: float, archive_state: str) -> StoreManifest:
+    def _fresh_manifest(self, *, initialized_at: float, archive_state: str) -> Manifest:
         """构造未降级的清单骨架, 主文件按已初始化处理"""
-        now = time.time()
-        return {
-            "version": MANIFEST_VERSION,
-            "initialized_at": initialized_at,
-            "updated_at": now,
-            "expected_files": {"main": "present", "archive": archive_state},
-            "degraded": None,
-        }
+        return self._durability.fresh(
+            initialized_at=initialized_at,
+            expected={"main": "present", "archive": archive_state},
+        )
 
-    def _read_manifest(self) -> StoreManifest | None:
+    def _read_manifest(self) -> Manifest | None:
         """读取并校验清单, 文件不存在返回 None, 结构非法抛 ValueError"""
-        if not self._manifest_path.is_file():
-            return None
-        raw: object = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        return _validate_manifest(raw)
+        return self._durability.read()
 
-    def _write_manifest(self, manifest: StoreManifest) -> None:
+    def _write_manifest(self, manifest: Manifest) -> None:
         """原子写入清单, 调用方必须已持有存储锁"""
-        atomic_write_json(self._manifest_path, dict(manifest))
+        atomic_write_json(self._durability.manifest_path, manifest.payload())
+
+    def _current_manifest(self) -> Manifest:
+        """当前清单, 缺失时按全新骨架, 保证降级标记始终有清单可写"""
+        return self._manifest or self._fresh_manifest(initialized_at=time.time(), archive_state="absent")
 
     def _mark_degraded(self, reason: str, detail: str) -> bool:
         """
@@ -441,35 +413,35 @@ class ManualWakeStore:
         返回:
         - bool: 降级标记已落盘为 True; 写失败时保留原文件, 调用方不得隔离
         """
+        manifest = self._current_manifest().with_expected({"archive": self._archive_state()})
+        outcome = self._durability.mark_degraded(manifest, reason=reason, persist=self._write_manifest)
+        self._apply_degrade(reason, detail, outcome)
+        return outcome.persisted
+
+    def _apply_degrade(self, reason: str, detail: str, outcome: DegradeOutcome) -> None:
+        """
+        把降级结果落到内存与日志
+
+        参数:
+        - reason: 脱敏原因码
+        - detail: 仅供日志的诊断说明
+        - outcome: 组件的降级结果; 标记未落盘时不会报告已隔离文件
+        """
         self.degraded = True
         self.degraded_reason = reason
-        manifest = self._manifest or self._fresh_manifest(initialized_at=time.time(), archive_state="absent")
-        manifest["expected_files"]["archive"] = self._archive_state()
-        manifest["degraded"] = {"reason": reason, "at": time.time()}
-        manifest["updated_at"] = time.time()
-        persisted = True
-        try:
-            with self._transaction(archive=True):
-                self._write_manifest(manifest)
-            self._manifest = manifest
-        except (OSError, TimeoutError) as error:
-            persisted = False
-            logger.error(f"[ManualWakeStore] 降级标记写失败, 保留原文件不隔离: {type(error).__name__}: {error}")
+        # 无论标记是否落盘, 内存清单都保持降级, 后续写回不会抹掉降级状态
+        self._manifest = outcome.manifest
         logger.error(f"[ManualWakeStore] 状态存储降级 reason={reason}: {detail}")
-        return persisted
+        for item in outcome.quarantined:
+            if item.original == self._archive_path:
+                self._archive_quarantined = True
+            logger.error(f"[ManualWakeStore] 存储文件损坏, 已隔离为 {item.target.name}")
 
     def _archive_state(self) -> str:
         """归档当前应处的状态: 文件存在为 present, 已被隔离为 missing, 其余为从未创建"""
         if self._archive_path.is_file():
             return "present"
         return "missing" if self._archive_quarantined else "absent"
-
-    def _quarantine(self, path: Path) -> None:
-        """改名隔离损坏文件, 隔离前必须已持久记录降级"""
-        target = quarantine_file(path)
-        if path == self._archive_path:
-            self._archive_quarantined = True
-        logger.error(f"[ManualWakeStore] 存储文件损坏, 已隔离为 {target.name}")
 
     def _degrade(self, reason: str, detail: str, bad_files: Sequence[Path]) -> None:
         """
@@ -480,18 +452,15 @@ class ManualWakeStore:
         - detail: 仅供日志的诊断说明
         - bad_files: 需要隔离的损坏文件, 标记写失败时全部保留
         """
-        if not self._mark_degraded(reason, detail):
-            return
-        with self._transaction(archive=True):
-            for path in bad_files:
-                try:
-                    self._quarantine(path)
-                except OSError as error:
-                    logger.error(f"[ManualWakeStore] 损坏文件隔离失败 {path.name}: {type(error).__name__}: {error}")
+        manifest = self._current_manifest().with_expected({"archive": self._archive_state()})
+        outcome = self._durability.degrade_then_quarantine(
+            manifest, reason=reason, persist=self._write_manifest, bad_files=bad_files,
+        )
+        self._apply_degrade(reason, detail, outcome)
 
     def _quarantine_names(self) -> list[str]:
         """目录中已隔离的损坏文件, 用于判定目录是否曾初始化"""
-        return sorted(item.name for item in self._path.parent.glob(f"{self._path.name}.corrupt-*"))
+        return self._durability.quarantine_names()
 
     # ---------- 加载与启动清扫 ----------
 
@@ -503,18 +472,17 @@ class ManualWakeStore:
 
     def _startup_locked(self) -> None:
         """按清单, 目录痕迹与文件内容决定初始化, 迁移或降级"""
-        manifest: StoreManifest | None = None
+        manifest: Manifest | None = None
         manifest_error = ""
         try:
             manifest = self._read_manifest()
         except (OSError, ValueError, json.JSONDecodeError) as error:
             manifest_error = f"{type(error).__name__}: {error}"
         main_exists = self._path.is_file()
-        if manifest is not None and manifest["degraded"] is not None:
-            info = cast(dict[str, Any], manifest["degraded"])
+        if manifest is not None and manifest.degraded is not None:
             self._manifest = manifest
             self.degraded = True
-            self.degraded_reason = str(info.get("reason") or "degraded")
+            self.degraded_reason = manifest.degraded.reason or "degraded"
             logger.error(f"[ManualWakeStore] 存储保持降级状态 reason={self.degraded_reason}, 需经 recover() 显式恢复")
             return
         if manifest is None:
@@ -586,7 +554,7 @@ class ManualWakeStore:
         self._manifest = manifest
         logger.info(
             f"[ManualWakeStore] 已迁移旧版存储 path={self._path.name} "
-            f"requests={len(self._requests)} attempts={len(self._attempts)} archive={manifest['expected_files']['archive']}"
+            f"requests={len(self._requests)} attempts={len(self._attempts)} archive={manifest.expected['archive']}"
         )
 
     def _load_with_manifest(self, main_exists: bool) -> None:
@@ -594,7 +562,7 @@ class ManualWakeStore:
         manifest = self._manifest
         if manifest is None:
             raise RuntimeError("清单未加载")
-        expected = manifest["expected_files"]
+        expected = manifest.expected
         if expected["main"] == "present" and not main_exists:
             self._degrade("main_missing", "已初始化存储的主文件缺失", [])
             return
@@ -623,10 +591,10 @@ class ManualWakeStore:
                 return
         archive_state = self._archive_state()
         if archive_state != expected["archive"] and archive_state != "missing":
-            manifest["expected_files"]["archive"] = archive_state
-            manifest["updated_at"] = time.time()
+            updated = manifest.with_expected({"archive": archive_state}).with_updated_at(time.time())
             try:
-                self._write_manifest(manifest)
+                self._write_manifest(updated)
+                self._manifest = updated
             except OSError as error:
                 logger.warning(f"[ManualWakeStore] 清单归档状态更新失败: {type(error).__name__}: {error}")
 
@@ -678,7 +646,7 @@ class ManualWakeStore:
                 logger.error(f"[ManualWakeStore] 恢复校验失败, 保持降级: {type(error).__name__}: {error}")
                 return False
             manifest = self._fresh_manifest(
-                initialized_at=self._manifest["initialized_at"] if self._manifest else time.time(),
+                initialized_at=self._manifest.initialized_at if self._manifest else time.time(),
                 archive_state="present" if self._archive_path.is_file() else "absent",
             )
             try:
@@ -730,12 +698,12 @@ class ManualWakeStore:
     def _mark_archive_present_locked(self) -> None:
         """归档落盘成功后更新清单, 保证崩溃后能按归档采纳而不是判定归档丢失"""
         manifest = self._manifest
-        if manifest is None or manifest["expected_files"]["archive"] == "present":
+        if manifest is None or manifest.expected["archive"] == "present":
             return
-        manifest["expected_files"]["archive"] = "present"
-        manifest["updated_at"] = time.time()
+        updated = manifest.with_expected({"archive": "present"}).with_updated_at(time.time())
         try:
-            self._write_manifest(manifest)
+            self._write_manifest(updated)
+            self._manifest = updated
         except OSError as error:
             logger.warning(f"[ManualWakeStore] 归档状态登记失败, 下次启动按未完成轮转采纳: {type(error).__name__}: {error}")
 

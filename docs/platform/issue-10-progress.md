@@ -507,3 +507,16 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - Playwright platform-policy 扩展: 数值 label 仍可定位, talk_value 提示为静态文案 (改阈值与改 talk_value 都不改变提示, 不再出现"被显式阈值覆盖/关闭自动参与"), 最长等待 119.9999 可保存而 120 被拦截且草稿保留, 冷却 86401 可保存, 群覆盖行内 120 被拒并同时阻止试算 (行内提示与试算阻止理由一致); manual-wake 仍 PASS
 
 验收: 全量单测 2164 passed / 19 skipped; pyright 全库 0 errors / 1532 warnings (与开工基线逐文件一致, 用 HEAD 工作树对比确认未新增); 前端 tsc 0 error / eslint 0 / vitest 190 绿; platform-policy 与 manual-wake 两个 Playwright 脚本 PASS。对外行为变化: 前端不再自行推导 talk_value 阈值优先级结论 (提示改为静态); 平台表单与群/时段行的非法取值由"交给后端报错"改为提交前拦截 (结论与后端一致, 草稿保留); `wake_max_wait` 的上界口径前后端统一为 `< 120`; `wake_cooldown` 删除前端额外上限。剩余限制: 群白名单, 上下文范围与覆盖结构仍只有后端校验, 前端只给出结构性提示
+
+### 批次 4: R1 持久化 DurabilityManifest 抽取
+
+- 新增 `satrap/core/storage/durability.py` (组合式小件, 不是基类): `ManifestSpec` 声明清单格式 (`version`, `expected_files` 必需键与允许状态, `keep_extra_keys`, `degraded_requires_reason`, `normalize_degraded_at`), `Manifest` 是"原始载荷 + 归一化视图"的冻结值对象 (`payload()`/`with_expected()`/`with_degraded()`/`with_updated_at()`, 不就地改动), `validate_manifest` 是纯校验入口, `DurabilityManifest` 提供 `read()`/`validate()`/`fresh()`/`mark_degraded()`/`degrade_then_quarantine()`/`quarantine()`/`quarantine_names()`
+- 顺序原语不可颠倒: `degrade_then_quarantine` 先持久降级标记, 标记写失败 (OSError/TimeoutError) 时返回 `persisted=False` 且不隔离任何文件; 隔离文件名复用 `persist.quarantine_file`, 隔离失败只记录日志; 清单路径与 `corrupt-*` 扫描都从数据文件路径派生, 事务上下文由业务方传入 (`transaction=`), 两个 `FileLock` 的持有方式与嵌套深度不变
+- 业务薄层留在各自类里: 清单校验入口以 `validate=` 注入 (`ManualWakeStore._validate_manifest` 保留"未降级时 main 必须 present"的交叉校验并实现 `_validate_manifest` 契约, 账本为无交叉校验的薄包装), 清单写入以 `persist=` 传入 (`_write_manifest`, 现有测试对它的注入失败仍然生效), 降级后的内存标记/`degraded_reason`/归档隔离标记与日志由各自的 `_apply_degrade` 负责
+- 差异全部改为声明数据, 不再各写一份实现: 存储清单 `expected_files` 为 main (present/missing) + archive (absent/present/missing), 写入时归一化丢弃额外键, 降级原因必须非空且 `at` 归一化为 float; 账本清单 `entries` 恒为 present, 额外键按原样保留, 降级原因只要求字符串, `at` 不解释 (空原因回落后仍是 `degraded`)
+- 行为不变: 启动决策树 (`_startup_locked`/`_initialize_fresh`/`_adopt_existing`/`_load_with_manifest`), `recover()`, 记录解析与校验, 容量/保留期/TTL, 归档轮转与读取模型一行未改; 降级期间仍不加载记录, 只有 `recover()` 校验通过才解除
+- 测试: 新增 `tests/unit/test_durability.py` 31 项 —— 结构校验 (版本非法, 缺键, 非法状态, 时间字段, 坏 JSON), 额外键两种语义, 降级原因严格/宽松与 `at` 归一化, 标记写失败与超时都不隔离且内存清单仍带降级, 标记先于隔离的顺序探针, 隔离失败不抛异常, 隔离保留原始字节与扫描只认数据文件, 校验入口钩子 (业务交叉校验), `payload()` 不泄漏声明字段引用; 冻结两类存储的清单样本并断言接受/拒绝与写回语义 (合法, 版本非法, 缺键, 非法状态, 空原因, 未降级却声明主文件缺失, 额外键, 归档三态), 存储侧的标记失败仍降级且原文件保留, 隔离失败后重启仍降级, 账本 `recover()` 失败不解除降级, 无持久路径的内存账本不创建文件
+- 行数实测 (方案 §5 的 120-180 行估计未达成, §6 已明确净减行数不作为验收目标): 两侧清单相关方法 `manual_wake_store.py` 121 → 83 行, `request_registry.py` 72 → 88 行 (新增声明式 spec, 校验入口与写入薄层), 新组件 345 行 (含文档); 净效果是"顺序与校验只有一份实现", 不是行数下降
+- 文档同步: [运行数据布局](../core/data-layout.md) 增补共用清单原语的位置, 声明项与组件边界
+
+验收: 全量单测 2195 passed / 19 skipped; pyright 全库 0 errors / 1532 warnings (与开工基线逐文件一致); 既有 `test_manual_wake_store.py` 36 项与审批账本既有用例未改动全部通过 (含降级/隔离/恢复反例与锁内重读并发用例)。对外行为变化: 无 (日志文案中隔离失败一行由组件统一前缀输出); 持久化格式, 故障顺序与降级语义保持不变。

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,15 @@ import json
 import threading
 
 from satrap.core.log import logger
-from satrap.core.storage.persist import atomic_write_json, quarantine_file
+from satrap.core.storage.persist import atomic_write_json
 from satrap.core.storage.file_lock import FileLock
+from satrap.core.storage.durability import (
+    DurabilityManifest,
+    Manifest,
+    ManifestSpec,
+    QuarantinedFile,
+    validate_manifest,
+)
 
 REQUEST_FLAG_LIMIT = 512
 """每张近期缓存表的 flag 容量, 超出淘汰最旧, 淘汰不影响账本身份"""
@@ -39,6 +47,35 @@ LEDGER_RESTART_STATE = "unknown"
 
 LEDGER_EXPECTED_ENTRIES = "present"
 """清单始终要求账本文件存在: 初始化后文件缺失按损坏处理, 不解释为空账本"""
+
+LEDGER_MANIFEST_SPEC = ManifestSpec(
+    version=LEDGER_VERSION,
+    expected_files={"entries": frozenset({LEDGER_EXPECTED_ENTRIES})},
+    # 账本清单保留历史额外键, 降级原因只要求字符串, at 字段原样保留不解释
+    keep_extra_keys=True,
+    degraded_requires_reason=False,
+    normalize_degraded_at=False,
+)
+"""审批账本清单格式"""
+
+LEDGER_MANIFEST_EXPECTED: dict[str, str] = {"entries": LEDGER_EXPECTED_ENTRIES}
+"""清单 expected_files 的初始状态"""
+
+
+def _validate_ledger_manifest(raw: object) -> Manifest:
+    """
+    校验账本清单: 基础结构由 durability 组件负责
+
+    参数:
+    - raw: 清单 JSON 解析结果
+
+    返回:
+    - Manifest: 归一化后的清单
+
+    异常:
+    - ValueError: 版本, 文件状态, 时间字段或降级字段非法
+    """
+    return validate_manifest(raw, LEDGER_MANIFEST_SPEC)
 
 
 class LedgerEntry(TypedDict):
@@ -140,11 +177,19 @@ class RequestApprovalLedger:
             raise ValueError("账本 TTL 与容量必须为正数")
         self._path = Path(path) if path is not None else None
         self._lock_path = self._path.with_name(f".{self._path.name}.lock") if self._path is not None else None
-        self._manifest_path = self._path.with_suffix(".manifest.json") if self._path is not None else None
         self._mutex = threading.RLock()
         self._ttl, self._instance_capacity, self._total_capacity = ttl, instance_capacity, total_capacity
         self._entries: dict[str, LedgerEntry] = {}
-        self._manifest: dict[str, Any] | None = None
+        self._manifest: Manifest | None = None
+        self._durability = (
+            DurabilityManifest(
+                self._path, LEDGER_MANIFEST_SPEC,
+                transaction=self._transaction,
+                validate=_validate_ledger_manifest,
+                log_prefix="[RequestLedger]",
+            )
+            if self._path is not None else None
+        )
         self.degraded = False
         self.degraded_reason = ""
         if self._path is None:
@@ -186,6 +231,19 @@ class RequestApprovalLedger:
             return
         atomic_write_json(self._path, {"version": LEDGER_VERSION, "entries": self._entries})
 
+    def _write_manifest(self, manifest: Manifest) -> None:
+        """原子写入清单, 调用方必须已持有账本锁"""
+        durability = self._durability
+        if durability is None:
+            raise RuntimeError("内存账本没有清单文件")
+        atomic_write_json(durability.manifest_path, manifest.payload())
+
+    def _fresh_ledger_manifest(self, durability: DurabilityManifest) -> Manifest:
+        """当前清单, 缺失时按全新骨架 (降级标记始终有清单可写)"""
+        if self._manifest is not None:
+            return self._manifest
+        return durability.fresh(initialized_at=time(), expected=LEDGER_MANIFEST_EXPECTED, updated_at=time())
+
     def _mark_degraded(self, reason: str, detail: str) -> bool:
         """
         持久记录降级原因, 不隔离文件也不清空账本
@@ -197,24 +255,15 @@ class RequestApprovalLedger:
         返回:
         - bool: 降级标记已落盘为 True; 写失败时保留原文件, 调用方不得隔离
         """
-        self.degraded = True
-        self.degraded_reason = reason
+        durability = self._durability
         persisted = True
-        if self._manifest_path is not None:
-            manifest: dict[str, Any] = dict(self._manifest) if self._manifest else {
-                "version": LEDGER_VERSION, "initialized_at": time(), "updated_at": time(),
-                "expected_files": {"entries": LEDGER_EXPECTED_ENTRIES}, "degraded": None,
-            }
-            manifest["degraded"] = {"reason": reason, "at": time()}
-            manifest["updated_at"] = time()
-            try:
-                with self._transaction():
-                    atomic_write_json(self._manifest_path, manifest)
-                self._manifest = manifest
-            except (OSError, TimeoutError) as error:
-                persisted = False
-                logger.error(f"[RequestLedger] 降级标记写失败, 保留原文件不隔离: {type(error).__name__}: {error}")
-        logger.error(f"[RequestLedger] 审批账本降级 reason={reason}: {detail}")
+        if durability is not None:
+            outcome = durability.mark_degraded(
+                self._fresh_ledger_manifest(durability), reason=reason, persist=self._write_manifest,
+            )
+            self._manifest = outcome.manifest
+            persisted = outcome.persisted
+        self._apply_degrade(reason, detail, ())
         return persisted
 
     def _degrade(self, reason: str, detail: str, corrupt: bool) -> None:
@@ -226,36 +275,51 @@ class RequestApprovalLedger:
         - detail: 诊断说明
         - corrupt: 账本文件是否损坏到需要隔离
         """
-        if not self._mark_degraded(reason, detail):
+        durability = self._durability
+        if durability is None:
+            self._apply_degrade(reason, detail, ())
             return
-        if not corrupt or self._path is None or not self._path.is_file():
-            return
-        try:
-            with self._transaction():
-                target = quarantine_file(self._path)
-            logger.error(f"[RequestLedger] 账本文件损坏, 已隔离为 {target.name}")
-        except OSError as error:
-            logger.error(f"[RequestLedger] 账本文件隔离失败: {type(error).__name__}: {error}")
+        bad_files = [self._path] if corrupt and self._path is not None and self._path.is_file() else []
+        outcome = durability.degrade_then_quarantine(
+            self._fresh_ledger_manifest(durability), reason=reason,
+            persist=self._write_manifest, bad_files=bad_files,
+        )
+        self._manifest = outcome.manifest
+        self._apply_degrade(reason, detail, outcome.quarantined)
+
+    def _apply_degrade(self, reason: str, detail: str, quarantined: Sequence[QuarantinedFile]) -> None:
+        """
+        把降级结果落到内存与日志
+
+        参数:
+        - reason: 脱敏原因码
+        - detail: 诊断说明
+        - quarantined: 已隔离的文件; 标记未落盘时为空
+        """
+        self.degraded = True
+        self.degraded_reason = reason
+        logger.error(f"[RequestLedger] 审批账本降级 reason={reason}: {detail}")
+        for item in quarantined:
+            logger.error(f"[RequestLedger] 账本文件损坏, 已隔离为 {item.target.name}")
 
     def _quarantine_names(self) -> list[str]:
-        if self._path is None:
-            return []
-        return sorted(item.name for item in self._path.parent.glob(f"{self._path.name}.corrupt-*"))
+        """目录中已隔离的损坏文件, 用于判定目录是否曾初始化"""
+        durability = self._durability
+        return [] if durability is None else durability.quarantine_names()
 
     def _startup_locked(self) -> None:
         """按清单与文件内容决定初始化, 迁移或降级"""
-        manifest: dict[str, Any] | None = None
+        manifest: Manifest | None = None
         manifest_error = ""
         try:
             manifest = self._read_manifest()
         except (OSError, ValueError, json.JSONDecodeError) as error:
             manifest_error = f"{type(error).__name__}: {error}"
         entries_exists = self._path is not None and self._path.is_file()
-        if manifest is not None and manifest.get("degraded") is not None:
-            info = cast(dict[str, Any], manifest["degraded"])
+        if manifest is not None and manifest.degraded is not None:
             self._manifest = manifest
             self.degraded = True
-            self.degraded_reason = str(info.get("reason") or "degraded")
+            self.degraded_reason = manifest.degraded.reason or "degraded"
             logger.error(f"[RequestLedger] 账本保持降级状态 reason={self.degraded_reason}, 需经 recover() 显式恢复")
             return
         if manifest is None:
@@ -273,37 +337,20 @@ class RequestApprovalLedger:
             return
         self._load_entries_locked(restart=True)
 
-    def _read_manifest(self) -> dict[str, Any] | None:
-        if self._manifest_path is None or not self._manifest_path.is_file():
-            return None
-        raw: object = json.loads(self._manifest_path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict):
-            raise ValueError("账本清单必须是对象")
-        data = cast(dict[str, Any], raw)
-        if data.get("version") != LEDGER_VERSION:
-            raise ValueError("账本清单版本非法")
-        expected = data.get("expected_files")
-        if not isinstance(expected, dict) or cast(dict[str, Any], expected).get("entries") != LEDGER_EXPECTED_ENTRIES:
-            raise ValueError("账本清单文件状态非法")
-        if any(not isinstance(data.get(field), (int, float)) or isinstance(data.get(field), bool) for field in ("initialized_at", "updated_at")):
-            raise ValueError("账本清单时间字段非法")
-        degraded = data.get("degraded")
-        if degraded is not None:
-            if not isinstance(degraded, dict) or not isinstance(cast(dict[str, Any], degraded).get("reason"), str):
-                raise ValueError("账本清单降级字段非法")
-        return data
+    def _read_manifest(self) -> Manifest | None:
+        """读取并校验清单, 文件不存在返回 None, 结构非法抛 ValueError"""
+        durability = self._durability
+        return None if durability is None else durability.read()
 
     def _initialize_fresh(self) -> None:
         """全新账本: 建立空文件与清单, 失败即降级"""
-        if self._path is None or self._manifest_path is None:
+        durability = self._durability
+        if self._path is None or durability is None:
             return
-        manifest: dict[str, Any] = {
-            "version": LEDGER_VERSION, "initialized_at": time(), "updated_at": time(),
-            "expected_files": {"entries": LEDGER_EXPECTED_ENTRIES}, "degraded": None,
-        }
+        manifest = durability.fresh(initialized_at=time(), expected=LEDGER_MANIFEST_EXPECTED, updated_at=time())
         try:
             self._save_locked()
-            atomic_write_json(self._manifest_path, manifest)
+            self._write_manifest(manifest)
         except OSError as error:
             self._degrade("init_io_failed", f"{type(error).__name__}: {error}", False)
             return
@@ -318,15 +365,13 @@ class RequestApprovalLedger:
             self._degrade(reason, f"账本校验失败: {type(error).__name__}: {error}", True)
             return
         self._entries = entries
-        if self._manifest_path is None:
+        durability = self._durability
+        if durability is None:
             return
-        manifest: dict[str, Any] = {
-            "version": LEDGER_VERSION, "initialized_at": time(), "updated_at": time(),
-            "expected_files": {"entries": LEDGER_EXPECTED_ENTRIES}, "degraded": None,
-        }
+        manifest = durability.fresh(initialized_at=time(), expected=LEDGER_MANIFEST_EXPECTED, updated_at=time())
         try:
             self._save_locked()
-            atomic_write_json(self._manifest_path, manifest)
+            self._write_manifest(manifest)
         except OSError as error:
             self._degrade(reason, f"清单写入失败: {type(error).__name__}: {error}", False)
             return
@@ -383,7 +428,8 @@ class RequestApprovalLedger:
         返回:
         - bool: 账本结构, 身份与状态一致时为 True 并解除降级, 否则保持降级返回 False
         """
-        if self._path is None or self._manifest_path is None:
+        durability = self._durability
+        if self._path is None or durability is None:
             self.degraded = False
             self.degraded_reason = ""
             return True
@@ -396,13 +442,13 @@ class RequestApprovalLedger:
             except (OSError, ValueError, json.JSONDecodeError) as error:
                 logger.error(f"[RequestLedger] 恢复校验失败, 保持降级: {type(error).__name__}: {error}")
                 return False
-            manifest: dict[str, Any] = {
-                "version": LEDGER_VERSION,
-                "initialized_at": float(cast(dict[str, Any], self._manifest or {}).get("initialized_at") or time()),
-                "updated_at": time(), "expected_files": {"entries": LEDGER_EXPECTED_ENTRIES}, "degraded": None,
-            }
+            manifest = durability.fresh(
+                initialized_at=self._manifest.initialized_at if self._manifest else time(),
+                expected=LEDGER_MANIFEST_EXPECTED,
+                updated_at=time(),
+            )
             try:
-                atomic_write_json(self._manifest_path, manifest)
+                self._write_manifest(manifest)
             except OSError as error:
                 logger.error(f"[RequestLedger] 恢复写入清单失败, 保持降级: {type(error).__name__}: {error}")
                 return False
