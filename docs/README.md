@@ -56,6 +56,8 @@
 
 实施 / 迁移 / 清理 / 优化的过程记录, 只反映当时状态, 不作为现行参考: RAG 实施记录, 恢复机制验收与存储优化记录, 向量存储迁移, 前端迁移, 死代码清理, Issue #10 平台接入的过程方案与多轮审计记录 ([archive/issue-10/](archive/issue-10/))。
 
+归档按过程记录入库: 已提交的归档文件照常提交改动, 但根 `.gitignore` 忽略了 `docs/archive/`, 因此 `git add <归档路径>` 会打印忽略警告并以退出码 1 结束 (改动仍会入索引, 但在 `&&` 链里会中断后续命令), 改用 `git add -f` 或 `git commit -- <路径>`; 归档目录里的新文件不会被 `git add -A` 收进索引, 需要显式 `git add -f`。
+
 ## 阅读路径
 
 1. 跑起来: [快速开始](getting-started/quick-start.md) → [配置说明](getting-started/configuration.md)
