@@ -196,6 +196,16 @@ class TestSharedCases:
         raw = FIXTURE.read_text(encoding="utf-8")
         assert "NaN" not in raw and "Infinity" not in raw
 
+    def test_text_length_counts_code_points(self):
+        # 与前端 textLength 同一口径: 非 BMP 字符按 1 个码点计, 不按 UTF-16 码元
+        assert len("😀" * 128) == 128
+        validate_wake_policy({"asr_model": "😀" * 128})
+        with pytest.raises(ValueError):
+            validate_wake_policy({"asr_model": "😀" * 129})
+        validate_wake_policy({"media_trusted_hosts": ["例" * 126 + "😀" * 127]})
+        with pytest.raises(ValueError):
+            validate_wake_policy({"media_trusted_hosts": ["例" * 126 + "😀" * 128]})
+
     @pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
     def test_non_finite_numbers_rejected(self, value: float):
         # NaN/Infinity 无法写进共享 JSON, 由两侧各自补测

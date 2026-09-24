@@ -153,6 +153,16 @@ describe('严格取值校验', () => {
     expect(validOf('platform', { wake_group_overrides: { '20': {} }, wake_time_rules: [] })).toBe(true);
   });
 
+  it('文本与列表项长度按 Unicode 码点计, 与后端 len() 同口径', () => {
+    const asr = policyField('asr_model')!;
+    // 128 个码点的非 BMP 名称在后端合法, 前端不能因为 UTF-16 码元翻倍而误拒
+    expect(validatePolicyValue(asr, '😀'.repeat(128))).toBeNull();
+    expect(validatePolicyValue(asr, '😀'.repeat(129))).toContain('128');
+    const hosts = policyField('media_trusted_hosts')!;
+    expect(validatePolicyValue(hosts, ['例'.repeat(126) + '😀'.repeat(127)])).toBeNull();
+    expect(validatePolicyValue(hosts, ['例'.repeat(126) + '😀'.repeat(128)])).not.toBeNull();
+  });
+
   it('平台未知扩展字段透传, 覆盖里的未知字段被拒绝', () => {
     expect(validOf('platform', { extension: 'keep' })).toBe(true);
     expect(validatePolicySettings('group', { extension: 'keep' })[0].message).toContain('不能出现在群覆盖中');

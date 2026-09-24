@@ -203,6 +203,12 @@ function numericError(field: PolicyField, label: string, value: unknown): string
   return `${label}必须小于等于 ${String(max)}（${key}）`;
 }
 
+// 长度口径: 后端 len() 按 Unicode 码点计数, 而 string.length 按 UTF-16 码元, 非 BMP 字符
+// (emoji, 扩展区汉字) 会因差一倍而被误拒, 这里用码点数与后端保持一致
+function textLength(value: string): number {
+  return Array.from(value).length;
+}
+
 function textListError(field: PolicyField, label: string, value: unknown): string | null {
   const key = field.key;
   const maxItems = field.max_items === undefined ? '' : `最多 ${field.max_items} 项的`;
@@ -211,7 +217,7 @@ function textListError(field: PolicyField, label: string, value: unknown): strin
     return `${label}必须是${maxItems}非空文本列表（${key}）`;
   }
   const invalid = value.some((item) => typeof item !== 'string' || !item.trim()
-    || (field.max_length !== undefined && item.length > field.max_length));
+    || (field.max_length !== undefined && textLength(item) > field.max_length));
   return invalid ? `${label}必须是${maxItems}非空文本列表（${key}）` : null;
 }
 
@@ -240,7 +246,7 @@ export function validatePolicyValue(
         ? null
         : `${label}必须为 ${(field.enum ?? []).join(' 或 ')}（${field.key}）`;
     case 'text':
-      return typeof value === 'string' && (field.max_length === undefined || value.length <= field.max_length)
+      return typeof value === 'string' && (field.max_length === undefined || textLength(value) <= field.max_length)
         ? null
         : `${label}必须是不超过 ${String(field.max_length)} 字符的文本（${field.key}）`;
     case 'list':

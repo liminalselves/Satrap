@@ -299,10 +299,11 @@ wake_group_overrides:
 | `wake_score_threshold` 与权重字段 | 0–1 |
 | `wake_talk_value` | 0–1, 接受显式 null (未设置) |
 | `message_text_limit` / `input_text_limit` / `input_media_limit` | 分别为 64–32000 / 1–200000 / 1–32 的整数 |
+| 文本长度 (`asr_model` ≤ 128, `media_trusted_hosts` 每项 ≤ 253) | 按 Unicode 码点计, 与后端 `len()` 同口径; 非 BMP 字符 (emoji, 扩展区汉字) 按 1 个码点计, 前端不以 UTF-16 码元判断 |
 
 缺失与默认值的区别: 字段缺失表示继承或未设置, 校验与前端编辑都不会向配置注入默认值; `0`, `false` 与 `[]` 都是显式取值。显式 `null` 只在可空字段上合法 (如 `wake_talk_value` 与 `notice_types`)。
 
-前端按同一张契约做即时校验: 保存与试算前, 平台设置先经 `normalizePlatformSettings` 归一化 (数字字符串转数字, 留空删键), 再逐字段校验; 群/时段覆盖的每个字段在行转换 `fromGroupRows`/`fromTimeRows` 时校验, 非法取值保留在草稿里并同时阻止保存与试算。后端在保存与适配器构造时按同一张表做权威校验, 两侧结论一致但都保留 (前端不复制后端的归一化逻辑)。
+前端按同一张契约做即时校验: 保存与试算前, 平台设置先经 `normalizePlatformSettings` 归一化 (数字字符串转数字, 留空删键), 再逐字段校验; 群/时段覆盖的每个字段在行转换 `fromGroupRows`/`fromTimeRows` 时校验, 非法取值保留在草稿里并同时阻止保存与试算。文本与列表项长度前端按 Unicode 码点判断 (`textLength`), 与后端 `len()` 同口径, 含 emoji 等非 BMP 字符的合法名称不会被误拒。后端在保存与适配器构造时按同一张表做权威校验, 两侧结论一致但都保留 (前端不复制后端的归一化逻辑)。
 
 分工例外: 群白名单, 上下文范围与覆盖结构 (群号/时段/条数上限) 仍由后端专用校验器负责, 前端不复制其归一化; 平台级未知扩展字段继续透传, 群/时段覆盖里的未知字段被拒绝。
 
