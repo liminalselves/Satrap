@@ -468,11 +468,11 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 ### 过程文档归档与冗余清理方案 (2026-09-24)
 
 - 本议题的 15 份已完成过程文档 (方案审查 / 语音转写方案 / 三轮审计与整改方案 / 目标审计链 / B1-B10 对照表 / 最终复核) 已移至 `docs/archive/issue-10/`, 仅反映当时状态; 本文件与 [实施方案](issue-10-plan.md), [SnowLuma 探针](issue-10-snowluma-probe.md), [平台接入](platforms.md) 保留在原文档夹作为合并前活文档
-- 审计发现的冗余方向核验与清理方案见 [冗余清理方案](issue-10-redundancy-plan.md) (诊断命名 / 弹窗双面板 / 策略字段契约 / 持久化清单组件)
+- 审计发现的冗余方向核验与清理方案见 [冗余清理方案](../archive/issue-10/issue-10-redundancy-plan.md) (诊断命名 / 弹窗双面板 / 策略字段契约 / 持久化清单组件); 四个批次已全部实施完毕, 该方案文档随本轮收尾一并归档
 
 ## 冗余清理 (R1-R5, 2026-09-24)
 
-依据 [冗余清理方案](issue-10-redundancy-plan.md), 按 R2 → R4 → R3+R5 → R1 四批次在 `fix/issue10` 推进, 每批一个提交。共同约束: 旧路由与兼容方法保留, 进程内死代码可删; unknown 语义与"先持久降级标记, 后隔离文件"顺序不变; pyright 不用 ignore 注释与 assert 收窄; 门禁为全量单测、pyright 0 error 且 warnings 不超过 1532、前端 tsc/eslint 0 且 vitest 绿、受影响的 Playwright 脚本 PASS。
+依据 [冗余清理方案](../archive/issue-10/issue-10-redundancy-plan.md), 按 R2 → R4 → R3+R5 → R1 四批次在 `fix/issue10` 推进, 每批一个提交。共同约束: 旧路由与兼容方法保留, 进程内死代码可删; unknown 语义与"先持久降级标记, 后隔离文件"顺序不变; pyright 不用 ignore 注释与 assert 收窄; 门禁为全量单测、pyright 0 error 且 warnings 不超过 1532、前端 tsc/eslint 0 且 vitest 绿、受影响的 Playwright 脚本 PASS。
 
 ### 批次 1: R2 诊断命名归一
 
@@ -502,7 +502,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 前端表驱动: 新增 `satrap-ui/src/utils/wakePolicyContract.ts` (契约加载器 + 严格逐字段校验 + 范围文本 + 表单约束), `wakeOverrides.ts` 的可覆盖字段集合, 范围, 关闭值与枚举选项改为从契约构建 (编辑器文案与 placeholder 保留手写), `fromGroupRows`/`fromTimeRows` 增加逐字段严格校验 (非法取值保留草稿并阻止保存与试算), `adminMigration.ts` 的 8 项 `POLICY_RANGES` 与范围校验删除并改为契约驱动, platform 表单的数值 label 范围文本, min/max/整数步长由契约生成, `WakeDryRunPanel` 的展示键与来源表过滤改为按 `display_in_preview`/契约成员判定
 - `talkValuePriorityHint` 由"随输入推导阈值优先级"改为静态提示常量, 生效阈值与覆盖结论只取试算响应的 `automatic.threshold.hint`/`overridden`; `FormModal` 增加 `min`/`max`/`step` 支持并对表单关闭原生校验气泡 (提示统一由表单校验器给出, 避免原生气泡抢先拦截)
 - 消除导入循环: `platform_policy.py` 不再顶层导入 `wake_overrides`, 覆盖结构校验在使用点惰性导入; `wake_overrides` 可顶层导入契约。独立导入烟测覆盖两个模块任一先导入的进程
-- 文档同步: [平台接入](platforms.md) 新增"策略字段契约与两侧校验" (契约字段, 派生关系, 取值口径表, 缺失/默认值语义, 两侧校验分工, 生成与 `--check` 命令, 共享样例) 并更新 talk_value 静态提示说明; [CONTRIBUTING](../CONTRIBUTING.md) 增加契约再生成步骤
+- 文档同步: [平台接入](platforms.md) 新增"策略字段契约与两侧校验" (契约字段, 派生关系, 取值口径表, 缺失/默认值语义, 两侧校验分工, 生成与 `--check` 命令, 共享样例) 并更新 talk_value 静态提示说明; [CONTRIBUTING](../../CONTRIBUTING.md) 增加契约再生成步骤
 - 测试: pytest 新增 `tests/unit/test_policy_field_contract.py` 82 项 (冻结集合对比, 生成物逐字节一致与 LF/末尾换行, 58 例共享样例, 独立进程导入烟测, 默认值单一来源含漂移守卫, 归一化后表单校验); 前端 vitest 新增 `wakePolicyContract.test.ts` 90 项 (契约加载与范围文本三种形态, 覆盖字段集合与编辑文案覆盖完整, 共享样例同一份 JSON, NaN/Infinity 单测, 实际行转换入口, 归一化后校验), 并更新 `adminMigration`/`wakeOverrides` 既有用例
 - Playwright platform-policy 扩展: 数值 label 仍可定位, talk_value 提示为静态文案 (改阈值与改 talk_value 都不改变提示, 不再出现"被显式阈值覆盖/关闭自动参与"), 最长等待 119.9999 可保存而 120 被拦截且草稿保留, 冷却 86401 可保存, 群覆盖行内 120 被拒并同时阻止试算 (行内提示与试算阻止理由一致); manual-wake 仍 PASS
 
