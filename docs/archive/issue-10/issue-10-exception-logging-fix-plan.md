@@ -176,7 +176,7 @@ finally:
 1. 每批: 改动文件 pyright 0 error / warning 不增; `python -m pytest tests/unit -q` 全绿; `git diff --check`。
 2. 批次 2 后: `benchmark_platform_ingress.py` 对比 after.json, ingress 场景 ±5% 内 (handler 包装与 `_warn_once` 都在非热路径或极低频路径, 预期无变化)。
 3. 批次 1+2 后做一次真实 SnowLuma 探针 (`scripts.probe_snowluma`) 确认连接日志与回执日志出现, 且刻意配置一个坏端口平台时后端仍启动、UI 显示 `init_error`。
-4. 全部完成后把审计报告的对应条目标记"已修", 更新 `issue-10-progress.md`。
+4. 全部完成后把审计报告的对应条目标记"已修", 更新 `../../platform/issue-10-progress.md`。
 
 ## 不做的事 (显式排除)
 

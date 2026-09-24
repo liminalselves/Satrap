@@ -176,4 +176,4 @@
 
 ## 门禁与提交
 
-每批次完成后: 全量 `python -m pytest tests/unit -q`; pyright 全库 0 error 且 warning ≤ 批次开始基线; 前端 tsc/vitest (批次四加 Playwright); 批次一/二复跑 `tests/benchmark` 入站与附件基准 (结果存 `tests/benchmark/results/platform/`); 同步更新 `issue-10-progress.md` 与受影响文档。每批次一个提交, 提交信息沿 `fix: ... (目标审计批次 N)` 格式。全部批次完成后按方案 6 节口径重跑目标验收, 区分"功能存在/受控协议测试通过/真实网络与模型验收/全部目标满足"四档记录。
+每批次完成后: 全量 `python -m pytest tests/unit -q`; pyright 全库 0 error 且 warning ≤ 批次开始基线; 前端 tsc/vitest (批次四加 Playwright); 批次一/二复跑 `tests/benchmark` 入站与附件基准 (结果存 `tests/benchmark/results/platform/`); 同步更新 `../../platform/issue-10-progress.md` 与受影响文档。每批次一个提交, 提交信息沿 `fix: ... (目标审计批次 N)` 格式。全部批次完成后按方案 6 节口径重跑目标验收, 区分"功能存在/受控协议测试通过/真实网络与模型验收/全部目标满足"四档记录。

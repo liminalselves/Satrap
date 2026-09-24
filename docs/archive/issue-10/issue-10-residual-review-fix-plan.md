@@ -29,7 +29,7 @@
 文件: `tests/unit/test_platform_config_runtime.py` (21), `tests/unit/test_group_admin_plugin.py` (12), `tests/unit/test_call_origin.py` (5), `tests/unit/test_manual_wake.py` (5), `tests/unit/test_onebot_forward.py` (2), `tests/benchmark/benchmark_platform_ingress.py` (2)
 
 - 逐文件清零, 手段按项目既定偏好: 标注 / 定型替身工厂 / overload / cast / 辅助函数, 不用 ignore 不用 assert 收窄。多为测试替身的属性访问与未定型参数, 预期以补标注和替身工厂为主。
-- 完成后全库 `python -m pyright -p .pyrightcfg` 0 error; 在 `issue-10-progress.md` 记录全库口径数字 (errors/warnings), 替代以往"修改文件"口径的表述。
+- 完成后全库 `python -m pyright -p .pyrightcfg` 0 error; 在 `../../platform/issue-10-progress.md` 记录全库口径数字 (errors/warnings), 替代以往"修改文件"口径的表述。
 - 顺带核验: main 全库 216 error 与本分支合流后是否回潮 —— 合回 main 时以全库 0 error 为合并门槛之一 (main 侧存量不属于本方案, 但分支合入不得把 47 个带回去)。
 
 ### A3. `media_insecure_tls` 收敛为仅登记主机生效
@@ -37,7 +37,7 @@
 文件: `satrap/core/pipeline/attachments.py:286`, `satrap/core/utils/outbound` (不动)
 
 - `_download` 增加主机判定: 仅当 URL 主机名归一化后命中 `trusted_hosts` 时才允许 `ssl_verify=False`; 公网主机永远校验。实现放在 `_download` 内: `effective_verify = verify_tls or host not in trusted` (host 取自 `urlsplit(url).hostname`, 归一化复用 outbound 的 `normalize_hostname`)。
-- 文档同步: `platforms.md` 与 `config.example` 中 `media_insecure_tls` 的描述改为"仅对 `media_trusted_hosts` 登记的主机关闭证书校验"。
+- 文档同步: `../../platform/platforms.md` 与 `config.example` 中 `media_insecure_tls` 的描述改为"仅对 `media_trusted_hosts` 登记的主机关闭证书校验"。
 
 测试:
 - 开启 `media_insecure_tls` 后: 登记主机下载 `ssl_verify=False`, 未登记公网主机下载仍 `ssl_verify=True` (mock `safe_async_get` 断言参数)。
@@ -128,7 +128,7 @@
 1. 每批: 全库 pyright (A2 完成后 0 error, warning 不增); `python -m pytest tests/unit -q` 全绿; `git diff --check`。
 2. A3/A4 实施后复跑一次附件相关 benchmark (`tests/benchmark/benchmark_audio_attachments.py`) 确认无回退。
 3. B6 实施后进行入站 benchmark 对比 (热路径顺序变化, 允许 ±5%)。
-4. 全部完成后更新 `issue-10-progress.md`, 并把评审意见逐条标记处置结果 (修复/降级为文档说明/不修及理由)。
+4. 全部完成后更新 `../../platform/issue-10-progress.md`, 并把评审意见逐条标记处置结果 (修复/降级为文档说明/不修及理由)。
 
 ## 不做的事 (显式排除)
 

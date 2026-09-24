@@ -36,7 +36,7 @@
 ### A5 手动请求无持久化 — 属实
 
 - `satrap/core/pipeline/manual_wake.py:34-40`: 纯内存 `OrderedDict` + `WeakKeyDictionary`, docstring 自述"有限的进程内幂等记录"。
-- 方案 `issue-10-plan.md:94` 明确要求"使用现有状态存储留下最小记录, 重启后无法确定的结果标为 unknown, 不自动重放"。文档声明"进程内"不等于完成原要求。
+- 方案 `../../platform/issue-10-plan.md:94` 明确要求"使用现有状态存储留下最小记录, 重启后无法确定的结果标为 unknown, 不自动重放"。文档声明"进程内"不等于完成原要求。
 
 ### A6 ASR 配置删除无引用检查 — 属实
 
@@ -63,10 +63,10 @@
 审计原文: "File 出站仍由 onebot_utils.py:271 调用 File.to_dict 后进入普通 send_msg。未见按实际 SnowLuma 文件动作能力分流及 Plain/File/Plain 真通信验收; 不能据此断言目标实现一定失败, 但文件出站验收尚不能判通过。"
 
 方案依据:
-- `issue-10-plan.md:78` (现状表): "文件出站 | 只能确认生成 file 段 | 不能据此认定所有 OneBot 实现都支持文件发送; **应按实际实现的扩展 API 验证**"
-- `issue-10-plan.md:160`: "Node/Nodes 与 File **按目标实现能力分流**, 保持前后顺序"
-- `issue-10-plan.md:180`: "实现相关的文件与合并转发发送接口放在 OneBot 实现配置中, 按目标实现版本验证载荷与返回结构"
-- `issue-10-plan.md:310` (验收清单): "Plain/Nodes/File 混合发送顺序……"
+- `../../platform/issue-10-plan.md:78` (现状表): "文件出站 | 只能确认生成 file 段 | 不能据此认定所有 OneBot 实现都支持文件发送; **应按实际实现的扩展 API 验证**"
+- `../../platform/issue-10-plan.md:160`: "Node/Nodes 与 File **按目标实现能力分流**, 保持前后顺序"
+- `../../platform/issue-10-plan.md:180`: "实现相关的文件与合并转发发送接口放在 OneBot 实现配置中, 按目标实现版本验证载荷与返回结构"
+- `../../platform/issue-10-plan.md:310` (验收清单): "Plain/Nodes/File 混合发送顺序……"
 
 代码现状:
 - `satrap/core/platform/onebot/onebot_utils.py:271-272`: `File` 组件只执行 `await component.to_dict()`, 产出 `{"type": "file", "data": {"name", "file"}}` (组件定义 `satrap/core/components/message.py:849`, `toDict` 约 :869), 混入普通消息段列表。
@@ -90,10 +90,10 @@ grep -rn "upload_group_file\|upload_private_file" satrap/ scripts/ tests/   # �
 
 审计原文: "talk_value 到参与阈值的映射未找到实现; 现有显式消息阈值不是该映射。"
 
-方案依据: `issue-10-plan.md:115` (唤醒策略表"消息数量/频率"行): "按群的待处理新消息数量达到阈值触发, **talk_value 映射为阈值**而非逐条随机抽签 | 默认关闭"。
+方案依据: `../../platform/issue-10-plan.md:115` (唤醒策略表"消息数量/频率"行): "按群的待处理新消息数量达到阈值触发, **talk_value 映射为阈值**而非逐条随机抽签 | 默认关闭"。
 
 代码现状:
-- 全库 `talk_value` 共 5 处命中, **全部在文档**: 审计报告 1 处 + `issue-10-progress.md:138/146/156/174` 四处历史进度自认"talk_value 映射待做/未提供"; 代码 0 命中。
+- 全库 `talk_value` 共 5 处命中, **全部在文档**: 审计报告 1 处 + `../../platform/issue-10-progress.md:138/146/156/174` 四处历史进度自认"talk_value 映射待做/未提供"; 代码 0 命中。
 - 现有阈值实现 (`satrap/core/pipeline/wake_window.py`): :165 frequency 模式 `wake_message_threshold` (默认 3, 固定条数); :178 necessity 模式 `wake_score_threshold` (默认 0.65, 评分=问题/指向性/积压/近期提交占比)。两者均为显式配置值, 无群活跃度输入。
 - talk_value 语义: NapCat 系群活跃"话痨值", 方案意图是频率阈值随群活跃度映射而非固定条数。
 
@@ -105,7 +105,7 @@ grep -rn "upload_group_file\|upload_private_file" satrap/ scripts/ tests/   # �
 grep -rn "talk_value" satrap/ satrap-ui/src/ scripts/ tests/   # 应为空, 仅 docs 命中
 ```
 
-读 `issue-10-plan.md:115` 原文与 `wake_window.py:150-185`, 确认阈值/评分输入中无 talk_value。
+读 `../../platform/issue-10-plan.md:115` 原文与 `wake_window.py:150-185`, 确认阈值/评分输入中无 talk_value。
 
 ### 3. 历史验收记录的有效性 — 证据纪律声明, 记录全部属实
 
@@ -115,15 +115,15 @@ grep -rn "talk_value" satrap/ satrap-ui/src/ scripts/ tests/   # 应为空, 仅 
 
 | 记录 | 位置 |
 | --- | --- |
-| ASR 同层封装/配置/控制端点/前端 (P3) | `issue-10-progress.md` 约 87-96 行 (APICall/ASRCall 与 LLMCall 同层、asr CRUD、`test_asr_config`、前端 ASR 标签页) |
-| 媒体提取管线 | `issue-10-progress.md` 约 100 行 (`resolve_attachments`、受限下载、ASR 16MiB/60s、文件 32MiB/20000 字符) |
-| 真实 ASR+LLM 全链路 | `issue-10-progress.md:310` (2026-09-21: TTS 合成 4 秒 wav → 回环 HTTP → 真实 SiliconFlow XingChenASR → 真实 DeepSeek `AsyncLLM.chat` → `send_group_msg` 回传成功, 转写"今天天气不错/我们一起去公园散步") |
+| ASR 同层封装/配置/控制端点/前端 (P3) | `../../platform/issue-10-progress.md` 约 87-96 行 (APICall/ASRCall 与 LLMCall 同层、asr CRUD、`test_asr_config`、前端 ASR 标签页) |
+| 媒体提取管线 | `../../platform/issue-10-progress.md` 约 100 行 (`resolve_attachments`、受限下载、ASR 16MiB/60s、文件 32MiB/20000 字符) |
+| 真实 ASR+LLM 全链路 | `../../platform/issue-10-progress.md:310` (2026-09-21: TTS 合成 4 秒 wav → 回环 HTTP → 真实 SiliconFlow XingChenASR → 真实 DeepSeek `AsyncLLM.chat` → `send_group_msg` 回传成功, 转写"今天天气不错/我们一起去公园散步") |
 | 语音三级路径真实 ASR | `issue-10-audio-convert-plan.md:90-95` (2026-09-22: 硅基流动 transcriptions, get_record 替身与 PyAV 转码两条路径 resolved, 样本为合成正弦) |
-| SnowLuma 网络层探针 | `issue-10-snowluma-probe.md` (安装包 SHA256、挂接边界、2026-09-21 复跑通过) |
+| SnowLuma 网络层探针 | `../../platform/issue-10-snowluma-probe.md` (安装包 SHA256、挂接边界、2026-09-21 复跑通过) |
 
 需用户裁定: 这些条目是否接受历史记录作为验收证据。注意两处边界声明:
-- `issue-10-snowluma-probe.md:28` 探针自述"不等同于完整 SnowLuma 应用启动、真实 QQ、真实模型、ASR 或所有 OneBot 动作验收" — 探针不覆盖范围恰好包含文件上传动作 (与第 1 条咬合)。
-- `issue-10-progress.md:316` "真实 QQ 全链路 (方案裁定为模拟)" — 真实 QQ 侧从未验过, 属方案级裁定而非遗漏。
+- `../../platform/issue-10-snowluma-probe.md:28` 探针自述"不等同于完整 SnowLuma 应用启动、真实 QQ、真实模型、ASR 或所有 OneBot 动作验收" — 探针不覆盖范围恰好包含文件上传动作 (与第 1 条咬合)。
+- `../../platform/issue-10-progress.md:316` "真实 QQ 全链路 (方案裁定为模拟)" — 真实 QQ 侧从未验过, 属方案级裁定而非遗漏。
 
 复核路径: 逐份打开上表行号核对; 如需刷新证据可重跑 `scripts/probe_snowluma.py` (只读、QQ 侧模拟、凭据仅运行时从 `.toolkit/` 读取), 但其不覆盖文件动作与真实 QQ。
 
@@ -131,10 +131,10 @@ grep -rn "talk_value" satrap/ satrap-ui/src/ scripts/ tests/   # 应为空, 仅 
 
 审计原文: "发行检查历史记录证明前端 build, 但未见本轮构建发行包并从安装后的静态服务核验新增页面版本的证据。"
 
-方案依据: `issue-10-plan.md:262`: "release 验收使用新构建的前端资源并检查**打包/静态服务实际加载版本**, 防止 Python 后端已支持 ASR 而**发行包仍带旧页面**。SnowLuma 仍由用户单独安装。"
+方案依据: `../../platform/issue-10-plan.md:262`: "release 验收使用新构建的前端资源并检查**打包/静态服务实际加载版本**, 防止 Python 后端已支持 ASR 而**发行包仍带旧页面**。SnowLuma 仍由用户单独安装。"
 
 现状:
-- 历史证据两条, 均停在开发树内: `issue-10-audit-2026-09-22.md:126` "前端 `npm run build` 成功"; `issue-10-progress.md:313` "后端以 `satrap-ui/dist` 托管构建产物"。两者证明 build 发生过, 均非"安装后的静态服务核验"。
+- 历史证据两条, 均停在开发树内: `issue-10-audit-2026-09-22.md:126` "前端 `npm run build` 成功"; `../../platform/issue-10-progress.md:313` "后端以 `satrap-ui/dist` 托管构建产物"。两者证明 build 发生过, 均非"安装后的静态服务核验"。
 - 仓库**无发行构建流程**: 根目录无 `.spec`/`.iss`/installer 配置; `scripts/` 仅 start/stop-dev、kill-chat-server、probe_snowluma; 仅 `setup.py` + `pyproject.toml` (Python 包元数据)。当前形态为源码/pip 运行, 后端托管仓库内 `satrap-ui/dist`。
 
 复审结论: 事实层属实 (无安装后核验记录), 但存在前提问题需裁定: plan:262 预设"发行包 + 安装后静态服务"形态, 而 Satrap 当前没有安装包构建流程。在源码运行形态下, "发行包带旧页面"风险等价于"干净检出/pip 安装后, 后端托管的 dist 是否为新版构建"; 若确认该形态, 验收方式应改写为"从干净环境安装后核验静态资源版本"。归类: 证据不足成立, 且验收前提需按项目实际分发形态改写。
@@ -146,7 +146,7 @@ ls F:/work/Satrap F:/work/Satrap/scripts/        # 确认无打包配置
 find . -maxdepth 2 -iname "*.spec" -o -iname "*.iss" -o -iname "*installer*"   # 应为空
 ```
 
-读 `issue-10-plan.md:262` 与 `issue-10-progress.md:313` 对比语义差, 并确认 README/setup.py 描述的实际分发方式。
+读 `../../platform/issue-10-plan.md:262` 与 `../../platform/issue-10-progress.md:313` 对比语义差, 并确认 README/setup.py 描述的实际分发方式。
 
 ## 四、测试口径说明
 

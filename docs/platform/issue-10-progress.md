@@ -317,11 +317,11 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ## 2026-09-22 代码审计与整改
 
-对 fix/issue10 全部改动做三视角只读审计 (管线/唤醒, 平台/OneBot/出站, 后端/配置/前端), 方案与逐项验证见 [issue-10-audit-2026-09-22.md](issue-10-audit-2026-09-22.md)。6 批提交 (`d1d4116`…`265db30`) 修复 3 项严重 (群管理写开关不可开启, 平台 reload 异常路径自毁, 空消息 IndexError)、20 项中等与十余项低优先级缺陷, 新增平台入站/配置面 benchmark 并完成热路径优化 (每消息 −58%, 满窗 observe −96%, 50 平台 reload −85%), 清理死代码并合并 5 份模型类型映射。对外行为变化: 附件下载默认校验 TLS (新增 `media_insecure_tls`), `enable_private/enable_group` 保存时校验布尔, 手动唤醒参数错误返回 400。收官回归 1787 passed, 前端全绿, SnowLuma 探针复跑通过。
+对 fix/issue10 全部改动做三视角只读审计 (管线/唤醒, 平台/OneBot/出站, 后端/配置/前端), 方案与逐项验证见 [../archive/issue-10/issue-10-audit-2026-09-22.md](../archive/issue-10/issue-10-audit-2026-09-22.md)。6 批提交 (`d1d4116`…`265db30`) 修复 3 项严重 (群管理写开关不可开启, 平台 reload 异常路径自毁, 空消息 IndexError)、20 项中等与十余项低优先级缺陷, 新增平台入站/配置面 benchmark 并完成热路径优化 (每消息 −58%, 满窗 observe −96%, 50 平台 reload −85%), 清理死代码并合并 5 份模型类型映射。对外行为变化: 附件下载默认校验 TLS (新增 `media_insecure_tls`), `enable_private/enable_group` 保存时校验布尔, 手动唤醒参数错误返回 400。收官回归 1787 passed, 前端全绿, SnowLuma 探针复跑通过。
 
 ## 2026-09-22 语音转写来源与格式兜底
 
-方案见 `issue-10-audio-convert-plan.md`。事实基础: SnowLuma 1.14.17 上报的 record 段文件名为 `<md5>.amr` 但内容是 SILK v3, PyAV 不含 SILK 解码器; SnowLuma/NapCat 提供 `get_record out_format` 服务端转码与 `fetch_ptt_text` 原生转写。
+方案见 `../archive/issue-10/issue-10-audio-convert-plan.md`。事实基础: SnowLuma 1.14.17 上报的 record 段文件名为 `<md5>.amr` 但内容是 SILK v3, PyAV 不含 SILK 解码器; SnowLuma/NapCat 提供 `get_record out_format` 服务端转码与 `fetch_ptt_text` 原生转写。
 
 - `pipeline/audio_convert.py`: `probe_audio` 按魔数 (优先 SILK 签名, 再 amr/wav/ogg/flac/mp3/webm/ftyp) 与扩展名判定编码, 返回 accepted/convertible/reason; `convert_to_wav` 用 PyAV (延迟导入, 缺包缓存为 None) 解码重采样为 16 kHz 单声道 s16 wav, 超过 `max_seconds` 抛 `AudioTooLong`
 - `OneBotAdmin` 新增只读动作 `get_record(file, out_format, max_bytes)` (校验 out_format 枚举, base64 解码, 大小双重上限) 与 `fetch_ptt_text(message_id)` (25 秒超时); 登记 `ADMIN_CAPABILITIES` 但不暴露为群管理工具
@@ -332,7 +332,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ## 2026-09-23 异常传播与日志覆盖整改 (五批收官)
 
-依据 [异常/日志审计](issue-10-exception-logging-audit-2026-09-22.md) 与 [整改方案](issue-10-exception-logging-fix-plan.md), 按批次 1-5 全部落地, 逐项状态映射见审计报告文末"整改状态"。
+依据 [异常/日志审计](../archive/issue-10/issue-10-exception-logging-audit-2026-09-22.md) 与 [整改方案](../archive/issue-10/issue-10-exception-logging-fix-plan.md), 按批次 1-5 全部落地, 逐项状态映射见审计报告文末"整改状态"。
 
 - 批次 1 `fd9a4af`: 平台初始化/启动/停止逐实例隔离, 坏配置不再拖垮整个后端; `_run_task` done callback 把主循环异常退出与静默返回置 ERROR; health 暴露 `adapters_errored` 与逐平台 failed 状态; 替换实例回滚独立兜底并全程留日志
 - 批次 2 `282426c`: WakeTimers 到期复查提交兜底, 复查事件按剩余冷却重排不再零延迟忙循环; 四个 aiocqhttp handler 顶层兜底 (单条坏事件只计数不置 ERROR); OutboundTurns 区分外部取消与 close 取消; 顺带修复既有 benchmark frequency 场景设计缺陷
@@ -344,7 +344,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ## 2026-09-23 残留复核整改 (A/B 两批收官)
 
-依据独立复核意见 (写开关 fail-open / pyright 全库口径 / TLS 全局生效 / 附件总预算 / 事件循环阻塞 / 3.10 超时兼容等) 出具 [修复方案](issue-10-residual-review-fix-plan.md), 批次 A `eb3b712` 与批次 B `8f8f8ae` 全部落地, 逐项状态见方案文末"实施状态"。
+依据独立复核意见 (写开关 fail-open / pyright 全库口径 / TLS 全局生效 / 附件总预算 / 事件循环阻塞 / 3.10 超时兼容等) 出具 [修复方案](../archive/issue-10/issue-10-residual-review-fix-plan.md), 批次 A `eb3b712` 与批次 B `8f8f8ae` 全部落地, 逐项状态见方案文末"实施状态"。
 
 - N1 写开关 fail-open 修复: `ConfigField.validate` bool 宽松分支改显式映射 ("false"/"0"/"no"/"off" → False), 无法识别回退默认值并告警; 经 `load_global` 加载的字符串 "false" 不再被 `bool()` 判真
 - `media_insecure_tls` 收敛: 仅对 `media_trusted_hosts` 登记主机关闭校验, 公网下载始终校验 (原全局生效)
@@ -359,7 +359,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ## 目标审计与复审 (2026-09-23)
 
-[issue-10-goal-audit-2026-09-23.md](issue-10-goal-audit-2026-09-23.md) 以"完整目标验收"为口径审计 (基线 `e683fce`), 结论不通过: 可复现缺陷 A1-A4 (跨群归属核验缺失/自动参与覆盖补全内容/取消清理竞态/无统一输入预算) 与交付缺口 A5-A8 (手动请求持久化/ASR 引用检查/能力状态语义/前端范围)。[issue-10-goal-audit-review-2026-09-23.md](issue-10-goal-audit-review-2026-09-23.md) 逐项复审全部属实, 并将 File 出站分流与 talk_value 映射两条证据不足项升级为"确认缺失"。用户裁定: 该两项补实现 (File 不断言现状必失败; talk_value 不做群活跃度采集), 历史验收记录与发行包核验搁置; 其余 10 项修复方案见 [issue-10-goal-audit-fix-plan.md](issue-10-goal-audit-fix-plan.md) (四批次, 待实施)。方案经 [issue-10-goal-audit-fix-plan-review-2026-09-23.md](issue-10-goal-audit-fix-plan-review-2026-09-23.md) 复审, R1-R8 八条意见全部采纳并修订 (A3 登记改由子任务终态驱动; A2 按事件类别区分合成/真实消息; A1 flag 原子占用与四态; A5 接受事务/降级/发送尝试记录; talk_value 改为配置来源接入 WakeWindow.decide; File/新工具走公共发送路径与连接代次能力缓存; A4 顶层媒体实际裁剪; A8 试算共用决策逻辑与决策点拒绝记录)。
+[../archive/issue-10/issue-10-goal-audit-2026-09-23.md](../archive/issue-10/issue-10-goal-audit-2026-09-23.md) 以"完整目标验收"为口径审计 (基线 `e683fce`), 结论不通过: 可复现缺陷 A1-A4 (跨群归属核验缺失/自动参与覆盖补全内容/取消清理竞态/无统一输入预算) 与交付缺口 A5-A8 (手动请求持久化/ASR 引用检查/能力状态语义/前端范围)。[../archive/issue-10/issue-10-goal-audit-review-2026-09-23.md](../archive/issue-10/issue-10-goal-audit-review-2026-09-23.md) 逐项复审全部属实, 并将 File 出站分流与 talk_value 映射两条证据不足项升级为"确认缺失"。用户裁定: 该两项补实现 (File 不断言现状必失败; talk_value 不做群活跃度采集), 历史验收记录与发行包核验搁置; 其余 10 项修复方案见 [../archive/issue-10/issue-10-goal-audit-fix-plan.md](../archive/issue-10/issue-10-goal-audit-fix-plan.md) (四批次, 待实施)。方案经 [../archive/issue-10/issue-10-goal-audit-fix-plan-review-2026-09-23.md](../archive/issue-10/issue-10-goal-audit-fix-plan-review-2026-09-23.md) 复审, R1-R8 八条意见全部采纳并修订 (A3 登记改由子任务终态驱动; A2 按事件类别区分合成/真实消息; A1 flag 原子占用与四态; A5 接受事务/降级/发送尝试记录; talk_value 改为配置来源接入 WakeWindow.decide; File/新工具走公共发送路径与连接代次能力缓存; A4 顶层媒体实际裁剪; A8 试算共用决策逻辑与决策点拒绝记录)。
 
 ### 目标审计批次 1 (A1/A2/A3)
 
@@ -458,9 +458,14 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ### 复核阻断项修复: TextSplitter 合并窗口的二次复杂度 (2026-09-24)
 
-- 来源: [整改后最终复核](issue-10-goal-audit-final-recheck-2026-09-24.md) 判定 B1-B10 代码验收通过, 但全量单测因 `test_document_upload.py::test_real_http_upload_limits_scope_and_search[control|chat]` 在读响应时超过 15 秒而失败。该项与 B1-B10 差异无关, 是既有性能缺陷: 40 万字符的无分隔中文文本需要 11-23 秒完成切分, 其中绝大部分耗在 `TextSplitter._merge_splits`
+- 来源: [整改后最终复核](../archive/issue-10/issue-10-goal-audit-final-recheck-2026-09-24.md) 判定 B1-B10 代码验收通过, 但全量单测因 `test_document_upload.py::test_real_http_upload_limits_scope_and_search[control|chat]` 在读响应时超过 15 秒而失败。该项与 B1-B10 差异无关, 是既有性能缺陷: 40 万字符的无分隔中文文本需要 11-23 秒完成切分, 其中绝大部分耗在 `TextSplitter._merge_splits`
 - 根因 `satrap/core/utils/text_utils.py`: 合并窗口在每个分块边界用 `current_doc.pop(0)` 逐个从队首弹出, 单次 `pop(0)` 需要搬移整个窗口 (长度可达 `chunk_size`), 于是单个边界成本 O(窗口²), 总成本 O(文档长度 × 窗口大小)。默认分块参数 (chunk_size=1000) 下不明显 (40 万字符 0.15 秒), 知识库上传使用的 `chunk_size=100000` 把它放大到 11-23 秒, 触发上传接口 15 秒读超时
 - 修复: 滑动窗口改为 `collections.deque`, 队首移除使用 `popleft()` (O(1)); 合并/重叠/`total_len` 记账逻辑一行未改。同机实测 (40 万字符, chunk_size=100000, overlap=0): 修复前 11.0 秒 → 修复后 0.122 秒 (变异验证: 改回 `list.pop(0)` 立即回到 11.0 秒); 120 万字符 45 秒 → 0.4 秒; 输出与修复前逐字节一致 (5 组参数快照对比: 无分隔 40 万 / 无分隔默认参数 / 混合段落 / 空格分隔 / 短文本)
 - 回归测试 `tests/unit/test_text_utils.py` (新增 8 项): 两个性能预算用例 (40 万字符 < 3 秒、120 万字符 < 8 秒, 变异后分别变红) + 结果完整性 (块数与拼接还原) + 重叠窗口语义 + 分隔符保留/不保留基线 + 超长单片段强制保留 + 短文本单块 + `split_documents` 顺序
 - 说明: 复核报告的 2081 passed / 7 skipped 与本机 2071-2079 / 19 skipped 的差异来自环境跳过项 (PowerShell 复现、reportlab、Windows 符号链接权限) 与收集数量, 不是回退
 - 附注: 本机存在 `%APPDATA%\Python\Python313\site-packages\satrap` 的已安装副本。从仓库根目录运行 `python -m pytest` 走工作树代码; 从仓库外运行的脚本会导入该副本, 测量性能时必须先确认 `satrap.core.utils.text_utils.__file__`, 否则会把旧实现的结果当成修复后的结果
+
+### 过程文档归档与冗余清理方案 (2026-09-24)
+
+- 本议题的 15 份已完成过程文档 (方案审查 / 语音转写方案 / 三轮审计与整改方案 / 目标审计链 / B1-B10 对照表 / 最终复核) 已移至 `docs/archive/issue-10/`, 仅反映当时状态; 本文件与 [实施方案](issue-10-plan.md), [SnowLuma 探针](issue-10-snowluma-probe.md), [平台接入](platforms.md) 保留在原文档夹作为合并前活文档
+- 审计发现的冗余方向核验与清理方案见 [冗余清理方案](issue-10-redundancy-plan.md) (诊断命名 / 弹窗双面板 / 策略字段契约 / 持久化清单组件)

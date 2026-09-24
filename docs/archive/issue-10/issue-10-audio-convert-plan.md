@@ -82,7 +82,7 @@
 2. `admin.py` 两动作 + 单测
 3. `attachments.py` 分派 + 策略 + 单测
 4. `model_service` 测试端点 + 前端
-5. pyproject extras + `platforms.md` / `configuration.md` / `config.example.yaml` / progress
+5. pyproject extras + `../../platform/platforms.md` / `configuration.md` / `config.example.yaml` / progress
 6. 真实 ASR 验收 (wav base64 替身 → 真实 ASR) + benchmark after
 
 对外行为变化: 已配置 `asr_model` 的 OneBot 实例, 群语音从"不支持的格式"变为经 `get_record` 转码后转写, 每条语音多一次 OneBot 动作调用与一次 ASR 调用; 可用 `voice_transcribe: off` 关闭。
