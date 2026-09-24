@@ -374,3 +374,145 @@ def test_talk_value_allowed_in_group_and_time_overrides():
         "wake_time_rules": [{"start": "08:00", "end": "09:00", "settings": {"wake_talk_value": 0.8}}],
     }
     validate_wake_policy(overrides)
+
+
+# ================= B6: 有效零值先于到期补偿 =================
+
+
+def test_message_threshold_resolution_reports_source_and_override():
+    """有效阈值与来源: 显式优先于映射, talk_value 被显式阈值覆盖时不作为关闭依据"""
+    from satrap.core.pipeline.wake_policy import (
+        NEVER_TRIGGER_THRESHOLD,
+        THRESHOLD_SOURCE_DEFAULT,
+        THRESHOLD_SOURCE_EXPLICIT,
+        THRESHOLD_SOURCE_TALK_VALUE,
+        resolve_message_threshold,
+    )
+
+    default = resolve_message_threshold({})
+    assert (default.threshold, default.source, default.talk_value_effective, default.closed) == (
+        3, THRESHOLD_SOURCE_DEFAULT, False, False,
+    )
+    explicit = resolve_message_threshold({"wake_message_threshold": 5})
+    assert (explicit.threshold, explicit.source, explicit.talk_value_effective, explicit.closed) == (
+        5, THRESHOLD_SOURCE_EXPLICIT, False, False,
+    )
+    mapped = resolve_message_threshold({"wake_talk_value": 0.2})
+    assert (mapped.threshold, mapped.source, mapped.talk_value_effective, mapped.closed) == (
+        8, THRESHOLD_SOURCE_TALK_VALUE, True, False,
+    )
+    zero = resolve_message_threshold({"wake_talk_value": 0})
+    assert zero.closed and zero.talk_value_effective and zero.threshold == NEVER_TRIGGER_THRESHOLD
+    # 反例: 显式阈值存在时 talk_value=0 不是有效关闭, 必须能显示出"被显式阈值覆盖"
+    overridden = resolve_message_threshold({"wake_talk_value": 0, "wake_message_threshold": 3})
+    assert (overridden.threshold, overridden.source, overridden.closed) == (3, THRESHOLD_SOURCE_EXPLICIT, False)
+    assert overridden.talk_value == 0 and overridden.talk_value_effective is False
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_is_not_bypassed_by_max_wait():
+    """反例: talk_value=0 已关闭自动参与, 到期补偿不得绕过关闭"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0, "wake_max_wait": 5,
+    }))
+    window = WakeWindow()
+    item = await event(adapter, "1", text="等很久了")
+    snapshot = window.observe(item, 0)
+    normal = window.decide(item, snapshot, 1)
+    stale = window.decide(item, snapshot, 6, deadline=True)
+    assert normal.triggered is False and stale.triggered is False
+    assert "wake_talk_value=0" in stale.reason and "不触发" in stale.reason
+    # 到期复查重复判定同样不触发, 也不消费窗口
+    assert window.claim(item, snapshot, True, 7, deadline=True) == ()
+
+
+@pytest.mark.asyncio
+async def test_positive_talk_value_still_triggers_on_deadline():
+    """正值映射不受零值关闭影响: 到达最长等待仍按 max_wait 触发"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0.2, "wake_max_wait": 5,
+    }))
+    window = WakeWindow()
+    item = await event(adapter, "1", text="等很久了")
+    snapshot = window.observe(item, 0)
+    assert window.decide(item, snapshot, 1).triggered is False
+    deadline = window.decide(item, snapshot, 6, deadline=True)
+    assert deadline.triggered is True and deadline.rule == "max_wait"
+
+
+@pytest.mark.asyncio
+async def test_explicit_threshold_with_zero_talk_value_keeps_deadline():
+    """显式阈值与 talk_value=0 同时存在时按显式阈值判断, 到期补偿照常生效"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0,
+        "wake_message_threshold": 3, "wake_max_wait": 5,
+    }))
+    window = WakeWindow()
+    item = await event(adapter, "1", text="等很久了")
+    snapshot = window.observe(item, 0)
+    deadline = window.decide(item, snapshot, 6, deadline=True)
+    assert deadline.triggered is True and deadline.rule == "max_wait"
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_max_wait_does_not_wake_real_pipeline():
+    """反例: 真实管线在 talk_value=0 下即使排了到期复查也不调用模型"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0, "wake_max_wait": 0.02,
+    }))
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    await scheduler.execute(await event(adapter, "1", text="等很久了"))
+    manager.handle_call_async.assert_not_awaited()
+    timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
+    assert timed.get_extra("wake_decision") is None
+    await scheduler.execute(timed)
+    manager.handle_call_async.assert_not_awaited()
+    decision = timed.get_extra("wake_decision")
+    assert decision is not None and decision.triggered is False and "wake_talk_value=0" in decision.reason
+    # 未触发不消费正文也不重排: 关闭状态下不会累积定时复查事件
+    await asyncio.sleep(0.05)
+    assert adapter._event_queue.empty()
+    assert len(scheduler.wake_window.peek(timed)) == 1
+    manager.handle_call_async.assert_not_awaited()
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_keeps_mention_and_manual_wake():
+    """talk_value=0 只关闭自动频率参与: 显式 @ 与手动唤醒不受影响"""
+    settings: dict[str, object] = {
+        "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0,
+        "wake_words": ["唤醒"], "wake_max_wait": 0.02,
+    }
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    # 显式 @ 事件不经 decide 自动路径, 直接进入模型
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": "m1",
+        "message_type": "group", "message": [{"type": "at", "data": {"qq": "10"}}, {"type": "text", "data": {"text": "在吗"}}]})
+    await scheduler.execute(adapter._event_queue.get_nowait())
+    manager.handle_call_async.assert_awaited_once()
+    # 手动唤醒同样不受关闭影响
+    manager.handle_call_async.reset_mock()
+    manual = await event(adapter, "m2", text="手动内容")
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+
+    scheduler.manual_wakes.tickets[manual] = ManualWakeTicket("manual-1", ())
+    await scheduler.execute(manual)
+    manager.handle_call_async.assert_awaited_once()
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
+async def test_zero_talk_value_does_not_block_necessity_deadline():
+    """necessity 保持既定语义: 到期补偿在必要性模式下照常触发"""
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
+        "wake_mode": "necessity", "wake_score_threshold": 0.99, "wake_talk_value": 0, "wake_max_wait": 5,
+    }))
+    window = WakeWindow()
+    item = await event(adapter, "1", text="随便聊聊")
+    decision = window.decide(item, window.observe(item, 0), 6, deadline=True)
+    assert decision.triggered is True and decision.rule == "max_wait"

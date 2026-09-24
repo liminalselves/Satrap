@@ -56,3 +56,39 @@ def test_malformed_runtime_structures_are_ignored():
     settings = {"wake_time_rules": [{"start": "bad", "end": "09:00", "settings": {"wake_mode": "frequency"}}, "x"],
                 "wake_group_overrides": {"123": "not-a-dict"}}
     assert "wake_mode" not in resolve_wake_settings(settings, "123")
+
+
+def test_policy_sources_match_the_merge_order():
+    """来源解析与值合并共用同一实现: 重叠时段以列表后项为准, 群覆盖最后生效"""
+    from satrap.core.config.wake_overrides import (
+        SOURCE_GROUP,
+        SOURCE_PLATFORM,
+        SOURCE_TIME_RULE,
+        resolve_wake_policy_sources,
+    )
+
+    settings: dict[str, object] = {
+        "wake_mode": "frequency", "wake_cooldown": 30,
+        "wake_time_rules": [
+            {"start": "08:00", "end": "12:00", "settings": {"wake_max_wait": 10, "wake_cooldown": 60}},
+            {"start": "11:00", "end": "14:00", "settings": {"wake_cooldown": 90}},
+        ],
+        "wake_group_overrides": {"123": {"wake_cooldown": 5}},
+    }
+    validate_wake_policy(settings)
+    noon = datetime(2026, 9, 24, 11, 30)
+    """11:30 落在两条重叠时段内, 用于验证后项覆盖前项"""
+    sources = resolve_wake_policy_sources(settings, "123", noon)
+    resolved = resolve_wake_settings(settings, "123", noon)
+    assert sources["wake_mode"] == {"source": SOURCE_PLATFORM, "source_index": None, "source_label": "平台配置"}
+    # 两条重叠时段按列表后项生效, 群覆盖再覆盖两者
+    time_sources = resolve_wake_policy_sources(settings, "456", noon)
+    assert time_sources["wake_cooldown"]["source"] == SOURCE_TIME_RULE
+    assert time_sources["wake_cooldown"]["source_index"] == 1
+    assert "11:00-14:00" in str(time_sources["wake_cooldown"]["source_label"])
+    assert time_sources["wake_max_wait"]["source_index"] == 0
+    assert sources["wake_cooldown"]["source"] == SOURCE_GROUP and resolved["wake_cooldown"] == 5
+    # 不传群时不应用覆盖, 来源只剩平台与时段
+    assert resolve_wake_policy_sources(settings, "", noon)["wake_cooldown"]["source"] == SOURCE_PLATFORM
+    # 来源字典与值字典键集合一致, 展示不会指向不存在的字段
+    assert set(sources) == set(resolved)

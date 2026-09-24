@@ -9,6 +9,36 @@ import re
 from satrap.core.config.wake_overrides import validate_wake_overrides
 
 
+POLICY_DEFAULTS: dict[str, object] = {
+    "message_text_limit": 2000,
+    "input_text_limit": 20000,
+    "input_media_limit": 8,
+    "wake_mode": "explicit",
+    "wake_message_threshold": 3,
+    "wake_cooldown": 30,
+    "wake_max_wait": 0,
+    "wake_score_threshold": 0.65,
+    "wake_question_weight": 0.55,
+    "wake_address_weight": 0.15,
+    "wake_backlog_weight": 0.30,
+    "wake_reply_penalty": 0.40,
+}
+"""未在配置中出现的策略字段的运行时默认值, 校验与配置界面提示共用同一事实来源"""
+
+
+def _default(key: str) -> object:
+    """
+    读取字段的运行时默认值
+
+    参数:
+    - key: 策略字段名, 必须存在于 POLICY_DEFAULTS
+
+    返回:
+    - object: 默认值
+    """
+    return POLICY_DEFAULTS[key]
+
+
 def validate_event_limits(settings: Mapping[str, object]) -> None:
     """
     校验有限的事件执行容量与等待时间
@@ -35,13 +65,13 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
     - settings: 平台策略配置
     """
     validate_wake_overrides(settings)
-    text_limit = settings.get("message_text_limit", 2000)
+    text_limit = settings.get("message_text_limit", _default("message_text_limit"))
     if isinstance(text_limit, bool) or not isinstance(text_limit, int) or not 64 <= text_limit <= 32000:
         raise ValueError("message_text_limit 必须为 64 到 32000 的整数")
-    input_text = settings.get("input_text_limit", 20000)
+    input_text = settings.get("input_text_limit", _default("input_text_limit"))
     if isinstance(input_text, bool) or not isinstance(input_text, int) or not 1 <= input_text <= 200000:
         raise ValueError("input_text_limit 必须为 1 到 200000 的整数")
-    input_media = settings.get("input_media_limit", 8)
+    input_media = settings.get("input_media_limit", _default("input_media_limit"))
     if isinstance(input_media, bool) or not isinstance(input_media, int) or not 1 <= input_media <= 32:
         raise ValueError("input_media_limit 必须为 1 到 32 的整数")
     for key in ("reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup", "enable_private", "enable_group"):
@@ -67,21 +97,21 @@ def validate_wake_policy(settings: Mapping[str, object]) -> None:
             not isinstance(item, str) or not re.fullmatch(r"(notice|request)(\.[a-z_]+)?", item) for item in cast(list[object], notice_types)
         ):
             raise ValueError("notice_types 必须是最多 64 项的 notice/request 或 notice.<类型>/request.<类型> 列表")
-    mode = settings.get("wake_mode", "explicit")
+    mode = settings.get("wake_mode", _default("wake_mode"))
     if not isinstance(mode, str) or mode not in {"explicit", "frequency", "necessity"}:
         raise ValueError("wake_mode 必须为 explicit, frequency 或 necessity")
-    threshold = settings.get("wake_message_threshold", 3)
+    threshold = settings.get("wake_message_threshold", _default("wake_message_threshold"))
     if isinstance(threshold, bool) or not isinstance(threshold, int) or not 1 <= threshold <= 32:
         raise ValueError("wake_message_threshold 必须为 1 到 32 的整数")
-    cooldown = settings.get("wake_cooldown", 30)
+    cooldown = settings.get("wake_cooldown", _default("wake_cooldown"))
     if isinstance(cooldown, bool) or not isinstance(cooldown, (int, float)) or not math.isfinite(cooldown) or cooldown < 0:
         raise ValueError("wake_cooldown 必须是有限的非负数")
-    max_wait = settings.get("wake_max_wait", 0)
+    max_wait = settings.get("wake_max_wait", _default("wake_max_wait"))
     if isinstance(max_wait, bool) or not isinstance(max_wait, (int, float)) or not math.isfinite(max_wait) or not 0 <= max_wait < 120:
         raise ValueError("wake_max_wait 必须为 0 到 120 之间的有限秒数, 不含 120; 0 表示关闭")
-    for key, default in (("wake_score_threshold", 0.65), ("wake_question_weight", 0.55),
-                         ("wake_address_weight", 0.15), ("wake_backlog_weight", 0.30), ("wake_reply_penalty", 0.40)):
-        value = settings.get(key, default)
+    for key in ("wake_score_threshold", "wake_question_weight", "wake_address_weight",
+                "wake_backlog_weight", "wake_reply_penalty"):
+        value = settings.get(key, _default(key))
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= 1:
             raise ValueError(f"{key} 必须为 0 到 1 的有限数值")
     talk_value = settings.get("wake_talk_value")

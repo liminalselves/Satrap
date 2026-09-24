@@ -4,6 +4,8 @@ import {
   classNameToConfigName,
   filterLogs,
   normalizePlatformSettings,
+  talkValuePriorityHint,
+  validatePlatformPolicyRanges,
   visibleLogs,
 } from './adminMigration';
 
@@ -86,5 +88,43 @@ describe('OneBot 策略表单保存', () => {
       group_whitelist: [], wake_words: [],
     });
     expect(normalizePlatformSettings(type, { group_whitelist: ['123'] }).group_whitelist).toEqual(['123']);
+  });
+});
+
+describe('B10 平台输入预算与 talk_value 往返', () => {
+  it('0 按数字保存, 留空才表示未设置', () => {
+    const zero = normalizePlatformSettings('onebot', { wake_talk_value: '0', input_text_limit: 0, input_media_limit: '2' });
+    // 0 是有效取值: 关闭自动参与 / 预算为 0 由后端范围校验拒绝, 但不能被前端静默删掉
+    expect(zero.wake_talk_value).toBe(0);
+    expect(zero.input_text_limit).toBe(0);
+    expect(zero.input_media_limit).toBe(2);
+    expect('wake_talk_value' in normalizePlatformSettings('onebot', { wake_talk_value: '' })).toBe(false);
+    expect('wake_talk_value' in normalizePlatformSettings('onebot', { wake_talk_value: '   ' })).toBe(false);
+    expect('input_text_limit' in normalizePlatformSettings('onebot', { input_text_limit: undefined })).toBe(false);
+    expect(normalizePlatformSettings('onebot', { wake_talk_value: '0.35' }).wake_talk_value).toBe(0.35);
+  });
+
+  it('范围校验拒绝非法值并给出字段名', () => {
+    expect(validatePlatformPolicyRanges({ wake_talk_value: 0 })).toBeNull();
+    expect(validatePlatformPolicyRanges({ input_text_limit: 1, input_media_limit: 32 })).toBeNull();
+    expect(validatePlatformPolicyRanges({ wake_talk_value: 1.5 })).toContain('发言频率偏好');
+    expect(validatePlatformPolicyRanges({ input_text_limit: 0 })).toContain('输入文本预算');
+    expect(validatePlatformPolicyRanges({ input_text_limit: 200001 })).toContain('输入文本预算');
+    expect(validatePlatformPolicyRanges({ input_media_limit: 2.5 })).toContain('必须为整数');
+    expect(validatePlatformPolicyRanges({ input_media_limit: 33 })).toContain('输入媒体上限');
+    expect(validatePlatformPolicyRanges({ message_text_limit: 32 })).toContain('每条消息文本上限');
+    expect(validatePlatformPolicyRanges({ wake_max_wait: 120 })).toContain('最长等待秒数');
+    expect(validatePlatformPolicyRanges({ wake_talk_value: Number.NaN })).toContain('必须为数字');
+    expect(validatePlatformPolicyRanges({ wake_talk_value: 'abc' })).toContain('必须为数字');
+  });
+
+  it('talk_value 与显式阈值的优先级提示', () => {
+    expect(talkValuePriorityHint({})).toContain('留空表示未设置');
+    expect(talkValuePriorityHint({ wake_talk_value: 0 })).toContain('关闭自动参与');
+    expect(talkValuePriorityHint({ wake_talk_value: 0.5 })).toContain('映射');
+    // 反例: 显式阈值存在时不能显示成"自动参与已关闭"
+    const overridden = talkValuePriorityHint({ wake_talk_value: 0, wake_message_threshold: 3 });
+    expect(overridden).toContain('被显式阈值覆盖');
+    expect(overridden).not.toContain('关闭自动参与');
   });
 });

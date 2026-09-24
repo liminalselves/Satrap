@@ -61,6 +61,45 @@ async def test_saved_revision_must_match_actual_backend_source(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_input_budget_and_talk_value_are_hot_applied(tmp_path: Path):
+    """B10: 输入预算与 talk_value 属逐事件配置, 热更新不重建实例且不改已冻结事件"""
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+
+    async def feed(text: str, message_id: str) -> Any:
+        await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30,
+                                             "message_id": message_id, "message_type": "group",
+                                             "message": [{"type": "text", "data": {"text": text}}]})
+        return adapter._event_queue.get_nowait()
+
+    frozen = await feed("保存前", "1")
+    assert frozen.policy_settings.get("input_text_limit") is None
+    platform["settings"].update({"input_text_limit": 512, "input_media_limit": 3,
+                                 "wake_talk_value": 0, "wake_mode": "frequency"})
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "applied" and result["saved_revision"] == result["active_revision"]
+    # 不重建实例或连接, 只替换配置对象
+    assert _require_manager(backend).get_adapter("bot") is adapter
+    assert adapter.config.settings["input_text_limit"] == 512
+    # 已冻结事件保留其原快照, 下一事件才用新预算与新频率
+    assert frozen.policy_settings.get("input_text_limit") is None
+    fresh = await feed("保存后", "2")
+    assert fresh.policy_settings["input_text_limit"] == 512
+    assert fresh.policy_settings["input_media_limit"] == 3
+    assert fresh.policy_settings["wake_talk_value"] == 0
+    # 新频率立即生效: talk_value=0 的自动参与不触发, 正文留在窗口等待显式唤醒
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(manager)
+    await scheduler.execute(fresh)
+    manager.handle_call_async.assert_not_awaited()
+    decision = fresh.get_extra("wake_decision")
+    assert decision is not None and decision.triggered is False and "wake_talk_value=0" in decision.reason
+    assert len(scheduler.wake_window.peek(fresh)) == 1
+    await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
 async def test_reload_tracks_actual_file_and_updates_new_events_only(tmp_path):
     backend, adapter, path, platform = setup_runtime(tmp_path)
     assert backend.config.source_path == str(path.resolve())

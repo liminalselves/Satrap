@@ -130,6 +130,79 @@ class TestAutomaticPath:
         assert _decision(result)["triggered"] is False
 
 
+class TestPolicySources:
+    """B6/B10: 有效阈值与字段来源必须在试算里可解释, 且与真实生效值一致"""
+
+    @pytest.mark.asyncio
+    async def test_zero_talk_value_closes_automatic_and_deadline(self):
+        """反例: 试算的到期分支同样不得被 talk_value=0 绕过"""
+        settings: dict[str, object] = {"wake_mode": "frequency", "wake_talk_value": 0, "wake_max_wait": 30}
+        payload: dict[str, object] = {
+            "settings": settings, "steps": [{"text": "积压"}, {"text": "还在", "advance_seconds": 40}],
+        }
+        result = await dry_run_wake(payload)
+        threshold = cast(dict[str, Any], _automatic(result)["threshold"])
+        assert threshold["closed"] is True and threshold["value"] is None
+        assert threshold["source"] == "talk_value" and "不补偿" in str(threshold["hint"])
+        for key in ("decision", "deadline_decision"):
+            decision = _decision(result, key)
+            assert decision["triggered"] is False and "wake_talk_value=0" in str(decision["reason"])
+
+    @pytest.mark.asyncio
+    async def test_explicit_threshold_overrides_talk_value_hint(self):
+        """反例: 显式阈值存在时不得把 talk_value=0 显示成关闭, 要显示被覆盖"""
+        settings: dict[str, object] = {
+            "wake_mode": "frequency", "wake_talk_value": 0, "wake_message_threshold": 2, "wake_max_wait": 30,
+        }
+        payload: dict[str, object] = {
+            "settings": settings, "steps": [{"text": "积压"}, {"text": "还在", "advance_seconds": 40}],
+        }
+        result = await dry_run_wake(payload)
+        threshold = cast(dict[str, Any], _automatic(result)["threshold"])
+        assert threshold["overridden"] is True and threshold["closed"] is False
+        assert threshold["value"] == 2 and threshold["source"] == "explicit"
+        assert "被显式 wake_message_threshold 覆盖" in str(threshold["hint"])
+        assert _decision(result, "deadline_decision")["rule"] == "max_wait"
+
+    @pytest.mark.asyncio
+    async def test_sources_report_layer_and_match_resolved_values(self):
+        """来源解析覆盖平台/时段/群与默认值, 数值与 resolved 完全一致"""
+        settings: dict[str, object] = {
+            "wake_mode": "frequency", "input_text_limit": 500, "wake_talk_value": 0.5,
+            "wake_time_rules": [{"start": "09:00", "end": "18:00", "settings": {"wake_cooldown": 90}}],
+            "wake_group_overrides": {"20": {"wake_message_threshold": 4}},
+        }
+        result = await dry_run_wake({"settings": settings, "group_id": "20", "local_time": "14:30",
+                                     "steps": [{"text": "hi"}]})
+        sources = cast(dict[str, dict[str, Any]], result["sources"])
+        resolved = cast(dict[str, Any], result["resolved"])
+        assert sources["input_text_limit"]["source"] == "platform"
+        assert sources["wake_cooldown"]["source"] == "time_rule"
+        assert sources["wake_cooldown"]["source_index"] == 0
+        assert "09:00-18:00" in str(sources["wake_cooldown"]["source_label"])
+        assert sources["wake_message_threshold"]["source"] == "group"
+        assert sources["wake_message_threshold"]["value"] == 4 == resolved["wake_message_threshold"]
+        # 未设置的字段展示运行时默认值, 与校验使用的默认值表一致
+        assert sources["input_media_limit"] == {
+            "value": 8, "source": "builtin_default", "source_index": None, "source_label": "未设置, 使用默认值",
+        }
+        assert sources["wake_score_threshold"]["value"] == result["defaults"]["wake_score_threshold"]
+        for key, entry in sources.items():
+            if key in resolved:
+                assert entry["value"] == resolved[key]
+
+    @pytest.mark.asyncio
+    async def test_sources_are_not_written_into_settings(self):
+        """反例: 来源是展示结果, 不得混回草稿或 resolved 里的持久化字段"""
+        settings: dict[str, object] = {"wake_mode": "frequency", "wake_talk_value": 0.5}
+        result = await dry_run_wake({"settings": settings, "group_id": "20", "local_time": "10:00",
+                                     "steps": [{"text": "hi"}]})
+        resolved = cast(dict[str, Any], result["resolved"])
+        assert "sources" not in resolved and "defaults" not in resolved
+        assert not any(key.startswith("source") for key in resolved)
+        assert "sources" not in settings and "defaults" not in settings
+
+
 class TestExplicitPath:
     @pytest.mark.asyncio
     async def test_mention_and_wake_word(self):

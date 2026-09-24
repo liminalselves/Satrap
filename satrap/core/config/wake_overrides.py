@@ -16,6 +16,14 @@ AUTOMATIC_KEYS = frozenset({
 GROUP_KEYS = AUTOMATIC_KEYS | {"wake_words", "wake_aliases", "reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup"}
 
 
+SOURCE_PLATFORM = "platform"
+"""字段来源: 平台配置本身"""
+SOURCE_TIME_RULE = "time_rule"
+"""字段来源: 本机时段规则"""
+SOURCE_GROUP = "group"
+"""字段来源: 群覆盖"""
+
+
 def _minute(value: object) -> int:
     """
     解析严格的本地时分格式
@@ -30,6 +38,11 @@ def _minute(value: object) -> int:
         raise ValueError("时段边界必须为 HH:MM")
     hour, minute = value.split(":")
     return int(hour) * 60 + int(minute)
+
+
+def _hhmm(minute: int) -> str:
+    """当日分钟数转 HH:MM, 供来源说明展示"""
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def validate_wake_overrides(settings: Mapping[str, object]) -> None:
@@ -75,9 +88,9 @@ class _PreparedPolicy:
 
     def __init__(self, settings: Mapping[str, Any]) -> None:
         self.base: dict[str, Any] = dict(settings)
-        self.periods: list[tuple[int, int, dict[str, Any]]] = []
+        self.periods: list[tuple[int, int, dict[str, Any], int, str]] = []
         rules = settings.get("wake_time_rules", [])
-        for period in cast(list[Any], rules) if isinstance(rules, list) else []:
+        for index, period in enumerate(cast(list[Any], rules) if isinstance(rules, list) else []):
             if not isinstance(period, dict):
                 continue
             entry = cast(dict[str, Any], period)
@@ -87,7 +100,8 @@ class _PreparedPolicy:
                 continue
             overrides = entry.get("settings")
             if isinstance(overrides, dict):
-                self.periods.append((start, end, dict(cast(dict[str, Any], overrides))))
+                label = f"{_hhmm(start)}-{_hhmm(end)} (第 {index + 1} 条时段规则)"
+                self.periods.append((start, end, dict(cast(dict[str, Any], overrides)), index, label))
         groups = settings.get("wake_group_overrides", {})
         self.groups: dict[str, dict[str, Any]] = {
             str(group): dict(cast(dict[str, Any], override))
@@ -120,6 +134,51 @@ def _prepared(settings: Mapping[str, Any]) -> _PreparedPolicy:
     return prepared
 
 
+def _merge(
+    settings: Mapping[str, Any], group_id: str, now: datetime | None, sources: dict[str, dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """
+    按平台, 时段, 群的顺序逐字段合并, 可选同时记录每个字段的有效来源
+
+    参数:
+    - settings: 已校验的平台策略
+    - group_id: 目标群, 空字符串表示不应用覆盖
+    - now: 本机当地时间, 默认读取系统时间
+    - sources: 传入字典时按字段写入 {source, source_index, source_label}
+
+    返回:
+    - dict[str, Any]: 合并后的独立配置副本
+    """
+    prepared = _prepared(settings)
+    resolved = dict(prepared.base)
+    if sources is not None:
+        for key in resolved:
+            sources[key] = {"source": SOURCE_PLATFORM, "source_index": None, "source_label": "平台配置"}
+    if group_id:
+        now = datetime.now().astimezone() if now is None else now
+        minute = now.hour * 60 + now.minute
+        for start, end, overrides, index, label in prepared.periods:
+            matches = start <= minute < end if start < end else minute >= start or minute < end
+            if matches:
+                resolved.update(overrides)
+                if sources is not None:
+                    for key in overrides:
+                        sources[key] = {"source": SOURCE_TIME_RULE, "source_index": index, "source_label": label}
+        override = prepared.groups.get(group_id)
+        if override is not None:
+            resolved.update(override)
+            if sources is not None:
+                for key in override:
+                    sources[key] = {
+                        "source": SOURCE_GROUP, "source_index": None, "source_label": f"群 {group_id} 覆盖",
+                    }
+    for key, value in resolved.items():
+        if isinstance(value, (list, dict)):
+            resolved[key] = deepcopy(cast(object, value))
+    # 只对容器值复制, 标量共享; 避免整份配置 deepcopy 的常量开销
+    return resolved
+
+
 def resolve_wake_settings(settings: Mapping[str, Any], group_id: str, now: datetime | None = None) -> dict[str, Any]:
     """
     按平台, 时段, 群的顺序冻结有效配置
@@ -132,20 +191,24 @@ def resolve_wake_settings(settings: Mapping[str, Any], group_id: str, now: datet
     返回:
     - dict[str, Any]: 独立配置副本, 重叠时段以列表后项为准
     """
-    prepared = _prepared(settings)
-    resolved = dict(prepared.base)
-    if group_id:
-        now = datetime.now().astimezone() if now is None else now
-        minute = now.hour * 60 + now.minute
-        for start, end, overrides in prepared.periods:
-            matches = start <= minute < end if start < end else minute >= start or minute < end
-            if matches:
-                resolved.update(overrides)
-        override = prepared.groups.get(group_id)
-        if override is not None:
-            resolved.update(override)
-    for key, value in resolved.items():
-        if isinstance(value, (list, dict)):
-            resolved[key] = deepcopy(cast(object, value))
-    # 只对容器值复制, 标量共享; 避免整份配置 deepcopy 的常量开销
-    return resolved
+    return _merge(settings, group_id, now, None)
+
+
+def resolve_wake_policy_sources(
+    settings: Mapping[str, Any], group_id: str = "", now: datetime | None = None,
+) -> dict[str, dict[str, Any]]:
+    """
+    解析每个字段的有效来源, 供试算与配置预览展示 (不进入持久化 settings)
+
+    参数:
+    - settings: 已校验的平台策略
+    - group_id: 目标群, 空字符串表示不应用覆盖
+    - now: 本机当地时间, 默认读取系统时间
+
+    返回:
+    - dict[str, dict[str, Any]]: 字段 -> {source, source_index, source_label};
+      与 resolve_wake_settings 共用同一合并实现, 展示结论不会偏离真实生效值
+    """
+    sources: dict[str, dict[str, Any]] = {}
+    _merge(settings, group_id, now, sources)
+    return sources

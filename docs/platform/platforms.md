@@ -273,6 +273,15 @@ wake_group_overrides:
 
 优先级为平台默认值、时段设置、群级设置; 重叠时段按列表顺序覆盖。群级规则只改变唤醒参数, 不改变白名单、权限和会话范围。
 
+### 频率模式的有效阈值与 talk_value
+
+频率模式的条数阈值只有一个有效来源, 按顺序解析: 显式 `wake_message_threshold` (来自平台/时段/群的合并结果) → `wake_talk_value` 映射 → 内置默认 3。解析结果带来源说明, 试算与配置预览据此展示 (`sources` 与 `automatic.threshold`), 不写回持久化配置。
+
+- `wake_talk_value` 为 0 时映射为"任何窗口长度都达不到": 频率模式的正常判断与**到期最长等待**都不触发, `wake_max_wait` 不补偿这一关闭; 窗口正文保留, 仍可由显式 @、唤醒词或手动唤醒处理
+- 合并结果里存在显式 `wake_message_threshold` 时, `wake_talk_value=0` **不是**有效关闭: 阈值取显式值, 界面显示"被显式阈值覆盖"而不是"自动参与已关闭"; 需要停用全部自动参与时设置 `wake_mode: explicit`
+- 正值 `wake_talk_value` 不受影响: 到达最长等待仍按 `max_wait` 触发; `necessity` 模式的评分与到期补偿不受 `wake_talk_value` 影响
+- 输入预算与频率偏好都可在平台表单编辑 (`input_text_limit` 1–200000, 默认 20000; `input_media_limit` 1–32, 默认 8; `wake_talk_value` 0–1)。三者是仅平台级的逐事件配置, 不进入群/时段覆盖, 保存后对下一事件生效, 已冻结事件保留其原策略快照, 不需要重连平台; 表单里留空表示未设置, 0 按数字保存
+
 
 ## 通知与请求事件
 

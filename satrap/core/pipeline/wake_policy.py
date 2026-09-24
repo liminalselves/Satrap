@@ -1,4 +1,5 @@
 """群聊唤醒规则与可解释决策, 不执行模型调用或内容回源"""
+from collections.abc import Mapping
 from dataclasses import dataclass
 import sys
 
@@ -20,6 +21,63 @@ class WakeDecision:
 
 NEVER_TRIGGER_THRESHOLD = sys.maxsize
 """wake_talk_value 为 0 时的映射结果: 任何窗口长度都达不到, 自动参与不触发"""
+
+THRESHOLD_SOURCE_EXPLICIT = "explicit"
+"""阈值来源: 显式 wake_message_threshold"""
+THRESHOLD_SOURCE_TALK_VALUE = "talk_value"
+"""阈值来源: wake_talk_value 映射"""
+THRESHOLD_SOURCE_DEFAULT = "default"
+"""阈值来源: 内置默认值"""
+
+DEFAULT_MESSAGE_THRESHOLD = 3
+"""未设置显式阈值与 wake_talk_value 时的条数阈值"""
+
+
+@dataclass(frozen=True)
+class MessageThreshold:
+    """频率模式的有效阈值与来源, 显式阈值优先于 wake_talk_value 映射"""
+
+    threshold: int
+    source: str
+    label: str
+    talk_value: float | None = None
+    talk_value_effective: bool = False
+    """talk_value 是否为有效来源; 存在显式阈值时为 False, 即"被显式阈值覆盖" """
+
+    @property
+    def closed(self) -> bool:
+        """有效来源是 talk_value=0: 自动参与被关闭, 到期补偿不得绕过"""
+        return self.talk_value_effective and self.threshold == NEVER_TRIGGER_THRESHOLD
+
+
+def resolve_message_threshold(settings: Mapping[str, object]) -> MessageThreshold:
+    """
+    解析频率模式的有效阈值与来源
+
+    参数:
+    - settings: 经平台, 时段, 群合并后的有效配置
+
+    返回:
+    - MessageThreshold: 阈值与来源; 显式 wake_message_threshold 优先,
+      其次 wake_talk_value 映射, 皆无时为内置默认值
+    """
+    explicit = settings.get("wake_message_threshold")
+    raw_talk = settings.get("wake_talk_value")
+    talk_value = float(raw_talk) if isinstance(raw_talk, (int, float)) and not isinstance(raw_talk, bool) else None
+    if explicit is not None:
+        # 类型非法的显式阈值沿用严格校验语义在此暴露, 不静默改用映射或默认值
+        value = int(str(explicit))
+        return MessageThreshold(
+            value, THRESHOLD_SOURCE_EXPLICIT, f"{value} (显式 wake_message_threshold)", talk_value, False,
+        )
+    if talk_value is not None:
+        mapped = map_talk_value_threshold(talk_value)
+        text = "不触发" if mapped == NEVER_TRIGGER_THRESHOLD else str(mapped)
+        return MessageThreshold(
+            mapped, THRESHOLD_SOURCE_TALK_VALUE, f"{text} (由 wake_talk_value={talk_value:g} 映射)", talk_value, True,
+        )
+    return MessageThreshold(DEFAULT_MESSAGE_THRESHOLD, THRESHOLD_SOURCE_DEFAULT, f"{DEFAULT_MESSAGE_THRESHOLD} (默认)", None, False)
+
 
 TALK_VALUE_LADDER: tuple[tuple[float, int], ...] = (
     (1.0, 1),

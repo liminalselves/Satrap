@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/components/ui/Toast';
 import { controlApi } from '@/api/control';
-import type { WakeDryRunDecision, WakeDryRunResult } from '@/api/control';
+import type { WakeDryRunDecision, WakeDryRunResult, WakePolicySource } from '@/api/control';
 
 interface WakeDryRunPanelProps {
   // 当前表单草稿归一化后的完整平台策略; 构造失败时传 undefined 并禁用试算
@@ -25,6 +25,47 @@ function DecisionLine({ label, decision }: { label: string; decision: WakeDryRun
         {decision.rule}: {decision.reason}
         {decision.score !== null && decision.score !== undefined ? ` (得分 ${decision.score.toFixed(2)})` : ''}
       </span>
+    </div>
+  );
+}
+
+const SOURCE_LABELS: Record<WakePolicySource['source'], string> = {
+  platform: '平台设置',
+  time_rule: '时段规则',
+  group: '群覆盖',
+  builtin_default: '默认值',
+};
+
+// 每字段生效值与来源, 让"被时段/群覆盖"和"使用默认值"在界面上可区分
+function SourceTable({ sources }: { sources: Record<string, WakePolicySource> }) {
+  const keys = Object.keys(sources).filter((key) => key.startsWith('wake_') || key.startsWith('input_') || key === 'message_text_limit');
+  if (!keys.length) return null;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left text-xs">
+        <thead className="text-text-secondary">
+          <tr>
+            <th className="py-0.5 pr-2 font-normal">字段</th>
+            <th className="py-0.5 pr-2 font-normal">生效值</th>
+            <th className="py-0.5 font-normal">来源</th>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.map((key) => {
+            const entry = sources[key];
+            const value = entry.value === undefined || entry.value === null ? '未设置' : String(entry.value);
+            return (
+              <tr key={key} className="text-text-primary">
+                <td className="py-0.5 pr-2 font-mono">{key}</td>
+                <td className="py-0.5 pr-2">{value}</td>
+                <td className="py-0.5 text-text-secondary">
+                  {SOURCE_LABELS[entry.source]}{entry.source === 'builtin_default' ? '' : ` · ${entry.source_label}`}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -128,6 +169,20 @@ export function WakeDryRunPanel({ settings }: WakeDryRunPanelProps) {
                 ))}
             </div>
           )}
+          {automatic?.threshold && (
+            <div className="flex items-start gap-2 py-0.5 text-xs" data-testid="wake-threshold-preview">
+              <span className="w-24 shrink-0 text-text-secondary">有效条数阈值</span>
+              <span className="text-text-primary break-all">
+                {automatic.threshold.value === null ? '不触发' : automatic.threshold.value}
+                {` · ${automatic.threshold.label}`}
+              </span>
+              {automatic.threshold.overridden && <Badge variant="warning">被显式阈值覆盖</Badge>}
+              {automatic.threshold.closed && <Badge variant="default">自动参与已关闭</Badge>}
+            </div>
+          )}
+          {automatic?.threshold?.hint && (
+            <div className="text-xs text-text-secondary">{automatic.threshold.hint}</div>
+          )}
           {result.explicit && <DecisionLine label="显式唤醒" decision={result.explicit} />}
           {automatic && (
             <>
@@ -137,6 +192,14 @@ export function WakeDryRunPanel({ settings }: WakeDryRunPanelProps) {
                 窗口有效正文 {automatic.observed} 条 · 冷却剩余 {automatic.cooldown_remaining.toFixed(0)} 秒
               </div>
             </>
+          )}
+          {result.sources && (
+            <details className="pt-1 text-xs" data-testid="wake-source-table">
+              <summary className="cursor-pointer text-text-secondary">策略来源明细</summary>
+              <div className="pt-1">
+                <SourceTable sources={result.sources} />
+              </div>
+            </details>
           )}
         </div>
       )}

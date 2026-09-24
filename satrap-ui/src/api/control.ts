@@ -49,10 +49,32 @@ export interface WakeDryRunDecision {
   score?: number | null;
 }
 
+export interface WakeThresholdPreview {
+  // 关闭时为 null: 有效来源是 wake_talk_value=0
+  value: number | null;
+  source: 'explicit' | 'talk_value' | 'default';
+  label: string;
+  talk_value: number | null;
+  // talk_value 是否真的生效; false 且设置了 talk_value 表示被显式阈值覆盖
+  talk_value_effective: boolean;
+  closed: boolean;
+  overridden: boolean;
+  hint: string;
+}
+
+export interface WakePolicySource {
+  value?: unknown;
+  source: 'platform' | 'time_rule' | 'group' | 'builtin_default';
+  source_index: number | null;
+  source_label: string;
+}
+
 export interface WakeDryRunResult {
   ok: boolean;
   error?: string;
   resolved?: Record<string, unknown>;
+  sources?: Record<string, WakePolicySource>;
+  defaults?: Record<string, unknown>;
   explicit?: WakeDryRunDecision;
   automatic?: {
     mode: string;
@@ -61,6 +83,7 @@ export interface WakeDryRunResult {
     decision: WakeDryRunDecision;
     deadline_decision: WakeDryRunDecision;
     cooldown_remaining: number;
+    threshold?: WakeThresholdPreview;
   };
 }
 

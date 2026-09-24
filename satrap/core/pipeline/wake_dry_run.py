@@ -8,9 +8,9 @@ from datetime import datetime
 from typing import Any, cast
 import re
 
-from satrap.core.config.platform_policy import normalize_group_whitelist, validate_wake_policy
-from satrap.core.config.wake_overrides import resolve_wake_settings
-from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
+from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, validate_wake_policy
+from satrap.core.config.wake_overrides import SOURCE_PLATFORM, resolve_wake_policy_sources, resolve_wake_settings
+from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, evaluate_wake, resolve_message_threshold
 from satrap.core.pipeline.wake_window import PendingText, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageEvent
@@ -21,6 +21,69 @@ MAX_STEP_TEXT = 1000
 MAX_ADVANCE_SECONDS = 3600
 _BASE_NOW = 1_000_000.0
 """试算单调时钟起点, 远大于零避免负值歧义"""
+
+SOURCE_BUILTIN_DEFAULT = "builtin_default"
+"""字段来源: 未在任何一层设置, 使用运行时默认值"""
+
+POLICY_SOURCE_KEYS: tuple[str, ...] = (*POLICY_DEFAULTS, "wake_talk_value")
+"""策略来源解析覆盖的字段: 自动参与参数与输入预算"""
+
+
+def _threshold_preview(settings: dict[str, Any]) -> dict[str, object]:
+    """
+    有效阈值与 wake_talk_value 的关系, 供界面说明映射为何生效或被覆盖
+
+    参数:
+    - settings: 已合并的有效策略
+
+    返回:
+    - dict[str, object]: 阈值, 来源与覆盖提示; 关闭时 value 为 None 且 closed 为 True
+    """
+    resolution = resolve_message_threshold(settings)
+    overridden = resolution.talk_value is not None and not resolution.talk_value_effective
+    return {
+        "value": None if resolution.threshold == NEVER_TRIGGER_THRESHOLD else resolution.threshold,
+        "source": resolution.source, "label": resolution.label,
+        "talk_value": resolution.talk_value, "talk_value_effective": resolution.talk_value_effective,
+        "closed": resolution.closed, "overridden": overridden,
+        "hint": (
+            "wake_talk_value 已被显式 wake_message_threshold 覆盖, 不参与频率判断" if overridden
+            else ("wake_talk_value=0, 自动参与不触发, 最长等待不补偿" if resolution.closed else "")
+        ),
+    }
+
+
+def _source_preview(settings: dict[str, Any], group_id: str, now: datetime) -> dict[str, dict[str, object]]:
+    """
+    逐字段的有效值与来源, 供试算与配置预览展示
+
+    参数:
+    - settings: 平台策略草稿
+    - group_id: 目标群, 空字符串表示不应用覆盖
+    - now: 注入的本地时间
+
+    返回:
+    - dict[str, dict[str, object]]: 字段 -> {value, source, source_index, source_label}
+    """
+    resolved = resolve_wake_settings(settings, group_id, now)
+    sources = resolve_wake_policy_sources(settings, group_id, now)
+    preview: dict[str, dict[str, object]] = {}
+    for key in POLICY_SOURCE_KEYS:
+        origin = sources.get(key)
+        if origin is not None:
+            preview[key] = {"value": resolved.get(key), **origin}
+            continue
+        # 未设置: 展示运行时默认值, 与校验使用的同一张默认值表
+        preview[key] = {
+            "value": POLICY_DEFAULTS.get(key), "source": SOURCE_BUILTIN_DEFAULT,
+            "source_index": None, "source_label": "未设置, 使用默认值",
+        }
+    for key, origin in sources.items():
+        if key in preview or key in {"wake_group_overrides", "wake_time_rules"}:
+            # 覆盖表与时段表是来源本身而不是单值字段, 不回显整份结构
+            continue
+        preview[key] = {"value": resolved.get(key), **origin}
+    return preview
 
 
 def _undetermined(reason: str) -> dict[str, object]:
@@ -208,6 +271,8 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
     return {
         "ok": True,
         "resolved": {key: resolved[key] for key in sorted(resolved) if key.startswith("wake_")},
+        "sources": _source_preview(draft, str(group_id), moment),
+        "defaults": dict(POLICY_DEFAULTS),
         "explicit": explicit,
         "automatic": {
             "mode": str(resolved.get("wake_mode", "explicit")),
@@ -216,5 +281,6 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
             "decision": final_decision,
             "deadline_decision": deadline_decision,
             "cooldown_remaining": round(cooldown_remaining, 3),
+            "threshold": _threshold_preview(resolved),
         },
     }

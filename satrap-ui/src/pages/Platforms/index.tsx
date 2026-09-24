@@ -12,7 +12,7 @@ import { Plus, Edit2, Trash2, RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
 import { backendApi } from '@/api/backend';
 import { edictumApi } from '@/api/edictum';
-import { normalizePlatformSettings, platformSettingsSummary } from '@/utils/adminMigration';
+import { normalizePlatformSettings, platformSettingsSummary, talkValuePriorityHint, validatePlatformPolicyRanges } from '@/utils/adminMigration';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { WakeOverrideEditor } from './WakeOverrideEditor';
 import { WakeDryRunPanel } from './WakeDryRunPanel';
@@ -149,6 +149,14 @@ export function Platforms() {
       toast('error', 'EdictumProvider 必须绑定一个命名配置');
       return;
     }
+    if (formData.type === 'onebot' || formData.type === 'aiocqhttp') {
+      // 输入预算与频率字段先做范围校验, 避免把非法值交给后端才报错
+      const rangeError = validatePlatformPolicyRanges(formData.settings);
+      if (rangeError) {
+        toast('error', rangeError);
+        return;
+      }
+    }
     setSaving(true);
     try {
       if (!draftRevision) throw new Error('请刷新平台配置后重新打开编辑表单');
@@ -217,6 +225,9 @@ export function Platforms() {
       return undefined;
     }
   }, [formData]);
+
+  // talk_value 与显式阈值的优先级提示随阈值输入实时更新
+  const talkValueHint = useMemo(() => talkValuePriorityHint(formData.settings), [formData.settings]);
 
   // 表单字段
   const formFields = useMemo<FormField[]>(() => {
@@ -292,7 +303,10 @@ export function Platforms() {
         { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（可选）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="group" value={value} onChange={set} /> },
         { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区）', type: 'custom', render: (value, set) => <WakeOverrideEditor kind="time" value={value} onChange={set} /> },
         { key: 'settings.wake_cooldown', label: '自动参与冷却秒数', type: 'number', placeholder: '默认 30, 明确唤醒不受此限制' },
+        { key: 'settings.wake_talk_value', label: '发言频率偏好 talk_value（0–1, 留空不设置）', type: 'number', placeholder: talkValueHint },
         { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
+        { key: 'settings.input_text_limit', label: '单条消息输入文本预算（1–200000）', type: 'number', placeholder: '默认 20000 字符; 仅平台级, 超出部分截断并标注' },
+        { key: 'settings.input_media_limit', label: '单条消息输入媒体上限（1–32）', type: 'number', placeholder: '默认 8 张/段; 仅平台级, 不进入群/时段覆盖' },
         { key: 'settings.reply_with_quote', label: '群聊回复引用原消息', type: 'checkbox', placeholder: '默认关闭; 仅对有来源消息 ID 的群聊回复添加引用' },
         { key: 'settings.reply_with_mention', label: '群聊回复 @发送者', type: 'checkbox', placeholder: '默认关闭; 已有 @ 时不重复, 私聊不受影响' },
         { key: 'settings.quote_lookup', label: '回源被引用消息原文', type: 'checkbox', placeholder: '默认开启; 唤醒后按预算 get_msg 获取引用原文作为上下文, 关闭后仅标记引用' },
@@ -332,7 +346,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, previewSettings, sessionClasses]);
+  }, [adapters, asrConfigs, edictumConfigs, editingPlatform, formData.session_provider, formData.type, platforms, previewSettings, sessionClasses, talkValueHint]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -370,6 +384,10 @@ export function Platforms() {
     'settings.wake_max_wait': formData.settings.wake_max_wait ?? '',
     'settings.wake_cooldown': formData.settings.wake_cooldown ?? '',
     'settings.message_text_limit': formData.settings.message_text_limit ?? '',
+    // 0 是有效取值 (关闭自动参与), 只有未设置才回填空字符串
+    'settings.wake_talk_value': formData.settings.wake_talk_value ?? '',
+    'settings.input_text_limit': formData.settings.input_text_limit ?? '',
+    'settings.input_media_limit': formData.settings.input_media_limit ?? '',
     'settings.media_insecure_tls': formData.settings.media_insecure_tls ?? false,
     'settings.media_plaintext_http': formData.settings.media_plaintext_http ?? false,
     'settings.wake_words': Array.isArray(formData.settings.wake_words) ? formData.settings.wake_words.join('\n') : formData.settings.wake_words ?? '',

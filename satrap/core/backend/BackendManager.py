@@ -753,7 +753,8 @@ class BackendManager:
             self.config.platforms = deepcopy(candidates)
             desired = {str(item["id"]): item for item in candidates}
             results: list[dict[str, Any]] = []
-            hot_keys = {"wake_max_wait", "wake_group_overrides", "wake_time_rules", "wake_score_threshold", "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty", "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_aliases", "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private", "asr_model", "voice_transcribe", "attachment_extract", "media_trusted_hosts", "media_insecure_tls", "media_plaintext_http"}
+            # 逐事件生效的字段: 变更只替换配置与策略快照, 不重建实例或连接; 已冻结事件保留其原快照
+            hot_keys = {"wake_max_wait", "wake_group_overrides", "wake_time_rules", "wake_score_threshold", "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty", "wake_mode", "wake_message_threshold", "wake_talk_value", "wake_cooldown", "wake_aliases", "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private", "input_text_limit", "input_media_limit", "message_text_limit", "asr_model", "voice_transcribe", "attachment_extract", "media_trusted_hosts", "media_insecure_tls", "media_plaintext_http"}
             for platform_id in sorted(set(desired) | set(self._platform_active_configs)):
                 candidate = desired.get(platform_id)
                 active = self._platform_active_configs.get(platform_id)

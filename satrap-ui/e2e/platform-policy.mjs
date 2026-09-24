@@ -51,12 +51,23 @@ try {
       return route.fulfill({ headers, json: {
         ok: true,
         resolved: { wake_mode: 'frequency', wake_message_threshold: 2, wake_cooldown: 60 },
+        sources: {
+          input_text_limit: { value: 500, source: 'platform', source_index: null, source_label: '平台配置' },
+          wake_cooldown: { value: 60, source: 'time_rule', source_index: 0, source_label: '09:00-18:00 (第 1 条时段规则)' },
+          wake_score_threshold: { value: 0.65, source: 'builtin_default', source_index: null, source_label: '未设置, 使用默认值' },
+        },
+        defaults: { input_text_limit: 20000, input_media_limit: 8 },
         explicit,
         automatic: {
           mode: 'frequency', observed: 2, steps: [],
           decision: { triggered: true, rule: 'frequency_threshold', reason: '累计有效正文达到阈值', score: null },
           deadline_decision: { triggered: false, rule: 'deadline_wait', reason: '未到最后期限', score: null },
           cooldown_remaining: 0,
+          threshold: {
+            value: 2, source: 'explicit', label: '2 (显式 wake_message_threshold)', talk_value: 0,
+            talk_value_effective: false, closed: false, overridden: true,
+            hint: 'wake_talk_value 已被显式 wake_message_threshold 覆盖, 不参与频率判断',
+          },
         },
       } });
     }
@@ -190,6 +201,76 @@ try {
   assert.deepEqual(writes.at(-1).settings.wake_group_overrides, { '20': { wake_mode: 'necessity', wake_cooldown: 30, wake_words: [] } });
   assert.deepEqual(writes.at(-1).settings.wake_time_rules, [{ start: '23:00', end: '07:00', settings: { wake_talk_value: 0 } }]);
 
+  // ── 批次7: 平台级输入预算与 talk_value 往返 (旧平台: 别名 aiocqhttp 且含未知扩展字段) ──
+  const legacyRow = page.getByText('legacy-bot', { exact: true }).locator('xpath=../..');
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  const talkField = dialog.getByLabel('发言频率偏好 talk_value', { exact: false });
+  const textBudget = dialog.getByLabel('单条消息输入文本预算', { exact: false });
+  const mediaBudget = dialog.getByLabel('单条消息输入媒体上限', { exact: false });
+  // 未设置时留空, 提示里给出默认值与仅平台级的约束
+  assert.equal(await talkField.inputValue(), '');
+  assert.equal(await textBudget.inputValue(), '');
+  assert.equal(await mediaBudget.inputValue(), '');
+  assert.match(await talkField.getAttribute('placeholder'), /留空表示未设置/);
+  assert.match(await mediaBudget.getAttribute('placeholder'), /不进入群\/时段覆盖/);
+  await textBudget.fill('500');
+  await mediaBudget.fill('4');
+  await talkField.fill('0');
+  // 该平台已有显式阈值 5: 提示"被显式阈值覆盖"而不是"自动参与已关闭"
+  const hintWait = (pattern) => page.waitForFunction(([selector, source]) => {
+    const element = document.querySelector(selector);
+    return element instanceof HTMLInputElement && new RegExp(source).test(element.placeholder);
+  }, ['input[id$="settings.wake_talk_value"]', pattern]);
+  await hintWait('被显式阈值覆盖');
+  const overrideHint = await talkField.getAttribute('placeholder');
+  assert.match(overrideHint, /被显式阈值覆盖/);
+  assert.doesNotMatch(overrideHint, /关闭自动参与/);
+  // 反例: 清掉显式阈值后 talk_value=0 才是有效关闭, 提示随输入实时切换
+  const thresholdField = dialog.getByLabel('自动参与消息阈值', { exact: false });
+  await thresholdField.fill('');
+  await hintWait('关闭自动参与');
+  await thresholdField.fill('5');
+  await hintWait('被显式阈值覆盖');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(writes.at(-1).id, 'legacy-bot');
+  assert.equal(writes.at(-1).settings.input_text_limit, 500);
+  assert.equal(writes.at(-1).settings.input_media_limit, 4);
+  // 0 按数字保存, 不能被当作空值丢弃
+  assert.equal(writes.at(-1).settings.wake_talk_value, 0);
+  assert.equal(writes.at(-1).settings.wake_message_threshold, 5);
+  assert.equal(writes.at(-1).settings.extension, 'keep');
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  assert.equal(await dialog.getByLabel('单条消息输入文本预算', { exact: false }).inputValue(), '500');
+  assert.equal(await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).inputValue(), '4');
+  const reopenedTalk = dialog.getByLabel('发言频率偏好 talk_value', { exact: false });
+  assert.equal(await reopenedTalk.inputValue(), '0');
+  // 清空表示未设置: 保存后该键被删除, 其余字段不受影响
+  await reopenedTalk.fill('');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal('wake_talk_value' in writes.at(-1).settings, false);
+  assert.equal(writes.at(-1).settings.input_text_limit, 500);
+  // 范围校验在提交前拦截, 不产生写入也不丢草稿
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  await dialog.getByLabel('发言频率偏好 talk_value', { exact: false }).fill('1.5');
+  const writesBeforeRange = writes.length;
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await page.getByText(/发言频率偏好必须在 0 到 1 之间/).waitFor();
+  assert.equal(writes.length, writesBeforeRange);
+  assert.equal(await dialog.isVisible(), true);
+  assert.equal(await dialog.getByLabel('发言频率偏好 talk_value', { exact: false }).inputValue(), '1.5');
+  // 越界的输入预算同样拦截
+  await dialog.getByLabel('发言频率偏好 talk_value', { exact: false }).fill('');
+  await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).fill('33');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await page.getByText(/输入媒体上限必须在 1 到 32 之间/).waitFor();
+  assert.equal(writes.length, writesBeforeRange);
+  await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).fill('4');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(writes.at(-1).settings.message_text_limit, 1500);
+
   // ── 批次4: 唤醒规则试算预览 ──
   await page.getByTitle('编辑', { exact: true }).first().click();
   const dryRunPanel = dialog.getByTestId('wake-dry-run-panel');
@@ -199,6 +280,18 @@ try {
   await dryRunPanel.getByText('无法判断', { exact: true }).waitFor();
   await dryRunPanel.getByText('触发', { exact: true }).waitFor();
   await dryRunPanel.getByText('wake_mode=frequency', { exact: true }).waitFor();
+  // 批次7: 有效阈值与来源明细必须可见, 覆盖提示不显示成已关闭
+  const thresholdRow = dryRunPanel.getByTestId('wake-threshold-preview');
+  await thresholdRow.waitFor();
+  assert.match(await thresholdRow.innerText(), /2 · 2 \(显式 wake_message_threshold\)/);
+  await thresholdRow.getByText('被显式阈值覆盖', { exact: true }).waitFor();
+  assert.equal(await thresholdRow.getByText('自动参与已关闭', { exact: true }).count(), 0);
+  await dryRunPanel.getByText('wake_talk_value 已被显式 wake_message_threshold 覆盖, 不参与频率判断', { exact: true }).waitFor();
+  const sourceTable = dryRunPanel.getByTestId('wake-source-table');
+  await sourceTable.locator('summary').click();
+  await sourceTable.getByText('时段规则 · 09:00-18:00 (第 1 条时段规则)', { exact: true }).waitFor();
+  await sourceTable.getByText('默认值', { exact: true }).waitFor();
+  await sourceTable.getByText('input_text_limit', { exact: true }).waitFor();
   await dryRunPanel.getByLabel('探测消息').fill('在吗');
   await dryRunPanel.getByRole('button', { name: '运行试算' }).click();
   await dryRunPanel.getByText('不触发', { exact: true }).waitFor();
@@ -239,7 +332,7 @@ try {
   page.off('dialog', navHandler);
 
   assert.deepEqual(errors, []);
-  console.log('PASS: 旧配置/别名, 新配置默认隔离, 列表往返, 空白名单, 错误保留草稿, 键盘与窄屏, 行编辑器, 试算预览, 脏保护');
+  console.log('PASS: 旧配置/别名, 新配置默认隔离, 列表往返, 空白名单, 错误保留草稿, 键盘与窄屏, 行编辑器, 平台级输入预算与 talk_value 往返及优先级提示, 试算预览与来源明细, 脏保护');
 } finally {
   await browser?.close();
   await server.close();

@@ -1,36 +1,12 @@
 """自动参与的有界文本窗口, 只在提交模型调用时消费快照"""
 from collections import OrderedDict
-from collections.abc import Mapping
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
 
 from satrap.core.platform.event import MessageEvent
-from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, map_talk_value_threshold
+from satrap.core.pipeline.wake_policy import WakeDecision, resolve_message_threshold
 from satrap.core.components import Plain
-
-
-def _message_threshold(settings: Mapping[str, Any]) -> tuple[int, str]:
-    """
-    解析频率模式的消息条数阈值与来源说明
-
-    参数:
-    - settings: 经平台, 时段, 群合并后的有效配置
-
-    返回:
-    - tuple[int, str]: 阈值与来源描述; 显式 wake_message_threshold 优先,
-      其次 wake_talk_value 映射, 皆无默认 3
-    """
-    explicit = settings.get("wake_message_threshold")
-    if explicit is not None:
-        return int(explicit), f"{int(explicit)} (显式 wake_message_threshold)"
-    raw = settings.get("wake_talk_value")
-    if raw is not None:
-        value = float(raw)
-        mapped = map_talk_value_threshold(value)
-        text = "不触发" if mapped == NEVER_TRIGGER_THRESHOLD else str(mapped)
-        return mapped, f"{text} (由 wake_talk_value={value:g} 映射)"
-    return 3, "3 (默认)"
 
 
 @dataclass(frozen=True)
@@ -180,16 +156,19 @@ class WakeWindow:
         mode = settings.get("wake_mode", "explicit")
         if mode not in {"frequency", "necessity"}:
             return WakeDecision(False, "explicit_only", "自动参与未启用")
+        resolution = resolve_message_threshold(settings) if mode == "frequency" else None
+        if resolution is not None and resolution.closed:
+            # 有效来源是 talk_value=0: 自动参与已关闭, 到期补偿不绕过关闭
+            return WakeDecision(False, "frequency", f"{resolution.label}, 自动参与不触发")
         last = self._submitted.get(self.key(event))
         if last is not None and now - last < float(settings.get("wake_cooldown", 30)):
             return WakeDecision(False, "cooldown", "自动参与冷却中")
         max_wait = float(settings.get("wake_max_wait", 0))
         if deadline and max_wait > 0 and now - snapshot[0].received_at >= max_wait:
             return WakeDecision(True, "max_wait", "待处理正文达到最长等待时间")
-        if mode == "frequency":
-            threshold, origin = _message_threshold(settings)
-            triggered = len(snapshot) >= threshold
-            return WakeDecision(triggered, "frequency", f"待处理正文 {len(snapshot)} 条, 阈值 {origin}")
+        if resolution is not None:
+            triggered = len(snapshot) >= resolution.threshold
+            return WakeDecision(triggered, "frequency", f"待处理正文 {len(snapshot)} 条, 阈值 {resolution.label}")
         text = "\n".join(item.text for item in snapshot)
         question = float(any(mark in text for mark in ("?", "？", "请问", "怎么", "如何", "为什么", "能否", "是否")))
         addressed = float(any(mark in text for mark in ("你觉得", "你能", "帮我", "帮忙", "请教")))
