@@ -520,3 +520,14 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 文档同步: [运行数据布局](../core/data-layout.md) 增补共用清单原语的位置, 声明项与组件边界
 
 验收: 全量单测 2195 passed / 19 skipped; pyright 全库 0 errors / 1532 warnings (与开工基线逐文件一致); 既有 `test_manual_wake_store.py` 36 项与审批账本既有用例未改动全部通过 (含降级/隔离/恢复反例与锁内重读并发用例)。对外行为变化: 无 (日志文案中隔离失败一行由组件统一前缀输出); 持久化格式, 故障顺序与降级语义保持不变。
+
+### 审计整改 (2026-09-25): 三项 P2
+
+来源: [实施审计](../archive/issue-10/issue-10-redundancy-audit-2026-09-25.md) (b78cd68 入库), 三项各自独立提交; 第 1 项按方案 B 裁定 (保留批次 3 的控件约束, 用显式选项限定关闭范围)。
+
+- 项 1 `3b47f66` 共用表单必填校验: `FormModal` 新增 `noValidate` (默认 false) 恢复浏览器原生必填与控件约束, 只有 Platforms 的策略表单显式关闭 (该表单的提示已由契约校验器与名称检查给 toast)。修复的是批次 3 无条件关闭原生校验导致的回归: 模型配置名称, 用户 ID, 检查点分支名等依赖 `required` 的字段不再被拦截, 空名称会直接发请求。新增 `satrap-ui/e2e/model-form-required.mjs` (别名 `npm run test:e2e:model-form`): 真实页面断言空名称时 `validity.valueMissing` 为真, 不发 `/config/models` 请求且弹窗保持, 填好名称后正常提交; 未修复时该脚本失败 (stash 复原实测), 修复后 PASS
+- 项 2 `a6e5553` 清单写回保留历史信息: `Manifest.payload()` 改为以原始载荷为底, 只用归一化视图覆盖声明字段 —— `expected_files` 的额外键, 顶层额外键与 `degraded` 的嵌套额外键都按原样保留, `normalize_degraded_at` 为假时 `at` 连取值与类型一起写回; `DegradedMarker` 增加读取时的原始嵌套载荷, 主动写入新标记仍按旧行为整体重建。复现与验证: 修复前真实 `RequestApprovalLedger` 降级写入丢掉 `expected_files.future`, 组件读回 `{"reason":"","at":"raw","note":"keep"}` 被改写成 `{"reason":"","at":0.0}`; 修复后两者都逐键保留。测试补旧清单完整写回样例 (顶层/`expected_files`/`degraded` 三处额外键), 新标记替换语义, 真实账本降级写入保留扩展键三条, 并纠正原先把 `at` 变成 0.0 写成期望的断言; 存储侧归一化丢弃规则不变
+- 项 3 `08ed980` 长度口径: 前端 `wakePolicyContract` 新增 `textLength` (`Array.from(...).length`), 文本字段与列表项都不再用 `string.length` (UTF-16 码元), 与后端 `len()` 的码点口径一致, 含 emoji 或扩展区汉字的合法 ASR 名称不再被误拒。共享样例 `tests/fixtures/wake_policy_cases.json` 新增 4 例非 BMP 边界 (码点 128 合法 / 129 非法, 列表项 253 / 254), 前后端各跑同一份 JSON: 未修复时前端两条合法样例失败, 后端 87 项全过; 两侧另各补一条口径断言, 防止任一侧换成码元或字节
+- 文档同步: [平台接入](platforms.md) 取值口径补文本长度一行与两侧实现说明; [运行数据布局](../core/data-layout.md) 写明嵌套额外键与不解释 `at` 的写回口径; [测试指南](../development/testing.md) 补新 e2e 脚本与别名; 审计文档归档并标注整改结论
+
+验收: 全量单测 2203 passed / 19 skipped (较整改前 +8: 清单 3 项, 共享样例 4 项, 码点口径 1 项); pyright 全库 0 errors / 1532 warnings (仍与基线逐文件一致); 前端 tsc 0 / eslint 0 / vitest 195 绿; Playwright `test:e2e:platform`, `test:e2e:wake`, `test:e2e:model-form` 三个脚本 PASS; 契约同步 `--check` 通过且生成物未变。对外行为变化: 其他页面的必填约束恢复为浏览器原生拦截 (与批次 3 之前一致), 平台策略表单维持应用侧提示; 账本清单写回不再丢历史键; 前端长度校验放宽到与后端同口径 (只影响含非 BMP 字符的边界取值)。
