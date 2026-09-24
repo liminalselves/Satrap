@@ -455,3 +455,12 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 未修改代码的发现: 聊天页 `RunRecovery` 在聊天接口返回缺少 `runs` 字段的响应时整页渲染失败 (数据路由下显示 "Unexpected Application Error!"), 该组件查询的是执行记录, 不在本批次范围内, 未改动; 已在对照表记录为剩余限制
 
 验收: 前端 vitest 94 绿 / tsc 0 error / eslint 0 / build 成功; platform-policy、manual-wake、chat-reconnect 三个 Playwright 脚本 PASS; 后端未改动, 全量单测与 pyright 复核结果见下方最终对照表。对外行为变化: 平台编辑弹窗的行校验由"静默忽略"改为"保留并报错, 阻止提交"; 站内导航与浏览器前进/后退现在也会触发未保存确认; 平台页与手动唤醒弹窗新增请求阶段诊断面板。
+
+### 复核阻断项修复: TextSplitter 合并窗口的二次复杂度 (2026-09-24)
+
+- 来源: [整改后最终复核](issue-10-goal-audit-final-recheck-2026-09-24.md) 判定 B1-B10 代码验收通过, 但全量单测因 `test_document_upload.py::test_real_http_upload_limits_scope_and_search[control|chat]` 在读响应时超过 15 秒而失败。该项与 B1-B10 差异无关, 是既有性能缺陷: 40 万字符的无分隔中文文本需要 11-23 秒完成切分, 其中绝大部分耗在 `TextSplitter._merge_splits`
+- 根因 `satrap/core/utils/text_utils.py`: 合并窗口在每个分块边界用 `current_doc.pop(0)` 逐个从队首弹出, 单次 `pop(0)` 需要搬移整个窗口 (长度可达 `chunk_size`), 于是单个边界成本 O(窗口²), 总成本 O(文档长度 × 窗口大小)。默认分块参数 (chunk_size=1000) 下不明显 (40 万字符 0.15 秒), 知识库上传使用的 `chunk_size=100000` 把它放大到 11-23 秒, 触发上传接口 15 秒读超时
+- 修复: 滑动窗口改为 `collections.deque`, 队首移除使用 `popleft()` (O(1)); 合并/重叠/`total_len` 记账逻辑一行未改。同机实测 (40 万字符, chunk_size=100000, overlap=0): 修复前 11.0 秒 → 修复后 0.122 秒 (变异验证: 改回 `list.pop(0)` 立即回到 11.0 秒); 120 万字符 45 秒 → 0.4 秒; 输出与修复前逐字节一致 (5 组参数快照对比: 无分隔 40 万 / 无分隔默认参数 / 混合段落 / 空格分隔 / 短文本)
+- 回归测试 `tests/unit/test_text_utils.py` (新增 8 项): 两个性能预算用例 (40 万字符 < 3 秒、120 万字符 < 8 秒, 变异后分别变红) + 结果完整性 (块数与拼接还原) + 重叠窗口语义 + 分隔符保留/不保留基线 + 超长单片段强制保留 + 短文本单块 + `split_documents` 顺序
+- 说明: 复核报告的 2081 passed / 7 skipped 与本机 2071-2079 / 19 skipped 的差异来自环境跳过项 (PowerShell 复现、reportlab、Windows 符号链接权限) 与收集数量, 不是回退
+- 附注: 本机存在 `%APPDATA%\Python\Python313\site-packages\satrap` 的已安装副本。从仓库根目录运行 `python -m pytest` 走工作树代码; 从仓库外运行的脚本会导入该副本, 测量性能时必须先确认 `satrap.core.utils.text_utils.__file__`, 否则会把旧实现的结果当成修复后的结果

@@ -134,7 +134,7 @@
 
 | 门禁 | 命令 | 结果 |
 | --- | --- | --- |
-| 后端单测 | `python -m pytest tests/unit -q` | 2071 passed / 19 skipped (跳过项为集成开关、缺 reportlab、Windows 符号链接权限) |
+| 后端单测 | `python -m pytest tests/unit -q` | 2079 passed / 19 skipped (含切分器新增 8 项; 跳过项为集成开关、缺 reportlab、Windows 符号链接权限) |
 | 类型检查 | `python -m pyright -p .pyrightcfg` | 0 errors / 1532 warnings (与开工基线一致, 未新增) |
 | 前端类型 | `node ./node_modules/typescript/bin/tsc --noEmit` | 0 error |
 | 前端单测 | `node ./node_modules/vitest/vitest.mjs run` | 18 文件 / 94 passed |
@@ -143,7 +143,22 @@
 | 浏览器回归 | `node e2e/platform-policy.mjs` / `e2e/manual-wake.mjs` / `e2e/chat-reconnect.mjs` | 三个脚本 PASS |
 | 空白检查 | `git diff --check` | 通过 |
 
-基线对照: 方案记录的开工基线为后端 1999 passed / 7 skipped、pyright 0 errors / 1532 warnings、前端 90 passed。本轮新增用例后为后端 2071 passed / 19 skipped、前端 94 passed; skipped 的增加来自既有集成开关用例的收集方式, 不是新增跳过。
+基线对照: 方案记录的开工基线为后端 1999 passed / 7 skipped、pyright 0 errors / 1532 warnings、前端 90 passed。B1-B10 完成后为后端 2071 passed / 19 skipped、前端 94 passed; skipped 的增加来自既有集成开关用例的收集方式, 不是新增跳过。
+
+### 复核阻断项修复: TextSplitter 合并窗口 (追加)
+
+[整改后最终复核](issue-10-goal-audit-final-recheck-2026-09-24.md) 判定 B1-B10 代码验收通过, 但指出全量单测仍有 2 项失败: `test_document_upload.py::test_real_http_upload_limits_scope_and_search[control|chat]` 在读响应时超过 15 秒。该项与 B1-B10 差异无关, 是既有性能缺陷, 已单独修复:
+
+| 项 | 内容 |
+| --- | --- |
+| 根因 | `satrap/core/utils/text_utils.py` 的 `_merge_splits` 用 `current_doc.pop(0)` 逐个从队首弹出合并窗口, 单次搬移整个窗口 (长度可达 `chunk_size`), 单边界成本 O(窗口²), 总成本 O(文档长度 × 窗口大小) |
+| 触发条件 | 无分隔长文本 + 大窗口: 知识库上传使用 `chunk_size=100000`, 40 万字符需 11-23 秒; 默认 `chunk_size=1000` 时同一文本仅 0.15 秒 |
+| 修复 | 滑动窗口改为 `collections.deque` + `popleft()` (O(1)); 合并、重叠与 `total_len` 记账逻辑未改 |
+| 实测 | 40 万字符: 11.0 秒 → 0.122 秒; 120 万字符: 45 秒 → 0.4 秒; 5 组参数快照输出与修复前逐字节一致 |
+| 反例测试 | `tests/unit/test_text_utils.py` (新增 8 项): 两个性能预算用例 (40 万 < 3 秒、120 万 < 8 秒) + 结果完整性 + 重叠语义 + 分隔符基线 + 超长单片段 + 短文本 + `split_documents` 顺序; 变异验证: 改回 `list.pop(0)` 后两个预算用例都变红 |
+| 复跑 | `tests/unit/test_document_upload.py::test_real_http_upload_limits_scope_and_search` 两个参数组由失败转为通过 (9.4 秒); 后端全量 2079 passed / 19 skipped; pyright 0 errors / 1532 warnings |
+
+复核环境报告的 `2081 passed / 7 skipped` 与本机 `2071-2079 / 19 skipped` 的差异来自环境跳过项 (PowerShell 复现、缺 `reportlab`、Windows 符号链接权限) 与收集方式, 不是回退。
 
 ## 4. 复审反例的复跑结论
 
