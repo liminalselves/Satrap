@@ -176,8 +176,9 @@ class TestExtraKeyAndDegradedSemantics:
                               "expected_files": {"entries": "present"}, "degraded": {"reason": "", "at": "raw"}}, lenient)
         assert manifest.degraded is not None
         assert manifest.degraded.reason == ""
-        # at 不被解释: 保持 0 而不是尝试转换
+        # 归一化视图不解释 at, 写回时按原值写回而不是替换成 0
         assert manifest.degraded.at == 0.0
+        assert manifest.payload()["degraded"] == {"reason": "", "at": "raw"}
 
     def test_degraded_at_normalized_when_spec_requires(self):
         assert _manifest(_payload(degraded={"reason": "x"})).degraded is not None
@@ -328,11 +329,12 @@ class TestFrozenManifestSamples:
                                   "expected_files": {"entries": "present"}, "degraded": None, "history": ["kept"]}
         manifest = _manifest(sample, LEDGER_SPEC)
         assert manifest.expected == {"entries": "present"}
-        # 账本保留历史额外键, 降级原因允许空串且不解释 at
-        assert manifest.payload()["history"] == ["kept"]
+        # 账本保留历史额外键: 无改动时写回与读入逐键一致
+        assert manifest.payload() == sample
         lenient = _manifest({**sample, "degraded": {"reason": "", "at": "raw", "note": "x"}}, LEDGER_SPEC)
         assert lenient.degraded is not None and lenient.degraded.reason == ""
-        assert lenient.payload()["degraded"] == {"reason": "", "at": 0.0}
+        # 降级原因允许空串, 不解释 at, 嵌套额外键按原值写回
+        assert lenient.payload() == {**sample, "degraded": {"reason": "", "at": "raw", "note": "x"}}
         # 账本要求 entries 恒为 present: 其它取值仍是清单损坏
         with pytest.raises(ValueError):
             _manifest({**sample, "expected_files": {"entries": "missing"}}, LEDGER_SPEC)
@@ -340,6 +342,33 @@ class TestFrozenManifestSamples:
             _manifest({**sample, "degraded": {"reason": None}}, LEDGER_SPEC)
         with pytest.raises(ValueError):
             _manifest({**sample, "version": 2}, LEDGER_SPEC)
+
+    def test_ledger_snapshot_write_back_keeps_all_extra_keys(self):
+        """旧清单完整写回: 顶层, expected_files 与 degraded 的额外键都要原样保留"""
+        sample: dict[str, Any] = {
+            "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
+            "expected_files": {"entries": "present", "future": "keep"},
+            "degraded": {"reason": "", "at": "raw", "note": "keep"},
+            "history": ["kept"],
+        }
+        manifest = _manifest(sample, LEDGER_SPEC)
+        assert manifest.payload() == sample
+        # 声明键仍以归一化视图为准, 额外键不参与判定
+        assert manifest.expected == {"entries": "present"}
+        assert manifest.degraded is not None and manifest.degraded.at == 0.0
+
+    def test_active_marker_replaces_nested_payload_only(self):
+        """主动写入新降级标记时按旧行为整体替换标记, 其它位置的额外键不受影响"""
+        sample: dict[str, Any] = {
+            "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
+            "expected_files": {"entries": "present", "future": "keep"},
+            "degraded": {"reason": "old", "at": 5.0, "note": "drop"},
+            "history": ["kept"],
+        }
+        payload = _manifest(sample, LEDGER_SPEC).with_degraded("probe", 9.0).payload()
+        assert payload["degraded"] == {"reason": "probe", "at": 9.0}
+        assert payload["expected_files"] == {"entries": "present", "future": "keep"}
+        assert payload["history"] == ["kept"]
 
 
 class TestFreshManifest:
@@ -484,6 +513,25 @@ class TestStorageDecisions:
         migrated = RequestApprovalLedger(tmp_path / "request_ledger.json")
         assert migrated.degraded is False
         assert json.loads((tmp_path / "request_ledger.manifest.json").read_text(encoding="utf-8"))["expected_files"] == {"entries": "present"}
+
+    def test_ledger_degrade_write_keeps_manifest_extras(self, tmp_path: Path):
+        """真实降级写入不得丢掉旧清单的 expected_files 与顶层扩展键"""
+        ledger = RequestApprovalLedger(tmp_path / "request_ledger.json")
+        assert ledger.degraded is False
+        (tmp_path / "request_ledger.manifest.json").write_text(json.dumps({
+            "version": 1, "initialized_at": 1.0, "updated_at": 2.0,
+            "expected_files": {"entries": "present", "future": "keep"},
+            "degraded": None, "history": ["kept"],
+        }, ensure_ascii=False), encoding="utf-8")
+        restarted = RequestApprovalLedger(tmp_path / "request_ledger.json")
+        assert restarted.degraded is False
+        assert restarted._mark_degraded("probe", "审计反例: 降级写入") is True
+        rewritten = json.loads((tmp_path / "request_ledger.manifest.json").read_text(encoding="utf-8"))
+        assert rewritten["expected_files"] == {"entries": "present", "future": "keep"}
+        assert rewritten["history"] == ["kept"]
+        # 标记是本次新写入的: 按声明字段生成, 带真实时间
+        assert rewritten["degraded"]["reason"] == "probe"
+        assert rewritten["degraded"]["at"] > 0
 
     def test_ledger_recover_failure_keeps_degraded(self, tmp_path: Path):
         path = tmp_path / "request_ledger.json"

@@ -4,7 +4,8 @@
 容量与恢复语义, 也不缓存业务状态; 各存储的格式差异按声明传入:
 
 - `expected_files` 的必需键与允许状态
-- 额外键语义 (归一化时丢弃还是按原样保留) 与降级原因的严格程度
+- 额外键语义 (归一化时丢弃还是按原样保留, 含 `expected_files` 与 `degraded` 的嵌套额外键)
+  与降级原因的严格程度
 - 事务上下文 (FileLock 的持有方式与嵌套深度不变)
 
 "先持久降级标记, 后隔离文件"的顺序在 `degrade_then_quarantine` 内固定: 标记写失败时不隔离任何文件,
@@ -33,9 +34,10 @@ class ManifestSpec:
     属性:
     - version: 清单版本, 读取时严格比对
     - expected_files: 必需键与该键允许的文件状态
-    - keep_extra_keys: 写回时是否保留未声明的额外键 (归一化视图始终只含声明键)
+    - keep_extra_keys: 写回时是否保留未声明的额外键, 含 expected_files 与 degraded 里的嵌套键
+      (归一化视图始终只含声明键)
     - degraded_requires_reason: degraded.reason 是否必须为非空字符串 (False 时只要求是字符串)
-    - normalize_degraded_at: 是否把 degraded.at 归一化为 float (False 时不解释该字段)
+    - normalize_degraded_at: 是否把 degraded.at 归一化为 float (False 时不解释该字段, 写回原值)
     """
 
     version: int
@@ -47,10 +49,12 @@ class ManifestSpec:
 
 @dataclass(frozen=True)
 class DegradedMarker:
-    """持久降级标记: 脱敏原因码与记录时间"""
+    """持久降级标记: 脱敏原因码, 记录时间与读取到的原始嵌套载荷"""
 
     reason: str
     at: float
+    raw: dict[str, Any] | None = None
+    """读取时的原始嵌套载荷; None 表示本轮新写入的标记, 写回时按声明字段重建"""
 
 
 @dataclass(frozen=True)
@@ -70,27 +74,43 @@ class Manifest:
         return self.spec.version
 
     def payload(self) -> dict[str, Any]:
-        """写回载荷: 声明字段按归一化视图生成, 额外键只在 spec 允许时保留"""
-        marker = self.degraded
-        payload: dict[str, Any] = {
-            "version": self.spec.version,
-            "initialized_at": self.initialized_at,
-            "updated_at": self.updated_at,
-            "expected_files": dict(self.expected),
-            "degraded": None if marker is None else {"reason": marker.reason, "at": marker.at},
-        }
-        if self.spec.keep_extra_keys:
-            for key, value in self.raw.items():
-                if key not in payload:
-                    payload[key] = value
+        """写回载荷: 原始载荷为底, 声明字段按归一化视图覆盖, 额外键只在 spec 允许时保留"""
+        payload: dict[str, Any] = dict(self.raw) if self.spec.keep_extra_keys else {}
+        payload["version"] = self.spec.version
+        payload["initialized_at"] = self.initialized_at
+        payload["updated_at"] = self.updated_at
+        payload["expected_files"] = self._expected_payload()
+        payload["degraded"] = self._degraded_payload()
         return payload
+
+    def _expected_payload(self) -> dict[str, Any]:
+        """声明键以归一化视图为准, 原始 expected_files 里的额外键按原样保留"""
+        if not self.spec.keep_extra_keys:
+            return dict(self.expected)
+        original = self.raw.get("expected_files")
+        if not isinstance(original, dict):
+            return dict(self.expected)
+        return {**cast(dict[str, Any], original), **self.expected}
+
+    def _degraded_payload(self) -> dict[str, Any] | None:
+        """读取到的标记按原始载荷写回 (不解释 at 时连取值与类型都不改写), 新标记按声明字段生成"""
+        marker = self.degraded
+        if marker is None:
+            return None
+        if marker.raw is not None and self.spec.keep_extra_keys:
+            merged: dict[str, Any] = dict(marker.raw)
+            merged["reason"] = marker.reason
+            if self.spec.normalize_degraded_at:
+                merged["at"] = marker.at
+            return merged
+        return {"reason": marker.reason, "at": marker.at}
 
     def with_expected(self, states: Mapping[str, str]) -> Manifest:
         """更新 expected_files 状态, 返回新清单 (调用方不得就地改动清单)"""
         return replace(self, expected={**self.expected, **states})
 
     def with_degraded(self, reason: str, at: float) -> Manifest:
-        """写入降级标记并刷新更新时间, 返回新清单"""
+        """写入降级标记并刷新更新时间, 返回新清单 (标记按声明字段重建, 读取到的嵌套额外键不再保留)"""
         return replace(self, degraded=DegradedMarker(reason=reason, at=at), updated_at=at)
 
     def with_updated_at(self, at: float) -> Manifest:
@@ -159,7 +179,7 @@ def validate_manifest(raw: object, spec: ManifestSpec) -> Manifest:
 
 
 def _parse_degraded(raw: object, spec: ManifestSpec) -> DegradedMarker | None:
-    """解析降级标记: 原因严格程度与时间归一化按 spec 决定"""
+    """解析降级标记: 原因严格程度与时间归一化按 spec 决定, 原始载荷留待写回时按原样保留"""
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -169,7 +189,7 @@ def _parse_degraded(raw: object, spec: ManifestSpec) -> DegradedMarker | None:
     if not isinstance(reason, str) or (spec.degraded_requires_reason and not reason):
         raise ValueError("清单降级原因非法")
     at = float(data.get("at") or 0.0) if spec.normalize_degraded_at else 0.0
-    return DegradedMarker(reason=reason, at=at)
+    return DegradedMarker(reason=reason, at=at, raw=dict(data))
 
 
 class DurabilityManifest:
