@@ -31,7 +31,7 @@ from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
-from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES
+from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES, parse_stages
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
@@ -599,19 +599,22 @@ class BackendManager:
 
         参数:
         - adapter_id: 可选适配器实例 ID, 缺省跨实例按时间合并
-        - stage: 只保留包含该阶段的请求
+        - stage: 阶段过滤, 多个阶段用逗号分隔, 命中任一阶段即保留该请求; 空串不过滤
         - request_id: 只保留该请求
         - limit: 返回请求数上限
 
         返回:
         - dict[str, Any]: 摘要列表与容量信息; 调度器未装配时显式标记不可用
+
+        异常:
+        - ValueError: stage 含空项或未知阶段
         """
         scheduler = self._scheduler
         if scheduler is None:
             return {"records": [], "available": False, "reason": "scheduler_unavailable"}
         return {
             "records": scheduler.request_diagnostics.list_requests(
-                adapter_id, stage=stage, request_id=request_id, limit=limit,
+                adapter_id, stages=parse_stages(stage), request_id=request_id, limit=limit,
             ),
             "available": True,
             **scheduler.request_diagnostics.stats(adapter_id),

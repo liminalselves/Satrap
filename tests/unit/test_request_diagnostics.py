@@ -257,8 +257,10 @@ class TestDiagnosticBounds:
             adapter_id="ob", session_id="s", actor_id="a", stage="send", decision="sent",
             reason="ok", recorded_at=_NOW + 1, request_id="r2", status="sent",
         ))
-        assert [item["request_id"] for item in log.list_requests("ob", stage="send")] == ["r2"]
-        assert [item["request_id"] for item in log.list_requests("ob", stage="wake_decision")] == ["r1"]
+        assert [item["request_id"] for item in log.list_requests("ob", stages=frozenset({"send"}))] == ["r2"]
+        assert [item["request_id"] for item in log.list_requests("ob", stages=frozenset({"wake_decision"}))] == ["r1"]
+        # 多值取并集: 命中任一阶段即保留该请求
+        assert {item["request_id"] for item in log.list_requests("ob", stages=frozenset({"send", "wake_decision"}))} == {"r1", "r2"}
         assert log.list_requests("ob", request_id="r2")[0]["stages"] == ["send"]
 
     def test_diagnostics_never_carry_body_text(self, tmp_path: Path):
@@ -370,3 +372,91 @@ class TestDiagnosticRoutes:
             assert send_status == "skipped"
         status, body = await server._route("GET", "/api/platforms/wake/diagnostics?stage=send", b"")
         assert status == 200 and len(cast(list[Any], body["records"])) == 2
+
+    @staticmethod
+    def _seed_rejections(scheduler: PipelineScheduler) -> None:
+        """生产形态的拒绝与执行记录: 有效 request_id, 决策拒绝与限流各一条"""
+        seeded = (
+            ("req-rejected", "wake_decision", "not_woken"),
+            ("req-limited", "rate_limit", "rate_limited"),
+            ("req-cooldown", "wake_decision", "cooldown"),
+        )
+        for index, (request_id, stage, reason_code) in enumerate(seeded):
+            scheduler.request_diagnostics.record(RequestDiagnostic(
+                adapter_id="ob", session_id="group%20", actor_id="30", stage=stage, decision="dropped",
+                reason=f"{reason_code}: 测试", recorded_at=_NOW + index, request_id=request_id, reason_code=reason_code,
+            ))
+        # 被拒绝后经定时复查执行的请求: 两侧都按"该请求曾被拒绝"命中
+        scheduler.request_diagnostics.record(RequestDiagnostic(
+            adapter_id="ob", session_id="group%20", actor_id="30", stage="wake_decision", decision="dropped",
+            reason="no_pending: 测试", recorded_at=_NOW + 4, request_id="req-resumed", reason_code="no_pending",
+        ))
+        scheduler.request_diagnostics.record(RequestDiagnostic(
+            adapter_id="ob", session_id="group%20", actor_id="30", stage="send", decision="ok",
+            reason="业务段 已确认 1 未确认 0 失败 0", recorded_at=_NOW + 5, request_id="req-resumed",
+            reason_code="all_segments_confirmed", status="sent",
+        ))
+
+    @staticmethod
+    def _request_ids(body: dict[str, Any]) -> set[str]:
+        """摘要或记录响应里的 request_id 集合"""
+        return {str(item["request_id"]) for item in cast(list[dict[str, Any]], body["records"])}
+
+    @pytest.mark.asyncio
+    async def test_stage_filter_multi_value_and_validation(self, tmp_path: Path):
+        """stage 支持逗号分隔多值: 命中任一阶段即保留请求, 但仍返回该请求全部阶段"""
+        server, _, scheduler, _ = self._server(tmp_path)
+        self._seed_rejections(scheduler)
+        single = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=send", b"")
+        assert self._request_ids(single[1]) == {"req-resumed"}
+        preset = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=wake_decision,rate_limit", b"")
+        assert self._request_ids(preset[1]) == {"req-rejected", "req-limited", "req-cooldown", "req-resumed"}
+        # 命中过滤的请求返回全部阶段, 不裁掉执行阶段明细
+        limited = [item for item in cast(list[dict[str, Any]], preset[1]["records"]) if item["request_id"] == "req-resumed"]
+        assert limited[0]["stages"] == ["wake_decision", "send"]
+        # 重复取值去重, 首尾空白容错
+        duplicate = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=send,send", b"")
+        assert self._request_ids(duplicate[1]) == {"req-resumed"}
+        spaced = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=%20send%20,%20model%20", b"")
+        assert self._request_ids(spaced[1]) == self._request_ids(single[1])
+        # 空参数不过滤: 与缺省一致
+        empty = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=", b"")
+        absent = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob", b"")
+        assert len(self._request_ids(empty[1])) == 4
+        assert self._request_ids(empty[1]) == self._request_ids(absent[1])
+        # 空项与未知阶段都拒绝
+        empty_item = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=send,", b"")
+        assert empty_item[0] == 400 and empty_item[1]["error"] == "invalid_stage"
+        unknown = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=send,nope", b"")
+        assert unknown[0] == 400 and unknown[1]["error"] == "invalid_stage"
+        # 与 request_id 按 AND 组合
+        both = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=rate_limit&request_id=req-resumed", b"")
+        assert both[0] == 200 and self._request_ids(both[1]) == set()
+
+    @pytest.mark.asyncio
+    async def test_rejection_preset_equals_legacy_rejection_requests(self, tmp_path: Path):
+        """等价性: 仅看拒绝的请求集合与旧拒绝记录接口的 request_id 集合一致"""
+        server, _, scheduler, _ = self._server(tmp_path)
+        self._seed_rejections(scheduler)
+        legacy = await server._route("GET", "/api/platforms/wake/rejections?adapter_id=ob&limit=256", b"")
+        preset = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=wake_decision,rate_limit&limit=256", b"")
+        assert legacy[0] == 200 and preset[0] == 200
+        assert self._request_ids(legacy[1]) == self._request_ids(preset[1])
+        assert self._request_ids(preset[1]) == {"req-rejected", "req-limited", "req-cooldown", "req-resumed"}
+
+    @pytest.mark.asyncio
+    async def test_rejection_preset_groups_repeated_decisions_per_request(self, tmp_path: Path):
+        """定时复查会给同一请求追加第二条决策记录: 记录级与请求级的条数差异是预期行为"""
+        server, _, scheduler, _ = self._server(tmp_path)
+        for index, reason_code in enumerate(("frequency", "cooldown")):
+            scheduler.request_diagnostics.record(RequestDiagnostic(
+                adapter_id="ob", session_id="group%20", actor_id="30", stage="wake_decision", decision="dropped",
+                reason=f"{reason_code}: 测试", recorded_at=_NOW + index, request_id="req-loop", reason_code=reason_code,
+            ))
+        legacy = await server._route("GET", "/api/platforms/wake/rejections?adapter_id=ob&limit=256", b"")
+        preset = await server._route("GET", "/api/platforms/wake/diagnostics?adapter_id=ob&stage=wake_decision,rate_limit", b"")
+        # 旧接口按记录返回两条, 新视图按请求归并为一条并保留两个原因码
+        assert len(cast(list[Any], legacy[1]["records"])) == 2
+        summaries = cast(list[dict[str, Any]], preset[1]["records"])
+        assert len(summaries) == 1 and summaries[0]["request_id"] == "req-loop"
+        assert summaries[0]["reason_codes"] == ["frequency", "cooldown"]

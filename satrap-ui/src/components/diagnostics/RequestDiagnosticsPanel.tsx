@@ -51,6 +51,9 @@ const TERMINAL_SEND_STATUSES = new Set(['sent', 'partial', 'failed', 'skipped'])
 const POLL_INTERVAL_MS = 4000;
 // 有界轮询: 最多自动刷新这么多轮后停下, 之后只能手动刷新
 const POLL_MAX_ROUNDS = 45;
+// 仅看拒绝: 命中任一拒绝阶段即保留该请求, 与旧版拒绝记录查询的请求集合一致 (含该请求的执行阶段)
+export const REJECTION_STAGE_FILTER = 'wake_decision,rate_limit';
+const REJECTION_EMPTY_TEXT = '近期没有被拒绝的请求';
 
 export function statusLabel(status: string): string {
   return STATUS_LABELS[status] || status;
@@ -167,6 +170,10 @@ interface RequestDiagnosticsPanelProps {
   requestId?: string;
   /** 固定阶段过滤 */
   stage?: string;
+  /** 未聚焦请求时"仅看拒绝"预设的初始状态 */
+  rejectionsOnlyDefault?: boolean;
+  /** 提供时, 聚焦请求下渲染"返回近期请求"入口 */
+  onClearRequest?: () => void;
   /** 外部触发刷新 */
   refreshKey?: number;
   limit?: number;
@@ -176,7 +183,7 @@ interface RequestDiagnosticsPanelProps {
 
 export function RequestDiagnosticsPanel({
   adapterId = '', adapterOptions, onAdapterChange, requestId = '', stage = '', refreshKey = 0,
-  limit = 20, allowPolling = true,
+  limit = 20, allowPolling = true, rejectionsOnlyDefault = false, onClearRequest,
 }: RequestDiagnosticsPanelProps) {
   const [records, setRecords] = useState<RequestDiagnosticSummary[]>([]);
   const [stats, setStats] = useState<{ capacity?: number; records_total?: number }>({});
@@ -185,14 +192,22 @@ export function RequestDiagnosticsPanel({
   const [loading, setLoading] = useState(false);
   const [polling, setPolling] = useState(false);
   const [pollNote, setPollNote] = useState('');
+  const [rejectionsOnly, setRejectionsOnly] = useState(rejectionsOnlyDefault);
   const [expanded, setExpanded] = useState<{ requestId: string; detail: RequestDiagnosticDetail | null } | null>(null);
   const rounds = useRef(0);
   const mounted = useRef(true);
 
+  // 聚焦单个请求时不能叠加拒绝筛选: 正常请求会因过滤而显示为空
+  useEffect(() => {
+    setRejectionsOnly(rejectionsOnlyDefault);
+  }, [adapterId, rejectionsOnlyDefault, requestId]);
+
+  const stageFilter = requestId ? stage : rejectionsOnly ? REJECTION_STAGE_FILTER : stage;
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const result = await backendApi.listRequestDiagnostics({ adapterId, stage, requestId, limit });
+      const result = await backendApi.listRequestDiagnostics({ adapterId, stage: stageFilter, requestId, limit });
       if (!mounted.current) return;
       setRecords(result.records || []);
       setStats({ capacity: result.capacity, records_total: result.records_total });
@@ -205,7 +220,7 @@ export function RequestDiagnosticsPanel({
     } finally {
       if (mounted.current) setLoading(false);
     }
-  }, [adapterId, limit, requestId, stage]);
+  }, [adapterId, limit, requestId, stageFilter]);
 
   useEffect(() => {
     mounted.current = true;
@@ -282,6 +297,19 @@ export function RequestDiagnosticsPanel({
         )}
         {!onAdapterChange && adapterId && <Badge variant="info">{adapterId}</Badge>}
         {requestId && <Badge variant="info">仅此请求 {requestId}</Badge>}
+        <label className="flex items-center gap-1 text-text-secondary">
+          <input
+            type="checkbox" className="h-3 w-3 accent-accent" checked={!requestId && rejectionsOnly}
+            disabled={!!requestId} onChange={(event) => setRejectionsOnly(event.target.checked)}
+            aria-label="仅看拒绝" data-testid="diagnostics-rejections-only"
+          />
+          仅看拒绝
+        </label>
+        {requestId && onClearRequest && (
+          <Button type="button" variant="ghost" className="text-xs" onClick={onClearRequest} data-testid="diagnostics-clear-request">
+            返回近期请求
+          </Button>
+        )}
         <Button type="button" variant="ghost" className="text-xs" onClick={() => void load()} disabled={loading} data-testid="diagnostics-refresh">
           <RefreshCw className={`h-3 w-3 mr-1 ${loading ? 'animate-spin' : ''}`} />
           刷新诊断
@@ -306,7 +334,7 @@ export function RequestDiagnosticsPanel({
       )}
       {!error && records.length === 0 && (
         <p className="text-xs text-text-secondary" data-testid="diagnostics-empty">
-          {available ? '近期没有请求诊断记录' : '调度器未运行, 近期诊断不可用'}
+          {!available ? '调度器未运行, 近期诊断不可用' : !requestId && rejectionsOnly ? REJECTION_EMPTY_TEXT : '近期没有请求诊断记录'}
         </p>
       )}
 

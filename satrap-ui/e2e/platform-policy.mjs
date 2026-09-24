@@ -103,7 +103,10 @@ try {
       if (diagnosticsFail) return route.fulfill({ status: 500, json: { error: 'diagnostics_unavailable' }, headers });
       if (tail) return route.fulfill({ headers, json: { ...diagnosticsDetail, request_id: tail } });
       const adapterId = url.searchParams.get('adapter_id') || '';
-      const records = adapterId === 'quiet-bot' ? [] : adapterId === 'new-bot' ? [diagnosticsManual] : adapterId === 'legacy-bot' ? [diagnosticsAuto] : [diagnosticsManual, diagnosticsAuto];
+      const base = adapterId === 'quiet-bot' ? [] : adapterId === 'new-bot' ? [diagnosticsManual] : adapterId === 'legacy-bot' ? [diagnosticsAuto] : [diagnosticsManual, diagnosticsAuto];
+      // 服务端按"命中任一请求阶段"过滤, 命中后仍返回该请求全部阶段
+      const stageFilter = (url.searchParams.get('stage') || '').split(',').filter(Boolean);
+      const records = stageFilter.length ? base.filter((item) => item.stages.some((stage) => stageFilter.includes(stage))) : base;
       return route.fulfill({ headers, json: { records, available: true, capacity: 256, records_per_request: 16, requests_total: records.length, records_total: records.length * 3 } });
     }
     if (pathname === '/api/config/reload') {
@@ -487,6 +490,18 @@ try {
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="diagnostics-row"]').length === 1);
   // 平台筛选必须真的作为查询参数到达服务端, 不能只在本地过滤
   assert.match(diagnosticsCalls.at(-1).url, /[?&]adapter_id=new-bot(&|$)/);
+  // 仅看拒绝预设: 只留命中拒绝阶段的请求 (平台页默认关闭, 需显式勾选); 切换平台后不残留该过滤
+  const rejectionsOnly = diagnostics.getByTestId('diagnostics-rejections-only');
+  assert.equal(await rejectionsOnly.isChecked(), false);
+  await rejectionsOnly.check();
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="diagnostics-row"]').length === 0);
+  assert.match(diagnosticsCalls.at(-1).url, /[?&]stage=wake_decision(%2C|,)rate_limit(&|$)/);
+  await diagnostics.getByLabel('诊断平台筛选').selectOption('legacy-bot');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="diagnostics-row"]').length === 1);
+  assert.equal(await rejectionsOnly.isChecked(), false);
+  assert.doesNotMatch(diagnosticsCalls.at(-1).url, /stage=/);
+  await diagnostics.getByLabel('诊断平台筛选').selectOption('new-bot');
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="diagnostics-row"]').length === 1);
   // 查询失败: 给出实际可用的刷新入口
   diagnosticsFail = true;
   await diagnostics.getByTestId('diagnostics-refresh').click();

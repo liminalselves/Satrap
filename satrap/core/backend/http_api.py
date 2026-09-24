@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
 
-from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES
+from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
@@ -354,6 +354,7 @@ class BackendHTTPServer(MiniHTTPServer):
 
         if method == "GET" and path.startswith("/api/platforms/wake/diagnostics"):
             # 请求诊断: GET /api/platforms/wake/diagnostics[?adapter_id=&stage=&request_id=&limit=]
+            # stage 支持逗号分隔多值, 命中任一阶段的请求即保留 (仍返回该请求全部阶段); 取值须属于 DIAGNOSTIC_STAGES
             # 与 rejections 一样必须先于通用 /api/platforms/wake/{request_id} 分支匹配
             parsed = urlsplit(path)
             query = parse_qs(parsed.query)
@@ -365,7 +366,9 @@ class BackendHTTPServer(MiniHTTPServer):
                 limit = int(raw_limit)
             except (TypeError, ValueError):
                 return 400, {"error": "invalid_limit"}
-            if stage and stage not in DIAGNOSTIC_STAGES:
+            try:
+                parse_stages(stage)
+            except ValueError:
                 return 400, {"error": "invalid_stage", "stages": sorted(DIAGNOSTIC_STAGES)}
             tail = unquote(parsed.path.removeprefix("/api/platforms/wake/diagnostics")).strip("/")
             if tail:

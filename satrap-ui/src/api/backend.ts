@@ -43,19 +43,6 @@ export interface WakeStatusResult {
   updated_at?: number;
 }
 
-export interface WakeRejectionRecord {
-  recorded_at: string;
-  adapter_id: string;
-  session_id: string;
-  actor_id: string;
-  stage: string;
-  decision: string;
-  reason: string;
-  message_id: string;
-  request_id: string;
-  send_status: string;
-}
-
 /** 阶段诊断记录: 决策/限流/补全/模型/发送各阶段就地采集的脱敏事实 */
 export interface RequestDiagnosticRecord {
   recorded_at: string;
@@ -129,13 +116,7 @@ export const backendApi = {
   getWakeStatus: (requestId: string, adapterId?: string) =>
     apiClient.get<WakeStatusResult>(`/api/platforms/wake/${encodeURIComponent(requestId)}`, adapterId ? { adapter_id: adapterId } : undefined),
 
-  // 唤醒决策/限流拒绝记录, 最新在前
-  listWakeRejections: (adapterId?: string, limit = 20) =>
-    apiClient.get<{ records: WakeRejectionRecord[] }>('/api/platforms/wake/rejections', {
-      ...(adapterId ? { adapter_id: adapterId } : {}), limit,
-    }),
-
-  // 按请求关联的近期阶段诊断 (决策/限流/补全/模型/发送), 最新在前
+  // 按请求关联的近期阶段诊断 (决策/限流/补全/模型/发送), 最新在前; stage 支持逗号分隔多值
   listRequestDiagnostics: (params: { adapterId?: string; stage?: string; requestId?: string; limit?: number } = {}) =>
     apiClient.get<RequestDiagnosticsResult>('/api/platforms/wake/diagnostics', {
       ...(params.adapterId ? { adapter_id: params.adapterId } : {}),

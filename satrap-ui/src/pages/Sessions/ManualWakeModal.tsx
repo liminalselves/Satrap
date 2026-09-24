@@ -6,7 +6,7 @@ import { toast } from '@/components/ui/Toast';
 import { backendApi } from '@/api/backend';
 import { controlApi } from '@/api/control';
 import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
-import type { WakeRejectionRecord, WakeStatusResult } from '@/api/backend';
+import type { WakeStatusResult } from '@/api/backend';
 import type { FormField } from '@/components/common';
 import type { PlatformConfig } from '@/api/types';
 
@@ -85,29 +85,6 @@ function WakeStatusPanel({ requestId, adapterId, onSettled }: { requestId: strin
   );
 }
 
-function WakeRejectionsPanel({ refreshKey }: { refreshKey: number }) {
-  const [records, setRecords] = useState<WakeRejectionRecord[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    backendApi.listWakeRejections(undefined, 10)
-      .then((result) => { if (!cancelled) setRecords(result.records || []); })
-      .catch(() => { if (!cancelled) setRecords([]); });
-    return () => { cancelled = true; };
-  }, [refreshKey]);
-  if (records.length === 0) return <div className="text-xs text-text-secondary">近期没有唤醒决策/限流拒绝记录</div>;
-  return (
-    <div className="max-h-40 space-y-1 overflow-y-auto rounded-sm bg-glass p-2 text-xs" data-testid="wake-rejections-panel">
-      {records.map((item, index) => (
-        <div key={index} className="flex items-start gap-2">
-          <span className="shrink-0 font-mono text-text-secondary">{item.recorded_at.slice(11, 19)}</span>
-          <Badge variant="default">{item.stage === 'rate_limit' ? '限流' : '决策'}</Badge>
-          <span className="break-all text-text-primary">{item.session_id} · {item.reason}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export function ManualWakeModal({ onClose }: { onClose: () => void }) {
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [saving, setSaving] = useState(false);
@@ -173,11 +150,8 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
       render: () => <WakeStatusPanel requestId={tracking.requestId} adapterId={tracking.adapterId} onSettled={handleSettled} />,
     });
   }
-  fields.push({
-    key: 'wake_rejections', label: '近期拒绝记录', type: 'custom',
-    render: () => <WakeRejectionsPanel refreshKey={refreshKey} />,
-  });
   // 普通自动事件与手动请求共用同一阶段诊断: 手动跟踪时聚焦当前 request_id
+  // 未跟踪时默认"仅看拒绝", 便于先确认近期为何没有唤醒; 跟踪期间自动取消过滤并禁用该筛选
   fields.push({
     key: 'wake_diagnostics', label: '请求阶段诊断', type: 'custom',
     render: () => (
@@ -187,6 +161,8 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
         requestId={tracking?.requestId || ''}
         refreshKey={refreshKey}
         allowPolling={!!tracking}
+        rejectionsOnlyDefault={!tracking}
+        onClearRequest={() => setTracking(null)}
       />
     ),
   });

@@ -29,6 +29,33 @@ REJECTION_STAGES = frozenset({"wake_decision", "rate_limit"})
 """拒绝阶段: 未唤醒与限流; 旧版拒绝记录查询只读这些阶段, 不混入已执行请求的阶段"""
 
 
+def parse_stages(value: str) -> frozenset[str] | None:
+    """
+    解析逗号分隔的阶段过滤参数
+
+    参数:
+    - value: 查询参数原值, 空串或全空白表示不过滤
+
+    返回:
+    - frozenset[str] | None: 去重后的阶段集合; 不过滤时为 None
+
+    异常:
+    - ValueError: 存在空项或未知阶段
+    """
+    text = value.strip()
+    if not text:
+        return None
+    stages: set[str] = set()
+    for part in text.split(","):
+        item = part.strip()
+        if not item:
+            raise ValueError("诊断阶段不能是空项")
+        if item not in DIAGNOSTIC_STAGES:
+            raise ValueError(f"未知诊断阶段: {item}")
+        stages.add(item)
+    return frozenset(stages)
+
+
 @dataclass(frozen=True)
 class RequestDiagnostic:
     """一次阶段事实: 拒绝 (未唤醒/限流) 或执行阶段结果 (补全/模型/发送)"""
@@ -155,19 +182,19 @@ class RequestDiagnosticLog:
         return [self._row(item) for item in selected[:limit]]
 
     def list_requests(
-        self, adapter_id: str | None = None, *, stage: str = "", request_id: str = "", limit: int = 50,
+        self, adapter_id: str | None = None, *, stages: frozenset[str] | None = None, request_id: str = "", limit: int = 50,
     ) -> list[dict[str, object]]:
         """
         按请求汇总诊断, 最新在前
 
         参数:
         - adapter_id: 可选适配器过滤
-        - stage: 只保留包含该阶段的请求
+        - stages: 只保留包含其中任一阶段的请求, None 表示不过滤
         - request_id: 只保留该请求
         - limit: 返回请求数上限 (不超过 REJECTION_QUERY_MAX_LIMIT)
 
         返回:
-        - list[dict[str, object]]: 每项为请求摘要 (最新时间, 阶段列表, 各阶段状态与附件情况)
+        - list[dict[str, object]]: 每项为请求摘要 (最新时间, 阶段列表, 各阶段状态与附件情况), 命中过滤的请求仍返回全部阶段
         """
         limit = max(1, min(REJECTION_QUERY_MAX_LIMIT, limit))
         with self._lock:
@@ -180,7 +207,7 @@ class RequestDiagnosticLog:
             for key, rows in requests.items():
                 if request_id and key != request_id:
                     continue
-                if stage and not any(item.stage == stage for item in rows):
+                if stages and not any(item.stage in stages for item in rows):
                     continue
                 if not rows:
                     continue

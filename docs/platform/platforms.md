@@ -331,9 +331,9 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/platforms/wake/diagnostics?adapter_id=&stage=&request_id=&limit=` | 按请求汇总的近期诊断, 最新在前; `limit` 上限 256, 非法值 400 `invalid_limit`/`invalid_stage` |
+| GET | `/api/platforms/wake/diagnostics?adapter_id=&stage=&request_id=&limit=` | 按请求汇总的近期诊断, 最新在前; `stage` 支持逗号分隔多值 (命中任一阶段即保留该请求, 命中后仍返回该请求全部阶段); `limit` 上限 256, 非法值 400 `invalid_limit`, 空项或未知阶段 400 `invalid_stage` |
 | GET | `/api/platforms/wake/diagnostics/{request_id}[?adapter_id=]` | 单请求的阶段明细; 未采集到 404 `not_found` |
-| GET | `/api/platforms/wake/rejections?adapter_id=&limit=` | 兼容保留的拒绝记录查询, 只返回 `wake_decision`/`rate_limit` 两个拒绝阶段 |
+| GET | `/api/platforms/wake/rejections?adapter_id=&limit=` | 遗留的记录级拒绝查询, 只返回 `wake_decision`/`rate_limit` 两个拒绝阶段; 新界面统一走 `stage=wake_decision,rate_limit` 的请求级诊断, 本接口仅为兼容保留 |
 
 调度器未装配时列表返回 `available: false`/`reason: scheduler_unavailable`, 明细返回 503; 诊断入口全部为内存操作, 采集异常只记日志, 不影响消息处理。
 
@@ -343,6 +343,9 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 
 - 只含 `wake_decision`/`rate_limit` 的请求不会被标成进行中
 - 平台筛选会作为 `adapter_id` 查询参数发给服务端 (不是仅在本地过滤), 可选项来自运行中适配器与已配置平台
+- 面板提供"仅看拒绝"预设 (即 `stage=wake_decision,rate_limit`), 用于浏览近期被拒绝的请求; 平台页默认关闭, 手动唤醒弹窗在未跟踪请求时默认开启
+- 跟踪某个具体请求时拒绝筛选被自动取消并禁用, 正常请求不会因残留过滤而显示为空; 弹窗提供"返回近期请求"清除聚焦后重新筛选, 切换平台也会重置该预设
+- 手动唤醒弹窗只有这一处诊断面板 (不再单独请求遗留的记录级拒绝接口), 状态跟踪与阶段诊断指向同一 `request_id`
 - 自动刷新有界: 每 4 秒一轮, 最多 45 轮; 没有进行中的请求或页面隐藏时停止, 之后只能手动刷新
 - 空列表、调度器不可用、查询失败各有独立状态, 查询失败时提供"实际重试"按钮; 刷新页面后可从来列表重新定位普通与手动请求
 - 近期诊断按容量淘汰, 详情被淘汰时说明"已被容量淘汰", 持久账本中的手动请求状态与发送证据仍可查询

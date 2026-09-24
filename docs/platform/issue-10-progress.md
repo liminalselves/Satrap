@@ -480,3 +480,12 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 生产引用面一次改清: `scheduler.py` 属性 `wake_rejections` → `request_diagnostics` (私有采集方法 `_record_diagnostic` / `_record_rejection` 名字保留, 后者确实只在拒绝点调用), `BackendManager.py` 与 `http_api.py` 只改导入路径
 - 兼容面按方案保留: 路由 `GET /api/platforms/wake/rejections`、`BackendManager.wake_rejections()` (兼容端点入口, 内部改用新属性名) 与 `REJECTION_STAGES` 常量名不变; 测试文件名 `test_wake_rejections.py` (兼容路由) 与 `test_request_diagnostics.py` (新接口) 均保留, 仅更新导入
 - 未做: 不为旧类名留别名 (进程内模块, 全库引用一次改清); 不合并两个测试文件
+
+### 批次 2: R4 手动唤醒弹窗双面板去重
+
+- 诊断端点 `GET /api/platforms/wake/diagnostics` 的 `stage` 参数接受逗号分隔多值: 逐值校验属于 `DIAGNOSTIC_STAGES`, 空字符串或缺失表示不过滤, 非空参数按逗号拆分、去除首尾空白、去重, 空项或未知值 400 `invalid_stage`; 多阶段按 OR 匹配请求, 与 `adapter_id`/`request_id` 按 AND 组合, 命中后仍返回请求全部阶段。解析规则由 `request_diagnostics.parse_stages` 单点实现, `http_api` 借它产出 400 契约, `BackendManager.request_diagnostics` 借它把逗号串透传给 `list_requests(stages=...)`, 单值请求保持兼容
+- `RequestDiagnosticsPanel` 新增"仅看拒绝"预设 (`stage=wake_decision,rate_limit`): 平台页默认关闭, 手动唤醒弹窗未跟踪请求时默认开启; 一旦聚焦 `request_id` 自动清除过滤并禁用该开关 (正常请求不会因残留过滤显示为空), 提供"返回近期请求"清除聚焦, 切换平台同样重置预设; 预设下空列表有独立文案
+- `ManualWakeModal.tsx` 删除内联 `WakeRejectionsPanel` 与 `wake_rejections` 表单项 (两次请求同一内存日志), 弹窗只保留诊断面板; 前端删除 `listWakeRejections` 与 `WakeRejectionRecord` (进程内客户端, 后端路由与 `BackendManager.wake_rejections()` 按兼容接口保留)
+- 语义等价实测: 在相同适配器与 limit 下, "仅看拒绝"的请求集合与旧 `/wake/rejections` 的 request_id 集合一致 (含"被拒绝后经定时复查执行"的请求); 已知差异一并固化在测试里 —— 同一请求在定时复查后可能累积两条决策记录 (同阶段不同原因码), 旧接口按记录返回两条, 新视图按请求归并为一条并保留两个原因码; 无有效 `request_id` 的记录在旧视图里是空串, 新视图用 `message:`/`anon:` 组键
+- 测试: pytest 新增 stage 单值/多值 OR/去重/空白容错/空参数/空项与未知值/与 request_id 的 AND 组合、等价性与重复决策归并共 3 组; 前端 vitest 新增面板静态渲染 4 项 (预设默认值/聚焦禁用/返回入口/预设取值); Playwright manual-wake 覆盖拒绝预设、取消后再勾选、聚焦后自动取消与禁用、返回近期请求恢复预设, 并断言弹窗不再请求旧端点; platform-policy 覆盖平台页预设默认关闭、切换平台后不残留过滤
+- 文档同步: [平台接入](platforms.md) 更新诊断接口表格 (`stage` 多值与 400 契约、旧接口标注为遗留) 与界面说明
