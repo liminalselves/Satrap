@@ -198,9 +198,13 @@ def run_cli_action(fn: Callable[[], Any]) -> None:
     - fn: 命令函数
     """
     from satrap.cli.client import DaemonError, DaemonUnavailable   # 延迟导入避免循环依赖
+    from satrap.core.framework.BackGroundManager import ConfigReferenceScanError
 
     try:
         fn()
+    except ConfigReferenceScanError as e:
+        error(str(e), hint="引用扫描不完整, 请先修复报告的数据源后重试")
+        sys.exit(EXIT_ERROR)
     except CliError as e:
         error(e.message, hint=e.hint)
         sys.exit(e.exit_code)

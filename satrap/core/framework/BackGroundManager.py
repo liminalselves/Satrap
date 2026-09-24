@@ -35,6 +35,16 @@ class ConfigInUseError(ValueError):
         self.references = references
 
 
+class ConfigReferenceScanError(RuntimeError):
+    """引用扫描不完整, 无法判定配置是否被引用; 与"确实存在引用"分开处理"""
+
+    def __init__(self, target: str, name: str, reason: str) -> None:
+        super().__init__(f"{target} 配置 {name} 的引用扫描不完整, 已拒绝变更: {reason}")
+        self.target = target
+        self.name = name
+        self.reason = reason
+
+
 class ModelConfigManager:
     """
     模型配置管理器
@@ -629,15 +639,15 @@ class ModelConfigManager:
             return True
 
     def _check_asr_in_use(self, name: str) -> list[dict[str, str]]:
-        """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描失败按被引用处理 (fail-closed)"""
+        """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描不完整时拒绝但不伪称找到引用"""
         checker = self._asr_in_use_checker
         if checker is None:
             return []
         try:
             return checker(name)
         except Exception as error:
-            logger.error(f"[ModelConfigManager] ASR 引用扫描失败, 拒绝变更 name={name}: {type(error).__name__}: {error}")
-            raise ConfigInUseError("asr", name, [{"kind": "scan_error", "summary": f"引用扫描失败: {type(error).__name__}"}]) from error
+            logger.error(f"[ModelConfigManager] ASR 引用扫描不完整, 拒绝变更 name={name}: {type(error).__name__}: {error}")
+            raise ConfigReferenceScanError("asr", name, f"{type(error).__name__}: {error}") from error
 
     # ---------- 公共配置 ----------
     def update_named_config(

@@ -231,12 +231,14 @@ async def probe(installation: Path) -> dict[str, object]:
                     break
             assert alive is not None, "断线重连后发送未恢复"
 
-            # 接口缺失 (10002): 记入能力缓存, 回落 file 段发送并标注未验证; 同连接代次不重复试错
+            # 接口缺失 (10002): 记入能力缓存, 回落 file 段发送且保持未确认语义; 同连接代次不重复试错
             for expected_ids in (("301",), ("301",)):
                 fallback = await asyncio.wait_for(adapter.send_message("group%20000", MessageChain([
                     File(name="probe-missing.bin", url="https://example.invalid/probe-missing.bin"),
                 ])), 15)
-                assert fallback.status == "success" and fallback.reason.startswith("fallback_unverified"), fallback
+                # 普通消息回包只证明消息动作返回, 不构成文件送达的证据
+                assert fallback.status == "unknown", fallback
+                assert fallback.reason.startswith("file_delivery_unconfirmed"), fallback
                 assert fallback.message_ids == expected_ids, fallback
 
             await command({"type": "dump_actions"})
@@ -255,7 +257,7 @@ async def probe(installation: Path) -> dict[str, object]:
             assert await asyncio.wait_for(process.wait(), 5) == 0
             return {"version": json.loads((installation / "package.json").read_text(encoding="utf-8"))["version"],
                     "bundle_sha256": digest, "event_roundtrips": 2, "correlated_actions": 4, "reconnect": "passed", "wrong_token": "rejected",
-                    "mixed_chain": "ordered_upload_split", "partial": "confirmed_prefix", "drop": "unknown", "file_fallback": "fallback_unverified",
+                    "mixed_chain": "ordered_upload_split", "partial": "confirmed_prefix", "drop": "unknown", "file_fallback": "unknown:file_delivery_unconfirmed",
                     "transport": "installed WsClientAdapter and native websocket", "qq": "simulated"}
         finally:
             if process is not None and process.returncode is None:

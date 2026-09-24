@@ -2,9 +2,12 @@
 
 记录语义:
 - 请求记录按 (adapter_id, request_id) 幂等, status ∈ accepted/executing/sent/partial/failed/unknown
-- 发送尝试按 turn_id 记录, 发送 I/O 之前落盘 submitted, 完成后逐段更新 (混合链允许 partial)
-- 重启时 accepted/executing/submitted 一律降级为 unknown, 不自动重发
-- 未决记录 (accepted/executing/unknown 与 submitted) 不因容量被淘汰; 已满时 settled 记录轮转归档一代 (.1),
+- 发送尝试按 turn_id 记录, 段状态 planned → submitted → sent/partial/failed/unknown (未尝试段 skipped);
+  发送 I/O 之前先落盘计划, 每段 I/O 前推进 submitted, 确认后立即落盘该段结果
+- 尝试带 purpose 区分业务输出与错误反馈; 旧记录缺 purpose 按"用途未知"处理, 不作为业务送达证据
+- 请求终态由同一 request_id 的全部业务尝试归并, 不只取最后一次回执
+- 重启时 accepted/executing 与未确认段 (planned/submitted) 分别降级为 unknown 与 skipped, 不自动重发
+- 未决记录 (accepted/executing/unknown 与未终结尝试) 不因容量被淘汰; 已满时 settled 记录轮转归档一代 (.1),
   归档也满则拒绝新记录并告警
 
 清单与降级语义:
@@ -16,10 +19,10 @@
 """
 from __future__ import annotations
 
+from typing import Any, Literal, TypedDict, cast, Generator
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Literal, TypedDict, cast
 import copy
 import json
 import threading
@@ -42,11 +45,19 @@ RETENTION_SECONDS = 7 * 24 * 3600
 
 REQUEST_STATUSES = frozenset({"accepted", "executing", "sent", "partial", "failed", "unknown"})
 ATTEMPT_STATUSES = frozenset({"submitted", "sent", "partial", "failed", "unknown"})
-SEGMENT_STATUSES = frozenset({"submitted", "sent", "partial", "failed", "unknown", "skipped"})
-"""段状态缺省即旧格式未确认; skipped 表示该段未尝试, 不计入发送结果"""
+SEGMENT_STATUSES = frozenset({"planned", "submitted", "sent", "partial", "failed", "unknown", "skipped"})
+"""段状态缺省即旧格式未确认; planned 表示尚未尝试, skipped 表示该段未尝试且不计入发送结果"""
 CONFIRMED_SEGMENT_STATUS = "sent"
+PENDING_SEGMENT_STATUSES = frozenset({"planned", "submitted"})
 SETTLED_STATUSES = frozenset({"sent", "partial", "failed"})
 """可归档/可按保留期清理的确认终态; unknown 属于未决, 不静默淘汰"""
+
+ATTEMPT_PURPOSES = frozenset({"business", "error_feedback", "unknown"})
+BUSINESS_PURPOSE = "business"
+LEGACY_PURPOSE = "unknown"
+"""旧记录缺 purpose 时的用途标记: 既可能是业务输出也可能是错误反馈, 不能当作业务送达证据"""
+RESTART_DETAILS = frozenset({"restart_unconfirmed", "stopped_unconfirmed"})
+"""不可由后续确认精化的未确认原因: 重启或平台停止后的历史结论"""
 
 MAIN_FILE_STATES = frozenset({"present", "missing"})
 """主文件应存在 (present) 或已被隔离 (missing, 仅出现在降级清单中)"""
@@ -75,6 +86,7 @@ class SendAttemptRecord(TypedDict):
     adapter_id: str
     target: str
     request_id: str
+    purpose: str
     segments: list[dict[str, Any]]
     status: str
     detail: str
@@ -131,6 +143,58 @@ def _validate_request(item: object, key: str, source: str) -> RequestRecord:
     return record
 
 
+def _segment_statuses(attempt: SendAttemptRecord) -> list[str]:
+    """取尝试内各段状态, 缺省按 planned 之外的历史语义视为未确认"""
+    statuses: list[str] = []
+    for segment in attempt["segments"]:
+        status = segment.get("status")
+        statuses.append(status if isinstance(status, str) and status in SEGMENT_STATUSES else "unknown")
+    return statuses
+
+
+def derive_attempt_status(segments: list[str]) -> tuple[str, str]:
+    """
+    由段状态归并整次尝试的结论, 段证据优先于调用方声明
+
+    参数:
+    - segments: 各段状态 (planned/submitted/sent/partial/failed/unknown/skipped)
+
+    返回:
+    - tuple[str, str]: 尝试状态与脱敏原因; 存在未确认段时为 unknown, 不谎报已送达或明确失败
+    """
+    pending = [status for status in segments if status in PENDING_SEGMENT_STATUSES or status == "unknown"]
+    if pending:
+        # planned 段断定尚未尝试, submitted/unknown 段可能是已提交的副作用
+        reason = "not_submitted" if all(status == "planned" for status in pending) else "in_flight_unconfirmed"
+        return "unknown", reason
+    confirmed = [status for status in segments if status == CONFIRMED_SEGMENT_STATUS]
+    unfinished = [status for status in segments if status in {"failed", "partial"}]
+    if not confirmed:
+        return "failed", "no_confirmed_segment" if segments else "empty_message"
+    if unfinished:
+        return "partial", "confirmed_prefix"
+    return "sent", "all_segments_confirmed"
+
+
+def _check_attempt_consistency(record: SendAttemptRecord, source: str) -> None:
+    """校验尝试终态与段证据一致, 说谎的终态视为文件损坏 (未终结状态允许任意段的中间态)"""
+    segments = _segment_statuses(record)
+    status = record["status"]
+    if status == "sent":
+        if not segments or any(item != CONFIRMED_SEGMENT_STATUS for item in segments):
+            # skipped 也不是确认段: 预定输出未全部确认就不能写 sent
+            raise ValueError(f"{source} 已确认发送尝试仍含未确认段")
+        return
+    if status == "partial":
+        if not any(item == CONFIRMED_SEGMENT_STATUS for item in segments):
+            raise ValueError(f"{source} 部分完成发送尝试缺少已确认段")
+        return
+    if status == "failed":
+        if any(item in {CONFIRMED_SEGMENT_STATUS, "partial"} or item in PENDING_SEGMENT_STATUSES or item == "unknown" for item in segments):
+            raise ValueError(f"{source} 失败发送尝试含未确认或已确认段")
+        return
+
+
 def _validate_attempt(item: object, key: str, source: str) -> SendAttemptRecord:
     """逐字段校验发送尝试记录, 身份, 段状态与聚合终态的一致性都视为损坏"""
     if not isinstance(item, dict):
@@ -145,6 +209,12 @@ def _validate_attempt(item: object, key: str, source: str) -> SendAttemptRecord:
         raise ValueError(f"{source} 发送尝试时间字段非法")
     if raw["status"] not in ATTEMPT_STATUSES:
         raise ValueError(f"{source} 未知发送尝试状态: {raw['status']}")
+    purpose = raw.get("purpose")
+    if purpose is None:
+        # 旧记录缺用途字段: 内部标为用途未知, 不按默认值当作业务送达
+        purpose = LEGACY_PURPOSE
+    elif not isinstance(purpose, str) or purpose not in ATTEMPT_PURPOSES:
+        raise ValueError(f"{source} 未知发送用途: {purpose!r}")
     segments = raw.get("segments")
     if not isinstance(segments, list) or any(not isinstance(entry, dict) for entry in cast(list[object], segments)):
         raise ValueError(f"{source} 发送尝试段记录非法")
@@ -155,17 +225,17 @@ def _validate_attempt(item: object, key: str, source: str) -> SendAttemptRecord:
         if status is not None:
             if not isinstance(status, str) or status not in SEGMENT_STATUSES:
                 raise ValueError(f"{source} 未知发送段状态: {status!r}")
-            if raw["status"] == "sent" and status not in {CONFIRMED_SEGMENT_STATUS, "skipped"}:
-                raise ValueError(f"{source} 已确认发送尝试仍含未确认段")
         copied.append(segment)
     record: SendAttemptRecord = {
         "turn_id": raw["turn_id"], "adapter_id": raw["adapter_id"], "target": raw["target"],
-        "request_id": raw["request_id"], "segments": copied, "status": raw["status"], "detail": raw["detail"],
-        "created_at": float(raw["created_at"]), "updated_at": float(raw["updated_at"]),
+        "request_id": raw["request_id"], "purpose": purpose, "segments": copied, "status": raw["status"],
+        "detail": raw["detail"], "created_at": float(raw["created_at"]), "updated_at": float(raw["updated_at"]),
     }
     if key != record["turn_id"] or not record["turn_id"]:
         raise ValueError(f"{source} 发送尝试身份与键不一致")
+    _check_attempt_consistency(record, source)
     return record
+
 
 
 def _validate_manifest(raw: object) -> StoreManifest:
@@ -324,7 +394,7 @@ class ManualWakeStore:
     # ---------- 事务与清单 ----------
 
     @contextmanager
-    def _transaction(self, *, archive: bool = False) -> Iterator[None]:
+    def _transaction(self, *, archive: bool = False) -> Generator[None, None, None]:
         """
         主文件, 归档与清单共用的存储锁
 
@@ -561,7 +631,7 @@ class ManualWakeStore:
                 logger.warning(f"[ManualWakeStore] 清单归档状态更新失败: {type(error).__name__}: {error}")
 
     def _sweep_restart_residue(self) -> bool:
-        """重启后无法确认的记录标 unknown, 不自动重发; 已确认段保持原状"""
+        """重启后无法确认的记录标 unknown, 不自动重发; 已确认段保持原状, 未尝试段标 skipped"""
         now = time.time()
         changed = False
         for record in self._requests.values():
@@ -571,14 +641,18 @@ class ManualWakeStore:
                 record["updated_at"] = now
                 changed = True
         for attempt in self._attempts.values():
-            if attempt["status"] == "submitted":
-                attempt["status"] = "unknown"
-                attempt["detail"] = "restart_unconfirmed"
-                attempt["updated_at"] = now
-                for segment in attempt["segments"]:
-                    if segment.get("status") == "submitted":
-                        segment["status"] = "unknown"
-                changed = True
+            if attempt["status"] != "submitted":
+                continue
+            for segment in attempt["segments"]:
+                if segment.get("status") == "submitted":
+                    segment["status"] = "unknown"
+                elif segment.get("status") == "planned":
+                    segment["status"] = "skipped"
+            # 段证据归并整次尝试: 已确认段保留, 未确认段变 unknown
+            attempt["status"], reason = derive_attempt_status(_segment_statuses(attempt))
+            attempt["detail"] = "restart_unconfirmed" if attempt["status"] == "unknown" else reason
+            attempt["updated_at"] = now
+            changed = True
         return changed
 
     def recover(self) -> bool:
@@ -766,14 +840,28 @@ class ManualWakeStore:
                 self._requests.pop(key, None)
                 raise ManualWakeStoreError("io", f"存储落盘失败: {type(error).__name__}") from error
 
-    def update_request(self, adapter_id: str, request_id: str, status: str, detail: str = "") -> bool:
-        """推进请求状态, 已终结记录不再回退; 落盘失败回滚内存状态只告警不阻断业务"""
+    def update_request(self, adapter_id: str, request_id: str, status: str, detail: str = "", *, refine: bool = False) -> bool:
+        """
+        推进请求状态, 已终结记录不再回退; 落盘失败回滚内存状态只告警不阻断业务
+
+        参数:
+        - adapter_id: 平台实例 ID
+        - request_id: 逻辑请求标识
+        - status: 目标状态
+        - detail: 脱敏原因
+        - refine: 允许把在途未确认 (in_flight/not_submitted 等) 的 unknown 精化为可信终态;
+          重启或平台停止造成的 unknown 属于历史结论, 不因 refine 改写
+        """
         with self._mutex, self._transaction():
             if self.degraded or status not in REQUEST_STATUSES:
                 return False
             key = _request_key(adapter_id, request_id)
             record = self._requests.get(key)
-            if record is None or record["status"] in SETTLED_STATUSES or record["status"] == "unknown":
+            if record is None or record["status"] in SETTLED_STATUSES:
+                return False
+            if record["status"] == "unknown" and not (refine and record["detail"] not in RESTART_DETAILS):
+                return False
+            if record["status"] == "unknown" and status == "unknown" and record["detail"] == detail:
                 return False
             previous = _copy_request(record)
             record["status"] = status
@@ -811,10 +899,14 @@ class ManualWakeStore:
             for key, attempt in self._attempts.items():
                 if attempt["adapter_id"] == adapter_id and attempt["status"] == "submitted":
                     rollback.append((self._attempts, key, _copy_attempt(attempt)))
-                    attempt["status"], attempt["detail"], attempt["updated_at"] = "unknown", "stopped_unconfirmed", now
                     for segment in attempt["segments"]:
                         if segment.get("status") == "submitted":
                             segment["status"] = "unknown"
+                        elif segment.get("status") == "planned":
+                            segment["status"] = "skipped"
+                    attempt["status"], reason = derive_attempt_status(_segment_statuses(attempt))
+                    attempt["detail"] = "stopped_unconfirmed" if attempt["status"] == "unknown" else reason
+                    attempt["updated_at"] = now
             if not rollback:
                 return
             try:
@@ -833,23 +925,40 @@ class ManualWakeStore:
         target: str,
         request_id: str,
         segments: list[dict[str, Any]],
+        purpose: str = BUSINESS_PURPOSE,
     ) -> bool:
-        """发送 I/O 之前持久化 submitted 占位; 失败只告警不阻断发送"""
+        """
+        发送 I/O 之前持久化计划 (段状态 planned, 尝试状态 submitted)
+
+        参数:
+        - turn_id: 本次尝试标识
+        - adapter_id: 平台实例 ID
+        - target: 目标会话
+        - request_id: 同一逻辑请求标识, 请求终态按它归并
+        - segments: 段计划 (index/kind/chars/digest)
+        - purpose: business 业务输出或 error_feedback 错误反馈
+
+        返回:
+        - bool: 计划已落盘为 True; 降级, 容量不足或写入失败为 False
+        """
         with self._mutex, self._transaction(archive=True):
             if self.degraded:
                 return False
             if not segments or not turn_id:
                 return False
+            if purpose not in ATTEMPT_PURPOSES:
+                raise ValueError("发送用途必须为 business 或 error_feedback")
             try:
                 self._ensure_insert_room("attempts")
             except ManualWakeStoreError as error:
                 logger.error(f"[ManualWakeStore] 发送尝试容量不足 turn={turn_id}: {error}")
                 return False
             now = time.time()
-            planned: list[dict[str, Any]] = [{**dict(segment), "status": "submitted"} for segment in segments]
+            planned: list[dict[str, Any]] = [{**dict(segment), "status": "planned"} for segment in segments]
             self._attempts[turn_id] = {
                 "turn_id": turn_id, "adapter_id": adapter_id, "target": target, "request_id": request_id,
-                "segments": planned, "status": "submitted", "detail": "", "created_at": now, "updated_at": now,
+                "purpose": purpose, "segments": planned, "status": "submitted", "detail": "",
+                "created_at": now, "updated_at": now,
             }
             try:
                 self._save_current_locked()
@@ -859,29 +968,198 @@ class ManualWakeStore:
                 return False
             return True
 
-    def complete_send_attempt(self, turn_id: str, segment_statuses: list[str], status: str, detail: str = "") -> bool:
-        """回执到达后逐段更新, 未到达的段由调用方标 skipped; 混合链允许 partial"""
+    def mark_segment_submitted(self, turn_id: str, index: int) -> bool:
+        """
+        段 I/O 之前把该段从 planned 推进 submitted, 未尝试段保持 planned
+
+        参数:
+        - turn_id: 本次尝试标识
+        - index: 段序号
+
+        返回:
+        - bool: 已落盘为 True; 未终结尝试之外的状态或写入失败为 False
+        """
         with self._mutex, self._transaction():
             if self.degraded:
                 return False
             attempt = self._attempts.get(turn_id)
-            if attempt is None or attempt["status"] != "submitted" or status not in ATTEMPT_STATUSES - {"submitted"}:
+            if attempt is None or attempt["status"] != "submitted":
+                return False
+            segment = self._segment_at(attempt, index)
+            if segment is None or segment.get("status") != "planned":
                 return False
             previous = _copy_attempt(attempt)
-            for index, segment_status in enumerate(segment_statuses):
-                if index >= len(attempt["segments"]):
-                    break
-                attempt["segments"][index]["status"] = segment_status
-            attempt["status"] = status
-            attempt["detail"] = detail
+            segment["status"] = "submitted"
             attempt["updated_at"] = time.time()
-            try:
-                self._save_current_locked()
-            except OSError as error:
-                self._restore_record(self._attempts, turn_id, previous)
-                logger.error(f"[ManualWakeStore] 发送回执落盘失败 turn={turn_id}: {type(error).__name__}: {error}")
+            if not self._persist_attempt(turn_id, previous, "段提交状态"):
                 return False
             return True
+
+    def record_segment_result(self, turn_id: str, index: int, status: str, *, advance_to: int | None = None) -> bool:
+        """
+        段结果确认后立即落盘, 可同时把下一段推进 submitted (单次写入)
+
+        参数:
+        - turn_id: 本次尝试标识
+        - index: 段序号
+        - status: sent/partial/failed/unknown
+        - advance_to: 下一段序号, None 表示不再有后续段
+
+        返回:
+        - bool: 已落盘为 True; 状态非法或写入失败为 False
+        """
+        if status not in {CONFIRMED_SEGMENT_STATUS, "partial", "failed", "unknown"}:
+            raise ValueError("段落定状态必须为 sent/partial/failed/unknown")
+        with self._mutex, self._transaction():
+            if self.degraded:
+                return False
+            attempt = self._attempts.get(turn_id)
+            if attempt is None or attempt["status"] != "submitted":
+                return False
+            segment = self._segment_at(attempt, index)
+            if segment is None or segment.get("status") not in PENDING_SEGMENT_STATUSES:
+                return False
+            previous = _copy_attempt(attempt)
+            segment["status"] = status
+            if advance_to is not None:
+                following = self._segment_at(attempt, advance_to)
+                if following is None or following.get("status") != "planned":
+                    self._restore_record(self._attempts, turn_id, previous)
+                    return False
+                following["status"] = "submitted"
+            attempt["updated_at"] = time.time()
+            if not self._persist_attempt(turn_id, previous, "段结果"):
+                return False
+            return True
+
+    def complete_send_attempt(
+        self, turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = (),
+    ) -> bool:
+        """
+        整轮收尾: 未尝试段标 skipped, 按段证据落终态
+
+        参数:
+        - turn_id: 本次尝试标识
+        - status: 调用方结论; unknown 表示存在未落盘的发送尝试, 只让结论更保守
+        - detail: 脱敏原因
+        - untracked: 已经发出但没有落盘证据的段序号, 这些段按无法确认处理
+
+        返回:
+        - bool: 已落盘为 True; 结论与段证据矛盾或写入失败为 False
+        """
+        if status not in ATTEMPT_STATUSES - {"submitted"}:
+            raise ValueError("发送尝试终态必须为 sent/partial/failed/unknown")
+        with self._mutex, self._transaction():
+            if self.degraded:
+                return False
+            attempt = self._attempts.get(turn_id)
+            if attempt is None or attempt["status"] != "submitted":
+                return False
+            previous = _copy_attempt(attempt)
+            gaps = {index for index in untracked if isinstance(index, int)}
+            for position, segment in enumerate(attempt["segments"]):
+                if segment.get("status") == "planned":
+                    # 未尝试段确定没有副作用; 已发出但证据丢失的段只能记无法确认
+                    segment["status"] = "unknown" if position in gaps else "skipped"
+                elif segment.get("status") == "submitted":
+                    # I/O 已开始却没有回执, 收尾只能保守记为无法确认
+                    segment["status"] = "unknown"
+            derived, reason = derive_attempt_status(_segment_statuses(attempt))
+            if status != derived and status != "unknown":
+                # 段证据优先: 调用方的乐观结论不能覆盖未确认段
+                logger.error(
+                    f"[ManualWakeStore] 发送结论与段证据不符 turn={turn_id} 请求={status} 证据={derived}",
+                )
+                self._restore_record(self._attempts, turn_id, previous)
+                return False
+            # 调用方的 unknown 表示存在未落盘的发送尝试, 只能让结论更保守
+            attempt["status"] = "unknown" if status == "unknown" else derived
+            attempt["detail"] = detail or reason
+            attempt["updated_at"] = time.time()
+            return self._persist_attempt(turn_id, previous, "发送终态")
+
+    def lookup_attempts(self, request_id: str, adapter_id: str | None = None) -> list[SendAttemptRecord]:
+        """
+        按 request_id 查询发送尝试副本, 最新在前
+
+        参数:
+        - request_id: 逻辑请求标识
+        - adapter_id: 可选平台实例过滤
+
+        返回:
+        - list[SendAttemptRecord]: 匹配的尝试记录副本
+        """
+        with self._mutex:
+            matched = [
+                _copy_attempt(attempt) for attempt in self._attempts.values()
+                if attempt["request_id"] == request_id and (adapter_id is None or attempt["adapter_id"] == adapter_id)
+            ]
+        return sorted(matched, key=lambda item: item["created_at"], reverse=True)
+
+    def request_send_outcome(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
+        """
+        按同一 request_id 的全部业务尝试归并发送证据
+
+        参数:
+        - request_id: 逻辑请求标识
+        - adapter_id: 可选平台实例过滤
+
+        返回:
+        - dict[str, Any]: confirmed/pending/planned/failed 段数, 是否有段已提交, 尝试数与脱敏原因;
+          pending 只统计可能已提交副作用的段 (submitted/unknown), planned 段尚未尝试;
+          旧记录 (用途未知) 与错误反馈不计入业务送达证据, 但会提高保守程度
+        """
+        attempts = self.lookup_attempts(request_id, adapter_id)
+        business = [item for item in attempts if item["purpose"] == BUSINESS_PURPOSE]
+        legacy = [item for item in attempts if item["purpose"] == LEGACY_PURPOSE]
+        confirmed = pending = planned = failed = 0
+        submitted = False
+        reasons: list[str] = []
+        for attempt in (*business, *legacy):
+            for status in _segment_statuses(attempt):
+                if status == CONFIRMED_SEGMENT_STATUS:
+                    confirmed += 1
+                    submitted = True
+                elif status == "partial":
+                    failed += 1
+                    submitted = True
+                elif status in {"submitted", "unknown"}:
+                    pending += 1
+                    submitted = True
+                elif status == "planned":
+                    planned += 1
+                elif status == "failed":
+                    failed += 1
+                    submitted = True
+            if attempt["status"] == "unknown":
+                reasons.append(attempt["detail"] or "in_flight_unconfirmed")
+        legacy_confirmed = sum(
+            1 for attempt in legacy for status in _segment_statuses(attempt) if status == CONFIRMED_SEGMENT_STATUS
+        )
+        return {
+            "attempts": len(business) + len(legacy), "business_attempts": len(business), "legacy_attempts": len(legacy),
+            "confirmed": confirmed, "pending": pending, "planned": planned, "failed": failed,
+            "submitted": submitted, "legacy_confirmed": legacy_confirmed,
+            "turn_ids": [item["turn_id"] for item in attempts[:4]], "reasons": reasons,
+        }
+
+    @staticmethod
+    def _segment_at(attempt: SendAttemptRecord, index: int) -> dict[str, Any] | None:
+        """取段记录, 越界返回 None"""
+        if not isinstance(index, int) or index < 0 or index >= len(attempt["segments"]):
+            return None
+        return attempt["segments"][index]
+
+    def _persist_attempt(self, turn_id: str, previous: SendAttemptRecord, label: str) -> bool:
+        """写入失败时恢复内存快照, 不向查询展示未持久的状态"""
+        try:
+            self._save_current_locked()
+        except OSError as error:
+            self._restore_record(self._attempts, turn_id, previous)
+            logger.error(f"[ManualWakeStore] 发送{label}落盘失败 turn={turn_id}: {type(error).__name__}: {error}")
+            return False
+        return True
+
 
     # ---------- 测试与运维探针 ----------
 

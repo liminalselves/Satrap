@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from typing import Any, cast
 
@@ -428,16 +430,38 @@ class TestFileOutboundSplit:
         adapter._running = True
         adapter._bot.upload_failures["gone.bin"] = ActionFailed({"retcode": 10002})
         receipt = await adapter.send_message("group%456", MessageChain([File(name="gone.bin", url="https://example.invalid/gone.bin")]))
-        assert receipt.status == "success"
-        assert receipt.reason.startswith("fallback_unverified")
+        # 反例: 兼容回落即使拿到 message_id 也不是文件送达的证据
+        assert receipt.status == "unknown"
+        assert receipt.reason.startswith("file_delivery_unconfirmed")
         assert receipt.message_ids == ("2",)
         assert [name for name, _ in adapter._bot.calls] == ["upload_group_file", "send_group_msg"]
         assert adapter.admin_capabilities()["upload_file"] == "unsupported"
         # 同连接代次内不重复试错: 后续文件直接走兼容路径
         adapter._bot.calls.clear()
         again = await adapter.send_message("group%456", MessageChain([File(name="other.bin", url="https://example.invalid/o.bin")]))
-        assert again.status == "success" and again.reason.startswith("fallback_unverified")
+        assert again.status == "unknown" and again.reason.startswith("file_delivery_unconfirmed")
         assert [name for name, _ in adapter._bot.calls] == ["send_group_msg"]
+
+    @pytest.mark.asyncio
+    async def test_file_fallback_keeps_confirmed_prefix_and_unsent_suffix(self, tmp_path: Any):
+        from aiocqhttp.exceptions import ActionFailed
+
+        adapter = make_adapter()
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+        adapter._bot.upload_failures["mid.bin"] = ActionFailed({"retcode": 1404})
+        receipt = await adapter.send_message("group%456", MessageChain([
+            Plain("前文"), File(name="mid.bin", url="https://example.invalid/mid.bin"), Plain("后文"),
+        ]))
+        # 反例: 首段确认保留, 文件段未确认, 末段不发送, 总结果不显示已送达
+        assert receipt.status == "unknown" and receipt.reason.startswith("file_delivery_unconfirmed")
+        assert receipt.message_ids == ("2", "2")
+        assert [name for name, _ in adapter._bot.calls] == ["send_group_msg", "upload_group_file", "send_group_msg"]
+        # 持久化与查询也不显示已送达: 文件段未确认, 末段未尝试, 尝试整体是未知
+        segments = _segment_states(tmp_path)
+        assert segments == ["sent", "unknown", "skipped"]
+        assert store.lookup_attempts("", "onebot_main")[0]["status"] == "unknown"
+        assert store.request_send_outcome("", "onebot_main")["confirmed"] == 1
 
     @pytest.mark.asyncio
     async def test_upload_rejection_stops_chain_with_partial(self):
@@ -467,3 +491,107 @@ class TestFileOutboundSplit:
         receipt = await adapter.send_message("group%456", MessageChain([File(name="empty.bin")]))
         assert receipt.status == "failed" and receipt.reason == "empty_file"
         assert adapter._bot.calls == []
+
+
+def _make_store(tmp_path: Any) -> Any:
+    """落盘到指定目录的发送尝试存储"""
+    from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+
+    return ManualWakeStore(tmp_path / "manual_wake_store.json")
+
+
+def _segment_states(tmp_path: Any) -> list[str]:
+    """磁盘上单个尝试的段状态, 用于观察 I/O 时刻的真实落盘内容"""
+    payload = json.loads((tmp_path / "manual_wake_store.json").read_text(encoding="utf-8"))
+    attempt = next(iter(cast(dict[str, Any], payload["attempts"]).values()))
+    return [segment.get("status") for segment in attempt["segments"]]
+
+
+class TestSegmentProgress:
+    """B3 反例: 逐段落盘发送证据, 未尝试段不得显示为已提交"""
+
+    @pytest.mark.asyncio
+    async def test_segments_advance_one_at_a_time(self, tmp_path: Any):
+        from unittest.mock import AsyncMock
+
+        adapter = make_adapter({"message_text_limit": 64})
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+        observed: list[list[str]] = []
+
+        async def observe_send(**kwargs: Any) -> dict[str, Any]:
+            observed.append(_segment_states(tmp_path))
+            return {"message_id": len(observed)}
+
+        adapter._bot.send_group_msg = AsyncMock(side_effect=observe_send)
+        receipt = await adapter.send_message("group%456", MessageChain.from_text("字" * 130))
+        assert receipt.status == "success"
+        # 每次 I/O 之前只有正在发送的段是 submitted, 后续段仍是 planned
+        assert observed[0] == ["submitted", "planned", "planned"]
+        assert observed[1] == ["sent", "submitted", "planned"]
+        assert observed[2] == ["sent", "sent", "submitted"]
+
+    @pytest.mark.asyncio
+    async def test_untracked_io_is_not_reported_as_sent(self, tmp_path: Any):
+        from unittest.mock import AsyncMock
+
+        adapter = make_adapter()
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+        adapter._bot = AsyncMock()
+        adapter._bot.send_group_msg = AsyncMock(return_value={"message_id": 7})
+
+        def broken(*args: Any, **kwargs: Any) -> bool:
+            return False
+
+        # 段状态写入全部失败: 已经发出的段没有任何落盘证据
+        store.mark_segment_submitted = broken    # type: ignore[method-assign]
+        store.record_segment_result = broken     # type: ignore[method-assign]
+        again = await adapter.send_message("group%456", MessageChain.from_text("第二条"))
+        assert again.status == "success"
+        attempts = store.lookup_attempts("", "onebot_main")
+        latest = attempts[0]
+        # 已经发出但没有任何落盘证据的段不能被记为已送达
+        assert latest["status"] == "unknown" and latest["detail"] == "tracking_incomplete"
+        assert [segment["status"] for segment in latest["segments"]] == ["unknown"]
+
+    @pytest.mark.asyncio
+    async def test_finalize_timeout_keeps_record_unconfirmed(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """反例: 收尾超时不显示已送达也不重发, 后续可信确认才允许精化"""
+        import threading
+        import time as time_module
+        from unittest.mock import AsyncMock
+
+        from satrap.core.platform.onebot import adapter as adapter_module
+
+        adapter = make_adapter()
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+        adapter._bot = AsyncMock()
+        adapter._bot.send_group_msg = AsyncMock(return_value={"message_id": 5})
+        release = threading.Event()
+        original = store.complete_send_attempt
+
+        def slow(*args: Any, **kwargs: Any) -> bool:
+            release.wait(2.0)
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(store, "complete_send_attempt", slow)
+        monkeypatch.setattr(adapter_module, "_ATTEMPT_FINALIZE_TIMEOUT", 0.05)
+        receipt = await adapter.send_message("group%456", MessageChain.from_text("收尾超时"))
+        # 传输层确认照常返回, 但收尾未落盘: 尝试仍是未终结状态, 已确认的段证据保留
+        assert receipt.status == "success"
+        attempt = store.lookup_attempts("", "onebot_main")[0]
+        assert attempt["status"] == "submitted" and attempt["segments"][0]["status"] == "sent"
+        # 结论只认段证据: 该段已确认, 不因收尾缺失被压成 unknown 或 failed
+        assert store.request_send_outcome("", "onebot_main")["confirmed"] == 1
+        # 收尾线程完成后的可信确认才落终态, 期间不产生第二次发送
+        release.set()
+        for _ in range(50):
+            if store.lookup_attempts("", "onebot_main")[0]["status"] == "sent":
+                break
+            time_module.sleep(0.02)
+        assert store.lookup_attempts("", "onebot_main")[0]["status"] == "sent"
+        adapter._bot.send_group_msg.assert_awaited_once()

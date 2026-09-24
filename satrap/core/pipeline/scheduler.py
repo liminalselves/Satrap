@@ -6,13 +6,14 @@
 """
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import asyncio
 from time import monotonic, time
 import inspect
 from typing import (
+    Any,
     Awaitable,
     Callable,
     List,
@@ -33,7 +34,7 @@ from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
-from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+from satrap.core.pipeline.manual_wake_store import ManualWakeStore, SendAttemptRecord
 from satrap.core.pipeline.wake_rejections import WakeRejection, WakeRejectionLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
@@ -43,6 +44,11 @@ from satrap.core.log import logger
 
 _RECEIPT_TO_REQUEST_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
 """手动请求终态取自发送回执, 错误分支的 detail 优先于反馈消息回执"""
+
+_SETTLEMENT_WAIT_SECONDS = 1.5
+"""发送收尾等待上限: 超时先按当时证据归并, 记录保持未确认可被后续确认精化"""
+_SETTLEMENT_POLL_SECONDS = 0.05
+"""发送收尾等待轮询间隔"""
 
 
 class PipelineScheduler:
@@ -99,27 +105,243 @@ class PipelineScheduler:
             self.manual_wake_store.adapter_stopped(adapter_id)
         self.wake_rejections.clear_adapter(adapter_id)
 
-    def _record_rejection(self, event: MessageEvent, stage: str, reason: str, *, send_status: str = "") -> None:
-        """在决策/限流拒绝点就地采集环形记录, 采集失败不影响管线执行"""
+    def _record_diagnostic(
+        self, event: MessageEvent, stage: str, status: str, *, reason_code: str = "", reason: str = "",
+        decision: str = "", attachments: str = "", notes: str = "", turn_id: str = "", send_status: str = "",
+    ) -> None:
+        """
+        在决策/限流/补全/模型/发送各阶段就地采集诊断
+
+        参数:
+        - event: 当前事件, 定位字段取自冻结的 call_origin
+        - stage: wake_decision/rate_limit/projection/model/send
+        - status: ok/partial/failed/unknown/dropped/skipped
+        - reason_code: 脱敏原因码, 与展示用 reason 分开
+        - reason: 展示用原因
+        - decision: 判定结果, 缺省与 status 一致
+        - attachments: 附件失败或跳过类型摘要
+        - notes: 截断等说明
+        - turn_id: 关联的发送尝试标识
+        - send_status: 发送回执状态
+
+        采集只写进程内环形结构, 不执行阻塞磁盘操作, 失败不影响管线执行
+        """
         try:
             origin = event.call_origin
             self.wake_rejections.record(WakeRejection(
                 adapter_id=origin.adapter_id, session_id=event.session_id, actor_id=event.get_sender_id(),
-                stage=stage, decision="dropped", reason=reason, recorded_at=time(),
-                message_id=origin.source_message_id, request_id=origin.request_id, send_status=send_status,
+                stage=stage, decision=decision or status, reason=reason, recorded_at=time(), status=status,
+                reason_code=reason_code, attachments=attachments, notes=notes, turn_id=turn_id,
+                send_status=send_status, message_id=origin.source_message_id, request_id=origin.request_id,
+                self_id=origin.self_id,
             ))
         except Exception as error:
-            logger.debug(f"[PipelineScheduler] 拒绝记录采集失败 stage={stage}: {type(error).__name__}")
+            logger.debug(f"[PipelineScheduler] 诊断采集失败 stage={stage}: {type(error).__name__}")
 
-    async def _update_manual_request(self, event: MessageEvent, ticket: ManualWakeTicket, status: str, detail: str) -> None:
+    def _record_rejection(self, event: MessageEvent, stage: str, reason: str, *, send_status: str = "",
+                          reason_code: str = "") -> None:
+        """在决策/限流拒绝点就地采集环形记录, 采集失败不影响管线执行"""
+        self._record_diagnostic(
+            event, stage, "dropped", reason_code=reason_code or stage, reason=reason,
+            decision="dropped", send_status=send_status,
+        )
+
+    async def _update_manual_request(
+        self, event: MessageEvent, ticket: ManualWakeTicket, status: str, detail: str, *, refine: bool = False,
+    ) -> None:
         """持久化手动请求状态, 落盘失败不影响管线执行"""
         store = self.manual_wake_store
         if store is None:
             return
         try:
-            await asyncio.to_thread(store.update_request, event.call_origin.adapter_id, ticket.request_id, status, detail)
+            await asyncio.to_thread(
+                store.update_request, event.call_origin.adapter_id, ticket.request_id, status, detail, refine=refine,
+            )
         except Exception as error:
             logger.debug(f"[PipelineScheduler] 手动请求状态回写失败 request_id={ticket.request_id}: {type(error).__name__}")
+
+    async def _adjudicate_manual_request(
+        self, event: MessageEvent, ticket: ManualWakeTicket, manual_detail: str | None,
+    ) -> tuple[str, str]:
+        """
+        按同一 request_id 的全部业务发送尝试归并请求终态
+
+        参数:
+        - event: 触发本次执行的事件
+        - ticket: 已受理的手动唤醒票据
+        - manual_detail: 管线错误出口原因, 无错误为 None
+
+        返回:
+        - tuple[str, str]: 请求终态与脱敏原因; 已提交但未确认的副作用保守判 unknown,
+          不接受"模型超时即失败"覆盖工具已经写出的内容
+        """
+        store = self.manual_wake_store
+        adapter_id = event.call_origin.adapter_id
+        # 业务回执只作为进程内补充证据: 错误反馈回执不参与请求结论
+        receipt = event.last_business_receipt
+        outcome: dict[str, Any] | None = None
+        if store is not None:
+            outcome = await self._await_send_settlement(store, ticket.request_id, adapter_id)
+        if outcome is None or (outcome["attempts"] == 0 and receipt is not None):
+            # 存储不可用或平台不记录发送尝试: 按业务回执裁决, 不因缺少段证据而放宽
+            if ticket.cancelled:
+                return "failed", "cancelled"
+            if manual_detail is not None:
+                return "failed", manual_detail
+            if receipt is None:
+                return "failed", "no_response"
+            return _RECEIPT_TO_REQUEST_STATUS[receipt.status], receipt.reason
+        pending, planned, confirmed, failed = outcome["pending"], outcome["planned"], outcome["confirmed"], outcome["failed"]
+        # 取消来源有两类: 事件被外部撤销, 以及本轮执行协程被取消或超时打断
+        cancelled = ticket.cancelled or manual_detail == "cancelled"
+        reasons = list(outcome["reasons"])
+        if cancelled:
+            reasons.append("cancelled")
+        if manual_detail is not None and manual_detail != "cancelled":
+            reasons.append(manual_detail)
+        if pending or outcome["legacy_confirmed"]:
+            # 有已提交未确认的动作 (或用途未知的历史记录) 一律保守为 unknown
+            return "unknown", ";".join(reasons) or "in_flight_unconfirmed"
+        if confirmed and (failed or planned or manual_detail is not None):
+            return "partial", ";".join([*reasons, "confirmed_prefix"])
+        if confirmed:
+            return "sent", ";".join(reasons)
+        if cancelled:
+            return "failed", "cancelled_before_send"
+        return "failed", manual_detail or "no_confirmed_send"
+
+    def _record_send_diagnostic(self, event: MessageEvent, manual_detail: str | None) -> None:
+        """
+        发送收尾阶段诊断: 与补全阶段的失败分开, 展示发送证据而不是覆盖成单一失败
+
+        参数:
+        - event: 当前事件
+        - manual_detail: 管线错误出口原因, 无错误为 None
+        """
+        if not event.is_wake:
+            # 未被唤醒的事件没有任何发送动作, 决策阶段的记录已经是完整结论
+            return
+        outcome = None
+        store = self.manual_wake_store
+        if store is not None:
+            try:
+                outcome = store.request_send_outcome(event.call_origin.request_id, event.call_origin.adapter_id)
+            except Exception as error:
+                logger.debug(f"[PipelineScheduler] 发送证据查询失败: {type(error).__name__}")
+        receipt = event.last_business_receipt
+        if outcome is None or outcome["attempts"] == 0:
+            if receipt is None:
+                # 既无业务尝试也无业务回执: 本轮没有发出业务内容, 不把管线出口原因冒充成发送失败
+                self._record_diagnostic(
+                    event, "send", "skipped", reason_code="no_business_send",
+                    reason="没有业务发送尝试与回执", notes=manual_detail or "",
+                )
+                return
+            self._record_diagnostic(
+                event, "send", _RECEIPT_TO_REQUEST_STATUS[receipt.status], reason_code=receipt.status,
+                reason=receipt.reason or "平台不记录发送尝试, 按进程内回执裁决", send_status=receipt.status,
+            )
+            return
+        if outcome["pending"] or outcome["legacy_confirmed"]:
+            status, code = "unknown", "in_flight_unconfirmed"
+        elif outcome["confirmed"] and (outcome["failed"] or outcome["planned"]):
+            status, code = "partial", "confirmed_prefix"
+        elif outcome["confirmed"]:
+            status, code = "sent", "all_segments_confirmed"
+        else:
+            status, code = "failed", manual_detail or "no_confirmed_send"
+        self._record_diagnostic(
+            event, "send", status, reason_code=code,
+            reason=f"业务段 已确认 {outcome['confirmed']} 未确认 {outcome['pending']} 失败 {outcome['failed']}",
+            turn_id=",".join(cast(list[str], outcome["turn_ids"])),
+            notes="|".join(cast(list[str], outcome["reasons"])),
+        )
+
+    def _request_attempts(self, event: MessageEvent) -> list[SendAttemptRecord]:
+        """本请求已登记的发送尝试, 只读内存状态, 不执行磁盘操作"""
+        store = self.manual_wake_store
+        if store is None:
+            return []
+        try:
+            return store.lookup_attempts(event.call_origin.request_id, event.call_origin.adapter_id)
+        except Exception as error:
+            logger.debug(f"[PipelineScheduler] 发送尝试查询失败: {type(error).__name__}")
+            return []
+
+    def _request_turn_ids(self, event: MessageEvent) -> str:
+        """本请求的发送尝试标识 (最多 4 条), 供诊断关联到具体尝试"""
+        return ",".join(item["turn_id"] for item in self._request_attempts(event)[:4])
+
+    def _record_projection(
+        self, event: MessageEvent, quote_status: str, forward_status: str,
+        attachments: Sequence[Any], projected: Any,
+    ) -> None:
+        """
+        补全与投影阶段诊断: 附件与引用补全结果独立成条, 不与最终发送结果混同
+
+        参数:
+        - event: 当前事件
+        - quote_status: 引用回源结果
+        - forward_status: 转发补全结果
+        - attachments: 附件处理结果 (AttachmentResult 序列)
+        - projected: 投影结果, 提供 notes 与 attachment_status
+        """
+        codes: list[str] = []
+        resolved = 0
+        failed = 0
+        for item in attachments:
+            status = str(safe_getattr_str(item, "status"))
+            kind = str(safe_getattr_str(item, "kind")) or "attachment"
+            if status == "resolved":
+                resolved += 1
+                continue
+            reason = str(safe_getattr_str(item, "reason"))
+            # 只记录类别, 状态与原因码: 不保存转写内容与文件名
+            codes.append(f"{kind}:{status}:{reason or 'none'}")
+            if status in {"failed", "too_large", "unsupported"}:
+                failed += 1
+        for label, status in (("quote", quote_status), ("forward", forward_status)):
+            if status not in {"none", "resolved", ""}:
+                codes.append(f"{label}:{status}")
+        if failed and not resolved:
+            verdict = "failed"
+        elif failed or any(code.endswith(":skipped:none") for code in codes):
+            verdict = "partial"
+        elif codes:
+            verdict = "skipped"
+        else:
+            verdict = "ok"
+        self._record_diagnostic(
+            event, "projection", verdict,
+            reason_code=str(safe_getattr_str(projected, "attachment_status")) or "none",
+            reason=f"附件已解析 {resolved} 项, 未完成 {len(codes)} 项",
+            attachments=",".join(codes[:8]), notes="|".join(getattr(projected, "notes", ()) or ()),
+            turn_id=self._request_turn_ids(event),
+        )
+
+    async def _await_send_settlement(self, store: ManualWakeStore, request_id: str, adapter_id: str) -> dict[str, Any] | None:
+        """
+        有界等待发送尝试收尾后再归并, 收尾超时仍返回当时证据
+
+        参数:
+        - store: 发送尝试存储
+        - request_id: 逻辑请求标识
+        - adapter_id: 平台实例 ID
+
+        返回:
+        - dict[str, Any] | None: 发送证据; 查询失败返回 None
+        """
+        deadline = monotonic() + _SETTLEMENT_WAIT_SECONDS
+        outcome: dict[str, Any] | None = None
+        while True:
+            try:
+                outcome = await asyncio.to_thread(store.request_send_outcome, request_id, adapter_id)
+            except Exception as error:
+                logger.debug(f"[PipelineScheduler] 发送证据查询失败 request_id={request_id}: {type(error).__name__}")
+                return None
+            if outcome["attempts"] == 0 or outcome["pending"] == 0 or monotonic() >= deadline:
+                return outcome
+            await asyncio.sleep(_SETTLEMENT_POLL_SECONDS)
 
     def add_preprocessor(self, fn: Callable[[MessageEvent], Awaitable[bool] | bool]):
         """
@@ -199,9 +421,13 @@ class PipelineScheduler:
             if not event.is_private_chat() and not event.is_wake_up():
                 decision = event.get_extra("wake_decision")
                 if isinstance(decision, WakeDecision):
-                    self._record_rejection(event, "wake_decision", f"{decision.rule}: {decision.reason}")
+                    self._record_rejection(
+                        event, "wake_decision", f"{decision.rule}: {decision.reason}", reason_code=decision.rule,
+                    )
                 else:
-                    self._record_rejection(event, "wake_decision", "not_woken: 未命中唤醒条件")
+                    self._record_rejection(
+                        event, "wake_decision", "not_woken: 未命中唤醒条件", reason_code="not_woken",
+                    )
                 if deadline_ticket is None:
                     self.wake_timers.schedule(event)
                 else:
@@ -232,7 +458,7 @@ class PipelineScheduler:
                         await self._send_feedback(event, "请求频率过高, 请稍后再试")
                     receipt = event.last_send_receipt
                     self._record_rejection(
-                        event, "rate_limit", f"请求频率限制, 需等待 {wait:.1f}s",
+                        event, "rate_limit", f"请求频率限制, 需等待 {wait:.1f}s", reason_code="rate_limited",
                         send_status=receipt.status if receipt is not None else "",
                     )
                     manual_detail = "rate_limited"
@@ -291,6 +517,7 @@ class PipelineScheduler:
                 attachments = await resolve_attachments(event, self.asr_resolver)
                 projected = project_input(event, quote_status, forward_status, attachments)
                 event.set_extra("input_projection", projected)
+                self._record_projection(event, quote_status, forward_status, attachments, projected)
                 message, images, videos = projected.message, list(projected.images), list(projected.videos)
                 if not message and not images and not videos:
                     manual_detail = "empty_message"
@@ -336,6 +563,8 @@ class PipelineScheduler:
                         event.set_extra("input_projection", replace(projected, notes=(*projected.notes, window_note)))
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
+                    # 已受理请求要求发送证据: 记录不可用时工具与回复不得冒充可恢复
+                    event.set_extra("require_send_tracking", True)
                     await self._update_manual_request(event, manual_ticket, "executing", "")
                 try:
                     response = await asyncio.wait_for(
@@ -344,10 +573,19 @@ class PipelineScheduler:
                     )
                 except asyncio.TimeoutError:
                     logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                    self._record_diagnostic(
+                        event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
+                        turn_id=self._request_turn_ids(event),
+                    )
                     if self.error_feedback:
                         await self._send_feedback(event, "请求超时, 请稍后重试")
                     manual_detail = "llm_timeout"
                     return
+                self._record_diagnostic(
+                    event, "model", "ok", reason_code="completed",
+                    reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
+                    turn_id=self._request_turn_ids(event),
+                )
 
                 if response and not event.has_send_operation():
                     await event.send(MessageChain.from_text(response))
@@ -355,6 +593,10 @@ class PipelineScheduler:
                 # 如果 Session 内部已通过 content_callback 发送过消息
                 # event.has_send_operation() 返回 True, 避免重复发送
 
+        except asyncio.CancelledError:
+            # 取消与超时都可能在发送已经发生之后到达, 记原因后交给 finally 归并真实副作用
+            manual_detail = "cancelled"
+            raise
         except (ValueError, TypeError, KeyError) as e:
             # 配置或输入结构问题属于运维可见的日志, 不向每条消息的发送者刷反馈
             logger.error(f"[PipelineScheduler] 管线配置或输入错误 session={event.session_id} request={event.call_origin.request_id}: {type(e).__name__}: {e}")
@@ -365,22 +607,14 @@ class PipelineScheduler:
             if self.error_feedback:
                 await self._send_feedback(event, "处理失败, 请稍后重试")
         finally:
+            self._record_send_diagnostic(event, manual_detail)
             ticket = self.manual_wakes.tickets.get(event)
             if ticket is not None:
                 if ticket.status == "pending":
                     ticket.status = "processed"
                 if self.manual_wake_store is not None:
-                    receipt = event.last_send_receipt
-                    if ticket.cancelled:
-                        final_status, final_detail = "failed", "cancelled"
-                    elif manual_detail is not None:
-                        final_status, final_detail = "failed", manual_detail
-                    elif receipt is None:
-                        final_status, final_detail = "failed", "no_response"
-                    else:
-                        final_status = _RECEIPT_TO_REQUEST_STATUS[receipt.status]
-                        final_detail = receipt.reason
-                    await self._update_manual_request(event, ticket, final_status, final_detail)
+                    final_status, final_detail = await self._adjudicate_manual_request(event, ticket, manual_detail)
+                    await self._update_manual_request(event, ticket, final_status, final_detail, refine=True)
             event.cleanup_temporary_local_files()
 
     # ---------- 可覆写钩子 ----------
@@ -505,9 +739,11 @@ class PipelineScheduler:
         参数:
         - event: 事件
         - text: 待处理文本
+
+        反馈消息按 error_feedback 记录: 不进入业务送达证据, 提示发送成功不改变请求结论
         """
         try:
-            await event.send(MessageChain.from_text(text))
+            await event.send(MessageChain.from_text(text), purpose="error_feedback")
         except Exception as e:
             logger.warning(f"[PipelineScheduler] 发送反馈消息失败: {e}")
 

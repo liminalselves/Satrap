@@ -43,7 +43,7 @@ platforms:
 
 每个 OneBot 实例只绑定一个机器人账号: 配置 `self_id` 时必须匹配该账号, 留空时使用首条合法来源消息的账号。后续不同账号和自身发出的回声消息不会入队。消息按账号、会话类型、群或私聊目标及平台消息 ID 去重, 每实例至多保留 4096 条标识, 120 秒后过期; 不缓存正文。转换失败、取消或队列满不会将消息记为已接收。此去重不跨进程重启持久化, 无消息 ID 的输入不参与去重。健康状态 `ingress` 提供各类拒绝计数和缓存容量。
 
-OneBot 发送方法返回 `SendReceipt`: `success` 表示收到平台消息 ID, `partial` 表示部分块成功后明确失败, `failed` 表示明确未完成, `unknown` 表示动作结果无法确认。回执保留已确认的 `message_ids`, 分块失败位置和固定错误原因, 不回显供应商响应正文。事件的 `last_send_receipt` 保存最近一次回执; 部分成功或未知结果阻止调度器兜底重发全文。其他平台旧式 `None` 返回继续按原契约处理, 不伪造平台确认。本契约覆盖普通发送、流式降级与按长度拆分后的多块发送。
+OneBot 发送方法返回 `SendReceipt`: `success` 表示收到平台消息 ID, `partial` 表示部分块成功后明确失败, `failed` 表示明确未完成, `unknown` 表示动作结果无法确认。回执保留已确认的 `message_ids`, 分块失败位置和固定错误原因, 不回显供应商响应正文。事件的 `last_send_receipt` 保存最近一次回执 (`last_business_receipt` 只保存业务输出回执); 部分成功或未知结果阻止调度器兜底重发全文。其他平台旧式 `None` 返回继续按原契约处理, 不伪造平台确认。本契约覆盖普通发送、流式降级与按长度拆分后的多块发送; 逐段发送证据与请求结论的归并规则见"发送证据与请求结论"。
 
 ### 回复引用与 @发送者
 
@@ -107,6 +107,27 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 `) 边界断开, 其次在换行处断开, 单段仍超限时按上限硬切; 图片、@ 等非文本组件不可切开并保持原顺序。拆分不修改原消息链, 拼接后的文本与原文一致。
 
 拆分后的各块按顺序发送, 首个非 `success` 的块之后停止, 回执聚合为 `partial` (已有确认 ID 且明确失败) 或 `unknown` (结果不明), 并记录 `failed_index`; 不会重发已确认块。
+
+### 发送证据与请求结论
+
+回复类 send_message 在支持的平台上逐段记录发送证据 (见 [运行数据布局](../core/data-layout.md) 的 `.satrap/data/manual_wake_store.json`): 转发段、文件段、普通文本分块各为一段, 段状态为 `planned → submitted → sent`/`partial`/`failed`/`unknown`, 未尝试的段由收尾标 `skipped`。计划在发送 I/O 之前落盘, 每段在 I/O 前推进 `submitted`, 得到回执后立即保存该段结果, 因此崩溃或取消时不会把"已发出但未确认"记成计划中。证据记录失败时该段按 `unknown` 处理 (收尾带 `tracking_incomplete`), 不冒充已送达。
+
+发送用途区分 `business` (业务输出) 与 `error_feedback` (错误提示): 错误提示的回执不进入请求送达证据, "错误提示发送成功"不会把业务失败改写成已送达。旧版本记录缺 `purpose` 字段时按用途未知处理: 只提高结论的保守程度, 不作为业务已送达的依据。
+
+已受理的手动唤醒请求要求发送证据: 发送前记录不可用 (存储降级、容量拒绝或落盘失败) 时拒绝业务发送并返回 `unknown`/`tracking_unavailable`, 不发出无法确认的业务输出。发送收尾归发送子任务所有, 外层取消或超时也保留已落定的段证据, 收尾有界 (2 秒), 超时或被取消时尝试记录保持未终结, 由后续可信确认精化, 期间绝不重发。
+
+请求终态按同一 `request_id` 关联的全部业务尝试归并, 采集自段证据而不是最后一次回执:
+
+| 事实 | 请求状态 |
+| --- | --- |
+| 确定尚未提交任何业务写动作 (取消/在发送前退出) | `failed`, detail 为 `cancelled_before_send` 等明确原因 |
+| 有已提交未确认的段 (含重启后无法确认的尝试) | `unknown`, 保留已确认段与原因, 不自动重发 |
+| 有已确认前缀, 其余明确失败或未尝试 | `partial` |
+| 预定业务输出全部确认 | `sent` |
+
+进程内回执 (`last_send_receipt`/`last_business_receipt`) 只在平台不记录尝试时作为补充证据; 段证据优先, 调用方的乐观状态不能把未确认段提升为已送达。重启时 `submitted` 段转 `unknown`, `planned` 段转 `skipped`, 已确认段保持原状后重新归并。
+
+文件段在没有经实现验证的上传动作时的兼容回落 (先把文件消息当普通消息发出) 只有消息动作返回, 不构成文件交付证据: 该段记为 `unknown` 并在回执原因中带 `file_delivery_unconfirmed`, 沿用停止后续段、禁止兜底全文重发的策略, 已确认的前缀保留。平台明确拒绝该消息动作时才是 `failed`。
 
 每个 OneBot 实例维护有界的逻辑回复队列: 同一平台会话的多轮回复串行, 不同会话互不阻塞; 至多 64 个等待或执行中的逻辑回复, 等待执行权最长 30 秒。满载、等待超时或适配器已关闭时返回 `failed` 且原因为 `send_queue_unavailable`, 不提交任何动作。适配器终止时取消未完成的发送任务。
 
@@ -280,9 +301,29 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 已唤醒且通过限流的消息中, 顶层 `Record` 与 `File` 组件由 `pipeline/attachments.py` 在引用/转发补全之后处理, 每事件至多 4 个附件, 其余标记为“超出附件处理数量”。未唤醒的普通消息不会下载任何附件。
 
 - 语音: `settings.voice_transcribe` 选择转写来源, 默认 `asr`; `settings.asr_model` 指向一个已保存的 ASR 模型配置, 后端按名称解析并用 `AsyncASR` 转写 (16 MiB / 60 秒超时)。`asr` 路径按三级获取 ASR 可接受的音频: ① 请求实现服务端转码 (`get_record out_format=wav`, SnowLuma/NapCat 支持, 覆盖 QQ 原生 SILK 语音); ② 实现不提供时直接下载并按魔数探测, wav/ogg/flac/mp3/webm/m4a 原样送 ASR; ③ amr 等 ffmpeg 可解码格式在线程池中经 PyAV 本地转 16 kHz 单声道 wav (需 `pip install -e .[audio]`, 最长 300 秒), 面向不提供 `get_record` 的实现。SILK 裸流无法本地转码, 标记 `unsupported/silk_needs_platform_transcode`; 缺 av 包标记 `av_missing`。`platform` 只调用实现的原生转写 `fetch_ptt_text` (不需要 `asr_model`); `asr_then_platform` 在 ASR 路径失败后回退到它; `off` 关闭。转写结果冻结到 `Record.text`, 同一事件不重复调用; 投影为 `[语音 转写内容: …]` (至多 4000 字符), 不支持时给出具体原因文案
+- ASR 命名配置的引用保护: 删除或重命名一个 ASR 配置前, 扫描平台 `asr_model` 绑定、插件全局配置的 asr 字段与各平台库中的会话覆盖; 有引用时拒绝 (控制端 409 `config_in_use` 并列出引用清单)。扫描必须完整才允许放行: 已存在的插件元数据或全局配置读不出/解析失败、平台库锁定或查询失败、覆盖 JSON 非法、平台库已声明覆盖表版本但缺表时, 一律按"无法确认无引用"处理, 返回 503 `asr_reference_scan_failed` 并带脱敏原因 (`override_db`/`override_json`/`override_schema`/`plugin_meta`/`plugin_config`), CLI 返回非零状态; 只有明确不存在且在契约上允许不存在的来源 (没有插件声明 asr 字段、旧版库 `PRAGMA user_version` 早于覆盖表版本) 才当作空集合。扫描与配置写入共用一把锁, 扫描通过到实际删除之间不会有新增引用被漏检
 - 文件: `settings.attachment_extract` 默认开启, 只处理 `documents.SUPPORTED_EXTENSIONS` 内的类型; 经受限下载写入临时文件 (登记到事件, 事件结束自动删除), 在线程池中调用 `extract_text` (32 MiB / 20000 字符上限), 投影为 `[文件 <名> 内容:
 …]`。群文件上传 notice 生成的 File 附件同样只在其被明确转为会话消息时才会下载
 - 下载使用出站防护 `safe_async_get`: 只接受 http/https, 私网地址默认拒绝, 需要访问 SnowLuma 内网下载地址时在 `settings.media_trusted_hosts` 登记主机名; 默认校验 TLS 证书且重定向限制在同源, 自签证书的内网 https 需显式开启 `settings.media_insecure_tls: true` (仅对 `media_trusted_hosts` 登记的主机生效, 公网下载始终校验证书); 公网地址默认要求 https, 明文 http 公网下载需显式开启 `settings.media_plaintext_http: true` (平台设置界面有对应开关, 明文传输可被窃听篡改, `media_trusted_hosts` 登记主机不受此限); 不把平台上报的本地路径当作 Satrap 主机上的可信文件
 - 失败降级: 未配置 ASR、格式不支持、下载/转写/提取失败均保留可识别标记 (`[语音: 未启用转写]`、`[文件 x: 不支持的格式]`、`[…: 获取或处理失败]`) 并继续处理当前问题, 不把未知二进制送入文本模型; `input_projection` extra 的 `attachment_status` 为 resolved/partial/failed, notes 记录各项原因
 
 上述内容作为用户提供的资料进入模型输入, 不提升为系统指令, 不参与唤醒判定或命令解析。
+
+## 请求诊断
+
+按请求关联的诊断在阶段位置就地采集, 进程内按平台实例有界保存 (每实例最近 256 个请求, 每请求最多 16 条): 阶段为 `wake_decision`/`rate_limit`/`projection`/`model`/`send`, 每条含状态、脱敏原因码、展示原因、附件失败类型、截断说明与关联 `turn_id`。诊断只保存原因码与计数, 不保存正文、音频、密钥或供应商原始响应; 普通事件与手动唤醒共用同一套阶段记录, 手动请求的幂等与发送证据仍以持久账本为准, 诊断环形淘汰不影响它。
+
+- 未唤醒/被限流的消息在投影之前就被拒绝, 其阶段记录同样可查 (`wake_decision`/`rate_limit`)
+- 补全阶段的附件失败与最终发送结果分开成条: 附件失败后模型仍可执行, 不把阶段失败压成整条请求失败
+- 发送阶段只读发送证据: 有已确认前缀且其余未尝试为 `partial`, 有未确认段为 `unknown`, 全段确认为 `sent`, 没有业务尝试也没有业务回执为 `skipped`
+- 未被唤醒的事件不产生发送阶段记录, 决策阶段的记录即为完整结论
+
+查询接口 (沿用既有管理认证通路):
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| GET | `/api/platforms/wake/diagnostics?adapter_id=&stage=&request_id=&limit=` | 按请求汇总的近期诊断, 最新在前; `limit` 上限 256, 非法值 400 `invalid_limit`/`invalid_stage` |
+| GET | `/api/platforms/wake/diagnostics/{request_id}[?adapter_id=]` | 单请求的阶段明细; 未采集到 404 `not_found` |
+| GET | `/api/platforms/wake/rejections?adapter_id=&limit=` | 兼容保留的拒绝记录查询, 只返回 `wake_decision`/`rate_limit` 两个拒绝阶段 |
+
+调度器未装配时列表返回 `available: false`/`reason: scheduler_unavailable`, 明细返回 503; 诊断入口全部为内存操作, 采集异常只记日志, 不影响消息处理。

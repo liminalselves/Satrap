@@ -36,7 +36,7 @@ from satrap.core.config.session_instance_service import SessionInstanceConfigSer
 from satrap.core.log import logger
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
-from satrap.core.framework.BackGroundManager import ConfigInUseError, ModelConfigManager
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.framework.SessionManager import SessionConfigStore
@@ -1485,6 +1485,9 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
         except ConfigInUseError as e:
             return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+        except ConfigReferenceScanError as e:
+            # 扫描不完整: 503 表示"暂时无法判定", 不能伪称已经找到具体引用
+            return 503, {"ok": False, "error": str(e), "code": "asr_reference_scan_failed", "reason": e.reason}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 

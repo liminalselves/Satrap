@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
 
+from satrap.core.pipeline.wake_rejections import DIAGNOSTIC_STAGES
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
@@ -350,6 +351,33 @@ class BackendHTTPServer(MiniHTTPServer):
             except (TypeError, ValueError):
                 return 400, {"error": "invalid_limit"}
             return 200, {"records": backend.wake_rejections(adapter_id, limit)}
+
+        if method == "GET" and path.startswith("/api/platforms/wake/diagnostics"):
+            # 请求诊断: GET /api/platforms/wake/diagnostics[?adapter_id=&stage=&request_id=&limit=]
+            # 与 rejections 一样必须先于通用 /api/platforms/wake/{request_id} 分支匹配
+            parsed = urlsplit(path)
+            query = parse_qs(parsed.query)
+            adapter_id = query.get("adapter_id", [None])[0]
+            stage = query.get("stage", [""])[0]
+            request_id = query.get("request_id", [""])[0]
+            raw_limit = query.get("limit", ["50"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return 400, {"error": "invalid_limit"}
+            if stage and stage not in DIAGNOSTIC_STAGES:
+                return 400, {"error": "invalid_stage", "stages": sorted(DIAGNOSTIC_STAGES)}
+            tail = unquote(parsed.path.removeprefix("/api/platforms/wake/diagnostics")).strip("/")
+            if tail:
+                if len(tail) > 128 or chr(10) in tail:
+                    return 400, {"status": "rejected", "reason": "invalid_request_id"}
+                detail = backend.request_diagnostic_detail(tail, adapter_id)
+                if detail.get("reason") == "not_found":
+                    return 404, detail
+                if detail.get("reason") == "scheduler_unavailable":
+                    return 503, detail
+                return 200, detail
+            return 200, backend.request_diagnostics(adapter_id, stage=stage, request_id=request_id, limit=limit)
 
         if method == "GET" and path.startswith("/api/platforms/wake/"):
             # 手动唤醒状态查询: GET /api/platforms/wake/{request_id}[?adapter_id=...]

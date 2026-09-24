@@ -577,13 +577,15 @@ class OneBotAdmin:
             raise AdminActionRejected("来源消息回源结果与请求消息 ID 不一致, 已拒绝读取转发")
         return payload
 
-    async def send_group_forward(self, group_id: Any, nodes: Any) -> dict[str, Any]:
+    async def send_group_forward(self, group_id: Any, nodes: Any, request_id: str = "") -> dict[str, Any]:
         """
         经公共发送路径向群发送合并转发, 与 pipeline 回复共用拆分, 整轮排序与容量约束
 
         参数:
         - group_id: 目标群, 必须在当前实例允许范围内
         - nodes: 节点列表, 每项 {content: 1 到 2000 字符文本, name: 可选昵称}, 1 到 30 项
+        - request_id: 发起该动作的逻辑请求标识, 由调用上下文注入 (不取模型参数);
+          发送尝试按它归并到同一请求, 模型调用期间的工具发送因此进入请求结论
 
         返回:
         - dict: 发送回执摘要 (status/message_ids/reason)
@@ -605,7 +607,7 @@ class OneBotAdmin:
                 raise ValueError("节点正文必须为 1 到 2000 字符")
             name = str(entry.get("name") or "").strip()[:30] or "Satrap"
             built.append(Node(Plain(content), name=name, uin=uin))
-        receipt = await self._adapter.send_message(group_session_id(gid), MessageChain(built))
+        receipt = await self._adapter.send_message(group_session_id(gid), MessageChain(built), request_id=request_id)
         return {"status": receipt.status, "message_ids": list(receipt.message_ids), "reason": receipt.reason}
 
     async def recall_message(self, group_id: Any, message_id: Any) -> None:

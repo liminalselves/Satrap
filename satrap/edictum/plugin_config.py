@@ -281,11 +281,15 @@ class PluginConfigManager:
             cleaned[key] = fld.validate(value)
         path = self._global_path(name)
         temporary = None
+        # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许写入新引用
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
         try:
-            with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
-                temporary = Path(file.name)
-                json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
-            temporary.replace(path)
+            with REFERENCE_SCAN_LOCK:
+                with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
+                    temporary = Path(file.name)
+                    json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
+                temporary.replace(path)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

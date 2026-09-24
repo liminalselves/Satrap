@@ -10,15 +10,15 @@ from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
-from satrap.core.pipeline.wake_rejections import WakeRejection, WakeRejectionLog
+from satrap.core.pipeline.wake_rejections import REJECTION_STAGES, WakeRejection, WakeRejectionLog
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 
-def _rejection(adapter: str, reason: str, at: float) -> WakeRejection:
+def _rejection(adapter: str, reason: str, at: float, request_id: str = "r") -> WakeRejection:
     return WakeRejection(
         adapter_id=adapter, session_id="group%20", actor_id="30", stage="wake_decision",
-        decision="dropped", reason=reason, recorded_at=at, message_id="1", request_id="r",
+        decision="dropped", reason=reason, recorded_at=at, message_id="1", request_id=request_id,
     )
 
 
@@ -55,8 +55,9 @@ async def _feed(adapter: OneBotAdapter, text: str, message_id: str = "1") -> Non
 class TestRejectionLog:
     def test_capacity_order_filter_and_clear(self):
         log = WakeRejectionLog(per_adapter=3)
+        # 容量按请求计数: 每条记录都是独立请求, 同请求的同阶段记录会被合并
         for index in range(5):
-            log.record(_rejection("bot", f"r{index}", 1_700_000_000.0 + index))
+            log.record(_rejection("bot", f"r{index}", 1_700_000_000.0 + index, request_id=f"req{index}"))
         log.record(_rejection("other", "x", 1_700_000_100.0))
         records = log.list("bot")
         # 环形容量 3: 只留最新三条, 最新在前
@@ -106,7 +107,10 @@ class TestSchedulerCollection:
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
         manager.handle_call_async.assert_called_once()
-        assert scheduler.wake_rejections.list("bot") == []
+        # 已唤醒请求不产生拒绝记录, 只留执行阶段诊断
+        assert scheduler.wake_rejections.list("bot", stages=REJECTION_STAGES) == []
+        stages = {item["stage"] for item in scheduler.wake_rejections.list("bot")}
+        assert {"model", "send"} <= stages
 
     @pytest.mark.asyncio
     async def test_rate_limit_rejection_records_wait_and_send_status(self):
@@ -126,7 +130,7 @@ class TestSchedulerCollection:
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
         manager.handle_call_async.assert_not_called()
-        records = scheduler.wake_rejections.list("bot")
+        records = scheduler.wake_rejections.list("bot", stages=REJECTION_STAGES)
         assert len(records) == 1
         record = records[0]
         assert record["stage"] == "rate_limit" and "7.5" in str(record["reason"])

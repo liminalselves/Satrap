@@ -34,7 +34,7 @@ def runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter, Any, ManualW
     backend._adapter_mgr = PlatformAdapterManager()
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"self_id": "10"}))
     adapter.started = True
-    backend._adapter_mgr._adapters["bot"] = adapter
+    cast(Any, backend._adapter_mgr)._adapters["bot"] = adapter
     return backend, adapter, manager, store
 
 
@@ -75,6 +75,11 @@ class TestRequestStore:
         assert store.record_send_attempt(
             "t1", "bot", "group%20", "running", [{"index": 0, "kind": "chunk", "chars": 2, "digest": "ab"}],
         ) is True
+        assert store.record_send_attempt(
+            "t2", "bot", "group%20", "running", [{"index": 0, "kind": "chunk", "chars": 2, "digest": "cd"}],
+        ) is True
+        # t2 只写了计划未推进 submitted: 该段确定尚未尝试, 重启后标 skipped
+        store.mark_segment_submitted("t1", 0)
         # 模拟进程崩溃重启: 新实例接管同一文件, 未确认的一律 unknown 且不重发
         restarted = ManualWakeStore(path)
         queued = restarted.lookup_request("queued", "bot")
@@ -83,8 +88,10 @@ class TestRequestStore:
         assert queued is not None and queued["status"] == "unknown" and queued["detail"] == "restart_unconfirmed"
         assert running is not None and running["status"] == "unknown"
         assert done is not None and done["status"] == "sent"
-        attempt = restarted._attempts["t1"]
-        assert attempt["status"] == "unknown" and attempt["segments"][0]["status"] == "unknown"
+        submitted = restarted._attempts["t1"]
+        assert submitted["status"] == "unknown" and submitted["segments"][0]["status"] == "unknown"
+        planned = restarted._attempts["t2"]
+        assert planned["status"] == "failed" and planned["segments"][0]["status"] == "skipped"
 
     def test_corrupt_file_quarantined_and_degraded(self, tmp_path: Path):
         path = tmp_path / "store.json"
@@ -162,12 +169,20 @@ class TestRequestStore:
             {"index": 2, "kind": "chunk", "chars": 3, "digest": "cc"},
         ]
         assert store.record_send_attempt("t1", "bot", "group%20", "rq", segments) is True
-        assert store.complete_send_attempt("t1", ["sent", "failed", "skipped"], "partial", "action_rejected") is True
+        # 计划落盘时全部为 planned: 未尝试段不能被当成已经发出
+        assert [segment["status"] for segment in store._attempts["t1"]["segments"]] == ["planned", "planned", "planned"]
+        assert store.mark_segment_submitted("t1", 0) is True
+        assert store.record_segment_result("t1", 0, "sent", advance_to=1) is True
+        assert [segment["status"] for segment in store._attempts["t1"]["segments"]] == ["sent", "submitted", "planned"]
+        assert store.record_segment_result("t1", 1, "failed") is True
+        # 段证据与调用方结论矛盾: 段优先, 拒绝把未确认段写成 sent
+        assert store.complete_send_attempt("t1", "sent") is False
+        assert store.complete_send_attempt("t1", "partial", "action_rejected") is True
         attempt = store._attempts["t1"]
         assert attempt["status"] == "partial" and attempt["detail"] == "action_rejected"
         assert [segment["status"] for segment in attempt["segments"]] == ["sent", "failed", "skipped"]
         # 终态不重复更新
-        assert store.complete_send_attempt("t1", ["sent", "sent", "sent"], "sent") is False
+        assert store.complete_send_attempt("t1", "sent") is False
         assert store._attempts["t1"]["status"] == "partial"
 
     def test_adapter_stopped_semantics(self, tmp_path: Path):
@@ -177,6 +192,7 @@ class TestRequestStore:
         store.update_request("bot", "running", "executing")
         store.accept_request("other", "keep", "fp", "group:21", "op")
         store.record_send_attempt("t1", "bot", "group%20", "running", [{"index": 0}])
+        store.mark_segment_submitted("t1", 0)
         store.adapter_stopped("bot")
         queued = store.lookup_request("queued", "bot")
         running = store.lookup_request("running", "bot")
@@ -348,10 +364,12 @@ class TestPersistentDegradation:
         assert store.update_request("bot", "r", "sent") is False
         record = store.lookup_request("r", "bot")
         assert record is not None and record["status"] == "accepted"
-        assert store.complete_send_attempt("t1", ["sent", "failed"], "partial", "action_rejected") is False
+        assert store.mark_segment_submitted("t1", 0) is False
+        assert store.record_segment_result("t1", 0, "sent") is False
+        assert store.complete_send_attempt("t1", "sent", "action_rejected") is False
         attempt = store._attempts["t1"]
         assert attempt["status"] == "submitted"
-        assert [segment["status"] for segment in attempt["segments"]] == ["submitted", "submitted"]
+        assert [segment["status"] for segment in attempt["segments"]] == ["planned", "planned"]
         assert store.adapter_stopped("bot") is None
         stopped = store.lookup_request("r", "bot")
         assert stopped is not None and stopped["status"] == "accepted"
@@ -494,7 +512,10 @@ class TestPipelineAndSendAttempts:
         manager.handle_call_async.return_value = "收到"
         seen_during_send: list[str] = []
 
-        async def fake_send(session_id: str, message: object, *, request_id: str = "") -> SendReceipt:
+        async def fake_send(
+            session_id: str, message: object, *, request_id: str = "",
+            purpose: str = "business", require_tracking: bool = False,
+        ) -> SendReceipt:
             current = store.lookup_request("pipe", "bot")
             seen_during_send.append(current["status"] if current is not None else "missing")
             return SendReceipt("success", ("m1",))
@@ -513,7 +534,10 @@ class TestPipelineAndSendAttempts:
         manager.handle_call_async.side_effect = RuntimeError("llm down")
         _scheduler(backend).error_feedback = False
 
-        async def fake_send(session_id: str, message: object, *, request_id: str = "") -> SendReceipt:
+        async def fake_send(
+            session_id: str, message: object, *, request_id: str = "",
+            purpose: str = "business", require_tracking: bool = False,
+        ) -> SendReceipt:
             raise AssertionError("失败路径不应发送")
 
         monkeypatch.setattr(adapter, "send_message", fake_send)
@@ -602,3 +626,168 @@ class TestStatusRoute:
         assert degraded[0] == 503 and degraded[1]["reason"] == "store_degraded"
         bad = await server._route("GET", "/api/platforms/wake/" + "x" * 129, b"")
         assert bad[0] == 400
+
+
+class TestSendOutcomeAdjudication:
+    """B3 反例: 请求终态由同一 request_id 的全部业务尝试归并, 副作用已发生就不能谎报失败"""
+
+    @staticmethod
+    def _attach(backend: BackendManager, tmp_path: Path) -> tuple[OneBotAdapter, ManualWakeStore, PipelineScheduler]:
+        store = ManualWakeStore(tmp_path / "manual_wake_store.json")
+        adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"self_id": "10", "message_text_limit": 64}))
+        adapter.set_send_attempt_recorder(store)
+        adapter.started = True
+        adapter._bot = AsyncMock()
+        scheduler = _scheduler(backend)
+        scheduler.manual_wake_store = store
+        backend._manual_wake_store = store
+        cast(Any, backend._adapter_mgr)._adapters["bot"] = adapter
+        return adapter, store, scheduler
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_any_io_is_failed_cancelled_before_send(self, tmp_path: Path):
+        """反例: 取消发生在任何发送 I/O 之前时请求判失败, 且不得发出网络动作"""
+        backend, _, _, _ = runtime(tmp_path)
+        adapter, store, scheduler = self._attach(backend, tmp_path)
+
+        async def cancelled(*args: Any, **kwargs: Any) -> str:
+            raise asyncio.CancelledError()
+
+        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=cancelled))
+        assert (await backend.wake_platform(_payload("cancel0"), operator="management"))["status"] == "accepted"
+        event = adapter._event_queue.get_nowait()
+        with pytest.raises(asyncio.CancelledError):
+            await scheduler.execute(event)
+        record = store.lookup_request("cancel0", "bot")
+        assert record is not None and record["status"] == "failed" and record["detail"] == "cancelled_before_send"
+        adapter._bot.send_group_msg.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancel_after_first_segment_is_unknown_with_confirmed_prefix(self, tmp_path: Path):
+        """反例: 第二段可能已提交时不得显示已送达也不得判失败, 已确认首段保留"""
+        backend, _, _, _ = runtime(tmp_path)
+        adapter, store, scheduler = self._attach(backend, tmp_path)
+        blocker = asyncio.Event()
+
+        async def slow_send(**kwargs: Any) -> dict[str, Any]:
+            if "第二节" in json.dumps(kwargs, ensure_ascii=False):
+                await blocker.wait()
+            return {"message_id": 1}
+
+        adapter._bot.send_group_msg = AsyncMock(side_effect=slow_send)
+
+        async def send_two_then_cancel(*args: Any, **kwargs: Any) -> str:
+            event = next(iter(scheduler.manual_wakes.tickets))
+            await event.send(MessageChain.from_text("第一节"))
+            pending = asyncio.ensure_future(event.send(MessageChain.from_text("第二节")))
+            await asyncio.sleep(0.05)
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            return ""
+
+        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=send_two_then_cancel))
+        assert (await backend.wake_platform(_payload("cancel1"), operator="management"))["status"] == "accepted"
+        event = adapter._event_queue.get_nowait()
+        await scheduler.execute(event)
+        record = store.lookup_request("cancel1", "bot")
+        assert record is not None and record["status"] == "unknown"
+        attempts = store.lookup_attempts("cancel1", "bot")
+        assert len(attempts) == 2
+        interrupted = next(item for item in attempts if item["status"] == "unknown")
+        assert [segment["status"] for segment in interrupted["segments"]] == ["unknown"]
+        confirmed = next(item for item in attempts if item["status"] == "sent")
+        assert confirmed["segments"][0]["status"] == "sent"
+        assert store.request_send_outcome("cancel1", "bot")["confirmed"] == 1
+
+    @pytest.mark.asyncio
+    async def test_llm_timeout_does_not_erase_tool_delivery(self, tmp_path: Path):
+        """反例: 模型超时不得把模型调用期间已经发出的回复抹成失败"""
+        backend, _, _, _ = runtime(tmp_path)
+        adapter, store, scheduler = self._attach(backend, tmp_path)
+        adapter._bot.send_group_msg = AsyncMock(return_value={"message_id": 1})
+        scheduler.llm_timeout = 0.05
+        scheduler.error_feedback = False
+
+        async def tool_then_hang(*args: Any, **kwargs: Any) -> str:
+            event = next(iter(scheduler.manual_wakes.tickets))
+            await event.send(MessageChain.from_text("工具已发送的回复"))
+            await asyncio.sleep(5)
+            return ""
+
+        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=tool_then_hang))
+        assert (await backend.wake_platform(_payload("timeout"), operator="management"))["status"] == "accepted"
+        event = adapter._event_queue.get_nowait()
+        await scheduler.execute(event)
+        record = store.lookup_request("timeout", "bot")
+        # 已确认的工具输出保留为已确认前缀, 模型超时既不抹掉它也不谎报全部送达
+        assert record is not None and record["status"] == "partial"
+        assert "llm_timeout" in record["detail"] and "confirmed_prefix" in record["detail"]
+        adapter._bot.send_group_msg.assert_awaited_once()
+        attempts = store.lookup_attempts("timeout", "bot")
+        assert attempts[0]["segments"][0]["status"] == "sent"
+
+    @pytest.mark.asyncio
+    async def test_error_feedback_receipt_does_not_mark_business_sent(self, tmp_path: Path):
+        """反例: 错误提示发送成功不能覆盖业务失败"""
+        backend, _, _, _ = runtime(tmp_path)
+        adapter, store, scheduler = self._attach(backend, tmp_path)
+
+        async def plain_failure(*args: Any, **kwargs: Any) -> str:
+            raise RuntimeError("llm down")
+
+        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=plain_failure))
+        assert (await backend.wake_platform(_payload("feedback"), operator="management"))["status"] == "accepted"
+        event = adapter._event_queue.get_nowait()
+        await scheduler.execute(event)
+        record = store.lookup_request("feedback", "bot")
+        assert record is not None and record["status"] == "failed"
+        assert record["detail"] == "pipeline_error:RuntimeError"
+        adapter._bot.send_group_msg.assert_awaited_once()
+        attempts = store.lookup_attempts("feedback", "bot")
+        assert [item["purpose"] for item in attempts] == ["error_feedback"]
+        assert store.request_send_outcome("feedback", "bot")["confirmed"] == 0
+
+    @pytest.mark.asyncio
+    async def test_tracking_failure_refuses_business_send(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """反例: 已受理请求的必要记录无法落盘时不发业务输出, 也不冒充可恢复"""
+        backend, _, _, _ = runtime(tmp_path)
+        adapter, store, scheduler = self._attach(backend, tmp_path)
+
+        def broken_save() -> None:
+            raise OSError("disk full")
+
+        async def reply(*args: Any, **kwargs: Any) -> str:
+            event = next(iter(scheduler.manual_wakes.tickets))
+            await event.send(MessageChain.from_text("业务回复"))
+            return ""
+
+        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=reply))
+        assert (await backend.wake_platform(_payload("notrack"), operator="management"))["status"] == "accepted"
+        event = adapter._event_queue.get_nowait()
+        monkeypatch.setattr(store, "_save_current_locked", broken_save)
+        await scheduler.execute(event)
+        adapter._bot.send_group_msg.assert_not_awaited()
+        receipt = event.last_business_receipt
+        assert receipt is not None and receipt.status == "unknown" and receipt.reason == "tracking_unavailable"
+
+    @pytest.mark.asyncio
+    async def test_legacy_attempt_without_purpose_is_not_business_evidence(self, tmp_path: Path):
+        """反例: 旧记录缺 purpose 不能按默认值判成业务已送达"""
+        path = tmp_path / "store.json"
+        store = ManualWakeStore(path)
+        store.accept_request("bot", "legacy", "fp", "group:20", "op")
+        assert store.record_send_attempt("t-old", "bot", "group%20", "legacy", [{"index": 0}]) is True
+        assert store.mark_segment_submitted("t-old", 0) is True
+        assert store.record_segment_result("t-old", 0, "sent") is True
+        assert store.complete_send_attempt("t-old", "sent") is True
+        # 模拟旧版本写入的记录: 缺少 purpose 字段
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        del raw["attempts"]["t-old"]["purpose"]
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        migrated = ManualWakeStore(path)
+        attempt = migrated.lookup_attempts("legacy", "bot")[0]
+        assert attempt["purpose"] == "unknown"
+        outcome = migrated.request_send_outcome("legacy", "bot")
+        assert outcome["confirmed"] == 1 and outcome["legacy_confirmed"] == 1 and outcome["business_attempts"] == 0
+

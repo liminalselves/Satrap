@@ -417,7 +417,10 @@ class PlatformAdapter(ABC):
             f"[PlatformAdapter] {self.__class__.__name__} 未实现 send_text()"
         )
 
-    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> Any:
+    async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
         """
         发送完整的消息链, 默认实现: 提取 Plain 组件拼接文本后调用 send_text
 
@@ -425,6 +428,8 @@ class PlatformAdapter(ABC):
         - session_id: 会话 ID
         - message: 要发送的消息链
         - request_id: 可选的逻辑请求标识, 支持发送尝试记录的平台据此关联手动请求
+        - purpose: business 业务输出或 error_feedback 错误反馈, 支持记录的平台据此区分送达证据
+        - require_tracking: 为 True 时发送前的必要记录不可用则不发送, 避免已受理请求冒充可恢复
 
         返回:
         - Any: 发送完整的消息链, 默认实现: 提取 Plain 组件拼接文本后调用 send_text

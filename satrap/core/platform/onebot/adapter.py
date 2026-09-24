@@ -61,6 +61,9 @@ except ImportError:   # pragma: no cover - 在安装依赖后走真实分支
 _RECEIPT_TO_SEGMENT_STATUS = {"success": "sent", "partial": "partial", "failed": "failed", "unknown": "unknown"}
 """回执状态到发送尝试段状态的映射"""
 
+_ATTEMPT_FINALIZE_TIMEOUT = 2.0
+"""发送尝试收尾的有界等待秒数, 超时保持未确认而不是谎报终态"""
+
 
 def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
     """段摘要: 组件类型与关键字段的散列及正文字符数, 不落正文原文"""
@@ -87,25 +90,32 @@ def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
     return digest, chars
 
 
-def _plan_send_segments(turns: list[tuple[str, list[BaseMessageComponent]]], limit: int) -> list[dict[str, Any]]:
-    """把轮次计划展开为与发送循环一一对应的段摘要 (normal 轮按分块展开)"""
-    plan: list[dict[str, Any]] = []
+def _plan_send_steps(
+    turns: list[tuple[str, list[BaseMessageComponent]]], limit: int,
+) -> list[tuple[str, list[BaseMessageComponent]]]:
+    """把轮次计划展开为与计划段一一对应的执行步骤 (forward/file 各一步, 普通轮按分块展开)"""
+    steps: list[tuple[str, list[BaseMessageComponent]]] = []
     for kind, payload in turns:
         if kind == "forward":
-            nodes = [component for component in payload if isinstance(component, Node)]
-            digest, chars = _turn_signature(cast(list[BaseMessageComponent], nodes))
-            plan.append({"index": len(plan), "kind": "forward", "chars": chars, "digest": digest})
+            nodes: list[BaseMessageComponent] = [component for component in payload if isinstance(component, Node)]
+            steps.append(("forward", nodes))
             continue
         if kind == "file":
-            files = [component for component in payload if isinstance(component, File)]
-            if not files:
-                continue
-            digest, _ = _turn_signature(cast(list[BaseMessageComponent], files[:1]))
-            plan.append({"index": len(plan), "kind": "file", "chars": 0, "digest": digest})
+            files: list[BaseMessageComponent] = [component for component in payload if isinstance(component, File)]
+            if files:
+                steps.append(("file", files[:1]))
             continue
         for chunk in split_components(payload, limit):
-            digest, chars = _turn_signature(chunk)
-            plan.append({"index": len(plan), "kind": "chunk", "chars": chars, "digest": digest})
+            steps.append(("chunk", chunk))
+    return steps
+
+
+def _plan_send_segments(turns: list[tuple[str, list[BaseMessageComponent]]], limit: int) -> list[dict[str, Any]]:
+    """由执行步骤生成段摘要, 与发送循环的下标严格一一对应"""
+    plan: list[dict[str, Any]] = []
+    for kind, payload in _plan_send_steps(turns, limit):
+        digest, chars = _turn_signature(payload)
+        plan.append({"index": len(plan), "kind": kind, "chars": 0 if kind == "file" else chars, "digest": digest})
     return plan
 
 
@@ -742,7 +752,10 @@ class OneBotAdapter(PlatformAdapter):
         """
         return await self.send_message(session_id, MessageChain.from_text(text))
 
-    async def send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> SendReceipt:
+    async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> SendReceipt:
         """
         在有界队列中按顺序发送完整逻辑回复
 
@@ -750,29 +763,45 @@ class OneBotAdapter(PlatformAdapter):
         - session_id: 平台会话 ID
         - message: 待发送消息链
         - request_id: 可选的逻辑请求标识, 发送尝试记录据此关联手动唤醒请求
+        - purpose: business 业务输出或 error_feedback 错误反馈
+        - require_tracking: 发送前记录不可用时不发业务输出 (已受理请求不冒充可恢复)
 
         返回:
         - SendReceipt: 全部已尝试块的回执, 满载或等待超时为明确失败
         """
         try:
-            return await self._outbound.run(session_id, lambda: self._send_message(session_id, message, request_id=request_id))
+            return await self._outbound.run(
+                session_id,
+                lambda: self._send_message(
+                    session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking,
+                ),
+            )
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
 
-    async def _send_message(self, session_id: str, message: MessageChain, *, request_id: str = "") -> SendReceipt:
+    async def _send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> SendReceipt:
         """
-        为已获取执行权的逻辑回复创建并执行分块计划, 发送 I/O 之前持久化尝试记录
+        为已获取执行权的逻辑回复创建并执行分块计划, 逐段落盘发送证据
+
+        计划在 I/O 之前落盘 (段状态 planned), 每段 I/O 前推进 submitted, 确认后立即保存该段结果,
+        未尝试段由收尾标 skipped; 启用 require_tracking 而记录不可用时不发业务输出
 
         参数:
         - session_id: 平台会话 ID
         - message: 待拆分组件
         - request_id: 可选的逻辑请求标识
+        - purpose: business 或 error_feedback
+        - require_tracking: 是否要求发送前的必要记录
 
         返回:
         - SendReceipt: 首次失败即停止的聚合结果
         """
         limit = int(self.config.settings.get("message_text_limit", 2000))
         turns = split_forward_turns(message.components)
+        steps = _plan_send_steps(turns, limit)
         plan = _plan_send_segments(turns, limit)
         recorder = self._send_attempt_recorder
         turn_id = ""
@@ -780,67 +809,122 @@ class OneBotAdapter(PlatformAdapter):
             turn_id = secrets.token_hex(12)
             try:
                 recorded = await asyncio.to_thread(
-                    recorder.record_send_attempt, turn_id, self.config.id, session_id, request_id, plan,
+                    recorder.record_send_attempt, turn_id, self.config.id, session_id, request_id, plan, purpose,
                 )
             except Exception as error:
                 logger.warning(f"[OneBotAdapter] 发送尝试落盘失败, 继续发送 turn={turn_id}: {type(error).__name__}")
                 recorded = False
             if not recorded:
                 turn_id = ""
+        if require_tracking and plan and not turn_id:
+            # 已受理请求的发送证据缺失: 不发业务输出, 保持不可确认而不是假装可恢复
+            logger.error(
+                f"[OneBotAdapter] 发送前记录不可用, 拒绝业务发送 session={session_id} request={request_id}",
+            )
+            return SendReceipt("unknown", reason="tracking_unavailable")
         receipts: list[SendReceipt] = []
-        fallback_unverified = False
-        for kind, payload in turns:
-            if kind == "forward":
-                nodes = [component for component in payload if isinstance(component, Node)]
-                try:
-                    result = await self._send_forward(session_id, nodes, limit)
-                except PermissionError:
-                    result = SendReceipt("failed", reason="target_unavailable")
-                except Exception:
-                    result = SendReceipt("failed", reason="message_conversion_failed")
+        combined: SendReceipt | None = None
+        gaps: list[int] = []
+        try:
+            for index, (kind, payload) in enumerate(steps):
+                marked = await self._mark_segment_submitted(turn_id, index)
+                if kind == "forward":
+                    try:
+                        result = await self._send_forward(session_id, cast(list[Node], payload), limit)
+                    except PermissionError:
+                        result = SendReceipt("failed", reason="target_unavailable")
+                    except Exception:
+                        result = SendReceipt("failed", reason="message_conversion_failed")
+                elif kind == "file":
+                    try:
+                        result = await self._send_file(session_id, cast(File, payload[0]))
+                    except PermissionError:
+                        result = SendReceipt("failed", reason="target_unavailable")
+                    except Exception:
+                        result = SendReceipt("failed", reason="message_conversion_failed")
+                else:
+                    result = await self._send_chunk_guarded(session_id, MessageChain(payload))
                 receipts.append(result)
-                if result.status != "success":
-                    break
-                continue
-            if kind == "file":
-                components = [component for component in payload if isinstance(component, File)]
-                if not components:
-                    continue
-                try:
-                    result = await self._send_file(session_id, components[0])
-                except PermissionError:
-                    result = SendReceipt("failed", reason="target_unavailable")
-                except Exception:
-                    result = SendReceipt("failed", reason="message_conversion_failed")
-                fallback_unverified = fallback_unverified or result.reason.startswith("fallback_unverified")
-                receipts.append(result)
-                if result.status != "success":
-                    break
-                continue
-            for chunk in split_components(payload, limit):
-                result = await self._send_chunk_guarded(session_id, MessageChain(chunk))
-                receipts.append(result)
-                if result.status != "success":
-                    break
-            if receipts and receipts[-1].status != "success":
-                break
-        combined = combine_receipts(receipts)
-        if fallback_unverified:
-            # 兼容尝试标注必须穿透聚合, 调用方才能区分上传确认与未验证投递
-            note = f"fallback_unverified:{combined.reason}" if combined.reason else "fallback_unverified"
-            combined = SendReceipt(combined.status, combined.message_ids, combined.failed_index, reason=note)
-        if turn_id and recorder is not None:
-            segment_statuses = [
-                _RECEIPT_TO_SEGMENT_STATUS[receipt.status] for receipt in receipts
-            ] + ["skipped"] * (len(plan) - len(receipts))
-            try:
-                await asyncio.to_thread(
-                    recorder.complete_send_attempt, turn_id, segment_statuses,
-                    _RECEIPT_TO_SEGMENT_STATUS[combined.status], combined.reason,
+                stored = await self._record_segment_result(
+                    turn_id, index, _RECEIPT_TO_SEGMENT_STATUS[result.status],
+                    advance_to=index + 1 if result.status == "success" and index + 1 < len(steps) else None,
                 )
-            except Exception as error:
-                logger.warning(f"[OneBotAdapter] 发送回执落盘失败 turn={turn_id}: {type(error).__name__}")
-        return combined
+                if not marked and not stored:
+                    # 该段已经发出却没有留下任何证据
+                    gaps.append(index)
+                if result.status != "success":
+                    break
+            combined = combine_receipts(receipts)
+            return combined
+        finally:
+            if turn_id:
+                # 收尾归本次尝试所有: 外层取消或超时也保留已落定的段证据
+                if gaps:
+                    # 已经发出但没有任何落盘证据的段: 只能按无法确认收尾
+                    await self._finalize_attempt(turn_id, "unknown", "tracking_incomplete", untracked=gaps)
+                else:
+                    await self._finalize_attempt(
+                        turn_id,
+                        _RECEIPT_TO_SEGMENT_STATUS[combined.status] if combined is not None else "unknown",
+                        combined.reason if combined is not None else "send_interrupted",
+                    )
+
+    async def _mark_segment_submitted(self, turn_id: str, index: int) -> bool:
+        """段 I/O 之前推进 submitted, 记录失败只告警不阻断发送"""
+        recorder = self._send_attempt_recorder
+        if not turn_id or recorder is None:
+            return False
+        try:
+            recorded = await asyncio.to_thread(recorder.mark_segment_submitted, turn_id, index)
+        except Exception as error:
+            logger.warning(f"[OneBotAdapter] 段提交状态落盘失败 turn={turn_id} index={index}: {type(error).__name__}")
+            return False
+        if not recorded:
+            logger.warning(f"[OneBotAdapter] 段提交状态未生效 turn={turn_id} index={index}")
+        return recorded
+
+    async def _record_segment_result(self, turn_id: str, index: int, status: str, *, advance_to: int | None) -> bool:
+        """段结果确认后立即落盘, 失败只告警; 证据缺失的段按未确认处理"""
+        recorder = self._send_attempt_recorder
+        if not turn_id or recorder is None:
+            return False
+        try:
+            recorded = await asyncio.to_thread(recorder.record_segment_result, turn_id, index, status, advance_to=advance_to)
+        except Exception as error:
+            logger.warning(f"[OneBotAdapter] 段结果落盘失败 turn={turn_id} index={index}: {type(error).__name__}")
+            return False
+        if not recorded:
+            logger.warning(f"[OneBotAdapter] 段结果未落盘 turn={turn_id} index={index} status={status}")
+        return recorded
+
+    async def _finalize_attempt(
+        self, turn_id: str, status: str, detail: str, *, untracked: list[int] | None = None,
+    ) -> None:
+        """
+        收尾发送尝试记录, 有界等待且不被外层取消打断
+
+        参数:
+        - turn_id: 本次尝试标识
+        - status: 聚合结论
+        - detail: 脱敏原因
+        - untracked: 已发出但没有落盘证据的段序号
+
+        收尾超时或被取消时记录保持未确认: 后续可信确认可精化结果, 但不会重发
+        """
+        recorder = self._send_attempt_recorder
+        if recorder is None:
+            return
+        worker = asyncio.ensure_future(
+            asyncio.to_thread(recorder.complete_send_attempt, turn_id, status, detail, untracked or []),
+        )
+        try:
+            await asyncio.wait_for(asyncio.shield(worker), _ATTEMPT_FINALIZE_TIMEOUT)
+        except asyncio.CancelledError:
+            logger.warning(f"[OneBotAdapter] 发送收尾被取消, 记录保持未确认 turn={turn_id}")
+        except asyncio.TimeoutError:
+            logger.warning(f"[OneBotAdapter] 发送收尾超时, 记录保持未确认 turn={turn_id}")
+        except Exception as error:
+            logger.warning(f"[OneBotAdapter] 发送收尾失败 turn={turn_id}: {type(error).__name__}: {error}")
 
     async def _send_chunk_guarded(self, session_id: str, chain: MessageChain) -> SendReceipt:
         """
@@ -949,14 +1033,15 @@ class OneBotAdapter(PlatformAdapter):
 
     async def _send_file_fallback(self, session_id: str, component: File) -> SendReceipt:
         """
-        未验证兼容尝试: 以 file 段普通消息发送, 回执标注 fallback_unverified
+        未验证兼容尝试: 以 file 段普通消息发送, 回执保持未确认语义
 
         参数:
         - session_id: 平台会话 ID
         - component: 文件组件
 
         返回:
-        - SendReceipt: 保留普通发送的状态与 ID, 该路径不构成文件送达的证据
+        - SendReceipt: 普通发送被平台明确拒绝时为 failed, 其余保留传输层确认信息但标为 unknown,
+          该路径不构成文件送达的证据
         """
         self._warn_limited(
             "file_fallback",
@@ -964,8 +1049,10 @@ class OneBotAdapter(PlatformAdapter):
             interval=600,
         )
         receipt = await self._send_chunk(session_id, MessageChain([component]))
-        note = f"fallback_unverified:{receipt.reason}" if receipt.reason else "fallback_unverified"
-        return SendReceipt(receipt.status, receipt.message_ids, receipt.failed_index, reason=note)
+        note = f"file_delivery_unconfirmed:{receipt.reason}" if receipt.reason else "file_delivery_unconfirmed"
+        # 平台明确拒绝该消息动作时保留失败语义, 其余一律不是文件送达的证据
+        status: Literal["failed", "unknown"] = "failed" if receipt.status == "failed" else "unknown"
+        return SendReceipt(status, receipt.message_ids, receipt.failed_index, reason=note)
 
     def _failed_receipt(self, session_id: str, action: str, reason: str, error: BaseException | None = None, *, status: Literal["failed", "unknown"] = "failed") -> SendReceipt:
         """

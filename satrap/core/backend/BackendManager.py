@@ -31,6 +31,7 @@ from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
+from satrap.core.pipeline.wake_rejections import REJECTION_STAGES
 from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
@@ -583,12 +584,57 @@ class BackendManager:
         - limit: 返回条数上限
 
         返回:
-        - list[dict[str, object]]: 拒绝记录; 调度器未装配时为空列表
+        - list[dict[str, object]]: 拒绝记录 (只含决策点与限流点阶段); 调度器未装配时为空列表
         """
         scheduler = self._scheduler
         if scheduler is None:
             return []
-        return scheduler.wake_rejections.list(adapter_id, limit)
+        return scheduler.wake_rejections.list(adapter_id, limit, stages=REJECTION_STAGES)
+
+    def request_diagnostics(
+        self, adapter_id: str | None = None, *, stage: str = "", request_id: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        """
+        查询按请求关联的有界诊断摘要, 最新在前
+
+        参数:
+        - adapter_id: 可选适配器实例 ID, 缺省跨实例按时间合并
+        - stage: 只保留包含该阶段的请求
+        - request_id: 只保留该请求
+        - limit: 返回请求数上限
+
+        返回:
+        - dict[str, Any]: 摘要列表与容量信息; 调度器未装配时显式标记不可用
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return {"records": [], "available": False, "reason": "scheduler_unavailable"}
+        return {
+            "records": scheduler.wake_rejections.list_requests(
+                adapter_id, stage=stage, request_id=request_id, limit=limit,
+            ),
+            "available": True,
+            **scheduler.wake_rejections.stats(adapter_id),
+        }
+
+    def request_diagnostic_detail(self, request_id: str, adapter_id: str | None = None) -> dict[str, Any]:
+        """
+        单个请求的完整阶段诊断
+
+        参数:
+        - request_id: 逻辑请求标识
+        - adapter_id: 可选适配器实例 ID
+
+        返回:
+        - dict[str, Any]: 阶段记录明细; 未采集到或调度器未装配时给出明确原因
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return {"status": "unknown", "request_id": request_id, "reason": "scheduler_unavailable"}
+        detail = scheduler.wake_rejections.get_request(request_id, adapter_id)
+        if detail is None:
+            return {"status": "unknown", "request_id": request_id, "reason": "not_found"}
+        return detail
 
     async def reload_config(self, expected_config_revision: str | None = None) -> dict[str, Any]:
         """

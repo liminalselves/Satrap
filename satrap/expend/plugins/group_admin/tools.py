@@ -193,7 +193,8 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             raise ValueError("必须提供 source_message_id: 该转发所在群消息的 ID")
         return admin.get_forward_message(gid, kwargs.get("forward_id", ""), source_id)
     if name == "group_admin_send_forward":
-        return admin.send_group_forward(gid, kwargs.get("nodes"))
+        # request_id 取自调用上下文而不是模型参数: 工具发送要归并进同一请求的发送结论
+        return admin.send_group_forward(gid, kwargs.get("nodes"), origin.request_id)
     if name == "group_admin_recall_message":
         return admin.recall_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_kick":

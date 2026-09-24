@@ -370,6 +370,8 @@ class MessageEvent:
         self.created_at = time()
         self._has_send_oper = False
         self.last_send_receipt: SendReceipt | None = None
+        self.last_business_receipt: SendReceipt | None = None
+        """最近一次业务发送的回执: 错误反馈回执不覆盖它, 请求结论据此区分送达证据"""
         self.call_llm = True
         self._temporary_local_files: list[str] = []
         self.plugins_name: list[str] | None = None
@@ -806,19 +808,24 @@ class MessageEvent:
             conversation=conversation,
         )
 
-    async def send(self, message: MessageChain) -> None:
+    async def send(self, message: MessageChain, *, purpose: str = "business") -> None:
         """
         发送消息到当前会话
 
         参数:
         - message: 要发送的消息链
+        - purpose: business 业务输出或 error_feedback 错误反馈, 支持发送尝试记录的平台据此归并请求结论
+
+        需要发送证据的请求 (已受理的手动唤醒) 由调度器在事件上设置 require_send_tracking,
+        记录不可用时直接拒绝发送而不是发出一条无法确认的业务输出
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
                 result = await self.adapter.send_message(
                     self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
+                    purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
                 )
-                self._record_send_result(result)
+                self._record_send_result(result, purpose=purpose)
             except Exception as e:
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
@@ -905,19 +912,23 @@ class MessageEvent:
                 yield self.decorate_reply(chain)
         # 空块不进入适配器, 避免降级路径把空消息当作明确失败而中断后续块
 
-    def _record_send_result(self, result: object) -> None:
+    def _record_send_result(self, result: object, *, purpose: str = "business") -> None:
         """
         保存明确回执并维护逻辑回复的去重标记
 
         参数:
         - result: 新适配器的 SendReceipt 或旧适配器的兼容返回值
+        - purpose: business 业务输出或 error_feedback 错误反馈, 后者不进入请求送达证据
+
+        旧适配器返回 None 时仍表示调用已完成, 不伪造平台确认回执
         """
         if isinstance(result, SendReceipt):
             self.last_send_receipt = result
+            if purpose == "business":
+                self.last_business_receipt = result
             self._has_send_oper = self._has_send_oper or result.suppress_fallback
         else:
             self._has_send_oper = True
-        # 旧适配器返回 None 仍表示调用已完成, 不伪造平台确认回执
 
     async def send_typing(self) -> None:
         """发送"输入中"状态指示"""

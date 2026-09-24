@@ -13,12 +13,16 @@ import time
 from satrap.core.storage.file_lock import database_session_lock
 
 
+OVERRIDE_SCHEMA_VERSION = 1
+"""覆盖表结构版本, 写入平台库的 user_version; 0 表示建表版本未知的旧库"""
+
+
 class OverrideConflictError(ValueError):
     """覆盖配置已被其他请求更新, 调用方需要重新读取"""
 
 
 def ensure_override_tables(connection: sqlite3.Connection) -> None:
-    """创建覆盖记录表, 空记录保留修订号以避免恢复继承后的并发覆盖"""
+    """创建覆盖记录表并在同一事务中向上写结构版本, 供引用扫描判断缺表是否属于旧库"""
     connection.execute(
         "CREATE TABLE IF NOT EXISTS session_config_overrides ("
         "session_id TEXT NOT NULL, namespace TEXT NOT NULL, "
@@ -26,6 +30,10 @@ def ensure_override_tables(connection: sqlite3.Connection) -> None:
         "revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL, "
         "PRIMARY KEY (session_id, namespace))"
     )
+    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if current < OVERRIDE_SCHEMA_VERSION:
+        # 只向上写: 更高版本由更新的代码负责, 不覆盖也不回退
+        connection.execute(f"PRAGMA user_version = {OVERRIDE_SCHEMA_VERSION}")
 
 
 class SessionOverrideStore:
@@ -80,7 +88,10 @@ class SessionOverrideStore:
             raise ValueError("覆盖配置必须是字符串键对象")
         encoded = json.dumps(dict(values), ensure_ascii=False, allow_nan=False)
         updated_at = time.time()
-        with database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
+        # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许插入新覆盖
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK, database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 "SELECT revision FROM session_config_overrides WHERE session_id=? AND namespace=?",

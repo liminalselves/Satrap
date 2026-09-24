@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, Sequence
 
 
 @dataclass(frozen=True)
@@ -72,10 +72,21 @@ class SendAttemptRecorder(Protocol):
         target: str,
         request_id: str,
         segments: list[dict[str, Any]],
+        purpose: str = "business",
     ) -> bool:
-        """在发送 I/O 之前持久化 submitted 占位, 返回是否已落盘"""
+        """在发送 I/O 之前持久化计划 (段状态 planned), 返回是否已落盘"""
         ...
 
-    def complete_send_attempt(self, turn_id: str, segment_statuses: list[str], status: str, detail: str = "") -> bool:
-        """回执到达后逐段更新并写终态 (sent/partial/failed/unknown)"""
+    def mark_segment_submitted(self, turn_id: str, index: int) -> bool:
+        """该段 I/O 之前把它从 planned 推进 submitted, 返回是否已落盘"""
+        ...
+
+    def record_segment_result(self, turn_id: str, index: int, status: str, *, advance_to: int | None = None) -> bool:
+        """段结果确认后立即落盘该段状态, 并可同时把下一段推进 submitted"""
+        ...
+
+    def complete_send_attempt(
+        self, turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = (),
+    ) -> bool:
+        """整轮收尾: 未尝试段标 skipped 并按段证据落终态 (sent/partial/failed/unknown)"""
         ...
