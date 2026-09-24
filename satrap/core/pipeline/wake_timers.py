@@ -6,6 +6,7 @@ from copy import copy, deepcopy
 import asyncio
 
 from satrap.core.pipeline.wake_window import WakeWindow, PendingText
+from satrap.core.config.platform_policy import policy_default
 from satrap.core.platform.event import MessageEvent
 from satrap.core.components import Plain
 from satrap.core.platform import PlatformAdapter
@@ -45,7 +46,7 @@ class WakeTimers:
         - event: 已通过权限检查的原事件
         - earliest: 到期时间下限 (monotonic), 到期复查未触发时由调用方传入剩余冷却
         """
-        wait = float(event.policy_settings.get("wake_max_wait", 0))
+        wait = float(event.policy_settings.get("wake_max_wait", policy_default("wake_max_wait")))
         if wait <= 0 or event.policy_settings.get("wake_mode") not in {"frequency", "necessity"} or not isinstance(event.adapter, PlatformAdapter):
             return
         key = self.window.key(event)

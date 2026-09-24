@@ -5,6 +5,7 @@ from time import monotonic
 from typing import Any
 
 from satrap.core.platform.event import MessageEvent
+from satrap.core.config.platform_policy import policy_default
 from satrap.core.pipeline.wake_policy import WakeDecision, resolve_message_threshold
 from satrap.core.components import Plain
 
@@ -153,7 +154,7 @@ class WakeWindow:
         if not snapshot:
             return WakeDecision(False, "no_pending", "没有可处理正文")
         settings = event.policy_settings
-        mode = settings.get("wake_mode", "explicit")
+        mode = settings.get("wake_mode", policy_default("wake_mode"))
         if mode not in {"frequency", "necessity"}:
             return WakeDecision(False, "explicit_only", "自动参与未启用")
         resolution = resolve_message_threshold(settings) if mode == "frequency" else None
@@ -161,9 +162,9 @@ class WakeWindow:
             # 有效来源是 talk_value=0: 自动参与已关闭, 到期补偿不绕过关闭
             return WakeDecision(False, "frequency", f"{resolution.label}, 自动参与不触发")
         last = self._submitted.get(self.key(event))
-        if last is not None and now - last < float(settings.get("wake_cooldown", 30)):
+        if last is not None and now - last < float(settings.get("wake_cooldown", policy_default("wake_cooldown"))):
             return WakeDecision(False, "cooldown", "自动参与冷却中")
-        max_wait = float(settings.get("wake_max_wait", 0))
+        max_wait = float(settings.get("wake_max_wait", policy_default("wake_max_wait")))
         if deadline and max_wait > 0 and now - snapshot[0].received_at >= max_wait:
             return WakeDecision(True, "max_wait", "待处理正文达到最长等待时间")
         if resolution is not None:
@@ -172,15 +173,15 @@ class WakeWindow:
         text = "\n".join(item.text for item in snapshot)
         question = float(any(mark in text for mark in ("?", "？", "请问", "怎么", "如何", "为什么", "能否", "是否")))
         addressed = float(any(mark in text for mark in ("你觉得", "你能", "帮我", "帮忙", "请教")))
-        backlog = min(len(snapshot) / max(1, int(settings.get("wake_message_threshold", 3))), 1.0)
+        backlog = min(len(snapshot) / max(1, int(settings.get("wake_message_threshold", policy_default("wake_message_threshold")))), 1.0)
         history = [item for item in self._activity.get(self.key(event), []) if now - item[0] < self.ttl]
         ratio = sum(item[1] for item in history) / max(len(history), 1)
         score = max(0.0, min(1.0,
-            question * float(settings.get("wake_question_weight", 0.55))
-            + addressed * float(settings.get("wake_address_weight", 0.15))
-            + backlog * float(settings.get("wake_backlog_weight", 0.30))
-            - ratio * float(settings.get("wake_reply_penalty", 0.40))))
-        threshold = float(settings.get("wake_score_threshold", 0.65))
+            question * float(settings.get("wake_question_weight", policy_default("wake_question_weight")))
+            + addressed * float(settings.get("wake_address_weight", policy_default("wake_address_weight")))
+            + backlog * float(settings.get("wake_backlog_weight", policy_default("wake_backlog_weight")))
+            - ratio * float(settings.get("wake_reply_penalty", policy_default("wake_reply_penalty")))))
+        threshold = float(settings.get("wake_score_threshold", policy_default("wake_score_threshold")))
         reason = f"问题={question:g}, 指向性={addressed:g}, 积压={backlog:.2f}, 近期提交占比={ratio:.2f}, 阈值={threshold:g}"
         return WakeDecision(score >= threshold, "necessity", reason, score=score)
 
@@ -232,7 +233,7 @@ class WakeWindow:
         last = self._submitted.get(self.key(event))
         if last is None:
             return 0.0
-        return max(0.0, float(event.policy_settings.get("wake_cooldown", 30)) - (now - last))
+        return max(0.0, float(event.policy_settings.get("wake_cooldown", policy_default("wake_cooldown"))) - (now - last))
 
     def peek(self, event: MessageEvent, now: float | None = None) -> tuple[PendingText, ...]:
         """

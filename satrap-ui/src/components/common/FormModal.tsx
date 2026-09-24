@@ -12,6 +12,10 @@ export interface FormField {
   disabled?: boolean;
   options?: { value: string; label: string }[];
   rows?: number;
+  // 数字字段的控件约束: min/max 为含上界, 排他上界由调用方的校验器负责
+  min?: number;
+  max?: number;
+  step?: number | 'any';
   // custom 类型的渲染器: 接收当前值与写回回调
   render?: (value: unknown, onChange: (value: unknown) => void) => React.ReactNode;
 }
@@ -88,7 +92,9 @@ export const FormModal = memo(function FormModal({
           <Input
             id={`${formId}-${field.key}`}
             type="number"
-            step="any"
+            step={field.step ?? 'any'}
+            min={field.min}
+            max={field.max}
             value={(value as number) ?? ''}
             onChange={(e) => onChange(field.key, e.target.value ? Number(e.target.value) : undefined)}
             placeholder={field.placeholder}
@@ -166,7 +172,8 @@ export const FormModal = memo(function FormModal({
 
   return (
     <Modal open={open} onClose={onClose} title={title} size={size}>
-      <form onSubmit={handleSubmit} className="space-y-4">
+      {/* 校验提示统一由表单校验器给出, 不用浏览器原生气泡抢先拦截 */}
+      <form onSubmit={handleSubmit} noValidate className="space-y-4">
         {fields.map((field) => (
           <div key={field.key}>
             <label htmlFor={field.type === 'checkbox-group' || field.type === 'custom' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">

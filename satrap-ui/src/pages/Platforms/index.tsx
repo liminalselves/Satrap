@@ -12,7 +12,8 @@ import { Plus, Edit2, Trash2, RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
 import { backendApi } from '@/api/backend';
 import { edictumApi } from '@/api/edictum';
-import { normalizePlatformSettings, platformSettingsSummary, talkValuePriorityHint, validatePlatformPolicyRanges } from '@/utils/adminMigration';
+import { normalizePlatformSettings, platformSettingsSummary, TALK_VALUE_HINT, validatePlatformPolicy } from '@/utils/adminMigration';
+import { formNumericLimits, formRangeSuffix, formRangeText } from '@/utils/wakePolicyContract';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
 import { fromGroupRows, fromTimeRows, toGroupRows, toTimeRows } from '@/utils/wakeOverrides';
@@ -197,10 +198,10 @@ export function Platforms() {
         toast('error', draftError);
         return;
       }
-      // 输入预算与频率字段先做范围校验, 避免把非法值交给后端才报错
-      const rangeError = validatePlatformPolicyRanges(settingsDraft);
-      if (rangeError) {
-        toast('error', rangeError);
+      // 数值/布尔/枚举字段按策略字段契约校验, 与后端同口径; 校验对象是归一化后的设置
+      const policyError = validatePlatformPolicy(normalizePlatformSettings(formData.type, settingsDraft));
+      if (policyError) {
+        toast('error', policyError);
         return;
       }
     }
@@ -286,8 +287,7 @@ export function Platforms() {
     }
   }, [draftError, formData.type, settingsDraft]);
 
-  // talk_value 与显式阈值的优先级提示随阈值输入实时更新
-  const talkValueHint = useMemo(() => talkValuePriorityHint(formData.settings), [formData.settings]);
+  // talk_value 与显式阈值的优先级结论由后端试算给出, 表单只给静态语义提示
 
   // 表单字段
   const formFields = useMemo<FormField[]>(() => {
@@ -357,16 +357,16 @@ export function Platforms() {
         { key: 'settings.group_whitelist', label: '群白名单（留空允许所有群）', type: 'textarea', rows: 3, placeholder: '每行一个群 ID' },
         { key: 'settings.wake_aliases', label: '机器人名字/别名（可选）', type: 'textarea', rows: 2, placeholder: '每行一个, 留空关闭; 仅匹配当前正文' },
         { key: 'settings.wake_mode', label: '自动参与模式', type: 'select', options: [{ value: 'explicit', label: '仅明确唤醒（默认）' }, { value: 'frequency', label: '按正文消息数量触发' }, { value: 'necessity', label: '按本地回复必要性评分' }] },
-        { key: 'settings.wake_message_threshold', label: '自动参与消息阈值（1–32）', type: 'number', placeholder: '默认 3' },
-        { key: 'settings.wake_score_threshold', label: '必要性评分阈值（0–1）', type: 'number', placeholder: '默认 0.65, 分值越高参与越少' },
-        { key: 'settings.wake_max_wait', label: '频率模式最长等待秒数（可选）', type: 'number', placeholder: '默认 0 关闭; 大于 0 且小于 120, 仍遵守冷却和限流' },
+        { key: 'settings.wake_message_threshold', label: `自动参与消息阈值${formRangeSuffix('wake_message_threshold')}`, type: 'number', ...formNumericLimits('wake_message_threshold'), placeholder: '默认 3' },
+        { key: 'settings.wake_score_threshold', label: `必要性评分阈值${formRangeSuffix('wake_score_threshold')}`, type: 'number', ...formNumericLimits('wake_score_threshold'), placeholder: '默认 0.65, 分值越高参与越少' },
+        { key: 'settings.wake_max_wait', label: `频率模式最长等待秒数（可选）${formRangeSuffix('wake_max_wait')}`, type: 'number', ...formNumericLimits('wake_max_wait'), placeholder: '默认 0 关闭; 仍遵守冷却和限流' },
         { key: 'settings.wake_group_overrides', label: '群级唤醒覆盖（可选）', type: 'custom', render: () => <WakeOverrideEditor kind="group" rows={groupDraftRows} onChange={setGroupDraftRows} issues={groupConversion.issues} /> },
         { key: 'settings.wake_time_rules', label: '时段自动参与规则（本机时区）', type: 'custom', render: () => <WakeOverrideEditor kind="time" rows={timeDraftRows} onChange={setTimeDraftRows} issues={timeConversion.issues} /> },
-        { key: 'settings.wake_cooldown', label: '自动参与冷却秒数', type: 'number', placeholder: '默认 30, 明确唤醒不受此限制' },
-        { key: 'settings.wake_talk_value', label: '发言频率偏好 talk_value（0–1, 留空不设置）', type: 'number', placeholder: talkValueHint },
-        { key: 'settings.message_text_limit', label: '每条消息文本上限（64–32000）', type: 'number', placeholder: '默认 2000 字符, 长消息优先按换行分段' },
-        { key: 'settings.input_text_limit', label: '单条消息输入文本预算（1–200000）', type: 'number', placeholder: '默认 20000 字符; 仅平台级, 超出部分截断并标注' },
-        { key: 'settings.input_media_limit', label: '单条消息输入媒体上限（1–32）', type: 'number', placeholder: '默认 8 张/段; 仅平台级, 不进入群/时段覆盖' },
+        { key: 'settings.wake_cooldown', label: `自动参与冷却秒数${formRangeSuffix('wake_cooldown')}`, type: 'number', ...formNumericLimits('wake_cooldown'), placeholder: '默认 30, 明确唤醒不受此限制' },
+        { key: 'settings.wake_talk_value', label: `发言频率偏好 talk_value（${formRangeText('wake_talk_value')}, 留空不设置）`, type: 'number', ...formNumericLimits('wake_talk_value'), placeholder: TALK_VALUE_HINT },
+        { key: 'settings.message_text_limit', label: `每条消息文本上限${formRangeSuffix('message_text_limit')}`, type: 'number', ...formNumericLimits('message_text_limit'), placeholder: '默认 2000 字符, 长消息优先按换行分段' },
+        { key: 'settings.input_text_limit', label: `单条消息输入文本预算${formRangeSuffix('input_text_limit')}`, type: 'number', ...formNumericLimits('input_text_limit'), placeholder: '默认 20000 字符; 仅平台级, 超出部分截断并标注' },
+        { key: 'settings.input_media_limit', label: `单条消息输入媒体上限${formRangeSuffix('input_media_limit')}`, type: 'number', ...formNumericLimits('input_media_limit'), placeholder: '默认 8 张/段; 仅平台级, 不进入群/时段覆盖' },
         { key: 'settings.reply_with_quote', label: '群聊回复引用原消息', type: 'checkbox', placeholder: '默认关闭; 仅对有来源消息 ID 的群聊回复添加引用' },
         { key: 'settings.reply_with_mention', label: '群聊回复 @发送者', type: 'checkbox', placeholder: '默认关闭; 已有 @ 时不重复, 私聊不受影响' },
         { key: 'settings.quote_lookup', label: '回源被引用消息原文', type: 'checkbox', placeholder: '默认开启; 唤醒后按预算 get_msg 获取引用原文作为上下文, 关闭后仅标记引用' },
@@ -406,7 +406,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_provider, formData.type, groupConversion, groupDraftRows, platforms, previewSettings, sessionClasses, talkValueHint, timeConversion, timeDraftRows]);
+  }, [adapters, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_provider, formData.type, groupConversion, groupDraftRows, platforms, previewSettings, sessionClasses, timeConversion, timeDraftRows]);
 
   // 表单值
   const formValues = useMemo(() => ({

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from satrap.core.pipeline.attachments import AttachmentResult, render_attachments
+from satrap.core.config.platform_policy import policy_default
 from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
@@ -22,10 +23,6 @@ FORWARD_TEXT_LIMIT = 2000
 """单条转发投影进入模型输入的最大字符数"""
 FORWARD_RESOLVE_LIMIT = 2
 """每事件最多回源的顶层转发数"""
-DEFAULT_INPUT_TEXT_LIMIT = 20000
-"""一次模型输入的默认字符总额度, 由平台设置 input_text_limit 覆盖"""
-DEFAULT_INPUT_MEDIA_LIMIT = 8
-"""一次模型输入的默认媒体总数额度, 由平台设置 input_media_limit 覆盖"""
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -307,7 +304,7 @@ def project_input(
       顶层媒体按 input_media_limit 实际裁剪, 文本总量按 input_text_limit 记账拼接
     """
     top = event.get_messages()
-    media_limit = int(event.policy_settings.get("input_media_limit", DEFAULT_INPUT_MEDIA_LIMIT))
+    media_limit = int(event.policy_settings.get("input_media_limit", policy_default("input_media_limit")))
     images = media_sources(top, "image")
     videos = media_sources(top, "video")
     notes: list[str] = []
@@ -376,7 +373,7 @@ def project_input(
         block = render_attachments(attachments)
         if block:
             attachment_blocks.append(_ContextBlock("attachment", "", block))
-    text_limit = int(event.policy_settings.get("input_text_limit", DEFAULT_INPUT_TEXT_LIMIT))
+    text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
     message = ProjectionBudget(text_limit).assemble(message, [*attachment_blocks, *forward_blocks, *quote_blocks], notes)
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),

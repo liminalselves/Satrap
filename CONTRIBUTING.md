@@ -44,6 +44,13 @@ npm install
 npm run dev
 ```
 
+前端的策略字段契约 (`satrap-ui/src/generated/wake-policy-contract.json`) 由后端契约表生成并入库。修改
+`satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 后, 需要在仓库根目录重新生成并把结果一并提交：
+
+```bash
+python scripts/sync_wake_policy_contract.py
+```
+
 ## 开发原则
 
 请尽量遵循现有代码结构和命名风格。

@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  TALK_VALUE_HINT,
   appendWithLimit,
   classNameToConfigName,
   filterLogs,
   normalizePlatformSettings,
-  talkValuePriorityHint,
-  validatePlatformPolicyRanges,
+  validatePlatformPolicy,
   visibleLogs,
 } from './adminMigration';
 
@@ -104,27 +104,26 @@ describe('B10 平台输入预算与 talk_value 往返', () => {
     expect(normalizePlatformSettings('onebot', { wake_talk_value: '0.35' }).wake_talk_value).toBe(0.35);
   });
 
-  it('范围校验拒绝非法值并给出字段名', () => {
-    expect(validatePlatformPolicyRanges({ wake_talk_value: 0 })).toBeNull();
-    expect(validatePlatformPolicyRanges({ input_text_limit: 1, input_media_limit: 32 })).toBeNull();
-    expect(validatePlatformPolicyRanges({ wake_talk_value: 1.5 })).toContain('发言频率偏好');
-    expect(validatePlatformPolicyRanges({ input_text_limit: 0 })).toContain('输入文本预算');
-    expect(validatePlatformPolicyRanges({ input_text_limit: 200001 })).toContain('输入文本预算');
-    expect(validatePlatformPolicyRanges({ input_media_limit: 2.5 })).toContain('必须为整数');
-    expect(validatePlatformPolicyRanges({ input_media_limit: 33 })).toContain('输入媒体上限');
-    expect(validatePlatformPolicyRanges({ message_text_limit: 32 })).toContain('每条消息文本上限');
-    expect(validatePlatformPolicyRanges({ wake_max_wait: 120 })).toContain('最长等待秒数');
-    expect(validatePlatformPolicyRanges({ wake_talk_value: Number.NaN })).toContain('必须为数字');
-    expect(validatePlatformPolicyRanges({ wake_talk_value: 'abc' })).toContain('必须为数字');
+  it('校验拒绝非法值并给出字段名', () => {
+    expect(validatePlatformPolicy({ wake_talk_value: 0 })).toBeNull();
+    expect(validatePlatformPolicy({ input_text_limit: 1, input_media_limit: 32 })).toBeNull();
+    expect(validatePlatformPolicy({ wake_talk_value: 1.5 })).toContain('发言频率偏好');
+    expect(validatePlatformPolicy({ input_text_limit: 0 })).toContain('输入文本预算');
+    expect(validatePlatformPolicy({ input_text_limit: 200001 })).toContain('输入文本预算');
+    expect(validatePlatformPolicy({ input_media_limit: 2.5 })).toContain('必须为整数');
+    expect(validatePlatformPolicy({ input_media_limit: 33 })).toContain('输入媒体上限');
+    expect(validatePlatformPolicy({ message_text_limit: 32 })).toContain('每条消息文本上限');
+    expect(validatePlatformPolicy({ wake_max_wait: 120 })).toContain('最长等待秒数');
+    expect(validatePlatformPolicy({ wake_talk_value: Number.NaN })).toContain('必须为数字');
+    // 非数字字段按契约报错, 不再只查 8 个数值键
+    expect(validatePlatformPolicy({ voice_transcribe: 'auto' })).toContain('语音转写来源');
+    expect(validatePlatformPolicy({ wake_words: '小助手' })).toContain('唤醒词');
   });
 
-  it('talk_value 与显式阈值的优先级提示', () => {
-    expect(talkValuePriorityHint({})).toContain('留空表示未设置');
-    expect(talkValuePriorityHint({ wake_talk_value: 0 })).toContain('关闭自动参与');
-    expect(talkValuePriorityHint({ wake_talk_value: 0.5 })).toContain('映射');
-    // 反例: 显式阈值存在时不能显示成"自动参与已关闭"
-    const overridden = talkValuePriorityHint({ wake_talk_value: 0, wake_message_threshold: 3 });
-    expect(overridden).toContain('被显式阈值覆盖');
-    expect(overridden).not.toContain('关闭自动参与');
+  it('talk_value 提示为静态文案, 数值结论以试算响应为准', () => {
+    expect(TALK_VALUE_HINT).toContain('留空表示未设置');
+    // 前端不再推导优先级结论: 显式阈值与 talk_value 都不改变提示
+    expect(TALK_VALUE_HINT).not.toContain('被显式阈值覆盖');
+    expect(TALK_VALUE_HINT).not.toContain('关闭自动参与');
   });
 });

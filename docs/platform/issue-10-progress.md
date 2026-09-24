@@ -489,3 +489,21 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 语义等价实测: 在相同适配器与 limit 下, "仅看拒绝"的请求集合与旧 `/wake/rejections` 的 request_id 集合一致 (含"被拒绝后经定时复查执行"的请求); 已知差异一并固化在测试里 —— 同一请求在定时复查后可能累积两条决策记录 (同阶段不同原因码), 旧接口按记录返回两条, 新视图按请求归并为一条并保留两个原因码; 无有效 `request_id` 的记录在旧视图里是空串, 新视图用 `message:`/`anon:` 组键
 - 测试: pytest 新增 stage 单值/多值 OR/去重/空白容错/空参数/空项与未知值/与 request_id 的 AND 组合、等价性与重复决策归并共 3 组; 前端 vitest 新增面板静态渲染 4 项 (预设默认值/聚焦禁用/返回入口/预设取值); Playwright manual-wake 覆盖拒绝预设、取消后再勾选、聚焦后自动取消与禁用、返回近期请求恢复预设, 并断言弹窗不再请求旧端点; platform-policy 覆盖平台页预设默认关闭、切换平台后不残留过滤
 - 文档同步: [平台接入](platforms.md) 更新诊断接口表格 (`stage` 多值与 400 契约、旧接口标注为遗留) 与界面说明
+
+### 批次 3: R3+R5 策略字段契约单一来源
+
+- 后端契约表 `satrap/core/config/platform_policy.py`: 新增声明式 `POLICY_FIELD_CONTRACT` (33 个字段), 每字段声明 `kind`, `scope`, `hot_reload`, `display_in_preview`, `off_value`, `min`/`max`/`max_exclusive`, `integer`, `max_length`/`max_items`, `enum`, `default`, `nullable` (需要额外说明的字段再加 `message` 覆盖文案, 该键只在后端使用, 不进入前端契约 JSON)。`max` 为含端点上界, `max_exclusive` 为排他上界, 两者不同时声明; 没有上界则省略
+- 派生集合全部改为从表计算, 手写字面量删除: 覆盖键 `GROUP_KEYS`/`AUTOMATIC_KEYS` (按 `scope`), 热更新键集合 (按 `hot_reload`, 原 `BackendManager` 的 27 键字面量删除), 运行时默认值 `POLICY_DEFAULTS` (按 `default`), 试算展示口径 (按 `display_in_preview`)。迁移测试冻结原 27 键, 10 项 `AUTOMATIC_KEYS`, 17 项 `GROUP_KEYS` 与 12 项 `POLICY_DEFAULTS`, 与派生结果逐项对比
+- 表驱动校验: `validate_wake_policy` 的标量检查改为遍历契约表 (int/number 保持有限性并拒绝 bool, bool 严格检查 bool, enum/text/list 按声明范围), 表无法表达的部分保持手写 —— `notice_types` 正则与 64 项上限, `asr_model` 长度, `media_trusted_hosts` 列表约束, `wake_words`/`wake_aliases` 归一化, 覆盖结构与条数上限 (512/32), 群白名单与上下文范围仍由各自专用校验器负责。缺失表示继承, 显式 null 只对声明 `nullable` 的字段放行, 任何一侧都不会向配置注入默认值
+- 运行时默认值单一来源: `wake_window.py` (10 处), `wake_timers.py`, `scheduler.py` (2 处), `onebot/adapter.py`, `input_projection.py` (删除两个 `DEFAULT_INPUT_*` 常量), `wake_dry_run.py`, `wake_policy.py` 的内置默认值全部改为 `policy_default(key)`, 漂移守卫测试通过改写 `POLICY_DEFAULTS` 证明消费方行为随之改变
+- 口径统一: `wake_cooldown` 保持有限非负且不新增上限 (删除前端 86400 与 `Number.MAX_SAFE_INTEGER` 两处额外业务上限, 存量 86401 秒配置可保存可启动); `wake_max_wait` 统一为 `0 ≤ x < 120` 排他上界, 前端 119 与 119.999 两处废止, HTML `max` 不表达排他上界, 由前后端校验器各自检查
+- 契约同步: 新增 `scripts/sync_wake_policy_contract.py` (生成/`--check`), 由契约表生成 `satrap-ui/src/generated/wake-policy-contract.json` 并入库 (UTF-8, LF, 字段排序, 末尾换行); `.gitattributes` 对该文件与共享样例固定 `eol=lf`; pytest 断言"表序列化结果与库内文件逐字节一致"; 脚本不启动后端服务, 前端构建不依赖后端在线
+- 共享样例 `tests/fixtures/wake_policy_cases.json` (58 例: 平台 40 / 群 12 / 时段 6): 覆盖 119.5, 119.9999, 120, 冷却 86401, 零值与负值, 整数小数, bool 当数字, 枚举与未知枚举, 缺失/null/显式关闭, 禁止覆盖字段, 群白名单与扩展字段透传等; pytest 跑后端真实校验入口, vitest 跑前端严格校验与实际行转换入口
+- 前端表驱动: 新增 `satrap-ui/src/utils/wakePolicyContract.ts` (契约加载器 + 严格逐字段校验 + 范围文本 + 表单约束), `wakeOverrides.ts` 的可覆盖字段集合, 范围, 关闭值与枚举选项改为从契约构建 (编辑器文案与 placeholder 保留手写), `fromGroupRows`/`fromTimeRows` 增加逐字段严格校验 (非法取值保留草稿并阻止保存与试算), `adminMigration.ts` 的 8 项 `POLICY_RANGES` 与范围校验删除并改为契约驱动, platform 表单的数值 label 范围文本, min/max/整数步长由契约生成, `WakeDryRunPanel` 的展示键与来源表过滤改为按 `display_in_preview`/契约成员判定
+- `talkValuePriorityHint` 由"随输入推导阈值优先级"改为静态提示常量, 生效阈值与覆盖结论只取试算响应的 `automatic.threshold.hint`/`overridden`; `FormModal` 增加 `min`/`max`/`step` 支持并对表单关闭原生校验气泡 (提示统一由表单校验器给出, 避免原生气泡抢先拦截)
+- 消除导入循环: `platform_policy.py` 不再顶层导入 `wake_overrides`, 覆盖结构校验在使用点惰性导入; `wake_overrides` 可顶层导入契约。独立导入烟测覆盖两个模块任一先导入的进程
+- 文档同步: [平台接入](platforms.md) 新增"策略字段契约与两侧校验" (契约字段, 派生关系, 取值口径表, 缺失/默认值语义, 两侧校验分工, 生成与 `--check` 命令, 共享样例) 并更新 talk_value 静态提示说明; [CONTRIBUTING](../CONTRIBUTING.md) 增加契约再生成步骤
+- 测试: pytest 新增 `tests/unit/test_policy_field_contract.py` 82 项 (冻结集合对比, 生成物逐字节一致与 LF/末尾换行, 58 例共享样例, 独立进程导入烟测, 默认值单一来源含漂移守卫, 归一化后表单校验); 前端 vitest 新增 `wakePolicyContract.test.ts` 90 项 (契约加载与范围文本三种形态, 覆盖字段集合与编辑文案覆盖完整, 共享样例同一份 JSON, NaN/Infinity 单测, 实际行转换入口, 归一化后校验), 并更新 `adminMigration`/`wakeOverrides` 既有用例
+- Playwright platform-policy 扩展: 数值 label 仍可定位, talk_value 提示为静态文案 (改阈值与改 talk_value 都不改变提示, 不再出现"被显式阈值覆盖/关闭自动参与"), 最长等待 119.9999 可保存而 120 被拦截且草稿保留, 冷却 86401 可保存, 群覆盖行内 120 被拒并同时阻止试算 (行内提示与试算阻止理由一致); manual-wake 仍 PASS
+
+验收: 全量单测 2164 passed / 19 skipped; pyright 全库 0 errors / 1532 warnings (与开工基线逐文件一致, 用 HEAD 工作树对比确认未新增); 前端 tsc 0 error / eslint 0 / vitest 190 绿; platform-policy 与 manual-wake 两个 Playwright 脚本 PASS。对外行为变化: 前端不再自行推导 talk_value 阈值优先级结论 (提示改为静态); 平台表单与群/时段行的非法取值由"交给后端报错"改为提交前拦截 (结论与后端一致, 草稿保留); `wake_max_wait` 的上界口径前后端统一为 `< 120`; `wake_cooldown` 删除前端额外上限。剩余限制: 群白名单, 上下文范围与覆盖结构仍只有后端校验, 前端只给出结构性提示

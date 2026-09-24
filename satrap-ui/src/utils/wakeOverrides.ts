@@ -1,5 +1,7 @@
 // 群/时段唤醒覆盖的行编辑模型: 继承 / 显式关闭 / 显式值 三态与 JSON 互转
-// 与后端 satrap/core/config/wake_overrides.py 的 GROUP_KEYS / AUTOMATIC_KEYS 对齐
+// 可覆盖字段与取值范围来自生成的策略字段契约; 本文件只保留编辑器的文案与控件形态
+import { overrideFieldKeys, policyField, rangeText, validatePolicySettings } from '@/utils/wakePolicyContract';
+import type { PolicyField } from '@/utils/wakePolicyContract';
 
 export type OverrideState = 'inherit' | 'off' | 'value';
 
@@ -14,39 +16,121 @@ export interface OverrideFieldDef {
   placeholder?: string;
   min?: number;
   max?: number;
+  // 排他上界: HTML max 表达不了, 由行校验器保证
+  maxExclusive?: number;
+  integer?: boolean;
   // 仅群覆盖可用 (时段规则只允许自动参与参数)
   groupOnly?: boolean;
 }
 
-export const OVERRIDE_FIELDS: OverrideFieldDef[] = [
-  {
-    key: 'wake_mode', label: '自动参与模式', kind: 'select',
-    options: [
-      { value: 'frequency', label: '按消息数量触发' },
-      { value: 'necessity', label: '按必要性评分' },
-    ],
-    offValue: 'explicit', offLabel: '关闭自动参与',
-  },
-  { key: 'wake_talk_value', label: '发言频率偏好 (0–1)', kind: 'number', offValue: 0, offLabel: '不自动参与', min: 0, max: 1, placeholder: '0.05–1' },
-  { key: 'wake_message_threshold', label: '消息条数阈值', kind: 'number', min: 1, max: 32, placeholder: '1–32' },
-  { key: 'wake_cooldown', label: '冷却秒数', kind: 'number', min: 0, max: 86400 },
-  { key: 'wake_score_threshold', label: '必要性评分阈值', kind: 'number', min: 0, max: 1, placeholder: '0–1' },
-  { key: 'wake_max_wait', label: '最长等待秒数', kind: 'number', min: 0, max: 119, placeholder: '0 关闭' },
-  { key: 'wake_question_weight', label: '问题权重', kind: 'number', min: 0, max: 1 },
-  { key: 'wake_address_weight', label: '指向性权重', kind: 'number', min: 0, max: 1 },
-  { key: 'wake_backlog_weight', label: '积压权重', kind: 'number', min: 0, max: 1 },
-  { key: 'wake_reply_penalty', label: '已回复惩罚', kind: 'number', min: 0, max: 1 },
-  { key: 'wake_words', label: '唤醒词', kind: 'lines', offValue: [], offLabel: '清空继承词表', groupOnly: true, placeholder: '每行一个' },
-  { key: 'wake_aliases', label: '机器人别名', kind: 'lines', offValue: [], offLabel: '清空继承别名', groupOnly: true, placeholder: '每行一个' },
-  { key: 'reply_with_quote', label: '回复引用原消息', kind: 'bool', offValue: false, groupOnly: true },
-  { key: 'reply_with_mention', label: '回复 @发送者', kind: 'bool', offValue: false, groupOnly: true },
-  { key: 'quote_lookup', label: '回源引用原文', kind: 'bool', offValue: false, groupOnly: true },
-  { key: 'forward_lookup', label: '回源合并转发', kind: 'bool', offValue: false, groupOnly: true },
-  { key: 'wake_on_quote_self', label: '引用机器人时唤醒', kind: 'bool', offValue: false, groupOnly: true },
+// 编辑器字段顺序与文案: 顺序是界面决策, 契约只决定字段集合与取值范围
+const OVERRIDE_FIELD_ORDER = [
+  'wake_mode',
+  'wake_talk_value',
+  'wake_message_threshold',
+  'wake_cooldown',
+  'wake_score_threshold',
+  'wake_max_wait',
+  'wake_question_weight',
+  'wake_address_weight',
+  'wake_backlog_weight',
+  'wake_reply_penalty',
+  'wake_words',
+  'wake_aliases',
+  'reply_with_quote',
+  'reply_with_mention',
+  'quote_lookup',
+  'forward_lookup',
+  'wake_on_quote_self',
 ];
 
+const OVERRIDE_LABELS: Record<string, string> = {
+  wake_mode: '自动参与模式',
+  wake_talk_value: '发言频率偏好',
+  wake_message_threshold: '消息条数阈值',
+  wake_cooldown: '冷却秒数',
+  wake_score_threshold: '必要性评分阈值',
+  wake_max_wait: '最长等待秒数',
+  wake_question_weight: '问题权重',
+  wake_address_weight: '指向性权重',
+  wake_backlog_weight: '积压权重',
+  wake_reply_penalty: '已回复惩罚',
+  wake_words: '唤醒词',
+  wake_aliases: '机器人别名',
+  reply_with_quote: '回复引用原消息',
+  reply_with_mention: '回复 @发送者',
+  quote_lookup: '回源引用原文',
+  forward_lookup: '回源合并转发',
+  wake_on_quote_self: '引用机器人时唤醒',
+};
+
+const OVERRIDE_PLACEHOLDERS: Record<string, string> = {
+  wake_talk_value: '0.05–1',
+  wake_message_threshold: '1–32',
+  wake_score_threshold: '0–1',
+  wake_max_wait: '0 关闭',
+  wake_words: '每行一个',
+  wake_aliases: '每行一个',
+};
+
+const OVERRIDE_OFF_LABELS: Record<string, string> = {
+  wake_mode: '关闭自动参与',
+  wake_talk_value: '不自动参与',
+  wake_words: '清空继承词表',
+  wake_aliases: '清空继承别名',
+};
+
+const MODE_OPTION_LABELS: Record<string, string> = {
+  frequency: '按消息数量触发',
+  necessity: '按必要性评分',
+};
+
+function editorKind(field: PolicyField): OverrideFieldDef['kind'] {
+  if (field.kind === 'enum') return 'select';
+  if (field.kind === 'int' || field.kind === 'number') return 'number';
+  if (field.kind === 'words') return 'lines';
+  return 'bool';
+}
+
+// 关闭态选项: 契约枚举去掉关闭值, 文案由编辑器提供
+function editorOptions(field: PolicyField): { value: string; label: string }[] | undefined {
+  if (field.kind !== 'enum') return undefined;
+  return (field.enum ?? [])
+    .filter((value) => value !== field.off_value)
+    .map((value) => ({ value, label: MODE_OPTION_LABELS[value] ?? value }));
+}
+
+function toFieldDef(key: string): OverrideFieldDef {
+  const field = policyField(key);
+  if (!field) throw new Error(`策略字段契约缺少覆盖字段: ${key}`);
+  const range = rangeText(field);
+  // label 的范围文本按含上界/排他上界/只有下界生成, placeholder 的语义提示保留手写
+  const label = field.kind === 'int' || field.kind === 'number'
+    ? `${OVERRIDE_LABELS[key] ?? key}${range ? ` (${range})` : ''}`
+    : OVERRIDE_LABELS[key] ?? key;
+  return {
+    key,
+    label,
+    kind: editorKind(field),
+    options: editorOptions(field),
+    offValue: field.off_value,
+    offLabel: OVERRIDE_OFF_LABELS[key],
+    placeholder: OVERRIDE_PLACEHOLDERS[key],
+    min: field.min,
+    max: field.max,
+    maxExclusive: field.max_exclusive,
+    integer: field.kind === 'int' || field.integer === true,
+    groupOnly: field.scope === 'group',
+  };
+}
+
+export const OVERRIDE_FIELDS: OverrideFieldDef[] = OVERRIDE_FIELD_ORDER.map(toFieldDef);
+
 export const GROUP_OVERRIDE_FIELDS = OVERRIDE_FIELDS;
-export const TIME_RULE_FIELDS = OVERRIDE_FIELDS.filter((field) => !field.groupOnly);
+
+const OVERRIDE_FIELD_KEYS = new Set(overrideFieldKeys('time'));
+
+export const TIME_RULE_FIELDS = OVERRIDE_FIELDS.filter((field) => OVERRIDE_FIELD_KEYS.has(field.key));
 
 export interface GroupOverrideRow {
   // 稳定本地行标识: 新增/删除/重排过程中不以数组下标作为身份
@@ -152,6 +236,11 @@ export function toGroupRows(value: unknown): GroupOverrideRow[] {
 
 const GROUP_ID_PATTERN = /^[1-9]\d*$/;
 
+function overrideIssues(rowId: string, context: 'group' | 'time', settings: Record<string, unknown>): RowIssue[] {
+  return validatePolicySettings(context, settings, (key) => OVERRIDE_LABELS[key] ?? key)
+    .map((issue) => ({ rowId, field: issue.key, message: issue.message }));
+}
+
 export function fromGroupRows(rows: GroupOverrideRow[]): RowsConversion<Record<string, Record<string, unknown>>> {
   const value: Record<string, Record<string, unknown>> = {};
   const issues: RowIssue[] = [];
@@ -167,6 +256,12 @@ export function fromGroupRows(rows: GroupOverrideRow[]): RowsConversion<Record<s
     }
     if (id in value) {
       issues.push({ rowId: row.rowId, field: 'id', message: `群号 ${id} 重复, 请删除其中一行` });
+      continue;
+    }
+    // 字段级错误保留在草稿里并阻止保存, 不删除行也不静默丢弃取值
+    const fieldIssues = overrideIssues(row.rowId, 'group', row.override);
+    if (fieldIssues.length) {
+      issues.push(...fieldIssues);
       continue;
     }
     // 完整且全部字段继承的行允许规范化为不写覆盖
@@ -206,6 +301,12 @@ export function fromTimeRows(rows: TimeRuleRow[]): RowsConversion<Array<{ start:
       issues.push({ rowId: row.rowId, field: 'end', message: '开始与结束时间不能相同' });
     }
     if (!startValid || !endValid || row.start === row.end) continue;
+    // 字段级错误保留在草稿里并阻止保存, 不删除行也不静默丢弃取值
+    const fieldIssues = overrideIssues(row.rowId, 'time', row.settings);
+    if (fieldIssues.length) {
+      issues.push(...fieldIssues);
+      continue;
+    }
     // 完整且全部字段继承的行允许规范化为不写覆盖
     if (Object.keys(row.settings).length === 0) continue;
     value.push({ start: row.start, end: row.end, settings: row.settings });

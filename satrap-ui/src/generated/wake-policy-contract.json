@@ -1,0 +1,303 @@
+{
+  "fields": [
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "asr_model",
+      "kind": "text",
+      "max_length": 128,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "attachment_extract",
+      "kind": "bool",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "context_scope",
+      "kind": "scope",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "enable_group",
+      "kind": "bool",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "enable_private",
+      "kind": "bool",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "forward_lookup",
+      "kind": "bool",
+      "off_value": false,
+      "scope": "group"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "group_whitelist",
+      "kind": "group_ids",
+      "scope": "platform"
+    },
+    {
+      "default": 8,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "integer": true,
+      "key": "input_media_limit",
+      "kind": "int",
+      "max": 32,
+      "min": 1,
+      "scope": "platform"
+    },
+    {
+      "default": 20000,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "integer": true,
+      "key": "input_text_limit",
+      "kind": "int",
+      "max": 200000,
+      "min": 1,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "media_insecure_tls",
+      "kind": "bool",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "media_plaintext_http",
+      "kind": "bool",
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "media_trusted_hosts",
+      "kind": "list",
+      "max_items": 32,
+      "max_length": 253,
+      "scope": "platform"
+    },
+    {
+      "default": 2000,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "integer": true,
+      "key": "message_text_limit",
+      "kind": "int",
+      "max": 32000,
+      "min": 64,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "notice_types",
+      "kind": "notice_types",
+      "max_items": 64,
+      "nullable": true,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "quote_lookup",
+      "kind": "bool",
+      "off_value": false,
+      "scope": "group"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "reply_with_mention",
+      "kind": "bool",
+      "off_value": false,
+      "scope": "group"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "reply_with_quote",
+      "kind": "bool",
+      "off_value": false,
+      "scope": "group"
+    },
+    {
+      "display_in_preview": false,
+      "enum": [
+        "off",
+        "asr",
+        "platform",
+        "asr_then_platform"
+      ],
+      "hot_reload": true,
+      "key": "voice_transcribe",
+      "kind": "enum",
+      "scope": "platform"
+    },
+    {
+      "default": 0.15,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_address_weight",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_aliases",
+      "kind": "words",
+      "off_value": [],
+      "scope": "group"
+    },
+    {
+      "default": 0.3,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_backlog_weight",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "default": 30,
+      "display_in_preview": true,
+      "hot_reload": true,
+      "key": "wake_cooldown",
+      "kind": "number",
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_group_overrides",
+      "kind": "group_map",
+      "max_items": 512,
+      "scope": "platform"
+    },
+    {
+      "default": 0,
+      "display_in_preview": true,
+      "hot_reload": true,
+      "key": "wake_max_wait",
+      "kind": "number",
+      "max_exclusive": 120,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "default": 3,
+      "display_in_preview": true,
+      "hot_reload": true,
+      "integer": true,
+      "key": "wake_message_threshold",
+      "kind": "int",
+      "max": 32,
+      "min": 1,
+      "scope": "time"
+    },
+    {
+      "default": "explicit",
+      "display_in_preview": true,
+      "enum": [
+        "explicit",
+        "frequency",
+        "necessity"
+      ],
+      "hot_reload": true,
+      "key": "wake_mode",
+      "kind": "enum",
+      "off_value": "explicit",
+      "scope": "time"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": false,
+      "key": "wake_on_quote_self",
+      "kind": "bool",
+      "off_value": false,
+      "scope": "group"
+    },
+    {
+      "default": 0.55,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_question_weight",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "default": 0.4,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_reply_penalty",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "default": 0.65,
+      "display_in_preview": true,
+      "hot_reload": true,
+      "key": "wake_score_threshold",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "scope": "time"
+    },
+    {
+      "display_in_preview": true,
+      "hot_reload": true,
+      "key": "wake_talk_value",
+      "kind": "number",
+      "max": 1,
+      "min": 0,
+      "nullable": true,
+      "off_value": 0,
+      "scope": "time"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_time_rules",
+      "kind": "time_rules",
+      "max_items": 32,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
+      "key": "wake_words",
+      "kind": "words",
+      "off_value": [],
+      "scope": "group"
+    }
+  ],
+  "version": 1
+}

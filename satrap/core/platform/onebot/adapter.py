@@ -31,7 +31,7 @@ from satrap.core.platform.onebot.onebot_utils import (
     normalize_segments,
     group_session_id,
 )
-from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words
+from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, policy_default
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
@@ -799,7 +799,7 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - SendReceipt: 首次失败即停止的聚合结果
         """
-        limit = int(self.config.settings.get("message_text_limit", 2000))
+        limit = int(self.config.settings.get("message_text_limit", policy_default("message_text_limit")))
         turns = split_forward_turns(message.components)
         steps = _plan_send_steps(turns, limit)
         plan = _plan_send_segments(turns, limit)

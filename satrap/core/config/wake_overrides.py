@@ -7,13 +7,18 @@ from copy import deepcopy
 from typing import Any, cast
 import re
 
+from satrap.core.config.platform_policy import (
+    fields_with_scope,
+    normalize_group_whitelist,
+    normalize_wake_words,
+    validate_wake_policy,
+)
 
-AUTOMATIC_KEYS = frozenset({
-    "wake_mode", "wake_message_threshold", "wake_cooldown", "wake_score_threshold", "wake_max_wait",
-    "wake_question_weight", "wake_address_weight", "wake_backlog_weight", "wake_reply_penalty",
-    "wake_talk_value",
-})
-GROUP_KEYS = AUTOMATIC_KEYS | {"wake_words", "wake_aliases", "reply_with_quote", "reply_with_mention", "quote_lookup", "wake_on_quote_self", "forward_lookup"}
+AUTOMATIC_KEYS = fields_with_scope("time")
+"""时段与群覆盖都可用的自动参与参数, 由 POLICY_FIELD_CONTRACT 的 scope 派生"""
+
+GROUP_KEYS = fields_with_scope("time", "group")
+"""群覆盖可用字段: 自动参与参数加回复装饰与回源开关"""
 
 
 SOURCE_PLATFORM = "platform"
@@ -52,8 +57,6 @@ def validate_wake_overrides(settings: Mapping[str, object]) -> None:
     参数:
     - settings: 完整平台策略
     """
-    from satrap.core.config.platform_policy import normalize_group_whitelist, normalize_wake_words, validate_wake_policy
-
     groups = settings.get("wake_group_overrides", {})
     if not isinstance(groups, dict) or len(cast(dict[object, object], groups)) > 512:
         raise ValueError("wake_group_overrides 必须是最多 512 项的群 ID 对象")

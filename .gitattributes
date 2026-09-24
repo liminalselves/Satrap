@@ -1,1 +1,4 @@
 *.bat text eol=crlf
+# 策略字段契约生成物与共享校验样例: 同步测试按字节比对, 检出时必须保持 LF
+satrap-ui/src/generated/wake-policy-contract.json text eol=lf
+tests/fixtures/wake_policy_cases.json text eol=lf

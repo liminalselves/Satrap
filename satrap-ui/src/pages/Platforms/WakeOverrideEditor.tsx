@@ -63,7 +63,7 @@ function FieldRow({
         <input
           aria-label={`${def.label}值`}
           type="number"
-          step="any"
+          step={def.integer ? 1 : 'any'}
           min={def.min}
           max={def.max}
           className="glass-input w-24 text-xs"

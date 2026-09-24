@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, cast
 import re
 
-from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, validate_wake_policy
+from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, policy_default, validate_wake_policy
 from satrap.core.config.wake_overrides import SOURCE_PLATFORM, resolve_wake_policy_sources, resolve_wake_settings
 from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, evaluate_wake, resolve_message_threshold
 from satrap.core.pipeline.wake_window import PendingText, WakeWindow
@@ -275,7 +275,7 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
         "defaults": dict(POLICY_DEFAULTS),
         "explicit": explicit,
         "automatic": {
-            "mode": str(resolved.get("wake_mode", "explicit")),
+            "mode": str(resolved.get("wake_mode", policy_default("wake_mode"))),
             "observed": len(snapshot),
             "steps": step_results,
             "decision": final_decision,

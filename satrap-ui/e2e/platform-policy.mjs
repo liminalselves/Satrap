@@ -231,10 +231,27 @@ try {
   await groupEditor.getByLabel('群号').fill('20');
   await groupEditor.getByLabel('自动参与模式状态').selectOption('value');
   await groupEditor.getByLabel('自动参与模式值').selectOption('necessity');
-  await groupEditor.getByLabel('冷却秒数状态').selectOption('value');
-  await groupEditor.getByLabel('冷却秒数值').fill('30');
+  // 数值字段的 label 带契约范围文本, 用正则定位状态与取值控件
+  await groupEditor.getByLabel(/^冷却秒数.*状态$/).selectOption('value');
+  await groupEditor.getByLabel(/^冷却秒数.*值$/).fill('30');
   await groupEditor.getByLabel('唤醒词状态').selectOption('off');
   await groupEditor.locator('span').filter({ hasText: '清空继承词表' }).waitFor();
+  // 行内字段按契约严格校验: 排他上界 120 被拒并保留草稿, 改回继承后恢复可保存
+  const groupMaxWaitState = groupEditor.getByLabel(/^最长等待秒数.*状态$/);
+  const groupMaxWaitValue = groupEditor.getByLabel(/^最长等待秒数.*值$/);
+  await groupMaxWaitState.selectOption('value');
+  await groupMaxWaitValue.fill('120');
+  const writesBeforeRowIssue = writes.length;
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  // 行内错误与草稿校验共用同一个结论, 试算同时被阻止
+  await groupEditor.getByText(/最长等待秒数必须大于等于 0 且小于 120/).waitFor();
+  const blockedPreview = dialog.getByTestId('wake-dry-run-blocked');
+  await blockedPreview.waitFor();
+  assert.match(await blockedPreview.innerText(), /群级\/时段规则有误/);
+  assert.match(await blockedPreview.innerText(), /最长等待秒数必须大于等于 0 且小于 120/);
+  assert.equal(writes.length, writesBeforeRowIssue);
+  assert.equal(await groupMaxWaitValue.inputValue(), '120');
+  await groupMaxWaitState.selectOption('inherit');
   const timeEditor = dialog.getByTestId('wake-time-editor');
   await timeEditor.getByRole('button', { name: '添加时段规则' }).click();
   await timeEditor.getByLabel('开始时间').fill('23:00');
@@ -260,21 +277,18 @@ try {
   await textBudget.fill('500');
   await mediaBudget.fill('4');
   await talkField.fill('0');
-  // 该平台已有显式阈值 5: 提示"被显式阈值覆盖"而不是"自动参与已关闭"
-  const hintWait = (pattern) => page.waitForFunction(([selector, source]) => {
-    const element = document.querySelector(selector);
-    return element instanceof HTMLInputElement && new RegExp(source).test(element.placeholder);
-  }, ['input[id$="settings.wake_talk_value"]', pattern]);
-  await hintWait('被显式阈值覆盖');
-  const overrideHint = await talkField.getAttribute('placeholder');
-  assert.match(overrideHint, /被显式阈值覆盖/);
-  assert.doesNotMatch(overrideHint, /关闭自动参与/);
-  // 反例: 清掉显式阈值后 talk_value=0 才是有效关闭, 提示随输入实时切换
+  // talk_value 提示是静态文案: 前端不再自行推导"被显式阈值覆盖/关闭自动参与"结论
+  const staticHint = await talkField.getAttribute('placeholder');
+  assert.match(staticHint, /以试算结论为准/);
+  assert.doesNotMatch(staticHint, /被显式阈值覆盖|关闭自动参与/);
   const thresholdField = dialog.getByLabel('自动参与消息阈值', { exact: false });
   await thresholdField.fill('');
-  await hintWait('关闭自动参与');
+  await talkField.fill('0.5');
   await thresholdField.fill('5');
-  await hintWait('被显式阈值覆盖');
+  assert.equal(await talkField.getAttribute('placeholder'), staticHint);
+  const overriddenTalkHint = await talkField.getAttribute('placeholder');
+  assert.doesNotMatch(overriddenTalkHint, /被显式阈值覆盖|关闭自动参与/);
+  await talkField.fill('0');
   await dialog.getByRole('button', { name: '保存修改' }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(writes.at(-1).id, 'legacy-bot');
@@ -310,6 +324,28 @@ try {
   await dialog.getByRole('button', { name: '保存修改' }).click();
   await page.getByText(/输入媒体上限必须在 1 到 32 之间/).waitFor();
   assert.equal(writes.length, writesBeforeRange);
+  // 排他上界由校验器检查: 最长等待 120 被拦截, 草稿保留
+  const maxWaitField = dialog.getByLabel('频率模式最长等待秒数', { exact: false });
+  await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).fill('4');
+  await maxWaitField.fill('119.9999');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(writes.at(-1).settings.wake_max_wait, 119.9999);
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
+  await dialog.getByLabel('频率模式最长等待秒数', { exact: false }).fill('120');
+  const writesBeforeExclusive = writes.length;
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  // 精确匹配: 行内错误的提示文案包含同一句字段消息
+  await page.getByText('最长等待秒数必须大于等于 0 且小于 120（wake_max_wait）', { exact: true }).waitFor();
+  assert.equal(writes.length, writesBeforeExclusive);
+  assert.equal(await dialog.getByLabel('频率模式最长等待秒数', { exact: false }).inputValue(), '120');
+  await dialog.getByLabel('频率模式最长等待秒数', { exact: false }).fill('');
+  // 冷却保持有限非负: 超过一天的历史取值仍可保存
+  await dialog.getByLabel('自动参与冷却秒数', { exact: false }).fill('86401');
+  await dialog.getByRole('button', { name: '保存修改' }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(writes.at(-1).settings.wake_cooldown, 86401);
+  await legacyRow.getByTitle('编辑', { exact: true }).click();
   await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).fill('4');
   await dialog.getByRole('button', { name: '保存修改' }).click();
   await dialog.waitFor({ state: 'hidden' });
@@ -388,7 +424,7 @@ try {
   await rowErrors().getByText(/群号不能为空/).waitFor();
   assert.equal(await rowsEditor.locator('[data-row-id]').count(), 1);
   assert.equal(await rowsEditor.getByLabel('自动参与模式值').inputValue(), 'necessity');
-  assert.equal(await rowsEditor.getByLabel('冷却秒数值').inputValue(), '30');
+  assert.equal(await rowsEditor.getByLabel(/^冷却秒数.*值$/).inputValue(), '30');
   await rowsEditor.getByLabel('群号').fill('20');
   await page.waitForFunction(() => document.querySelectorAll('[data-testid="wake-override-row-error"]').length === 0);
   // 重复群号: 保留第二行并在该行上报错, 保存被阻止
@@ -403,21 +439,21 @@ try {
   assert.equal(await rowsEditor.locator('[data-row-id]').count(), 2);
   // 删除中间行: 按 rowId 删除, 其余行保留各自的值, 不发生错位
   await groupRow(1).getByLabel('群号').fill('31');
-  await groupRow(1).getByLabel('冷却秒数状态').selectOption('value');
-  await groupRow(1).getByLabel('冷却秒数值').fill('11');
+  await groupRow(1).getByLabel(/^冷却秒数.*状态$/).selectOption('value');
+  await groupRow(1).getByLabel(/^冷却秒数.*值$/).fill('11');
   await rowsEditor.getByRole('button', { name: '添加群覆盖' }).click();
   await groupRow(2).getByLabel('群号').fill('32');
-  await groupRow(2).getByLabel('冷却秒数状态').selectOption('value');
-  await groupRow(2).getByLabel('冷却秒数值').fill('22');
+  await groupRow(2).getByLabel(/^冷却秒数.*状态$/).selectOption('value');
+  await groupRow(2).getByLabel(/^冷却秒数.*值$/).fill('22');
   await groupRow(1).getByRole('button', { name: '删除群覆盖' }).click();
   assert.equal(await rowsEditor.locator('[data-row-id]').count(), 2);
   assert.equal(await rowsEditor.getByLabel('群号').nth(0).inputValue(), '20');
   assert.equal(await rowsEditor.getByLabel('群号').nth(1).inputValue(), '32');
-  assert.equal(await rowsEditor.getByLabel('冷却秒数值').nth(1).inputValue(), '22');
+  assert.equal(await rowsEditor.getByLabel(/^冷却秒数.*值$/).nth(1).inputValue(), '22');
   // 最后字段改回继承: 行不消失, 只是不再写入覆盖
-  await groupRow(1).getByLabel('冷却秒数状态').selectOption('inherit');
+  await groupRow(1).getByLabel(/^冷却秒数.*状态$/).selectOption('inherit');
   assert.equal(await rowsEditor.locator('[data-row-id]').count(), 2);
-  assert.equal(await rowsEditor.getByLabel('冷却秒数值').count(), 1);
+  assert.equal(await rowsEditor.getByLabel(/^冷却秒数.*值$/).count(), 1);
   // 已有时段暂时无效: 行与同行的显式关闭值保留, 保存被阻止
   const timeRowsEditor = dialog.getByTestId('wake-time-editor');
   await timeRowsEditor.getByLabel('开始时间').fill('');
@@ -584,7 +620,7 @@ try {
   await page.getByRole('heading', { name: '请求阶段诊断' }).waitFor();
 
   assert.deepEqual(errors, []);
-  console.log('PASS: 旧配置/别名, 新配置默认隔离, 列表往返, 空白名单, 错误保留草稿, 键盘与窄屏, 行编辑器, 平台级输入预算与 talk_value 往返及优先级提示, 试算预览与来源明细, 脏保护, 草稿行保留与校验, 请求阶段诊断, 数据路由离开拦截');
+  console.log('PASS: 旧配置/别名, 新配置默认隔离, 列表往返, 空白名单, 错误保留草稿, 键盘与窄屏, 行编辑器, 平台级输入预算与 talk_value 往返及静态提示, 契约边界 (排他上界/冷却非负) 与行内校验, 试算预览与来源明细, 脏保护, 草稿行保留与校验, 请求阶段诊断, 数据路由离开拦截');
 } finally {
   await browser?.close();
   await server.close();

@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/components/ui/Toast';
 import { controlApi } from '@/api/control';
+import { POLICY_FIELD_BY_KEY, previewFieldKeys } from '@/utils/wakePolicyContract';
 import type { WakeDryRunDecision, WakeDryRunResult, WakePolicySource } from '@/api/control';
 
 interface WakeDryRunPanelProps {
@@ -39,8 +40,9 @@ const SOURCE_LABELS: Record<WakePolicySource['source'], string> = {
 };
 
 // 每字段生效值与来源, 让"被时段/群覆盖"和"使用默认值"在界面上可区分
+// 只展示契约里声明为试算重点的字段, 避免与后端 resolved 键集合各写一份
 function SourceTable({ sources }: { sources: Record<string, WakePolicySource> }) {
-  const keys = Object.keys(sources).filter((key) => key.startsWith('wake_') || key.startsWith('input_') || key === 'message_text_limit');
+  const keys = Object.keys(sources).filter((key) => POLICY_FIELD_BY_KEY.has(key));
   if (!keys.length) return null;
   return (
     <div className="overflow-x-auto">
@@ -169,7 +171,7 @@ export function WakeDryRunPanel({ settings, blockedReason }: WakeDryRunPanelProp
         <div className="space-y-1 border-t border-border/50 pt-2">
           {resolved && (
             <div className="flex flex-wrap gap-1 pb-1">
-              {['wake_mode', 'wake_talk_value', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait']
+              {previewFieldKeys()
                 .filter((key) => resolved[key] !== undefined)
                 .map((key) => (
                   <Badge key={key} variant="info">{`${key}=${String(resolved[key])}`}</Badge>

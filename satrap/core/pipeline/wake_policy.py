@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 import sys
 
-from satrap.core.config.platform_policy import normalize_wake_words
+from satrap.core.config.platform_policy import normalize_wake_words, policy_default_int, policy_default
 from satrap.core.platform.event import MessageEvent
 from satrap.core.components import At, AtAll, Plain
 
@@ -29,8 +29,8 @@ THRESHOLD_SOURCE_TALK_VALUE = "talk_value"
 THRESHOLD_SOURCE_DEFAULT = "default"
 """阈值来源: 内置默认值"""
 
-DEFAULT_MESSAGE_THRESHOLD = 3
-"""未设置显式阈值与 wake_talk_value 时的条数阈值"""
+DEFAULT_MESSAGE_THRESHOLD = policy_default_int("wake_message_threshold")
+"""未设置显式阈值与 wake_talk_value 时的条数阈值, 取策略字段契约的默认值"""
 
 
 @dataclass(frozen=True)

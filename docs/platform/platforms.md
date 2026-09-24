@@ -281,6 +281,39 @@ wake_group_overrides:
 - 合并结果里存在显式 `wake_message_threshold` 时, `wake_talk_value=0` **不是**有效关闭: 阈值取显式值, 界面显示"被显式阈值覆盖"而不是"自动参与已关闭"; 需要停用全部自动参与时设置 `wake_mode: explicit`
 - 正值 `wake_talk_value` 不受影响: 到达最长等待仍按 `max_wait` 触发; `necessity` 模式的评分与到期补偿不受 `wake_talk_value` 影响
 - 输入预算与频率偏好都可在平台表单编辑 (`input_text_limit` 1–200000, 默认 20000; `input_media_limit` 1–32, 默认 8; `wake_talk_value` 0–1)。三者是仅平台级的逐事件配置, 不进入群/时段覆盖, 保存后对下一事件生效, 已冻结事件保留其原策略快照, 不需要重连平台; 表单里留空表示未设置, 0 按数字保存
+- 表单里的 talk_value 提示是静态语义说明 ("留空表示未设置; 生效阈值与覆盖情况以试算结论为准")。生效阈值与是否被覆盖只以后端试算响应的 `automatic.threshold.hint`/`overridden` 为准, 前端不自行推导这两个结论
+
+### 策略字段契约与两侧校验
+
+策略字段的类型, 覆盖范围, 取值范围, 热更新能力, 试算展示口径, 显式关闭值与运行时默认值集中在一张声明式契约表 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT`。每个字段声明 `kind` (int/number/bool/enum/text/list/notice_types/words/group_ids/scope/group_map/time_rules), `scope` (`platform` 仅平台级 / `group` 平台与群覆盖 / `time` 平台, 时段与群覆盖), `hot_reload`, `display_in_preview`, `off_value`, `min`, `max`, `max_exclusive`, `integer`, `max_length`, `max_items`, `enum`, `default` 与 `nullable`。
+
+以下集合都由这张表派生, 不再各自维护: 群覆盖键 `GROUP_KEYS` 与时段规则键 `AUTOMATIC_KEYS` (按 `scope`), 热更新键集合 (按 `hot_reload`), 运行时默认值 `POLICY_DEFAULTS` (按 `default`), 试算面板展示的字段 (按 `display_in_preview`), 以及前端编辑器字段与表单数值约束 (由生成的契约 JSON 构建)。
+
+取值口径:
+
+| 字段 | 口径 |
+| --- | --- |
+| `wake_cooldown` | 有限非负, 没有上限; 存量大于一天的配置仍可保存并启动 |
+| `wake_max_wait` | `0 ≤ x < 120` (排他上界), `0` 表示关闭; 前端不以 119 或任意 epsilon 代替。HTML `max` 表达不了排他上界, 由校验器检查 |
+| `wake_message_threshold` | 整数 1–32 |
+| `wake_score_threshold` 与权重字段 | 0–1 |
+| `wake_talk_value` | 0–1, 接受显式 null (未设置) |
+| `message_text_limit` / `input_text_limit` / `input_media_limit` | 分别为 64–32000 / 1–200000 / 1–32 的整数 |
+
+缺失与默认值的区别: 字段缺失表示继承或未设置, 校验与前端编辑都不会向配置注入默认值; `0`, `false` 与 `[]` 都是显式取值。显式 `null` 只在可空字段上合法 (如 `wake_talk_value` 与 `notice_types`)。
+
+前端按同一张契约做即时校验: 保存与试算前, 平台设置先经 `normalizePlatformSettings` 归一化 (数字字符串转数字, 留空删键), 再逐字段校验; 群/时段覆盖的每个字段在行转换 `fromGroupRows`/`fromTimeRows` 时校验, 非法取值保留在草稿里并同时阻止保存与试算。后端在保存与适配器构造时按同一张表做权威校验, 两侧结论一致但都保留 (前端不复制后端的归一化逻辑)。
+
+分工例外: 群白名单, 上下文范围与覆盖结构 (群号/时段/条数上限) 仍由后端专用校验器负责, 前端不复制其归一化; 平台级未知扩展字段继续透传, 群/时段覆盖里的未知字段被拒绝。
+
+契约 JSON 的生成与同步:
+
+```bash
+python scripts/sync_wake_policy_contract.py          # 重新生成 satrap-ui/src/generated/wake-policy-contract.json
+python scripts/sync_wake_policy_contract.py --check  # 只校验生成物是否与契约表一致
+```
+
+生成物按 UTF-8, LF, 字段排序与末尾换行固定并已入库; `.gitattributes` 对该文件与共享样例固定 `eol=lf`, 避免换行差异污染逐字节比对。pytest 断言"契约表序列化结果与库内文件逐字节一致", 漂移即失败。前端构建只读取该 JSON, 不要求后端在线。共享样例 `tests/fixtures/wake_policy_cases.json` 按平台/群/时段上下文列出合法, 非法与边界取值, 由 pytest 跑后端真实校验入口, 由 vitest 跑前端严格校验与实际行转换入口。
 
 
 ## 通知与请求事件

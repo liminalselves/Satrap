@@ -21,7 +21,7 @@ from typing import (
 )
 
 from satrap.core.framework.SessionManager import SessionManager
-from satrap.core.config.platform_policy import normalize_group_whitelist
+from satrap.core.config.platform_policy import normalize_group_whitelist, policy_default
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
@@ -410,7 +410,7 @@ class PipelineScheduler:
             automatic = False
             if manual_ticket is not None:
                 event.is_wake = True
-            elif not event.is_private_chat() and event.policy_settings.get("wake_mode", "explicit") in {"frequency", "necessity"} and self._automatic_policy_current(event):
+            elif not event.is_private_chat() and event.policy_settings.get("wake_mode", policy_default("wake_mode")) in {"frequency", "necessity"} and self._automatic_policy_current(event):
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
                 if not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
@@ -534,7 +534,7 @@ class PipelineScheduler:
                 )
                 if batch:
                     window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
-                    text_limit = int(event.policy_settings.get("input_text_limit", 20000))
+                    text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
                     window_note: str | None = None
                     if window_synthetic:
                         # 窗口类合成事件 (待处理手动唤醒/定时补偿): projected 正文来自快照拼接或陈旧副本,
