@@ -11,6 +11,7 @@
     "test:e2e:platform": "node e2e/platform-policy.mjs",
     "test:e2e:wake": "node e2e/manual-wake.mjs",
     "test:e2e:asr": "node e2e/asr-models.mjs",
+    "test:e2e:model-form": "node e2e/model-form-required.mjs",
     "test:e2e": "node e2e/chat-reconnect.mjs",
     "preview": "vite preview",
     "benchmark": "npm run build && node benchmarks/run.mjs",

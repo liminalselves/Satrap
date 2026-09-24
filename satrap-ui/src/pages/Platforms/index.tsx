@@ -601,7 +601,7 @@ export function Platforms() {
         )}
       </Card>
 
-      {/* 编辑/新增模态框 */}
+      {/* 编辑/新增模态框: 策略字段提示统一由契约校验器给 toast, 关闭浏览器原生校验 */}
       <FormModal
         open={showModal}
         onClose={guardedClose}
@@ -613,6 +613,7 @@ export function Platforms() {
         submitText={editingPlatform ? '保存修改' : '创建'}
         loading={saving}
         size="lg"
+        noValidate
       />
     </div>
   );

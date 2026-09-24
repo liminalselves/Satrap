@@ -32,6 +32,8 @@ export interface FormModalProps {
   cancelText?: string;
   loading?: boolean;
   size?: 'sm' | 'md' | 'lg' | 'xl';
+  // 默认保留浏览器原生校验 (必填与控件约束); 由应用校验器统一给提示的表单显式关闭
+  noValidate?: boolean;
 }
 
 export const FormModal = memo(function FormModal({
@@ -46,6 +48,7 @@ export const FormModal = memo(function FormModal({
   cancelText = '取消',
   loading = false,
   size = 'md',
+  noValidate = false,
 }: FormModalProps) {
   const formId = useId();
   const handleSubmit = (e: React.FormEvent) => {
@@ -172,8 +175,8 @@ export const FormModal = memo(function FormModal({
 
   return (
     <Modal open={open} onClose={onClose} title={title} size={size}>
-      {/* 校验提示统一由表单校验器给出, 不用浏览器原生气泡抢先拦截 */}
-      <form onSubmit={handleSubmit} noValidate className="space-y-4">
+      {/* 校验提示: 默认交给浏览器原生气泡, noValidate 的表单由调用方的校验器负责 */}
+      <form onSubmit={handleSubmit} noValidate={noValidate} className="space-y-4">
         {fields.map((field) => (
           <div key={field.key}>
             <label htmlFor={field.type === 'checkbox-group' || field.type === 'custom' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">
