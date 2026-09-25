@@ -16,6 +16,7 @@ import unicodedata
 
 from satrap.core.components import BaseMessageComponent, Node, Plain
 from satrap.core.platform.event import MessageChain
+from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.platform.onebot.onebot_utils import forward_ids_in_message, group_session_id
 from satrap.core.log import logger
 
@@ -49,6 +50,12 @@ WRITE_ACTIONS = frozenset({
     "set_friend_add_request", "set_group_add_request",
 })
 """会改变平台状态的 OneBot 动作名, 执行成功记审计日志"""
+
+APPROVAL_FLAG_KINDS: dict[str, str] = {
+    "set_friend_add_request": "friend",
+    "set_group_add_request": "group",
+}
+"""审批动作到账本 flag 域的映射, 供审计日志用同域摘要替代原始标识"""
 
 ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "get_group_list": ("read", "获取机器人所在群列表"),
@@ -288,8 +295,15 @@ class OneBotAdmin:
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
         self._adapter.note_action_outcome(action, True)
         if action in WRITE_ACTIONS:
-            targets = {key: value for key, value in params.items() if key in {"group_id", "user_id", "message_id", "flag"}}
-            logger.info(f"[OneBotAdmin] 写动作已执行 {action} {targets}")
+            targets = {key: value for key, value in params.items() if key in {"group_id", "user_id", "message_id"}}
+            approval_kind = APPROVAL_FLAG_KINDS.get(action)
+            if approval_kind is not None and "flag" in params:
+                # 原始 flag 可重放审批, 不落日志; 只记与账本同域的摘要便于对照条目
+                targets["flag_digest"] = flag_digest(approval_kind, self._adapter.bot_self_id, str(params["flag"]))[:8]
+            logger.info(
+                f"[OneBotAdmin] 写动作已执行 {action} adapter={self._adapter.config.id} "
+                f"self_id={self._adapter.bot_self_id} {targets}"
+            )
         return result
 
     def _check_group(self, group_id: str) -> None:
@@ -791,6 +805,36 @@ class OneBotAdmin:
         except Exception as error:
             logger.error(f"[OneBotAdmin] 审批终态写入失败 kind={kind} state={state}: {type(error).__name__}: {error}")
 
+    async def _execute_request_decision(
+        self, kind: str, flag: str, self_id: str, action: str, params: dict[str, Any],
+    ) -> None:
+        """
+        执行审批动作并按异常分类结算 flag 终态
+
+        参数:
+        - kind: group 或 friend, 决定账本域
+        - flag: 已占用的请求标识
+        - self_id: 已绑定机器人账号
+        - action: 审批动作名
+        - params: 动作参数, 经 _call 原样交给平台实现
+
+        超时或取消记 unknown, 平台给出明确结果记 completed; 终态写失败时标识保持
+        executing, 不可重放优先于终态精确
+        """
+        try:
+            await self._call(action, **params)
+        except AdminActionUnconfirmed:
+            await self._settle_request_flag(kind, flag, self_id, "unknown")
+            raise
+        except Exception:
+            await self._settle_request_flag(kind, flag, self_id, "completed")
+            raise
+        except BaseException:
+            # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
+            await self._settle_request_flag(kind, flag, self_id, "unknown")
+            raise
+        await self._settle_request_flag(kind, flag, self_id, "completed")
+
     async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "") -> None:
         """
         处理好友添加请求
@@ -815,19 +859,10 @@ class OneBotAdmin:
             await registry.occupy("friend", normalized, self_id=self_id)
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
-        try:
-            await self._call("set_friend_add_request", flag=normalized, approve=approve, remark=text)
-        except AdminActionUnconfirmed:
-            await self._settle_request_flag("friend", normalized, self_id, "unknown")
-            raise
-        except Exception:
-            await self._settle_request_flag("friend", normalized, self_id, "completed")
-            raise
-        except BaseException:
-            # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
-            await self._settle_request_flag("friend", normalized, self_id, "unknown")
-            raise
-        await self._settle_request_flag("friend", normalized, self_id, "completed")
+        await self._execute_request_decision(
+            "friend", normalized, self_id,
+            "set_friend_add_request", {"flag": normalized, "approve": approve, "remark": text},
+        )
 
     async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
         """
@@ -859,16 +894,7 @@ class OneBotAdmin:
             await registry.occupy("group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type))
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
-        try:
-            await self._call("set_group_add_request", flag=normalized, sub_type=sub_type, approve=approve, reason=text)
-        except AdminActionUnconfirmed:
-            await self._settle_request_flag("group", normalized, self_id, "unknown")
-            raise
-        except Exception:
-            await self._settle_request_flag("group", normalized, self_id, "completed")
-            raise
-        except BaseException:
-            # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
-            await self._settle_request_flag("group", normalized, self_id, "unknown")
-            raise
-        await self._settle_request_flag("group", normalized, self_id, "completed")
+        await self._execute_request_decision(
+            "group", normalized, self_id,
+            "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
+        )

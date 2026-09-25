@@ -9,6 +9,7 @@ import pytest
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
+from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.platform.onebot.outbound import OutboundTurns
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform import PlatformConfig
@@ -52,6 +53,29 @@ async def test_admin_call_logs_each_failure_kind_and_write_audit(caplog: pytest.
     infos = _messages(caplog, logging.INFO)
     assert any("写动作已执行 set_group_kick" in m and "'group_id': 456" in m for m in infos)
     assert not any("get_group_info" in m for m in infos)
+
+
+@pytest.mark.asyncio
+async def test_approval_audit_log_records_digest_not_raw_flag(caplog: pytest.LogCaptureFixture):
+    """审批与匿名禁言的审计日志不得回显原始 flag, 审批只留与账本同域的摘要"""
+    adapter = _adapter(self_id="10000")
+    await adapter.request_flags.register("friend", "SYNTHETIC_AUDIT_FLAG", self_id="10000", user_id="99")
+    await adapter.request_flags.register("friend", "SYNTHETIC_AUDIT_FLAG_2", self_id="10000", user_id="99")
+    with caplog.at_level(logging.INFO):
+        await adapter.admin.handle_friend_request("SYNTHETIC_AUDIT_FLAG", True, "")
+        adapter._bot.set_friend_add_request.side_effect = ActionFailed({"retcode": 1200})
+        with pytest.raises(AdminActionRejected):
+            await adapter.admin.handle_friend_request("SYNTHETIC_AUDIT_FLAG_2", True, "")
+        adapter._bot.set_group_anonymous_ban.return_value = {}
+        await adapter.admin.ban_anonymous("456", "ANONYMOUS_FLAG", 60)
+    messages = _messages(caplog)
+    digest = flag_digest("friend", "10000", "SYNTHETIC_AUDIT_FLAG")[:8]
+    assert any("写动作已执行 set_friend_add_request" in m and f"flag_digest': '{digest}'" in m for m in messages)
+    assert any("adapter=ob" in m and "self_id=10000" in m for m in messages)
+    assert not any("SYNTHETIC_AUDIT_FLAG" in m for m in messages)
+    assert not any("ANONYMOUS_FLAG" in m for m in messages)
+    # 匿名禁言不属于账本域, 只保留群范围
+    assert any("写动作已执行 set_group_anonymous_ban" in m and "'group_id': 456" in m for m in messages)
 
 
 @pytest.mark.asyncio

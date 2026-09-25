@@ -104,8 +104,18 @@ class RequestFlagEntry:
     state: str = "available"
 
 
-def _flag_digest(kind: str, self_id: str, flag: str) -> str:
-    """flag 摘要, 账本只保存摘要不保存原始标识"""
+def flag_digest(kind: str, self_id: str, flag: str) -> str:
+    """
+    计算 flag 摘要
+
+    参数:
+    - kind: group 或 friend, 构成摘要域的一部分
+    - self_id: 已绑定机器人账号, 同一 flag 在不同账号下摘要不同
+    - flag: request 事件上报的原始标识
+
+    返回:
+    - str: 32 位十六进制摘要; 账本与审计日志只保存摘要, 不保存原始标识
+    """
     return hashlib.sha256(f"{kind}\x00{self_id}\x00{flag}".encode("utf-8")).hexdigest()[:32]
 
 
@@ -478,7 +488,7 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 return "degraded"
-            digest = _flag_digest(kind, self_id, flag)
+            digest = flag_digest(kind, self_id, flag)
             key = _entry_key(adapter_id, self_id, kind, digest)
             existing = self._entries.get(key)
             if existing is not None:
@@ -522,7 +532,7 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 raise LookupError("审批账本不可用, 拒绝执行")
-            key = _entry_key(adapter_id, self_id, kind, _flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
             if entry is None:
                 raise LookupError("请求标识未登记或已过期, 无法确认归属")
@@ -548,7 +558,7 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 return False
-            key = _entry_key(adapter_id, self_id, kind, _flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
             if entry is None or entry["state"] != "executing":
                 return False
@@ -634,7 +644,7 @@ class RequestApprovalLedger:
         with self._mutex:
             if self.degraded:
                 return None
-            key = _entry_key(adapter_id, self_id, kind, _flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
             return cast(LedgerEntry, dict(entry)) if entry is not None else None
 
