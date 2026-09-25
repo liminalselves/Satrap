@@ -34,7 +34,7 @@ from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
-from satrap.core.pipeline.manual_wake_store import ManualWakeStore, SendAttemptRecord
+from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError, SendAttemptRecord
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
@@ -99,10 +99,17 @@ class PipelineScheduler:
 
         参数:
         - adapter_id: 平台实例 ID
+
+        持久化回写失败只告警: 存储不可用不应阻断平台停止与热重载
         """
         self.manual_wakes.clear_adapter(adapter_id)
         if self.manual_wake_store is not None:
-            self.manual_wake_store.adapter_stopped(adapter_id)
+            try:
+                self.manual_wake_store.adapter_stopped(adapter_id)
+            except (ManualWakeStoreError, OSError) as error:
+                logger.warning(
+                    f"[PipelineScheduler] 平台停止状态未落盘 adapter={adapter_id}: {type(error).__name__}",
+                )
         self.request_diagnostics.clear_adapter(adapter_id)
 
     def _record_diagnostic(

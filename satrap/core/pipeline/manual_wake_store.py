@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, TypedDict, cast, Generator
 from collections.abc import Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import copy
 import json
@@ -122,6 +122,37 @@ class ManualWakeStoreError(RuntimeError):
     def __init__(self, reason: Literal["degraded", "capacity", "io", "duplicate"], message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+class ManualWakeStoreLockError(ManualWakeStoreError, TimeoutError):
+    """
+    存储锁在进入阶段不可用
+
+    同时保持 OSError 语义: 降级组件写降级标记时按 OSError/TimeoutError 判定"标记未落盘,
+    保留原文件不隔离", 两条契约都要成立, 因此按双基类归一
+    """
+
+
+@contextmanager
+def _store_lock(path: Path) -> Generator[None, None, None]:
+    """
+    进入存储锁, 把锁等待与锁文件错误归一为类型化存储失败
+
+    参数:
+    - path: 锁文件路径
+
+    只包装进入阶段: 进入之后的写入失败由各方法自己的回滚与日志处理, 不在这里改写
+    """
+    lock = FileLock(path)
+    try:
+        lock.__enter__()
+    except OSError as error:
+        # TimeoutError 也是 OSError: 锁等待超时与锁文件打不开都按存储不可用上报
+        raise ManualWakeStoreLockError("io", f"存储锁不可用: {type(error).__name__}") from error
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
 
 
 def _validate_request(item: object, key: str, source: str) -> RequestRecord:
@@ -379,13 +410,15 @@ class ManualWakeStore:
 
         参数:
         - archive: 是否同时涉及时归档文件, 叠加归档锁以兼容旧写入者
+
+        异常:
+        - ManualWakeStoreError: 锁等待超时或锁文件不可用, 统一按存储不可用上报
         """
-        with FileLock(self._lock_path):
-            if not archive:
-                yield
-                return
-            with FileLock(self._archive_lock_path):
-                yield
+        paths = (self._lock_path, self._archive_lock_path) if archive else (self._lock_path,)
+        with ExitStack() as stack:
+            for path in paths:
+                stack.enter_context(_store_lock(path))
+            yield
 
     def _fresh_manifest(self, *, initialized_at: float, archive_state: str) -> Manifest:
         """构造未降级的清单骨架, 主文件按已初始化处理"""

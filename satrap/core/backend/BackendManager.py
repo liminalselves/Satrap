@@ -521,7 +521,11 @@ class BackendManager:
             if store is not None:
                 if store.degraded:
                     return {"status": "rejected", "request_id": request_id, "reason": "store_unavailable"}
-                record = await asyncio.to_thread(store.lookup_request, request_id, str(adapter_id))
+                try:
+                    record = await asyncio.to_thread(store.lookup_request, request_id, str(adapter_id))
+                except ManualWakeStoreError as error:
+                    logger.warning(f"[BackendManager] 手动唤醒查重失败 request_id={request_id} adapter={adapter_id}: {error}")
+                    return {"status": "rejected", "request_id": request_id, "reason": "store_unavailable"}
                 if record is not None:
                     if record["fingerprint"] == fingerprint:
                         return {"status": "already_pending", "request_id": request_id, "state": record["status"], "reason": "duplicate"}
@@ -542,7 +546,18 @@ class BackendManager:
             if not adapter.commit_event(event):
                 requests.records.pop(request_id, None)
                 if store is not None:
-                    await asyncio.to_thread(store.update_request, str(adapter_id), request_id, "failed", "queue_full")
+                    try:
+                        outcome = await asyncio.to_thread(
+                            store.update_request, str(adapter_id), request_id, "failed", "queue_full",
+                        )
+                    except ManualWakeStoreError as error:
+                        logger.warning(f"[BackendManager] 手动唤醒回滚写入失败 request_id={request_id} adapter={adapter_id}: {error}")
+                    else:
+                        if outcome not in {"persisted", "no_op", "degraded"}:
+                            logger.warning(
+                                f"[BackendManager] 手动唤醒回滚未落盘 request_id={request_id} "
+                                f"adapter={adapter_id} outcome={outcome}",
+                            )
                 logger.warning(f"[BackendManager] 手动唤醒入队失败 request_id={request_id} adapter={adapter_id}")
                 return {"status": "rejected", "request_id": request_id, "reason": "queue_full"}
         logger.info(f"[BackendManager] 手动唤醒已接受 request_id={request_id} adapter={adapter_id} group={group_id} operator={operator} pending={len(snapshot)}")
@@ -564,7 +579,11 @@ class BackendManager:
             return {"status": "unknown", "request_id": request_id, "reason": "store_unavailable"}
         if store.degraded:
             return {"status": "unknown", "request_id": request_id, "reason": "store_degraded", "detail": store.degraded_reason}
-        record = await asyncio.to_thread(store.lookup_request, request_id, adapter_id)
+        try:
+            record = await asyncio.to_thread(store.lookup_request, request_id, adapter_id)
+        except ManualWakeStoreError as error:
+            logger.warning(f"[BackendManager] 手动唤醒状态查询失败 request_id={request_id} adapter={adapter_id}: {error}")
+            return {"status": "unknown", "request_id": request_id, "reason": "store_unavailable"}
         if store.degraded:
             # 查询期间归档读取失败会进入降级, 此时不能把结果报成未找到
             return {"status": "unknown", "request_id": request_id, "reason": "store_degraded", "detail": store.degraded_reason}

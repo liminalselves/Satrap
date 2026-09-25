@@ -49,6 +49,20 @@ def _payload(request_id: str) -> dict[str, object]:
     return {"adapter_id": "bot", "group_id": "20", "user_id": "30", "prompt": "手动处理", "request_id": request_id}
 
 
+class _BlockedFileLock:
+    """进入即超时的锁替身, 用于观察事务入口的失败归一"""
+
+    def __init__(self, path: Path, timeout: float = 30) -> None:
+        self.path = path
+        self.timeout = timeout
+
+    def __enter__(self) -> None:
+        raise TimeoutError("目标文件正在执行其他写入操作, 请稍后重试")
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
 class TestRequestStore:
     def test_accept_lookup_and_terminal_guard(self, tmp_path: Path):
         store = ManualWakeStore(tmp_path / "store.json")
@@ -642,6 +656,100 @@ class TestStatusRoute:
         assert degraded[0] == 503 and degraded[1]["reason"] == "store_degraded"
         bad = await server._route("GET", "/api/platforms/wake/" + "x" * 129, b"")
         assert bad[0] == 400
+
+
+    def test_lock_entry_failure_is_typed_store_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """E4: 事务入口的锁失败按存储不可用上报, 不再是裸 OSError"""
+        store = ManualWakeStore(tmp_path / "store.json")
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        monkeypatch.setattr(store_module, "FileLock", _BlockedFileLock)
+        with pytest.raises(ManualWakeStoreError) as exc:
+            store.accept_request("bot", "r2", "fp", "group:20", "op")
+        assert exc.value.reason == "io"
+        with pytest.raises(ManualWakeStoreError) as exc:
+            store.update_request("bot", "r1", "sent")
+        assert exc.value.reason == "io"
+        # 降级组件按 OSError/TimeoutError 判定"标记未落盘", 双基类保证该契约不被破坏
+        assert isinstance(exc.value, (OSError, TimeoutError))
+
+    def test_marker_write_lock_failure_keeps_degrade_without_isolation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        """E4 反例: 降级标记写不动时保持内存降级且不隔离任何文件"""
+        store = ManualWakeStore(tmp_path / "store.json")
+        bad = tmp_path / "bad.json"
+        bad.write_text("not-json{", encoding="utf-8")
+        monkeypatch.setattr(store_module, "FileLock", _BlockedFileLock)
+        store._degrade("archive_corrupt", "标记写不动", [bad])
+        assert store.degraded is True and store.degraded_reason == "archive_corrupt"
+        assert bad.is_file() and list(tmp_path.glob("bad.json.corrupt-*")) == []
+
+
+class TestStoreUnavailableRoute:
+    """E4 反例: 事务进入失败与保存失败都返回稳定拒绝原因, 不退化成通用 500"""
+
+    @staticmethod
+    def _blocked(*args: Any, **kwargs: Any) -> Any:
+        raise ManualWakeStoreError("io", "存储锁不可用: TimeoutError")
+
+    @pytest.mark.asyncio
+    async def test_wake_post_lookup_failure_reports_store_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        import logging
+
+        backend, adapter, _, store = runtime(tmp_path)
+        monkeypatch.setattr(store, "lookup_request", self._blocked)
+        server = BackendHTTPServer(backend, port=0)
+        with caplog.at_level(logging.WARNING):
+            status, result = await server._route("POST", "/api/platforms/wake", json.dumps(_payload("locked")).encode())
+        assert status == 409 and result["status"] == "rejected" and result["reason"] == "store_unavailable"
+        assert result["request_id"] == "locked"
+        assert any("手动唤醒查重失败" in r.getMessage() for r in caplog.records)
+        # 无入队与进程内登记副作用
+        assert adapter._event_queue.empty() and not _scheduler(backend).manual_wakes.records
+
+    @pytest.mark.asyncio
+    async def test_wake_post_accept_failure_reports_store_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        import logging
+
+        backend, adapter, _, store = runtime(tmp_path)
+        monkeypatch.setattr(store, "accept_request", self._blocked)
+        server = BackendHTTPServer(backend, port=0)
+        with caplog.at_level(logging.WARNING):
+            status, result = await server._route("POST", "/api/platforms/wake", json.dumps(_payload("locked2")).encode())
+        assert status == 409 and result["reason"] == "store_unavailable"
+        assert any("手动唤醒占位落盘失败" in r.getMessage() for r in caplog.records)
+        assert adapter._event_queue.empty() and not _scheduler(backend).manual_wakes.records
+
+    @pytest.mark.asyncio
+    async def test_wake_status_route_reports_store_unavailable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        import logging
+
+        backend, _, _, store = runtime(tmp_path)
+        monkeypatch.setattr(store, "lookup_request", self._blocked)
+        server = BackendHTTPServer(backend, port=0)
+        with caplog.at_level(logging.WARNING):
+            status, result = await server._route("GET", "/api/platforms/wake/locked?adapter_id=bot", b"")
+        assert status == 503 and result["reason"] == "store_unavailable"
+        assert any("手动唤醒状态查询失败" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_platform_stop_survives_store_write_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        import logging
+
+        backend, _, _, store = runtime(tmp_path)
+        monkeypatch.setattr(store, "adapter_stopped", self._blocked)
+        scheduler = _scheduler(backend)
+        with caplog.at_level(logging.WARNING):
+            scheduler.clear_manual_wakes("bot")
+        assert any("平台停止状态未落盘" in r.getMessage() for r in caplog.records)
 
 
 class TestSendOutcomeAdjudication:
