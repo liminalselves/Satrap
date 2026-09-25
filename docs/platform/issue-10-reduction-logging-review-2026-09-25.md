@@ -96,3 +96,18 @@
 - 本轮不是全量 pytest/前端门禁复跑, 不据此宣称所有新增代码或真实平台验收通过; E2/E5 为静态链路结论, 未宣称做过浏览器/生产故障复现
 
 建议顺序: 修 E1-E4, 同时做审批流程与前端错误提取的局部复用; 随后处理 E5 与确定的小清理。保持独立可评审 diff, 不再以引入新的通用框架换取纸面复用率。
+
+## 五、整改结论 (2026-09-25)
+
+六项裁定与落地批次: E1 保留同域摘要并与账本共用 `flag_digest`; E3 采用五值结果码; `_await_send_settlement` 异常分支提升 warning; `clear_manual_wakes` 同批加固; E2 使用既有 `ApiError.code` 且 CLI 同批修; E5 覆盖另外两个同形异常分支。本文档原为只审查记录, 落实后按批次补记结论。
+
+| 项 | 落地 | 结论 |
+| --- | --- | --- |
+| E1 `b3bb1b9` | 审计行去掉原始 `flag`, 审批动作只记与账本同域的 `flag_digest` 前 8 位并补 `adapter`/`self_id`; `_flag_digest` 提为公开 `flag_digest` 供账本与日志共用; 好友与群审批的结算段抽为 `_execute_request_decision` (参数校验, 群范围与 subtype 校验, occupy 参数留在入口) | 成功, 平台拒绝与匿名禁言三路日志都不含原始标识; 摘要可与账本条目对照, 不引入可重放标识 |
+| E2 `fc63779` | `toApiError` 把拒绝信封的 `reason` 存入既有 `ApiError.code`; 弹窗按 15 个原因码给文案并回显未知码; CLI `_request` 在无 `error` 时改用 `reason` | 成功。实施中确认 e2e 原夹具用 `{error: ...}` 造 409 与真实信封不符, 属掩盖该缺陷的假契约, 已改为 `{status, request_id, reason}` 并断言映射文案 |
+| E3 `7bb39b8` | `update_request` 返回 `persisted`/`no_op`/`degraded`/`invalid`/`io`; scheduler 按码分级记录; `_finalize_attempt` 检查收尾返回值, 降级期短路; 回写异常与证据查询失败提到 warning | 成功。合法幂等拒绝 (已终结记录, 历史 unknown 不被 refine 改写) 不产生告警; 需要调查的未落盘结果带 adapter/request_id/turn 关联可见 |
+| E4 `fb829dc` | 事务入口锁失败归一为 `ManualWakeStoreLockError` (双基类, 同时是 OSError/TimeoutError); API 侧查重, 占位, 回滚写入与状态查询都返回稳定 reason; `clear_manual_wakes` 回写失败只告警 | 成功。实施中确认两件事并据此调整: 存储的查询路径本身不取文件锁, 因此读路径不会产生锁故障; 降级组件按 OSError/TimeoutError 判定"标记未落盘", 单基类会破坏该契约, 故采用双基类并补反例测试 |
+| E5 `f13a3a2` | 分块, 转发, 文件的兜底分支统一复用 `_failed_receipt`, 保留 `message_conversion_failed` 并记录目标会话与异常类型; PermissionError 分支维持静默 | 成功。全库此前无任何用例覆盖该原因码, 已补一组三路断言 |
+| 小清理 `f13a3a2` | 删除零调用的 `DurabilityManifest.validate()`; 内联 `ManualWakeStore` 的两个纯转发方法; 平台表单数值字段只迭代 `PLATFORM_NUMERIC_KEYS` | 完成。账本的 `_read_manifest`/`_quarantine_names` 保留 (其 `_durability is None` 语义内联后反而更长); 未做文档既定不批准的项 (状态基类, 枚举合并, 缓存删除等) |
+
+验收: 全量单测 2215 passed / 31 skipped (skipped 含本机 12 项 Windows 符号链接特权跳过); pyright 全库 0 errors / 1530 warnings (较基线少 2, 无新增); 前端 tsc / eslint 0, vitest 199 绿; `test:e2e:platform`, `test:e2e:wake`, `test:e2e:forms` 三个脚本 PASS。逐项证据与边界见 `docs/platform/issue-10-progress.md` 的"复核整改 (2026-09-25)"小节。
