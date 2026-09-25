@@ -631,3 +631,37 @@ class TestSegmentProgress:
         # 降级期存储拒绝一切写入: 不再发起调用, 也不需要逐次告警
         assert calls == []
         assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []
+
+    @pytest.mark.asyncio
+    async def test_finalize_failure_logs_exactly_one_warning(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        """R4 反例: 收尾异常只按异常分支告警一次, 不再叠加"未落盘"; 正常返回 False 才记未落盘"""
+        import logging
+
+        adapter = make_adapter()
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+
+        def _explode(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+            raise OSError("写入失败")
+
+        monkeypatch.setattr(store, "complete_send_attempt", _explode)
+        with caplog.at_level(logging.WARNING):
+            await adapter._finalize_attempt("turn-error", "sent", "ok")
+        # 只统计一次调用语句 (打印与文件两个 logger 输出同一条消息)
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
+        assert len(warnings) == 1
+        assert "发送收尾失败 turn=turn-error" in warnings[0] and "OSError" in warnings[0]
+
+        caplog.clear()
+
+        def _refuse(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+            return False
+
+        monkeypatch.setattr(store, "complete_send_attempt", _refuse)
+        with caplog.at_level(logging.WARNING):
+            await adapter._finalize_attempt("turn-false-only", "sent", "ok")
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
+        assert len(warnings) == 1
+        assert "发送收尾未落盘 turn=turn-false-only status=sent" in warnings[0]
