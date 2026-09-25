@@ -383,7 +383,7 @@ async def test_unresolved_session_is_logged_and_dropped(monkeypatch: pytest.Monk
 async def test_manual_request_state_outcome_is_consumed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ):
-    """E3 反例: 合法幂等 no-op 不告警, 落盘失败, 存储异常与证据查询失败都必须可见"""
+    """R1/E3 反例: 只有明确幂等 no-op 不告警, 缺失记录, 终态冲突, 落盘失败与证据查询失败都必须可见"""
     import logging
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
     from satrap.core.pipeline.manual_wake_store import ManualWakeStore
@@ -394,10 +394,34 @@ async def test_manual_request_state_outcome_is_consumed(
     event = _message_event(_RecorderAdapter())
     ticket = ManualWakeTicket("missing")
 
-    # 记录不存在属于预期结论: 只留 debug
+    # 已终结记录收到同一目标的重复写入属于明确幂等: 只留 debug
+    store.accept_request("rec1", "missing", "fp", "group:20", "op")
+    assert store.update_request("rec1", "missing", "sent", "ok") == "persisted"
     with caplog.at_level(logging.DEBUG):
         await sched._update_manual_request(event, ticket, "sent", "ok")
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert any("outcome=no_op" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+
+    # 记录不存在与终态冲突都是状态推进未生效, 不能按正常未推进静默
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ManualWakeTicket("vanished"), "sent", "ok")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        and "request_id=vanished" in r.getMessage() and "outcome=missing" in r.getMessage()
+        for r in caplog.records
+    )
+
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "failed", "late")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "request_id=missing" in r.getMessage()
+        and "outcome=conflict" in r.getMessage()
+        for r in caplog.records
+    )
 
     caplog.clear()
 

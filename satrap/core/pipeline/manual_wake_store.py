@@ -66,9 +66,10 @@ LEGACY_PURPOSE = "unknown"
 RESTART_DETAILS = frozenset({"restart_unconfirmed", "stopped_unconfirmed"})
 """不可由后续确认精化的未确认原因: 重启或平台停止后的历史结论"""
 
-RequestUpdateOutcome = Literal["persisted", "no_op", "degraded", "invalid", "io"]
-"""update_request 结果码: 已落盘, 合法幂等 no-op, 存储降级, 状态非法, 落盘失败;
-调用方据此区分需要调查的未生效结果与预期拒绝, 不把两者混成一个布尔"""
+RequestUpdateOutcome = Literal["persisted", "no_op", "missing", "conflict", "degraded", "invalid", "io"]
+"""update_request 结果码: 已落盘, 合法幂等 no-op, 记录不存在, 结论冲突, 存储降级, 状态非法, 落盘失败;
+只有同目标终态重复写入与不可改写的历史 unknown 算幂等 no-op,
+记录不存在与终态改写是异常拒绝, 调用方必须与预期未推进分开记录"""
 
 MAIN_FILE_STATES = frozenset({"present", "missing"})
 """主文件应存在 (present) 或已被隔离 (missing, 仅出现在降级清单中)"""
@@ -852,8 +853,12 @@ class ManualWakeStore:
           重启或平台停止造成的 unknown 属于历史结论, 不因 refine 改写
 
         返回:
-        - RequestUpdateOutcome: 已落盘, 合法幂等 no-op, 存储降级, 状态非法或落盘失败;
-          记录不存在与已终结属于预期拒绝, 调用方按 no_op 处理而不是按故障告警
+        - RequestUpdateOutcome: 已落盘, 合法幂等 no-op, 记录不存在, 结论冲突, 存储降级, 状态非法或落盘失败;
+          幂等只覆盖同目标终态的重复写入与不可改写的 unknown 结论,
+          记录不存在 (missing) 与终态改写 (conflict) 都是异常拒绝, 调用方按未生效记录处理
+
+        异常:
+        - ManualWakeStoreError: 归档不可读时进入降级并抛出, 调用方按存储不可用处理
         """
         with self._mutex, self._transaction():
             if self.degraded:
@@ -862,8 +867,11 @@ class ManualWakeStore:
                 return "invalid"
             key = _request_key(adapter_id, request_id)
             record = self._requests.get(key)
-            if record is None or record["status"] in SETTLED_STATUSES:
-                return "no_op"
+            if record is None:
+                return self._classify_archived_update(key, status)
+            if record["status"] in SETTLED_STATUSES:
+                # 终态不回退: 同目标重复写入是幂等重试, 要求改写成别的终态属于结论冲突
+                return "no_op" if record["status"] == status else "conflict"
             if record["status"] == "unknown" and not (refine and record["detail"] not in RESTART_DETAILS):
                 return "no_op"
             if record["status"] == "unknown" and status == "unknown" and record["detail"] == detail:
@@ -879,6 +887,26 @@ class ManualWakeStore:
                 logger.error(f"[ManualWakeStore] 请求状态落盘失败 request_id={request_id}: {type(error).__name__}: {error}")
                 return "io"
             return "persisted"
+
+    def _classify_archived_update(self, key: str, status: str) -> RequestUpdateOutcome:
+        """
+        记录不在当前文件时按归档判定: 归档只保存已终结记录, 因此只能分类不能改写
+
+        参数:
+        - key: 内部请求键
+        - status: 目标状态
+
+        返回:
+        - RequestUpdateOutcome: 同目标终态 no_op, 目标不同 conflict, 两处都不存在 missing
+
+        异常:
+        - ManualWakeStoreError: 归档不可读时进入降级并抛出
+        """
+        archive_requests, _ = self._load_archive_locked()
+        archived = archive_requests.get(key)
+        if archived is None:
+            return "missing"
+        return "no_op" if archived["status"] == status else "conflict"
 
     @staticmethod
     def _restore_record(records: dict[str, Any], key: str, previous: Any) -> None:

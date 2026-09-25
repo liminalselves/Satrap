@@ -77,25 +77,46 @@ class TestRequestStore:
             store.accept_request("bot", "r1", "fp2", "group:20", "op")
         assert store.update_request("bot", "r1", "executing") == "persisted"
         assert store.update_request("bot", "r1", "sent") == "persisted"
-        assert store.update_request("bot", "r1", "failed", "late") == "no_op"
+        # 终态不回退: 同目标重复写入是幂等, 改写成别的终态是冲突
+        assert store.update_request("bot", "r1", "sent", "repeat") == "no_op"
+        assert store.update_request("bot", "r1", "failed", "late") == "conflict"
         final = store.lookup_request("r1", "bot")
         assert final is not None and final["status"] == "sent"
 
     def test_update_request_outcome_codes_are_distinguishable(self, tmp_path: Path):
-        """E3: 五值结果码把预期 no-op 与需要调查的未落盘分开, 不再共用一个 False"""
+        """E3+R1: 结果码把明确幂等与异常拒绝分开, 缺失记录和终态改写不按正常未推进处理"""
         store = ManualWakeStore(tmp_path / "store.json")
-        assert store.update_request("bot", "missing", "executing") == "no_op"
+        assert store.update_request("bot", "missing", "executing") == "missing"
         assert store.update_request("bot", "anything", "not_a_status") == "invalid"
         store.accept_request("bot", "r1", "fp", "group:20", "op")
         assert store.update_request("bot", "r1", "unknown", "in_flight_unconfirmed") == "persisted"
         # 在途 unknown 可被可信终态精化, 重启结论不可
         assert store.update_request("bot", "r1", "sent", "confirmed", refine=True) == "persisted"
-        assert store.update_request("bot", "r1", "failed", "late") == "no_op"
+        assert store.update_request("bot", "r1", "sent", "again") == "no_op"
+        assert store.update_request("bot", "r1", "failed", "late") == "conflict"
         store.accept_request("bot", "r2", "fp", "group:20", "op")
         store.update_request("bot", "r2", "unknown", "restart_unconfirmed")
         assert store.update_request("bot", "r2", "sent", "confirmed", refine=True) == "no_op"
+        assert store.update_request("bot", "r2", "unknown", "restart_unconfirmed") == "no_op"
         store.degraded = True
         assert store.update_request("bot", "r1", "sent") == "degraded"
+
+    def test_archived_terminal_classification(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        """R1: 归档里的终态同样只认同目标幂等, 异目标判冲突, 两处都没有才判缺失"""
+        monkeypatch.setattr(store_module, "REQUEST_CAPACITY", 2)
+        store = ManualWakeStore(tmp_path / "store.json")
+        store.accept_request("bot", "s1", "fp", "group:20", "op")
+        assert store.update_request("bot", "s1", "sent") == "persisted"
+        # 满容量插入触发轮转: 已终结的 s1 进入归档, 未决记录留在当前文件
+        store.accept_request("bot", "p1", "fp", "group:20", "op")
+        store.accept_request("bot", "p2", "fp", "group:20", "op")
+        assert "bot\ns1" not in store._requests
+        assert store.lookup_request("s1", "bot") is not None
+        assert store.update_request("bot", "s1", "sent", "late") == "no_op"
+        assert store.update_request("bot", "s1", "failed", "late") == "conflict"
+        assert store.update_request("bot", "never", "sent") == "missing"
+        archived = store.lookup_request("s1", "bot")
+        assert archived is not None and archived["status"] == "sent"
 
     def test_restart_marks_unconfirmed_unknown(self, tmp_path: Path):
         path = tmp_path / "store.json"

@@ -176,7 +176,7 @@ class PipelineScheduler:
         if outcome == "persisted":
             return
         if outcome in {"no_op", "degraded"}:
-            # 记录已终结或历史 unknown 不改写属预期结论, 降级已在状态转换时记录
+            # 同目标终态的重复写入与历史 unknown 不改写属预期结论, 降级已在状态转换时记录
             logger.debug(
                 f"[PipelineScheduler] 手动请求状态未推进 adapter={adapter_id} "
                 f"request_id={ticket.request_id} status={status} outcome={outcome}",
@@ -189,6 +189,12 @@ class PipelineScheduler:
         if outcome == "invalid":
             # 状态取值来自管线自身, 非法说明调用点写错
             logger.error(message)
+        elif outcome == "missing":
+            # 受理过的手动请求必须有记录: 状态推进真的没生效或被过早清理, 不能按正常未推进静默
+            logger.warning(f"{message} 记录不存在")
+        elif outcome == "conflict":
+            # 平台停止等路径已写终态而管线结论不同: 保留原终态不覆盖, 但冲突必须可见
+            logger.warning(f"{message} 已有终态与新结论冲突")
         else:
             logger.warning(message)
 
