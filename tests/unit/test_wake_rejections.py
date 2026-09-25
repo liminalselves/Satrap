@@ -142,7 +142,7 @@ class TestSchedulerCollection:
         await _feed(adapter, "普通消息")
         await scheduler.execute(adapter._event_queue.get_nowait())
         assert len(scheduler.request_diagnostics.list("bot")) == 1
-        scheduler.clear_manual_wakes("bot")
+        await scheduler.clear_manual_wakes("bot")
         assert scheduler.request_diagnostics.list("bot") == []
 
 

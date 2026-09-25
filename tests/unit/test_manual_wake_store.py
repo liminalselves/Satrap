@@ -4,8 +4,11 @@ from __future__ import annotations
 from unittest.mock import AsyncMock
 from pathlib import Path
 from typing import Any, cast
+import contextlib
+import threading
 import asyncio
 import json
+import time
 
 import pytest
 
@@ -748,8 +751,54 @@ class TestStoreUnavailableRoute:
         monkeypatch.setattr(store, "adapter_stopped", self._blocked)
         scheduler = _scheduler(backend)
         with caplog.at_level(logging.WARNING):
-            scheduler.clear_manual_wakes("bot")
+            await scheduler.clear_manual_wakes("bot")
         assert any("平台停止状态未落盘" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_platform_stop_waits_off_loop_for_contended_lock(self, tmp_path: Path):
+        """R2 反例: 等文件锁期间事件循环必须继续推进, 清理仍要等到真正落盘"""
+        from satrap.core.storage.file_lock import FileLock
+
+        backend, _, _, store = runtime(tmp_path)
+        scheduler = _scheduler(backend)
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        held, release = threading.Event(), threading.Event()
+
+        def holder() -> None:
+            with FileLock(store._lock_path):
+                held.set()
+                release.wait(10)
+
+        holder_thread = threading.Thread(target=holder, daemon=True)
+        holder_thread.start()
+        assert held.wait(10)
+        ticks = 0
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while True:
+                ticks += 1
+                await asyncio.sleep(0.01)
+
+        heartbeat = asyncio.create_task(ticker())
+        await asyncio.sleep(0.05)
+        baseline = ticks
+        threading.Timer(0.3, release.set).start()
+        started = time.monotonic()
+        try:
+            await scheduler.clear_manual_wakes("bot")
+        finally:
+            release.set()
+            holder_thread.join(10)
+        elapsed = time.monotonic() - started
+        heartbeat.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat
+        # 确实等到了锁, 但等待期间事件循环仍在跑心跳
+        assert elapsed >= 0.2
+        assert ticks - baseline >= 5
+        record = store.lookup_request("r1", "bot")
+        assert record is not None and record["status"] == "failed"
 
 
 class TestSendOutcomeAdjudication:

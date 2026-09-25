@@ -813,7 +813,7 @@ class BackendManager:
                         if self._scheduler is not None and old_settings != new_settings:
                             self._scheduler.wake_window.clear_adapter(platform_id)
                             self._scheduler.wake_timers.clear_adapter(platform_id)
-                            self._scheduler.clear_manual_wakes(platform_id)
+                            await self._scheduler.clear_manual_wakes(platform_id)
                         self._platform_active_configs[platform_id] = deepcopy(candidate)
                         result["active_revision"] = saved_revision
                         result["status"] = "applied"
@@ -886,7 +886,7 @@ class BackendManager:
             if self._scheduler is not None:
                 self._scheduler.wake_window.clear_adapter(platform_id)
                 self._scheduler.wake_timers.clear_adapter(platform_id)
-                self._scheduler.clear_manual_wakes(platform_id)
+                await self._scheduler.clear_manual_wakes(platform_id)
             if old is not None:
                 await old.terminate()
             if replacement is not None:
