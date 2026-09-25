@@ -1,6 +1,6 @@
 # Issue #10 实施记录
 
-更新日期: 2026-09-23 (异常/日志整改收官)
+更新日期: 2026-09-25 (复核一 E1-E5 与复核二 R1-R4 整改记录)
 
 目标仍为完整实施 [主方案](issue-10-plan.md), 本记录不将首批改动视为议题整体完成。
 
@@ -389,7 +389,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 - A5 持久化存储 `satrap/core/pipeline/manual_wake_store.py`: JSON 单文件 (FileLock + NamedTemporaryFile/os.replace 原子写), 键 `adapter_id\nrequest_id` (request_id 拒绝含换行)。请求状态 accepted/executing/sent/partial/failed/unknown, 尝试状态 submitted/sent/partial/failed/unknown; SETTLED={sent,partial,failed}, unknown 属未决永不容量淘汰 (仅 7 天保留期清理)。容量 请求 1024/尝试 2048, 满时先扫超期 settled, 再按 updated_at 最旧轮转 settled 至单代 `.1` 归档 (2048/4096), 归档满或未决占满则 ManualWakeStoreError(capacity) 拒绝且不动未决记录。文件损坏改名 `.corrupt-<ts>` 隔离并进显式降级: 拒绝依赖去重的新请求, 发送/查询等其余功能照常, 同路径可重建。启动清扫: accepted/executing→unknown/restart_unconfirmed, submitted 尝试 (含逐段)→unknown, 不自动重发; update_request 终态守卫 (settled/unknown 不可改写)
 - A5 接受事务 (BackendManager.wake_platform): `_wake_accept_lock` 内完成 内存查重→降级拒绝 (store_unavailable)→存储查重 (同指纹 already_pending+存储状态/异指纹 request_id_conflict)→适配器再校验→队列预检→`store.accept_request` (to_thread, capacity→request_capacity/其余→store_unavailable)→内存登记→入队; 入队失败回滚内存登记并落 failed/queue_full 后按 queue_full 拒绝——accepted 仅在持久化成功后返回, 不留假占位
-- A5 调度器单写者终态裁决: Step.6 会话调用前落 executing; `manual_detail` 跟踪错误出口 (rate_limited/empty_message/llm_timeout/pipeline_input:T/pipeline_error:T); finally 按 取消→failed/cancelled > manual_detail→failed/detail > 无回执→failed/no_response > `_RECEIPT_TO_REQUEST_STATUS` 映射回执状态 落终态, 反馈消息发送不再污染请求结论。`clear_manual_wakes(adapter_id)` 同步 `store.adapter_stopped`: accepted→failed/platform_stopped, executing→unknown/stopped_unconfirmed
+- A5 调度器单写者终态裁决: Step.6 会话调用前落 executing; `manual_detail` 跟踪错误出口 (rate_limited/empty_message/llm_timeout/pipeline_input:T/pipeline_error:T); finally 按 取消→failed/cancelled > manual_detail→failed/detail > 无回执→failed/no_response > `_RECEIPT_TO_REQUEST_STATUS` 映射回执状态 落终态, 反馈消息发送不再污染请求结论。`clear_manual_wakes(adapter_id)` 经线程池执行 `store.adapter_stopped` (等文件锁不占用事件循环, 调用方等待落盘): accepted→failed/platform_stopped, executing→unknown/stopped_unconfirmed
 - A5 发送尝试记录: 平台侧结构协议 `SendAttemptRecorder` (receipt.py); ABC `send_message(..., *, request_id="")`, misskey 接受并忽略, event.send 传 `call_origin.request_id`。OneBot `_send_message` 统一走分块循环 (单块快路径移除), `_plan_send_segments` 按 转发=1/文件=1(空文件跳过)/普通=逐分块 展开段计划, `_turn_signature` 只留类型摘要散列+字符数 (不落正文); I/O 之前 to_thread 落 submitted (失败告警继续发送不记录), 完成后按回执逐段标 sent/failed/unknown, 未到达段标 skipped, 混合链聚合 partial
 - A5 状态查询: `BackendManager.manual_wake_status(request_id, adapter_id=None)` (store_unavailable/store_degraded/not_found/记录字段); HTTP `GET /api/platforms/wake/{request_id}[?adapter_id=]` → 400 invalid_request_id / 404 not_found / 503 store_unavailable|store_degraded / 200 记录
 - A6 引用检查 `satrap/core/config/asr_references.py`: 三来源汇总 平台 settings.asr_model (配置文档或传入列表) / 插件全局配置 (scan_plugin_dirs→parse_config_schema 取 type==asr 字段→`.satrap/plugin_config/<name>.json` 值匹配) / 会话覆盖 (各平台库只读 sqlite `mode=ro`, namespace 前缀 `plugins.`, config_json 字段匹配; 平台 id 列表含 chat/local 内置); 每条引用带 summary 与 kind/定位字段。`ConfigInUseError(ValueError)` 携带 references, 在 remove_asr_config 与 update_named_config (仅 asr 且改名) 强制; 检查器以 Callable 注入 ModelConfigManager (框架层不依赖平台/插件知识), 扫描异常 fail-closed 按被引用拒绝 (scan_error)。控制端 DELETE → 409 `{code: config_in_use, references}` (先于 ValueError→400 捕获); BackendManager._init_model_config (传 platforms) 与 CLI cmd_model._init_mgr (传 platforms+默认布局) 完成接线; display/server.py 删除仅 LLM, 不动
@@ -546,4 +546,18 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 - 文档同步: [平台接入](platforms.md) 补拒绝原因码信封与状态码分工, 审计摘要口径, 发送兜底与收尾未落盘记录口径; [运行数据布局](../core/data-layout.md) 补锁失败归一与降级契约并存说明
 
 验收: 全量单测 2215 passed / 31 skipped (较整改前 +12: E1 1 项, E3 4 项, E4 6 项, E5 1 项; skipped 计数含本机 12 项 Windows 符号链接特权跳过, 与 19 的环境口径差异不是回归); pyright 全库 0 errors / 1530 warnings (较基线 1532 少 2, 减少来自 `cli/client.py` 的显式字典收窄, 无新增告警); 前端 tsc 0 / eslint 0 / vitest 199 绿 (195 + 4); Playwright `test:e2e:platform`, `test:e2e:wake`, `test:e2e:forms` 三个脚本 PASS。对外行为变化: 审批审计日志不再含原始 flag; 唤醒拒绝原因码在控制面板与 CLI 可见; 存储锁/事务不可用按稳定 reason 返回而不是通用 500; 收尾未落盘, 请求状态未落盘与转换兜底新增 warning; 持久化格式, 协议字段与请求终态语义不变。按复核文档边界未做: 存储状态基类抽取, 手动请求状态与诊断阶段枚举合并, ASR 双 API 合并, 试算接入生产调度器, 宽松扫描替代严格扫描, 清单 raw 视图统一, 删除 `ManualWakeRequests` 缓存; 本轮以小范围清理与错误边界修复为目标, 不给出净减行数承诺。
+
+本节不再表述为 E1-E5 全部闭环: 二次复核 (见下节) 打回其中两项 —— E3 的结果码分类把记录不存在与终态改写都算作 `no_op` (R1), `clear_manual_wakes` 的加固只捕获异常而没有做线程卸载 (R2)。
+
+### 复核整改二 (2026-09-25): 日志与错误边界 R1-R4
+
+来源: 独立复核记录 [日志与错误边界整改独立复核](issue-10-logging-fix-recheck-2026-09-25.md) (a0b876d 入库, 整改结论已追加在同文件)。关闭条件为修正 R1/R2, 补齐 R3, 消除 R4, 并纠正"E1-E5 全部闭环"的表述。四项各自独立提交。
+
+- R1 `7aab292` 结果码分类与裁定对齐: `RequestUpdateOutcome` 由五值扩为七值, `no_op` 只保留"同目标终态的重复写入"与"不可由 refine 改写的历史 `unknown` 结论"; 新增 `missing` (当前文件与归档都没有该记录) 与 `conflict` (已有终态与目标状态不同)。记录不在当前文件时由 `_classify_archived_update` 按归档判同一条规则: 归档只保存已终结记录, 因此同目标判幂等, 异目标判冲突, 只分类不改写 (归档不可读仍按既有降级抛出, 调用方按存储不可用处理)。scheduler 按七码分级: `no_op`/`degraded` 只留 debug, `missing`/`conflict`/`io` 记 warning 且带 adapter/request_id/status 与原因后缀, `invalid` 保持 error。真实 store 探针: `missing_result=missing`, `sent_result=persisted`, `same_target_result=no_op`, `conflicting_final_result=conflict` 且终态仍为 `sent`; 反例测试补归档分类 (容量 2 触发轮转后 `no_op`/`conflict`/`missing` 三态), 并修正原先把偏差固化成期望的断言
+- R2 `2b51571` 清理路径线程卸载: `clear_manual_wakes` 改为 async, 持久化回写经 `asyncio.to_thread` 执行, 两个生命周期调用点 (`reload_platform_policies` 的热重载分支与 `_replace_platform_instance`) 等待完成, 保持"内存票据撤销 → 持久状态推进 → 诊断清理"顺序与存储失败 log-and-continue, 不用未跟踪后台任务替代等待 (避免新实例启用与旧状态收尾竞争)。真实争用探针 (另一线程持 `FileLock` 约 0.35 秒): 旧路径 `call_soon` 回调延迟 0.406s 且心跳 0 次, 新路径回调延迟 0.001s, 等锁耗时同为 0.356s 而心跳 22 次。反例测试用真实 `FileLock` 持锁 0.3 秒, 断言等锁期间心跳 ≥5 次且记录确实落到 `failed` (仅断言不抛异常已不足)
+- R3 `fcee98b` 400 信封页面回归: `satrap-ui/e2e/manual-wake.mjs` 并列保留两种真实信封 —— 409 + `reason` (稳定原因码) 与 400 + `error` (后端 `_parse_json_object` 失败原文), 两种都检查实际 toast 文案与输入保留, 原有 409 用例未撤回。验证强度: 把 `toApiError` 的 `error` 取值行改回 `error.message` 后该用例在等待目标文案处超时失败
+- R4 `4e726a6` 收尾单条告警: `_finalize_attempt` 的 `completed` 初值会让取消/超时/异常分支各记一条 warning 后再进入 `if not completed` 记第二条; 改为 try/except/else, 只有调用正常返回 False 才记"发送收尾未落盘", 异常分支各保留原一条, shield、超时与后台写入语义不变。反例测试断言异常路径与 False 路径各只有一条 warning (按本仓库口径排除 `_file` logger)
+- 文档同步: [平台接入](platforms.md) 改写请求状态回写分级口径 (幂等 / 异常拒绝 / 保留原终态) 与清理顺序 (线程池落盘但仍等待); 本节的 E1-E5 表述按关闭条件纠正
+
+验收: 全量单测 2218 passed / 31 skipped (较上轮 +3: R1 归档分类 1 项, R2 争用 1 项, R4 单条告警 1 项); pyright 全库 0 errors / 1530 warnings (逐项与上轮一致, 无新增告警); 前端 tsc 0 / eslint 0 / vitest 199 绿; Playwright `test:e2e:wake` (含新增 400 信封用例), `test:e2e:platform`, `test:e2e:forms` 三个脚本 PASS。对外行为变化: 请求状态回写的日志分级按七值结果码细分 (幂等仍只留 debug, 缺失记录与终态冲突升为 warning); 平台停止与热重载期间文件锁争用不再冻结事件循环。持久化格式, 协议字段与请求终态语义未变。
 

@@ -76,3 +76,21 @@ conflicting_final_result= no_op
 - 本轮未复跑全量 pytest、pyright、全量 vitest、tsc/eslint; 执行记录中的全量结果不冒充独立复测
 
 关闭条件: 修正 R1/R2, 补齐 R3, 顺手消除 R4; 更新整改记录, 不再把当前状态描述为 E1-E5 全部闭环。
+
+## 整改结论 (2026-09-25)
+
+四项全部落实, 各自独立提交; 关闭条件中的"更新整改记录"见 [实施记录](issue-10-progress.md) 的"复核整改二"一节。
+
+| 项 | 提交 | 落地内容 | 验证 |
+| --- | --- | --- | --- |
+| R1 | `7aab292` | 结果码扩为七值: `no_op` 只保留"同目标终态重复写入"与"不可改写的历史 unknown"; 新增 `missing` (当前文件与归档都没有) 与 `conflict` (已有终态与目标不同, 不回退但可见); 记录不在当前文件时按归档判同一条规则 (归档只保存已终结记录, 只分类不改写); scheduler 对 `missing`/`conflict` 记 warning 并带 adapter/request_id/status | 探针 `missing_result=missing` / `same_target_result=no_op` / `conflicting_final_result=conflict` (终态仍 `sent`); store 反例 3 项 + scheduler 反例改造 (幂等只留 debug, 缺失与冲突必须告警) |
+| R2 | `2b51571` | `clear_manual_wakes` 改为 async, 持久化回写经 `asyncio.to_thread`; 两个生命周期调用点 (热重载策略应用, 平台实例替换) 等待其完成, 保持"内存票据撤销 → 持久状态推进 → 诊断清理"顺序与失败 log-and-continue, 未改用未跟踪后台任务 | 真实 FileLock 争用: 旧路径回调延迟 0.406s 且心跳 0 次, 新路径回调延迟 0.001s, 等锁耗时同为 0.356s 而心跳 22 次; 新增争用反例测试用真实锁 + 心跳断言 |
+| R3 | `fcee98b` | e2e 夹具并列保留两种真实信封 (409 + `reason` 与 400 + `error`), 两种都检查 toast 文案与输入保留; 原有 409 用例未撤回 | `npm run test:e2e:wake` PASS; 把 `toApiError` 的 `error` 取值改回 `error.message` 后该用例超时失败, 证明断言有效 |
+| R4 | `4e726a6` | `_finalize_attempt` 改为 try/except/else, 只有调用正常返回 False 才记"未落盘"; 异常、超时、取消各按自身分支记一次, shield 与后台写入语义不变 | 反例测试断言异常路径与 False 路径各一条 warning (按去重口径排除 file logger) |
+
+全量验收 (与上表分开的整轮门禁): 后端 `python -m pytest -q` **2218 passed / 31 skipped** (较整改前 +3: R1 store 归档分类 1 项, R2 争用 1 项, R4 单条告警 1 项; 31 与关闭条件的 19 差异来自本机 12 项 Windows 符号链接特权跳过);
+`python -m pyright -p .pyrightcfg/pyrightconfig.json` **0 errors / 1530 warnings** (与整改前逐项一致, 无新增告警);
+前端 `npx tsc --noEmit` 0, `npx eslint src` 0, `npm test` **199 passed**;
+Playwright `test:e2e:wake` (含新增 400 信封用例), `test:e2e:platform`, `test:e2e:forms` 三个脚本 PASS。
+
+本轮证伪方式: R1 用真实 store 探针列出结果码矩阵, R2 用另一线程持真实 `FileLock` 并量 `call_soon` 回调延迟与事件循环心跳 (同时验证旧实现心跳为 0), R3 用改坏 `toApiError` 的反向验证, R4 用 `caplog` 计数。四项均未触碰持久化格式、协议字段与请求终态语义; 这一轮之前把 E1-E5 表述为全部闭环的说法作废, 以本文件 R1-R4 与 [实施记录](issue-10-progress.md) 的对应小节为准。
