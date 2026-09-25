@@ -536,7 +536,7 @@ P2 全部完成, P3 文件提取与 ASR 待后续批次。
 
 ### 复核整改 (2026-09-25): 日志与错误边界 E1-E5
 
-来源: 复核记录 `docs/platform/issue-10-reduction-logging-review-2026-09-25.md` (911bda5 入库)。六项裁定: E1 保留同域摘要并与账本共用 `flag_digest`; E3 采用五值结果码; `_await_send_settlement` 异常分支提升 warning; `clear_manual_wakes` 同批加固; E2 使用既有 `ApiError.code` 且 CLI 同批修; E5 覆盖另外两个同形异常分支。五个批次各自独立提交。
+来源: 复核记录 `docs/archive/issue-10/issue-10-reduction-logging-review-2026-09-25.md` (911bda5 入库, 整改后归档并标注结论)。六项裁定: E1 保留同域摘要并与账本共用 `flag_digest`; E3 采用五值结果码; `_await_send_settlement` 异常分支提升 warning; `clear_manual_wakes` 同批加固; E2 使用既有 `ApiError.code` 且 CLI 同批修; E5 覆盖另外两个同形异常分支。五个批次各自独立提交。
 
 - 批次 1 `b3bb1b9` E1 审计日志脱敏: `[OneBotAdmin] 写动作已执行` 不再写原始 `flag` (可重放标识), 审批动作只记与账本同域的 `flag_digest` 前 8 位, 并补 `adapter`/`self_id`; 匿名禁言不属于账本域, 只保留群范围。`_flag_digest` 提为公开 `flag_digest(kind, self_id, flag)`, 账本内部改为复用, 日志摘要与账本条目可直接对照。好友与群审批的 occupy→调用→三分支结算抽为 `_execute_request_decision`, 参数归一化, 群范围与 subtype 校验, occupy 参数仍留在各自入口。测试断言成功, 平台拒绝与匿名禁言三路日志都不含原始标识
 - 批次 2 `7bb39b8` E3 未落盘结果被消费: `ManualWakeStore.update_request` 由 bool 改为五值结果码 `persisted`/`no_op`/`degraded`/`invalid`/`io`; scheduler 按码分级 (`no_op`/`degraded` 只留 debug, `io` warning, `invalid` error), 均带 adapter/request_id/status; 回写异常与发送证据查询失败由 debug 提升为 warning; `_finalize_attempt` 检查 `complete_send_attempt` 返回值, 未落盘记 warning, 并在 `recorder.degraded` 时短路 (与发送前记录跳过一致, 不逐次告警); 入队失败路径的 `update_request` 回滚写入同样消费结果码。请求终态推导 (`derive_attempt_status`) 与回执语义未改, "业务已发送"与"状态已持久化"仍是两个标志
