@@ -18,6 +18,8 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
   const requests = [];
   let responseMode = 'error';
+  // 两种真实拒绝信封: 'reason' 是 409 + 稳定原因码, 'plain' 是 400 + 参数解析错误文本
+  let wakeErrorShape = 'reason';
   let statusMode = 'poll';
   let statusCalls = 0;
   let legacyRejectionsCalls = 0;
@@ -34,6 +36,11 @@ try {
       const body = request.postDataJSON();
       requests.push(body);
       if (responseMode === 'error') {
+        if (wakeErrorShape === 'plain') {
+          // 参数解析失败的信封: 只有 error 字段, 没有 reason (后端 _parse_json_object 失败路径)
+          return route.fulfill({ headers, status: 400,
+            json: { status: 'rejected', error: '请求体必须是 JSON 对象' } });
+        }
         // 真实拒绝信封: 后端只给 status/reason, 不含 error 字段 (E2)
         return route.fulfill({ headers, status: 409,
           json: { status: 'rejected', request_id: body.request_id, reason: 'queue_full' } });
@@ -133,6 +140,12 @@ try {
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
   await page.getByText('唤醒失败, 输入已保留: 平台事件队列已满, 请稍后重试', { exact: true }).waitFor();
   assert.equal(await dialog.getByLabel('唤醒正文', { exact: false }).inputValue(), '请处理这条消息');
+  // 400 + error 信封同样要显示后端原文并保留输入, 不能只靠辅助函数单测覆盖
+  wakeErrorShape = 'plain';
+  await dialog.getByRole('button', { name: '提交唤醒' }).click();
+  await page.getByText('唤醒失败, 输入已保留: 请求体必须是 JSON 对象', { exact: true }).waitFor();
+  assert.equal(await dialog.getByLabel('唤醒正文', { exact: false }).inputValue(), '请处理这条消息');
+  wakeErrorShape = 'reason';
   responseMode = 'accepted';
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
   // 受理后弹窗保留, 跟踪面板轮询至终态, 聚焦请求自动取消拒绝过滤并禁用该筛选
@@ -208,7 +221,7 @@ try {
   assert.deepEqual(errors, []);
   // 弹窗只走阶段诊断接口, 不再请求旧拒绝记录端点
   assert.equal(legacyRejectionsCalls, 0);
-  console.log('PASS: 手动唤醒页面, 错误保留输入, 幂等重试, 状态跟踪至终态, 拒绝预设与返回近期请求, 空窗口提示, 阶段诊断, unknown 不重发, 存储降级显示');
+  console.log('PASS: 手动唤醒页面, 400/409 两种错误信封均保留输入, 幂等重试, 状态跟踪至终态, 拒绝预设与返回近期请求, 空窗口提示, 阶段诊断, unknown 不重发, 存储降级显示');
 } finally {
   await browser?.close();
   await server.close();
