@@ -72,7 +72,8 @@ export function normalizePlatformSettings(
     }
     if (typeof settings.asr_model === 'string' && !settings.asr_model.trim()) delete normalized.asr_model;
     if (settings.voice_transcribe === undefined || settings.voice_transcribe === 'asr') delete normalized.voice_transcribe;
-    for (const key of ['message_text_limit', 'wake_message_threshold', 'wake_cooldown', 'wake_score_threshold', 'wake_max_wait', ...PLATFORM_NUMERIC_KEYS]) {
+    // PLATFORM_NUMERIC_KEYS 已包含文本长度, 频率阈值与冷却等全部数值字段, 不再另列一份
+    for (const key of PLATFORM_NUMERIC_KEYS) {
       const value = settings[key];
       // 留空表示未设置 (删除键); 0 是有效取值, 必须按数字保存而不是当作空值丢弃
       const text = typeof value === 'string' ? value.trim() : value;

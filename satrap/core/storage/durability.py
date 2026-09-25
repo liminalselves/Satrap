@@ -244,21 +244,6 @@ class DurabilityManifest:
         raw: object = json.loads(self._manifest_path.read_text(encoding="utf-8"))
         return self._validate(raw)
 
-    def validate(self, raw: object) -> Manifest:
-        """
-        用业务方的校验入口校验清单
-
-        参数:
-        - raw: 清单 JSON 解析结果
-
-        返回:
-        - Manifest: 归一化后的清单
-
-        异常:
-        - ValueError: 基础结构或业务交叉校验失败
-        """
-        return self._validate(raw)
-
     def fresh(self, *, initialized_at: float, expected: Mapping[str, str], updated_at: float | None = None) -> Manifest:
         """
         构造未降级的清单骨架

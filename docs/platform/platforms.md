@@ -114,7 +114,9 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 
 发送用途区分 `business` (业务输出) 与 `error_feedback` (错误提示): 错误提示的回执不进入请求送达证据, "错误提示发送成功"不会把业务失败改写成已送达。旧版本记录缺 `purpose` 字段时按用途未知处理: 只提高结论的保守程度, 不作为业务已送达的依据。
 
-已受理的手动唤醒请求要求发送证据: 发送前记录不可用 (存储降级、容量拒绝或落盘失败) 时拒绝业务发送并返回 `unknown`/`tracking_unavailable`, 不发出无法确认的业务输出。发送收尾归发送子任务所有, 外层取消或超时也保留已落定的段证据, 收尾有界 (2 秒), 超时或被取消时尝试记录保持未终结, 由后续可信确认精化, 期间绝不重发。
+已受理的手动唤醒请求要求发送证据: 发送前记录不可用 (存储降级、容量拒绝或落盘失败) 时拒绝业务发送并返回 `unknown`/`tracking_unavailable`, 不发出无法确认的业务输出。发送收尾归发送子任务所有, 外层取消或超时也保留已落定的段证据, 收尾有界 (2 秒), 超时或被取消时尝试记录保持未终结, 由后续可信确认精化, 期间绝不重发。收尾写回未生效 (含降级期) 会记 warning 并保持记录未终结, 不把"业务已发送"与"状态已持久化"混成同一个成功标志; 请求状态回写同样按结果码分级记录, 记录已终结或历史 `unknown` 的拒绝属预期结论, 只留 debug。
+
+发送兜底 (分块, 转发段, 文件段) 遇到转换或未预期异常时统一返回 `failed`/`message_conversion_failed`, 并记录目标会话与异常类型, 便于定位是哪一个组件转换失败; 目标不在允许范围仍返回 `failed`/`target_unavailable` 且不升级为异常日志。
 
 请求终态按同一 `request_id` 关联的全部业务尝试归并, 采集自段证据而不是最后一次回执:
 
@@ -199,6 +201,8 @@ satrap platform wake qq_bot --group 20000 --user 30000 --prompt "请总结刚才
 ```
 
 `platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内的待处理正文; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
+
+被拒绝时响应体为 `{"status": "rejected", "request_id": ..., "reason": <稳定原因码>}`: 参数类原因 (`invalid_request_id`, `invalid_prompt`, `invalid_message_id_or_conflicting_prompt`, `explicit_group_and_route_user_required`) 返回 400, 其余 (`queue_full`, `request_capacity`, `store_unavailable`, `request_id_conflict`, `adapter_changed`, `adapter_unavailable`, `backend_unavailable`, `source_unavailable`, `message_lookup_failed_or_scope_mismatch`, `message_convert_failed`, `invalid_fields_or_operator`) 返回 409; 状态查询接口沿用 404 `not_found` 与 503 `store_unavailable`/`store_degraded`。存储锁等待超时或锁文件不可用按 `store_unavailable` 上报, 不退化成通用 500。控制面板把原因码翻成可操作文案, 未知码回显原始码; CLI 的 HTTP 错误在响应只有 `reason` 时同样给出该码。
 
 ## 自定义适配器
 
@@ -335,6 +339,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 - 审批动作在文件锁内原子占用 `available → executing → completed/unknown`, 落盘成功后才发出网络动作; 动作超时、取消或传输异常记为 `unknown` 并保持不可重放, 同一 flag 永远不会回到可审批
 - 重启后无法确认的占用保守记为 `unknown`; 台账容量达限 (每"实例+账号"4096, 全表 16384) 拒绝新登记, 不淘汰旧身份
 - 进程内的近期 flag 缓存只用于跳过重复入站的磁盘访问, 不作为审批资格依据; 缓存淘汰不影响账本身份
+- 审批动作的审计日志 (`[OneBotAdmin] 写动作已执行`) 只记 `adapter`, `self_id`, 群或成员 ID 与 flag 摘要 (与账本同域, 前 8 位), 不回显原始 flag, 备注, 拒绝理由或消息正文: 原始 flag 是可重放标识, 摘要可与账本条目对照而不泄露
 - 账本损坏或降级时审批直接拒绝执行, 需显式恢复并校验通过后才继续, 不提供"清空账本后继续"
 - 声明"处理了某个 flag"的调用必须与登记事件的账号和群一致, 归属不符按拒绝处理, 不落任何网络动作
 

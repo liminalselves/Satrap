@@ -833,15 +833,15 @@ class OneBotAdapter(PlatformAdapter):
                         result = await self._send_forward(session_id, cast(list[Node], payload), limit)
                     except PermissionError:
                         result = SendReceipt("failed", reason="target_unavailable")
-                    except Exception:
-                        result = SendReceipt("failed", reason="message_conversion_failed")
+                    except Exception as error:
+                        result = self._failed_receipt(session_id, "forward", "message_conversion_failed", error)
                 elif kind == "file":
                     try:
                         result = await self._send_file(session_id, cast(File, payload[0]))
                     except PermissionError:
                         result = SendReceipt("failed", reason="target_unavailable")
-                    except Exception:
-                        result = SendReceipt("failed", reason="message_conversion_failed")
+                    except Exception as error:
+                        result = self._failed_receipt(session_id, "file", "message_conversion_failed", error)
                 else:
                     result = await self._send_chunk_guarded(session_id, MessageChain(payload))
                 receipts.append(result)
@@ -946,8 +946,9 @@ class OneBotAdapter(PlatformAdapter):
             return await self._send_chunk(session_id, chain)
         except PermissionError:
             return SendReceipt("failed", reason="target_unavailable")
-        except Exception:
-            return SendReceipt("failed", reason="message_conversion_failed")
+        except Exception as error:
+            # 转换阶段的异常只留下固定原因码会丢掉排查线索, 复用发送失败回执记录类型
+            return self._failed_receipt(session_id, "message", "message_conversion_failed", error)
 
     async def _send_forward(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """

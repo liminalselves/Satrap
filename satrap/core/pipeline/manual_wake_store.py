@@ -427,10 +427,6 @@ class ManualWakeStore:
             expected={"main": "present", "archive": archive_state},
         )
 
-    def _read_manifest(self) -> Manifest | None:
-        """读取并校验清单, 文件不存在返回 None, 结构非法抛 ValueError"""
-        return self._durability.read()
-
     def _write_manifest(self, manifest: Manifest) -> None:
         """原子写入清单, 调用方必须已持有存储锁"""
         atomic_write_json(self._durability.manifest_path, manifest.payload())
@@ -495,10 +491,6 @@ class ManualWakeStore:
         )
         self._apply_degrade(reason, detail, outcome)
 
-    def _quarantine_names(self) -> list[str]:
-        """目录中已隔离的损坏文件, 用于判定目录是否曾初始化"""
-        return self._durability.quarantine_names()
-
     # ---------- 加载与启动清扫 ----------
 
     def _read_payload(self, path: Path) -> tuple[dict[str, RequestRecord], dict[str, SendAttemptRecord]]:
@@ -512,7 +504,8 @@ class ManualWakeStore:
         manifest: Manifest | None = None
         manifest_error = ""
         try:
-            manifest = self._read_manifest()
+            # 清单不存在返回 None, 结构非法抛 ValueError (调用方按清单不可读处理)
+            manifest = self._durability.read()
         except (OSError, ValueError, json.JSONDecodeError) as error:
             manifest_error = f"{type(error).__name__}: {error}"
         main_exists = self._path.is_file()
@@ -523,7 +516,8 @@ class ManualWakeStore:
             logger.error(f"[ManualWakeStore] 存储保持降级状态 reason={self.degraded_reason}, 需经 recover() 显式恢复")
             return
         if manifest is None:
-            quarantined = self._quarantine_names()
+            # 目录中已隔离的损坏文件用于判定目录是否曾初始化
+            quarantined = self._durability.quarantine_names()
             if main_exists or self._archive_path.is_file() or quarantined:
                 # 目录已有存储痕迹时不得当作首次初始化
                 reason = "manifest_unreadable" if manifest_error else "manifest_missing_with_data"

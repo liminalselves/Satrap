@@ -95,6 +95,38 @@ async def test_send_failures_are_logged_with_reason(caplog: pytest.LogCaptureFix
 
 
 @pytest.mark.asyncio
+async def test_send_fallback_branches_keep_error_diagnostics(caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch):
+    """E5: 三个发送兜底分支都保留原因码, 同时记录异常类型与目标会话"""
+    from satrap.core.components import File, Node, Plain
+    from satrap.core.platform.receipt import SendReceipt
+
+    async def _boom_chunk(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("chunk boom")
+
+    async def _boom_forward(*args: Any, **kwargs: Any) -> Any:
+        raise ValueError("forward boom")
+
+    async def _boom_file(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("file boom")
+
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_send_chunk", _boom_chunk)
+    monkeypatch.setattr(adapter, "_send_forward", _boom_forward)
+    monkeypatch.setattr(adapter, "_send_file", _boom_file)
+    with caplog.at_level(logging.WARNING):
+        chunk = await adapter.send_message("group%456", MessageChain.from_text("hi"))
+        forwarded = await adapter.send_message("group%456", MessageChain([Node(Plain("hi"), name="n", uin="10000")]))
+        filed = await adapter.send_message("group%456", MessageChain([File(name="x.bin", url="https://example.invalid/x.bin")]))
+    assert (chunk.status, chunk.reason) == ("failed", "message_conversion_failed")
+    assert (forwarded.status, forwarded.reason) == ("failed", "message_conversion_failed")
+    assert (filed.status, filed.reason) == ("failed", "message_conversion_failed")
+    messages = _messages(caplog, logging.WARNING)
+    assert any("action=message session=group%456 reason=message_conversion_failed RuntimeError" in m for m in messages)
+    assert any("action=forward session=group%456 reason=message_conversion_failed ValueError" in m for m in messages)
+    assert any("action=file session=group%456 reason=message_conversion_failed RuntimeError" in m for m in messages)
+
+
+@pytest.mark.asyncio
 async def test_client_unavailable_warning_is_rate_limited(caplog: pytest.LogCaptureFixture):
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={}))
     with caplog.at_level(logging.DEBUG):

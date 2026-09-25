@@ -5,7 +5,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 import json
 import os
 
@@ -663,10 +663,11 @@ class DaemonClient:
             try:
                 payload = json.loads(err_body)
                 if isinstance(payload, dict):
+                    body = cast(dict[str, Any], payload)
                     # reason 是稳定原因码 (手动唤醒等接口用它代替 error), 保留给调用方排查
-                    reason = payload.get("reason")
-                    if payload.get("error"):
-                        message = str(payload["error"])
+                    reason = body.get("reason")
+                    if body.get("error"):
+                        message = str(body["error"])
                     elif isinstance(reason, str) and reason:
                         message = f"HTTP {e.code}: {reason}"
             except Exception:
