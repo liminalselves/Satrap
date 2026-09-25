@@ -912,19 +912,24 @@ class OneBotAdapter(PlatformAdapter):
         收尾超时或被取消时记录保持未确认: 后续可信确认可精化结果, 但不会重发
         """
         recorder = self._send_attempt_recorder
-        if recorder is None:
+        if recorder is None or recorder.degraded:
+            # 降级期存储拒绝一切写入, 记录保持未确认; 与发送前的记录跳过保持一致
             return
+        completed = False
         worker = asyncio.ensure_future(
             asyncio.to_thread(recorder.complete_send_attempt, turn_id, status, detail, untracked or []),
         )
         try:
-            await asyncio.wait_for(asyncio.shield(worker), _ATTEMPT_FINALIZE_TIMEOUT)
+            completed = await asyncio.wait_for(asyncio.shield(worker), _ATTEMPT_FINALIZE_TIMEOUT)
         except asyncio.CancelledError:
             logger.warning(f"[OneBotAdapter] 发送收尾被取消, 记录保持未确认 turn={turn_id}")
         except asyncio.TimeoutError:
             logger.warning(f"[OneBotAdapter] 发送收尾超时, 记录保持未确认 turn={turn_id}")
         except Exception as error:
             logger.warning(f"[OneBotAdapter] 发送收尾失败 turn={turn_id}: {type(error).__name__}: {error}")
+        if not completed:
+            # 段证据或结论未能落盘: 记录停在 submitted, 不冒充已终结
+            logger.warning(f"[OneBotAdapter] 发送收尾未落盘 turn={turn_id} status={status}")
 
     async def _send_chunk_guarded(self, session_id: str, chain: MessageChain) -> SendReceipt:
         """

@@ -149,16 +149,39 @@ class PipelineScheduler:
     async def _update_manual_request(
         self, event: MessageEvent, ticket: ManualWakeTicket, status: str, detail: str, *, refine: bool = False,
     ) -> None:
-        """持久化手动请求状态, 落盘失败不影响管线执行"""
+        """持久化手动请求状态, 落盘失败不阻断业务但必须对运维可见"""
         store = self.manual_wake_store
         if store is None:
             return
+        adapter_id = event.call_origin.adapter_id
         try:
-            await asyncio.to_thread(
-                store.update_request, event.call_origin.adapter_id, ticket.request_id, status, detail, refine=refine,
+            outcome = await asyncio.to_thread(
+                store.update_request, adapter_id, ticket.request_id, status, detail, refine=refine,
             )
         except Exception as error:
-            logger.debug(f"[PipelineScheduler] 手动请求状态回写失败 request_id={ticket.request_id}: {type(error).__name__}")
+            logger.warning(
+                f"[PipelineScheduler] 手动请求状态回写异常 adapter={adapter_id} "
+                f"request_id={ticket.request_id} status={status}: {type(error).__name__}",
+            )
+            return
+        if outcome == "persisted":
+            return
+        if outcome in {"no_op", "degraded"}:
+            # 记录已终结或历史 unknown 不改写属预期结论, 降级已在状态转换时记录
+            logger.debug(
+                f"[PipelineScheduler] 手动请求状态未推进 adapter={adapter_id} "
+                f"request_id={ticket.request_id} status={status} outcome={outcome}",
+            )
+            return
+        message = (
+            f"[PipelineScheduler] 手动请求状态未落盘 adapter={adapter_id} "
+            f"request_id={ticket.request_id} status={status} outcome={outcome}"
+        )
+        if outcome == "invalid":
+            # 状态取值来自管线自身, 非法说明调用点写错
+            logger.error(message)
+        else:
+            logger.warning(message)
 
     async def _adjudicate_manual_request(
         self, event: MessageEvent, ticket: ManualWakeTicket, manual_detail: str | None,
@@ -337,7 +360,11 @@ class PipelineScheduler:
             try:
                 outcome = await asyncio.to_thread(store.request_send_outcome, request_id, adapter_id)
             except Exception as error:
-                logger.debug(f"[PipelineScheduler] 发送证据查询失败 request_id={request_id}: {type(error).__name__}")
+                # 查询失败会让归并退化为仅按业务回执裁决, 属于需要可见的存储故障
+                logger.warning(
+                    f"[PipelineScheduler] 发送证据查询失败 request_id={request_id} "
+                    f"adapter={adapter_id}: {type(error).__name__}",
+                )
                 return None
             if outcome["attempts"] == 0 or outcome["pending"] == 0 or monotonic() >= deadline:
                 return outcome

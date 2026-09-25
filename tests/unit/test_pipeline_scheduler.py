@@ -379,6 +379,66 @@ async def test_unresolved_session_is_logged_and_dropped(monkeypatch: pytest.Monk
     assert any("未解析到会话, 消息丢弃" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.asyncio
+async def test_manual_request_state_outcome_is_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """E3 反例: 合法幂等 no-op 不告警, 落盘失败, 存储异常与证据查询失败都必须可见"""
+    import logging
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+
+    sched = PipelineScheduler(_as_session_manager(_FakeSessionManager()))
+    store = ManualWakeStore(tmp_path / "wake.json")
+    sched.manual_wake_store = store
+    event = _message_event(_RecorderAdapter())
+    ticket = ManualWakeTicket("missing")
+
+    # 记录不存在属于预期结论: 只留 debug
+    with caplog.at_level(logging.DEBUG):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    caplog.clear()
+
+    def _failed_write(*args: Any, **kwargs: Any) -> str:
+        return "io"
+
+    monkeypatch.setattr(store, "update_request", _failed_write)
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        and "request_id=missing" in r.getMessage() and "status=sent" in r.getMessage()
+        and "outcome=io" in r.getMessage()
+        for r in caplog.records
+    )
+
+    caplog.clear()
+
+    def _lock_timeout(*args: Any, **kwargs: Any) -> str:
+        raise TimeoutError("锁超时")
+
+    monkeypatch.setattr(store, "update_request", _lock_timeout)
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert any("手动请求状态回写异常" in r.getMessage() and "TimeoutError" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+
+    def _query_failure(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise OSError("锁超时")
+
+    monkeypatch.setattr(store, "request_send_outcome", _query_failure)
+    with caplog.at_level(logging.WARNING):
+        assert await sched._await_send_settlement(store, "r1", "rec1") is None
+    # 查询失败会让请求终态退化为仅按业务回执裁决, 不能只留 debug
+    assert any(
+        "发送证据查询失败" in r.getMessage() and "request_id=r1" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_resolve_route_adapter_no_requested_uses_source():
     """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()

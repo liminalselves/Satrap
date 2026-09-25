@@ -66,6 +66,10 @@ LEGACY_PURPOSE = "unknown"
 RESTART_DETAILS = frozenset({"restart_unconfirmed", "stopped_unconfirmed"})
 """不可由后续确认精化的未确认原因: 重启或平台停止后的历史结论"""
 
+RequestUpdateOutcome = Literal["persisted", "no_op", "degraded", "invalid", "io"]
+"""update_request 结果码: 已落盘, 合法幂等 no-op, 存储降级, 状态非法, 落盘失败;
+调用方据此区分需要调查的未生效结果与预期拒绝, 不把两者混成一个布尔"""
+
 MAIN_FILE_STATES = frozenset({"present", "missing"})
 """主文件应存在 (present) 或已被隔离 (missing, 仅出现在降级清单中)"""
 ARCHIVE_FILE_STATES = frozenset({"absent", "present", "missing"})
@@ -808,7 +812,7 @@ class ManualWakeStore:
                 self._requests.pop(key, None)
                 raise ManualWakeStoreError("io", f"存储落盘失败: {type(error).__name__}") from error
 
-    def update_request(self, adapter_id: str, request_id: str, status: str, detail: str = "", *, refine: bool = False) -> bool:
+    def update_request(self, adapter_id: str, request_id: str, status: str, detail: str = "", *, refine: bool = False) -> RequestUpdateOutcome:
         """
         推进请求状态, 已终结记录不再回退; 落盘失败回滚内存状态只告警不阻断业务
 
@@ -819,18 +823,24 @@ class ManualWakeStore:
         - detail: 脱敏原因
         - refine: 允许把在途未确认 (in_flight/not_submitted 等) 的 unknown 精化为可信终态;
           重启或平台停止造成的 unknown 属于历史结论, 不因 refine 改写
+
+        返回:
+        - RequestUpdateOutcome: 已落盘, 合法幂等 no-op, 存储降级, 状态非法或落盘失败;
+          记录不存在与已终结属于预期拒绝, 调用方按 no_op 处理而不是按故障告警
         """
         with self._mutex, self._transaction():
-            if self.degraded or status not in REQUEST_STATUSES:
-                return False
+            if self.degraded:
+                return "degraded"
+            if status not in REQUEST_STATUSES:
+                return "invalid"
             key = _request_key(adapter_id, request_id)
             record = self._requests.get(key)
             if record is None or record["status"] in SETTLED_STATUSES:
-                return False
+                return "no_op"
             if record["status"] == "unknown" and not (refine and record["detail"] not in RESTART_DETAILS):
-                return False
+                return "no_op"
             if record["status"] == "unknown" and status == "unknown" and record["detail"] == detail:
-                return False
+                return "no_op"
             previous = _copy_request(record)
             record["status"] = status
             record["detail"] = detail
@@ -840,8 +850,8 @@ class ManualWakeStore:
             except OSError as error:
                 self._restore_record(self._requests, key, previous)
                 logger.error(f"[ManualWakeStore] 请求状态落盘失败 request_id={request_id}: {type(error).__name__}: {error}")
-                return False
-            return True
+                return "io"
+            return "persisted"
 
     @staticmethod
     def _restore_record(records: dict[str, Any], key: str, previous: Any) -> None:

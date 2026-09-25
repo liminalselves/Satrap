@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 import json
 
 import pytest
@@ -595,3 +596,38 @@ class TestSegmentProgress:
             time_module.sleep(0.02)
         assert store.lookup_attempts("", "onebot_main")[0]["status"] == "sent"
         adapter._bot.send_group_msg.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_finalize_result_is_consumed_and_degrade_skips_write(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+    ):
+        """E3 反例: 收尾未落盘必须可见; 降级期不再发起写入也不重复告警"""
+        import logging
+
+        adapter = make_adapter()
+        store = _make_store(tmp_path)
+        adapter.set_send_attempt_recorder(store)
+
+        def _refuse_finalize(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+            return False
+
+        calls: list[str] = []
+
+        def _record_finalize(turn_id: str, status: str, detail: str = "", untracked: Sequence[int] = ()) -> bool:
+            calls.append(turn_id)
+            return True
+
+        monkeypatch.setattr(store, "complete_send_attempt", _refuse_finalize)
+        with caplog.at_level(logging.WARNING):
+            await adapter._finalize_attempt("turn-false", "sent", "ok")
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        assert any("发送收尾未落盘 turn=turn-false status=sent" in m for m in warnings)
+
+        caplog.clear()
+        monkeypatch.setattr(store, "degraded", True)
+        monkeypatch.setattr(store, "complete_send_attempt", _record_finalize)
+        with caplog.at_level(logging.WARNING):
+            await adapter._finalize_attempt("turn-degraded", "sent", "ok")
+        # 降级期存储拒绝一切写入: 不再发起调用, 也不需要逐次告警
+        assert calls == []
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING] == []

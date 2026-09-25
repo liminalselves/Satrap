@@ -58,11 +58,27 @@ class TestRequestStore:
         assert record["status"] == "accepted" and record["operator"] == "op" and record["target"] == "group:20"
         with pytest.raises(ManualWakeStoreError, match="已存在"):
             store.accept_request("bot", "r1", "fp2", "group:20", "op")
-        assert store.update_request("bot", "r1", "executing") is True
-        assert store.update_request("bot", "r1", "sent") is True
-        assert store.update_request("bot", "r1", "failed", "late") is False
+        assert store.update_request("bot", "r1", "executing") == "persisted"
+        assert store.update_request("bot", "r1", "sent") == "persisted"
+        assert store.update_request("bot", "r1", "failed", "late") == "no_op"
         final = store.lookup_request("r1", "bot")
         assert final is not None and final["status"] == "sent"
+
+    def test_update_request_outcome_codes_are_distinguishable(self, tmp_path: Path):
+        """E3: 五值结果码把预期 no-op 与需要调查的未落盘分开, 不再共用一个 False"""
+        store = ManualWakeStore(tmp_path / "store.json")
+        assert store.update_request("bot", "missing", "executing") == "no_op"
+        assert store.update_request("bot", "anything", "not_a_status") == "invalid"
+        store.accept_request("bot", "r1", "fp", "group:20", "op")
+        assert store.update_request("bot", "r1", "unknown", "in_flight_unconfirmed") == "persisted"
+        # 在途 unknown 可被可信终态精化, 重启结论不可
+        assert store.update_request("bot", "r1", "sent", "confirmed", refine=True) == "persisted"
+        assert store.update_request("bot", "r1", "failed", "late") == "no_op"
+        store.accept_request("bot", "r2", "fp", "group:20", "op")
+        store.update_request("bot", "r2", "unknown", "restart_unconfirmed")
+        assert store.update_request("bot", "r2", "sent", "confirmed", refine=True) == "no_op"
+        store.degraded = True
+        assert store.update_request("bot", "r1", "sent") == "degraded"
 
     def test_restart_marks_unconfirmed_unknown(self, tmp_path: Path):
         path = tmp_path / "store.json"
@@ -361,7 +377,7 @@ class TestPersistentDegradation:
             raise OSError("disk full")
 
         monkeypatch.setattr(store, "_save_current_locked", broken_save)
-        assert store.update_request("bot", "r", "sent") is False
+        assert store.update_request("bot", "r", "sent") == "io"
         record = store.lookup_request("r", "bot")
         assert record is not None and record["status"] == "accepted"
         assert store.mark_segment_submitted("t1", 0) is False
