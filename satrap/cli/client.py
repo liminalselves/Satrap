@@ -662,8 +662,13 @@ class DaemonClient:
             message = f"HTTP {e.code}: {e.reason}"
             try:
                 payload = json.loads(err_body)
-                if isinstance(payload, dict) and payload.get("error"):
-                    message = str(payload["error"])
+                if isinstance(payload, dict):
+                    # reason 是稳定原因码 (手动唤醒等接口用它代替 error), 保留给调用方排查
+                    reason = payload.get("reason")
+                    if payload.get("error"):
+                        message = str(payload["error"])
+                    elif isinstance(reason, str) and reason:
+                        message = f"HTTP {e.code}: {reason}"
             except Exception:
                 pass
             raise DaemonError(message) from e

@@ -4,6 +4,7 @@ import { FormModal } from '@/components/common';
 import { Badge } from '@/components/ui/Badge';
 import { toast } from '@/components/ui/Toast';
 import { backendApi } from '@/api/backend';
+import { ApiError } from '@/api/client';
 import { controlApi } from '@/api/control';
 import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnosticsPanel';
 import type { WakeStatusResult } from '@/api/backend';
@@ -15,6 +16,33 @@ const STATUS_LABELS: Record<string, string> = {
   accepted: '已受理', executing: '执行中', sent: '已送达', partial: '部分送达',
   failed: '失败', unknown: '状态未知',
 };
+
+// POST /api/platforms/wake 的稳定拒绝原因码: 后端以 400/409 返回, 前端按码给出可操作文案
+const REJECTION_LABELS: Record<string, string> = {
+  queue_full: '平台事件队列已满, 请稍后重试',
+  request_capacity: '状态存储已满, 请稍后重试',
+  store_unavailable: '状态存储不可用, 请稍后重试',
+  request_id_conflict: '该 request_id 已用于另一份请求, 请重新提交',
+  adapter_changed: '平台连接已变更, 请重试',
+  adapter_unavailable: '平台未启用或未连接',
+  backend_unavailable: '后端未就绪, 请稍后重试',
+  source_unavailable: '目标群或机器人账号不可用',
+  message_lookup_failed_or_scope_mismatch: '消息回源失败或不属于该群与成员',
+  message_convert_failed: '消息解析失败',
+  invalid_fields_or_operator: '请求字段非法',
+  invalid_request_id: '请求标识非法',
+  invalid_prompt: '唤醒正文非法',
+  invalid_message_id_or_conflicting_prompt: '消息 ID 非法或与正文冲突',
+  explicit_group_and_route_user_required: '必须指定目标群与会话成员',
+};
+
+function rejectionMessage(error: unknown): string {
+  if (error instanceof ApiError && error.code) {
+    // 未知原因码保留原始码, 便于对照后端返回值排查
+    return REJECTION_LABELS[error.code] || `请求被拒绝 (${error.code})`;
+  }
+  return error instanceof Error ? error.message : '请求失败';
+}
 
 function statusVariant(status: string): 'success' | 'warning' | 'error' | 'info' | 'default' {
   if (status === 'sent') return 'success';
@@ -131,7 +159,7 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
       }
       setRefreshKey((key) => key + 1);
     } catch (error) {
-      toast('error', '唤醒失败, 输入已保留: ' + (error instanceof Error ? error.message : '请求失败'));
+      toast('error', '唤醒失败, 输入已保留: ' + rejectionMessage(error));
     } finally {
       setSaving(false);
     }

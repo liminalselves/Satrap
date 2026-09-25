@@ -3,6 +3,7 @@ import { getApiBaseUrl } from '@/utils/constants';
 import { establishApiSession } from '@/api/auth';
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & { _satrapAuthRetry?: boolean };
+type ErrorBody = { error?: string; reason?: string };
 
 export class ApiError extends Error {
   constructor(
@@ -13,6 +14,16 @@ export class ApiError extends Error {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+// 后端拒绝统一用 {status, reason} 信封, error 只用于请求体解析失败等通用错误;
+// 保留稳定原因码, 调用方据此区分队列满/冲突/存储不可用, 而不是只看 HTTP 状态
+export function toApiError(error: AxiosError<ErrorBody>): ApiError {
+  const data = error.response?.data;
+  const body = data && typeof data === 'object' ? data : undefined;
+  const message = body?.error || error.message;
+  const code = typeof body?.reason === 'string' && body.reason ? body.reason : undefined;
+  return new ApiError(message, error.response?.status, code);
 }
 
 class ApiClient {
@@ -38,16 +49,14 @@ class ApiClient {
   private setupInterceptors() {
     this.client.interceptors.response.use(
       (response) => response.data,
-      async (error: AxiosError<{ error?: string }>) => {
+      async (error: AxiosError<ErrorBody>) => {
         const config = error.config as RetriableRequestConfig | undefined;
         if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
           config._satrapAuthRetry = true;
           await establishApiSession(getApiBaseUrl());
           return this.client.request(config);
         }
-        const message = error.response?.data?.error || error.message;
-        const status = error.response?.status;
-        return Promise.reject(new ApiError(message, status));
+        return Promise.reject(toApiError(error));
       }
     );
   }

@@ -31,9 +31,14 @@ try {
     const headers = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, OPTIONS' };
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
     if (pathname === '/api/platforms/wake') {
-      requests.push(request.postDataJSON());
-      return route.fulfill({ headers, status: responseMode === 'error' ? 409 : 200,
-        json: responseMode === 'error' ? { error: '目标群暂不可用' } : { status: responseMode } });
+      const body = request.postDataJSON();
+      requests.push(body);
+      if (responseMode === 'error') {
+        // 真实拒绝信封: 后端只给 status/reason, 不含 error 字段 (E2)
+        return route.fulfill({ headers, status: 409,
+          json: { status: 'rejected', request_id: body.request_id, reason: 'queue_full' } });
+      }
+      return route.fulfill({ headers, status: 200, json: { status: responseMode } });
     }
     if (pathname === '/api/platforms/wake/rejections') {
       // 旧拒绝记录接口: 弹窗改用阶段诊断面板后不得再请求, 计数器只为断言 (返回空不影响页面)
@@ -126,7 +131,7 @@ try {
   await dialog.getByLabel('会话成员 ID', { exact: false }).fill('30000');
   await dialog.getByLabel('唤醒正文', { exact: false }).fill('请处理这条消息');
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
-  await page.getByText('唤醒失败, 输入已保留: 目标群暂不可用', { exact: true }).waitFor();
+  await page.getByText('唤醒失败, 输入已保留: 平台事件队列已满, 请稍后重试', { exact: true }).waitFor();
   assert.equal(await dialog.getByLabel('唤醒正文', { exact: false }).inputValue(), '请处理这条消息');
   responseMode = 'accepted';
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
