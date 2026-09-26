@@ -3,8 +3,10 @@ from __future__ import annotations
 import argparse
 from typing import Any, cast
 import json
+import uuid
 
 from satrap.core.config.document import (
+    config_document_revision,
     delete_platform,
     find_config_path,
     load_config_document,
@@ -12,8 +14,9 @@ from satrap.core.config.document import (
     upsert_platform,
     validate_platforms,
 )
+from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
 from satrap.cli.common import daemon_client_from_args, parse_kv_pairs
-from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table
+from satrap.cli.client import DaemonError
 from satrap.core.type import safe_getattr
 
 
@@ -118,6 +121,7 @@ def cmd_platform_upsert(args: argparse.Namespace):
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
+    revision = config_document_revision(data)
     platforms = list(data.get("platforms", []) or [])
     try:
         platform: dict[str, Any] = {
@@ -134,7 +138,7 @@ def cmd_platform_upsert(args: argparse.Namespace):
             original_id=args.id if args.action == "update" else None,
         )
         data["platforms"] = validate_platforms(merged)
-        save_config_document(path, data)
+        save_config_document(path, data, expected_revision=revision)
     except Exception as e:
         raise CliError(f"保存失败: {e}") from e
     ok(f"平台配置已保存: {args.id}")
@@ -151,10 +155,52 @@ def cmd_platform_remove(args: argparse.Namespace):
     _warn_if_backend_running(args)
     path = find_config_path()
     data = load_config_document(path)
-    data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
-    save_config_document(path, data)
+    revision = config_document_revision(data)
+    try:
+        data["platforms"] = delete_platform(list(data.get("platforms", []) or []), args.id)
+        save_config_document(path, data, expected_revision=revision)
+    except Exception as e:
+        raise CliError(f"删除失败: {e}") from e
     ok(f"平台配置已删除: {args.id}")
     info("平台实例变更需要重启后端后生效")
+
+
+def cmd_platform_wake(args: argparse.Namespace):
+    """
+    向运行中的后端提交 OneBot 群手动唤醒
+
+    参数:
+    - args: adapter id, 群号, 路由成员 ID, 可选 prompt/message-id/reason/request-id
+    """
+    if args.prompt and args.message_id:
+        raise CliError("--prompt 与 --message-id 只能指定一个")
+    payload: dict[str, Any] = {
+        "adapter_id": args.id, "group_id": args.group, "user_id": args.user,
+        "request_id": args.request_id or f"cli-{uuid.uuid4().hex}",
+    }
+    for key in ("prompt", "message_id", "reason"):
+        value = getattr(args, key, None)
+        if value:
+            payload[key] = value
+    client = daemon_client_from_args(args, timeout=10)
+    client.require_alive()
+    try:
+        result = client.wake_platform(payload)
+    except DaemonError as error:
+        raise CliError(f"手动唤醒被拒绝: {error}") from error
+    status = str(result.get("status", ""))
+    if status not in {"accepted", "already_pending", "no_pending"}:
+        raise CliError(f"手动唤醒未接受: {status or '未知状态'} {result.get('reason', '')}".rstrip())
+
+    def _human() -> None:
+        if status == "accepted":
+            ok(f"已接受手动唤醒, request_id={result.get('request_id', payload['request_id'])}")
+        elif status == "already_pending":
+            info(f"相同请求已在处理, 状态: {result.get('state', '')}")
+        else:
+            info("该群与成员范围内没有待处理正文, 未提交模型调用")
+
+    render_data(result, _human)
 
 
 def dispatch(args: argparse.Namespace):
@@ -170,4 +216,5 @@ def dispatch(args: argparse.Namespace):
         "add": cmd_platform_upsert,
         "update": cmd_platform_upsert,
         "remove": cmd_platform_remove,
+        "wake": cmd_platform_wake,
     }, args)

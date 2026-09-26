@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 import pytest
 from typing import Any
@@ -46,6 +47,53 @@ from satrap.cli.client import DaemonClient
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.loader import ConfigLoader
+from unittest.mock import AsyncMock
+
+
+@pytest.mark.asyncio
+async def test_reload_api_forwards_saved_revision_and_rejects_invalid_type():
+    """重载接口传递保存修订, 非法输入不得触发重载"""
+    backend = BackendManager()
+    backend.reload_config = AsyncMock(return_value={"ok": True})
+    server = BackendHTTPServer(backend)
+    assert (await server._route("POST", "/api/config/reload", b'{"expected_config_revision":"saved"}'))[0] == 200
+    backend.reload_config.assert_awaited_once_with("saved")
+    backend.reload_config.reset_mock()
+    assert (await server._route("POST", "/api/config/reload", b'{"expected_config_revision":42}'))[0] == 400
+    backend.reload_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["POST", "PUT", "DELETE"])
+async def test_platform_revision_conflict_preserves_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, method: str):
+    """旧页面的新增, 更新和删除均不能覆盖后来保存的配置"""
+    from satrap.core.backend import control_server as control
+
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(control, "CONFIG_PATH", path)
+    original = {"id": "bot", "type": "onebot", "settings": {"access_token": "test-secret"}}
+    save_config_document(path, {"platforms": [original]})
+    read_context = control._RouteContext("GET", "/config/platforms", "/config/platforms", asyncio.StreamReader(), b"")
+    response = await control._route_config_document(read_context)
+    assert response is not None
+    status, data = response
+    assert status == 200
+    revision = data["revision"]
+    assert "test-secret" not in json.dumps(data)
+    latest = save_config_document(path, {"platforms": [original], "extra": "new-value"})
+    route = "/config/platforms" if method == "POST" else "/config/platforms/bot"
+    payload = {"id": "new-bot" if method == "POST" else "bot", "type": "onebot", "settings": {}}
+    body = json.dumps(payload).encode("utf-8")
+    reader = asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+    context = control._RouteContext(method, route, f"{route}?expected_revision={revision}", reader,
+                                    f"{method} {route} HTTP/1.1\r\nContent-Length: {len(body)}\r\n\r\n".encode("utf-8"))
+    response = await control._route_config_document(context)
+    assert response is not None
+    assert response[0] == 409
+    assert response[1]["code"] == "config_revision_conflict"
+    assert load_config_document(path) == latest
 
 
 def test_daemon_client_shutdown_uses_shutdown_route(monkeypatch: pytest.MonkeyPatch):

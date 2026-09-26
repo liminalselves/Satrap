@@ -51,6 +51,6 @@ python tests/agent_demo.py --help
 前端 (`satrap-ui/`) 有单元测试与浏览器端到端测试两套, 均不访问用户服务:
 
 - **单元测试 (Vitest)**: 与源码同目录的 `*.test.ts(x)` (api 客户端 / hooks / 工具函数 / Chat 组件), 运行 `npm test` (即 `vitest run`);
-- **浏览器 e2e**: `satrap-ui/e2e/` 下的脚本经 Playwright (Chromium headless) 驱动真实 React 页面, HTTP / WebSocket 使用受控数据或临时后端: `chat-reconnect.mjs` (WS 重连 / 快照恢复 / 序号去重), `model-dimensions.mjs`, `rag-settings.mjs`, `rag-upload.mjs` (真实 HTTP 上传 + 文档解析 + SQLite / FAISS 检索全链路, 自带临时后端 `rag-upload-backend.py`)。`npm run test:e2e` 目前只跑 `chat-reconnect.mjs`, 其余用 `node e2e/<脚本名>.mjs` 单独运行。
+- **浏览器 e2e**: `satrap-ui/e2e/` 下的脚本经 Playwright (Chromium headless) 驱动真实 React 页面, HTTP / WebSocket 使用受控数据或临时后端: `chat-reconnect.mjs` (WS 重连 / 快照恢复 / 序号去重), `model-dimensions.mjs`, `form-required.mjs` (共用表单必填约束: 模型配置名称, 用户 ID, 绑定 Session ID, 检查点分支名为空时不发写请求且弹窗保留, `npm run test:e2e:forms`), `rag-settings.mjs`, `rag-upload.mjs` (真实 HTTP 上传 + 文档解析 + SQLite / FAISS 检索全链路, 自带临时后端 `rag-upload-backend.py`)。`npm run test:e2e` 目前只跑 `chat-reconnect.mjs`, 其余用 `node e2e/<脚本名>.mjs` 单独运行 (`platform-policy.mjs` / `manual-wake.mjs` / `asr-models.mjs` / `form-required.mjs` 另有 `test:e2e:*` 别名)。
 
 两套测试都会自行拉起临时 Vite 服务, 无需预先启动前端或后端。

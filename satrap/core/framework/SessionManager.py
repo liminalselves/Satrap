@@ -42,6 +42,7 @@ from satrap.core.storage import (
     default_storage_layout,
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
+from satrap.core.call_context import bind_call_origin
 
 from satrap.core.log import logger
 
@@ -930,6 +931,7 @@ class SessionManager:
         context_value: str,
         platform: str = "",
         extra_params: Optional[Dict[str, Any]] = None,
+        session_identity: str | None = None,
     ) -> SessionConfig:
         """
         从指定 Provider 定义创建平台上下文会话
@@ -940,6 +942,7 @@ class SessionManager:
         - context_value: 用户或频道等上下文区分值
         - platform: 平台实例标识
         - extra_params: 实例级补充或覆盖参数
+        - session_identity: 可选会话标识, 与注入 Provider 的上下文值分离
 
         返回:
         - SessionConfig: 已持久化的上下文会话配置
@@ -952,11 +955,12 @@ class SessionManager:
         params = dict(extra_params or {})
         if context_key:
             params[context_key] = context_value
+        identity = context_value if session_identity is None else session_identity
         random_id = _short_uid()
         if platform and platform != definition_name:
-            session_id = f"{definition_name}:{platform}:{context_value}:{random_id}"
+            session_id = f"{definition_name}:{platform}:{identity}:{random_id}"
         else:
-            session_id = f"{definition_name}:{context_value}:{random_id}"
+            session_id = f"{definition_name}:{identity}:{random_id}"
         return self.register_session_from_provider_config(
             provider_name,
             definition_name,
@@ -1358,7 +1362,13 @@ class SessionManager:
 
                 user_mgr = self._user_mgr
                 # 更新 context_sessions 路由, 使下一条消息能路由到新会话
-                if user_mgr:
+                if user_mgr and user_call.route is not None:
+                    route = user_call.route
+                    user_mgr.store.upsert_context_session(
+                        route.owner, route.platform, route.session_type, new_id,
+                        route.provider, context_key=route.key,
+                    )
+                elif user_mgr:
                     parts = new_id.split(":")
                     if len(parts) >= 4:
                         user_mgr.update_context_session(
@@ -2345,7 +2355,8 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+            with bind_call_origin(user_call.origin):
+                return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             logger.error(f"[SessionManager] 同步会话执行失败：{e}")
             return ""
@@ -2365,7 +2376,8 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
+            with bind_call_origin(user_call.origin):
+                return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
             logger.error(f"[SessionManager] 异步会话执行失败：{e}")
             return ""

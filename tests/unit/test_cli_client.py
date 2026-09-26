@@ -50,6 +50,19 @@ def test_request_raises_daemon_error_with_server_message(monkeypatch: pytest.Mon
         _client().health()
 
 
+def test_request_reports_stable_reason_code(monkeypatch: pytest.MonkeyPatch):
+    """手动唤醒等接口的拒绝信封只有 status/reason, CLI 必须给出原因码而不是通用 HTTP 文案"""
+
+    def _raise(req: Any, timeout: float = 0):
+        raise urllib.error.HTTPError(
+            req.full_url, 409, "Conflict", hdrs=Message(), fp=io.BytesIO(b'{"status": "rejected", "reason": "queue_full"}'),
+        )
+
+    monkeypatch.setattr(client_mod.urllib.request, "urlopen", _raise)
+    with pytest.raises(DaemonError, match="queue_full"):
+        _client().health()
+
+
 def test_is_alive_never_raises(monkeypatch: pytest.MonkeyPatch):
     """is_alive 探测在不可达时返回 False"""
 

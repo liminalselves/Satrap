@@ -86,6 +86,7 @@ export const MODEL_TYPES = [
   { value: 'llm', label: 'LLM 配置' },
   { value: 'embedding', label: 'Embedding 配置' },
   { value: 'rerank', label: 'ReRank 配置' },
+  { value: 'asr', label: 'ASR 配置' },
 ] as const;
 
 export const THINKING_FIELD_OPTIONS = [
@@ -142,8 +143,4 @@ export function getThinkingOptions(config?: {
 
 export const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] as const;
 
-export const PLATFORM_TYPES = ['misskey', 'onebot'] as const;
-
-export type ModelType = (typeof MODEL_TYPES)[number]['value'];
-export type LogLevel = (typeof LOG_LEVELS)[number];
-export type PlatformType = (typeof PLATFORM_TYPES)[number];
+export const PLATFORM_TYPES = ['misskey', 'onebot', 'aiocqhttp'] as const;

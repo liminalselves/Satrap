@@ -9,10 +9,9 @@ import type {
   EdictumSessionConfig,
   EdictumAvailablePlugin,
   EdictumTypeDefinition,
-  EmbeddingConfig,
-  LLMConfig,
+  ModelConfig,
+  ModelType,
   PlatformConfig,
-  ReRankConfig,
   RuntimeSession,
   SessionClassConfig,
 } from './types';
@@ -24,6 +23,69 @@ import type {
   ChatHistoryResult,
   ChatHistoryTrashResult,
 } from './chat';
+
+// 唤醒策略试算 (POST /config/wake-dry-run)
+export interface WakeDryRunStep {
+  text?: string;
+  actor?: string;
+  advance_seconds?: number;
+  at_self?: boolean;
+  submit?: boolean;
+}
+
+export interface WakeDryRunRequest {
+  settings: Record<string, unknown>;
+  group_id?: string;
+  local_time?: string;
+  steps?: WakeDryRunStep[];
+  probe?: { text: string; at_self?: boolean; quote_self?: boolean };
+}
+
+export interface WakeDryRunDecision {
+  triggered: boolean | null;
+  rule: string;
+  reason: string;
+  matched?: string;
+  score?: number | null;
+}
+
+export interface WakeThresholdPreview {
+  // 关闭时为 null: 有效来源是 wake_talk_value=0
+  value: number | null;
+  source: 'explicit' | 'talk_value' | 'default';
+  label: string;
+  talk_value: number | null;
+  // talk_value 是否真的生效; false 且设置了 talk_value 表示被显式阈值覆盖
+  talk_value_effective: boolean;
+  closed: boolean;
+  overridden: boolean;
+  hint: string;
+}
+
+export interface WakePolicySource {
+  value?: unknown;
+  source: 'platform' | 'time_rule' | 'group' | 'builtin_default';
+  source_index: number | null;
+  source_label: string;
+}
+
+export interface WakeDryRunResult {
+  ok: boolean;
+  error?: string;
+  resolved?: Record<string, unknown>;
+  sources?: Record<string, WakePolicySource>;
+  defaults?: Record<string, unknown>;
+  explicit?: WakeDryRunDecision;
+  automatic?: {
+    mode: string;
+    observed: number;
+    steps: Array<{ index: number; kind: string; observed?: number; claimed?: number; decision?: WakeDryRunDecision }>;
+    decision: WakeDryRunDecision;
+    deadline_decision: WakeDryRunDecision;
+    cooldown_remaining: number;
+    threshold?: WakeThresholdPreview;
+  };
+}
 
 // 后端控制 API 客户端(独立于主后端)
 const controlClient = axios.create({
@@ -79,12 +141,20 @@ export interface ConfigResult {
 }
 
 export interface PlatformConfigResult extends ControlResult {
+  revision?: string;
   platforms?: PlatformConfig[];
   exists?: boolean;
 }
 
-type ModelType = 'llm' | 'embedding' | 'rerank';
-type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
+
+export interface AsrTestResult extends ControlResult {
+  text?: string;
+  model?: string;
+  language?: string;
+  duration?: number;
+  elapsed_ms?: number;
+  converted_from?: string;
+}
 
 export interface SessionClassConfigPayload {
   name: string;
@@ -223,6 +293,12 @@ export const controlApi = {
     return response.data;
   },
 
+  // 唤醒策略试算: 隔离窗口 + 当前草稿, 不触碰线上状态
+  dryRunWake: async (payload: WakeDryRunRequest): Promise<WakeDryRunResult> => {
+    const response = await controlClient.post<WakeDryRunResult>('/config/wake-dry-run', payload);
+    return response.data;
+  },
+
   // 读取平台配置
   listPlatforms: async (): Promise<PlatformConfigResult> => {
     const response = await controlClient.get<PlatformConfigResult>('/config/platforms');
@@ -230,24 +306,26 @@ export const controlApi = {
   },
 
   // 创建平台配置
-  createPlatform: async (platform: PlatformConfig): Promise<PlatformConfigResult> => {
-    const response = await controlClient.post<PlatformConfigResult>('/config/platforms', platform);
+  createPlatform: async (platform: PlatformConfig, revision: string): Promise<PlatformConfigResult> => {
+    const response = await controlClient.post<PlatformConfigResult>('/config/platforms', platform, { params: { expected_revision: revision } });
     return response.data;
   },
 
   // 更新平台配置
-  updatePlatform: async (originalId: string, platform: PlatformConfig): Promise<PlatformConfigResult> => {
+  updatePlatform: async (originalId: string, platform: PlatformConfig, revision: string): Promise<PlatformConfigResult> => {
     const response = await controlClient.put<PlatformConfigResult>(
       `/config/platforms/${encodeURIComponent(originalId)}`,
       platform,
+      { params: { expected_revision: revision } },
     );
     return response.data;
   },
 
   // 删除平台配置
-  deletePlatform: async (platformId: string): Promise<PlatformConfigResult> => {
+  deletePlatform: async (platformId: string, revision: string): Promise<PlatformConfigResult> => {
     const response = await controlClient.delete<PlatformConfigResult>(
       `/config/platforms/${encodeURIComponent(platformId)}`,
+      { params: { expected_revision: revision } },
     );
     return response.data;
   },
@@ -280,6 +358,26 @@ export const controlApi = {
       `/config/models/${type}/${encodeURIComponent(name)}`,
     );
     return response.data;
+  },
+
+  testAsrConfig: async (name: string, filename: string, audioBase64: string): Promise<AsrTestResult> => {
+    try {
+      const response = await controlClient.post<AsrTestResult>(
+        `/config/models/asr/${encodeURIComponent(name)}/test`,
+        { filename, audio_base64: audioBase64 },
+        { timeout: 120000 },
+      );
+      return response.data;
+    } catch (error) {
+      // 服务端以 4xx/5xx 返回结构化错误时保留其 error 文案, 便于页面直接呈现拒绝原因
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status === 401 || status === 403) throw error;
+      if (axios.isAxiosError(error) && error.response?.data && typeof error.response.data === 'object') {
+        const data = error.response.data as Partial<AsrTestResult>;
+        return { ok: false, error: data.error || error.message };
+      }
+      throw error;
+    }
   },
 
   listSessionClasses: async (): Promise<Record<string, SessionClassConfig>> => {

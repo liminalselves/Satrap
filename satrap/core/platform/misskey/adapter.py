@@ -495,13 +495,19 @@ class MisskeyAdapter(PlatformAdapter):
         """
         return await self.send_message(session_id, MessageChain.from_text(text))
 
-    async def send_message(self, session_id: str, message: MessageChain) -> Any:
+    async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
         """
         按 session_id 发送完整消息链
 
         参数:
         - session_id: 会话 ID
         - message: 要发送的消息链
+        - request_id: 逻辑请求标识 (Misskey 暂不实现发送尝试记录, 忽略)
+        - purpose: 发送用途 (Misskey 暂不实现发送尝试记录, 忽略)
+        - require_tracking: 是否要求发送前记录 (Misskey 暂不实现发送尝试记录, 忽略)
 
         返回:
         - Any: 按 session_id 发送完整消息链

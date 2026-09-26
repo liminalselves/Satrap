@@ -71,3 +71,19 @@ platforms:
   #     access_token: ${ONEBOT_ACCESS_TOKEN}
   #     enable_private: true
   #     enable_group: true
+  #     context_scope: group_member   # 按群成员隔离, 旧配置省略时保留原用户映射
+  #     group_whitelist: []   # 留空允许所有群, 非空填写群 ID 字符串
+  #     wake_words: []   # 留空仅响应真实 @机器人, 配置后匹配当前正文
+  #     message_text_limit: 2000   # 每条消息文本上限 (64-32000), 超长回复优先按段落/换行拆分为多条
+  #     reply_with_quote: false   # 群聊回复是否引用触发消息, 私聊与无来源消息 ID 的手动唤醒不添加
+  #     reply_with_mention: false   # 群聊回复是否 @发送者, 已有 @ 不重复; 可在 wake_group_overrides 中按群覆盖
+  #     quote_lookup: true   # 唤醒后是否回源被引用消息原文 (get_msg, 5 秒/64KiB 预算, 不递归), 作为引用上下文进入模型输入
+  #     forward_lookup: true   # 唤醒后是否回源合并转发节点 (get_forward_msg, 5 秒/256KiB 预算, 至多 20 节点, 不递归), 作为转发上下文进入模型输入
+  #     wake_on_quote_self: false   # 引用机器人消息是否视为唤醒; 需先回源确认被引用者, 引用他人或回源失败不唤醒
+  #     # notice_types: [notice.group_increase, notice.group_recall, request]   # 省略表示派发全部 notice/request; 群通知受 group_whitelist 限制, 默认不触发模型
+  #     asr_model: ""   # 语音转写使用的 ASR 模型配置名 (satrap model set asr <name> ...), 留空不转写
+  #     voice_transcribe: asr   # 语音转写来源: asr (默认, 依次尝试实现转码 get_record → 直接下载 → 本地 av 转码) / asr_then_platform (ASR 失败后回退 fetch_ptt_text) / platform (仅平台原生转写, 不需要 asr_model) / off
+  #     attachment_extract: true   # 已唤醒消息中的受支持文档 (txt/md/pdf/docx/xlsx 等) 下载并提取正文, 32 MiB / 20000 字符上限
+  #     media_trusted_hosts: []   # 允许访问私网的媒体下载主机名, SnowLuma 内网地址需登记
+  #     media_insecure_tls: false   # 仅对 media_trusted_hosts 登记的主机关闭 TLS 校验 (自签证书场景), 公网下载始终校验
+  #     media_plaintext_http: false   # 允许公网明文 http 附件下载 (明文可被窃听篡改, 默认关闭; media_trusted_hosts 登记主机不受影响)

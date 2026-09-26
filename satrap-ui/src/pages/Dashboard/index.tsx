@@ -34,7 +34,7 @@ export function Dashboard() {
     shutdown, 
     setHealth,
   } = useBackendStore();
-  const { llmConfigs, embeddingConfigs, rerankConfigs, sessionClasses, fetchAllModels, fetchSessionClasses } = useConfigStore();
+  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses, fetchAllModels, fetchSessionClasses } = useConfigStore();
   
   const [controlLoading, setControlLoading] = useState(false);
   const { connect, disconnect, isConnected } = useWebSocket('/ws/status');
@@ -80,9 +80,9 @@ export function Dashboard() {
   // 统计数据
   const stats = useMemo(() => ({
     adapterCount: health?.adapters ? Object.keys(health.adapters).length : 0,
-    modelCount: Object.keys(llmConfigs).length + Object.keys(embeddingConfigs).length + Object.keys(rerankConfigs).length,
+    modelCount: Object.keys(llmConfigs).length + Object.keys(embeddingConfigs).length + Object.keys(rerankConfigs).length + Object.keys(asrConfigs).length,
     sessionCount: Object.keys(sessionClasses).length,
-  }), [health?.adapters, llmConfigs, embeddingConfigs, rerankConfigs, sessionClasses]);
+  }), [health?.adapters, llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses]);
 
   // 操作处理函数
   const handleReload = useCallback(async () => {

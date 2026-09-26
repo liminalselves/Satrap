@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
 
+from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
@@ -97,6 +98,28 @@ def _platform_db_path(backend: BackendManager, platform_id: str) -> str:
     return str(backend.checkpoint_db_path)
 
 
+_WAKE_INPUT_REASONS = frozenset({
+    "invalid_request_id", "invalid_prompt", "invalid_message_id_or_conflicting_prompt",
+    "explicit_group_and_route_user_required",
+})
+"""属于请求参数错误的手动唤醒拒绝原因, 返回 400 而非冲突类 409"""
+
+
+def _wake_status_code(result: dict[str, Any]) -> int:
+    """
+    把手动唤醒结果映射为 HTTP 状态码
+
+    参数:
+    - result: BackendManager.wake_platform 的返回
+
+    返回:
+    - int: 参数错误 400, 其他拒绝 409, 接受与重复 200
+    """
+    if result.get("status") != "rejected":
+        return 200
+    return 400 if result.get("reason") in _WAKE_INPUT_REASONS else 409
+
+
 class BackendHTTPServer(MiniHTTPServer):
     """
     内嵌 HTTP 服务器, 提供管理 API
@@ -125,7 +148,7 @@ class BackendHTTPServer(MiniHTTPServer):
         super().__init__(
             host=host,
             port=port,
-            log_errors=False,
+            log_errors=True,
             session_namespace="backend",
         )
         self.backend = backend
@@ -207,7 +230,8 @@ class BackendHTTPServer(MiniHTTPServer):
             while not reader.at_eof():
                 try:
                     entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
-                except TimeoutError:
+                except asyncio.TimeoutError:
+                    # 3.10 中 wait_for 抛 asyncio.TimeoutError 而非内置 TimeoutError
                     continue
                 await self._ws_send(writer, {
                     "type": "log",
@@ -308,6 +332,71 @@ class BackendHTTPServer(MiniHTTPServer):
         """UI 配置 / 健康检查 / 配置热加载 (精确路径)"""
         backend = self.backend
 
+        if method == "POST" and path == "/api/platforms/wake":
+            try:
+                payload = _parse_json_object(body)
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"status": "rejected", "error": str(error)}
+            result = await backend.wake_platform(payload, operator="management")
+            return _wake_status_code(result), result
+
+        if method == "GET" and path.startswith("/api/platforms/wake/rejections"):
+            # 唤醒决策/限流拒绝记录: GET /api/platforms/wake/rejections[?adapter_id=...&limit=...]
+            # 必须先于通用 /api/platforms/wake/{request_id} 分支匹配, 避免被当作 request_id
+            query = parse_qs(urlsplit(path).query)
+            adapter_id = query.get("adapter_id", [None])[0]
+            raw_limit = query.get("limit", ["50"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return 400, {"error": "invalid_limit"}
+            return 200, {"records": backend.wake_rejections(adapter_id, limit)}
+
+        if method == "GET" and path.startswith("/api/platforms/wake/diagnostics"):
+            # 请求诊断: GET /api/platforms/wake/diagnostics[?adapter_id=&stage=&request_id=&limit=]
+            # stage 支持逗号分隔多值, 命中任一阶段的请求即保留 (仍返回该请求全部阶段); 取值须属于 DIAGNOSTIC_STAGES
+            # 与 rejections 一样必须先于通用 /api/platforms/wake/{request_id} 分支匹配
+            parsed = urlsplit(path)
+            query = parse_qs(parsed.query)
+            adapter_id = query.get("adapter_id", [None])[0]
+            stage = query.get("stage", [""])[0]
+            request_id = query.get("request_id", [""])[0]
+            raw_limit = query.get("limit", ["50"])[0]
+            try:
+                limit = int(raw_limit)
+            except (TypeError, ValueError):
+                return 400, {"error": "invalid_limit"}
+            try:
+                parse_stages(stage)
+            except ValueError:
+                return 400, {"error": "invalid_stage", "stages": sorted(DIAGNOSTIC_STAGES)}
+            tail = unquote(parsed.path.removeprefix("/api/platforms/wake/diagnostics")).strip("/")
+            if tail:
+                if len(tail) > 128 or chr(10) in tail:
+                    return 400, {"status": "rejected", "reason": "invalid_request_id"}
+                detail = backend.request_diagnostic_detail(tail, adapter_id)
+                if detail.get("reason") == "not_found":
+                    return 404, detail
+                if detail.get("reason") == "scheduler_unavailable":
+                    return 503, detail
+                return 200, detail
+            return 200, backend.request_diagnostics(adapter_id, stage=stage, request_id=request_id, limit=limit)
+
+        if method == "GET" and path.startswith("/api/platforms/wake/"):
+            # 手动唤醒状态查询: GET /api/platforms/wake/{request_id}[?adapter_id=...]
+            parsed = urlsplit(path)
+            request_id = unquote(parsed.path.removeprefix("/api/platforms/wake/")).strip()
+            adapter_id = parse_qs(parsed.query).get("adapter_id", [None])[0]
+            if not request_id or len(request_id) > 128 or "\n" in request_id:
+                return 400, {"status": "rejected", "reason": "invalid_request_id"}
+            result = await backend.manual_wake_status(request_id, adapter_id)
+            reason = result.get("reason")
+            if reason == "not_found":
+                return 404, result
+            if reason in {"store_unavailable", "store_degraded"}:
+                return 503, result
+            return 200, result
+
         if method == "GET" and path == "/ui-config.json":
             return 200, build_ui_config(
                 backend_host=backend.config.api_host,
@@ -321,7 +410,14 @@ class BackendHTTPServer(MiniHTTPServer):
         # 接口: GET /api/health
 
         if method == "POST" and path == "/api/config/reload":
-            return 200, await backend.reload_config()
+            try:
+                payload = _parse_json_object(body)
+                revision = payload.get("expected_config_revision")
+                if revision is not None and (not isinstance(revision, str) or not revision):
+                    raise ValueError("expected_config_revision 必须是非空字符串")
+            except (ValueError, json.JSONDecodeError) as error:
+                return 400, {"ok": False, "error": str(error)}
+            return 200, await backend.reload_config(revision)
         # 接口: POST /api/config/reload
 
         return None

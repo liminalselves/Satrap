@@ -18,6 +18,7 @@ import { Plus, Power, PowerOff, Trash2, Settings, Search, FolderPlus, Play, Refr
 import type { Column, FormField } from '@/components/common';
 import type { DiscoveredSessionClass, RuntimeSession, SessionClassConfig } from '@/api/types';
 import { EdictumSessionsPanel } from './EdictumSessionsPanel';
+import { ManualWakeModal } from './ManualWakeModal';
 
 interface SessionClassItem {
   name: string;
@@ -30,6 +31,7 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions() {
+  const [showWakeModal, setShowWakeModal] = useState(false);
   const [ragSession, setRagSession] = useState<RuntimeSession | null>(null);
   const [overrideSession, setOverrideSession] = useState<RuntimeSession | null>(null);
   const [overridePlugins, setOverridePlugins] = useState<string[]>([]);
@@ -620,6 +622,7 @@ export function Sessions() {
             </p>
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button size="sm" disabled={!backendRunning} onClick={() => setShowWakeModal(true)}>手动唤醒群聊</Button>
             <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('empty')}>删除无消息</Button>
             <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('single')}>删除仅 1 条</Button>
             <Button variant="danger" size="sm" disabled={deleting || selectedRuntimeIds.size === 0} onClick={() => handleBulkDeleteRuntime('selected')}>
@@ -640,6 +643,7 @@ export function Sessions() {
         />
       </Card>
 
+      {showWakeModal && <ManualWakeModal onClose={() => setShowWakeModal(false)} />}
       <FormModal open={showRegisterModal} onClose={() => setShowRegisterModal(false)} title="注册新会话类" fields={registerFields} values={registerForm} onChange={(key, value) => setRegisterForm((current) => ({ ...current, [key]: value }))} onSubmit={handleRegister} submitText="注册" loading={saving} size="lg" />
       <FormModal open={showEditModal} onClose={() => setShowEditModal(false)} title={`编辑会话类: ${selectedClass || ''}`} fields={editFields} values={editForm} onChange={(key, value) => setEditForm((current) => ({ ...current, [key]: value }))} onSubmit={handleSaveEdit} submitText="保存" loading={saving} size="lg" />
       <FormModal open={showCreateModal} onClose={() => setShowCreateModal(false)} title={`创建会话: ${selectedClass || ''}`} fields={createFields} values={createForm} onChange={(key, value) => setCreateForm((current) => ({ ...current, [key]: value }))} onSubmit={handleCreateSession} submitText="创建" loading={saving} size="lg" />

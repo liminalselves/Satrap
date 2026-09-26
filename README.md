@@ -25,6 +25,7 @@ pip install -e .
 
 ```bash
 pip install -e .[vector]  # faiss 向量检索
+pip install -e .[audio]   # PyAV 本地语音转码 (amr 等非 ASR 接口格式)
 pip install -e .[all]     # 全部可选依赖
 ```
 

@@ -132,7 +132,7 @@ def normalize_openai_base_url(
     if scheme == "http" and not allow_insecure and not _is_loopback_api_host(parsed.hostname):
         raise ValueError("非回环 API base_url 必须使用 https, 或显式启用 allow_insecure")
 
-    suffixes = ("/chat/completions", "/completions", "/responses")
+    suffixes = ("/chat/completions", "/audio/transcriptions", "/completions", "/responses")
     for suffix in suffixes:
         if cleaned.endswith(suffix):
             cleaned = cleaned[: -len(suffix)]

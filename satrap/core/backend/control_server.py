@@ -20,20 +20,23 @@ import dataclasses
 import subprocess
 import argparse
 import asyncio
+import binascii
 from pathlib import Path
 import secrets
 import atexit
 import ctypes
 import signal
 from typing import Any, cast
+import base64
 import json
 import sys
 import os
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
+from satrap.core.log import logger
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
-from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.config.session_overrides import OverrideConflictError
 from satrap.core.framework.SessionManager import SessionConfigStore
@@ -41,13 +44,15 @@ from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
-from satrap.core.config.model_service import ModelConfigService
+from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.config.document import (
+    ConfigRevisionConflict,
+    config_document_revision,
     create_default_config,
     delete_platform,
     find_config_path,
@@ -115,6 +120,23 @@ _CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control
 
 CONTROL_MAX_BODY_BYTES = 1024 * 1024
 """控制服务 JSON 请求体最大字节数"""
+
+ASR_TEST_MAX_BODY_BYTES = ASR_TEST_MAX_AUDIO_BYTES * 4 // 3 + 4096
+"""ASR 转录测试请求体上限, 覆盖 base64 4/3 膨胀与 JSON 包装, 超出音频上限的请求在读取阶段即被拒绝"""
+
+
+def _expected_revision(ctx: "_RouteContext") -> str | None:
+    """
+    读取查询串中的 expected_revision
+
+    参数:
+    - ctx: 请求上下文
+
+    返回:
+    - str | None: 客户端读取时的修订; 未提供时为 None 表示无条件保存, 不用当前值伪造恒等比对
+    """
+    values = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True).get("expected_revision")
+    return values[0] if values else None
 
 CONTROL_MAX_CONNECTIONS = 256
 """控制服务最大并发连接数"""
@@ -584,6 +606,13 @@ def _is_control_api_path(path: str) -> bool:
     ))
 
 
+def _asr_in_use_checker(config_name: str) -> list[dict[str, str]]:
+    """删除/重命名 ASR 配置前扫描平台绑定与插件引用 (含会话覆盖)"""
+    from satrap.core.config.asr_references import list_asr_config_references
+
+    return list_asr_config_references(config_name, config_path=CONFIG_PATH, layout=_configured_storage_layout())
+
+
 def _model_config_service() -> ModelConfigService:
     """
     根据当前后端配置创建共享模型配置服务
@@ -598,7 +627,7 @@ def _model_config_service() -> ModelConfigService:
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    return ModelConfigService(ModelConfigManager(storage_path=storage_path))
+    return ModelConfigService(ModelConfigManager(storage_path=storage_path, asr_in_use_checker=_asr_in_use_checker))
 
 
 def _session_class_config_service() -> SessionClassConfigService:
@@ -1277,7 +1306,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             current_config = load_config_document(CONFIG_PATH)
             submitted_config = await _read_json_body(ctx.reader, ctx.raw_request)
             merged_config = merge_masked_secrets(current_config, submitted_config)
-            config_data = save_config_document(CONFIG_PATH, merged_config)
+            config_data = await asyncio.to_thread(save_config_document, CONFIG_PATH, merged_config)
             return 200, {
                 "ok": True,
                 "message": "配置已保存",
@@ -1316,6 +1345,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 "ok": True,
                 "platforms": redact_config_document(platforms),
                 "exists": CONFIG_PATH.exists(),
+                "revision": config_document_revision(config_data),
             }
         except (OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
@@ -1324,14 +1354,18 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             config_data = load_config_document(CONFIG_PATH)
+            expected_revision = _expected_revision(ctx)
             safe_payload = merge_masked_secrets({}, payload)
             config_data["platforms"] = upsert_platform(config_data.get("platforms", []), safe_payload)
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已创建",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (json.JSONDecodeError, OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 
@@ -1345,18 +1379,22 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
                 (item for item in current_platforms if item["id"] == original_id),
                 cast(dict[str, Any], {}),
             )
+            expected_revision = _expected_revision(ctx)
             safe_payload = merge_masked_secrets(current_platform, payload)
             config_data["platforms"] = upsert_platform(
                 current_platforms,
                 safe_payload,
                 original_id=original_id,
             )
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已更新",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (json.JSONDecodeError, OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 
@@ -1364,13 +1402,17 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
         try:
             platform_id = urllib.parse.unquote(ctx.path.removeprefix("/config/platforms/"))
             config_data = load_config_document(CONFIG_PATH)
+            expected_revision = _expected_revision(ctx)
             config_data["platforms"] = delete_platform(config_data.get("platforms", []), platform_id)
-            saved_config = save_config_document(CONFIG_PATH, config_data)
+            saved_config = await asyncio.to_thread(save_config_document, CONFIG_PATH, config_data, expected_revision=expected_revision)
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(saved_config["platforms"]),
+                "revision": config_document_revision(saved_config),
                 "message": "平台已删除",
             }
+        except ConfigRevisionConflict as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (OSError, ValueError) as e:
             return 400, {"ok": False, "error": str(e)}
 
@@ -1397,6 +1439,33 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.path.startswith("/config/models/"):
         parts = ctx.path.removeprefix("/config/models/").split("/", 1)
+        if len(parts) == 2 and parts[0] == "asr" and parts[1].endswith("/test"):
+            # ASR 转录测试: POST /config/models/asr/{name}/test, 请求体 {filename, audio_base64}
+            if ctx.method != "POST":
+                return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+            name = urllib.parse.unquote(parts[1][: -len("/test")])
+            try:
+                body = await read_request_body(
+                    ctx.reader, ctx.raw_request,
+                    max_bytes=ASR_TEST_MAX_BODY_BYTES, timeout=DEFAULT_BODY_TIMEOUT, required=True,
+                )
+                payload: object = json.loads(body.decode("utf-8"))
+                if not isinstance(payload, dict):
+                    raise ValueError("请求体必须是 JSON 对象")
+                data = cast(dict[str, Any], payload)
+                filename = data.get("filename")
+                audio_base64 = data.get("audio_base64")
+                if not isinstance(filename, str) or not filename.strip():
+                    raise ValueError("缺少音频文件名")
+                if not isinstance(audio_base64, str) or not audio_base64:
+                    raise ValueError("缺少 audio_base64 音频内容")
+                audio = base64.b64decode(audio_base64, validate=True)
+                result = await _model_config_service().test_asr_config(name, filename.strip(), audio)
+                return 200, {"ok": True, **result}
+            except (HTTPRequestError, binascii.Error, UnicodeDecodeError, ValueError) as e:
+                return 400, {"ok": False, "error": str(e)}
+            except Exception as e:
+                return 502, {"ok": False, "error": f"{type(e).__name__}: {e}"}
         if len(parts) != 2:
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
         model_type = urllib.parse.unquote(parts[0])
@@ -1414,9 +1483,35 @@ async def _route_models(ctx: _RouteContext) -> ControlResponse | None:
                     return 200, {"ok": True}
                 return 404, {"error": "not found"}
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except ConfigInUseError as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+        except ConfigReferenceScanError as e:
+            # 扫描不完整: 503 表示"暂时无法判定", 不能伪称已经找到具体引用
+            return 503, {"ok": False, "error": str(e), "code": "asr_reference_scan_failed", "reason": e.reason}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
+    return None
+
+
+async def _route_wake_dry_run(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    唤醒策略试算区段: POST /config/wake-dry-run
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method == "POST" and ctx.path == "/config/wake-dry-run":
+        from satrap.core.pipeline.wake_dry_run import dry_run_wake
+
+        try:
+            result = await dry_run_wake(await _read_json_body(ctx.reader, ctx.raw_request))
+            return 200, result
+        except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
+            return 400, {"ok": False, "error": str(e)}
     return None
 
 
@@ -1661,7 +1756,8 @@ async def _route_rag(ctx: _RouteContext) -> ControlResponse | None:
         return error.status, {"error": str(error), "stage": error.stage}
     except WorkerBusyError as error:
         return 503, {"error": str(error)}
-    except (OSError, TypeError, ValueError, TimeoutError) as error:
+    except (OSError, TypeError, ValueError, asyncio.TimeoutError) as error:
+        # asyncio.TimeoutError 兼容 3.10 的 concurrent.futures 系超时 (3.11+ 为内置别名)
         return 400, {"error": str(error)}
 
 
@@ -2102,6 +2198,7 @@ async def _handle_request(
             _route_lifecycle,
             _route_config_document,
             _route_models,
+            _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
             _route_edictum_metadata,
@@ -2141,7 +2238,8 @@ async def _handle_request(
 
     except HTTPRequestError as error:
         await _send_control_json(writer, error.status, {"error": error.message}, origin)
-    except Exception:
+    except Exception as error:
+        logger.error(f"[ControlServer] 未处理异常: {type(error).__name__}: {error}")
         await _send_control_json(writer, 500, {"error": "internal server error"}, origin)
     finally:
         _CONTROL_ACTIVE_CONNECTIONS -= 1

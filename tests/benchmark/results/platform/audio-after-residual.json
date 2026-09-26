@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-09-22T18:39:58.927655+00:00",
+  "environment": {
+    "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 204 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "dependencies": {
+      "aiocqhttp": "1.4.4",
+      "av": "18.1.0"
+    },
+    "git_head": "eb3b71281c0709cd14ecadcabe787673a797d029",
+    "source_sha256": {
+      "satrap/core/pipeline/audio_convert.py": "87a7b75abce348340c7e514ad08e46cafdf3d0c73ce958f8c9263039d2d65892",
+      "satrap/core/pipeline/attachments.py": "b3e1d0136cb6d2a123dd7d268c2de61390519c7326911411973edb8d0dc393c2",
+      "satrap/core/platform/onebot/admin.py": "44f93c13e1dcafcfaa117a5bd57a077e9afe692287264c047202929da6aa3d57"
+    },
+    "benchmark_sha256": "ada72a09311e53162b4caa3cd35a590864bcfc953100e45f83091165156ac3f8"
+  },
+  "method": {
+    "repeats": 3,
+    "iterations": 50,
+    "aggregation": "median across repeats",
+    "network": "none; OneBot bot, download and ASR mocked"
+  },
+  "scenarios": {
+    "audio_probe": {
+      "mean_us": 0.797599961515516,
+      "p50_us": 0.700005330145359,
+      "p95_us": 1.100008375942707,
+      "count": 1000
+    },
+    "amr_convert": {
+      "mean_us": 19850.416003610007,
+      "p50_us": 20089.800003916025,
+      "p95_us": 20878.200011793524,
+      "count": 50,
+      "input_bytes": 6519.0,
+      "output_bytes": 320654.0,
+      "audio_seconds": 10.0
+    },
+    "record_get_record": {
+      "mean_us": 1400.9200007421896,
+      "p50_us": 1432.69999534823,
+      "p95_us": 1582.500000949949,
+      "count": 50,
+      "audio_seconds": 10.0
+    },
+    "record_local_amr": {
+      "mean_us": 20312.103997566737,
+      "p50_us": 20715.299993753433,
+      "p95_us": 22044.000012101606,
+      "count": 50,
+      "audio_seconds": 10.0
+    }
+  }
+}

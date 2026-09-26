@@ -40,7 +40,10 @@ class _RecorderAdapter(PlatformAdapter):
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(name=self.config.id, id=self.config.id)
 
-    async def send_message(self, session_id: str, message: MessageChain) -> Any:
+    async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
         self.sent.append((session_id, message))
         return None
 
@@ -358,6 +361,108 @@ async def test_execute_resolves_session_via_user_manager(monkeypatch: pytest.Mon
     assert sm.calls[0].session_id == "rec1:user-1:sid"
 
 
+@pytest.mark.asyncio
+async def test_unresolved_session_is_logged_and_dropped(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
+    """resolve_session 返回空时消息丢弃且留下 warning"""
+    import logging
+    sm = _FakeSessionManager()
+    sched = PipelineScheduler(_as_session_manager(sm))
+
+    class _NoneUserManager:
+        def resolve_session(self, *args: Any, **kwargs: Any) -> str:
+            return ""
+
+    monkeypatch.setattr(sched, "user_manager", _NoneUserManager())
+    with caplog.at_level(logging.WARNING):
+        await sched.execute(_message_event(_RecorderAdapter()))
+    assert not sm.calls
+    assert any("未解析到会话, 消息丢弃" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_manual_request_state_outcome_is_consumed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """R1/E3 反例: 只有明确幂等 no-op 不告警, 缺失记录, 终态冲突, 落盘失败与证据查询失败都必须可见"""
+    import logging
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.pipeline.manual_wake_store import ManualWakeStore
+
+    sched = PipelineScheduler(_as_session_manager(_FakeSessionManager()))
+    store = ManualWakeStore(tmp_path / "wake.json")
+    sched.manual_wake_store = store
+    event = _message_event(_RecorderAdapter())
+    ticket = ManualWakeTicket("missing")
+
+    # 已终结记录收到同一目标的重复写入属于明确幂等: 只留 debug
+    store.accept_request("rec1", "missing", "fp", "group:20", "op")
+    assert store.update_request("rec1", "missing", "sent", "ok") == "persisted"
+    with caplog.at_level(logging.DEBUG):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+    assert any("outcome=no_op" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+
+    # 记录不存在与终态冲突都是状态推进未生效, 不能按正常未推进静默
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ManualWakeTicket("vanished"), "sent", "ok")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        and "request_id=vanished" in r.getMessage() and "outcome=missing" in r.getMessage()
+        for r in caplog.records
+    )
+
+    caplog.clear()
+
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "failed", "late")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "request_id=missing" in r.getMessage()
+        and "outcome=conflict" in r.getMessage()
+        for r in caplog.records
+    )
+
+    caplog.clear()
+
+    def _failed_write(*args: Any, **kwargs: Any) -> str:
+        return "io"
+
+    monkeypatch.setattr(store, "update_request", _failed_write)
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert any(
+        "手动请求状态未落盘" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        and "request_id=missing" in r.getMessage() and "status=sent" in r.getMessage()
+        and "outcome=io" in r.getMessage()
+        for r in caplog.records
+    )
+
+    caplog.clear()
+
+    def _lock_timeout(*args: Any, **kwargs: Any) -> str:
+        raise TimeoutError("锁超时")
+
+    monkeypatch.setattr(store, "update_request", _lock_timeout)
+    with caplog.at_level(logging.WARNING):
+        await sched._update_manual_request(event, ticket, "sent", "ok")
+    assert any("手动请求状态回写异常" in r.getMessage() and "TimeoutError" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+
+    def _query_failure(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise OSError("锁超时")
+
+    monkeypatch.setattr(store, "request_send_outcome", _query_failure)
+    with caplog.at_level(logging.WARNING):
+        assert await sched._await_send_settlement(store, "r1", "rec1") is None
+    # 查询失败会让请求终态退化为仅按业务回执裁决, 不能只留 debug
+    assert any(
+        "发送证据查询失败" in r.getMessage() and "request_id=r1" in r.getMessage() and "adapter=rec1" in r.getMessage()
+        for r in caplog.records
+    )
+
+
 def test_resolve_route_adapter_no_requested_uses_source():
     """入站路由应使用事件来源适配器并写入会话配置"""
     sm = _FakeSessionManager()
@@ -406,7 +511,8 @@ def test_extract_img_urls_from_components():
     event = _message_event(adapter)
     event.platform_message = message
 
-    urls = PipelineScheduler._extract_img_urls(event)
+    from satrap.core.pipeline.input_projection import media_sources
+    urls = media_sources(event.get_messages(), "image")
     assert urls == ["http://x/1.png", "local.png"]
 
 
@@ -450,3 +556,198 @@ def test_session_video_signature_adaptation():
     assert invoke(structured) == (call, {})
     with pytest.raises(ValueError, match="未提供视频"):
         invoke(lambda message: message)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop", [True, False])
+async def test_explicit_stop_prevents_model_and_rate_feedback(stop):
+    manager = _FakeSessionManager()
+    adapter = _RecorderAdapter()
+    event = _message_event(adapter)
+    scheduler = PipelineScheduler(_as_session_manager(manager), RateLimiter(rate=1, burst=0))
+    if stop:
+        scheduler.add_preprocessor(lambda current: current.stop_event() or True)
+    else:
+        scheduler.add_preprocessor(lambda current: current.should_call_llm(False) or True)
+    await scheduler.execute(event)
+    assert manager.calls == []
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_final_session_turn_orders_model_and_reply_and_reclaims_locks():
+    manager = _FakeSessionManager()
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    sending = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowAdapter(_RecorderAdapter):
+        async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
+            self.sent.append((session_id, message))
+            if len(self.sent) == 1:
+                sending.set()
+                await release.wait()
+
+    adapter = SlowAdapter()
+    first = asyncio.create_task(scheduler.execute(_message_event(adapter, message_str="first")))
+    await asyncio.wait_for(sending.wait(), 1)
+    later = asyncio.create_task(scheduler.execute(_message_event(adapter, message_str="second")))
+    try:
+        await asyncio.sleep(0)
+        assert len(manager.calls) == 1
+        release.set()
+        await asyncio.wait_for(asyncio.gather(first, later), 1)
+        assert [call.message for call in manager.calls] == ["first", "second"]
+        assert len(adapter.sent) == 2
+        assert scheduler._session_turns == {}
+    finally:
+        first.cancel()
+        later.cancel()
+        await asyncio.gather(first, later, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_session_turn_reuses_lock_while_active_and_serializes():
+    """并发轮次共享同一把锁串行执行, 结束后锁表清空"""
+    manager = _as_session_manager(object())
+    scheduler = PipelineScheduler(manager)
+    order: list[str] = []
+
+    async def turn(name: str) -> None:
+        async with scheduler._session_turn(manager, "s1"):
+            order.append(f"enter-{name}")
+            await asyncio.sleep(0.01)
+            order.append(f"exit-{name}")
+
+    await asyncio.gather(turn("a"), turn("b"))
+    assert order == ["enter-a", "exit-a", "enter-b", "exit-b"]
+    assert scheduler._session_turns == {}
+
+
+@pytest.mark.asyncio
+async def test_unclaimed_automatic_batch_skips_resolution(monkeypatch: pytest.MonkeyPatch):
+    """自动唤醒竞争认领失败时直接退出, 不做引用回源或附件下载"""
+    from unittest.mock import AsyncMock
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "message": [{"type": "reply", "data": {"id": "5"}},
+                                             {"type": "text", "data": {"text": "看看"}}]})
+    event = adapter._event_queue.get_nowait()
+
+    def no_batch(*args: Any, **kwargs: Any) -> tuple[Any, ...]:
+        return ()
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", no_batch)
+    await scheduler.execute(event)
+    adapter._bot.get_msg.assert_not_called()
+    manager.handle_call_async.assert_not_awaited()
+
+
+# ================= A2 窗口批次与投影合并测试 =================
+
+
+@pytest.mark.asyncio
+async def test_real_message_merges_window_without_losing_projection():
+    """frequency 模式下显式 @ + 引用: UserCall 同时保留引用块与先前窗口块, 当前消息不重复"""
+    from unittest.mock import AsyncMock
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 5, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "先聊着"}}]})
+    first = adapter._event_queue.get_nowait()
+    await scheduler.execute(first)
+    manager.handle_call_async.assert_not_awaited()
+
+    adapter._bot.get_msg.return_value = {"message_id": 5, "message_type": "group", "group_id": 20, "user_id": 31,
+        "message": [{"type": "text", "data": {"text": "QUOTED_SECRET_CONTEXT"}}], "sender": {"user_id": 31, "nickname": "甲"}}
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 2,
+        "message_type": "group", "message": [{"type": "reply", "data": {"id": "5"}},
+                                             {"type": "at", "data": {"qq": "10"}},
+                                             {"type": "text", "data": {"text": "please summarize"}}]})
+    second = adapter._event_queue.get_nowait()
+    await scheduler.execute(second)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert "QUOTED_SECRET_CONTEXT" in user_call.message
+    assert "[先前窗口消息" in user_call.message and "先聊着" in user_call.message
+    assert user_call.message.count("please summarize") == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyPatch):
+    """无 prompt 待处理手动唤醒: 输入仅为实际认领批次, 不叠加合成事件正文"""
+    from unittest.mock import AsyncMock
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={"self_id": "10"}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "窗口甲\n窗口乙"}}]})
+    event = adapter._event_queue.get_nowait()
+    snapshot = (PendingText("r1", "30", "1", "窗口甲", 0.0), PendingText("r2", "30", "2", "窗口乙", 0.0))
+    scheduler.manual_wakes.tickets[event] = ManualWakeTicket("req-1", snapshot)
+
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+        return snapshot
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
+    await scheduler.execute(event)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert user_call.message == "[用户 30, 消息 1] 窗口甲\n[用户 30, 消息 2] 窗口乙"
+
+
+@pytest.mark.asyncio
+async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyPatch):
+    """定时补偿唤醒: 以到期实际认领为准, 定时器保存的陈旧正文副本不进入输入"""
+    from unittest.mock import AsyncMock
+    from satrap.core.pipeline.wake_timers import DeadlineTicket
+    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    scheduler = PipelineScheduler(_as_session_manager(manager))
+    adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
+        "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
+    adapter.started = True
+    adapter._bot = AsyncMock()
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
+        "message_type": "group", "message": [{"type": "text", "data": {"text": "旧副本"}}]})
+    event = adapter._event_queue.get_nowait()
+    snapshot = (PendingText("r1", "30", "1", "实际认领", 0.0),)
+    scheduler.wake_timers.tickets[event] = DeadlineTicket(snapshot=snapshot)
+
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+        return snapshot
+
+    monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
+    await scheduler.execute(event)
+    manager.handle_call_async.assert_awaited_once()
+    user_call = manager.handle_call_async.await_args.args[0]
+    assert user_call.message == "[用户 30, 消息 1] 实际认领"
+    assert "旧副本" not in user_call.message

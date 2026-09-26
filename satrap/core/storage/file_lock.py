@@ -1,4 +1,4 @@
-"""跨进程文件锁, 仅用于已有文件数据的知识库写入互斥"""
+"""跨进程文件锁, 用于知识库及配置文档写入互斥"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -61,7 +61,7 @@ class FileLock:
             except OSError:
                 if time.monotonic() >= deadline:
                     self._file.close()
-                    raise TimeoutError("知识库正在执行其他写入操作, 请稍后重试")
+                    raise TimeoutError("目标文件正在执行其他写入操作, 请稍后重试")
                 time.sleep(0.05)
 
     def __exit__(self, *args: object) -> None:
@@ -78,6 +78,7 @@ class FileLock:
                 fcntl.flock(file.fileno(), fcntl.LOCK_UN)
         finally:
             file.close()
+        # 锁文件保留不删除: POSIX 下删除正被等待的锁文件会让后来者拿到另一个 inode, 造成双持有
 
 
 def session_storage_lock(layout: StorageLayout, platform_id: str, session_id: str) -> FileLock:

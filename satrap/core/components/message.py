@@ -722,13 +722,6 @@ class Poke(BaseMessageComponent):
         return {"type": "poke", "data": data}
 
 
-class Forward(BaseMessageComponent):
-    """转发消息组件"""
-
-    type: PlatformComponentType = PlatformComponentType.Forward
-    id: str
-
-
 class Node(BaseMessageComponent):
     """合并转发消息节点"""
 
@@ -816,6 +809,15 @@ class Nodes(BaseMessageComponent):
         - dict[str, Any]: 将 Nodes 转换为 OneBot 风格的消息列表
         """
         return {"messages": [await node.to_dict() for node in self.nodes]}
+
+
+class Forward(BaseMessageComponent):
+    """转发消息组件"""
+
+    type: PlatformComponentType = PlatformComponentType.Forward
+    id: str
+    nodes: list[Node] | None = None
+    """已解析的合并转发节点; None 表示尚未回源或回源失败"""
 
 
 class Json(BaseMessageComponent):

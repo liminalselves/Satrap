@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 import importlib
 import inspect
 from pathlib import Path
-from typing import Any, Type
+from typing import Any, Type, cast
 import sys
 
 from satrap.core.framework.Base import AsyncSession, Session
@@ -103,7 +103,7 @@ class SessionClassDiscoveryService:
                             class_name=cls.__name__,
                             class_path=f"{cls.__module__}.{cls.__qualname__}",
                             is_async=issubclass(cls, AsyncSession),
-                            init_params=_generate_template(_detect_params(cls)),
+                            init_params=_generate_template(_detect_params(cast(Type[Session] | Type[AsyncSession], cls))),
                         )
                     )
         return discovered

@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useId } from 'react';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -6,12 +6,18 @@ import { Input } from '@/components/ui/Input';
 export interface FormField {
   key: string;
   label: string;
-  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox' | 'checkbox-group';
+  type?: 'text' | 'password' | 'number' | 'textarea' | 'select' | 'checkbox' | 'checkbox-group' | 'custom';
   placeholder?: string;
   required?: boolean;
   disabled?: boolean;
   options?: { value: string; label: string }[];
   rows?: number;
+  // 数字字段的控件约束: min/max 为含上界, 排他上界由调用方的校验器负责
+  min?: number;
+  max?: number;
+  step?: number | 'any';
+  // custom 类型的渲染器: 接收当前值与写回回调
+  render?: (value: unknown, onChange: (value: unknown) => void) => React.ReactNode;
 }
 
 export interface FormModalProps {
@@ -26,6 +32,8 @@ export interface FormModalProps {
   cancelText?: string;
   loading?: boolean;
   size?: 'sm' | 'md' | 'lg' | 'xl';
+  // 默认保留浏览器原生校验 (必填与控件约束); 由应用校验器统一给提示的表单显式关闭
+  noValidate?: boolean;
 }
 
 export const FormModal = memo(function FormModal({
@@ -40,7 +48,9 @@ export const FormModal = memo(function FormModal({
   cancelText = '取消',
   loading = false,
   size = 'md',
+  noValidate = false,
 }: FormModalProps) {
+  const formId = useId();
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     onSubmit();
@@ -50,9 +60,12 @@ export const FormModal = memo(function FormModal({
     const value = values[field.key];
 
     switch (field.type) {
+      case 'custom':
+        return field.render ? field.render(value, (next) => onChange(field.key, next)) : null;
       case 'textarea':
         return (
           <textarea
+            id={`${formId}-${field.key}`}
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
             placeholder={field.placeholder}
@@ -64,6 +77,7 @@ export const FormModal = memo(function FormModal({
       case 'select':
         return (
           <select
+            id={`${formId}-${field.key}`}
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
             disabled={field.disabled}
@@ -79,8 +93,11 @@ export const FormModal = memo(function FormModal({
       case 'number':
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="number"
-            step="any"
+            step={field.step ?? 'any'}
+            min={field.min}
+            max={field.max}
             value={(value as number) ?? ''}
             onChange={(e) => onChange(field.key, e.target.value ? Number(e.target.value) : undefined)}
             placeholder={field.placeholder}
@@ -91,6 +108,7 @@ export const FormModal = memo(function FormModal({
         return (
           <label className="flex cursor-pointer items-center gap-3 rounded-sm bg-glass px-3 py-2">
             <input
+              id={`${formId}-${field.key}`}
               type="checkbox"
               checked={Boolean(value)}
               onChange={(e) => onChange(field.key, e.target.checked)}
@@ -132,6 +150,7 @@ export const FormModal = memo(function FormModal({
       case 'password':
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="password"
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -142,6 +161,7 @@ export const FormModal = memo(function FormModal({
       default:
         return (
           <Input
+            id={`${formId}-${field.key}`}
             type="text"
             value={(value as string) || ''}
             onChange={(e) => onChange(field.key, e.target.value)}
@@ -155,10 +175,11 @@ export const FormModal = memo(function FormModal({
 
   return (
     <Modal open={open} onClose={onClose} title={title} size={size}>
-      <form onSubmit={handleSubmit} className="space-y-4">
+      {/* 校验提示: 默认交给浏览器原生气泡, noValidate 的表单由调用方的校验器负责 */}
+      <form onSubmit={handleSubmit} noValidate={noValidate} className="space-y-4">
         {fields.map((field) => (
           <div key={field.key}>
-            <label className="block text-sm font-medium text-text-secondary mb-1">
+            <label htmlFor={field.type === 'checkbox-group' || field.type === 'custom' ? undefined : `${formId}-${field.key}`} className="block text-sm font-medium text-text-secondary mb-1">
               {field.label}
               {field.required && <span className="text-error ml-1">*</span>}
             </label>

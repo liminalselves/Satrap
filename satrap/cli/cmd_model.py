@@ -7,15 +7,16 @@ import json
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, load_cli_config, offline_requested, parse_kv_pairs
 from satrap.cli.output import CliError, dispatch_action, ok, print_json, print_table, render_data
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, safe_getattr_callable
+from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, safe_getattr_callable
 
 
 TYPE_MAP = {
     "llm": ("list_llm_configs", "get_llm_config", "set_llm_config", "update_llm_config", "remove_llm_config"),
     "embedding": ("list_embedding_configs", "get_embedding_config", "set_embedding_config", "update_embedding_config", "remove_embedding_config"),
     "rerank": ("list_rerank_configs", "get_rerank_config", "set_rerank_config", "update_rerank_config", "remove_rerank_config"),
+    "asr": ("list_asr_configs", "get_asr_config", "set_asr_config", "update_asr_config", "remove_asr_config"),
 }
-CLS_MAP: dict[str, type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig]] = {"llm": LLMConfig, "embedding": EmbeddingConfig, "rerank": ReRankConfig}
+CLS_MAP = MODEL_CONFIG_CLASSES
 
 
 def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
@@ -27,10 +28,17 @@ def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     - ModelConfigManager: 离线模型配置管理器
     """
     config = load_cli_config(args)
-    return ModelConfigManager(storage_path=config.model_config_path)
+
+    def _checker(config_name: str) -> list[dict[str, str]]:
+        from satrap.core.config.asr_references import list_asr_config_references
+        from satrap.core.storage import default_storage_layout
+
+        return list_asr_config_references(config_name, platforms=list(config.platforms), layout=default_storage_layout)
+
+    return ModelConfigManager(storage_path=config.model_config_path, asr_in_use_checker=_checker)
 
 
-def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig) -> dict[str, Any]:
+def _fmt_model_config(config: LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig) -> dict[str, Any]:
     """
     参数:
     - config: 配置信息
@@ -54,7 +62,7 @@ def _require_type(args: argparse.Namespace) -> tuple[str, str, str, str, str]:
     """
     info = TYPE_MAP.get(args.type)
     if not info:
-        raise CliError(f"未知类型: {args.type}", hint="可选: llm / embedding / rerank")
+        raise CliError(f"未知类型: {args.type}", hint="可选: llm / embedding / rerank / asr")
     return info
 
 

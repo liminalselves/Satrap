@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -12,10 +12,10 @@ import {
   THINKING_LEVEL_OPTIONS,
 } from '@/utils/constants';
 import { PageHeader, FormModal, FormField, EmptyState } from '@/components/common';
-import { Plus, Edit2, Trash2, Eye, EyeOff } from 'lucide-react';
-import type { LLMConfig, EmbeddingConfig, ReRankConfig } from '@/api/types';
-
-type ModelType = 'llm' | 'embedding' | 'rerank';
+import { Plus, Edit2, Trash2, Eye, EyeOff, Mic } from 'lucide-react';
+import { Modal } from '@/components/ui/Modal';
+import { controlApi, type AsrTestResult } from '@/api/control';
+import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelType } from '@/api/types';
 
 interface ModelFormData {
   name: string;
@@ -34,9 +34,12 @@ interface ModelFormData {
   max_batch_size?: number;
   top_k?: number;
   min_score?: number;
+  language?: string;
+  prompt?: string;
+  timeout?: number;
 }
 
-type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig;
+type ModelConfig = LLMConfig | EmbeddingConfig | ReRankConfig | ASRConfig;
 
 const FIELD_META: Record<ModelType, FormField[]> = {
   llm: [
@@ -85,6 +88,14 @@ const FIELD_META: Record<ModelType, FormField[]> = {
     { key: 'top_k', label: 'Top K', type: 'number' },
     { key: 'min_score', label: 'Min Score', type: 'number' },
   ],
+  asr: [
+    { key: 'model', label: '模型' },
+    { key: 'base_url', label: 'Base URL' },
+    { key: 'api_key', label: 'API Key', type: 'password' },
+    { key: 'language', label: '识别语言', placeholder: '留空由服务端自动检测, 如 zh / en' },
+    { key: 'prompt', label: '提示词', placeholder: '可选, 按服务端能力透传' },
+    { key: 'timeout', label: '超时秒数', type: 'number', placeholder: '留空使用默认 60 秒' },
+  ],
 };
 
 export function Models() {
@@ -92,6 +103,7 @@ export function Models() {
     llmConfigs,
     embeddingConfigs,
     rerankConfigs,
+    asrConfigs,
     fetchAllModels,
     createModel,
     updateModel,
@@ -103,6 +115,7 @@ export function Models() {
   const [editingName, setEditingName] = useState<string | null>(null);
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [formData, setFormData] = useState<ModelFormData>({ name: '' });
+  const [asrTestName, setAsrTestName] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAllModels();
@@ -113,9 +126,10 @@ export function Models() {
     switch (activeTab) {
       case 'llm': return llmConfigs;
       case 'embedding': return embeddingConfigs;
+      case 'asr': return asrConfigs;
       case 'rerank': return rerankConfigs;
     }
-  }, [activeTab, llmConfigs, embeddingConfigs, rerankConfigs]);
+  }, [activeTab, llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs]);
 
   const handleAdd = useCallback(() => {
     setEditingName(null);
@@ -204,7 +218,7 @@ export function Models() {
     <div className="space-y-6">
       <PageHeader
         title="模型配置"
-        description="管理 LLM、Embedding 和 ReRank 模型配置"
+        description="管理 LLM、Embedding、ReRank 和 ASR 模型配置"
         actions={
           <Button variant="primary" onClick={handleAdd}>
             <Plus className="h-4 w-4 mr-2" />
@@ -241,6 +255,7 @@ export function Models() {
                     onToggleApiKey={() => toggleApiKeyVisibility(name)}
                     onEdit={() => handleEdit(name, config)}
                     onDelete={() => handleDelete(name)}
+                    onTest={t.value === 'asr' ? () => setAsrTestName(name) : undefined}
                   />
                 ))}
               </div>
@@ -248,6 +263,8 @@ export function Models() {
           </TabsContent>
         ))}
       </Tabs>
+
+      <AsrTestModal name={asrTestName} onClose={() => setAsrTestName(null)} />
 
       {/* 编辑/新增模态框 */}
       <FormModal
@@ -274,6 +291,7 @@ interface ModelCardProps {
   onToggleApiKey: () => void;
   onEdit: () => void;
   onDelete: () => void;
+  onTest?: () => void;
 }
 
 function ModelCard({
@@ -284,6 +302,7 @@ function ModelCard({
   onToggleApiKey,
   onEdit,
   onDelete,
+  onTest,
 }: ModelCardProps) {
   return (
     <Card className="relative">
@@ -322,6 +341,12 @@ function ModelCard({
           <Edit2 className="h-3 w-3 mr-1" />
           编辑
         </Button>
+        {onTest && (
+          <Button variant="default" size="sm" onClick={onTest} aria-label={`测试转录 ${name}`}>
+            <Mic className="h-3 w-3 mr-1" />
+            测试转录
+          </Button>
+        )}
         <Button
           variant="danger"
           size="sm"
@@ -331,5 +356,104 @@ function ModelCard({
         </Button>
       </div>
     </Card>
+  );
+}
+
+const ASR_TEST_MAX_BYTES = 8 * 1024 * 1024;
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('读取文件失败'));
+    reader.onload = () => {
+      const result = String(reader.result ?? '');
+      const separator = result.indexOf(',');
+      if (separator < 0) {
+        reject(new Error('无法读取音频内容'));
+        return;
+      }
+      resolve(result.slice(separator + 1));
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+// ASR 转录测试: 由后端读取密钥并调用服务商, 浏览器只上传短音频
+function AsrTestModal({ name, onClose }: { name: string | null; onClose: () => void }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<AsrTestResult | null>(null);
+  const [error, setError] = useState<string>('');
+  const requestSeq = useRef(0);
+
+  useEffect(() => {
+    requestSeq.current += 1;
+    setFile(null);
+    setResult(null);
+    setError('');
+    setRunning(false);
+  }, [name]);
+
+  const handleRun = useCallback(async () => {
+    if (!name || !file) return;
+    if (file.size > ASR_TEST_MAX_BYTES) {
+      setError('音频超过 8 MiB 测试上限');
+      return;
+    }
+    const seq = ++requestSeq.current;
+    setRunning(true);
+    setError('');
+    setResult(null);
+    try {
+      const audio = await readFileAsBase64(file);
+      const response = await controlApi.testAsrConfig(name, file.name, audio);
+      // 切换配置或关闭弹窗后到达的迟到响应不再写入当前视图
+      if (seq !== requestSeq.current) return;
+      if (response.ok === false) {
+        setError(response.error || '转录失败');
+      } else {
+        setResult(response);
+      }
+    } catch (e) {
+      if (seq !== requestSeq.current) return;
+      setError(e instanceof Error ? e.message : '转录请求失败');
+    } finally {
+      if (seq === requestSeq.current) setRunning(false);
+    }
+  }, [file, name]);
+
+  return (
+    <Modal open={name !== null} onClose={onClose} title={`测试 ASR 转录: ${name ?? ''}`} size="md">
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary">
+          选择一段短音频 (不超过 8 MiB), 后端使用已保存的密钥调用转录接口; 该操作会产生一次真实调用。
+        </p>
+        <label className="block text-sm">
+          <span className="text-text-secondary">音频文件</span>
+          <input
+            type="file"
+            accept="audio/*,.wav,.mp3,.m4a,.ogg,.flac,.webm"
+            className="mt-1 block w-full text-sm"
+            aria-label="音频文件"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+        </label>
+        {error && <p className="text-sm text-error" role="alert">{error}</p>}
+        {result && (
+          <div className="rounded bg-glass p-3 text-sm space-y-1" role="status">
+            <div className="text-text-tertiary">
+              模型 {result.model || '-'} · 语言 {result.language || '自动'} · 音频 {result.duration ?? '-'} 秒 · 耗时 {result.elapsed_ms ?? '-'} ms{result.converted_from ? ` · 已由 ${result.converted_from} 本地转码为 wav` : ''}
+            </div>
+            <pre className="whitespace-pre-wrap break-words text-text-primary">{result.text || '(空转录结果)'}</pre>
+          </div>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button variant="default" onClick={onClose}>关闭</Button>
+          <Button variant="primary" onClick={handleRun} disabled={!file || running}>
+            {running ? '转录中…' : '开始转录'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

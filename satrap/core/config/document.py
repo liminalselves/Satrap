@@ -2,15 +2,20 @@
 from __future__ import annotations
 
 import tempfile
+import time
+import errno
+import hashlib
 from pathlib import Path
 from typing import Any, cast
 import json
 import os
 import re
 
+from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, validate_event_limits
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
 from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
+from satrap.core.storage.file_lock import FileLock
 
 
 MASKED_SECRET = "********"
@@ -166,12 +171,13 @@ def config_exists(cwd: str | Path | None = None) -> bool:
     return any(path.exists() for path in ConfigLoader.candidate_paths(cwd))
 
 
-def load_config_document(path: str | Path) -> dict[str, Any]:
+def load_config_document(path: str | Path, *, locked: bool = False) -> dict[str, Any]:
     """
     读取 YAML 配置文档
 
     参数:
     - path: 配置文件路径
+    - locked: 是否持有与保存相同的文件锁读取, 后端与控制端跨进程并发时使用
 
     返回:
     - dict[str, Any]: 配置文档, 文件不存在时返回空字典
@@ -179,7 +185,21 @@ def load_config_document(path: str | Path) -> dict[str, Any]:
     config_path = Path(path)
     if not config_path.exists():
         return {}
-    data = safe_yaml_load(config_path.read_text(encoding="utf-8"))
+    if locked:
+        resolved = config_path.resolve()
+        with FileLock(resolved.with_name(f".{resolved.name}.lock")):
+            text = config_path.read_text(encoding="utf-8")
+    else:
+        text = config_path.read_text(encoding="utf-8")
+    # JSON 是 YAML 子集, 但标准库 json 解析快得多; 解析失败再回退 YAML 以兼容带注释的 .json
+    data: object
+    if config_path.suffix.lower() == ".json":
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            data = safe_yaml_load(text)
+    else:
+        data = safe_yaml_load(text)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -274,7 +294,10 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         if platform_id in seen:
             raise ValueError(f"平台 id 重复: {platform_id}")
         seen.add(platform_id)
+        if "enable" in item and not isinstance(item["enable"], bool):
+            raise ValueError("平台 enable 必须是布尔值")
         normalized = dict(item)
+        normalized["enable"] = item.get("enable", True)
         normalized["id"] = platform_id
         normalized["type"] = platform_type
         normalized["session_provider"] = session_provider
@@ -283,6 +306,13 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         else:
             normalized.pop("session_type", None)
         normalized["settings"] = dict(cast(dict[str, Any], settings))
+        validate_event_limits(normalized["settings"])
+        if platform_type in {"onebot", "aiocqhttp"}:
+            validate_wake_policy(normalized["settings"])
+            validate_context_scope(normalized["settings"].get("context_scope", "legacy_user"))
+            for key, validator in (("group_whitelist", normalize_group_whitelist), ("wake_words", normalize_wake_words), ("wake_aliases", normalize_wake_words)):
+                if key in normalized["settings"]:
+                    normalized["settings"][key] = validator(normalized["settings"][key])
         result.append(normalized)
     return result
 
@@ -305,19 +335,57 @@ def validate_config_document(data: object) -> dict[str, Any]:
     return normalized
 
 
-def save_config_document(path: str | Path, data: object) -> dict[str, Any]:
+class ConfigRevisionConflict(ValueError):
+    """配置已被其他写入者修改, 调用方应重新读取后合并"""
+
+
+def config_document_revision(data: object) -> str:
+    """
+    计算配置文档修订, 不返回配置正文
+
+    参数:
+    - data: 已读取的配置文档
+
+    返回:
+    - str: 与字段顺序无关的内容摘要
+    """
+    encoded = json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def save_config_document(
+    path: str | Path, data: object, *, expected_revision: str | None = None,
+) -> dict[str, Any]:
     """
     校验并原子保存配置文档
 
     参数:
     - path: 配置文件路径
     - data: 待保存的配置文档
+    - expected_revision: 读取时的修订, 默认 None 兼容无条件保存
 
     返回:
     - dict[str, Any]: 已保存的规范化配置文档
     """
-    config_path = Path(path)
+    config_path = Path(path).resolve()
     normalized = validate_config_document(data)
+    with FileLock(config_path.with_name(f".{config_path.name}.lock")):
+        if expected_revision is not None:
+            current_revision = config_document_revision(load_config_document(config_path))
+            if current_revision != expected_revision:
+                raise ConfigRevisionConflict("配置已被其他操作修改, 请重新读取并合并后保存")
+        _write_config_document(config_path, normalized)
+    return normalized
+
+
+def _write_config_document(config_path: Path, normalized: dict[str, Any]) -> None:
+    """
+    在调用方持有配置锁时执行原子替换
+
+    参数:
+    - config_path: 配置文件路径
+    - normalized: 已校验的配置文档
+    """
     if config_path.suffix.lower() == ".json":
         dumped_value = json.dumps(normalized, ensure_ascii=False, indent=2) + "\n"
     else:
@@ -335,12 +403,32 @@ def save_config_document(path: str | Path, data: object) -> dict[str, Any]:
             temporary_file.write(dumped_value)
             temporary_file.flush()
             os.fsync(temporary_file.fileno())
-        os.replace(temporary_path, config_path)
+        _replace_with_retry(temporary_path, config_path)
     except Exception:
         if temporary_path.exists():
             temporary_path.unlink()
         raise
-    return normalized
+
+
+def _replace_with_retry(source: Path, target: Path, attempts: int = 20, interval: float = 0.05) -> None:
+    """
+    原子替换配置文件, Windows 下目标被其他进程短暂读取时重试
+
+    参数:
+    - source: 临时文件
+    - target: 目标配置文件
+    - attempts: 最多尝试次数
+    - interval: 每次重试间隔秒数
+    """
+    retryable = {errno.EACCES, errno.EPERM, errno.EBUSY}
+    for index in range(attempts):
+        try:
+            os.replace(source, target)
+            return
+        except OSError as error:
+            if error.errno not in retryable or index == attempts - 1:
+                raise
+            time.sleep(interval)
 
 
 def create_default_config(path: str | Path, *, overwrite: bool = False) -> dict[str, Any]:

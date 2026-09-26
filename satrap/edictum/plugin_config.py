@@ -29,7 +29,7 @@ from satrap.core.log import logger
 CONFIG_DIR = Path(".satrap") / "plugin_config"
 """插件全局配置目录 (相对工作目录)"""
 
-_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "knowledge_base", "knowledge_bases")
+_FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
 
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
@@ -99,11 +99,22 @@ class ConfigField:
             if self.nullable:
                 return None
             return self.default
-        if self.type in {"llm", "embed", "rerank", "knowledge_base", "knowledge_bases"}:
+        if self.type in {"llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases"}:
             return self.validate_strict(value)
         try:
             if self.type == "bool":
-                return bool(value)
+                # 显式映射, 避免 bool("false") == True 的 fail-open
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, (int, float)) and value in (0, 1):
+                    return bool(value)
+                if isinstance(value, str):
+                    mapped = {"true": True, "1": True, "yes": True, "on": True,
+                              "false": False, "0": False, "no": False, "off": False}.get(value.strip().lower())
+                    if mapped is not None:
+                        return mapped
+                logger.warning(f"[插件配置] {self.name} 布尔值 {value!r} 无法识别, 回退默认 {self.default!r}")
+                return self.default
             if self.type == "number":
                 if isinstance(value, bool):
                     return self.default
@@ -270,11 +281,15 @@ class PluginConfigManager:
             cleaned[key] = fld.validate(value)
         path = self._global_path(name)
         temporary = None
+        # 与 ASR 引用扫描共用同一把锁: 扫描判定无引用与删除配置之间不允许写入新引用
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
         try:
-            with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
-                temporary = Path(file.name)
-                json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
-            temporary.replace(path)
+            with REFERENCE_SCAN_LOCK:
+                with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
+                    temporary = Path(file.name)
+                    json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)
+                temporary.replace(path)
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)

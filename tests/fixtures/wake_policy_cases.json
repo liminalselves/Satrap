@@ -1,0 +1,577 @@
+{
+  "cases": [
+    {
+      "context": "platform",
+      "field": "wake_max_wait",
+      "id": "platform-wake-max-wait-below-limit",
+      "valid": true,
+      "value": {
+        "wake_max_wait": 119.5
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_max_wait",
+      "id": "platform-wake-max-wait-epsilon",
+      "valid": true,
+      "value": {
+        "wake_max_wait": 119.9999
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_max_wait",
+      "id": "platform-wake-max-wait-boundary",
+      "valid": false,
+      "value": {
+        "wake_max_wait": 120
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_max_wait",
+      "id": "platform-wake-max-wait-off",
+      "valid": true,
+      "value": {
+        "wake_max_wait": 0
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_max_wait",
+      "id": "platform-wake-max-wait-negative",
+      "valid": false,
+      "value": {
+        "wake_max_wait": -0.5
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_cooldown",
+      "id": "platform-wake-cooldown-over-day",
+      "valid": true,
+      "value": {
+        "wake_cooldown": 86401
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_cooldown",
+      "id": "platform-wake-cooldown-zero",
+      "valid": true,
+      "value": {
+        "wake_cooldown": 0
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_cooldown",
+      "id": "platform-wake-cooldown-negative",
+      "valid": false,
+      "value": {
+        "wake_cooldown": -1
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_cooldown",
+      "id": "platform-wake-cooldown-string",
+      "valid": false,
+      "value": {
+        "wake_cooldown": "30"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_message_threshold",
+      "id": "platform-threshold-fraction",
+      "valid": false,
+      "value": {
+        "wake_message_threshold": 1.5
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_message_threshold",
+      "id": "platform-threshold-bool",
+      "valid": false,
+      "value": {
+        "wake_message_threshold": true
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_message_threshold",
+      "id": "platform-threshold-min",
+      "valid": true,
+      "value": {
+        "wake_message_threshold": 1
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_message_threshold",
+      "id": "platform-threshold-max",
+      "valid": true,
+      "value": {
+        "wake_message_threshold": 32
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_message_threshold",
+      "id": "platform-threshold-over-max",
+      "valid": false,
+      "value": {
+        "wake_message_threshold": 33
+      }
+    },
+    {
+      "context": "platform",
+      "field": "message_text_limit",
+      "id": "platform-message-text-limit-min",
+      "valid": true,
+      "value": {
+        "message_text_limit": 64
+      }
+    },
+    {
+      "context": "platform",
+      "field": "message_text_limit",
+      "id": "platform-message-text-limit-under-min",
+      "valid": false,
+      "value": {
+        "message_text_limit": 63
+      }
+    },
+    {
+      "context": "platform",
+      "field": "input_text_limit",
+      "id": "platform-input-text-limit-max",
+      "valid": true,
+      "value": {
+        "input_text_limit": 200000
+      }
+    },
+    {
+      "context": "platform",
+      "field": "input_text_limit",
+      "id": "platform-input-text-limit-over-max",
+      "valid": false,
+      "value": {
+        "input_text_limit": 200001
+      }
+    },
+    {
+      "context": "platform",
+      "field": "input_media_limit",
+      "id": "platform-input-media-limit-max",
+      "valid": true,
+      "value": {
+        "input_media_limit": 32
+      }
+    },
+    {
+      "context": "platform",
+      "field": "input_media_limit",
+      "id": "platform-input-media-limit-over-max",
+      "valid": false,
+      "value": {
+        "input_media_limit": 33
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_mode",
+      "id": "platform-mode-enum",
+      "valid": true,
+      "value": {
+        "wake_mode": "necessity"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_mode",
+      "id": "platform-mode-unknown",
+      "valid": false,
+      "value": {
+        "wake_mode": "always"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_talk_value",
+      "id": "platform-talk-value-null",
+      "valid": true,
+      "value": {
+        "wake_talk_value": null
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_talk_value",
+      "id": "platform-talk-value-explicit-zero",
+      "valid": true,
+      "value": {
+        "wake_talk_value": 0
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_talk_value",
+      "id": "platform-talk-value-over-max",
+      "valid": false,
+      "value": {
+        "wake_talk_value": 1.5
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_score_threshold",
+      "id": "platform-score-bool",
+      "valid": false,
+      "value": {
+        "wake_score_threshold": true
+      }
+    },
+    {
+      "context": "platform",
+      "field": "reply_with_quote",
+      "id": "platform-bool-string",
+      "valid": false,
+      "value": {
+        "reply_with_quote": "true"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "reply_with_quote",
+      "id": "platform-bool-explicit-false",
+      "valid": true,
+      "value": {
+        "reply_with_quote": false
+      }
+    },
+    {
+      "context": "platform",
+      "field": "voice_transcribe",
+      "id": "platform-voice-transcribe-enum",
+      "valid": true,
+      "value": {
+        "voice_transcribe": "asr_then_platform"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "voice_transcribe",
+      "id": "platform-voice-transcribe-unknown",
+      "valid": false,
+      "value": {
+        "voice_transcribe": "auto"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "notice_types",
+      "id": "platform-notice-types-null",
+      "valid": true,
+      "value": {
+        "notice_types": null
+      }
+    },
+    {
+      "context": "platform",
+      "field": "notice_types",
+      "id": "platform-notice-types-valid",
+      "valid": true,
+      "value": {
+        "notice_types": [
+          "notice",
+          "request.friend",
+          "notice.group_upload"
+        ]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "notice_types",
+      "id": "platform-notice-types-unknown",
+      "valid": false,
+      "value": {
+        "notice_types": [
+          "group"
+        ]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "media_trusted_hosts",
+      "id": "platform-media-hosts-empty",
+      "valid": true,
+      "value": {
+        "media_trusted_hosts": []
+      }
+    },
+    {
+      "context": "platform",
+      "field": "media_trusted_hosts",
+      "id": "platform-media-hosts-blank-item",
+      "valid": false,
+      "value": {
+        "media_trusted_hosts": [
+          " "
+        ]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "media_trusted_hosts",
+      "id": "platform-media-hosts-over-cap",
+      "valid": false,
+      "value": {
+        "media_trusted_hosts": [
+          "h01.example", "h02.example", "h03.example", "h04.example", "h05.example",
+          "h06.example", "h07.example", "h08.example", "h09.example", "h10.example",
+          "h11.example", "h12.example", "h13.example", "h14.example", "h15.example",
+          "h16.example", "h17.example", "h18.example", "h19.example", "h20.example",
+          "h21.example", "h22.example", "h23.example", "h24.example", "h25.example",
+          "h26.example", "h27.example", "h28.example", "h29.example", "h30.example",
+          "h31.example", "h32.example", "h33.example"
+        ]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "media_trusted_hosts",
+      "id": "platform-media-hosts-non-bmp-item-code-points",
+      "valid": true,
+      "value": {
+        "media_trusted_hosts": ["例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "media_trusted_hosts",
+      "id": "platform-media-hosts-non-bmp-item-over-code-points",
+      "valid": false,
+      "value": {
+        "media_trusted_hosts": ["例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"]
+      }
+    },
+    {
+      "context": "platform",
+      "field": "asr_model",
+      "id": "platform-asr-model-empty",
+      "valid": true,
+      "value": {
+        "asr_model": ""
+      }
+    },
+    {
+      "context": "platform",
+      "field": "asr_model",
+      "id": "platform-asr-model-too-long",
+      "valid": false,
+      "value": {
+        "asr_model": "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "asr_model",
+      "id": "platform-asr-model-non-bmp-code-points",
+      "valid": true,
+      "value": {
+        "asr_model": "例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "asr_model",
+      "id": "platform-asr-model-non-bmp-over-code-points",
+      "valid": false,
+      "value": {
+        "asr_model": "例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例例😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "extension",
+      "id": "platform-unknown-extension-passthrough",
+      "valid": true,
+      "value": {
+        "extension": "keep"
+      }
+    },
+    {
+      "context": "platform",
+      "field": "wake_cooldown",
+      "id": "platform-missing-field-inherits",
+      "valid": true,
+      "value": {}
+    },
+    {
+      "context": "group",
+      "field": "wake_cooldown",
+      "id": "group-cooldown-over-day",
+      "valid": true,
+      "value": {
+        "wake_cooldown": 86401
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_max_wait",
+      "id": "group-wake-max-wait-below-limit",
+      "valid": true,
+      "value": {
+        "wake_max_wait": 119.5
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_max_wait",
+      "id": "group-wake-max-wait-boundary",
+      "valid": false,
+      "value": {
+        "wake_max_wait": 120
+      }
+    },
+    {
+      "context": "group",
+      "field": "quote_lookup",
+      "id": "group-quote-lookup-allowed",
+      "valid": true,
+      "value": {
+        "quote_lookup": true
+      }
+    },
+    {
+      "context": "group",
+      "field": "quote_lookup",
+      "id": "group-quote-lookup-string",
+      "valid": false,
+      "value": {
+        "quote_lookup": "on"
+      }
+    },
+    {
+      "context": "group",
+      "field": "input_text_limit",
+      "id": "group-platform-only-field",
+      "valid": false,
+      "value": {
+        "input_text_limit": 100
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_words",
+      "id": "group-words-empty-clears",
+      "valid": true,
+      "value": {
+        "wake_words": []
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_words",
+      "id": "group-words-blank-item",
+      "valid": false,
+      "value": {
+        "wake_words": [
+          " "
+        ]
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_group_overrides",
+      "id": "group-nested-overrides-forbidden",
+      "valid": false,
+      "value": {
+        "wake_group_overrides": {}
+      }
+    },
+    {
+      "context": "group",
+      "field": "extension",
+      "id": "group-unknown-extension-forbidden",
+      "valid": false,
+      "value": {
+        "extension": "keep"
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_talk_value",
+      "id": "group-talk-value-explicit-zero",
+      "valid": true,
+      "value": {
+        "wake_talk_value": 0
+      }
+    },
+    {
+      "context": "group",
+      "field": "wake_mode",
+      "id": "group-empty-inherits",
+      "valid": true,
+      "value": {}
+    },
+    {
+      "context": "time",
+      "field": "wake_mode",
+      "id": "time-mode-frequency",
+      "valid": true,
+      "value": {
+        "wake_mode": "frequency"
+      }
+    },
+    {
+      "context": "time",
+      "field": "quote_lookup",
+      "id": "time-group-only-field",
+      "valid": false,
+      "value": {
+        "quote_lookup": true
+      }
+    },
+    {
+      "context": "time",
+      "field": "wake_max_wait",
+      "id": "time-wake-max-wait-below-limit",
+      "valid": true,
+      "value": {
+        "wake_max_wait": 119
+      }
+    },
+    {
+      "context": "time",
+      "field": "wake_max_wait",
+      "id": "time-wake-max-wait-boundary",
+      "valid": false,
+      "value": {
+        "wake_max_wait": 120
+      }
+    },
+    {
+      "context": "time",
+      "field": "extension",
+      "id": "time-unknown-extension-forbidden",
+      "valid": false,
+      "value": {
+        "extension": "keep"
+      }
+    },
+    {
+      "context": "time",
+      "field": "wake_talk_value",
+      "id": "time-talk-value-explicit-zero",
+      "valid": true,
+      "value": {
+        "wake_talk_value": 0
+      }
+    }
+  ],
+  "version": 1
+}

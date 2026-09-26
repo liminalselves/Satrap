@@ -9,19 +9,40 @@ from __future__ import annotations
 from dataclasses import asdict, fields
 import threading
 from pathlib import Path
-from typing import Any, Dict, Literal, TypeVar, cast
+from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
 from satrap.core.utils.paths import get_data_dir
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig
+from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
 
 from satrap.core.log import logger
 
 
-ConfigTarget = Literal["llm", "embedding", "rerank"]
-ResetTarget = Literal["llm", "embedding", "rerank", "all"]
-TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig)
+ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
+ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
+TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+
+
+class ConfigInUseError(ValueError):
+    """命名配置仍被平台或插件引用, 禁止删除或重命名; references 为结构化引用清单"""
+
+    def __init__(self, target: str, name: str, references: list[dict[str, str]]) -> None:
+        summary = "; ".join(ref["summary"] for ref in references if ref.get("summary")) or "未知引用"
+        super().__init__(f"{target} 配置 {name} 仍被引用, 禁止删除或重命名: {summary}")
+        self.target = target
+        self.name = name
+        self.references = references
+
+
+class ConfigReferenceScanError(RuntimeError):
+    """引用扫描不完整, 无法判定配置是否被引用; 与"确实存在引用"分开处理"""
+
+    def __init__(self, target: str, name: str, reason: str) -> None:
+        super().__init__(f"{target} 配置 {name} 的引用扫描不完整, 已拒绝变更: {reason}")
+        self.target = target
+        self.name = name
+        self.reason = reason
 
 
 class ModelConfigManager:
@@ -29,7 +50,7 @@ class ModelConfigManager:
     模型配置管理器
 
     支持:
-    - LLM/Embedding/ReRank 多配置(按 name 区分)
+    - LLM/Embedding/ReRank/ASR 多配置(按 name 区分)
     - 配置持久化到 JSON
     - 兼容旧版单配置格式, 自动迁移为 `default`
 
@@ -40,16 +61,23 @@ class ModelConfigManager:
 
     DEFAULT_NAME = "default"
 
-    def __init__(self, storage_path: str | Path | None = None, auto_create: bool = True):
+    def __init__(
+        self,
+        storage_path: str | Path | None = None,
+        auto_create: bool = True,
+        asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
+    ):
         """
         初始化 ModelConfigManager
 
         参数:
         - storage_path: 存储路径
         - auto_create: auto创建
+        - asr_in_use_checker: ASR 删除/重命名前的引用扫描, 返回引用清单; 未装配时不检查 (精简运行时)
         """
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
+        self._asr_in_use_checker = asr_in_use_checker
 
         self._llm_configs: Dict[str, LLMConfig] = {
             self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)
@@ -59,6 +87,9 @@ class ModelConfigManager:
         }
         self._rerank_configs: Dict[str, ReRankConfig] = {
             self.DEFAULT_NAME: ReRankConfig(name=self.DEFAULT_NAME)
+        }
+        self._asr_configs: Dict[str, ASRConfig] = {
+            self.DEFAULT_NAME: ASRConfig(name=self.DEFAULT_NAME)
         }
 
         if auto_create:
@@ -192,6 +223,7 @@ class ModelConfigManager:
             "llm": dump_named(self._llm_configs),
             "embedding": dump_named(self._embedding_configs),
             "rerank": dump_named(self._rerank_configs),
+            "asr": dump_named(self._asr_configs),
         }
 
     def _save_locked(self):
@@ -227,6 +259,9 @@ class ModelConfigManager:
                 )
                 self._rerank_configs = self._deserialize_named_configs(
                     data.get("rerank", {}), ReRankConfig, self.DEFAULT_NAME
+                )
+                self._asr_configs = self._deserialize_named_configs(
+                    data.get("asr", {}), ASRConfig, self.DEFAULT_NAME
                 )
                 self._save_locked()
             except Exception as e:
@@ -264,6 +299,8 @@ class ModelConfigManager:
             return self._llm_configs
         if target == "embedding":
             return self._embedding_configs
+        if target == "asr":
+            return self._asr_configs
         return self._rerank_configs
 
     # ---------- LLM 配置 ----------
@@ -515,6 +552,103 @@ class ModelConfigManager:
             self._save_locked()
             return True
 
+    # ---------- ASR 配置 ----------
+    def get_asr_config(self, name: str = DEFAULT_NAME) -> ASRConfig:
+        """
+        获取 ASR 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - ASRConfig: ASR 配置
+        """
+        with self._lock:
+            key = self._normalize_name(name)
+            cfg = self._asr_configs.get(key)
+            if cfg is None:
+                return ASRConfig(name=key)
+            return ASRConfig(**asdict(cfg))
+
+    def list_asr_configs(self, mask_api_key: bool = False) -> Dict[str, Dict[str, Any]]:
+        """
+        列出所有 ASR 配置
+
+        参数:
+        - mask_api_key: maskAPI密钥
+
+        返回:
+        - Dict[str, Dict[str, Any]]: 列出所有 ASR 配置
+        """
+        with self._lock:
+            return self._to_payload_locked(mask_api_key=mask_api_key)["asr"]
+
+    def set_asr_config(self, config: ASRConfig, name: str | None = None):
+        """
+        设置 ASR 配置
+
+        参数:
+        - config: 配置信息
+        - name: 名称
+        """
+        with self._lock:
+            key = self._normalize_name(name or config.name)
+            payload = asdict(config)
+            payload["name"] = key
+            self._asr_configs[key] = ASRConfig(**payload)
+            self._save_locked()
+
+    def update_asr_config(self, name: str = DEFAULT_NAME, **kwargs: Any):
+        """
+        更新 ASR 配置
+
+        参数:
+        - name: 名称
+        - kwargs: 额外关键字参数
+        """
+        with self._lock:
+            key = self._normalize_name(name)
+            current = asdict(self._asr_configs.get(key, ASRConfig(name=key)))
+            current.update(kwargs)
+            current["name"] = key
+            self._asr_configs[key] = self._from_dict(current, ASRConfig)
+            self._save_locked()
+
+    def remove_asr_config(self, name: str) -> bool:
+        """
+        删除 ASR 配置
+
+        参数:
+        - name: 名称
+
+        返回:
+        - bool: 删除 ASR 配置
+        """
+        with self._lock:
+            key = self._normalize_name(name)
+            if key not in self._asr_configs:
+                return False
+            references = self._check_asr_in_use(key)
+            if references:
+                raise ConfigInUseError("asr", key, references)
+            if len(self._asr_configs) <= 1:
+                self._asr_configs[key] = ASRConfig(name=key)
+            else:
+                self._asr_configs.pop(key, None)
+            self._save_locked()
+            return True
+
+    def _check_asr_in_use(self, name: str) -> list[dict[str, str]]:
+        """删除/重命名前的引用扫描, 未装配检查器时放行; 扫描不完整时拒绝但不伪称找到引用"""
+        checker = self._asr_in_use_checker
+        if checker is None:
+            return []
+        try:
+            return checker(name)
+        except Exception as error:
+            logger.error(f"[ModelConfigManager] ASR 引用扫描不完整, 拒绝变更 name={name}: {type(error).__name__}: {error}")
+            raise ConfigReferenceScanError("asr", name, f"{type(error).__name__}: {error}") from error
+
     # ---------- 公共配置 ----------
     def update_named_config(
         self,
@@ -541,6 +675,10 @@ class ModelConfigManager:
                 raise ValueError(f"模型配置不存在: {current_key}")
             if target_key != current_key and target_key in store:
                 raise ValueError(f"模型配置名称已存在: {target_key}")
+            if target == "asr" and target_key != current_key:
+                references = self._check_asr_in_use(current_key)
+                if references:
+                    raise ConfigInUseError("asr", current_key, references)
 
             payload = asdict(store[current_key])
             payload.update(changes)
@@ -549,6 +687,8 @@ class ModelConfigManager:
                 updated = self._from_dict(payload, LLMConfig)
             elif target == "embedding":
                 updated = self._from_dict(payload, EmbeddingConfig)
+            elif target == "asr":
+                updated = self._from_dict(payload, ASRConfig)
             else:
                 updated = self._from_dict(payload, ReRankConfig)
 
@@ -611,4 +751,6 @@ class ModelConfigManager:
                 }
             if target in ("rerank", "all"):
                 self._rerank_configs = {self.DEFAULT_NAME: ReRankConfig(name=self.DEFAULT_NAME)}
+            if target in ("asr", "all"):
+                self._asr_configs = {self.DEFAULT_NAME: ASRConfig(name=self.DEFAULT_NAME)}
             self._save_locked()

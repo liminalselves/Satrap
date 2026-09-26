@@ -11,12 +11,16 @@ from dataclasses import dataclass, field
 import asyncio
 from typing import Any
 from enum import Enum
-from time import time
+from time import time, monotonic
+from copy import deepcopy
 import uuid
 import os
 import re
 
-from satrap.core.components import BaseMessageComponent, PlatformComponentType
+from satrap.core.config.wake_overrides import resolve_wake_settings
+from satrap.core.platform.receipt import SendReceipt
+from satrap.core.call_context import CallOrigin
+from satrap.core.components import BaseMessageComponent, PlatformComponentType, Plain, At, Reply
 from satrap.core.platform import PlatformAdapter
 from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str, safe_getattr_list
 
@@ -342,6 +346,8 @@ class MessageEvent:
         self.platform_message = platform_message
         self.platform_meta = platform_meta
         self.adapter = adapter
+        self.queued_at = monotonic()
+        self.policy_settings = resolve_wake_settings(adapter.config.settings, self.get_group_id()) if isinstance(adapter, PlatformAdapter) else {}
         self.session_provider = session_provider
         self.session_type = session_type
 
@@ -351,18 +357,35 @@ class MessageEvent:
             message_type=mt,
             session_id=session_id,
         )
+        self._call_origin = CallOrigin(
+            adapter_id=platform_meta.id, self_id=self.get_self_id(), chat_type=mt,
+            chat_id=self.get_group_id() or self.get_sender_id(), actor_id=self.get_sender_id(),
+            source_message_id=safe_getattr_str(platform_message, "message_id"), request_id=uuid.uuid4().hex,
+        )
 
         self.role = "member"
         self.is_wake = False
-        self.is_at_or_wake_command = False
 
         self._result: MessageEventResult | None = None
         self.created_at = time()
         self._has_send_oper = False
+        self.last_send_receipt: SendReceipt | None = None
+        self.last_business_receipt: SendReceipt | None = None
+        """最近一次业务发送的回执: 错误反馈回执不覆盖它, 请求结论据此区分送达证据"""
         self.call_llm = True
         self._temporary_local_files: list[str] = []
         self.plugins_name: list[str] | None = None
         self._extras: dict[str, Any] = {}
+
+    @property
+    def call_origin(self) -> CallOrigin:
+        """
+        获取事件创建时冻结的来源
+
+        返回:
+        - CallOrigin: 不随消息预处理和会话路由变化的身份
+        """
+        return self._call_origin
 
     @property
     def unified_msg_origin(self) -> str:
@@ -785,17 +808,24 @@ class MessageEvent:
             conversation=conversation,
         )
 
-    async def send(self, message: MessageChain) -> None:
+    async def send(self, message: MessageChain, *, purpose: str = "business") -> None:
         """
         发送消息到当前会话
 
         参数:
         - message: 要发送的消息链
+        - purpose: business 业务输出或 error_feedback 错误反馈, 支持发送尝试记录的平台据此归并请求结论
+
+        需要发送证据的请求 (已受理的手动唤醒) 由调度器在事件上设置 require_send_tracking,
+        记录不可用时直接拒绝发送而不是发出一条无法确认的业务输出
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                await self.adapter.send_message(self.session_id, message)
-                self._has_send_oper = True
+                result = await self.adapter.send_message(
+                    self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
+                    purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
+                )
+                self._record_send_result(result, purpose=purpose)
             except Exception as e:
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
@@ -816,15 +846,89 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
-                await self.adapter.send_stream(
-                    self.session_id, generator, use_fallback=use_fallback
+                result = await self.adapter.send_stream(
+                    self.session_id, self._decorate_stream(generator), use_fallback=use_fallback
                 )
-                self._has_send_oper = True
+                self._record_send_result(result)
             except Exception as e:
                 logger.error(
                     f"[MessageEvent.send_streaming] 流式发送消息失败: session_id={self.session_id}, "
                     f"错误={e}",
                 )
+
+    def decorate_reply(self, message: MessageChain) -> MessageChain:
+        """
+        按当前有效策略为回复添加引用与 @发送者, 返回新消息链
+
+        参数:
+        - message: 原始回复, 不原地修改
+
+        返回:
+        - MessageChain: 群聊且策略开启时前置 Reply/At; 已有同类组件, 私聊或缺少来源消息 ID 时保持原样
+        """
+        components = list(message.components)
+        if not components or self.is_private_chat():
+            return MessageChain(components)
+        origin = self._call_origin
+        prefix: list[BaseMessageComponent] = []
+        has_reply = any(c.type == PlatformComponentType.Reply for c in components)
+        has_mention = any(
+            c.type == PlatformComponentType.At and safe_getattr_str(c, "qq") == origin.actor_id for c in components
+        )
+        if self.policy_settings.get("reply_with_quote") is True and origin.source_message_id and not has_reply:
+            prefix.append(Reply(id=origin.source_message_id))
+        if self.policy_settings.get("reply_with_mention") is True and origin.actor_id and not has_mention:
+            # 已有 Reply 时 At 紧随其后, 多数 OneBot 实现要求 reply 段位于首位
+            insert_at = 1 if has_reply and components[0].type == PlatformComponentType.Reply else 0
+            components.insert(insert_at, At(qq=origin.actor_id))
+            following = insert_at + 1
+            if following < len(components) and components[following].type == PlatformComponentType.Plain:
+                first_text = safe_getattr_str(components[following], "text")
+                if first_text and not first_text[0].isspace():
+                    components[following] = Plain(" " + first_text)
+        # @ 后补空格防止与正文粘连; 手动唤醒等无来源消息 ID 的事件不添加引用
+        return MessageChain(prefix + components)
+
+    async def _decorate_stream(
+        self, generator: AsyncGenerator[MessageChain, None],
+    ) -> AsyncGenerator[MessageChain, None]:
+        """
+        只装饰流式回复的首个非空块
+
+        参数:
+        - generator: 原始消息块生成器
+
+        返回:
+        - AsyncGenerator: 跳过空块, 首个非空块含引用/@ 的生成器
+        """
+        decorated = False
+        async for chain in generator:
+            if not chain.components:
+                continue
+            if decorated:
+                yield chain
+            else:
+                decorated = True
+                yield self.decorate_reply(chain)
+        # 空块不进入适配器, 避免降级路径把空消息当作明确失败而中断后续块
+
+    def _record_send_result(self, result: object, *, purpose: str = "business") -> None:
+        """
+        保存明确回执并维护逻辑回复的去重标记
+
+        参数:
+        - result: 新适配器的 SendReceipt 或旧适配器的兼容返回值
+        - purpose: business 业务输出或 error_feedback 错误反馈, 后者不进入请求送达证据
+
+        旧适配器返回 None 时仍表示调用已完成, 不伪造平台确认回执
+        """
+        if isinstance(result, SendReceipt):
+            self.last_send_receipt = result
+            if purpose == "business":
+                self.last_business_receipt = result
+            self._has_send_oper = self._has_send_oper or result.suppress_fallback
+        else:
+            self._has_send_oper = True
 
     async def send_typing(self) -> None:
         """发送"输入中"状态指示"""

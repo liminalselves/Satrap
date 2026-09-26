@@ -21,7 +21,7 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
     const overridden = Object.prototype.hasOwnProperty.call(values, key);
     const value = overridden ? values[key] : Object.prototype.hasOwnProperty.call(inherited, key) ? inherited[key] : field.default;
     const locked = disabled || (sessionMode && field.session_overridable === false);
-    const modelField = ['llm', 'embed', 'rerank'].includes(field.type);
+    const modelField = ['llm', 'embed', 'rerank', 'asr'].includes(field.type);
     const knowledgeField = ['knowledge_base', 'knowledge_bases'].includes(field.type);
     const options = modelField ? modelOptions[field.type] || [] : knowledgeField
       ? knowledgeBases.filter((item) => !field.scope || item.scope === field.scope)

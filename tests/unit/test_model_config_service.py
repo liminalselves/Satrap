@@ -174,3 +174,114 @@ def test_dump_uses_storage_key_as_config_name(tmp_path: Path):
     listed = manager.list_llm_configs(mask_api_key=False)
 
     assert listed["alias"]["name"] == "alias"
+
+
+def test_asr_config_crud_masking_and_client_build(tmp_path: Path):
+    """ASR 作为第四类模型配置: 增删改查, 脱敏读取, 由配置构造客户端"""
+    from satrap.core.APICall.ASRCall import ASR, build_asr_from_config
+
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    service.create("asr", "speech", {"model": "whisper-1", "api_key": "asr-secret", "base_url": "https://asr.example.com/v1", "language": "zh"})
+    listed = service.list_configs("asr")
+    assert "speech" in listed and listed["speech"]["api_key"] != "asr-secret"
+    manager.reload()
+    config = manager.get_asr_config("speech")
+    assert (config.model, config.api_key, config.language) == ("whisper-1", "asr-secret", "zh")
+    service.update("asr", "speech", {"language": "en", "timeout": 30})
+    manager.reload()
+    config = manager.get_asr_config("speech")
+    assert (config.language, config.timeout, config.api_key) == ("en", 30, "asr-secret")
+    client = build_asr_from_config(config)
+    assert isinstance(client, ASR) and client.model == "whisper-1" and client.language == "en"
+    client.client.close()
+    assert service.delete("asr", "speech") is True
+    assert not manager.has_config("asr", "speech")
+
+
+@pytest.mark.asyncio
+async def test_asr_test_endpoint_uses_saved_secret_and_rejects_bad_input(tmp_path: Path):
+    """转录测试读取已保存密钥, 拒绝空音频/超限/缺配置, 并关闭客户端"""
+    from unittest.mock import AsyncMock
+    from satrap.core.config import model_service as module
+    from satrap.core.type import ASRResponse
+
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    with pytest.raises(ValueError, match="不存在"):
+        await service.test_asr_config("missing", "a.wav", b"x")
+    service.create("asr", "speech", {"model": "whisper-1", "api_key": "asr-secret"})
+    with pytest.raises(ValueError, match="为空"):
+        await service.test_asr_config("speech", "a.wav", b"")
+    with pytest.raises(ValueError, match="上限"):
+        await service.test_asr_config("speech", "a.wav", b"x" * (module.ASR_TEST_MAX_AUDIO_BYTES + 1))
+
+    seen: dict[str, object] = {}
+
+    class _FakeClient:
+        suppress_error = True
+
+        def __init__(self) -> None:
+            self.client = AsyncMock()
+
+        async def transcribe(self, audio: bytes, filename: str | None = None) -> ASRResponse:
+            seen["audio"], seen["filename"], seen["suppress"] = audio, filename, self.suppress_error
+            return ASRResponse(text="你好", model="whisper-1", language="zh", duration=1.5)
+
+    fake = _FakeClient()
+
+    def _build(cfg: object, *, async_: bool = False) -> _FakeClient:
+        seen["api_key"] = getattr(cfg, "api_key", None)
+        return fake
+
+    original = module.build_asr_from_config
+    module.build_asr_from_config = _build
+    try:
+        result = await service.test_asr_config("speech", "clip.wav", b"RIFF")
+    finally:
+        module.build_asr_from_config = original
+    assert result["text"] == "你好" and result["model"] == "whisper-1" and result["duration"] == 1.5
+    assert isinstance(result["elapsed_ms"], int)
+    assert seen == {"api_key": "asr-secret", "audio": b"RIFF", "filename": "clip.wav", "suppress": False}
+    assert "converted_from" not in result
+    fake.client.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_asr_test_endpoint_probes_and_converts_audio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """测试音频按魔数判定: SILK 明确拒绝, amr 本地转码后附 converted_from, 未知格式拒绝"""
+    from unittest.mock import AsyncMock
+    from satrap.core.config import model_service as module
+    from satrap.core.pipeline import audio_convert
+    from satrap.core.type import ASRResponse
+
+    manager = ModelConfigManager(storage_path=tmp_path / "models.json")
+    service = ModelConfigService(manager)
+    service.create("asr", "speech", {"model": "whisper-1", "api_key": "asr-secret"})
+    with pytest.raises(ValueError, match="SILK"):
+        await service.test_asr_config("speech", "a.amr", b"#!SILK_V3" + bytes(8))
+    with pytest.raises(ValueError, match="无法识别"):
+        await service.test_asr_config("speech", "a.bin", bytes(16))
+    seen: dict[str, object] = {}
+
+    class _FakeClient:
+        suppress_error = True
+        client = AsyncMock()
+
+        async def transcribe(self, audio: bytes, filename: str | None = None) -> ASRResponse:
+            seen["audio"], seen["filename"] = audio, filename
+            return ASRResponse(text="ok", model="whisper-1", language="zh", duration=1.0)
+
+    def _build(cfg: object, *, async_: bool = False) -> _FakeClient:
+        return _FakeClient()
+
+    def _convert(data: bytes, *, max_seconds: float) -> bytes:
+        return b"RIFFconverted"
+
+    monkeypatch.setattr(module, "build_asr_from_config", _build)
+    monkeypatch.setattr(module, "convert_to_wav", _convert)
+    result = await service.test_asr_config("speech", "a.amr", b"#!AMR\n" + bytes(8))
+    assert result["converted_from"] == "amr" and seen == {"audio": b"RIFFconverted", "filename": "test.wav"}
+    monkeypatch.setitem(audio_convert._AV_STATE, "module", None)
+    with pytest.raises(ValueError, match="pip install av"):
+        await service.test_asr_config("speech", "a.amr", b"#!AMR\n" + bytes(8))

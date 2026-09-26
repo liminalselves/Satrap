@@ -265,3 +265,33 @@ def test_install_plugin_config_schema_on_plugin(tmp_path: Path, monkeypatch: Any
     assert plugin.config_schema["root"]["type"] == "path"
     assert plugin.config_schema["timeout"]["default"] == 10
     json.dumps(plugin.config_schema)
+
+
+def test_bool_validate_explicit_mapping_no_fail_open(tmp_path: Path):
+    """宽松 bool 分支显式映射: 字符串 "false" 不再被 bool() 误判为 True"""
+    field = ConfigField("write_tools_enabled", "bool", False)
+    assert field.validate("false") is False
+    assert field.validate("off") is False
+    assert field.validate("0") is False
+    assert field.validate(0) is False
+    assert field.validate("true") is True
+    assert field.validate("yes") is True
+    assert field.validate(1) is True
+    # 无法识别的值回退默认 (fail-closed), 不沿用真值语义
+    assert field.validate("yesss") is False
+    assert field.validate([]) is False
+    assert field.validate(2) is False
+    assert ConfigField("b", "bool", True).validate("garbage") is True
+    # 回退默认True 时非法输入同样回退, 方向始终朝默认
+
+
+def test_load_global_bool_string_is_not_fail_open(tmp_path: Path):
+    """手改的全局 JSON 中字符串 "false" 加载后仍为 False"""
+    import json as _json
+
+    schema = {"write_tools_enabled": ConfigField("write_tools_enabled", "bool", False)}
+    config_dir = tmp_path / "cfg"
+    mgr = PluginConfigManager(config_dir)
+    config_dir.mkdir(parents=True)
+    (config_dir / "group_admin.json").write_text(_json.dumps({"write_tools_enabled": "false"}), encoding="utf-8")
+    assert mgr.load_global("group_admin", schema)["write_tools_enabled"] is False

@@ -1,4 +1,5 @@
 """消息文本清理与片段提取辅助函数"""
+from collections import deque
 from typing import List, Optional
 import re
 
@@ -125,7 +126,9 @@ class TextSplitter:
         - 合并完成的最终文本块列表
         """
         docs: list[str] = []
-        current_doc: List[str] = []
+        # 滑动窗口用 deque: list.pop(0) 每次搬移整个窗口, 单个分块边界的成本是 O(窗口²),
+        # 大窗口 (知识库上传用 chunk_size=100000) 配无分隔长文本会因此耗到十几秒以上
+        current_doc: deque[str] = deque()
         total_len = 0
         separator_len = len(separator)
 
@@ -151,7 +154,7 @@ class TextSplitter:
                         total_len -= pop_len
                         if len(current_doc) > 1:
                             total_len -= separator_len
-                        current_doc.pop(0)
+                        current_doc.popleft()
                         if not current_doc:
                             break
                     # 这里通过弹出队首元素来维持窗口在 chunk_overlap 范围内

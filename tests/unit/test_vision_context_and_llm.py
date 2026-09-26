@@ -189,6 +189,7 @@ def _load_toolkit_config() -> dict[str, str]:
 
 def test_normalize_openai_base_url_for_toolkit_endpoint():
     assert normalize_openai_base_url("https://api.siliconflow.cn/v1/chat/completions") == "https://api.siliconflow.cn/v1"
+    assert normalize_openai_base_url("https://api.siliconflow.cn/v1/audio/transcriptions") == "https://api.siliconflow.cn/v1"
 
 
 def test_normalize_openai_base_url_enforces_transport_security() -> None:

@@ -2,21 +2,24 @@
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from pathlib import Path
+from time import monotonic
+import asyncio
 from typing import Any, cast
 
 from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
 from satrap.core.utils.context_policy import resolve_context_policy
-from satrap.core.type import EmbeddingConfig, LLMConfig, ReRankConfig, validate_thinking_levels
+from satrap.core.APICall.ASRCall import AsyncASR, build_asr_from_config
+from satrap.core.pipeline.audio_convert import AudioConvertError, convert_to_wav, probe_audio
+from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, MODEL_CONFIG_CLASSES, ReRankConfig, validate_thinking_levels
+
+ASR_TEST_MAX_AUDIO_BYTES = 8 * 1024 * 1024
+"""ASR 转录测试接受的解码后音频字节上限"""
+ASR_TEST_MAX_SECONDS = 120.0
+"""测试音频本地转码允许的最长秒数"""
 
 
-_CONFIG_CLASSES: dict[
-    ConfigTarget,
-    type[LLMConfig] | type[EmbeddingConfig] | type[ReRankConfig],
-] = {
-    "llm": LLMConfig,
-    "embedding": EmbeddingConfig,
-    "rerank": ReRankConfig,
-}
+_CONFIG_CLASSES = MODEL_CONFIG_CLASSES
 """模型配置类型到数据类的映射"""
 
 
@@ -47,6 +50,8 @@ class ModelConfigService:
             return self.manager.list_llm_configs(mask_api_key=True)
         if normalized == "embedding":
             return self.manager.list_embedding_configs(mask_api_key=True)
+        if normalized == "asr":
+            return self.manager.list_asr_configs(mask_api_key=True)
         return self.manager.list_rerank_configs(mask_api_key=True)
 
     def create(self, target: str, name: str, payload: object) -> None:
@@ -68,6 +73,8 @@ class ModelConfigService:
             self.manager.set_llm_config(config, name=config_name)
         elif normalized == "embedding":
             self.manager.set_embedding_config(EmbeddingConfig(**cleaned), name=config_name)
+        elif normalized == "asr":
+            self.manager.set_asr_config(ASRConfig(**cleaned), name=config_name)
         else:
             self.manager.set_rerank_config(ReRankConfig(**cleaned), name=config_name)
 
@@ -112,7 +119,80 @@ class ModelConfigService:
             return self.manager.remove_llm_config(config_name)
         if normalized == "embedding":
             return self.manager.remove_embedding_config(config_name)
+        if normalized == "asr":
+            return self.manager.remove_asr_config(config_name)
         return self.manager.remove_rerank_config(config_name)
+
+    async def test_asr_config(self, name: str, filename: str, audio: bytes) -> dict[str, Any]:
+        """
+        用已保存的 ASR 配置转录一段短音频, 密钥只在后端读取, 不落临时文件
+
+        参数:
+        - name: 配置名称
+        - filename: 原始文件名, 用于格式校验
+        - audio: 解码后的音频字节
+
+        返回:
+        - dict[str, Any]: 转录文本, 模型, 语言, 音频秒数与耗时毫秒; 经本地转码时附 converted_from
+        """
+        config_name = self._validate_name(name)
+        if not audio:
+            raise ValueError("音频内容为空")
+        if len(audio) > ASR_TEST_MAX_AUDIO_BYTES:
+            raise ValueError("音频超过测试大小上限")
+        if not self.manager.has_config("asr", config_name):
+            raise ValueError(f"模型配置不存在: asr/{config_name}")
+        config = self.manager.get_asr_config(config_name)
+        if not config.model or not config.api_key:
+            raise ValueError("ASR 配置缺少 model 或 api_key")
+        audio, filename, converted_from = await self._prepare_test_audio(audio, filename)
+        client = cast(AsyncASR, build_asr_from_config(config, async_=True))
+        client.suppress_error = False
+        started = monotonic()
+        try:
+            result = await client.transcribe(audio, filename=filename)
+        finally:
+            await client.client.close()
+        elapsed_ms = int((monotonic() - started) * 1000)
+        if result is None:
+            raise RuntimeError("转录失败且无详细错误")
+        payload: dict[str, Any] = {
+            "text": result.text,
+            "model": result.model,
+            "language": result.language,
+            "duration": result.duration,
+            "elapsed_ms": elapsed_ms,
+        }
+        if converted_from:
+            payload["converted_from"] = converted_from
+        return payload
+
+    @staticmethod
+    async def _prepare_test_audio(audio: bytes, filename: str) -> tuple[bytes, str, str]:
+        """
+        按魔数探测测试音频, 服务不接受的格式在本地转成 wav, 与入站语音走同一套判定
+
+        参数:
+        - audio: 原始字节
+        - filename: 原始文件名
+
+        返回:
+        - tuple[bytes, str, str]: 送入 ASR 的字节, 文件名, 以及转码前编码 (未转码为空)
+        """
+        probe = probe_audio(audio, Path(filename).suffix.lower())
+        if probe.accepted:
+            return audio, filename, ""
+        if probe.reason == "silk_needs_platform_transcode":
+            raise ValueError("QQ SILK 语音无法本地转码, 请改用 OneBot 实现的 get_record 转码或平台原生转写")
+        if probe.reason == "av_missing":
+            raise ValueError(f"{probe.codec} 需要本地转码, 请安装 av 包 (pip install av)")
+        if not probe.convertible:
+            raise ValueError("无法识别的音频格式")
+        try:
+            converted = await asyncio.to_thread(convert_to_wav, audio, max_seconds=ASR_TEST_MAX_SECONDS)
+        except AudioConvertError as error:
+            raise ValueError(f"本地转码失败: {error}") from error
+        return converted, "test.wav", probe.codec
 
     @staticmethod
     def _validate_target(target: str) -> ConfigTarget:
@@ -143,6 +223,8 @@ class ModelConfigService:
         normalized = str(name or "").strip()
         if not normalized:
             raise ValueError("模型配置名称不能为空")
+        if len(normalized) > 128 or "/" in normalized or "\\" in normalized or not normalized.isprintable():
+            raise ValueError("模型配置名称不能超过 128 字符且不能包含路径分隔符或控制字符")
         return normalized
 
     @staticmethod
