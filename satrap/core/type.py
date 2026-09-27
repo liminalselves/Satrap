@@ -271,6 +271,8 @@ class UserCall:
     """当前群已核验的会话覆盖快照, 不持久化为实例配置"""
     group_config_revision: int | None = None
     """本轮会话覆盖对应的群配置修订号"""
+    group_route_generation: int | None = None
+    """本轮会话覆盖对应的群路由代次"""
 
 @dataclass
 class LLMConfig:

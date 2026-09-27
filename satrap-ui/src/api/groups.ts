@@ -93,6 +93,7 @@ export interface GroupConfigResult {
   apply_status: 'applied' | 'pending' | 'failed';
   apply_error?: string;
   route_generation: number;
+  active_instance_count?: number;
   session_instances?: { known_scoped_count: number; current_route_count: number; session_ids: string[];
     override_counts: { model: number; prompt: number; plugins: number } };
   base_revision: string;

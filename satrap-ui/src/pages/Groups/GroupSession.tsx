@@ -286,7 +286,7 @@ export function GroupSession() {
       <p className="text-sm text-text-secondary">切换绑定或范围后, 后续请求创建新会话。原历史保留且不自动合并</p>
     </Card>
     {!historical && <Card className="flex flex-wrap items-center justify-between gap-3">
-      <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? '配置已生效' : config.apply_status === 'failed' ? '配置应用失败' : '将在下次会话安全轮次应用'}</span>
+      <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? (config.active_instance_count === 0 ? '已保存, 后续实例首轮应用' : '配置已生效') : config.apply_status === 'failed' ? '配置应用失败' : '将在下次会话安全轮次应用'}</span>
       <div className="flex gap-2">
         {config.apply_status === 'failed' && <Button variant="subtle" onClick={retryApply} disabled={!isRunning || applying || dirty}>重试应用</Button>}
         <Button variant="primary" onClick={() => setShowImpact(true)} disabled={!canSave}>保存并应用</Button>

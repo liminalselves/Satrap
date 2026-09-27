@@ -78,6 +78,8 @@ class SessionEntry:
     """会话创建时间戳"""
     last_used: float
     """会话最近使用时间戳"""
+    instance_generation: str = field(default_factory=lambda: secrets.token_urlsafe(16))
+    """会话对象的生命周期标识"""
     sync_operation_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     """串行化同步会话运行和运行时配置更新"""
     async_operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -548,6 +550,8 @@ class SessionPool:
 
             if session_id in self._sessions:
                 entry = self._sessions[session_id]
+                if entry.session is not session:
+                    entry.instance_generation = secrets.token_urlsafe(16)
                 entry.session = session
                 entry.session_type = session_type
                 entry.last_used = now
@@ -593,6 +597,7 @@ class SessionPool:
             if current.active_calls > 0 or current.retiring:
                 return False
             current.session = replacement.session
+            current.instance_generation = replacement.instance_generation
             current.session_type = replacement.session_type
             current.created_at = replacement.created_at
             current.last_used = replacement.last_used
@@ -763,7 +768,7 @@ class SessionManager:
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
-        self.group_apply_reporter: Callable[[UserCall, str, str | None], None] | None = None
+        self.group_apply_reporter: Callable[[UserCall, str, str, str | None], None] | None = None
         self.provider_registry = SessionProviderRegistry()
         self.session_class_provider = SessionClassProvider(
             self.registry,
@@ -1341,9 +1346,9 @@ class SessionManager:
                         await self._prepare_session_async(entry.session)
                         await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
                     except Exception as error:
-                        self._report_group_apply(user_call, session_id, str(error))
+                        self._report_group_apply(user_call, session_id, entry.instance_generation, str(error))
                         raise
-                    self._report_group_apply(user_call, session_id, None)
+                    self._report_group_apply(user_call, session_id, entry.instance_generation, None)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
@@ -1409,26 +1414,30 @@ class SessionManager:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
 
-    def _report_group_apply(self, user_call: UserCall, session_id: str, error: str | None) -> None:
+    def _report_group_apply(
+        self, user_call: UserCall, session_id: str, instance_generation: str, error: str | None,
+    ) -> None:
         """将群会话安全轮次的应用结果交给平台运行时"""
         reporter = getattr(self, "group_apply_reporter", None)
         if reporter is None or user_call.group_config_revision is None:
             return
         try:
-            reporter(user_call, session_id, error)
+            reporter(user_call, session_id, instance_generation, error)
         except Exception as report_error:
             logger.error(f"[SessionManager] 群配置应用状态上报失败: {report_error}")
 
     async def retry_group_session_apply_async(
-        self, session_id: str, user_call: UserCall,
+        self, session_id: str, user_call: UserCall, instance_generation: str,
+        is_current: Callable[[], bool],
     ) -> bool:
         """在现有实例的会话锁内重试覆盖应用, 不发起模型对话"""
         entry = self.pool.list_entries().get(session_id)
         session_cfg = self.store.get(session_id)
-        if entry is None or session_cfg is None:
+        if entry is None or session_cfg is None or entry.instance_generation != instance_generation:
             return False
         async with entry.async_operation_lock:
-            if self.pool.list_entries().get(session_id) is not entry:
+            if (self.pool.list_entries().get(session_id) is not entry
+                    or entry.instance_generation != instance_generation or not is_current()):
                 return False
             try:
                 plugins = self._group_plugin_target(session_cfg, user_call)
@@ -1436,9 +1445,11 @@ class SessionManager:
                 await self._prepare_session_async(entry.session)
                 await self._apply_group_session_overrides(session_cfg, entry.session, user_call, plugins)
             except Exception as error:
-                self._report_group_apply(user_call, session_id, str(error))
+                self._report_group_apply(user_call, session_id, instance_generation, str(error))
                 return False
-            self._report_group_apply(user_call, session_id, None)
+            if not is_current():
+                return False
+            self._report_group_apply(user_call, session_id, instance_generation, None)
             return True
 
     def _group_plugin_target(self, session_cfg: SessionConfig, user_call: UserCall) -> list[object] | None:

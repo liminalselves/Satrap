@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 import asyncio
 import json
+import sqlite3
 
 import pytest
 
@@ -15,6 +16,7 @@ from satrap.core.call_context import CallOrigin
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.document import save_config_document
+from satrap.core.conversation import ConversationRoute
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.type import SessionConfig, UserCall
@@ -71,25 +73,40 @@ async def test_group_session_apply_status_and_retry_reaches_failed_instance(tmp_
     }, expected_revision=1)
     await adapter.refresh_group_access("100")
     pending = await backend.group_config("bot", "100", "456")
-    assert pending["apply_status"] == "pending"
-    assert pending["active_revision"] == 1
-    adapter.report_group_session_apply("100", "456", 2, "sid", "群插件配置应用失败")
+    assert pending["apply_status"] == "applied"
+    assert pending["active_revision"] == 2
+    generation = pending["route_generation"]
+    route = ConversationRoute("1", "bot", "simple", "edictum", "group_member", "100", "456", generation)
+    with sqlite3.connect(backend.platform_db_path("bot")) as connection:
+        connection.execute("CREATE TABLE context_sessions (context_key TEXT, platform TEXT, session_id TEXT)")
+        connection.execute("INSERT INTO context_sessions VALUES (?, ?, ?)", (route.key, "bot", "sid"))
+    entry = SimpleNamespace(instance_generation="first")
+    entries = {"sid": entry}
+
+    async def retry(session_id, call, instance_generation, is_current):
+        assert session_id == "sid" and instance_generation == "first" and is_current()
+        assert call.group_session_overrides == {"prompt": "新提示词"}
+        adapter.report_group_session_apply("100", "456", 2, generation, session_id, instance_generation, None)
+        return True
+
+    runtime = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: entries),
+                              retry_group_session_apply_async=retry)
+    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
+    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "first", "群插件配置应用失败")
     failed = await backend.group_config("bot", "100", "456")
     assert failed["apply_status"] == "failed"
     assert failed["apply_error"] == "群插件配置应用失败"
-
-    async def retry(session_id, call):
-        assert session_id == "sid"
-        assert call.group_session_overrides == {"prompt": "新提示词"}
-        adapter.report_group_session_apply("100", "456", 2, session_id, None)
-        return True
-
-    runtime = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {}),
-                              retry_group_session_apply_async=retry)
-    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
     recovered = await backend.apply_group_config("bot", "100", "456", 2)
     assert recovered["apply_status"] == "applied"
     assert recovered["active_revision"] == 2
+    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "first", "旧实例失败")
+    entry.instance_generation = "second"
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
+    adapter.report_group_session_apply("100", "456", 2, generation, "sid", "second", None)
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
+    entries.clear()
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
 
 
 @pytest.mark.asyncio
@@ -104,10 +121,15 @@ async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
         "prompt": {"mode": "value", "value": "新提示词"},
     }, expected_revision=0)
     await adapter.refresh_group_access("100")
+    generation = (await backend.group_config("bot", "100", "456"))["route_generation"]
+    route = ConversationRoute("123", "bot", "simple", "edictum", "group_member", "100", "456", generation)
+    with sqlite3.connect(backend.platform_db_path("bot")) as connection:
+        connection.execute("CREATE TABLE context_sessions (context_key TEXT, platform TEXT, session_id TEXT)")
+        connection.execute("INSERT INTO context_sessions VALUES (?, ?, ?)", (route.key, "bot", "sid"))
     manager = backend._create_session_manager("bot")
     backend._platform_runtimes["bot"] = cast(Any, (manager, None))
     cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
-    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock())
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock(), instance_generation="first")
     monkeypatch.setattr(manager, "_resolve_or_create_session_config", lambda _: cfg)
     monkeypatch.setattr(manager, "_acquire_or_create_entry_async", AsyncMock(return_value=entry))
     monkeypatch.setattr(manager.pool, "list_entries", lambda: {"sid": entry})
@@ -125,7 +147,8 @@ async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
         raise RuntimeError("群插件配置应用失败")
 
     monkeypatch.setattr(manager, "_apply_group_session_overrides", fail_after_wait)
-    call = UserCall(session_id="sid", group_config_revision=1, group_session_overrides={"prompt": "新提示词"},
+    call = UserCall(session_id="sid", group_config_revision=1, group_route_generation=generation,
+                    group_session_overrides={"prompt": "新提示词"},
                     origin=CallOrigin("bot", "100", "GroupMessage", "456", "123", "1", "request"))
     turn = asyncio.create_task(manager.handle_call_async(call))
     await entered.wait()

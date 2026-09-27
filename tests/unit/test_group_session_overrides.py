@@ -169,7 +169,7 @@ async def test_model_reload_reapplies_group_override_and_same_name_config(monkey
 async def test_retry_group_session_apply_reports_failure_and_recovery_without_turn() -> None:
     manager = object.__new__(SessionManager)
     cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
-    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock())
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock(), instance_generation="gen")
     manager.pool = cast(Any, SimpleNamespace(list_entries=lambda: {"sid": entry}))
     manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
     manager._group_plugin_target = cast(Any, lambda *_: [])
@@ -177,13 +177,36 @@ async def test_retry_group_session_apply_reports_failure_and_recovery_without_tu
     apply = AsyncMock(side_effect=[RuntimeError("群插件配置应用失败"), None])
     manager._apply_group_session_overrides = cast(Any, apply)
     reports: list[tuple[str, str | None]] = []
-    manager.group_apply_reporter = lambda call, session_id, error: reports.append((session_id, error))
+    manager.group_apply_reporter = lambda call, session_id, generation, error: reports.append((session_id, error))
     call = UserCall(group_config_revision=2, group_session_overrides={"plugins": []})
 
-    assert not await manager.retry_group_session_apply_async("sid", call)
-    assert await manager.retry_group_session_apply_async("sid", call)
+    assert not await manager.retry_group_session_apply_async("sid", call, "gen", lambda: True)
+    assert await manager.retry_group_session_apply_async("sid", call, "gen", lambda: True)
     assert reports == [("sid", "群插件配置应用失败"), ("sid", None)]
     assert apply.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_retry_discards_instance_replaced_while_waiting_for_lock() -> None:
+    manager = object.__new__(SessionManager)
+    cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
+    lock = asyncio.Lock()
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=lock, instance_generation="first")
+    manager.pool = cast(Any, SimpleNamespace(list_entries=lambda: {"sid": entry}))
+    manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
+    manager._group_plugin_target = cast(Any, lambda *_: [])
+    manager._prepare_session_async = cast(Any, AsyncMock())
+    manager._apply_group_session_overrides = cast(Any, AsyncMock())
+    manager.group_apply_reporter = lambda *_: None
+    await lock.acquire()
+    retry = asyncio.create_task(manager.retry_group_session_apply_async(
+        "sid", UserCall(group_config_revision=2), "first", lambda: True,
+    ))
+    await asyncio.sleep(0)
+    entry.instance_generation = "second"
+    lock.release()
+    assert not await retry
+    manager._apply_group_session_overrides.assert_not_awaited()
 
 
 @pytest.mark.asyncio
