@@ -26,10 +26,16 @@ try {
   let releasePendingActions = null;
   let lostAction = null;
   let lostSend = null;
+  const modelConfigs = {};
+  const edictumConfigs = {};
+  const platforms = [];
+  const firstRun = { reloads: 0, syncs: 0, sent: [], diagnostics: [] };
+  let platformRevision = 'platforms-1';
+  let directoryReady = false;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
     membership: 'joined', confirmed_at: 1_790_000_000, response_enabled: false, response_source: 'account' };
   let unbound = true;
-  let syncMode = 'complete';
+  let syncMode = 'never';
   let settingsMode = 'selected';
   let settingsRevision = 1;
   let settingsApprovalDefaults = {};
@@ -55,6 +61,18 @@ try {
   let conflict = false;
   let actionState = 'pending';
   let actionReject = 0;
+  const injectAtMessage = (message) => {
+    if (!message.includes('@100') || unbound || !directoryReady || !config.effective.policy.enabled) return null;
+    const platform = platforms.find((item) => item.id === 'ob');
+    const namedSession = edictumConfigs[platform?.session_type];
+    if (!platform || !namedSession || !modelConfigs[namedSession.model_name]) return null;
+    const reply = { group_id: '456', message: 'fixture-reply', trigger: '@100', model: namedSession.model_name };
+    firstRun.sent.push(reply);
+    firstRun.diagnostics.push({ request_id: 'first-run-at', recorded_at: '2026-09-27T00:00:00Z',
+      session_id: 'fixture-session', self_id: '100', stages: ['ingress', 'wake', 'model', 'send'],
+      statuses: { send: 'sent' }, reason_codes: ['at_self'], send_status: 'sent' });
+    return reply;
+  };
   await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
     backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
   } }));
@@ -66,6 +84,50 @@ try {
       'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS' };
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
     const reply = (json, status = 200) => route.fulfill({ status, json, headers });
+    if (pathname === '/config/models') return reply(url.searchParams.get('type') === 'llm' ? modelConfigs : {});
+    if (pathname === '/config/models/llm/base' && request.method() === 'POST') {
+      assert.deepEqual(Object.keys(modelConfigs), []);
+      modelConfigs.base = request.postDataJSON();
+      return reply({ ok: true });
+    }
+    if (pathname === '/config/edictum/types') return reply({ types: [{ name: 'simple', is_async: true,
+      description: '测试会话', config_schema: {}, capabilities: { plugins: false, mcp: false, stream: false } }] });
+    if (pathname === '/config/edictum/plugins') return reply({ plugins: [] });
+    if (pathname === '/config/edictum/sessions' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      assert.equal(payload.model_name, 'base');
+      edictumConfigs[payload.name] = { ...payload, provider: 'edictum' };
+      return reply({ ok: true, name: payload.name, config: edictumConfigs[payload.name] });
+    }
+    if (pathname === '/config/edictum/sessions') return reply(edictumConfigs);
+    if (pathname === '/config/platforms' && request.method() === 'POST') {
+      assert.equal(url.searchParams.get('expected_revision'), platformRevision);
+      const payload = request.postDataJSON();
+      assert.equal(payload.session_provider, 'edictum');
+      assert.equal(payload.session_type, 'simple');
+      assert.equal(payload.type, 'onebot');
+      platforms.push(payload);
+      platformRevision = 'platforms-2';
+      return reply({ ok: true, platforms, revision: platformRevision });
+    }
+    if (pathname === '/config/platforms') return reply({ ok: true, platforms, revision: platformRevision });
+    if (pathname === '/api/config/reload' && request.method() === 'POST') {
+      firstRun.reloads += 1;
+      if (platforms.length) unbound = false;
+      return reply({ ok: true, platforms: platforms.map((item) => ({ id: item.id, status: 'applied' })),
+        edictum_sessions: [] });
+    }
+    if (pathname === '/api/platforms/ob/groups/sync' && request.method() === 'POST') {
+      assert.equal(request.postDataJSON().expected_self_id, '100');
+      assert.equal(unbound, false);
+      firstRun.syncs += 1;
+      directoryReady = true;
+      syncMode = 'complete';
+      return reply({ sync_id: 'first-run-sync', status: 'complete', reused: false });
+    }
+    if (pathname === '/api/platforms/ob/groups/sync/first-run-sync') {
+      return reply({ sync_id: 'first-run-sync', status: 'complete', complete: true, truncated: false });
+    }
     if (pathname === '/api/platforms/ob/groups/456/config' && request.method() === 'PATCH') {
       const payload = request.postDataJSON();
       writes.push(payload);
@@ -164,7 +226,10 @@ try {
       eventReads += 1;
       return reply({ items: [], volatile: true, capacity: 4096, truncated: false });
     }
-    if (pathname === '/api/platforms/ob/groups/456/diagnostics') return reply({ records: [], available: true });
+    if (pathname === '/api/platforms/ob/groups/456/diagnostics') return reply({ records: firstRun.diagnostics, available: true });
+    if (pathname === '/api/platforms/ob/groups/456/diagnostics/first-run-at') return reply({ records: [
+      { stage: 'ingress', reason: 'at_self' }, { stage: 'send', status: 'sent' },
+    ] });
     if (pathname === '/api/platforms/ob/groups/456/action-types') return reply({ items: [
       { action_type: 'set_group_name', schema: { name: 'string' }, risk: 'normal',
         approval_mode: 'auto_execute', approval_source: 'default', available: true,
@@ -210,9 +275,10 @@ try {
     if (pathname === '/api/platforms/ob/groups') {
       const requestedAccount = url.searchParams.get('account') || '100';
       if (requestedAccount === '100' && holdOldList) await new Promise((resolve) => { releaseOldList = resolve; });
-      return reply({ items: [{ ...row, group_name: requestedAccount === '101' ? '历史账号群' : row.group_name,
-        response_enabled: settingsMode === 'all' }], total: 1, page: 1, page_size: 25,
-      counts: { joined: 1, response_enabled: settingsMode === 'all' ? 1 : 0, configured: 0 }, account: url.searchParams.get('account') || '100',
+      return reply({ items: directoryReady ? [{ ...row, group_name: requestedAccount === '101' ? '历史账号群' : row.group_name,
+        response_enabled: settingsMode === 'all' || config.effective.policy.enabled }]
+        : [], total: directoryReady ? 1 : 0, page: 1, page_size: 25,
+      counts: { joined: directoryReady ? 1 : 0, response_enabled: settingsMode === 'all' ? 1 : 0, configured: 0 }, account: url.searchParams.get('account') || '100',
       current_account: '100', account_generation: 1,
       sync: { status: syncMode, sync_id: 'sync-1', complete: syncMode === 'complete', truncated: syncMode !== 'complete',
         reason: syncMode === 'complete' ? null : 'invalid_entry',
@@ -235,6 +301,65 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+  await page.goto(`${origin}/models`);
+  await page.getByRole('button', { name: '新增配置' }).click();
+  await page.getByLabel('配置名称').fill('base');
+  await page.getByLabel('模型', { exact: true }).fill('fixture-model');
+  await page.getByLabel('Base URL').fill('http://fixture.invalid/v1');
+  await page.getByLabel('API Key').fill('fixture-key');
+  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByText('base', { exact: true }).last().waitFor();
+  assert.equal(modelConfigs.base.model, 'fixture-model');
+  await page.goto(`${origin}/sessions`);
+  await page.getByRole('button', { name: 'Edictum 会话' }).click();
+  await page.getByRole('button', { name: '新建 Edictum 配置' }).click();
+  await page.getByLabel('配置名称').fill('simple');
+  await page.getByLabel('绑定 LLM').selectOption('base');
+  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByText('Edictum 配置已创建').waitFor();
+  assert.equal(edictumConfigs.simple.model_name, 'base');
+  await page.goto(`${origin}/platforms`);
+  await page.getByRole('button', { name: '添加平台' }).click();
+  await page.getByLabel('平台名称').fill('ob');
+  await page.getByLabel('类型', { exact: true }).selectOption('onebot');
+  await page.getByLabel('会话 Provider').selectOption('edictum');
+  await page.getByLabel('Edictum 命名配置').selectOption('simple');
+  await page.getByLabel('Self ID').fill('100');
+  await page.getByLabel('Host').fill('127.0.0.1');
+  await page.getByLabel('Port').fill('3000');
+  await page.getByRole('button', { name: '创建', exact: true }).click();
+  await page.getByText('配置已保存并生效').waitFor();
+  assert.equal(firstRun.reloads >= 2, true);
+  assert.equal(unbound, false);
+  await page.goto(`${origin}/platforms/ob/groups?account=100`);
+  await page.getByText('尚未同步群列表').last().waitFor();
+  assert.equal(await page.getByText('测试交流群').count(), 0);
+  await page.getByRole('button', { name: '同步群列表' }).click();
+  await page.getByText('测试交流群').last().waitFor();
+  assert.equal(firstRun.syncs, 1);
+  await page.getByRole('link', { name: '进入' }).click();
+  assert.equal(injectAtMessage('@100 启用前不应回复'), null);
+  await page.getByRole('link', { name: '响应策略', exact: true }).click();
+  await page.locator('label:has-text("本群设置") select').selectOption('true');
+  await page.getByRole('button', { name: '保存并应用' }).click();
+  await page.getByText('响应开启').first().waitFor();
+  assert.equal(config.effective.policy.enabled, true);
+  assert.equal(platforms[0].session_type, 'simple');
+  assert.equal(injectAtMessage('普通群消息'), null);
+  assert.deepEqual(injectAtMessage('@100 首次接入'),
+    { group_id: '456', message: 'fixture-reply', trigger: '@100', model: 'base' });
+  assert.deepEqual(firstRun.sent, [{ group_id: '456', message: 'fixture-reply', trigger: '@100', model: 'base' }]);
+  await page.getByRole('link', { name: '事件与诊断' }).click();
+  await page.getByText('first-run-at').waitFor();
+  await page.getByRole('button', { name: '查看阶段明细' }).click();
+  await page.getByText('"status": "sent"').waitFor();
+  firstRun.diagnostics.length = 0;
+  unbound = true;
+  config.explicit.policy = {};
+  config.effective.policy.enabled = false;
+  config.revision = 0;
+  config.saved_revision = 0;
+  config.active_revision = 0;
   await page.goto(`${origin}/platforms/ob/groups`);
   await page.getByText('等待机器人连接并确认账号').waitFor();
   assert.equal(await page.getByText('测试交流群').count(), 0);

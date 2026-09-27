@@ -2,7 +2,7 @@
 
 日期: 2026-09-27
 
-本记录对应 `docs/archive/issue-1/issue-1-plan.md` 第 17 节。`通过` 表示有自动化断言或联调证据; `部分` 表示关键环节分别验证, 但尚缺计划指定的连续流程证据。页面截图由 `node satrap-ui/e2e/groups.mjs` 生成在本地 `satrap-ui/test-results/groups/`。
+本记录对应 `docs/archive/issue-1/issue-1-plan.md` 第 17 节。`通过` 表示有自动化断言或联调证据。页面截图由 `node satrap-ui/e2e/groups.mjs` 生成在本地 `satrap-ui/test-results/groups/`。
 
 | 编号 | 状态 | 证据与限制 |
 | --- | --- | --- |
@@ -23,6 +23,6 @@
 | UI-15 | 通过 | E2E 验证事件及审批页隐藏/恢复/离页轮询, 旧筛选回包不覆盖当前结果 |
 | UI-16 | 通过 | E2E 验证弹窗焦点、脏标签和浏览器返回保护、账号切换; 生成深浅主题及 390px 截图 |
 | UI-17 | 通过 | 后端测试验证隐藏业务事件时退群维护、请求账本与脱敏事件仍可用 |
-| UI-18 | 部分 | SnowLuma 网络、受控模型、真实页面和 ApiClient 各自通过; 尚缺同一浏览器流程从模型/命名会话资源创建到连接、同步、启用、@ 回复和诊断的连续断言; 未做真实 QQ 网络或真实模型供应商验收 |
+| UI-18 | 通过 | 同一浏览器流程用真实页面和 ApiClient 从空配置创建模型及 Edictum 命名会话, 创建 OneBot 平台并观察热加载连接, 同步后群才出现, 启用前 @ 不回复, 启用后受控后端模拟 @ 回复并在诊断页查看阶段明细; SnowLuma 实际网络模块与 QQ 模拟器另行验证消息收发。浏览器后端与模型均为受控替身, 未做真实 QQ 网络或真实模型供应商验收 |
 
 验证门禁: `python -m pytest -q tests/unit` 为 2277 passed, 7 skipped; `python -m pyright -p .pyrightcfg/pyrightconfig.json` 为 0 error; 前端 Vitest 199 passed, lint/build、策略契约 `--check` 和 `node e2e/groups.mjs` 通过。全量 pytest 曾在后续改动前取得 2272 passed, 19 skipped, 单次约 72 分钟; 最后一批改动后未重跑全量集成测试。
