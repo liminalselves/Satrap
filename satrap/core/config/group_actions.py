@@ -18,10 +18,14 @@ ACTION_TTL = 600.0
 TERMINAL_RETENTION = 30 * 86400.0
 
 
-def action_fingerprint(self_id: str, group_id: str, action_type: str, params: Mapping[str, object], actor_kind: str) -> str:
+def action_fingerprint(self_id: str, group_id: str, action_type: str, params: Mapping[str, object],
+                       actor_kind: str, model_origin: Mapping[str, str] | None = None) -> str:
     """计算同 ID 操作的稳定参数指纹, 不记录原始请求 flag"""
+    parts: list[object] = [self_id, group_id, action_type, params, actor_kind]
+    if model_origin is not None:
+        parts.append(dict(model_origin))
     payload = json.dumps(
-        [self_id, group_id, action_type, params, actor_kind],
+        parts,
         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -44,6 +48,11 @@ class GroupActionStore(GroupConfigStore):
                     "WHERE state='pending' AND action_type='handle_group_request'",
                     (time.time(), json.dumps({"reason": "request_flag_lost_on_restart"})),
                 )
+                connection.execute(
+                    "UPDATE group_actions SET state='expired', decision_at=?, result_json=? "
+                    "WHERE state='pending' AND actor_kind='model'",
+                    (time.time(), json.dumps({"reason": "model_source_lost_on_restart"})),
+                )
 
     @staticmethod
     def _record(row: sqlite3.Row) -> dict[str, Any]:
@@ -61,7 +70,7 @@ class GroupActionStore(GroupConfigStore):
     def submit(
         self, action_id: str, self_id: str, group_id: str, action_type: str,
         params: Mapping[str, object], actor_kind: str, policy_revision: int,
-        *, approval_required: bool,
+        *, approval_required: bool, model_origin: Mapping[str, str] | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """同 ID 同指纹返回既有记录, 新动作原子登记为 pending 或 executing"""
         _identity(self_id, group_id)
@@ -74,7 +83,14 @@ class GroupActionStore(GroupConfigStore):
         encoded = json.dumps(dict(params), ensure_ascii=False, sort_keys=True, allow_nan=False)
         if len(encoded.encode("utf-8")) > 8192:
             raise ValueError("动作参数超过上限")
-        fingerprint = action_fingerprint(self_id, group_id, action_type, params, actor_kind)
+        encoded_origin = None
+        if model_origin is not None:
+            required = {"adapter_id", "self_id", "chat_type", "chat_id", "actor_id", "session_id", "tool_name"}
+            if set(model_origin) != required or any(not isinstance(value, str) or len(value) > 256
+                                                    for value in model_origin.values()):
+                raise ValueError("模型动作来源无效")
+            encoded_origin = json.dumps(dict(model_origin), ensure_ascii=False, sort_keys=True)
+        fingerprint = action_fingerprint(self_id, group_id, action_type, params, actor_kind, model_origin)
         now = time.time()
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -94,15 +110,30 @@ class GroupActionStore(GroupConfigStore):
             state = "pending" if approval_required else "executing"
             connection.execute(
                 "INSERT INTO group_actions (action_id, self_id, group_id, action_type, params_json, "
-                "fingerprint, actor_kind, policy_revision, state, created_at, expires_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "fingerprint, actor_kind, policy_revision, state, created_at, expires_at, model_origin_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (action_id, self_id, group_id, action_type, encoded, fingerprint, actor_kind,
-                 policy_revision, state, now, now + ACTION_TTL if approval_required else None),
+                 policy_revision, state, now, now + ACTION_TTL if approval_required else None, encoded_origin),
             )
             row = connection.execute("SELECT * FROM group_actions WHERE action_id=?", (action_id,)).fetchone()
             if row is None:
                 raise RuntimeError("动作登记后读取失败")
             return self._record(row), True
+
+    def model_origin(self, self_id: str, group_id: str, action_id: str) -> dict[str, str] | None:
+        """仅供执行授权复核读取不出现在动作 API 中的模型来源"""
+        _identity(self_id, group_id)
+        with closing(self._connect()) as connection:
+            row = connection.execute(
+                "SELECT model_origin_json FROM group_actions WHERE self_id=? AND group_id=? AND action_id=?",
+                (self_id, group_id, action_id),
+            ).fetchone()
+        if row is None or row["model_origin_json"] is None:
+            return None
+        decoded = json.loads(row["model_origin_json"])
+        if not isinstance(decoded, dict) or any(not isinstance(value, str) for value in decoded.values()):
+            raise RuntimeError("模型动作来源数据损坏")
+        return decoded
 
     def get(self, self_id: str, group_id: str, action_id: str) -> dict[str, Any] | None:
         """按固定账号和群身份读取动作并处理自然到期"""

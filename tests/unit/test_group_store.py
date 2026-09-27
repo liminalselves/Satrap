@@ -78,7 +78,7 @@ def test_override_store_uses_central_schema_without_downgrade(tmp_path: Path) ->
     database = tmp_path / "platform.db"
     SessionOverrideStore(database)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
         connection.execute("PRAGMA user_version = 3")
     SessionOverrideStore(database)
     with sqlite3.connect(database) as connection:

@@ -139,7 +139,7 @@ async def test_model_reload_reapplies_group_override_and_same_name_config(monkey
     manager._model_cfg_mgr = cast(Any, SimpleNamespace(
         get_llm_config=lambda name: LLMConfig(name=name, api_key="test-key"),
     ))
-    manager._apply_session_context_config = lambda *_: None
+    cast(Any, manager)._apply_session_context_config = lambda *_: None
     session = SimpleNamespace(llm=("base", 1), _all_contexts=lambda: {})
     session.reload_llm = lambda llm: setattr(session, "llm", llm)
     entry = SimpleNamespace(session=session, session_type="named", async_operation_lock=asyncio.Lock(),
@@ -148,19 +148,19 @@ async def test_model_reload_reapplies_group_override_and_same_name_config(monkey
     manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
 
     group_call = UserCall(group_session_overrides={"model": "group-model"})
-    await manager._apply_group_session_overrides(cfg, session, group_call, None)
+    await manager._apply_group_session_overrides(cfg, cast(Any, session), group_call, None)
     assert session.llm == ("group-model", 1)
     versions["group-model"] = 2
     await manager.reload_model_configs_async()
     assert session.llm == ("base", 1)
-    await manager._apply_group_session_overrides(cfg, session, group_call, None)
+    await manager._apply_group_session_overrides(cfg, cast(Any, session), group_call, None)
     assert session.llm == ("group-model", 2)
 
     base_call = UserCall(group_session_overrides={"model": "base"})
-    await manager._apply_group_session_overrides(cfg, session, base_call, None)
+    await manager._apply_group_session_overrides(cfg, cast(Any, session), base_call, None)
     versions["base"] = 2
     await manager.reload_model_configs_async()
-    await manager._apply_group_session_overrides(cfg, session, base_call, None)
+    await manager._apply_group_session_overrides(cfg, cast(Any, session), base_call, None)
     assert session.llm == ("base", 2)
 
 

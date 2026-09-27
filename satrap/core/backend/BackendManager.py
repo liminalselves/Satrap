@@ -31,6 +31,9 @@ from satrap.core.config.platform_policy import hot_reload_keys
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.config.group_action_origin import (
+    ModelActionAuthorization, ModelActionAuthorizationError, current_model_action_authorization,
+)
 from satrap.core.config.group_events import GroupEventBuffer
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
@@ -201,6 +204,7 @@ class BackendManager:
         self._group_action_stores: dict[str, GroupActionStore] = {}
         self._group_action_lock = asyncio.Lock()
         self._group_action_flags: dict[str, str] = {}
+        self._group_action_authorizers: dict[str, ModelActionAuthorization] = {}
         self._group_events = GroupEventBuffer()
 
         self._model_cfg: ModelConfigManager | None = None
@@ -1140,10 +1144,16 @@ class BackendManager:
         from satrap.core.platform.onebot.group_action_types import normalize_action_params
 
         normalized, secret_flag = normalize_action_params(action_type, params, self_id)
+        authorization = current_model_action_authorization() if actor_kind == "model" else None
+        if actor_kind == "model":
+            if authorization is None or authorization.identity["adapter_id"] != adapter_id or authorization.identity["self_id"] != self_id:
+                raise PermissionError("模型群动作缺少可信来源")
+            authorization.verify(group_id)
+        model_origin = authorization.identity if authorization is not None else None
         store = await self._group_action_store(adapter_id)
         existing = await asyncio.to_thread(store.get, self_id, group_id, action_id)
         if existing is not None:
-            expected = action_fingerprint(self_id, group_id, action_type, normalized, actor_kind)
+            expected = action_fingerprint(self_id, group_id, action_type, normalized, actor_kind, model_origin)
             if existing["fingerprint"] != expected:
                 raise GroupConfigConflict("相同 action_id 已用于不同动作")
             return existing
@@ -1160,10 +1170,12 @@ class BackendManager:
                 raise PermissionError("群请求 flag 未登记、已过期或归属不符")
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
-            actor_kind, version, approval_required=mode == "approval_required",
+            actor_kind, version, approval_required=mode == "approval_required", model_origin=model_origin,
         )
         if not created:
             return record
+        if authorization is not None:
+            self._group_action_authorizers[action_id] = authorization
         if secret_flag is not None:
             self._group_action_flags[action_id] = secret_flag
         if mode == "approval_required":
@@ -1193,6 +1205,7 @@ class BackendManager:
         )
         if not approve:
             self._group_action_flags.pop(action_id, None)
+            self._group_action_authorizers.pop(action_id, None)
             return decided
         return await self._execute_group_action(adapter_id, self_id, group_id, action_id, decided)
 
@@ -1210,6 +1223,15 @@ class BackendManager:
             adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action)
             if version != record["policy_revision"]:
                 raise AdminActionRejected("审批策略或连接代次已变化")
+            if record["actor_kind"] == "model":
+                persisted_origin = await asyncio.to_thread(store.model_origin, self_id, group_id, action_id)
+                authorization = self._group_action_authorizers.get(action_id)
+                if authorization is None or persisted_origin is None or dict(authorization.identity) != persisted_origin:
+                    raise ModelActionAuthorizationError("model_source_unavailable")
+                try:
+                    authorization.verify(group_id)
+                except Exception as error:
+                    raise ModelActionAuthorizationError("model_permission_revoked") from error
             params = dict(record["params"])
             flag = self._group_action_flags.get(action_id)
             if "flag_digest" in params:
@@ -1221,6 +1243,8 @@ class BackendManager:
             started = True
             await method(group_id, **params)
             state, reason = "succeeded", "platform_confirmed"
+        except ModelActionAuthorizationError as error:
+            state, reason = "failed", str(error)
         except (AdminActionRejected, UnsupportedAdminAction, PermissionError, ValueError) as error:
             state, reason = "failed", type(error).__name__
         except (AdminActionUnconfirmed, asyncio.TimeoutError) as error:
@@ -1232,6 +1256,7 @@ class BackendManager:
             raise
         finally:
             self._group_action_flags.pop(action_id, None)
+            self._group_action_authorizers.pop(action_id, None)
         try:
             return await asyncio.to_thread(store.settle, self_id, group_id, action_id, state, reason)
         except Exception as error:

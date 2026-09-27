@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 2
+PLATFORM_SCHEMA_VERSION = 3
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -43,6 +43,10 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
+    if version >= 3:
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(group_actions)")}
+        if "model_origin_json" not in columns:
+            raise RuntimeError("平台数据库结构损坏: 群动作表缺少模型来源字段")
 
     if version < 1:
         connection.execute(
@@ -105,3 +109,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             "CREATE INDEX idx_group_actions_identity ON group_actions(self_id, group_id, created_at)"
         )
         connection.execute("PRAGMA user_version = 2")
+
+    if version < 3:
+        connection.execute("ALTER TABLE group_actions ADD COLUMN model_origin_json TEXT")
+        connection.execute("PRAGMA user_version = 3")

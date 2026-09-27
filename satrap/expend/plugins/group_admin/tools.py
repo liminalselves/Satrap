@@ -5,10 +5,12 @@ from collections.abc import Awaitable, Coroutine
 from typing import Any, TypeVar, cast, overload
 
 import asyncio
+import weakref
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.call_context import CallOrigin, require_call_origin
+from satrap.core.call_context import CallOrigin, bind_call_origin, require_call_origin
+from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
@@ -158,7 +160,41 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
     return group_id
 
 
-def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) -> Coroutine[Any, Any, Any]:
+def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
+    """固定可信来源并在审批时从仍有效的工具读取当前权限"""
+    tool_ref = weakref.ref(tool)
+    session_ref = getattr(tool, "_group_admin_session_ref", None)
+    identity = {"adapter_id": origin.adapter_id, "self_id": origin.self_id,
+                "chat_type": origin.chat_type, "chat_id": origin.chat_id,
+                "actor_id": origin.actor_id, "session_id": str(getattr(tool, "_group_admin_session_id", "")),
+                "tool_name": str(tool.tool_name)}
+
+    def verify(target_group: str) -> None:
+        """重验工具存活、插件启用状态及当前调用者和目标群限制"""
+        live_tool = tool_ref()
+        if live_tool is None or not live_tool.is_enabled():
+            raise PermissionError("模型管理工具已停用或来源已失效")
+        if session_ref is not None:
+            session = session_ref()
+            workflow = getattr(session, "_wf", None) if session is not None else None
+            tools_manager = getattr(workflow, "tools_manager", None)
+            plugins = session.list_plugins() if session is not None else []
+            plugin = next((item for item in plugins if item.name == "group_admin"), None)
+            if (tools_manager is None or tools_manager.tools.get(live_tool.tool_name) is not live_tool
+                    or not tools_manager.is_tool_enabled(live_tool.tool_name)
+                    or plugin is None or not plugin.enabled or not plugin.tools.get(live_tool.tool_name, False)):
+                raise PermissionError("模型管理工具已从来源会话移除或停用")
+        with bind_call_origin(origin):
+            current_adapter, _, current_groups = _resolve(live_tool.config, True)
+        if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
+            raise PermissionError("模型管理工具的机器人账号或平台已变化")
+        _group_id(origin, current_groups, {"group_id": target_group})
+
+    return ModelActionAuthorization(identity, verify)
+
+
+def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
+                kwargs: dict[str, Any], source_tool: Any) -> Coroutine[Any, Any, Any]:
     """
     按工具名组装管理动作协程, 群目标默认取当前群
 
@@ -205,7 +241,9 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
 
         async def submit() -> dict[str, Any]:
             """把已授权的模型群管理请求交给统一审批与执行服务"""
-            return await cast(Awaitable[dict[str, Any]], handler(gid, action, params))
+            source = _authorization_source(source_tool, admin, origin)
+            with bind_model_action_authorization(source):
+                return await cast(Awaitable[dict[str, Any]], handler(gid, action, params))
 
         return submit()
     if name == "group_admin_list_groups":
@@ -261,6 +299,8 @@ class _GroupAdminMixin:
 
     tool_name: str | None
     config: dict[str, Any]
+    _group_admin_session_ref: weakref.ReferenceType[Session | AsyncSession] | None
+    _group_admin_session_id: str
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
         if not definition or self.tool_name is None:
@@ -274,7 +314,7 @@ class _GroupAdminMixin:
         name = str(self.tool_name)
         write = _DEFINITIONS[name][3]
         adapter, origin, allowed = _resolve(self.config, write)
-        result = await _build_call(name, adapter.admin, origin, allowed, kwargs)
+        result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
         return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
@@ -287,7 +327,7 @@ class _GroupAdminMixin:
             loop = getattr(adapter, "_loop", None)
             if loop is None or loop.is_closed():
                 raise ValueError("平台事件循环不可用")
-            coro = _build_call(name, adapter.admin, origin, allowed, kwargs)
+            coro = _build_call(name, adapter.admin, origin, allowed, kwargs, self)
             future = asyncio.run_coroutine_threadsafe(coro, loop)
             try:
                 result = future.result(timeout=15)
@@ -364,7 +404,14 @@ def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: An
 @overload
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
-    """平台管理工具不依赖会话状态, 权限与适配器在执行时按来源身份解析"""
-    if isinstance(session, AsyncSimpleSession):
-        return _build_tools(AsyncGroupAdminTool, config)
-    return _build_tools(GroupAdminTool, config)
+    """创建平台管理工具并保留审批时可复核的来源会话引用"""
+    tools = (_build_tools(AsyncGroupAdminTool, config) if isinstance(session, AsyncSimpleSession)
+             else _build_tools(GroupAdminTool, config))
+    try:
+        session_ref = weakref.ref(session)
+    except TypeError:
+        session_ref = None
+    for tool in tools:
+        tool._group_admin_session_ref = session_ref
+        tool._group_admin_session_id = str(getattr(session, "session_id", ""))
+    return tools

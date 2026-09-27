@@ -11,11 +11,13 @@ from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.config.group_actions import GroupActionStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict
-from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.call_context import CallOrigin, bind_call_origin
+from satrap.core.platform import PlatformAdapterManager, PlatformConfig, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
 from satrap.core.platform.onebot.group_action_types import normalize_action_params
 from satrap.core.platform.receipt import SendReceipt
+from satrap.expend.plugins.group_admin.tools import AsyncGroupAdminTool, _build_tools
 
 
 def test_pending_decision_is_atomic_and_cannot_replay(tmp_path: Path) -> None:
@@ -76,6 +78,84 @@ def test_executing_recovers_unknown_without_retry(tmp_path: Path) -> None:
     assert record["result"]["reason"] == "interrupted_restart"
     with pytest.raises(GroupConfigConflict):
         recovered.settle("10000", "456", "action-0002", "succeeded", "platform_confirmed")
+
+
+def test_pending_model_action_expires_when_source_is_lost_on_restart(tmp_path: Path) -> None:
+    database = tmp_path / "platform.db"
+    store = GroupActionStore(database)
+    origin = {"adapter_id": "bot", "self_id": "100", "chat_type": "GroupMessage",
+              "chat_id": "456", "actor_id": "123", "session_id": "sid", "tool_name": "group_admin_kick"}
+    record, _ = store.submit("model-restart-1", "100", "456", "kick_group_member", {"user_id": "42"},
+                             "model", 1, approval_required=True, model_origin=origin)
+    assert record["state"] == "pending"
+    assert "model_origin" not in record
+    assert store.model_origin("100", "456", "model-restart-1") == origin
+    recovered = GroupActionStore(database, recover=True)
+    expired = recovered.get("100", "456", "model-restart-1")
+    assert expired is not None and expired["state"] == "expired"
+    assert expired["result"]["reason"] == "model_source_lost_on_restart"
+
+
+def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> None:
+    database = tmp_path / "platform.db"
+    store = GroupActionStore(database)
+    store.submit("legacy-action-1", "100", "456", "set_group_name", {"name": "旧群名"},
+                 "panel", 1, approval_required=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE group_actions DROP COLUMN model_origin_json")
+        connection.execute("PRAGMA user_version = 2")
+    migrated = GroupActionStore(database)
+    record = migrated.get("100", "456", "legacy-action-1")
+    assert record is not None and record["state"] == "pending"
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert "model_origin_json" in {row[1] for row in connection.execute("PRAGMA table_info(group_actions)")}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ["write", "caller", "group", "tool"])
+async def test_pending_model_action_rechecks_current_permission(tmp_path: Path, revocation: str) -> None:
+    """审批不能替已撤销的模型工具权限补授权"""
+    settings = {"group_management_version": 1}
+    backend = BackendManager(BackendConfig(data_root=str(tmp_path), platforms=[
+        {"id": "bot", "type": "onebot", "settings": settings},
+    ]))
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    adapter.bot_self_id = "100"
+    adapter._bot = AsyncMock()
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters["bot"] = adapter
+    directory = GroupDirectoryStore(backend.platform_db_path("bot"))
+    directory.adopt_legacy("100", settings)
+    directory.confirm_membership("100", "456", True)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("100")
+    adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+        "bot", "100", gid, "model-pending-1", action, params, actor_kind="model",
+    )
+    set_current_adapter_manager(backend._adapter_mgr)
+    config = {"write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "456"}
+    tool = next(item for item in _build_tools(AsyncGroupAdminTool, config) if item.tool_name == "group_admin_kick")
+    origin = CallOrigin("bot", "100", "GroupMessage", "456", "123", "message-1", "request-1")
+    try:
+        with bind_call_origin(origin):
+            submitted = await tool.execute(user_id="42")
+        assert submitted["data"]["state"] == "pending"
+        adapter._bot.set_group_kick.assert_not_awaited()
+        if revocation == "write":
+            config["write_tools_enabled"] = False
+        elif revocation == "caller":
+            config["allowed_callers"] = "999"
+        elif revocation == "group":
+            config["allowed_groups"] = "789"
+        else:
+            tool.disable()
+        result = await backend.decide_group_action("bot", "100", "456", "model-pending-1", approve=True)
+        assert result["state"] == "failed"
+        assert result["result"]["reason"] == "model_permission_revoked"
+        adapter._bot.set_group_kick.assert_not_awaited()
+    finally:
+        set_current_adapter_manager(None)
 
 
 def test_group_request_flag_never_enters_persistent_parameters(tmp_path: Path) -> None:
