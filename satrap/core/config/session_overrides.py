@@ -10,11 +10,12 @@ from copy import deepcopy
 import json
 import time
 
+from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.storage.file_lock import database_session_lock
 
 
 OVERRIDE_SCHEMA_VERSION = 1
-"""覆盖表结构版本, 写入平台库的 user_version; 0 表示建表版本未知的旧库"""
+"""覆盖表最早出现的结构版本, 供只读引用扫描识别旧库"""
 
 
 class OverrideConflictError(ValueError):
@@ -22,18 +23,8 @@ class OverrideConflictError(ValueError):
 
 
 def ensure_override_tables(connection: sqlite3.Connection) -> None:
-    """创建覆盖记录表并在同一事务中向上写结构版本, 供引用扫描判断缺表是否属于旧库"""
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS session_config_overrides ("
-        "session_id TEXT NOT NULL, namespace TEXT NOT NULL, "
-        "config_json TEXT NOT NULL DEFAULT '{}', schema_version INTEGER NOT NULL DEFAULT 1, "
-        "revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL, "
-        "PRIMARY KEY (session_id, namespace))"
-    )
-    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if current < OVERRIDE_SCHEMA_VERSION:
-        # 只向上写: 更高版本由更新的代码负责, 不覆盖也不回退
-        connection.execute(f"PRAGMA user_version = {OVERRIDE_SCHEMA_VERSION}")
+    """通过统一平台迁移入口确保覆盖表和群管理表存在"""
+    ensure_platform_tables(connection)
 
 
 class SessionOverrideStore:
