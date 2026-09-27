@@ -405,8 +405,9 @@ class BackendManager:
         try:
             await adapter.refresh_group_access(self_id)
         except Exception as error:
-            return {**saved, "apply_status": "failed", "apply_error": type(error).__name__}
-        return {**saved, "apply_status": "applied"}
+            return {**await self.group_settings(adapter_id, self_id), **saved,
+                    "apply_status": "failed", "apply_error": type(error).__name__}
+        return {**await self.group_settings(adapter_id, self_id), **saved, "apply_status": "applied"}
 
     async def list_groups(
         self, adapter_id: str, self_id: str, *, query: str = "", membership: str = "joined",

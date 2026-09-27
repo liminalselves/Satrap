@@ -129,11 +129,15 @@ async def test_settings_route_updates_current_account_and_rejects_friend_policy(
     backend, adapter = _runtime(tmp_path)
     store = GroupDirectoryStore(backend.platform_db_path("bot"))
     store.adopt_legacy("100", {"group_management_version": 1})
+    store.confirm_membership("100", "123", True)
     server = BackendHTTPServer(backend)
     status, accounts = await server._route("GET", "/api/platforms/bot/groups/accounts", b"")
     assert status == 200 and accounts["current_account"] == "100"
     status, settings = await server._route("GET", "/api/platforms/bot/groups/settings?account=100", b"")
     assert status == 200 and settings["mode"] == "selected"
+    assert settings["approval_inheriting_counts"]["kick_group_member"] == 1
+    assert any(item["action_type"] == "kick_group_member" and item["risk"] == "high"
+               for item in settings["approval_actions"])
     invalid = {"expected_self_id": "100", "expected_revision": 1, "mode": "all",
                "approval_defaults": {"handle_friend_request": "auto_execute"}}
     status, body = await server._route(
@@ -145,6 +149,7 @@ async def test_settings_route_updates_current_account_and_rejects_friend_policy(
         "PATCH", "/api/platforms/bot/groups/settings", json.dumps(invalid).encode("utf-8"),
     )
     assert status == 200 and saved["mode"] == "all" and saved["apply_status"] == "applied"
+    assert saved["approval_inheriting_counts"]["kick_group_member"] == 1
     assert adapter.allows_group("123")
     status, body = await server._route(
         "PATCH", "/api/platforms/bot/groups/settings", json.dumps(invalid).encode("utf-8"),
@@ -221,6 +226,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     assert result is not None
     status, saved = result
     assert status == 200 and saved["mode"] == "all" and saved["apply_status"] == "pending"
+    assert saved["approval_inheriting_counts"]["kick_group_member"] == 0
     save_config_document(path, {
         "data_root": str(tmp_path / "data"),
         "platforms": [{"id": "bot", "type": "onebot", "settings": {"group_management_version": 1}}],

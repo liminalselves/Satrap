@@ -1096,7 +1096,13 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 store.patch_account, expected_self_id, expected_revision=revision,
                 mode=mode, approval_defaults=cast(dict[str, object], defaults),
             )
-            return 200, {**saved, "apply_status": "pending"}
+            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+            from satrap.core.platform.onebot.group_action_types import action_metadata
+
+            counts = await asyncio.to_thread(store.approval_inheritance_counts, expected_self_id)
+            return 200, {**saved, "current": True, "offline_snapshot": True,
+                         "approval_actions": [action_metadata(action) for action in sorted(GROUP_APPROVAL_ACTIONS)],
+                         "approval_inheriting_counts": counts, "apply_status": "pending"}
         if len(parts) == 6 and parts[5] == "config" and ctx.method in {"GET", "PATCH"}:
             from satrap.core.config.group_approval import effective_approval
             from satrap.core.config.group_events import EVENT_KINDS, event_values
