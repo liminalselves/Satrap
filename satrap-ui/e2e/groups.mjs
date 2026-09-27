@@ -20,6 +20,7 @@ try {
   const actionPosts = [];
   const dryRuns = [];
   const rejectedActions = [];
+  let eventReads = 0;
   let lostAction = null;
   let lostSend = null;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
@@ -28,6 +29,8 @@ try {
   let syncMode = 'complete';
   let settingsMode = 'selected';
   let settingsRevision = 1;
+  let holdOldList = false;
+  let releaseOldList = null;
   let config = {
     account: '100', current_account: '100', group: row, explicit: { policy: {}, session: {}, events: {}, approval: {} },
     revision: 0, saved_revision: 0, active_revision: 0, apply_status: 'applied', route_generation: 0,
@@ -124,7 +127,10 @@ try {
       total: 1, page: 1, page_size: 25,
     });
     if (pathname === '/api/platforms/ob/groups/456/config') return reply({ ...config, account: url.searchParams.get('account') || '100' });
-    if (pathname === '/api/platforms/ob/groups/456/events') return reply({ items: [], volatile: true, capacity: 4096, truncated: false });
+    if (pathname === '/api/platforms/ob/groups/456/events') {
+      eventReads += 1;
+      return reply({ items: [], volatile: true, capacity: 4096, truncated: false });
+    }
     if (pathname === '/api/platforms/ob/groups/456/diagnostics') return reply({ records: [], available: true });
     if (pathname === '/api/platforms/ob/groups/456/action-types') return reply({ items: [
       { action_type: 'set_group_name', schema: { name: 'string' }, risk: 'normal',
@@ -152,7 +158,7 @@ try {
       settingsMode = payload.mode;
       settingsRevision += 1;
     }
-    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: '100', mode: settingsMode, approval_defaults: {},
+    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: url.searchParams.get('account') || '100', mode: settingsMode, approval_defaults: {},
       revision: settingsRevision, migrated_at: 1_790_000_000, last_bound_at: 1_790_000_000,
       legacy_adopted: true, current: true, apply_status: 'applied' });
     if (pathname === '/api/platforms/ob/groups/accounts' && unbound) return reply({
@@ -163,12 +169,17 @@ try {
         { self_id: '101', mode: 'selected', revision: 1, last_bound_at: 1_790_000_000 }],
       current_account: '100', waiting_for_account: false,
     });
-    if (pathname === '/api/platforms/ob/groups') return reply({ items: [{ ...row, response_enabled: settingsMode === 'all' }], total: 1, page: 1, page_size: 25,
+    if (pathname === '/api/platforms/ob/groups') {
+      const requestedAccount = url.searchParams.get('account') || '100';
+      if (requestedAccount === '100' && holdOldList) await new Promise((resolve) => { releaseOldList = resolve; });
+      return reply({ items: [{ ...row, group_name: requestedAccount === '101' ? '历史账号群' : row.group_name,
+        response_enabled: settingsMode === 'all' }], total: 1, page: 1, page_size: 25,
       counts: { joined: 1, response_enabled: settingsMode === 'all' ? 1 : 0, configured: 0 }, account: url.searchParams.get('account') || '100',
       current_account: '100', account_generation: 1,
       sync: { status: syncMode, sync_id: 'sync-1', complete: syncMode === 'complete', truncated: syncMode !== 'complete',
         reason: syncMode === 'complete' ? null : 'invalid_entry',
         started_at: 1_790_000_000, completed_at: 1_790_000_001, last_complete_at: 1_790_000_001, connection_generation: 1 } });
+    }
     const defaults = {
       '/api/health': { running: true, adapters: { ob: { config_type: 'onebot', status: 'running', started: true } } },
       '/status': { running: true }, '/api/sessions': { sessions: [] }, '/config/session-instances': { sessions: [] },
@@ -204,6 +215,23 @@ try {
   await page.getByRole('button', { name: '保存模式' }).click();
   await page.getByText('响应开启 0').waitFor();
   assert.equal(settingsMode, 'selected');
+  holdOldList = true;
+  await page.getByLabel('搜索群名或群号').fill('延迟请求');
+  await page.waitForRequest((request) => request.url().includes('/api/platforms/ob/groups?')
+    && request.url().includes(encodeURIComponent('延迟请求')));
+  await page.getByLabel('查看账号').selectOption('101');
+  await page.getByText('历史账号群').last().waitFor();
+  assert.equal(await page.getByText('历史账号只读').count() > 0, true);
+  const oldListResponse = page.waitForResponse((result) => result.url().includes('/api/platforms/ob/groups?')
+    && result.url().includes(encodeURIComponent('延迟请求'))
+    && result.url().includes('account=100'));
+  holdOldList = false;
+  releaseOldList();
+  await oldListResponse;
+  await page.waitForTimeout(100);
+  assert.equal(await page.getByText('测试交流群').count(), 0);
+  await page.goto(`${origin}/platforms/ob/groups?account=100`);
+  await page.getByText('测试交流群').last().waitFor();
   syncMode = 'partial';
   await page.reload();
   await page.getByText('同步不完整').waitFor();
@@ -234,7 +262,19 @@ try {
   assert.deepEqual(dryRuns.at(-1).scenario.probe, { text: '@机器人 你好', at_self: true });
   assert.equal(writes.length, policyWrites);
   await page.locator('label:has-text("本群设置") select').selectOption('inherit');
+  await page.getByRole('link', { name: '事件与诊断' }).click();
+  await page.getByText('近期没有可见事件').waitFor();
+  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
+  const hiddenReads = eventReads;
+  await page.waitForTimeout(5_300);
+  assert.equal(eventReads, hiddenReads);
+  await page.evaluate(() => { delete document.visibilityState; });
+  await page.waitForTimeout(5_300);
+  assert.equal(eventReads > hiddenReads, true);
   await page.getByRole('link', { name: '会话配置' }).click();
+  const afterLeaveReads = eventReads;
+  await page.waitForTimeout(5_300);
+  assert.equal(eventReads, afterLeaveReads);
   await page.getByText('模型与提示词').waitFor();
   await page.locator('label:has-text("模型来源") select').first().selectOption('value');
   await page.locator('label:has-text("模型来源") select').last().selectOption('other');
