@@ -51,6 +51,7 @@
 
 - [开发规范](development/development-guidelines.md): 注释规范, 静态类型检查规范与门禁
 - [测试说明](development/testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
+- [安全审查报告](development/security-review-issue-12.md): issue #12 全仓安全审查: 威胁模型, 分级发现与修复路线
 
 ### archive/ 过程记录 (本地留档, 不入库)
 

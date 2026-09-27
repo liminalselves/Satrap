@@ -5,6 +5,7 @@ import shutil
 import os
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import RiskLevel
+from satrap.core.utils.proc_env import sanitized_child_env
 
 
 def _resolve_shell_executable(shell: str) -> str:
@@ -76,7 +77,7 @@ def _run_shell(args: list[str], workdir: Path, timeout: int) -> str:
             errors="replace",
             check=False,
             timeout=timeout,
-            env={**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"},
+            env=sanitized_child_env(PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
         )
         output = (result.stdout or "")[-20000:]
         error = (result.stderr or "")[-20000:]

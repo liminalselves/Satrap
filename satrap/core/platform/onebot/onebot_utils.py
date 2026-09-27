@@ -7,6 +7,7 @@ import os
 
 from pydantic import ValidationError
 
+from satrap.core.utils.paths import ensure_allowed_media_path
 from satrap.core.components import (
     At,
     AtAll,
@@ -383,7 +384,7 @@ def _normalize_file_source(source: str) -> str:
         return source
     try:
         if os.path.exists(source):
-            return f"file:///{os.path.abspath(source)}"
+            return f"file:///{ensure_allowed_media_path(source)}"
     except ValueError:
         pass
     # 含 NUL 等非法路径按原样透传, 由平台侧报错

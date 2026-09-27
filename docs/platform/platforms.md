@@ -175,7 +175,7 @@ platforms:
 | --- | --- |
 | `host` | 反向 WebSocket 监听地址 |
 | `port` | 反向 WebSocket 监听端口 |
-| `access_token` | OneBot access token |
+| `access_token` | OneBot access token; 强烈建议始终配置。未配置时本机任意进程可伪造事件, 且非回环地址 (`host` 不为 `127.0.0.1`/`localhost`/`::1`) 监听会拒绝启动 |
 | `enable_private` | 是否处理私聊 |
 | `enable_group` | 是否处理群聊 |
 

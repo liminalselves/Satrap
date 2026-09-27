@@ -11,7 +11,11 @@ config_schema:
   allowed_callers:
     type: textarea
     default: ""
-    description: "允许触发管理动作的成员 QQ, 每行一个; 留空不限制调用者, 仍受写操作开关限制"
+    description: "允许触发管理写操作的成员 QQ, 每行一个; 写操作要求此项非空, 留空时拒绝所有写操作"
+  allowed_read_callers:
+    type: textarea
+    default: ""
+    description: "允许调用只读工具的成员 QQ, 每行一个; 留空不限制"
   allowed_groups:
     type: textarea
     default: ""

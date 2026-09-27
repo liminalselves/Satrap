@@ -140,20 +140,20 @@ def normalize_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> li
 
 def ensure_session_scan_paths(paths: list[str] | tuple[str, ...] | None = None) -> list[Path]:
     """
-    将扫描目录的导入根加入 sys.path
+    将扫描目录的导入根追加到 sys.path 末尾 (不遮蔽标准库与已安装包)
 
     参数:
     - paths: 路径列表
 
     返回:
-    - list[Path]: 将扫描目录的导入根加入 sys.path
+    - list[Path]: 将扫描目录的导入根追加到 sys.path 末尾
     """
     normalized = normalize_scan_paths(paths)
     for path in normalized:
         import_root = _import_root_for_scan_path(path)
         text = str(import_root)
         if text not in sys.path:
-            sys.path.insert(0, text)
+            sys.path.append(text)
     return normalized
 
 

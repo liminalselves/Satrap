@@ -69,7 +69,7 @@ Copy-Item config.example.yaml config.yaml
 | `api.host` | `127.0.0.1` | 后端 HTTP API 监听地址 |
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
-| `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录 |
+| `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
 | `platforms` | `[]` | 平台适配器实例配置 |
 

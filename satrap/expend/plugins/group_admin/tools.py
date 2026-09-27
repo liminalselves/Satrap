@@ -115,6 +115,10 @@ def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list
     """
     校验来源身份, 写操作开关, 调用者与群范围, 返回来源适配器
 
+    写操作在 write_tools_enabled 开启的基础上还要求 allowed_callers 非空 (留空即
+    拒绝所有写操作); 只读工具默认不限制调用者, 配置 allowed_read_callers 后仅允许
+    列出的成员
+
     参数:
     - config: 插件配置
     - write: 是否为写操作
@@ -125,8 +129,12 @@ def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list
     origin = require_call_origin()
     if write and config.get("write_tools_enabled") is not True:
         raise PermissionError("管理写操作未在插件配置中开启")
-    callers = _lines(config.get("allowed_callers"))
-    if write and callers and origin.actor_id not in callers:
+    callers = _lines(config.get("allowed_callers" if write else "allowed_read_callers"))
+    if write and not callers:
+        raise PermissionError(
+            "写操作要求在插件配置 allowed_callers 中显式列出允许的调用者 (留空即拒绝所有写操作)"
+        )
+    if callers and origin.actor_id not in callers:
         raise PermissionError("当前调用者不在管理动作允许范围内")
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager is not None else None

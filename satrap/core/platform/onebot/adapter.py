@@ -37,6 +37,7 @@ from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_AC
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
+from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_media_path
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
@@ -63,6 +64,14 @@ _RECEIPT_TO_SEGMENT_STATUS = {"success": "sent", "partial": "partial", "failed":
 
 _ATTEMPT_FINALIZE_TIMEOUT = 2.0
 """发送尝试收尾的有界等待秒数, 超时保持未确认而不是谎报终态"""
+
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
+"""视为回环监听的地址, 空鉴权只允许出现在这些地址上"""
+
+
+def _is_loopback_host(host: str) -> bool:
+    """判断监听地址是否为回环地址"""
+    return host.strip("[]").lower() in _LOOPBACK_HOSTS
 
 
 def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
@@ -213,6 +222,17 @@ class OneBotAdapter(PlatformAdapter):
         if CQHttp is _MissingCQHttp:
             self.record_error("[OneBotAdapter] 未安装 aiocqhttp, 无法启动 OneBot 适配器")
             return
+        if not self.access_token:
+            if _is_loopback_host(self.host):
+                logger.warning(
+                    "[OneBotAdapter] 未配置 access_token, 反向 WebSocket 端口本机任意进程可伪造事件; "
+                    "建议在平台 settings 中设置 access_token"
+                )
+            else:
+                self.record_error(
+                    f"[OneBotAdapter] 非回环地址 {self.host} 监听必须配置 access_token, 已拒绝启动"
+                )
+                return
 
         kwargs: dict[str, Any] = {"use_ws_reverse": True}
         if self.access_token:
@@ -831,6 +851,8 @@ class OneBotAdapter(PlatformAdapter):
                 if kind == "forward":
                     try:
                         result = await self._send_forward(session_id, cast(list[Node], payload), limit)
+                    except MediaSourcePermissionError as error:
+                        result = self._failed_receipt(session_id, "forward", "media_source_denied", error)
                     except PermissionError:
                         result = SendReceipt("failed", reason="target_unavailable")
                     except Exception as error:
@@ -838,6 +860,8 @@ class OneBotAdapter(PlatformAdapter):
                 elif kind == "file":
                     try:
                         result = await self._send_file(session_id, cast(File, payload[0]))
+                    except MediaSourcePermissionError as error:
+                        result = self._failed_receipt(session_id, "file", "media_source_denied", error)
                     except PermissionError:
                         result = SendReceipt("failed", reason="target_unavailable")
                     except Exception as error:
@@ -944,6 +968,9 @@ class OneBotAdapter(PlatformAdapter):
         """
         try:
             return await self._send_chunk(session_id, chain)
+        except MediaSourcePermissionError as error:
+            # 媒体白名单拒绝与目标范围拒绝同属 PermissionError, 优先细分以保留真实原因码
+            return self._failed_receipt(session_id, "message", "media_source_denied", error)
         except PermissionError:
             return SendReceipt("failed", reason="target_unavailable")
         except Exception as error:
@@ -1009,7 +1036,13 @@ class OneBotAdapter(PlatformAdapter):
         source = ""
         if raw_file:
             local_path = raw_file.removeprefix("file:///").removeprefix("file://")
-            source = os.path.abspath(local_path) if os.path.exists(local_path) else raw_file
+            if os.path.exists(local_path):
+                try:
+                    source = ensure_allowed_media_path(local_path)
+                except MediaSourcePermissionError as error:
+                    return self._failed_receipt(session_id, "file", "media_source_denied", error)
+            else:
+                source = raw_file
         elif component.url:
             source = component.url.strip()
         if not source:
@@ -1214,6 +1247,8 @@ class OneBotAdapter(PlatformAdapter):
                     receipts.append(result)
                     if result.status != "success":
                         break
+            except MediaSourcePermissionError as error:
+                receipts.append(self._failed_receipt(session_id, "message", "media_source_denied", error))
             except PermissionError:
                 receipts.append(SendReceipt("failed", reason="target_unavailable"))
             except Exception:

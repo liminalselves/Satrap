@@ -237,3 +237,55 @@ def test_component_types_mapping_contains_astrbot_keys():
         "unknown",
     ]:
         assert key in ComponentTypes
+
+
+@pytest.mark.asyncio
+async def test_media_source_whitelist_rejects_paths_outside_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    from satrap.core.utils import paths as paths_mod
+
+    fake_root = tmp_path / "allowed"
+    fake_root.mkdir()
+    monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top secret", encoding="utf-8")
+    image = Image.fromFileSystem(str(outside))
+    with pytest.raises(PermissionError):
+        await image.convert_to_file_path()
+    with pytest.raises(PermissionError):
+        await image.convert_to_base64()
+
+    set_callback_api_base("https://callback.example/")
+    try:
+        with pytest.raises(PermissionError):
+            await File(name="secret.txt", file=str(outside)).register_to_file_service()
+    finally:
+        set_callback_api_base("")
+
+
+@pytest.mark.asyncio
+async def test_media_source_whitelist_allows_extra_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    picture = extra / "pic.png"
+    picture.write_bytes(b"png")
+
+    monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(extra))
+    image = Image.fromFileSystem(str(picture))
+    assert await image.convert_to_file_path() == os.path.abspath(picture)

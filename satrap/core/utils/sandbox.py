@@ -5,6 +5,7 @@ import shutil
 from typing import Dict, Any
 import os
 
+from satrap.core.utils.proc_env import sanitized_child_env
 from satrap.core.log import logger
 
 
@@ -62,6 +63,7 @@ class CodeSandbox:
                 text=True,
                 check=False,
                 timeout=self.execution_timeout,
+                env=sanitized_child_env(),
             )
             return {
                 'stdout': result.stdout,

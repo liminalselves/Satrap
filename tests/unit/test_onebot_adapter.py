@@ -393,6 +393,60 @@ def test_normalize_file_source_tolerates_embedded_nul():
     assert _normalize_file_source("bad\0path") == "bad\0path"
 
 
+def test_normalize_file_source_rejects_paths_outside_media_roots(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """白名单外的本地路径不再包装为 file:// 上传, 直接拒绝"""
+    from satrap.core.platform.onebot.onebot_utils import _normalize_file_source
+    from satrap.core.utils import paths as paths_mod
+
+    fake_root = tmp_path / "allowed"
+    fake_root.mkdir()
+    monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+    with pytest.raises(PermissionError):
+        _normalize_file_source(str(outside))
+
+
+class TestMediaSourceRejection:
+    """媒体白名单拒绝在发送链上保留专属原因码, 不与目标范围拒绝混淆"""
+
+    @pytest.mark.asyncio
+    async def test_image_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"png")
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([Image(file=str(outside))]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert adapter._bot.calls == []
+
+    @pytest.mark.asyncio
+    async def test_file_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"bin")
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="secret.bin", file=str(outside))]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert [name for name, _ in adapter._bot.calls] == []
+
+
 class TestFileOutboundSplit:
     """File 组件按实现能力分流上传, 混合链保持原序, 未验证回落显式标注"""
 

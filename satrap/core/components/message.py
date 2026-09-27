@@ -15,6 +15,7 @@ from typing import Any, Dict, cast
 from enum import Enum
 import json
 import uuid
+import time
 import os
 import re
 
@@ -23,6 +24,7 @@ from satrap.core.utils.outbound import (
     safe_async_get,
     trusted_hosts_from_env,
 )
+from satrap.core.utils.paths import ensure_allowed_media_path
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 from satrap.core.log import logger
@@ -162,15 +164,28 @@ def _strip_file_uri(path: str) -> str:
 
 
 class SatrapFileTokenService:
-    """轻量文件 token 注册服务, 只维护 token 到本地路径的映射"""
+    """轻量文件 token 注册服务, 只维护带过期时间的 token 到本地路径的映射"""
+
+    _TOKEN_TTL_SECONDS = 24 * 60 * 60
+    """注册条目存活时间, 超时后 token 失效"""
+    _MAX_ENTRIES = 1024
+    """同时存活的注册条目上限, 超出时淘汰最早注册的条目"""
 
     def __init__(self) -> None:
         """初始化 SatrapFileTokenService"""
-        self._files: dict[str, str] = {}
+        self._files: dict[str, tuple[str, float]] = {}
+
+    def _evict_expired(self) -> None:
+        """清除超过存活时间的注册条目"""
+        now = time.monotonic()
+        expired = [token for token, (_, registered_at) in self._files.items()
+                   if now - registered_at > self._TOKEN_TTL_SECONDS]
+        for token in expired:
+            del self._files[token]
 
     async def register_file(self, path: str) -> str:
         """
-        注册文件路径并返回 token
+        注册文件路径并返回 token; 仅允许注册媒体白名单内的路径
 
         参数:
         - path: 路径
@@ -178,16 +193,20 @@ class SatrapFileTokenService:
         返回:
         - str: 注册文件路径并返回 token
         """
-        real_path = os.path.abspath(_strip_file_uri(path))
+        real_path = ensure_allowed_media_path(os.path.abspath(_strip_file_uri(path)))
         if not os.path.exists(real_path):
             raise FileNotFoundError(f"文件不存在, 无法注册: {real_path}")
+        self._evict_expired()
+        while len(self._files) >= self._MAX_ENTRIES:
+            oldest = min(self._files, key=lambda token: self._files[token][1])
+            del self._files[oldest]
         token = uuid.uuid4().hex
-        self._files[token] = real_path
+        self._files[token] = (real_path, time.monotonic())
         return token
 
     def get_file(self, token: str) -> str | None:
         """
-        按 token 获取已注册的本地文件路径
+        按 token 获取已注册的本地文件路径, 过期 token 返回 None
 
         参数:
         - token: 令牌
@@ -195,7 +214,14 @@ class SatrapFileTokenService:
         返回:
         - str | None: 按 token 获取已注册的本地文件路径
         """
-        return self._files.get(token)
+        entry = self._files.get(token)
+        if entry is None:
+            return None
+        real_path, registered_at = entry
+        if time.monotonic() - registered_at > self._TOKEN_TTL_SECONDS:
+            del self._files[token]
+            return None
+        return real_path
 
 
 file_token_service = SatrapFileTokenService()
@@ -409,7 +435,7 @@ class _FileLikeComponent(BaseMessageComponent):
         if source.startswith("file://"):
             path = _strip_file_uri(source)
             if os.path.exists(path):
-                return os.path.abspath(path)
+                return ensure_allowed_media_path(path)
             raise FileNotFoundError(f"not a valid file: {source}")
         if source.startswith("http"):
             filename = f"{self.type.value.lower()}seg_{uuid.uuid4().hex}"
@@ -422,7 +448,7 @@ class _FileLikeComponent(BaseMessageComponent):
                 f.write(base64.b64decode(bs64_data))
             return os.path.abspath(file_path)
         if os.path.exists(source):
-            return os.path.abspath(source)
+            return ensure_allowed_media_path(source)
         raise FileNotFoundError(f"not a valid file: {source}")
 
     async def convert_to_base64(self) -> str:
@@ -434,14 +460,14 @@ class _FileLikeComponent(BaseMessageComponent):
         """
         source = self._source()
         if source.startswith("file://"):
-            bs64_data = file_to_base64(_strip_file_uri(source))
+            bs64_data = file_to_base64(ensure_allowed_media_path(_strip_file_uri(source)))
         elif source.startswith("http"):
             file_path = await self.convert_to_file_path()
             bs64_data = file_to_base64(file_path)
         elif source.startswith("base64://"):
             bs64_data = source
         elif os.path.exists(source):
-            bs64_data = file_to_base64(source)
+            bs64_data = file_to_base64(ensure_allowed_media_path(source))
         else:
             raise FileNotFoundError(f"not a valid file: {source}")
         return bs64_data.removeprefix("base64://")
@@ -458,7 +484,7 @@ class _FileLikeComponent(BaseMessageComponent):
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
         file_path = await self.convert_to_file_path()
         token = await file_token_service.register_file(file_path)
-        logger.debug(f"已注册: {callback_host}/api/file/{token}")
+        logger.debug(f"已注册: {callback_host}/api/file/{token[:8]}***")
         return f"{callback_host}/api/file/{token}"
 
 
@@ -886,7 +912,7 @@ class File(BaseMessageComponent):
         if self.file_:
             path = _strip_file_uri(self.file_)
             if os.path.exists(path):
-                return os.path.abspath(path)
+                return ensure_allowed_media_path(path)
         if self.url:
             try:
                 asyncio.get_running_loop()
@@ -932,7 +958,7 @@ class File(BaseMessageComponent):
         if self.file_:
             path = _strip_file_uri(self.file_)
             if os.path.exists(path):
-                return os.path.abspath(path)
+                return ensure_allowed_media_path(path)
         if self.url:
             await self._download_file()
             if self.file_:
@@ -961,7 +987,7 @@ class File(BaseMessageComponent):
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
         file_path = await self.get_file()
         token = await file_token_service.register_file(file_path)
-        logger.debug(f"已注册: {callback_host}/api/file/{token}")
+        logger.debug(f"已注册: {callback_host}/api/file/{token[:8]}***")
         return f"{callback_host}/api/file/{token}"
 
     async def to_dict(self) -> dict[str, Any]:

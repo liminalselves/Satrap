@@ -33,6 +33,7 @@ session_classes:
 
 # --- Session 类扫描目录 ---
 # 管理面板和 CLI 可以扫描这些目录下的 .py 文件, 发现继承 Session/AsyncSession 的类
+# 注意: 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入
 session_scan_paths:
   - .satrap/session
 
