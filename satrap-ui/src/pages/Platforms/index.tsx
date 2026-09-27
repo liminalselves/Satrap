@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { isAxiosError } from 'axios';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
@@ -578,6 +579,12 @@ export function Platforms() {
                     {platformSettingsSummary(platform.type, platform.settings)}
                   </p>
                 </div>
+                <div className="flex shrink-0 items-center gap-2">
+                {(platform.type === 'onebot' || platform.type === 'aiocqhttp') && (
+                  <Link className="glass-button px-3 py-1.5 text-sm" to={`/platforms/${encodeURIComponent(platform.id)}/groups`}>
+                    管理群聊
+                  </Link>
+                )}
                 <ActionButtons
                   actions={[
                     {
@@ -595,6 +602,7 @@ export function Platforms() {
                     },
                   ]}
                 />
+                </div>
               </div>
             ))}
           </div>

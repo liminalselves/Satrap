@@ -2,12 +2,12 @@ import { useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Badge } from '@/components/ui/Badge';
-import { Sun, Moon, MessageSquare } from 'lucide-react';
+import { Sun, Moon, MessageSquare, Menu } from 'lucide-react';
 import { useTheme } from '@/hooks/useTheme';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { cn } from '@/utils/cn';
 
-export function Header() {
+export function Header({ onOpenMenu }: { onOpenMenu?: () => void }) {
   const { isRunning, refreshControlStatus } = useBackendStore();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
@@ -27,6 +27,7 @@ export function Header() {
   return (
     <header ref={headerRef} className="h-14 glass-header flex items-center justify-between px-4 sticky top-2 z-40">
       <div className="flex items-center gap-3">
+        <button className="theme-toggle md:hidden" onClick={onOpenMenu} aria-label="打开导航菜单"><Menu className="h-4 w-4" /></button>
         <h2 className="text-base font-semibold text-text-primary">管理面板</h2>
         <Badge variant={isRunning ? 'success' : 'error'}>
           {isRunning ? '后端运行中' : '后端未运行'}

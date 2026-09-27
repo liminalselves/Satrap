@@ -7,6 +7,17 @@ const Models = lazy(() => import('@/pages/Models').then((module) => ({ default: 
 const Rag = lazy(() => import('@/pages/Rag').then((module) => ({ default: module.Rag })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
+const Groups = lazy(() => import('@/pages/Groups').then((module) => ({ default: module.Groups })));
+const GroupLayout = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupLayout })));
+const GroupDefault = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupDefault })));
+const GroupManage = lazy(() => import('@/pages/Groups/GroupManage').then((module) => ({ default: module.GroupManage })));
+const GroupActions = lazy(() => import('@/pages/Groups/GroupActions').then((module) => ({ default: module.GroupActions })));
+const GroupMembers = lazy(() => import('@/pages/Groups/GroupMembers').then((module) => ({ default: module.GroupMembers })));
+const GroupEvents = lazy(() => import('@/pages/Groups/GroupEvents').then((module) => ({ default: module.GroupEvents })));
+const GroupInvalidSection = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupInvalidSection })));
+const GroupOverview = lazy(() => import('@/pages/Groups/GroupOverview').then((module) => ({ default: module.GroupOverview })));
+const GroupPolicy = lazy(() => import('@/pages/Groups/GroupPolicy').then((module) => ({ default: module.GroupPolicy })));
+const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((module) => ({ default: module.GroupSession })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
 const Users = lazy(() => import('@/pages/Users').then((module) => ({ default: module.Users })));
@@ -33,6 +44,18 @@ export const router = createBrowserRouter([
       { path: 'rag', element: lazyRoute(<Rag />) },
       { path: 'sessions', element: lazyRoute(<Sessions />) },
       { path: 'platforms', element: lazyRoute(<Platforms />) },
+      { path: 'platforms/:adapterId/groups', element: lazyRoute(<Groups />) },
+      { path: 'platforms/:adapterId/groups/:groupId', element: lazyRoute(<GroupLayout />), children: [
+        { index: true, element: lazyRoute(<GroupDefault />) },
+        { path: 'overview', element: lazyRoute(<GroupOverview />) },
+        { path: 'policy', element: lazyRoute(<GroupPolicy />) },
+        { path: 'session', element: lazyRoute(<GroupSession />) },
+        { path: 'members', element: lazyRoute(<GroupMembers />) },
+        { path: 'manage', element: lazyRoute(<GroupManage />) },
+        { path: 'events', element: lazyRoute(<GroupEvents />) },
+        { path: 'actions', element: lazyRoute(<GroupActions />) },
+        { path: ':section', element: lazyRoute(<GroupInvalidSection />) },
+      ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
       { path: 'checkpoints', element: lazyRoute(<Checkpoints />) },
       { path: 'users', element: lazyRoute(<Users />) },

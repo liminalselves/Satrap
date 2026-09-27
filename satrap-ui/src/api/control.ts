@@ -88,7 +88,7 @@ export interface WakeDryRunResult {
 }
 
 // 后端控制 API 客户端(独立于主后端)
-const controlClient = axios.create({
+export const controlClient = axios.create({
   timeout: 30000,
   withCredentials: true,
   headers: {

@@ -27,7 +27,7 @@ const navItems = [
 ] as const;
 
 // 导航项组件 - 每个项向全局管理器注册反射
-function NavItem({ item }: { item: typeof navItems[number] }) {
+function NavItem({ item, onNavigate }: { item: typeof navItems[number]; onNavigate?: () => void }) {
   const reflectRef = useGlassReflect<HTMLAnchorElement>({
     reflectRange: 100,
   });
@@ -36,6 +36,7 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
     <NavLink
       ref={reflectRef}
       to={item.path}
+      onClick={onNavigate}
       className={({ isActive }) =>
         cn(
           'glass-nav-item',
@@ -50,13 +51,13 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const sidebarRef = useGlassReflect<HTMLElement>({
     reflectRange: 150,
   });
 
   return (
-    <aside ref={sidebarRef} className="w-64 sticky top-2 glass-sidebar flex flex-col">
+    <aside ref={sidebarRef} className={cn('w-64 shrink-0 sticky top-2 glass-sidebar flex flex-col', className)}>
       <div className="p-4 border-b border-glass-border">
         <h1 className="text-lg font-semibold text-text-primary flex items-center gap-2">
           <div className="w-8 h-8 rounded-md bg-accent flex items-center justify-center shadow-glow-accent">
@@ -68,7 +69,7 @@ export function Sidebar() {
 
       <nav className="flex-1 py-2 overflow-y-auto custom-scrollbar">
         {navItems.map((item) => (
-          <NavItem key={item.path} item={item} />
+          <NavItem key={item.path} item={item} onNavigate={onNavigate} />
         ))}
       </nav>
 
