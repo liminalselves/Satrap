@@ -86,6 +86,13 @@ try {
           config.sources.approval[action] = 'group';
         }
       }
+      if (payload.section === 'policy') {
+        const enabled = payload.values.enabled?.mode === 'value' ? payload.values.enabled.value : false;
+        config.effective.policy.enabled = enabled;
+        config.sources.policy.enabled = enabled
+          ? { source: 'group', source_label: '本群覆盖', source_index: null }
+          : { source: 'account', source_label: '账号接入模式', source_index: null };
+      }
       return reply(config);
     }
     if (pathname === '/api/platforms/ob/groups/456/dry-run' && request.method() === 'POST') {
@@ -286,7 +293,19 @@ try {
   assert.deepEqual(dryRuns.at(-1).values.enabled, { mode: 'value', value: true });
   assert.deepEqual(dryRuns.at(-1).scenario.probe, { text: '@机器人 你好', at_self: true });
   assert.equal(writes.length, policyWrites);
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: '保存并应用' }).click(),
+  ]);
+  await page.reload();
+  await page.getByText('有效状态: 开启').waitFor();
+  assert.equal(await page.locator('label:has-text("本群设置") select').inputValue(), 'true');
+  assert.equal(await page.getByText('本群覆盖').count() > 0, true);
   await page.locator('label:has-text("本群设置") select').selectOption('inherit');
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: '保存并应用' }).click(),
+  ]);
   await page.getByRole('link', { name: '事件与诊断' }).click();
   await page.getByText('近期没有可见事件').waitFor();
   await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
@@ -363,7 +382,7 @@ try {
   ]);
   assert.equal(writes.at(-1).section, 'approval');
   assert.deepEqual(writes.at(-1).values.kick_group_member, { mode: 'value', value: 'auto_execute' });
-  assert.equal(writes.at(-1).expected_revision, 1);
+  assert.equal(writes.at(-1).expected_revision, 3);
   await page.locator('label:has-text("动作") select').selectOption('kick_group_member');
   await page.getByText('此动作当前不可用: 平台已确认不支持').waitFor();
   assert.equal(await page.getByRole('button', { name: '提交管理动作' }).isDisabled(), true);
