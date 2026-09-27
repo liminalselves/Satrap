@@ -196,7 +196,8 @@ async def test_retry_discards_instance_replaced_while_waiting_for_lock() -> None
     manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
     manager._group_plugin_target = cast(Any, lambda *_: [])
     manager._prepare_session_async = cast(Any, AsyncMock())
-    manager._apply_group_session_overrides = cast(Any, AsyncMock())
+    apply_mock = AsyncMock()
+    manager._apply_group_session_overrides = cast(Any, apply_mock)
     manager.group_apply_reporter = lambda *_: None
     await lock.acquire()
     retry = asyncio.create_task(manager.retry_group_session_apply_async(
@@ -206,7 +207,7 @@ async def test_retry_discards_instance_replaced_while_waiting_for_lock() -> None
     entry.instance_generation = "second"
     lock.release()
     assert not await retry
-    manager._apply_group_session_overrides.assert_not_awaited()
+    apply_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

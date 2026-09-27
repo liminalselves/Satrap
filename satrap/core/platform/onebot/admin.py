@@ -955,10 +955,19 @@ class OneBotAdmin:
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
         try:
-            await registry.occupy("group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type))
+            occupied = await registry.occupy(
+                "group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type),
+            )
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
-        await self._execute_request_decision(
-            "group", normalized, self_id,
-            "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
-        )
+        if occupied.group_id != gid or occupied.sub_type != sub_type or occupied.state != "executing":
+            raise AdminActionRejected("群请求占用凭据与当前动作不符")
+        from satrap.core.config.group_action_origin import bind_group_request_occupancy
+
+        with bind_group_request_occupancy(
+            self._adapter.config.id, self_id, gid, cast(str, sub_type), flag_digest("group", self_id, normalized),
+        ):
+            await self._execute_request_decision(
+                "group", normalized, self_id,
+                "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
+            )

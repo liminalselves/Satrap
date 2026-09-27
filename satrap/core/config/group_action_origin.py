@@ -26,6 +26,9 @@ _CURRENT: ContextVar[ModelActionAuthorization | None] = ContextVar(
 _PREFLIGHT: ContextVar[Callable[[], None] | None] = ContextVar(
     "satrap_group_action_preflight", default=None,
 )
+_REQUEST_OCCUPANCY: ContextVar[tuple[str, str, str, str, str] | None] = ContextVar(
+    "satrap_group_request_occupancy", default=None,
+)
 
 
 def current_model_action_authorization() -> ModelActionAuthorization | None:
@@ -36,6 +39,11 @@ def current_model_action_authorization() -> ModelActionAuthorization | None:
 def current_group_action_preflight() -> Callable[[], None] | None:
     """取得平台写调用前的同步授权复核"""
     return _PREFLIGHT.get()
+
+
+def current_group_request_occupancy() -> tuple[str, str, str, str, str] | None:
+    """取得当前执行路径成功占用的群请求标识摘要"""
+    return _REQUEST_OCCUPANCY.get()
 
 
 @contextmanager
@@ -56,3 +64,15 @@ def bind_group_action_preflight(preflight: Callable[[], None]) -> Iterator[None]
         yield
     finally:
         _PREFLIGHT.reset(token)
+
+
+@contextmanager
+def bind_group_request_occupancy(
+    adapter_id: str, self_id: str, group_id: str, sub_type: str, flag_digest: str,
+) -> Iterator[None]:
+    """仅在成功占用群请求的执行路径中保留占用凭据"""
+    token = _REQUEST_OCCUPANCY.set((adapter_id, self_id, group_id, sub_type, flag_digest))
+    try:
+        yield
+    finally:
+        _REQUEST_OCCUPANCY.reset(token)

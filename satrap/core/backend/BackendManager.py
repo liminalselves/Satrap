@@ -34,7 +34,7 @@ from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
 from satrap.core.config.group_action_origin import (
     ModelActionAuthorization, ModelActionAuthorizationError, bind_group_action_preflight,
-    current_model_action_authorization,
+    current_group_request_occupancy, current_model_action_authorization,
 )
 from satrap.core.config.group_events import GroupEventBuffer
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -1439,6 +1439,7 @@ class BackendManager:
     ) -> dict[str, Any]:
         """占用后再次核验策略与成员关系, 按 OneBot 结果保守结算"""
         from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
+        from satrap.core.platform.onebot.request_registry import flag_digest
 
         store = await self._group_action_store(adapter_id)
         action = str(record["action_type"])
@@ -1458,8 +1459,23 @@ class BackendManager:
                 def verify_preflight() -> None:
                     """在平台写调用前复核来源群最新授权及目标群资格"""
                     try:
-                        if (not adapter.allows_management_target(group_id)
-                                or self._model_source_permission_fingerprint(authorization, group_id) != expected_fingerprint):
+                        target_allowed = adapter.allows_management_target(group_id)
+                        if action == "handle_group_request" and flag is not None:
+                            sub_type = str(params["sub_type"])
+                            digest = flag_digest("group", self_id, flag)
+                            occupied = current_group_request_occupancy()
+                            ledger_entry = adapter.request_flags.ledger.lookup(
+                                adapter_id, self_id, "group", flag,
+                            )
+                            target_allowed = (
+                                occupied == (adapter_id, self_id, group_id, sub_type, digest)
+                                and ledger_entry is not None and ledger_entry["state"] == "executing"
+                                and ledger_entry["group_id"] == group_id
+                                and ledger_entry["sub_type"] == sub_type
+                            )
+                        if (not target_allowed or self._model_source_permission_fingerprint(
+                            authorization, group_id,
+                        ) != expected_fingerprint):
                             raise PermissionError("模型动作来源或目标授权已变化")
                     except Exception as error:
                         raise ModelActionAuthorizationError("model_permission_revoked") from error

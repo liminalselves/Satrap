@@ -25,6 +25,7 @@ from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.edictum.registry import create_default_edictum_type_registry
+from satrap.edictum.simple_session.async_ import AsyncSimpleSession
 from satrap.expend.plugins.group_admin.tools import AsyncGroupAdminTool, _build_tools
 
 
@@ -199,6 +200,7 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
     cfg = SessionConfig(session_id="source-session", session_type_name="assistant", provider_name="edictum")
     manager.store.upsert(cfg)
     session = provider.create_session(cfg, llm=cast(Any, object()))
+    assert isinstance(session, AsyncSimpleSession)
     session.plugin_environment = PluginEnvironment("platform", "onebot")
     manager.pool.put("source-session", session, "assistant")
     backend._platform_runtimes["bot"] = cast(Any, (manager, None))
@@ -208,6 +210,7 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
     set_current_adapter_manager(backend._adapter_mgr)
     try:
         await provider.prepare_session_async(session)
+        assert session._wf is not None
         tool = session._wf.tools_manager.tools["group_admin_kick"]
         origin = CallOrigin("bot", "100", "GroupMessage", "456", "123", "message-1", "request-1")
         with bind_call_origin(origin):
@@ -232,10 +235,10 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
         release = asyncio.Event()
         original_kick = adapter.admin.kick_group_member
 
-        async def delayed_kick(*args: object, **kwargs: object) -> None:
+        async def delayed_kick(group_id: Any, user_id: Any, reject_add_request: bool = False) -> None:
             entered.set()
             await release.wait()
-            await original_kick(*args, **kwargs)
+            await original_kick(group_id, user_id, reject_add_request)
 
         monkeypatch.setattr(adapter.admin, "kick_group_member", delayed_kick)
         decision = asyncio.create_task(backend.decide_group_action(
@@ -258,6 +261,120 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
             denied = await tool.execute(group_id="789", user_id="42")
         assert denied["status"] == "error"
         assert GroupActionStore(backend.platform_db_path("bot")).get("100", "789", "invalid-source-action") is None
+    finally:
+        await provider.release_session_async(session)
+        set_current_adapter_manager(None)
+
+
+@pytest.mark.asyncio
+async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path) -> None:
+    """未入群邀请由请求账本证明归属, 同一 flag 的第二个模型动作不能调用平台"""
+    settings = {"group_management_version": 1}
+    backend = BackendManager(BackendConfig(data_root=str(tmp_path), platforms=[
+        {"id": "bot", "type": "onebot", "session_provider": "edictum", "session_type": "assistant", "settings": settings},
+    ]))
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    adapter.bot_self_id = "100"
+    adapter._bot = AsyncMock()
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters["bot"] = adapter
+    backend._attach_request_ledger(adapter)
+    directory = GroupDirectoryStore(backend.platform_db_path("bot"))
+    directory.adopt_legacy("100", settings)
+    directory.patch_account("100", expected_revision=1, mode="all", approval_defaults={
+        "handle_group_request": "approval_required",
+    })
+    directory.confirm_membership("100", "456", True)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("100")
+    assert not adapter.allows_management_target("999")
+
+    registry = create_default_edictum_type_registry()
+    config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    config_manager.create("assistant", {
+        "edictum_type": "async_simple", "model_name": "base",
+        "plugins": [{"name": "group_admin", "enabled": True, "config": {
+            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999",
+        }}],
+    })
+    provider = EdictumProvider(config_manager, registry, default_checkpoint_db=str(backend.platform_db_path("bot")))
+    manager = SessionManager(db_path=backend.platform_db_path("bot"), platform_id="bot")
+    manager.register_provider(provider)
+    cfg = SessionConfig(session_id="invite-session", session_type_name="assistant", provider_name="edictum")
+    manager.store.upsert(cfg)
+    session = provider.create_session(cfg, llm=cast(Any, object()))
+    assert isinstance(session, AsyncSimpleSession)
+    session.plugin_environment = PluginEnvironment("platform", "onebot")
+    manager.pool.put("invite-session", session, "assistant")
+    backend._platform_runtimes["bot"] = cast(Any, (manager, None))
+    origin = CallOrigin("bot", "100", "GroupMessage", "456", "123", "message-1", "request-1")
+    set_current_adapter_manager(backend._adapter_mgr)
+    try:
+        await provider.prepare_session_async(session)
+        assert session._wf is not None
+        tool = session._wf.tools_manager.tools["group_admin_handle_group_request"]
+
+        await adapter.request_flags.register(
+            "group", "panel-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
+        )
+        panel = await backend.submit_group_action(
+            "bot", "100", "999", "panel-invite-action", "handle_group_request",
+            {"flag": "panel-invite", "sub_type": "invite", "approve": True}, actor_kind="panel",
+        )
+        assert panel["state"] == "pending"
+        panel_result = await backend.decide_group_action("bot", "100", "999", "panel-invite-action", approve=True)
+        assert panel_result["state"] == "succeeded"
+
+        await adapter.request_flags.register(
+            "group", "model-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
+        )
+        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+            "bot", "100", gid, "model-invite-action", action, params, actor_kind="model",
+        )
+        with bind_call_origin(origin):
+            submitted = await tool.execute(group_id="999", flag="model-invite", sub_type="invite", approve=True)
+        assert submitted["data"]["state"] == "pending"
+        model_result = await backend.decide_group_action("bot", "100", "999", "model-invite-action", approve=True)
+        assert model_result["state"] == "succeeded"
+
+        await adapter.request_flags.register(
+            "group", "race-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
+        )
+        action_ids = iter(("race-invite-first", "race-invite-second"))
+        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+            "bot", "100", gid, next(action_ids), action, params, actor_kind="model",
+        )
+        with bind_call_origin(origin):
+            first = await tool.execute(group_id="999", flag="race-invite", sub_type="invite", approve=True)
+            second = await tool.execute(group_id="999", flag="race-invite", sub_type="invite", approve=True)
+        assert first["data"]["state"] == second["data"]["state"] == "pending"
+
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_request(**kwargs: Any) -> dict[str, Any]:
+            if kwargs["flag"] == "race-invite":
+                entered.set()
+                await release.wait()
+            return {}
+
+        adapter._bot.set_group_add_request.side_effect = delayed_request
+        first_decision = asyncio.create_task(backend.decide_group_action(
+            "bot", "100", "999", "race-invite-first", approve=True,
+        ))
+        await entered.wait()
+        second_result = await backend.decide_group_action(
+            "bot", "100", "999", "race-invite-second", approve=True,
+        )
+        assert second_result["state"] == "failed"
+        assert second_result["result"]["reason"] == "AdminActionRejected"
+        release.set()
+        first_result = await first_decision
+        assert first_result["state"] == "succeeded"
+        calls = adapter._bot.set_group_add_request.await_args_list
+        assert [call.kwargs["flag"] for call in calls] == ["panel-invite", "model-invite", "race-invite"]
+        entry = adapter.request_flags.ledger.lookup("bot", "100", "group", "race-invite")
+        assert entry is not None and entry["state"] == "completed"
     finally:
         await provider.release_session_async(session)
         set_current_adapter_manager(None)
