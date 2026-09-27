@@ -53,6 +53,9 @@ from .constants import (
     _SUBAGENT_PROMPT,
     DEFAULT_SANDBOX_ROOT,
 )
+
+ALLOWED_ENV_VARS: frozenset[str] = frozenset()
+"""shell 子进程环境剥敏时显式放行的变量名, 由插件配置 allowed_env_vars 更新"""
 from .sync_read import (
     ReadFileTool,
     ListDirTool,
@@ -103,7 +106,7 @@ def _apply_config(config: dict[str, Any]) -> None:
     """
     if not config:
         return
-    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS
+    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS, ALLOWED_ENV_VARS
     if config.get("workspace_root"):
         WORKSPACE_ROOT = Path(str(config["workspace_root"])).resolve()
         DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
@@ -116,6 +119,10 @@ def _apply_config(config: dict[str, Any]) -> None:
             d.strip() for d in str(config["protected_dirs"]).split(",") if d.strip()
         )
         _PROTECTED_DIRS = (".satrap", ".git", "node_modules") + extra
+    if config.get("allowed_env_vars"):
+        ALLOWED_ENV_VARS = frozenset(
+            name.strip() for name in str(config["allowed_env_vars"]).split(",") if name.strip()
+        )
 
 
 def get_tools(

@@ -26,6 +26,10 @@ config_schema:
     type: string
     default: ""
     description: "额外保护目录 (逗号分隔, 追加到内置 .satrap/.git/node_modules)"
+  allowed_env_vars:
+    type: string
+    default: ""
+    description: "shell 子进程显式放行的环境变量名 (逗号分隔); 其余密钥类变量 (如 *_API_KEY, *_TOKEN) 默认剥离"
 
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 # 注: search/fetch_page/memory 已移交 base_take 插件

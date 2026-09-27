@@ -73,18 +73,44 @@ class MediaSourcePermissionError(PermissionError):
     """媒体来源路径位于白名单之外, 继承 PermissionError 以保持权限拒绝语义"""
 
 
-@lru_cache(maxsize=4)
-def _resolve_allowed_roots(extra_roots_raw: str) -> tuple[Path, ...]:
+_configured_media_roots: tuple[str, ...] = ()
+"""经 set_media_allowed_roots 注册的配置覆盖值, 空元组表示使用默认根目录"""
+
+
+def set_media_allowed_roots(roots: list[str] | None) -> None:
     """
-    解析媒体白名单根目录, 以环境变量原始值为缓存键
+    注册配置中的媒体白名单根目录, 后端启动时注入
 
     参数:
-    - extra_roots_raw: SATRAP_EXTRA_MEDIA_ROOTS 的原始值, 变化时重新解析
+    - roots: 配置的根目录列表, None 或空列表恢复默认 (`.satrap` 数据目录, 沙箱目录与系统临时目录)
+    """
+    global _configured_media_roots
+    _configured_media_roots = tuple(str(item).strip() for item in roots if str(item).strip()) if roots else ()
+
+
+def _configured_roots_key() -> str:
+    """生成配置根目录的缓存键, 注册值变化时自动失效"""
+    return os.pathsep.join(_configured_media_roots)
+
+
+@lru_cache(maxsize=8)
+def _resolve_allowed_roots(configured_key: str, extra_roots_raw: str) -> tuple[Path, ...]:
+    """
+    解析媒体白名单根目录, 以配置覆盖值与环境变量原始值为缓存键
+
+    参数:
+    - configured_key: 配置根目录的缓存键
+    - extra_roots_raw: SATRAP_EXTRA_MEDIA_ROOTS 的原始值
 
     返回:
-    - tuple[Path, ...]: 已解析的允许根目录, 含默认根目录
+    - tuple[Path, ...]: 已解析的允许根目录
     """
-    roots = [get_data_dir().resolve(), Path(tempfile.gettempdir()).resolve()]
+    if configured_key:
+        roots = [Path(item).expanduser().resolve() for item in configured_key.split(os.pathsep)]
+    else:
+        # 默认不含 .satrap 根目录: api-token 与 session 扫描目录等敏感文件不允许随媒体外发
+        roots = [get_storage_dir().resolve(), get_data_dir().joinpath("sandbox").resolve()]
+    roots.append(Path(tempfile.gettempdir()).resolve())
     for item in extra_roots_raw.split(os.pathsep):
         if item.strip():
             roots.append(Path(item.strip()).expanduser().resolve())
@@ -95,13 +121,14 @@ def get_allowed_media_roots() -> list[Path]:
     """
     获取媒体组件允许读取的本机根目录
 
-    默认只允许 `.satrap` 数据目录与系统临时目录; 例外场景通过环境变量
-    `SATRAP_EXTRA_MEDIA_ROOTS` 追加, 多个路径用系统路径分隔符 (`;` 或 `:`) 隔开
+    配置 `media_allowed_roots` 非空时完全替换默认根目录; 默认只允许 `.satrap`
+    数据目录, 沙箱目录与系统临时目录; 环境变量 `SATRAP_EXTRA_MEDIA_ROOTS`
+    追加, 多个路径用系统路径分隔符 (`;` 或 `:`) 隔开
 
     返回:
     - list[Path]: 已解析的允许根目录列表
     """
-    return list(_resolve_allowed_roots(os.environ.get("SATRAP_EXTRA_MEDIA_ROOTS", "")))
+    return list(_resolve_allowed_roots(_configured_roots_key(), os.environ.get("SATRAP_EXTRA_MEDIA_ROOTS", "")))
 
 
 def ensure_allowed_media_path(path: str) -> str:

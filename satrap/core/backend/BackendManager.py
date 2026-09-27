@@ -54,6 +54,7 @@ from satrap.core.platform import (
     registry as global_registry,
     set_current_adapter_manager,
 )
+from satrap.core.utils.paths import set_media_allowed_roots
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
@@ -94,6 +95,8 @@ class BackendConfig:
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
     workspace_roots: List[str] = field(default_factory=lambda: ["."])
     # Chat 项目允许浏览和绑定的工作区根目录
+    media_allowed_roots: List[str] | None = None
+    # 消息组件媒体来源白名单根目录, None 使用默认 (.satrap 数据目录, 沙箱目录与系统临时目录)
 
     api_host: str = "127.0.0.1"
     # HTTP API 配置
@@ -156,6 +159,7 @@ class BackendConfig:
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
             workspace_roots=list(data.get("workspace_roots", ["."])),
+            media_allowed_roots=(list(data.get("media_allowed_roots") or []) or None),
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
@@ -188,6 +192,8 @@ class BackendManager:
         - edictum_type_registry: 可选扩展类型注册表, 未提供时使用内置类型
         """
         self.config = config or BackendConfig()
+        # 媒体白名单在组件转换层全局生效, 启动时同步配置覆盖值
+        set_media_allowed_roots(self.config.media_allowed_roots)
         self._platform_active_configs: dict[str, dict[str, Any]] = {}
         self._platform_config_results: list[dict[str, Any]] = []
         self._platform_apply_lock = asyncio.Lock()

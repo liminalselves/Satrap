@@ -19,6 +19,7 @@ import os
 from satrap.core.framework.session_discovery import (
     build_session_module_catalog,
     ensure_session_scan_paths,
+    load_session_module,
 )
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.paths import get_data_dir
@@ -217,7 +218,15 @@ class SessionClassConfigManager:
         """
         module_path, class_name, expected_source = self._trusted_module_source(class_path)
         try:
-            module = importlib.import_module(module_path)
+            try:
+                module = importlib.import_module(module_path)
+            except ImportError:
+                # 合成模块名的会话文件不在 sys.path 查找范围, 按可信目录解析到的源码路径显式加载
+                catalog = build_session_module_catalog(self.session_scan_paths)
+                catalog_source = catalog.get(module_path)
+                if catalog_source is None or catalog_source.resolve() != expected_source:
+                    raise
+                module = load_session_module(module_path, expected_source)
             cls = getattr(module, class_name)   # 动态类加载, 类名运行时决定, 保留裸 getattr
             if not inspect.isclass(cls) or not issubclass(cls, (Session, AsyncSession)):
                 raise ValueError(f"{class_path} 不是 Session/AsyncSession 子类")

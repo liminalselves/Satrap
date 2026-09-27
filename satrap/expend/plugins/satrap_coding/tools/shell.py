@@ -65,8 +65,8 @@ def _prepare_shell(
     return args, max(risk, RiskLevel.HIGH), description
 
 
-def _run_shell(args: list[str], workdir: Path, timeout: int) -> str:
-    """以 UTF-8 执行已经批准的固定参数, 同步和异步共用"""
+def _run_shell(args: list[str], workdir: Path, timeout: int, allow: frozenset[str] = frozenset()) -> str:
+    """以 UTF-8 执行已经批准的固定参数, 同步和异步共用; allow 显式放行剥敏排除的环境变量"""
     try:
         result = subprocess.run(
             args,
@@ -77,7 +77,7 @@ def _run_shell(args: list[str], workdir: Path, timeout: int) -> str:
             errors="replace",
             check=False,
             timeout=timeout,
-            env=sanitized_child_env(PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
+            env=sanitized_child_env(allow=allow, PYTHONUTF8="1", PYTHONIOENCODING="utf-8"),
         )
         output = (result.stdout or "")[-20000:]
         error = (result.stderr or "")[-20000:]

@@ -141,7 +141,8 @@ class ShellTool(Tool):
             or workdir_path.resolve() != workdir_path
         ):
             return "执行已取消: 审批期间计划模式或工作区发生变化"
-        return _run_shell(args, workdir_path, timeout_value)
+        from . import ALLOWED_ENV_VARS
+        return _run_shell(args, workdir_path, timeout_value, allow=ALLOWED_ENV_VARS)
 
     def _bind(self, session: SimpleSession) -> None:
         """

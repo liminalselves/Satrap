@@ -413,6 +413,24 @@ class TestMediaSourceRejection:
     """媒体白名单拒绝在发送链上保留专属原因码, 不与目标范围拒绝混淆"""
 
     @pytest.mark.asyncio
+    async def test_file_uri_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        """file:// 前缀的本地来源同样受白名单约束, fromFileSystem 生成的形态不能绕过"""
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"png")
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([Image.fromFileSystem(str(outside))]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert adapter._bot.calls == []
+
+    @pytest.mark.asyncio
     async def test_image_segment_denied_reports_media_reason(
         self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
     ):

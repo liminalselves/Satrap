@@ -71,6 +71,7 @@ Copy-Item config.example.yaml config.yaml
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
+| `media_allowed_roots` | `[]`(默认白名单) | 消息组件媒体来源白名单根目录, 留空使用默认 (`.satrap` 数据目录, 沙箱目录与系统临时目录) |
 | `platforms` | `[]` | 平台适配器实例配置 |
 
 ## 模型配置

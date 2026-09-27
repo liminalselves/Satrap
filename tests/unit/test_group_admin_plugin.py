@@ -130,6 +130,45 @@ class TestPermissionGate:
         assert result["status"] == "error" and "allowed_callers" in result["error"]
 
     @pytest.mark.asyncio
+    async def test_high_risk_approval_requires_provider(self):
+        """high_risk_approval 开启时无审批通道的高危动作直接拒绝"""
+        _setup_adapter()
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        with bind_call_origin(_origin()):
+            tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+            result = await tool.execute(user_id="321")
+        assert result["status"] == "error" and "审批通道" in result["error"]
+        # 未开启审批时同一动作不受影响
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        with bind_call_origin(_origin()):
+            tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123"}) if t.tool_name == "group_admin_kick")
+            result = await tool.execute(user_id="321")
+        assert result == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_high_risk_approval_grants_on_user_yes(self):
+        """审批通道明确同意后高危动作放行, 拒绝回答则拒绝执行"""
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        answers: list[str] = []
+
+        async def provider(question: str, options: list[str]) -> str:
+            answers.append(question)
+            return "y"
+
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+        tool.user_input_provider = provider
+        with bind_call_origin(_origin()):
+            approved = await tool.execute(user_id="321")
+            tool.user_input_provider = lambda question, options: "n"
+            denied = await tool.execute(user_id="322")
+        assert approved == {"status": "ok"}
+        assert denied["status"] == "error" and "未获人工批准" in denied["error"]
+        assert "group_admin_kick" in answers[0]
+
+    @pytest.mark.asyncio
     async def test_read_callers_allowlist_gates_read_tools(self):
         adapter = _setup_adapter()
         adapter._bot.get_group_info.return_value = {"group_id": 456, "group_name": "测试群"}

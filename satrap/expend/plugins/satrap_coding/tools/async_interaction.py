@@ -143,7 +143,8 @@ class AsyncShellTool(AsyncTool):
             or workdir_path.resolve() != workdir_path
         ):
             return "执行已取消: 审批期间计划模式或工作区发生变化"
-        return await asyncio.to_thread(_run_shell, args, workdir_path, timeout_value)
+        from . import ALLOWED_ENV_VARS
+        return await asyncio.to_thread(_run_shell, args, workdir_path, timeout_value, ALLOWED_ENV_VARS)
 
     def _bind(self, session: AsyncSimpleSession) -> None:
         """

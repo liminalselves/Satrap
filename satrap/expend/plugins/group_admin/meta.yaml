@@ -8,6 +8,10 @@ config_schema:
     type: bool
     default: false
     description: "允许执行踢人, 禁言, 管理员, 名片, 群名, 头衔, 退群与请求审批等写操作; 默认关闭"
+  high_risk_approval:
+    type: bool
+    default: false
+    description: "开启后踢人, 禁言, 全员禁言, 管理员设置, 改群名, 退群与请求审批等高危动作每次执行前需人工批准; 无审批通道的会话直接拒绝"
   allowed_callers:
     type: textarea
     default: ""

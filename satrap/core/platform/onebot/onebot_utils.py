@@ -380,7 +380,19 @@ def _normalize_file_source(source: str) -> str:
     """
     if not source:
         return source
-    if source.startswith(("http://", "https://", "file://", "base64://")):
+    if source.startswith("file://"):
+        # file:// 与裸路径同样受媒体白名单约束, 白名单外拒绝包装透传
+        try:
+            local_path = source.removeprefix("file:///")
+            local_path = local_path.removeprefix("file://")
+            if os.name == "nt" and len(local_path) > 2 and local_path[0] == "/" and local_path[2] == ":":
+                local_path = local_path[1:]
+            return f"file:///{ensure_allowed_media_path(local_path)}"
+        except ValueError:
+            pass
+        # 含 NUL 等非法路径按原样透传, 由平台侧报错
+        return source
+    if source.startswith(("http://", "https://", "base64://")):
         return source
     try:
         if os.path.exists(source):

@@ -92,7 +92,7 @@ async def test_shell_requires_each_explicit_approval(tmp_path, monkeypatch, asyn
         return answer
 
     session = SimpleNamespace(coding_workspace_root=tmp_path, user_input_provider=provider if answer else None)
-    monkeypatch.setattr(coding, "_run_shell", lambda *args: calls.append(args) or "executed")
+    monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: calls.append(args) or "executed")
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
     for _ in range(2):
@@ -117,7 +117,7 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
         return "y"
 
     session.user_input_provider = provider
-    monkeypatch.setattr(coding, "_run_shell", lambda *args: pytest.fail("已失效授权不能执行"))
+    monkeypatch.setattr(coding, "_run_shell", lambda *args, **kwargs: pytest.fail("已失效授权不能执行"))
     tool = coding.AsyncShellTool(engine) if asynchronous else coding.ShellTool(engine)
     tool._bind(cast(Any, session))
     result = await tool.execute("echo audit") if isinstance(tool, coding.AsyncShellTool) else tool.execute("echo audit")

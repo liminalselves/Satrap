@@ -173,3 +173,38 @@ def test_create_default_session_dir(tmp_path: Path):
 
     assert target.exists()
     assert (target / "__init__.py").exists()
+
+
+def test_stdlib_named_session_file_loads_via_synthetic_module(tmp_path: Path, monkeypatch):
+    """
+    与标准库同名的会话文件 (如 json.py) 应经合成模块名从文件路径显式加载,
+    既不遮蔽标准库也不会静默加载到标准库模块
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    import json as stdlib_json
+    import sys
+
+    scan_dir = tmp_path / ".satrap" / "session"
+    _write_session_file(
+        scan_dir,
+        "json.py",
+        """
+from satrap.core.framework import Session
+
+class JsonSession(Session):
+    def __init__(self, session_id: str):
+        super().__init__(session_id)
+""".strip(),
+    )
+    monkeypatch.chdir(tmp_path)
+
+    results = discover_session_classes([str(scan_dir)])
+    found = [item for item in results if item.class_name == "JsonSession"]
+    assert len(found) == 1 and not found[0].error
+    assert found[0].module_name.startswith("satrap_user_sessions_json_")
+    # 标准库 json 不被遮蔽, 合成模块与标准库同时可用
+    assert sys.modules["json"] is stdlib_json
+    assert stdlib_json.loads('{"ok": true}') == {"ok": True}

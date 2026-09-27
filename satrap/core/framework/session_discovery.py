@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import hashlib
 import importlib
+import importlib.util
 import inspect
 from pathlib import Path
 from typing import Any, Type, cast
@@ -13,6 +15,41 @@ from satrap.core.framework.Base import AsyncSession, Session
 
 DEFAULT_SESSION_SCAN_PATH = ".satrap/session"
 """默认 Session 扫描目录"""
+
+USER_SESSION_MODULE_PREFIX = "satrap_user_sessions_"
+"""扫描目录内会话模块的合成模块名前缀, 避免与标准库及已安装包同名冲突"""
+
+
+def load_session_module(module_name: str, file_path: Path):
+    """
+    按文件路径显式加载会话模块, 不依赖 sys.path 查找顺序
+
+    模块已加载且源码一致时重载以支持热更新, 否则经 spec_from_file_location
+    注册进 sys.modules; 同名标准库或三方包文件 (如 json.py) 也能正确加载
+
+    参数:
+    - module_name: 合成模块名
+    - file_path: 模块源码路径
+
+    返回:
+    - ModuleType: 已加载或重载的模块对象
+    """
+    resolved = file_path.resolve()
+    existing = sys.modules.get(module_name)
+    existing_source = getattr(existing, "__file__", None) if existing is not None else None
+    if existing is not None and existing_source and Path(existing_source).resolve() == resolved:
+        try:
+            return importlib.reload(existing)
+        except ImportError:
+            # 点分模块名缺少已注册父包时无法 reload, 丢弃旧模块按文件重新加载
+            sys.modules.pop(module_name, None)
+    spec = importlib.util.spec_from_file_location(module_name, resolved)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"无法从文件构造会话模块: {resolved}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 @dataclass
@@ -77,8 +114,7 @@ class SessionClassDiscoveryService:
                     continue
                 module_name = _module_name_for_file(scan_path, file_path)
                 try:
-                    module = importlib.import_module(module_name)
-                    module = importlib.reload(module)
+                    module = load_session_module(module_name, file_path)
                 except Exception as e:
                     discovered.append(
                         DiscoveredSessionClass(
@@ -252,6 +288,10 @@ def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
     """
     根据扫描目录和文件路径生成稳定模块名
 
+    点开头目录 (如 .satrap/session) 无法构成合法包路径, 使用带专属前缀的
+    合成模块名并经文件路径显式加载, 不遮蔽标准库与已安装包; 其余目录沿用
+    相对 cwd 的真实模块路径
+
     参数:
     - scan_path: scan路径
     - file_path: 文件路径
@@ -264,11 +304,20 @@ def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
     try:
         rel = file_resolved.relative_to(cwd)
         if any(p.startswith(".") for p in rel.parts):
-            return file_path.stem
+            return _user_session_module_name(scan_path, file_path)
         return ".".join(rel.with_suffix("").parts)
     except ValueError:
         rel = file_resolved.relative_to(scan_path.parent.resolve())
-        return ".".join(rel.with_suffix("").parts)
+        parts = rel.with_suffix("").parts
+        if any(p.startswith(".") for p in parts):
+            return _user_session_module_name(scan_path, file_path)
+        return ".".join(parts)
+
+
+def _user_session_module_name(scan_path: Path, file_path: Path) -> str:
+    """生成扫描目录内会话文件的合成模块名, 带扫描路径摘要避免多目录同名冲突"""
+    digest = hashlib.sha1(str(scan_path.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{USER_SESSION_MODULE_PREFIX}{file_path.stem}_{digest}"
 
 
 def _is_declared_session_class(module_name: str, cls: Type[Any]) -> bool:

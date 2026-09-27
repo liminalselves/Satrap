@@ -1,5 +1,6 @@
 """受限代码执行环境与沙箱路径安全检查"""
 import subprocess
+from collections.abc import Iterable
 from pathlib import Path
 import shutil
 from typing import Dict, Any
@@ -11,7 +12,13 @@ from satrap.core.log import logger
 
 class CodeSandbox:
     """代码沙箱执行器, 在指定目录和 Python 环境中运行代码"""
-    def __init__(self, sandbox_path: str, env: str, execution_timeout: float = 30.0):
+    def __init__(
+        self,
+        sandbox_path: str,
+        env: str,
+        execution_timeout: float = 30.0,
+        allowed_env: Iterable[str] = (),
+    ):
         """
         初始化沙箱
 
@@ -19,10 +26,12 @@ class CodeSandbox:
         - sandbox_path: 沙箱根目录 (绝对或相对路径)
         - env: Python 解释器路径 (例如 '/usr/bin/python3' 或虚拟环境中的 python)
         - execution_timeout: 单次代码执行超时秒数
+        - allowed_env: 子进程环境剥敏时显式放行的环境变量名
         """
         self.sandbox_path = str(Path(sandbox_path).resolve())
         self.python_executable = env
         self.execution_timeout = max(0.1, float(execution_timeout))
+        self.allowed_env = frozenset(allowed_env)
 
     def _safe_join(self, *paths: str) -> str:
         """
@@ -63,7 +72,7 @@ class CodeSandbox:
                 text=True,
                 check=False,
                 timeout=self.execution_timeout,
-                env=sanitized_child_env(),
+                env=sanitized_child_env(allow=self.allowed_env),
             )
             return {
                 'stdout': result.stdout,
