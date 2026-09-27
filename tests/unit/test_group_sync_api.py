@@ -142,6 +142,46 @@ async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
 
 
 @pytest.mark.asyncio
+async def test_group_save_pauses_only_target_until_snapshot_is_ready(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    for group_id in ("456", "789"):
+        store.confirm_membership("100", group_id, True)
+        store.patch_group("100", group_id, "policy", {
+            "enabled": {"mode": "value", "value": True},
+        }, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    current = await backend.group_config("bot", "100", "456")
+    original = adapter.refresh_group_access
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def paused(self_id: str) -> None:
+        entered.set()
+        await release.wait()
+        await original(self_id)
+
+    monkeypatch.setattr(adapter, "refresh_group_access", paused)
+    task = asyncio.create_task(backend.patch_group_config(
+        "bot", "100", "456", expected_revision=1, base_revision=current["base_revision"],
+        section="policy", values={"enabled": {"mode": "value", "value": False}},
+    ))
+    await entered.wait()
+    assert not adapter.allows_group("456")
+    assert adapter.group_route("456")[1] == -1
+    assert adapter.allows_group("789")
+    assert adapter.allows_management_target("789")
+    release.set()
+    saved = await task
+    assert saved["apply_status"] == "applied"
+    assert not adapter.allows_group("456")
+    assert adapter.allows_group("789")
+
+
+@pytest.mark.asyncio
 async def test_sync_discards_result_after_connection_generation_changes(tmp_path: Path) -> None:
     backend, adapter = _runtime(tmp_path)
     entered = asyncio.Event()
