@@ -148,7 +148,7 @@ export function GroupManage() {
           const effective = config.effective.approval[action];
           return <label key={action} className="block rounded-lg border border-glass-border p-3 text-sm">
             <span className="font-medium">{groupActionLabels[action] || action}</span>
-            <span className="ml-2 text-text-secondary">{metadata?.risk === 'high' ? '高影响' : '普通'} · 当前{effective === 'approval_required' ? '需审批' : '自动执行'} · {config.sources.approval[action] || '默认'}</span>
+            <span className="ml-2 text-text-secondary">{metadata ? metadata.risk === 'high' ? '高影响' : '普通' : '风险待确认'} · 当前{effective === 'approval_required' ? '需审批' : '自动执行'} · {config.sources.approval[action] || '默认'}</span>
             <select className="glass-input mt-2 w-full" value={approvalDraft[action] || 'inherit'}
               disabled={historical || approvalBusy}
               onChange={(event) => setApprovalDraft((old) => ({ ...old, [action]: event.target.value as ApprovalMode }))}>
