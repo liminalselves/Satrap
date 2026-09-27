@@ -34,14 +34,6 @@ export function GroupDefault() {
   return <Navigate to={`overview${location.search}`} replace />;
 }
 
-export function GroupPendingSection() {
-  return <Card>此群管理区域尚未实现</Card>;
-}
-
-export function GroupInvalidSection() {
-  return <Card role="alert">群详情标签不存在</Card>;
-}
-
 function errorText(error: unknown): string {
   if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
   return error instanceof Error ? error.message : '群配置读取失败';
