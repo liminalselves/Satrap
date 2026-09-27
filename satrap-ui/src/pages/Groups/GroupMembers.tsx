@@ -110,9 +110,11 @@ export function GroupMembers() {
           {available && <div className="flex flex-wrap gap-1">
             {memberActions.map(([action, label]) => {
               const meta = types.find((item) => item.action_type === action);
-              return <Button key={action} size="sm" variant="subtle" disabled={!meta?.available || result?.state === 'unknown' || result?.state === 'executing'}
-                title={meta?.capability === 'unknown' ? '机器人能力待平台确认' : undefined}
-                onClick={() => open(member, action)}>{label}</Button>;
+              return <span key={action} className="flex flex-col items-center gap-1">
+                <Button size="sm" variant="subtle" disabled={!meta?.available || result?.state === 'unknown' || result?.state === 'executing'}
+                  onClick={() => open(member, action)}>{label}</Button>
+                {!meta?.available && <span className="text-xs text-warning">{meta?.capability === 'unsupported' ? '平台不支持' : '当前不可用'}</span>}
+              </span>;
             })}
           </div>}
         </div>)}

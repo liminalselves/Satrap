@@ -102,6 +102,7 @@ export function GroupManage() {
       </label>
       {selected && <>
         <p className="text-sm">风险: {selected.risk === 'high' ? '高影响' : '普通'} · 审批: {selected.approval_mode === 'approval_required' ? '需要人工批准' : '自动执行'} · 能力: {selected.capability === 'unknown' ? '待平台确认' : selected.capability}</p>
+        {!selected.available && <p className="text-sm text-warning">此动作当前不可用: {selected.capability === 'unsupported' ? '平台已确认不支持' : selected.capability === 'unavailable' ? '平台连接不可用' : '机器人尚未确认加入目标群'}</p>}
         <div className="grid gap-3 md:grid-cols-2">
           {Object.entries(selected.schema).map(([key, kind]) => <label key={key} className="block text-sm">{fields[key] || key}
             {kind === 'bool' ? <select className="glass-input mt-1 w-full" value={values[key] || ''} disabled={!ready || busy || !!operationId}

@@ -283,6 +283,28 @@ class TestExecution:
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=True, reason="")
 
     @pytest.mark.asyncio
+    async def test_group_write_uses_approval_handler_but_friend_request_stays_direct(self):
+        adapter = _setup_adapter()
+        adapter.bot_self_id = "10000"
+        adapter.group_action_handler = AsyncMock(return_value={"state": "pending", "action_id": "action-model-1"})
+        await adapter.request_flags.register(
+            "friend", "friend-flag", self_id="10000", user_id="321",
+        )
+        adapter._bot.set_friend_add_request.return_value = {}
+        tools = _async_tools({"write_tools_enabled": True})
+        group = next(tool for tool in tools if tool.tool_name == "group_admin_set_name")
+        friend = next(tool for tool in tools if tool.tool_name == "group_admin_handle_friend_request")
+        with bind_call_origin(_origin()):
+            pending = await group.execute(name="新群名")
+            accepted = await friend.execute(flag="friend-flag", approve=True)
+        assert pending["status"] == "ok" and pending["data"]["state"] == "pending"
+        assert accepted == {"status": "ok"}
+        adapter.group_action_handler.assert_awaited_once_with("456", "set_group_name", {"name": "新群名"})
+        adapter._bot.set_friend_add_request.assert_awaited_once_with(
+            flag="friend-flag", approve=True, remark="",
+        )
+
+    @pytest.mark.asyncio
     async def test_unknown_platform_returns_unsupported(self):
         from satrap.core.platform import PlatformAdapter
         from satrap.core.platform.event import PlatformMetadata

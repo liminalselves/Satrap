@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 import sqlite3
 
 import pytest
 
+from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict
+from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
 from satrap.core.platform.onebot.group_action_types import normalize_action_params
 
 
@@ -86,3 +92,67 @@ def test_group_request_flag_never_enters_persistent_parameters(tmp_path: Path) -
     record = recovered.get("10000", "456", "action-0003")
     assert record is not None and record["state"] == "expired"
     assert record["result"]["reason"] == "request_flag_lost_on_restart"
+
+
+@pytest.mark.asyncio
+async def test_runtime_approval_and_auto_mode_execute_exactly_once(tmp_path: Path) -> None:
+    """关闭响应的已加入群仍可管理, 人工批准前没有平台副作用"""
+    settings = {"group_management_version": 1}
+    backend = BackendManager(BackendConfig(
+        data_root=str(tmp_path), platforms=[{"id": "bot", "type": "onebot", "settings": settings}],
+    ))
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    adapter.bot_self_id = "100"
+    adapter._bot = AsyncMock()
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters["bot"] = adapter
+    directory = GroupDirectoryStore(backend.platform_db_path("bot"))
+    directory.adopt_legacy("100", settings)
+    directory.confirm_membership("100", "456", True)
+    directory.patch_group("100", "456", "approval", {
+        "set_group_name": {"mode": "value", "value": "approval_required"},
+    }, expected_revision=0)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("100")
+    assert not adapter.allows_group("456")
+    assert adapter.allows_management_target("456")
+    adapter.admin.set_group_name = AsyncMock()
+    params: dict[str, object] = {"name": "新群名"}
+    pending = await backend.submit_group_action(
+        "bot", "100", "456", "action-runtime-1", "set_group_name", params, actor_kind="panel",
+    )
+    assert pending["state"] == "pending"
+    adapter.admin.set_group_name.assert_not_awaited()
+    approved = await backend.decide_group_action("bot", "100", "456", "action-runtime-1", approve=True)
+    assert approved["state"] == "succeeded"
+    adapter.admin.set_group_name.assert_awaited_once_with("456", name="新群名")
+    duplicate = await backend.submit_group_action(
+        "bot", "100", "456", "action-runtime-1", "set_group_name", params, actor_kind="panel",
+    )
+    assert duplicate == approved
+    adapter.admin.set_group_name.assert_awaited_once()
+    with pytest.raises(GroupConfigConflict):
+        await backend.decide_group_action("bot", "100", "456", "action-runtime-1", approve=True)
+    directory.patch_group("100", "456", "approval", {
+        "set_group_name": {"mode": "value", "value": "auto_execute"},
+    }, expected_revision=1)
+    executed = await backend.submit_group_action(
+        "bot", "100", "456", "action-runtime-2", "set_group_name", {"name": "自动群名"}, actor_kind="panel",
+    )
+    assert executed["state"] == "succeeded"
+    assert adapter.admin.set_group_name.await_count == 2
+    adapter.admin.set_group_name = AsyncMock(side_effect=AdminActionUnconfirmed("网络超时"))
+    unknown = await backend.submit_group_action(
+        "bot", "100", "456", "action-runtime-3", "set_group_name", {"name": "未知群名"}, actor_kind="panel",
+    )
+    assert unknown["state"] == "unknown"
+    repeated = await backend.submit_group_action(
+        "bot", "100", "456", "action-runtime-3", "set_group_name", {"name": "未知群名"}, actor_kind="panel",
+    )
+    assert repeated == unknown
+    adapter.admin.set_group_name.assert_awaited_once()
+    adapter._running = True
+    adapter._capability_states["set_group_name"] = (adapter.connection_generation(), "unsupported")
+    metadata = await backend.group_action_types("bot", "100", "456")
+    name_action = next(item for item in metadata["items"] if item["action_type"] == "set_group_name")
+    assert name_action["capability"] == "unsupported" and name_action["available"] is False

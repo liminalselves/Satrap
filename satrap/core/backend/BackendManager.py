@@ -896,6 +896,7 @@ class BackendManager:
     async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
         """返回当前群的动作参数结构、风险和有效审批模式"""
         from satrap.core.config.group_approval import effective_approval
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
         from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS, action_metadata
 
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
@@ -909,12 +910,17 @@ class BackendManager:
         approval = group["explicit"].get("approval", {})
         if not isinstance(approval, dict):
             raise RuntimeError("群审批配置数据损坏")
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        current = isinstance(adapter, OneBotAdapter) and adapter.bot_self_id == self_id
+        capabilities = adapter.admin_capabilities() if isinstance(adapter, OneBotAdapter) and current else {}
         items: list[dict[str, Any]] = []
         for action in ACTION_FIELDS:
             mode, source = effective_approval(action, account["approval_defaults"], approval)
+            capability = capabilities.get(action, "unavailable")
+            membership = record["membership"] == "joined" or action == "handle_group_request"
             items.append({**action_metadata(action), "approval_mode": mode, "approval_source": source,
-                          "membership": record["membership"], "capability": "unknown",
-                          "available": record["membership"] == "joined" or action == "handle_group_request"})
+                          "membership": record["membership"], "capability": capability,
+                          "available": current and membership and capability not in {"unavailable", "unsupported"}})
         return {"items": items, "account": self_id, "group_id": group_id}
 
     async def group_members(
