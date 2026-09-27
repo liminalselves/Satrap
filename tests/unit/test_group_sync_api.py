@@ -226,6 +226,7 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     assert result is not None
     status, saved = result
     assert status == 200 and saved["mode"] == "all" and saved["apply_status"] == "pending"
+    assert isinstance(saved["approval_inheriting_counts"], dict)
     assert saved["approval_inheriting_counts"]["kick_group_member"] == 0
     save_config_document(path, {
         "data_root": str(tmp_path / "data"),

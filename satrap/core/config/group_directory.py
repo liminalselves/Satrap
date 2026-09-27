@@ -51,6 +51,55 @@ class GroupDirectoryStore(GroupConfigStore):
                     counts[action] += 1
         return counts
 
+    def scoped_session_summary(
+        self, platform_id: str, self_id: str, group_id: str, generation: int = 0,
+    ) -> dict[str, Any]:
+        """汇总可从范围路由键可靠归属到本群的持久会话实例"""
+        _identity(self_id, group_id)
+        with closing(self._connect()) as connection:
+            tables = {str(row["name"]) for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('context_sessions', 'session_configs')",
+            ).fetchall()}
+            if "context_sessions" not in tables:
+                return {"known_scoped_count": 0, "current_route_count": 0, "session_ids": [],
+                        "override_counts": {"model": 0, "prompt": 0, "plugins": 0}}
+            routes = connection.execute(
+                "SELECT context_key, session_id FROM context_sessions "
+                "WHERE platform=? AND context_key LIKE 'scoped:v1:%'", (platform_id,),
+            ).fetchall()
+            session_ids: set[str] = set()
+            current_ids: set[str] = set()
+            for route in routes:
+                key = str(route["context_key"])
+                try:
+                    parts = json.loads(key.removeprefix("scoped:v1:"))
+                except (ValueError, TypeError):
+                    continue
+                if (isinstance(parts, list) and len(parts) in {7, 8}
+                        and parts[0] == platform_id and parts[4] == self_id and parts[5] == group_id):
+                    session_id = str(route["session_id"])
+                    session_ids.add(session_id)
+                    route_generation = parts[7] if len(parts) == 8 else 0
+                    if type(route_generation) is int and route_generation == generation:
+                        current_ids.add(session_id)
+            counts = {"model": 0, "prompt": 0, "plugins": 0}
+            if "session_configs" in tables:
+                for session_id in session_ids:
+                    row = connection.execute(
+                        "SELECT session_config FROM session_configs WHERE session_id=?", (session_id,),
+                    ).fetchone()
+                    if row is None:
+                        continue
+                    config = json.loads(row["session_config"])
+                    if not isinstance(config, dict):
+                        raise RuntimeError("会话实例配置数据损坏")
+                    for field, key in (("model", "model_name"), ("prompt", "system_prompt"), ("plugins", "plugins")):
+                        if key in config:
+                            counts[field] += 1
+        return {"known_scoped_count": len(session_ids), "current_route_count": len(current_ids),
+                "session_ids": sorted(session_ids),
+                "override_counts": counts}
+
     def begin_sync(self, self_id: str, connection_generation: int, token: str) -> int:
         """
         登记当前账号和连接的同步任务

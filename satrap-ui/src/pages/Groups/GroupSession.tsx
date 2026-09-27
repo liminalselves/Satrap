@@ -80,6 +80,7 @@ export function GroupSession() {
   }, [adapterId, account, isRunning]);
 
   const binding = config.effective.session.binding as { provider?: string; config_name?: string } | undefined;
+  const instanceSummary = config.session_instances;
   const effectiveScope = String(config.effective.session.scope || 'legacy_user');
   const selected = options.find((item) => item.provider === draft.provider && item.config_name === draft.configName);
   const previousRoute = fromConfig(config.explicit.session || {});
@@ -182,6 +183,12 @@ export function GroupSession() {
         <Link className="ml-2 text-accent hover:underline" to="/sessions">打开或复制命名配置</Link>
         <Link className="ml-2 text-accent hover:underline" to="/models">创建模型配置</Link>
       </p>
+      <div className="space-y-1 text-sm text-text-secondary">
+        <p>当前路由可归属实例: {instanceSummary?.current_route_count ?? '待读取'}; 含旧路由共 {instanceSummary?.known_scoped_count ?? '待读取'}。旧版按用户共享的历史无法可靠按群统计</p>
+        <p>实例显式覆盖: 模型 {instanceSummary?.override_counts.model ?? '—'}, 提示词 {instanceSummary?.override_counts.prompt ?? '—'}, 插件 {instanceSummary?.override_counts.plugins ?? '—'}</p>
+        <Link className="text-accent hover:underline" to="/sessions">打开会话实例管理</Link>
+        {instanceSummary?.session_ids.length ? <p className="break-all">本群可归属实例 ID: {instanceSummary.session_ids.join(', ')}</p> : null}
+      </div>
       {unsupportedOverrides.length > 0 && <div role="alert" className="space-y-2 text-sm text-warning">
         <p>目标配置不支持已有的 {unsupportedOverrides.join('、')} 覆盖。请明确恢复继承后再保存, 现有值不会自动丢弃</p>
         <div className="flex flex-wrap gap-2">
@@ -277,7 +284,8 @@ export function GroupSession() {
       <div className="space-y-4 text-sm text-text-secondary">
         <p>旧绑定: {binding?.provider || '平台'} / {binding?.config_name || '未指定'}, 范围: {effectiveScope}</p>
         <p>新绑定: {draft.bindingMode === 'inherit' ? '继承平台' : `${draft.provider} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : draft.scope}</p>
-        <p>{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</p>
+          <p>{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</p>
+          {routeChanged && <p>当前路由可归属实例 {instanceSummary?.current_route_count ?? '未知'} 个; 旧路由和旧版按用户共享的历史会保留, 其中旧版历史可能未计入</p>}
         <div className="flex justify-end gap-2"><Button variant="subtle" onClick={() => setShowImpact(false)}>取消</Button><Button variant="primary" onClick={submit} disabled={saving}>{routeChanged ? '确认保存并切换' : '确认保存覆盖'}</Button></div>
       </div>
     </Modal>

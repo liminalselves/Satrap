@@ -36,6 +36,8 @@ try {
   let config = {
     account: '100', current_account: '100', group: row, explicit: { policy: {}, session: {}, events: {}, approval: {} },
     revision: 0, saved_revision: 0, active_revision: 0, apply_status: 'applied', route_generation: 0,
+    session_instances: { known_scoped_count: 1, current_route_count: 1, session_ids: ['session-a'],
+      override_counts: { model: 1, prompt: 1, plugins: 0 } },
     base_revision: 'base-1',
     effective: { policy: { enabled: false, wake_mode: 'necessity' },
       session: { binding: { provider: 'edictum', config_name: 'simple' }, scope: 'legacy_user', model: 'base', prompt: '原提示词', plugins: [] },
@@ -320,6 +322,8 @@ try {
   await page.waitForTimeout(5_300);
   assert.equal(eventReads, afterLeaveReads);
   await page.getByText('模型与提示词').waitFor();
+  await page.getByText('当前路由可归属实例: 1').waitFor();
+  await page.getByText('本群可归属实例 ID: session-a').waitFor();
   await page.locator('label:has-text("模型来源") select').first().selectOption('value');
   await page.locator('label:has-text("模型来源") select').last().selectOption('other');
   await page.locator('label:has-text("系统提示词") select').selectOption('value');
@@ -349,6 +353,7 @@ try {
   await page.getByRole('button', { name: '保存并应用' }).click();
   const impactDialog = page.getByRole('dialog', { name: '切换会话绑定或范围' });
   await impactDialog.getByText('此后使用新会话; 原历史保留, 不自动迁移').waitFor();
+  await impactDialog.getByText('当前路由可归属实例 1 个').waitFor();
   assert.equal(await impactDialog.evaluate((element) => element.contains(document.activeElement)), true);
   await page.keyboard.press('Shift+Tab');
   assert.equal(await impactDialog.getByRole('button', { name: '确认保存并切换' })

@@ -3,11 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import AsyncMock
+import json
 import sqlite3
 
 import pytest
 
 from satrap.core.config.group_directory import GroupDirectoryStore
+from satrap.core.conversation import ConversationRoute
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig
 
@@ -113,3 +115,27 @@ def test_approval_inheritance_counts_only_joined_groups(tmp_path: Path) -> None:
     counts = store.approval_inheritance_counts("100")
     assert counts["kick_group_member"] == 1
     assert counts["set_group_name"] == 2
+
+
+def test_scoped_session_summary_keeps_group_and_account_boundaries(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    assert store.scoped_session_summary("bot", "100", "123")["known_scoped_count"] == 0
+    route = ConversationRoute("42", "bot", "simple", "edictum", "group_member", "100", "123", 1)
+    other = ConversationRoute("42", "bot", "simple", "edictum", "group_member", "200", "123", 1)
+    with sqlite3.connect(tmp_path / "platform.db") as connection:
+        connection.execute("CREATE TABLE context_sessions (context_key TEXT, platform TEXT, session_id TEXT)")
+        connection.execute("CREATE TABLE session_configs (session_id TEXT, session_config TEXT)")
+        connection.executemany("INSERT INTO context_sessions VALUES (?, ?, ?)", [
+            (route.key, "bot", "session-a"), (other.key, "bot", "session-b"),
+            ("legacy:user:42", "bot", "session-c"),
+        ])
+        connection.executemany("INSERT INTO session_configs VALUES (?, ?)", [
+            ("session-a", json.dumps({"model_name": "other", "system_prompt": "", "plugins": []})),
+            ("session-b", json.dumps({"model_name": "hidden"})),
+        ])
+    summary = store.scoped_session_summary("bot", "100", "123", 1)
+    assert summary["known_scoped_count"] == 1
+    assert summary["current_route_count"] == 1
+    assert summary["session_ids"] == ["session-a"]
+    assert summary["override_counts"] == {"model": 1, "prompt": 1, "plugins": 1}
+    assert store.scoped_session_summary("bot", "100", "123", 2)["current_route_count"] == 0

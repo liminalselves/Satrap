@@ -585,6 +585,9 @@ class BackendManager:
         )
         if account is None or record is None:
             raise LookupError("群记录不存在")
+        instance_summary = await asyncio.to_thread(
+            store.scoped_session_summary, adapter_id, self_id, group_id, config["route_generation"],
+        )
         platform = self._group_platform_snapshot(adapter_id)
         raw_policy = config["explicit"].get("policy", {})
         if not isinstance(raw_policy, dict):
@@ -660,6 +663,7 @@ class BackendManager:
             "active_revision": active_revision,
             "apply_status": "applied" if active_revision == config["revision"] else "pending",
             "route_generation": config["route_generation"],
+            "session_instances": instance_summary,
             "base_revision": self._group_base_revision(adapter_id, platform, raw_session),
             "effective": {"policy": effective, "session": session_effective,
                           "approval": {action: pair[0] for action, pair in approval_pairs.items()},

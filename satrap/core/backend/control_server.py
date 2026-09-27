@@ -1149,6 +1149,9 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 if account is None or record is None:
                     raise RuntimeError("群配置保存后读取失败")
             config = await asyncio.to_thread(store.read_group, self_id, group_id)
+            instance_summary = await asyncio.to_thread(
+                store.scoped_session_summary, adapter_id, self_id, group_id, config["route_generation"],
+            )
             raw_policy = config["explicit"].get("policy", {})
             if not isinstance(raw_policy, dict):
                 raise RuntimeError("群策略数据损坏")
@@ -1178,6 +1181,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 "explicit": config["explicit"], "revision": config["revision"],
                 "saved_revision": config["revision"], "active_revision": None,
                 "apply_status": "pending", "route_generation": config["route_generation"],
+                "session_instances": instance_summary,
                 "base_revision": hashlib.sha256(json.dumps(platform, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
                 "effective": {"policy": effective, "session": session_effective,
                               "approval": {action: pair[0] for action, pair in approval_pairs.items()},
