@@ -3,6 +3,7 @@ import { ApiError } from '@/api/client';
 import { groupApi, type GroupAction } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
+import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { useGroupContext } from './GroupLayout';
 
 const labels: Record<string, string> = {
@@ -22,8 +23,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : '操作失败';
 }
 
+type ApprovalMode = 'inherit' | 'approval_required' | 'auto_execute';
+
+function approvalFrom(explicit: Record<string, { mode: string; value?: unknown }> | undefined): Record<string, ApprovalMode> {
+  return Object.fromEntries(Object.entries(explicit || {}).map(([action, value]) => [action,
+    value.mode === 'value' && (value.value === 'approval_required' || value.value === 'auto_execute')
+      ? value.value : 'inherit']));
+}
+
 export function GroupManage() {
-  const { adapterId, groupId, account, isRunning, historical, config } = useGroupContext();
+  const { adapterId, groupId, account, isRunning, historical, config, setConfig, reload } = useGroupContext();
   const [types, setTypes] = useState<Awaited<ReturnType<typeof groupApi.actionTypes>>['items']>([]);
   const [type, setType] = useState('');
   const [values, setValues] = useState<Record<string, string>>({});
@@ -33,6 +42,19 @@ export function GroupManage() {
   const [operationId, setOperationId] = useState('');
   const [submitted, setSubmitted] = useState<{ action_type: string; params: Record<string, unknown> } | null>(null);
   const [info, setInfo] = useState<Record<string, unknown> | null>(null);
+  const [approvalDraft, setApprovalDraft] = useState(() => approvalFrom(config.explicit.approval));
+  const [approvalBaseline, setApprovalBaseline] = useState(() => JSON.stringify(approvalFrom(config.explicit.approval)));
+  const [approvalBusy, setApprovalBusy] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
+  const [approvalConflict, setApprovalConflict] = useState(false);
+  const approvalDirty = JSON.stringify(approvalDraft) !== approvalBaseline;
+  useDirtyGuard(approvalDirty);
+  useEffect(() => {
+    if (approvalDirty) return;
+    const fresh = approvalFrom(config.explicit.approval);
+    setApprovalDraft(fresh);
+    setApprovalBaseline(JSON.stringify(fresh));
+  }, [config.revision, config.account, config.explicit.approval, approvalDirty]);
   useEffect(() => {
     if (!isRunning || !account) return;
     let live = true;
@@ -83,13 +105,65 @@ export function GroupManage() {
     setOperationId(''); setSubmitted(null); setResult(null); setValues({}); setError('');
   };
   const ready = isRunning && !historical && (config.group.membership === 'joined' || type === 'handle_group_request');
+  const saveApproval = async () => {
+    if (historical || approvalBusy || !approvalDirty) return;
+    const values = Object.fromEntries(Object.entries(approvalDraft)
+      .filter(([, mode]) => mode !== 'inherit')
+      .map(([action, mode]) => [action, { mode: 'value' as const, value: mode }]));
+    setApprovalBusy(true); setApprovalError('');
+    try {
+      const saved = await groupApi.saveConfig(adapterId, groupId, {
+        expected_self_id: account, expected_revision: config.revision,
+        base_revision: config.base_revision, section: 'approval', values,
+      }, isRunning);
+      setConfig(saved);
+      const fresh = approvalFrom(saved.explicit.approval);
+      setApprovalDraft(fresh); setApprovalBaseline(JSON.stringify(fresh)); setApprovalConflict(false);
+    } catch (caught) {
+      setApprovalError(errorText(caught));
+      if (caught instanceof ApiError && caught.status === 409) setApprovalConflict(true);
+    } finally { setApprovalBusy(false); }
+  };
 
   return <div className="space-y-4">
     {error && <Card role="alert" className="border border-error text-error">{error}</Card>}
+    {approvalError && <Card role="alert" className="border border-error text-error">{approvalError}</Card>}
+    {approvalConflict && <Card role="alert" className="space-y-2 border border-warning">
+      <p>审批设置已变化。草稿仍保留, 不会自动覆盖其他修改</p>
+      <div className="flex flex-wrap gap-2">
+        <Button size="sm" onClick={async () => { await reload(); setApprovalConflict(false); }}>查看服务器最新值</Button>
+        <Button size="sm" variant="subtle" onClick={() => navigator.clipboard.writeText(JSON.stringify(approvalDraft, null, 2))}>复制我的草稿</Button>
+        <Button size="sm" variant="subtle" onClick={async () => {
+          const fresh = approvalFrom(config.explicit.approval);
+          setApprovalDraft(fresh); setApprovalBaseline(JSON.stringify(fresh)); setApprovalConflict(false);
+          await reload();
+        }}>放弃草稿并重新加载</Button>
+      </div>
+    </Card>}
     {info && <Card className="space-y-2 text-sm"><h2 className="text-lg font-semibold">平台群信息</h2>
       <p>群名: {String(info.group_name || config.group.group_name || groupId)}</p>
       <p>成员: {String(info.member_count ?? '未知')} / {String(info.max_member_count ?? '未知')}</p>
     </Card>}
+    <Card className="space-y-3">
+      <h2 className="text-lg font-semibold">本群审批设置</h2>
+      <p className="text-sm text-text-secondary">只影响以后提交的群目标动作。已有待审批请求不会因切换为自动执行而运行</p>
+      <div className="grid gap-3 md:grid-cols-2">
+        {config.capabilities.approval_actions.map((action) => {
+          const metadata = types.find((item) => item.action_type === action);
+          const effective = config.effective.approval[action];
+          return <label key={action} className="block rounded-lg border border-glass-border p-3 text-sm">
+            <span className="font-medium">{labels[action] || action}</span>
+            <span className="ml-2 text-text-secondary">{metadata?.risk === 'high' ? '高影响' : '普通'} · 当前{effective === 'approval_required' ? '需审批' : '自动执行'} · {config.sources.approval[action] || '默认'}</span>
+            <select className="glass-input mt-2 w-full" value={approvalDraft[action] || 'inherit'}
+              disabled={historical || approvalBusy}
+              onChange={(event) => setApprovalDraft((old) => ({ ...old, [action]: event.target.value as ApprovalMode }))}>
+              <option value="inherit">继承平台默认</option><option value="approval_required">需审批</option><option value="auto_execute">自动执行</option>
+            </select>
+          </label>;
+        })}
+      </div>
+      <Button onClick={saveApproval} disabled={historical || approvalBusy || !approvalDirty}>保存本群审批设置</Button>
+    </Card>
     <Card className="space-y-3">
       <h2 className="text-lg font-semibold">群管理动作</h2>
       <p className="text-sm text-text-secondary">目标固定为机器人 {account} 的群 {groupId}。机器人能力由平台执行时确认</p>

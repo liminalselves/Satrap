@@ -78,6 +78,12 @@ try {
           }
         }
       }
+      if (payload.section === 'approval') {
+        for (const [action, value] of Object.entries(payload.values)) {
+          config.effective.approval[action] = value.value;
+          config.sources.approval[action] = 'group';
+        }
+      }
       return reply(config);
     }
     if (pathname === '/api/platforms/ob/groups/456/dry-run' && request.method() === 'POST') {
@@ -331,6 +337,14 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.getByRole('link', { name: '群管理' }).click();
+  await page.getByText('移出成员', { exact: true }).locator('..').locator('select').selectOption('auto_execute');
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: '保存本群审批设置' }).click(),
+  ]);
+  assert.equal(writes.at(-1).section, 'approval');
+  assert.deepEqual(writes.at(-1).values.kick_group_member, { mode: 'value', value: 'auto_execute' });
+  assert.equal(writes.at(-1).expected_revision, 1);
   await page.locator('label:has-text("动作") select').selectOption('kick_group_member');
   await page.getByText('此动作当前不可用: 平台已确认不支持').waitFor();
   assert.equal(await page.getByRole('button', { name: '提交管理动作' }).isDisabled(), true);
