@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 import hashlib
@@ -42,6 +43,20 @@ class GroupConfigConflict(ValueError):
 
 class GroupLegacyConflict(ValueError):
     """已采用的旧群配置再次被修改, 需要显式导入"""
+
+
+@dataclass(frozen=True)
+class GroupRuntimeSnapshot:
+    """同一 SQLite 读取事务中的账号群状态"""
+
+    self_id: str
+    mode: str
+    exceptions: dict[str, bool]
+    policies: dict[str, dict[str, object]]
+    revisions: dict[str, int]
+    routes: dict[str, tuple[dict[str, object], int]]
+    events: dict[str, dict[str, bool]]
+    membership: dict[str, str]
 
 
 def _identity(self_id: str, group_id: str | None = None) -> None:
@@ -349,6 +364,55 @@ class GroupConfigStore:
                 raise RuntimeError("群配置数据损坏: enabled 不是显式布尔值")
             exceptions[str(row["group_id"])] = enabled["value"]
         return str(account["mode"]), exceptions
+
+    def runtime_snapshot(self, self_id: str) -> GroupRuntimeSnapshot:
+        """在一次数据库读事务中构造完整的账号群运行时快照"""
+        from satrap.core.config.group_events import event_values
+
+        _identity(self_id)
+        with closing(self._connect()) as connection:
+            connection.execute("BEGIN")
+            account = connection.execute(
+                "SELECT mode FROM group_accounts WHERE self_id=?", (self_id,),
+            ).fetchone()
+            if account is None:
+                raise RuntimeError("群接入账号尚未采用")
+            rows = connection.execute(
+                "SELECT group_id, config_json, revision, route_generation FROM group_configs WHERE self_id=?",
+                (self_id,),
+            ).fetchall()
+            members = connection.execute(
+                "SELECT group_id, membership FROM group_directory WHERE self_id=?", (self_id,),
+            ).fetchall()
+        exceptions: dict[str, bool] = {}
+        policies: dict[str, dict[str, object]] = {}
+        revisions: dict[str, int] = {}
+        routes: dict[str, tuple[dict[str, object], int]] = {}
+        events: dict[str, dict[str, bool]] = {}
+        for row in rows:
+            group_id = str(row["group_id"])
+            explicit = json.loads(row["config_json"])
+            if not isinstance(explicit, dict):
+                raise RuntimeError("群配置数据损坏")
+            policy = explicit.get("policy", {})
+            session = explicit.get("session", {})
+            event_config = explicit.get("events", {})
+            if not isinstance(policy, dict) or not isinstance(session, dict) or not isinstance(event_config, dict):
+                raise RuntimeError("群配置区域数据损坏")
+            policy_values(policy)
+            session_values(session)
+            enabled = policy.get("enabled")
+            if enabled is not None and enabled != {"mode": "inherit"}:
+                if not isinstance(enabled, dict) or enabled.get("mode") != "value" or type(enabled.get("value")) is not bool:
+                    raise RuntimeError("群配置数据损坏: enabled 不是显式布尔值")
+                exceptions[group_id] = enabled["value"]
+            policies[group_id] = policy
+            revisions[group_id] = int(row["revision"])
+            routes[group_id] = (session, int(row["route_generation"]))
+            events[group_id] = event_values(event_config)
+        membership = {str(row["group_id"]): str(row["membership"]) for row in members}
+        return GroupRuntimeSnapshot(self_id, str(account["mode"]), exceptions, policies,
+                                    revisions, routes, events, membership)
 
     def policy_snapshot(self, self_id: str) -> dict[str, dict[str, object]]:
         """读取已确认账号所有群的显式策略供运行时冻结使用"""

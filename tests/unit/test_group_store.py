@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import sqlite3
+from threading import Event
 
 import pytest
 
@@ -142,3 +143,42 @@ async def test_old_access_and_legacy_conflict_fail_closed(tmp_path: Path) -> Non
         await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
     assert not adapter.allows_group("123")
     assert not adapter.allows_group("456")
+
+
+@pytest.mark.asyncio
+async def test_refresh_keeps_unrelated_groups_until_complete_and_on_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"group_management_version": 1}))
+    store = GroupConfigStore(tmp_path / "platform.db")
+    adapter.set_group_access_store(store)
+    await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
+    for group_id in ("123", "789"):
+        store.patch_group("100", group_id, "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    original = store.runtime_snapshot
+    entered = Event()
+    release = Event()
+
+    def delayed(self_id: str):
+        result = original(self_id)
+        entered.set()
+        assert release.wait(5)
+        return result
+
+    monkeypatch.setattr(store, "runtime_snapshot", delayed)
+    task = asyncio.create_task(adapter.refresh_group_access("100"))
+    assert await asyncio.to_thread(entered.wait, 5)
+    assert adapter.allows_group("789")
+    assert adapter.group_route("789")[1] == 0
+    release.set()
+    await task
+
+    def failed(self_id: str):
+        raise RuntimeError("read failed")
+
+    monkeypatch.setattr(store, "runtime_snapshot", failed)
+    with pytest.raises(RuntimeError, match="read failed"):
+        await adapter.refresh_group_access("100")
+    assert adapter.allows_group("789")
+    assert adapter.group_route("789")[1] == 0

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from collections import OrderedDict
+from dataclasses import replace
 import asyncio
 import hashlib
 import inspect
@@ -32,7 +33,7 @@ from satrap.core.platform.onebot.onebot_utils import (
     group_session_id,
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, policy_default
-from satrap.core.config.group_store import GroupConfigStore
+from satrap.core.config.group_store import GroupConfigStore, GroupLegacyConflict, GroupRuntimeSnapshot
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
@@ -176,14 +177,7 @@ class OneBotAdapter(PlatformAdapter):
         self._last_heartbeat_at = 0.0
         self._send_attempt_recorder: SendAttemptRecorder | None = None
         self._group_access_store: GroupConfigStore | None = None
-        self._group_access_account = ""
-        self._group_access_mode: str | None = None
-        self._group_access_exceptions: dict[str, bool] = {}
-        self._group_policies: dict[str, dict[str, object]] = {}
-        self._group_active_revisions: dict[str, int] = {}
-        self._group_routes: dict[str, tuple[dict[str, object], int]] = {}
-        self._group_event_options: dict[str, dict[str, bool]] = {}
-        self._management_membership: dict[str, str] = {}
+        self._group_access_snapshot: GroupRuntimeSnapshot | None = None
         self._group_access_lock = asyncio.Lock()
         self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
         self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
@@ -222,72 +216,55 @@ class OneBotAdapter(PlatformAdapter):
             return False
         if store is None:
             return True
-        if self._group_access_account == incoming_self and self._group_access_mode is not None and not force:
+        snapshot = self._group_access_snapshot
+        if snapshot is not None and snapshot.self_id == incoming_self and not force:
             return True
         async with self._group_access_lock:
-            if self._group_access_account == incoming_self and self._group_access_mode is not None and not force:
+            snapshot = self._group_access_snapshot
+            if snapshot is not None and snapshot.self_id == incoming_self and not force:
                 return True
             try:
                 await asyncio.to_thread(store.adopt_legacy, incoming_self, self.config.settings)
-                mode, exceptions = await asyncio.to_thread(store.access_snapshot, incoming_self)
-                policies = await asyncio.to_thread(store.policy_snapshot, incoming_self)
-                revisions = await asyncio.to_thread(store.revision_snapshot, incoming_self)
-                routes = await asyncio.to_thread(store.route_snapshot, incoming_self)
-                events = await asyncio.to_thread(store.event_snapshot, incoming_self)
-                membership = (
-                    await asyncio.to_thread(store.membership_snapshot, incoming_self)
-                    if isinstance(store, GroupDirectoryStore) else {}
-                )
-            except Exception:
-                self._group_access_mode = None
-                self._group_access_exceptions = {}
-                self._group_policies = {}
-                self._group_active_revisions = {}
-                self._group_routes = {}
-                self._group_event_options = {}
-                self._management_membership = {}
+            except GroupLegacyConflict:
+                self._group_access_snapshot = None
                 raise
-            self._group_access_account = incoming_self
-            self._group_access_mode = mode
-            self._group_access_exceptions = exceptions
-            self._group_policies = policies
-            self._group_active_revisions = revisions
-            self._group_routes = routes
-            self._group_event_options = events
-            self._management_membership = membership
+            prepared = await asyncio.to_thread(store.runtime_snapshot, incoming_self)
+            self._group_access_snapshot = prepared
             return True
 
     def group_route(self, group_id: str) -> tuple[dict[str, object], int]:
         """返回已应用的群会话配置和路由代次"""
         if self._group_access_store is None:
             return {}, 0
-        if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+        snapshot = self._group_access_snapshot
+        if snapshot is None or snapshot.self_id != self.bot_self_id:
             return {}, -1
-        return self._group_routes.get(group_id, ({}, 0))
+        return snapshot.routes.get(group_id, ({}, 0))
 
     def allows_management_target(self, group_id: str) -> bool:
         """校验已确认成员关系, 不借用聊天响应启停判断管理资格"""
         if self._group_access_store is None:
             return self.allows_group(group_id)
-        return (
-            self.bot_self_id == self._group_access_account
-            and self._group_access_mode is not None
-            and self._management_membership.get(group_id) == "joined"
-        )
+        snapshot = self._group_access_snapshot
+        return bool(snapshot is not None and self.bot_self_id == snapshot.self_id
+                    and snapshot.membership.get(group_id) == "joined")
 
     async def refresh_management_membership(self, expected_self_id: str) -> None:
         """目录同步后刷新当前账号的管理目标成员关系快照"""
         if expected_self_id != self.bot_self_id or not isinstance(self._group_access_store, GroupDirectoryStore):
             raise ValueError("机器人账号已变化或目录存储不可用")
-        self._management_membership = await asyncio.to_thread(
-            self._group_access_store.membership_snapshot, expected_self_id,
-        )
+        async with self._group_access_lock:
+            members = await asyncio.to_thread(self._group_access_store.membership_snapshot, expected_self_id)
+            snapshot = self._group_access_snapshot
+            if snapshot is not None and snapshot.self_id == expected_self_id:
+                self._group_access_snapshot = replace(snapshot, membership=members)
 
     def group_active_revision(self, group_id: str) -> int | None:
         """返回当前账号已装载的群配置修订号"""
-        if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+        snapshot = self._group_access_snapshot
+        if snapshot is None or snapshot.self_id != self.bot_self_id:
             return None
-        return self._group_active_revisions.get(group_id, 0)
+        return snapshot.revisions.get(group_id, 0)
 
     def resolve_policy_settings(self, group_id: str) -> dict[str, Any]:
         """取得与入站群消息同一快照的有效策略"""
@@ -296,8 +273,9 @@ class OneBotAdapter(PlatformAdapter):
 
         if self._group_access_store is None:
             return resolve_wake_settings(self.config.settings, group_id)
+        snapshot = self._group_access_snapshot
         resolved, _ = resolve_group_policy(
-            self.config.settings, group_id, self._group_policies.get(group_id, {}),
+            self.config.settings, group_id, snapshot.policies.get(group_id, {}) if snapshot is not None else {},
         )
         return resolved
 
@@ -310,7 +288,6 @@ class OneBotAdapter(PlatformAdapter):
         """
         if expected_self_id != self.bot_self_id or self._group_access_store is None:
             raise ValueError("机器人账号已变化或群配置存储不可用")
-        self._group_access_mode = None
         await self._ensure_group_access(expected_self_id, force=True)
 
     def set_send_attempt_recorder(self, recorder: SendAttemptRecorder | None) -> None:
@@ -556,9 +533,10 @@ class OneBotAdapter(PlatformAdapter):
         """
         settings = self.config.settings
         if self._group_access_store is not None:
-            if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+            snapshot = self._group_access_snapshot
+            if snapshot is None or snapshot.self_id != self.bot_self_id:
                 return False
-            enabled = self._group_access_exceptions.get(group_id, self._group_access_mode == "all")
+            enabled = snapshot.exceptions.get(group_id, snapshot.mode == "all")
             return self.config.enable and bool(settings.get("enable_group", True)) and enabled
         if settings.get("group_management_version") == 1:
             return False
@@ -751,7 +729,12 @@ class OneBotAdapter(PlatformAdapter):
                         await asyncio.to_thread(
                             store.confirm_membership, incoming_self, group_id, notice_type == "group_increase",
                         )
-                        self._management_membership[group_id] = "joined" if notice_type == "group_increase" else "left"
+                        async with self._group_access_lock:
+                            snapshot = self._group_access_snapshot
+                            if snapshot is not None and snapshot.self_id == incoming_self:
+                                membership = {**snapshot.membership,
+                                              group_id: "joined" if notice_type == "group_increase" else "left"}
+                                self._group_access_snapshot = replace(snapshot, membership=membership)
                 elif self._group_sync_handler is not None:
                     await self._group_sync_handler()
         await self._emit_notice(event)
@@ -822,7 +805,8 @@ class OneBotAdapter(PlatformAdapter):
             if self._group_access_store is None and not self.allows_group(payload.group_id):
                 return
             event_kind = "group_request" if payload.category == "request" and payload.kind == "group" else payload.kind
-            if self._group_access_store is not None and not self._group_event_options.get(payload.group_id, {}).get(event_kind, True):
+            snapshot = self._group_access_snapshot
+            if self._group_access_store is not None and snapshot is not None and not snapshot.events.get(payload.group_id, {}).get(event_kind, True):
                 return
         session_id = group_session_id(payload.group_id) if payload.group_id else private_session_id(payload.user_id) if payload.user_id else ""
         extras: dict[str, Any] = {"payload": payload}
