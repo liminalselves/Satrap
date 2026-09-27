@@ -221,3 +221,22 @@ async def test_control_route_reads_offline_snapshot_and_saves_cold_mode(
     assert result is not None
     status, saved = result
     assert status == 200 and saved["mode"] == "all" and saved["apply_status"] == "pending"
+    save_config_document(path, {
+        "data_root": str(tmp_path / "data"),
+        "platforms": [{"id": "bot", "type": "onebot", "settings": {"group_management_version": 1}}],
+    })
+    context = control._RouteContext(
+        "GET", "/platforms/bot/groups/accounts", "/platforms/bot/groups/accounts", asyncio.StreamReader(), b"",
+    )
+    result = await control._route_group_directory(context)
+    assert result is not None
+    status, accounts = result
+    assert status == 200 and accounts["current_account"] == "" and accounts["waiting_for_account"] is True
+    reader = asyncio.StreamReader()
+    reader.feed_data(body)
+    reader.feed_eof()
+    context = control._RouteContext("PATCH", route, route, reader, raw)
+    result = await control._route_group_directory(context)
+    assert result is not None
+    status, rejected = result
+    assert status == 409 and rejected["reason"] == "account_changed"

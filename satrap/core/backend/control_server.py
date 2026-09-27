@@ -1044,10 +1044,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
         store = await asyncio.to_thread(GroupDirectoryStore, layout.platform_db(adapter_id))
         accounts = await asyncio.to_thread(store.list_accounts)
         configured = str(platform["settings"].get("self_id") or "")
-        current = (
-            configured if any(item["self_id"] == configured for item in accounts)
-            else "" if configured else str(accounts[0]["self_id"]) if accounts else ""
-        )
+        current = configured if any(item["self_id"] == configured for item in accounts) else ""
         if ctx.method == "GET" and parts[4:] == ["accounts"]:
             return 200, {"items": accounts, "current_account": current,
                          "waiting_for_account": not current, "offline_snapshot": True}
