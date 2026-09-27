@@ -90,6 +90,13 @@ export function GroupLayout() {
     }
     return () => { request.current += 1; };
   }, [account, adapterId, isRunning, reload, params, setParams]);
+  useEffect(() => {
+    if (!account || !isRunning) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void reload();
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [account, isRunning, reload]);
 
   if (!sections.some(([key]) => key === section)) {
     return <Card role="alert">群详情标签不存在。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
@@ -117,7 +124,9 @@ export function GroupLayout() {
           <button type="button" className="text-accent hover:underline" onClick={() => navigator.clipboard.writeText(groupId)}>复制群号</button>
         </div>
         {historical && <p className="text-sm text-warning">当前连接账号不同, 此账号的群配置只读</p>}
-        {!isRunning && <p className="text-sm text-warning">后端离线。可保存冷配置, 网络动作暂不可执行</p>}
+        {!isRunning && <p className="text-sm text-warning">{historical
+          ? '后端离线或未确认绑定账号, 此页仅可查看历史快照'
+          : '后端离线。可保存冷配置, 网络动作暂不可执行'}</p>}
         <nav className="flex gap-1 overflow-x-auto border-t border-glass-border pt-3" aria-label="群详情标签">
           {sections.map(([key, label]) => (
             <NavLink key={key} to={`/platforms/${encodeURIComponent(adapterId)}/groups/${encodeURIComponent(groupId)}/${key}?account=${encodeURIComponent(account)}`}

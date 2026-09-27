@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupAction, type GroupPolicyValue } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
@@ -32,6 +32,7 @@ export function GroupActions() {
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
   const [conflict, setConflict] = useState(false);
+  const request = useRef(0);
   const dirty = JSON.stringify(draft) !== baseline;
   useDirtyGuard(dirty);
   useEffect(() => {
@@ -42,12 +43,30 @@ export function GroupActions() {
   }, [config.revision, config.account, dirty, initial]);
   const refresh = useCallback(async () => {
     if (!isRunning) return;
+    const current = ++request.current;
     try {
       const result = await groupApi.actions(adapterId, groupId, account, state, page);
+      if (current !== request.current) return;
       setActions(result.items); setTotal(result.total); setError('');
-    } catch (caught) { setError(errorText(caught)); }
+    } catch (caught) { if (current === request.current) setError(errorText(caught)); }
   }, [adapterId, groupId, account, isRunning, state, page]);
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => {
+    void refresh();
+    return () => { request.current += 1; };
+  }, [refresh]);
+  useEffect(() => {
+    if (!isRunning || error || !['pending', 'executing', 'all'].includes(state)) return;
+    const startedAt = Date.now();
+    const interval = window.setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      if (state === 'executing' && Date.now() - startedAt >= 60_000) {
+        window.clearInterval(interval);
+        return;
+      }
+      void refresh();
+    }, state === 'executing' ? 2_000 : 10_000);
+    return () => window.clearInterval(interval);
+  }, [isRunning, error, state, refresh]);
   const save = async () => {
     if (busy || historical) return;
     const values: Record<string, GroupPolicyValue> = {};

@@ -79,6 +79,9 @@ export function GroupManage() {
     try { setResult(await groupApi.action(adapterId, groupId, account, operationId)); setError(''); }
     catch (caught) { setError(errorText(caught)); }
   };
+  const resetOperation = () => {
+    setOperationId(''); setSubmitted(null); setResult(null); setValues({}); setError('');
+  };
   const ready = isRunning && !historical && (config.group.membership === 'joined' || type === 'handle_group_request');
 
   return <div className="space-y-4">
@@ -110,13 +113,15 @@ export function GroupManage() {
           </label>)}
         </div>
         <div className="flex gap-2"><Button onClick={submit} disabled={!ready || busy || !selected.available || !!result}>{busy ? '提交中…' : operationId ? '按原 ID 重试提交' : '提交管理动作'}</Button>
-          {operationId && <Button variant="subtle" onClick={() => { setOperationId(''); setSubmitted(null); setResult(null); setValues({}); setError(''); }} disabled={busy || result?.state === 'unknown' || result?.state === 'executing'}>开始新操作</Button>}
+          {operationId && <Button variant="subtle" onClick={resetOperation} disabled={busy || result?.state === 'unknown' || result?.state === 'executing'}>开始新操作</Button>}
         </div>
       </>}
       {result && <div className="rounded-lg border border-glass-border p-3 text-sm" aria-live="polite">
         <p>操作 ID: <code>{result.action_id}</code></p>
         <p>状态: {result.state} · {result.result?.reason || '等待后续处理'}</p>
+        {result.state === 'unknown' && <p className="text-warning">结果未知, 请先核实平台状态</p>}
         <Button size="sm" variant="subtle" onClick={inspect}>按操作 ID 查询状态</Button>
+        {result.state === 'unknown' && <Button size="sm" variant="subtle" onClick={resetOperation}>我已核实平台状态, 可以创建新操作</Button>}
       </div>}
       {operationId && !result && <div className="rounded-lg border border-warning p-3 text-sm">
         <p>操作 ID: <code>{operationId}</code></p>

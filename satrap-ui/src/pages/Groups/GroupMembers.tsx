@@ -60,6 +60,7 @@ export function GroupMembers() {
     return () => { live = false; };
   }, [adapterId, groupId, account, isRunning, historical, config.group.membership, debounced, page, refreshKey]);
   const open = (member: GroupMember, action: string) => {
+    if (result?.state === 'unknown' || result?.state === 'executing') return;
     setSelected({ member, action }); setResult(null); setCard(member.card || ''); setDuration('1800');
     setEnable('true'); setReject(false); setError(''); setOperationId(crypto.randomUUID()); setSubmitted(null);
   };
@@ -109,7 +110,7 @@ export function GroupMembers() {
           {available && <div className="flex flex-wrap gap-1">
             {memberActions.map(([action, label]) => {
               const meta = types.find((item) => item.action_type === action);
-              return <Button key={action} size="sm" variant="subtle" disabled={!meta?.available}
+              return <Button key={action} size="sm" variant="subtle" disabled={!meta?.available || result?.state === 'unknown' || result?.state === 'executing'}
                 title={meta?.capability === 'unknown' ? '机器人能力待平台确认' : undefined}
                 onClick={() => open(member, action)}>{label}</Button>;
             })}
@@ -143,9 +144,12 @@ export function GroupMembers() {
       </label>}
       <div className="flex flex-wrap gap-2"><Button onClick={submit} disabled={busy || !available || !!result}>{submitted ? '按原 ID 重试提交' : '提交动作'}</Button>
         <Button variant="subtle" onClick={inspect} disabled={!operationId}>按操作 ID 查询</Button>
-        <Button variant="subtle" onClick={() => setSelected(null)}>关闭</Button></div>
+        <Button variant="subtle" onClick={() => setSelected(null)} disabled={result?.state === 'unknown' || result?.state === 'executing'}>关闭</Button></div>
       <p className="break-all text-xs text-text-secondary">操作 ID: {operationId}</p>
       {result && <p role="status" className="text-sm">操作 {result.action_id}: {result.state}{result.state === 'unknown' ? ', 结果未知, 请先核实平台状态' : ''}</p>}
+      {result?.state === 'unknown' && <Button variant="subtle" onClick={() => {
+        setSelected(null); setResult(null); setSubmitted(null); setOperationId('');
+      }}>我已核实平台状态, 可以创建新操作</Button>}
     </Card>}
   </div>;
 }

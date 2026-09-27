@@ -54,6 +54,13 @@ export function GroupEvents() {
     }).catch((caught) => { if (live) setError(errorText(caught)); });
     return () => { live = false; };
   }, [adapterId, groupId, account, isRunning, eventLimit, stage, requestId, refreshKey]);
+  useEffect(() => {
+    if (!isRunning || error) return;
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') setRefreshKey((value) => value + 1);
+    }, 5_000);
+    return () => window.clearInterval(interval);
+  }, [isRunning, error]);
   const changeParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);

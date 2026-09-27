@@ -17,6 +17,8 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const writes = [];
   const decisions = [];
+  const actionPosts = [];
+  let lostAction = null;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
     membership: 'joined', confirmed_at: 1_790_000_000, response_enabled: false, response_source: 'account' };
   let config = {
@@ -71,6 +73,18 @@ try {
       actionState = 'succeeded';
       return reply({ action_id: 'action-123456', state: actionState });
     }
+    if (pathname === '/api/platforms/ob/groups/456/actions' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      actionPosts.push(payload);
+      lostAction = { ...payload, self_id: '100', group_id: '456', actor_kind: 'panel', state: 'unknown',
+        created_at: 1_790_000_000, expires_at: null, decision_at: null, executed_at: null,
+        result: { reason: 'interrupted' } };
+      return reply({ error: '连接中断', reason: 'group_service_unavailable' }, 503);
+    }
+    if (pathname.startsWith('/api/platforms/ob/groups/456/actions/') && request.method() === 'GET' && lostAction) {
+      assert.equal(pathname.split('/').at(-1), lostAction.action_id);
+      return reply(lostAction);
+    }
     if (pathname === '/api/platforms/ob/groups/456/actions') return reply({
       items: [{ action_id: 'action-123456', self_id: '100', group_id: '456', action_type: 'kick_group_member',
         params: { user_id: '42' }, actor_kind: 'model', state: actionState,
@@ -80,10 +94,16 @@ try {
     if (pathname === '/api/platforms/ob/groups/456/config') return reply({ ...config, account: url.searchParams.get('account') || '100' });
     if (pathname === '/api/platforms/ob/groups/456/events') return reply({ items: [], volatile: true, capacity: 4096, truncated: false });
     if (pathname === '/api/platforms/ob/groups/456/diagnostics') return reply({ records: [], available: true });
-    if (pathname === '/api/platforms/ob/groups/456/action-types') return reply({ items: [] });
+    if (pathname === '/api/platforms/ob/groups/456/action-types') return reply({ items: [
+      { action_type: 'set_group_name', schema: { name: 'string' }, risk: 'normal',
+        approval_mode: 'auto_execute', approval_source: 'default', available: true,
+        capability: 'unknown', membership: 'joined' },
+    ] });
     if (pathname === '/api/platforms/ob/groups/bindings') return reply({ account: '100',
       items: [{ provider: 'edictum', config_name: 'simple', enabled: true, available: true,
-        description: '简单会话', session_fields: ['binding', 'scope', 'model', 'prompt', 'plugins'] }],
+        description: '简单会话', session_fields: ['binding', 'scope', 'model', 'prompt', 'plugins'] },
+      { provider: 'session_class', config_name: 'basic', enabled: true, available: true,
+        description: '基础会话', session_fields: ['binding', 'scope'] }],
       models: ['base', 'other'], plugins: [{ name: 'search', description: '搜索', config_schema: {
         limit: { type: 'number', description: '上限', session_overridable: true, integer: true },
       } }],
@@ -117,8 +137,12 @@ try {
   assert.equal(await page.getByText('关闭', { exact: true }).count() > 0, true);
   for (const theme of ['dark', 'light']) {
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
-    await page.screenshot({ animations: 'disabled', path: path.join(artifacts, `${theme}-list.png`) });
+    await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, `${theme}-list.png`) });
   }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-list.png') });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole('link', { name: '进入' }).click();
   await page.getByRole('link', { name: '会话配置' }).click();
   await page.getByText('模型与提示词').waitFor();
@@ -138,8 +162,14 @@ try {
   assert.deepEqual(writes.at(-1).values.plugins, { mode: 'value', value: [{ name: 'search', mode: 'disabled', config: {} }] });
   for (const theme of ['dark', 'light']) {
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
-    await page.screenshot({ animations: 'disabled', path: path.join(artifacts, `${theme}-session.png`) });
+    await page.locator('main').evaluate((element) => { element.scrollTop = 0; });
+    await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, `${theme}-session.png`) });
   }
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('main').evaluate((element) => { element.scrollTop = 0; });
+  await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-session.png') });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+  await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole('link', { name: '审批与记录' }).click();
   await page.getByText('action-123456').waitFor();
   await page.getByRole('button', { name: '批准' }).click();
@@ -148,11 +178,31 @@ try {
   await page.getByRole('button', { name: '刷新' }).click();
   for (const theme of ['dark', 'light']) {
     await page.evaluate((value) => document.documentElement.setAttribute('data-theme', value), theme);
-    await page.screenshot({ animations: 'disabled', path: path.join(artifacts, `${theme}-actions.png`) });
+    await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, `${theme}-actions.png`) });
   }
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.screenshot({ animations: 'disabled', path: path.join(artifacts, 'narrow-actions.png') });
+  await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+  await page.getByRole('link', { name: '群管理' }).click();
+  await page.locator('label:has-text("群名") input').fill('新群名');
+  await page.getByRole('button', { name: '提交管理动作' }).click();
+  await page.getByText('连接中断').waitFor();
+  assert.equal(actionPosts.length, 1);
+  await page.getByRole('button', { name: '按原 ID 重试提交' }).click();
+  await page.getByText('连接中断').waitFor();
+  assert.equal(actionPosts.length, 2);
+  assert.equal(actionPosts[0].action_id, actionPosts[1].action_id);
+  assert.deepEqual(actionPosts[0].params, actionPosts[1].params);
+  await page.getByRole('button', { name: '按原 ID 查询状态' }).click();
+  await page.getByText('状态: unknown').waitFor();
+  assert.equal(actionPosts.length, 2);
+  assert.equal(await page.getByRole('button', { name: '开始新操作' }).isDisabled(), true);
+  await page.getByRole('button', { name: '我已核实平台状态, 可以创建新操作' }).click();
+  await page.locator('label:has-text("群名") input').fill('另一个群名');
+  await page.getByRole('button', { name: '提交管理动作' }).click();
+  await page.getByText('连接中断').waitFor();
+  assert.equal(actionPosts.length, 3);
+  assert.notEqual(actionPosts[2].action_id, actionPosts[0].action_id);
   conflict = true;
   await page.goto(`${origin}/platforms/ob/groups/456/session?account=100`);
   await page.getByText('模型与提示词').waitFor();
@@ -164,6 +214,16 @@ try {
   ]);
   await page.getByText('群配置已变化').waitFor();
   assert.equal(await page.locator('label:has-text("系统提示词") textarea').inputValue(), '未保存草稿');
+  await page.getByRole('button', { name: '取消' }).click();
+  await page.locator('label:has-text("绑定来源") select').selectOption('value');
+  await page.locator('label:has-text("Provider") select').selectOption('session_class');
+  await page.locator('label:has-text("命名配置") select').selectOption('basic');
+  await page.getByText('目标配置不支持已有的').waitFor();
+  assert.equal(await page.getByRole('button', { name: '保存并应用' }).isDisabled(), true);
+  await page.getByRole('button', { name: '模型恢复继承' }).click();
+  await page.getByRole('button', { name: '提示词恢复继承' }).click();
+  await page.getByRole('button', { name: '插件恢复继承' }).click();
+  assert.equal(await page.getByRole('button', { name: '保存并应用' }).isEnabled(), true);
   assert.deepEqual(errors, []);
   console.log(`groups E2E passed; screenshots: ${artifacts}`);
 } finally {
