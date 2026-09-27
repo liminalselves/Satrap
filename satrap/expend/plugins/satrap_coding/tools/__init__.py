@@ -119,10 +119,12 @@ def _apply_config(config: dict[str, Any]) -> None:
             d.strip() for d in str(config["protected_dirs"]).split(",") if d.strip()
         )
         _PROTECTED_DIRS = (".satrap", ".git", "node_modules") + extra
-    if config.get("allowed_env_vars"):
-        ALLOWED_ENV_VARS = frozenset(
-            name.strip() for name in str(config["allowed_env_vars"]).split(",") if name.strip()
-        )
+    # 空配置同样要覆盖运行态值, 避免上一次配置的 allowlist 泄漏到后续会话
+    ALLOWED_ENV_VARS = frozenset(
+        name.strip()
+        for name in str(config.get("allowed_env_vars") or "").split(",")
+        if name.strip()
+    )
 
 
 def get_tools(

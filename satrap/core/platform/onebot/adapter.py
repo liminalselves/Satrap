@@ -37,7 +37,7 @@ from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_AC
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
-from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_media_path
+from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_media_path, file_uri_to_path
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
@@ -1035,9 +1035,10 @@ class OneBotAdapter(PlatformAdapter):
         raw_file = (component.file_ or "").strip()
         source = ""
         if raw_file:
-            local_path = raw_file.removeprefix("file:///").removeprefix("file://")
-            if os.path.exists(local_path):
+            local_path = file_uri_to_path(raw_file)
+            if raw_file.startswith("file://") or os.path.exists(local_path):
                 try:
+                    # file URI 即使指向不存在路径也必须先过白名单, 禁止原字符串透传给 OneBot 实现读取
                     source = ensure_allowed_media_path(local_path)
                 except MediaSourcePermissionError as error:
                     return self._failed_receipt(session_id, "file", "media_source_denied", error)

@@ -448,8 +448,9 @@ class TestMediaSourceRejection:
         assert adapter._bot.calls == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_uri", [False, True], ids=["raw-path", "file-uri"])
     async def test_file_segment_denied_reports_media_reason(
-        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, use_uri: bool
     ):
         from satrap.core.utils import paths as paths_mod
 
@@ -458,11 +459,19 @@ class TestMediaSourceRejection:
         monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
         outside = tmp_path / "secret.bin"
         outside.write_bytes(b"bin")
+        source = outside.as_uri() if use_uri else str(outside)
 
         adapter = make_adapter()
-        receipt = await adapter.send_message("group%456", MessageChain([File(name="secret.bin", file=str(outside))]))
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="secret.bin", file=source)]))
         assert receipt.status == "failed" and receipt.reason == "media_source_denied"
         assert [name for name, _ in adapter._bot.calls] == []
+
+
+def test_file_uri_to_path_preserves_unix_absolute_root():
+    """Unix file:///absolute/path 必须保留根斜杠, 不能变成相对路径"""
+    from satrap.core.utils.paths import file_uri_to_path
+
+    assert file_uri_to_path("file:///var/tmp/example.txt") == "/var/tmp/example.txt"
 
 
 class TestFileOutboundSplit:

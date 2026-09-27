@@ -54,6 +54,27 @@ def get_storage_dir() -> Path:
     return get_data_dir() / "data"
 
 
+def file_uri_to_path(source: str) -> str:
+    """
+    将 file:// URI 转为本地路径, 非 file URI 原样返回
+
+    保留 Unix `file:///absolute/path` 的根 `/`; Windows 下仅移除盘符前由 URI
+    语法引入的额外 `/`, 使 `file:///C:/path` 还原为 `C:/path`
+
+    参数:
+    - source: URI 或本地路径
+
+    返回:
+    - str: 本地路径或原始非 file URI
+    """
+    if not source.startswith("file://"):
+        return source
+    path = source[7:]
+    if os.name == "nt" and len(path) > 2 and path[0] == "/" and path[2] == ":":
+        path = path[1:]
+    return path
+
+
 def get_db_path(*, platform_id: str = "local") -> str:
     """
     获取指定平台实例唯一的数据库路径

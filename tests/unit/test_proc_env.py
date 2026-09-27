@@ -10,6 +10,7 @@ def test_strips_suffix_matched_sensitive_vars(monkeypatch):
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "s")
     monkeypatch.setenv("DB_PASSWORD", "p")
     monkeypatch.setenv("TOKEN", "bare")
+    monkeypatch.setenv("service_api_key", "lowercase")
 
     env = sanitized_child_env()
 
@@ -18,6 +19,7 @@ def test_strips_suffix_matched_sensitive_vars(monkeypatch):
     assert "AWS_SECRET_ACCESS_KEY" not in env
     assert "DB_PASSWORD" not in env
     assert "TOKEN" not in env
+    assert "service_api_key" not in env
 
 
 def test_keeps_normal_vars_containing_sensitive_prefix(monkeypatch):

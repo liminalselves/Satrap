@@ -122,3 +122,14 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
     tool._bind(cast(Any, session))
     result = await tool.execute("echo audit") if isinstance(tool, coding.AsyncShellTool) else tool.execute("echo audit")
     assert "执行已取消" in result
+
+
+def test_empty_allowed_env_vars_clears_runtime_allowlist(monkeypatch):
+    """插件配置从非空改为空时必须清空模块运行态 allowlist, 不能泄漏旧会话配置"""
+    monkeypatch.setattr(coding, "ALLOWED_ENV_VARS", frozenset())
+
+    coding._apply_config({"allowed_env_vars": "TEST_API_KEY,OTHER_TOKEN"})
+    assert coding.ALLOWED_ENV_VARS == frozenset({"TEST_API_KEY", "OTHER_TOKEN"})
+
+    coding._apply_config({"allowed_env_vars": ""})
+    assert coding.ALLOWED_ENV_VARS == frozenset()

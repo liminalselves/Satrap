@@ -24,7 +24,7 @@ from satrap.core.utils.outbound import (
     safe_async_get,
     trusted_hosts_from_env,
 )
-from satrap.core.utils.paths import ensure_allowed_media_path
+from satrap.core.utils.paths import ensure_allowed_media_path, file_uri_to_path
 from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
 
 from satrap.core.log import logger
@@ -145,24 +145,6 @@ async def download_image_by_url(url: str) -> str:
     return await download_file(url, path)
 
 
-def _strip_file_uri(path: str) -> str:
-    """
-    兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
-
-    参数:
-    - path: 路径
-
-    返回:
-    - str: 兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
-    """
-    if not path.startswith("file://"):
-        return path
-    stripped = path[7:]
-    if os.name == "nt" and len(stripped) > 2 and stripped[0] == "/" and stripped[2] == ":":
-        stripped = stripped[1:]
-    return stripped
-
-
 class SatrapFileTokenService:
     """轻量文件 token 注册服务, 只维护带过期时间的 token 到本地路径的映射"""
 
@@ -193,7 +175,7 @@ class SatrapFileTokenService:
         返回:
         - str: 注册文件路径并返回 token
         """
-        real_path = ensure_allowed_media_path(os.path.abspath(_strip_file_uri(path)))
+        real_path = ensure_allowed_media_path(os.path.abspath(file_uri_to_path(path)))
         if not os.path.exists(real_path):
             raise FileNotFoundError(f"文件不存在, 无法注册: {real_path}")
         self._evict_expired()
@@ -433,7 +415,7 @@ class _FileLikeComponent(BaseMessageComponent):
         """
         source = self._source()
         if source.startswith("file://"):
-            path = _strip_file_uri(source)
+            path = file_uri_to_path(source)
             if os.path.exists(path):
                 return ensure_allowed_media_path(path)
             raise FileNotFoundError(f"not a valid file: {source}")
@@ -460,7 +442,7 @@ class _FileLikeComponent(BaseMessageComponent):
         """
         source = self._source()
         if source.startswith("file://"):
-            bs64_data = file_to_base64(ensure_allowed_media_path(_strip_file_uri(source)))
+            bs64_data = file_to_base64(ensure_allowed_media_path(file_uri_to_path(source)))
         elif source.startswith("http"):
             file_path = await self.convert_to_file_path()
             bs64_data = file_to_base64(file_path)
@@ -910,7 +892,7 @@ class File(BaseMessageComponent):
         - str: 同步获取文件路径, 异步上下文中不会阻塞下载
         """
         if self.file_:
-            path = _strip_file_uri(self.file_)
+            path = file_uri_to_path(self.file_)
             if os.path.exists(path):
                 return ensure_allowed_media_path(path)
         if self.url:
@@ -926,8 +908,8 @@ class File(BaseMessageComponent):
                     asyncio.run(self._download_file())
                 except Exception as e:
                     logger.error(f"文件下载失败: {e}")
-                if self.file_ and os.path.exists(_strip_file_uri(self.file_)):
-                    return os.path.abspath(_strip_file_uri(self.file_))
+                if self.file_ and os.path.exists(file_uri_to_path(self.file_)):
+                    return os.path.abspath(file_uri_to_path(self.file_))
         return ""
 
     @file.setter
@@ -956,13 +938,13 @@ class File(BaseMessageComponent):
         if allow_return_url and self.url:
             return self.url
         if self.file_:
-            path = _strip_file_uri(self.file_)
+            path = file_uri_to_path(self.file_)
             if os.path.exists(path):
                 return ensure_allowed_media_path(path)
         if self.url:
             await self._download_file()
             if self.file_:
-                return os.path.abspath(_strip_file_uri(self.file_))
+                return os.path.abspath(file_uri_to_path(self.file_))
         return ""
 
     async def _download_file(self) -> None:

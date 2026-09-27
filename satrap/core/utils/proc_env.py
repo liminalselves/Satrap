@@ -4,7 +4,10 @@ from __future__ import annotations
 import os, re
 from collections.abc import Iterable
 
-_SENSITIVE_ENV_PATTERN = re.compile(r"(?:^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?$")
+_SENSITIVE_ENV_PATTERN = re.compile(
+    r"(?:^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?$",
+    re.IGNORECASE,
+)
 """变量名以 KEY / TOKEN / SECRET / PASSWORD / PASSWD / CREDENTIAL 为完整尾部分段
 (允许复数 S 结尾) 时视为敏感; TOKENIZERS_PARALLELISM 等含敏感词前缀的正常
 变量不受影响"""
