@@ -336,6 +336,17 @@ try {
   await page.locator('label:has-text("系统提示词") select').selectOption('value');
   await page.locator('label:has-text("系统提示词") textarea').fill('');
   await page.locator('label:has-text("search") select').selectOption('disabled');
+  let backPrompt = 0;
+  page.once('dialog', async (dialog) => {
+    assert.equal(dialog.message(), '当前表单有未保存的修改, 确定放弃吗?');
+    backPrompt += 1;
+    await dialog.dismiss();
+  });
+  await page.evaluate(() => window.history.back());
+  await page.waitForTimeout(100);
+  assert.equal(backPrompt, 1);
+  assert.equal(new URL(page.url()).pathname.endsWith('/session'), true);
+  assert.equal(await page.locator('label:has-text("模型来源") select').last().inputValue(), 'other');
   await page.getByRole('button', { name: '保存并应用' }).click();
   await Promise.all([
     page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
@@ -470,6 +481,15 @@ try {
   assert.equal(discardPrompt, 1);
   assert.equal(new URL(page.url()).pathname.endsWith('/session'), true);
   assert.equal(await page.locator('label:has-text("本群范围") select').inputValue(), 'group_shared');
+  page.once('dialog', async (dialog) => { await dialog.accept(); });
+  await page.getByRole('link', { name: '返回群列表' }).click();
+  await page.getByLabel('查看账号').selectOption('101');
+  await page.getByText('历史账号群').first().waitFor();
+  await page.getByRole('link', { name: '进入' }).click();
+  await page.getByRole('link', { name: '会话配置' }).click();
+  await page.getByText('当前连接账号不同, 此账号的群配置只读').waitFor();
+  assert.equal(await page.locator('label:has-text("范围来源") select').inputValue(), 'inherit');
+  assert.equal(await page.getByRole('button', { name: '保存并应用' }).count(), 0);
   assert.deepEqual(errors, []);
   console.log(`groups E2E passed; screenshots: ${artifacts}`);
 } finally {
