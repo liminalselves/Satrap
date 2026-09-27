@@ -353,6 +353,10 @@ try {
   await page.getByText('first-run-at').waitFor();
   await page.getByRole('button', { name: '查看阶段明细' }).click();
   await page.getByText('"status": "sent"').waitFor();
+  await page.goto(`${origin}/platforms/ob/groups/456/not-a-tab?account=100`);
+  await page.getByText('群详情标签不存在').waitFor();
+  await page.getByRole('alert').getByRole('link', { name: '返回群列表' }).click();
+  await page.getByText('测试交流群').last().waitFor();
   firstRun.diagnostics.length = 0;
   unbound = true;
   config.explicit.policy = {};

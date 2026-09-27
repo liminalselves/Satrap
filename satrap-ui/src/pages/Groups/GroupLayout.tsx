@@ -34,6 +34,12 @@ export function GroupDefault() {
   return <Navigate to={`overview${location.search}`} replace />;
 }
 
+export function GroupInvalidSection() {
+  const { adapterId, account } = useGroupContext();
+  const listPath = `/platforms/${encodeURIComponent(adapterId)}/groups?account=${encodeURIComponent(account)}`;
+  return <Card role="alert">群详情标签不存在。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
+}
+
 function errorText(error: unknown): string {
   if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
   return error instanceof Error ? error.message : '群配置读取失败';
@@ -90,9 +96,6 @@ export function GroupLayout() {
     return () => window.clearInterval(interval);
   }, [account, isRunning, reload]);
 
-  if (!sections.some(([key]) => key === section)) {
-    return <Card role="alert">群详情标签不存在。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
-  }
   if (!account && !loading) return <Card>等待机器人确认账号。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
   if (loading && !config) return <Card className="min-h-52 animate-pulse" aria-label="群详情加载中" />;
   if (!config || config.account !== account || config.group.group_id !== groupId) {
