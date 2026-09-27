@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import importlib
+import threading
 from types import SimpleNamespace
 from pathlib import Path
 from typing import Any, cast
@@ -11,7 +14,7 @@ import pytest
 from satrap.core.config.group_session import resolve_group_session, session_values
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider, SessionProviderRegistry
-from satrap.core.type import SessionConfig, UserCall
+from satrap.core.type import LLMConfig, SessionConfig, UserCall
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.edictum.registry import create_default_edictum_type_registry
@@ -122,6 +125,43 @@ async def test_group_prompt_does_not_leak_into_another_legacy_context() -> None:
     assert session.context.prompt == "群 A 的内容"
     await manager._apply_group_session_overrides(cfg, cast(Any, session), UserCall(), None)
     assert session.context.prompt == ""
+
+
+@pytest.mark.asyncio
+async def test_model_reload_reapplies_group_override_and_same_name_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    versions = {"base": 1, "group-model": 1}
+    module = importlib.import_module("satrap.core.framework.SessionManager")
+    monkeypatch.setattr(module, "build_llm_from_config", lambda config, **_: (config.name, versions[config.name]))
+    manager = object.__new__(SessionManager)
+    cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
+    definition = SimpleNamespace(params={"model_name": "base"}, model_key="model_name")
+    manager.provider_registry = cast(Any, SimpleNamespace(resolve_definition=lambda *_: (SimpleNamespace(), definition)))
+    manager._model_cfg_mgr = cast(Any, SimpleNamespace(
+        get_llm_config=lambda name: LLMConfig(name=name, api_key="test-key"),
+    ))
+    manager._apply_session_context_config = lambda *_: None
+    session = SimpleNamespace(llm=("base", 1), _all_contexts=lambda: {})
+    session.reload_llm = lambda llm: setattr(session, "llm", llm)
+    entry = SimpleNamespace(session=session, session_type="named", async_operation_lock=asyncio.Lock(),
+                            sync_operation_lock=threading.RLock())
+    manager.pool = cast(Any, SimpleNamespace(list_entries=lambda: {"sid": entry}))
+    manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
+
+    group_call = UserCall(group_session_overrides={"model": "group-model"})
+    await manager._apply_group_session_overrides(cfg, session, group_call, None)
+    assert session.llm == ("group-model", 1)
+    versions["group-model"] = 2
+    await manager.reload_model_configs_async()
+    assert session.llm == ("base", 1)
+    await manager._apply_group_session_overrides(cfg, session, group_call, None)
+    assert session.llm == ("group-model", 2)
+
+    base_call = UserCall(group_session_overrides={"model": "base"})
+    await manager._apply_group_session_overrides(cfg, session, base_call, None)
+    versions["base"] = 2
+    await manager.reload_model_configs_async()
+    await manager._apply_group_session_overrides(cfg, session, base_call, None)
+    assert session.llm == ("base", 2)
 
 
 @pytest.mark.asyncio

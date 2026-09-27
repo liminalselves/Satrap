@@ -1452,7 +1452,6 @@ class SessionManager:
                 raise ValueError("群模型配置不存在或缺少必要凭据")
             llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
             self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
-            setattr(session, "_satrap_group_model_name", model_name)
         base_prompt = instance.get("system_prompt", definition.params.get("system_prompt"))
         prompt = base_prompt if "system_prompt" in instance else overrides.get("prompt", base_prompt)
         if prompt is None and hasattr(session, "_satrap_group_prompt"):
@@ -2317,6 +2316,7 @@ class SessionManager:
         - new_llm: 新模型实例
         - llm_cfg: 新模型配置
         """
+        setattr(session, "_satrap_group_model_name", None)   # 外部模型替换前失效群覆盖缓存, 失败后下一轮仍会重试
         # 同步与异步模型类型由会话类型决定, reload_llm 恒被调用
         if isinstance(session, AsyncSession):
             session.reload_llm(cast(AsyncLLM, new_llm))
@@ -2330,6 +2330,7 @@ class SessionManager:
                 reset_llm(new_llm)
             elif workflow is not None and hasattr(workflow, "llm"):
                 workflow.llm = new_llm
+        setattr(session, "_satrap_group_model_name", llm_cfg.name)   # 所有模型引用更新成功后记录实际应用名称
         logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     def _persist_config(self, config: SessionConfig) -> None:
