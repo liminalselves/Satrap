@@ -190,6 +190,8 @@ class OneBotAdapter(PlatformAdapter):
         self._group_access_snapshot: GroupRuntimeSnapshot | None = None
         self._group_session_apply: dict[str, GroupSessionApplyState] = {}
         self._paused_groups: set[str] = set()
+        self._account_mode_restrictions: dict[str, tuple[int, frozenset[str]]] = {}
+        self._account_apply_errors: dict[int, str] = {}
         self._group_access_lock = asyncio.Lock()
         self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
         self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
@@ -240,6 +242,7 @@ class OneBotAdapter(PlatformAdapter):
             except GroupLegacyConflict:
                 self._group_access_snapshot = None
                 self._group_session_apply.clear()
+                self._account_mode_restrictions.clear()
                 raise
             prepared = await asyncio.to_thread(store.runtime_snapshot, incoming_self)
             if snapshot is None or snapshot.self_id != incoming_self:
@@ -263,7 +266,49 @@ class OneBotAdapter(PlatformAdapter):
                             prepared.revisions.get(group_id, 0), previous_active,
                         )
             self._group_access_snapshot = prepared
+            self._account_mode_restrictions = {
+                token: restriction for token, restriction in self._account_mode_restrictions.items()
+                if restriction[0] > prepared.account_revision
+            }
+            self._account_apply_errors = {
+                revision: reason for revision, reason in self._account_apply_errors.items()
+                if revision > prepared.account_revision
+            }
             return True
+
+    def begin_account_mode_restriction(self, self_id: str, mode: str, revision: int) -> str | None:
+        """账号收紧写入前限制将失去响应资格的群"""
+        snapshot = self._group_access_snapshot
+        if snapshot is None or snapshot.self_id != self_id or snapshot.mode != "all" or mode != "selected":
+            return None
+        token = secrets.token_urlsafe(16)
+        allowed = frozenset(group_id for group_id, enabled in snapshot.exceptions.items() if enabled)
+        self._account_mode_restrictions[token] = (revision, allowed)
+        return token
+
+    def withdraw_account_mode_restriction(self, token: str | None) -> None:
+        """只撤销本次未提交写入所新增的限制"""
+        if token is not None:
+            self._account_mode_restrictions.pop(token, None)
+
+    def account_apply_status(self, self_id: str, revision: int) -> tuple[str, int | None, str | None]:
+        """区分账号设置的保存修订与运行时快照修订"""
+        snapshot = self._group_access_snapshot
+        if snapshot is None or snapshot.self_id != self_id:
+            return "pending", None, None
+        active = snapshot.account_revision
+        if active == revision:
+            return "applied", active, None
+        error = self._account_apply_errors.get(revision)
+        return ("failed" if error else "pending"), active, error
+
+    def record_account_apply_failure(self, revision: int, reason: str) -> None:
+        """保存账号快照刷新失败原因, 供查询和重试展示"""
+        self._account_apply_errors[revision] = reason
+
+    def _account_group_restricted(self, group_id: str) -> bool:
+        """按所有尚未确认应用的收紧请求取允许范围交集"""
+        return any(group_id not in allowed for _, allowed in self._account_mode_restrictions.values())
 
     def group_session_apply_status(
         self, group_id: str, saved_revision: int, active_session_ids: set[str],
@@ -314,7 +359,7 @@ class OneBotAdapter(PlatformAdapter):
 
     def group_route_revision(self, group_id: str) -> tuple[dict[str, object], int, int | None]:
         """从单一快照取得群会话配置, 路由代次和修订号"""
-        if group_id in self._paused_groups:
+        if group_id in self._paused_groups or self._account_group_restricted(group_id):
             return {}, -1, None
         if self._group_access_store is None:
             return {}, 0, None
@@ -627,7 +672,7 @@ class OneBotAdapter(PlatformAdapter):
         - 群聊已启用且目标在允许范围内时返回 True
         """
         settings = self.config.settings
-        if group_id in self._paused_groups:
+        if group_id in self._paused_groups or self._account_group_restricted(group_id):
             return False
         if self._group_access_store is not None:
             snapshot = self._group_access_snapshot

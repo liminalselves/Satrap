@@ -182,6 +182,64 @@ async def test_group_save_pauses_only_target_until_snapshot_is_ready(
 
 
 @pytest.mark.asyncio
+async def test_account_mode_restriction_preserves_explicit_groups_and_survives_conflict(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.patch_account("100", expected_revision=1, mode="all", approval_defaults={})
+    for group_id in ("456", "789"):
+        store.confirm_membership("100", group_id, True)
+    store.patch_group("100", "456", "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    assert adapter.allows_group("456") and adapter.allows_group("789")
+    original = adapter.refresh_group_access
+
+    async def failed(_: str) -> None:
+        raise RuntimeError("read failed")
+
+    monkeypatch.setattr(adapter, "refresh_group_access", failed)
+    result = await backend.patch_group_settings("bot", "100", 2, "selected", {})
+    assert result["apply_status"] == "failed" and result["active_revision"] == 2
+    assert adapter.allows_group("456") and not adapter.allows_group("789")
+    assert adapter.allows_management_target("789")
+    with pytest.raises(Exception, match="已变化"):
+        await backend.patch_group_settings("bot", "100", 2, "selected", {})
+    assert not adapter.allows_group("789")
+    monkeypatch.setattr(adapter, "refresh_group_access", original)
+    recovered = await backend.apply_group_settings("bot", "100", 3)
+    assert recovered["apply_status"] == "applied" and recovered["active_revision"] == 3
+    assert store.read_account("100")["revision"] == 3
+    assert adapter.allows_group("456") and not adapter.allows_group("789")
+    assert adapter.allows_management_target("789")
+
+
+@pytest.mark.asyncio
+async def test_account_mode_restriction_survives_uncertain_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.patch_account("100", expected_revision=1, mode="all", approval_defaults={})
+    store.confirm_membership("100", "456", True)
+    await adapter.refresh_group_access("100")
+    original = GroupDirectoryStore.patch_account
+
+    def commit_then_fail(self: GroupDirectoryStore, *args: object, **kwargs: object) -> dict[str, object]:
+        original(self, *args, **kwargs)
+        raise RuntimeError("commit result unknown")
+
+    monkeypatch.setattr(GroupDirectoryStore, "patch_account", commit_then_fail)
+    with pytest.raises(RuntimeError, match="unknown"):
+        await backend.patch_group_settings("bot", "100", 2, "selected", {})
+    assert store.read_account("100")["revision"] == 3
+    assert not adapter.allows_group("456")
+    assert adapter.allows_management_target("456")
+
+
+@pytest.mark.asyncio
 async def test_sync_discards_result_after_connection_generation_changes(tmp_path: Path) -> None:
     backend, adapter = _runtime(tmp_path)
     entered = asyncio.Event()

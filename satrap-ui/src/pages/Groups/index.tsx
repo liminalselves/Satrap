@@ -70,6 +70,7 @@ export function Groups() {
   const [showMode, setShowMode] = useState(false);
   const [modeDraft, setModeDraft] = useState<'selected' | 'all'>('selected');
   const [modeSaving, setModeSaving] = useState(false);
+  const [settingsApplying, setSettingsApplying] = useState(false);
   const [showApproval, setShowApproval] = useState(false);
   const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft>({});
   const [approvalBaseline, setApprovalBaseline] = useState('{}');
@@ -211,6 +212,18 @@ export function Groups() {
     } catch (caught) { setError(errorText(caught)); }
     finally { setModeSaving(false); }
   }, [settings, account, modeSaving, adapterId, modeDraft, isRunning, loadList]);
+
+  const retrySettings = useCallback(async () => {
+    if (!visibleSettings || !account || !isRunning || historical || settingsApplying) return;
+    setSettingsApplying(true);
+    try {
+      const result = await groupApi.applySettings(adapterId, account, visibleSettings.revision);
+      setSettings(result);
+      await loadList();
+      setError(result.apply_status === 'failed' ? `账号设置仍未生效: ${result.apply_error || '刷新失败'}` : '');
+    } catch (caught) { setError(errorText(caught)); }
+    finally { setSettingsApplying(false); }
+  }, [visibleSettings, account, isRunning, historical, settingsApplying, adapterId, loadList]);
   const saveApproval = useCallback(async () => {
     if (!settings || !account || approvalSaving || !approvalDirty || approvalConflict) return;
     const defaults = Object.fromEntries(Object.entries(approvalDraft)
@@ -291,10 +304,15 @@ export function Groups() {
           {historical && <p className="text-sm text-text-secondary">当前连接账号不同, 历史账号只读。账号选择只切换查看数据</p>}
           <div className="flex flex-wrap gap-3 text-sm text-text-secondary" aria-live="polite">
             <span>接入模式: {visibleSettings?.mode === 'all' ? '全部群, 含以后新加入群' : visibleSettings?.mode === 'selected' ? '仅所选群' : '读取中'}</span>
+            {visibleSettings?.apply_status && <span>应用状态: {visibleSettings.apply_status === 'applied' ? '已生效' : visibleSettings.apply_status === 'failed' ? '失败' : '待应用'}</span>}
             <span>已加入 {visibleListing?.counts.joined ?? '—'}</span>
             <span>响应开启 {visibleListing?.counts.response_enabled ?? '—'}</span>
             <span>上次完整同步: {timeText(sync?.last_complete_at ?? null)}</span>
           </div>
+          {visibleSettings?.apply_status === 'failed' && !historical && <div className="flex items-center gap-3 text-sm text-error" role="alert">
+            <span>账号设置已保存, 应用失败: {visibleSettings.apply_error || '刷新失败'}</span>
+            <Button size="sm" variant="subtle" onClick={retrySettings} disabled={!isRunning || settingsApplying}>重试应用</Button>
+          </div>}
           {sync?.status === 'failed' || sync?.status === 'partial' ? (
             <p className="text-sm text-warning" role="status">同步{sync.status === 'failed' ? '失败' : '不完整'}, 旧目录已保留, 未据此判断退群。原因: {sync.reason || '未知'}</p>
           ) : null}

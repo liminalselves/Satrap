@@ -374,6 +374,14 @@ class BackendHTTPServer(MiniHTTPServer):
                     adapter_id, self_id, revision, mode, cast(dict[str, object], defaults),
                 )
                 return 200, saved
+            if method == "POST" and parts[5:] == ["settings", "apply"]:
+                payload = _parse_json_object(body)
+                self_id = payload.get("expected_self_id")
+                revision = payload.get("saved_revision")
+                if (not isinstance(self_id, str) or not self_id or not isinstance(revision, int)
+                        or isinstance(revision, bool)):
+                    return 400, {"error": "账号设置应用参数无效", "reason": "invalid_settings"}
+                return 200, await self.backend.apply_group_settings(adapter_id, self_id, revision)
             if method == "GET" and len(parts) == 5:
                 if not account:
                     return 400, {"error": "account 必填", "reason": "missing_account"}

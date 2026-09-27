@@ -6,6 +6,8 @@ export interface GroupAccount {
   self_id: string;
   mode: 'selected' | 'all';
   revision: number;
+  saved_revision?: number;
+  active_revision?: number | null;
   last_bound_at: number;
 }
 
@@ -148,6 +150,11 @@ export const groupApi = {
     running
       ? apiClient.patch<GroupSettings>(`/api${path(adapterId)}/settings`, data)
       : controlPatch<GroupSettings>(`${path(adapterId)}/settings`, data)
+  ),
+  applySettings: (adapterId: string, account: string, revision: number): Promise<GroupSettings> => (
+    apiClient.post<GroupSettings>(`/api${path(adapterId)}/settings/apply`, {
+      expected_self_id: account, saved_revision: revision,
+    })
   ),
   sync: (adapterId: string, account: string): Promise<{ sync_id: string; status: string; reused: boolean }> => (
     apiClient.post(`/api${path(adapterId)}/sync`, { expected_self_id: account })

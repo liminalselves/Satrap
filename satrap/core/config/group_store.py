@@ -57,6 +57,7 @@ class GroupRuntimeSnapshot:
     routes: dict[str, tuple[dict[str, object], int]]
     events: dict[str, dict[str, bool]]
     membership: dict[str, str]
+    account_revision: int
 
 
 def _identity(self_id: str, group_id: str | None = None) -> None:
@@ -373,7 +374,7 @@ class GroupConfigStore:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN")
             account = connection.execute(
-                "SELECT mode FROM group_accounts WHERE self_id=?", (self_id,),
+                "SELECT mode, revision FROM group_accounts WHERE self_id=?", (self_id,),
             ).fetchone()
             if account is None:
                 raise RuntimeError("群接入账号尚未采用")
@@ -412,7 +413,7 @@ class GroupConfigStore:
             events[group_id] = event_values(event_config)
         membership = {str(row["group_id"]): str(row["membership"]) for row in members}
         return GroupRuntimeSnapshot(self_id, str(account["mode"]), exceptions, policies,
-                                    revisions, routes, events, membership)
+                                    revisions, routes, events, membership, int(account["revision"]))
 
     def policy_snapshot(self, self_id: str) -> dict[str, dict[str, object]]:
         """读取已确认账号所有群的显式策略供运行时冻结使用"""

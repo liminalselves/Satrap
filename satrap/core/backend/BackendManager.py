@@ -201,6 +201,7 @@ class BackendManager:
         self._platform_apply_lock = asyncio.Lock()
         self._group_sync_tasks: dict[tuple[str, str], tuple[str, asyncio.Task[None]]] = {}
         self._group_sync_lock = asyncio.Lock()
+        self._group_account_locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._group_patch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._group_action_stores: dict[str, GroupActionStore] = {}
         self._group_action_lock = asyncio.Lock()
@@ -376,9 +377,18 @@ class BackendManager:
         counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         current = str(getattr(adapter, "bot_self_id", "") or "")
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        status, active_revision, apply_error = (
+            adapter.account_apply_status(self_id, account["revision"])
+            if isinstance(adapter, OneBotAdapter) and current == self_id
+            else ("pending", None, None)
+        )
         return {**account, "current": current == self_id,
                 "approval_actions": [action_metadata(action) for action in sorted(GROUP_APPROVAL_ACTIONS)],
-                "approval_inheriting_counts": counts}
+                "approval_inheriting_counts": counts, "saved_revision": account["revision"],
+                "active_revision": active_revision, "apply_status": status,
+                **({"apply_error": apply_error} if apply_error else {})}
 
     async def patch_group_settings(
         self, adapter_id: str, self_id: str, expected_revision: int, mode: str,
@@ -403,16 +413,45 @@ class BackendManager:
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
             raise ValueError("机器人账号已变化")
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
-        saved = await asyncio.to_thread(
-            store.patch_account, self_id, expected_revision=expected_revision,
-            mode=mode, approval_defaults=approval_defaults,
-        )
-        try:
-            await adapter.refresh_group_access(self_id)
-        except Exception as error:
-            return {**await self.group_settings(adapter_id, self_id), **saved,
-                    "apply_status": "failed", "apply_error": type(error).__name__}
-        return {**await self.group_settings(adapter_id, self_id), **saved, "apply_status": "applied"}
+        from satrap.core.config.group_store import GroupConfigConflict
+
+        lock = self._group_account_locks.setdefault((adapter_id, self_id), asyncio.Lock())
+        async with lock:
+            token = adapter.begin_account_mode_restriction(self_id, mode, expected_revision + 1)
+            try:
+                saved = await asyncio.to_thread(
+                    store.patch_account, self_id, expected_revision=expected_revision,
+                    mode=mode, approval_defaults=approval_defaults,
+                )
+            except (GroupConfigConflict, ValueError):
+                adapter.withdraw_account_mode_restriction(token)
+                raise
+            try:
+                await adapter.refresh_group_access(self_id)
+            except Exception as error:
+                adapter.record_account_apply_failure(saved["revision"], type(error).__name__)
+                return await self.group_settings(adapter_id, self_id)
+        return await self.group_settings(adapter_id, self_id)
+
+    async def apply_group_settings(self, adapter_id: str, self_id: str, saved_revision: int) -> dict[str, Any]:
+        """按固定账号和保存修订重试快照应用, 不重复写入"""
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        lock = self._group_account_locks.setdefault((adapter_id, self_id), asyncio.Lock())
+        async with lock:
+            store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+            current = await asyncio.to_thread(store.read_account, self_id)
+            if current is None or current["revision"] != saved_revision:
+                raise GroupConfigConflict("账号设置已变化, 请刷新后重试")
+            try:
+                await adapter.refresh_group_access(self_id)
+            except Exception as error:
+                adapter.record_account_apply_failure(saved_revision, type(error).__name__)
+        return await self.group_settings(adapter_id, self_id)
 
     async def list_groups(
         self, adapter_id: str, self_id: str, *, query: str = "", membership: str = "joined",
