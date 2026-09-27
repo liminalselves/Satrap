@@ -13,6 +13,7 @@ class ModelActionAuthorization:
 
     identity: Mapping[str, str]
     verify: Callable[[str], None]
+    source_session: Callable[[], object | None] | None = None
 
 
 class ModelActionAuthorizationError(PermissionError):
@@ -22,11 +23,19 @@ class ModelActionAuthorizationError(PermissionError):
 _CURRENT: ContextVar[ModelActionAuthorization | None] = ContextVar(
     "satrap_model_group_action_authorization", default=None,
 )
+_PREFLIGHT: ContextVar[Callable[[], None] | None] = ContextVar(
+    "satrap_group_action_preflight", default=None,
+)
 
 
 def current_model_action_authorization() -> ModelActionAuthorization | None:
     """取得当前模型工具交给管理服务的授权来源"""
     return _CURRENT.get()
+
+
+def current_group_action_preflight() -> Callable[[], None] | None:
+    """取得平台写调用前的同步授权复核"""
+    return _PREFLIGHT.get()
 
 
 @contextmanager
@@ -37,3 +46,13 @@ def bind_model_action_authorization(source: ModelActionAuthorization) -> Iterato
         yield
     finally:
         _CURRENT.reset(token)
+
+
+@contextmanager
+def bind_group_action_preflight(preflight: Callable[[], None]) -> Iterator[None]:
+    """仅在当前管理动作的网络调用中传递最终复核"""
+    token = _PREFLIGHT.set(preflight)
+    try:
+        yield
+    finally:
+        _PREFLIGHT.reset(token)

@@ -86,8 +86,10 @@ class GroupActionStore(GroupConfigStore):
         encoded_origin = None
         if model_origin is not None:
             required = {"adapter_id", "self_id", "chat_type", "chat_id", "actor_id", "session_id", "tool_name"}
-            if set(model_origin) != required or any(not isinstance(value, str) or len(value) > 256
-                                                    for value in model_origin.values()):
+            valid_keys = {frozenset(required), frozenset(required | {"auth_fingerprint"})}
+            if frozenset(model_origin) not in valid_keys or any(
+                not isinstance(value, str) or len(value) > 256 for value in model_origin.values()
+            ):
                 raise ValueError("模型动作来源无效")
             encoded_origin = json.dumps(dict(model_origin), ensure_ascii=False, sort_keys=True)
         fingerprint = action_fingerprint(self_id, group_id, action_type, params, actor_kind, model_origin)

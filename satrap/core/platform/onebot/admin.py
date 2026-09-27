@@ -280,11 +280,22 @@ class OneBotAdmin:
             raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
         call = cast(Callable[..., Awaitable[Any]], method)
         try:
-            result = await asyncio.wait_for(call(**params), timeout)
+            async def guarded_call() -> Any:
+                """在平台写调用的同一协程中完成最后一次权限复核"""
+                from satrap.core.config.group_action_origin import current_group_action_preflight
+
+                preflight = current_group_action_preflight()
+                if preflight is not None:
+                    preflight()
+                return await call(**params)
+
+            result = await asyncio.wait_for(guarded_call(), timeout)
         except asyncio.TimeoutError as error:
             logger.warning(f"[OneBotAdmin] {action} 超时 ({timeout}s), 结果未知")
             raise AdminActionUnconfirmed(f"动作 {action} 超时, 结果未知") from error
         except PlatformAdminError:
+            raise
+        except PermissionError:
             raise
         except Exception as error:
             if self._action_failures and isinstance(error, self._action_failures):

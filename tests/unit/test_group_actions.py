@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
+import asyncio
 import sqlite3
 
 import pytest
@@ -17,6 +19,12 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
 from satrap.core.platform.onebot.group_action_types import normalize_action_params
 from satrap.core.platform.receipt import SendReceipt
+from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.providers import EdictumProvider
+from satrap.core.type import SessionConfig
+from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.expend.plugins.group_admin.tools import AsyncGroupAdminTool, _build_tools
 
 
@@ -155,6 +163,103 @@ async def test_pending_model_action_rechecks_current_permission(tmp_path: Path, 
         assert result["result"]["reason"] == "model_permission_revoked"
         adapter._bot.set_group_kick.assert_not_awaited()
     finally:
+        set_current_adapter_manager(None)
+
+
+@pytest.mark.asyncio
+async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """群 A 停用管理插件后不能批准它提交给群 B 的旧动作"""
+    settings = {"group_management_version": 1}
+    backend = BackendManager(BackendConfig(data_root=str(tmp_path), platforms=[
+        {"id": "bot", "type": "onebot", "session_provider": "edictum", "session_type": "assistant", "settings": settings},
+    ]))
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    adapter.bot_self_id = "100"
+    adapter._bot = AsyncMock()
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters["bot"] = adapter
+    directory = GroupDirectoryStore(backend.platform_db_path("bot"))
+    directory.adopt_legacy("100", settings)
+    directory.patch_account("100", expected_revision=1, mode="all", approval_defaults={})
+    for group_id in ("456", "789"):
+        directory.confirm_membership("100", group_id, True)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("100")
+    registry = create_default_edictum_type_registry()
+    config_manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    config_manager.create("assistant", {
+        "edictum_type": "async_simple", "model_name": "base",
+        "plugins": [{"name": "group_admin", "enabled": True, "config": {
+            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "789",
+        }}],
+    })
+    provider = EdictumProvider(config_manager, registry, default_checkpoint_db=str(backend.platform_db_path("bot")))
+    manager = SessionManager(db_path=backend.platform_db_path("bot"), platform_id="bot")
+    manager.register_provider(provider)
+    cfg = SessionConfig(session_id="source-session", session_type_name="assistant", provider_name="edictum")
+    manager.store.upsert(cfg)
+    session = provider.create_session(cfg, llm=cast(Any, object()))
+    session.plugin_environment = PluginEnvironment("platform", "onebot")
+    manager.pool.put("source-session", session, "assistant")
+    backend._platform_runtimes["bot"] = cast(Any, (manager, None))
+    adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+        "bot", "100", gid, "source-group-action", action, params, actor_kind="model",
+    )
+    set_current_adapter_manager(backend._adapter_mgr)
+    try:
+        await provider.prepare_session_async(session)
+        tool = session._wf.tools_manager.tools["group_admin_kick"]
+        origin = CallOrigin("bot", "100", "GroupMessage", "456", "123", "message-1", "request-1")
+        with bind_call_origin(origin):
+            submitted = await tool.execute(group_id="789", user_id="42")
+        assert submitted["data"]["state"] == "pending"
+        directory.patch_group("100", "456", "session", {"plugins": {"mode": "value", "value": [
+            {"name": "group_admin", "mode": "disabled"},
+        ]}}, expected_revision=0)
+        result = await backend.decide_group_action("bot", "100", "789", "source-group-action", approve=True)
+        assert result["state"] == "failed" and result["result"]["reason"] == "model_permission_revoked"
+        adapter._bot.set_group_kick.assert_not_awaited()
+        directory.patch_group("100", "456", "session", {"plugins": {"mode": "value", "value": [
+            {"name": "group_admin", "mode": "enabled"},
+        ]}}, expected_revision=1)
+        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+            "bot", "100", gid, "race-source-action", action, params, actor_kind="model",
+        )
+        with bind_call_origin(origin):
+            race = await tool.execute(group_id="789", user_id="42")
+        assert race["data"]["state"] == "pending"
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        original_kick = adapter.admin.kick_group_member
+
+        async def delayed_kick(*args: object, **kwargs: object) -> None:
+            entered.set()
+            await release.wait()
+            await original_kick(*args, **kwargs)
+
+        monkeypatch.setattr(adapter.admin, "kick_group_member", delayed_kick)
+        decision = asyncio.create_task(backend.decide_group_action(
+            "bot", "100", "789", "race-source-action", approve=True,
+        ))
+        await entered.wait()
+        directory.patch_group("100", "456", "session", {"plugins": {"mode": "value", "value": [
+            {"name": "group_admin", "mode": "disabled"},
+        ]}}, expected_revision=2)
+        release.set()
+        race_result = await decision
+        assert race_result["state"] == "failed" and race_result["result"]["reason"] == "model_permission_revoked"
+        adapter._bot.set_group_kick.assert_not_awaited()
+        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+            "bot", "100", gid, "invalid-source-action", action, params, actor_kind="model",
+        )
+        with sqlite3.connect(backend.platform_db_path("bot")) as connection:
+            connection.execute("UPDATE group_configs SET config_json='{' WHERE self_id='100' AND group_id='456'")
+        with bind_call_origin(origin):
+            denied = await tool.execute(group_id="789", user_id="42")
+        assert denied["status"] == "error"
+        assert GroupActionStore(backend.platform_db_path("bot")).get("100", "789", "invalid-source-action") is None
+    finally:
+        await provider.release_session_async(session)
         set_current_adapter_manager(None)
 
 

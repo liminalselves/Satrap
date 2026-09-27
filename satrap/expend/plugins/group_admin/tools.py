@@ -164,6 +164,8 @@ def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> 
     """固定可信来源并在审批时从仍有效的工具读取当前权限"""
     tool_ref = weakref.ref(tool)
     session_ref = getattr(tool, "_group_admin_session_ref", None)
+    if hasattr(tool, "_group_admin_session_ref") and session_ref is None:
+        raise PermissionError("模型管理工具无法复核来源会话")
     identity = {"adapter_id": origin.adapter_id, "self_id": origin.self_id,
                 "chat_type": origin.chat_type, "chat_id": origin.chat_id,
                 "actor_id": origin.actor_id, "session_id": str(getattr(tool, "_group_admin_session_id", "")),
@@ -190,7 +192,7 @@ def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> 
             raise PermissionError("模型管理工具的机器人账号或平台已变化")
         _group_id(origin, current_groups, {"group_id": target_group})
 
-    return ModelActionAuthorization(identity, verify)
+    return ModelActionAuthorization(identity, verify, session_ref)
 
 
 def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
@@ -402,7 +404,9 @@ def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list
 @overload
 def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: Any = None) -> list[AsyncGroupAdminTool]: ...
 @overload
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+def get_tools(session: Session, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+@overload
+def get_tools(session: AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]: ...
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
     """创建平台管理工具并保留审批时可复核的来源会话引用"""
     tools = (_build_tools(AsyncGroupAdminTool, config) if isinstance(session, AsyncSimpleSession)

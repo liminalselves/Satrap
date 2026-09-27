@@ -15,6 +15,7 @@ import time
 from typing import (
     Any,
     Awaitable,
+    Callable,
     Dict,
     List,
     Optional,
@@ -32,7 +33,8 @@ from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
 from satrap.core.config.group_action_origin import (
-    ModelActionAuthorization, ModelActionAuthorizationError, current_model_action_authorization,
+    ModelActionAuthorization, ModelActionAuthorizationError, bind_group_action_preflight,
+    current_model_action_authorization,
 )
 from satrap.core.config.group_events import GroupEventBuffer
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -920,12 +922,19 @@ class BackendManager:
                 for session_id in current["session_instances"]["current_session_ids"] if session_id in entries
             }
             retry_ids = adapter.failed_group_session_ids(group_id, active_instances)
+            config_store = self._group_directory_store(adapter_id)
             for session_id, instance_generation in retry_ids:
                 def is_current(session_id: str = session_id, instance_generation: str = instance_generation) -> bool:
                     entry = runtime[0].pool.list_entries().get(session_id)
                     _, generation, revision = adapter.group_route_revision(group_id)
+                    try:
+                        saved = config_store.read_group(self_id, group_id)
+                    except Exception:
+                        return False
                     return (entry is not None and entry.instance_generation == instance_generation
-                            and generation == route_generation and revision == route_revision)
+                            and generation == route_generation and revision == route_revision
+                            and saved["revision"] == saved_revision
+                            and saved["route_generation"] == route_generation)
 
                 await runtime[0].retry_group_session_apply_async(
                     session_id,
@@ -1240,6 +1249,89 @@ class BackendManager:
             raise LookupError("管理动作不存在")
         return result
 
+    def _model_source_permission_fingerprint(
+        self, authorization: ModelActionAuthorization, target_group: str,
+    ) -> str:
+        """从来源群最新配置计算与本次写授权相关的指纹"""
+        from satrap.core.config.group_session import session_values
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+        from satrap.edictum.plugin_settings import resolve_runtime_specs
+        from satrap.edictum.plugin_spec import parse_plugin_specs
+        from satrap.expend.plugins.group_admin.tools import _lines
+
+        authorization.verify(target_group)
+        source_ref = authorization.source_session
+        if source_ref is None:
+            return ""
+        identity = authorization.identity
+        adapter_id, self_id = identity["adapter_id"], identity["self_id"]
+        session_id = identity["session_id"]
+        runtime = self.get_platform_runtime(adapter_id)
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if (not session_id or runtime is None or not isinstance(adapter, OneBotAdapter)
+                or adapter.bot_self_id != self_id):
+            raise PermissionError("模型动作来源会话或平台已失效")
+        manager = runtime[0]
+        entry = manager.pool.list_entries().get(session_id)
+        session = source_ref()
+        if entry is None or session is None or entry.session is not session:
+            raise PermissionError("模型动作来源实例已失效")
+        session_cfg = manager.store.get(session_id)
+        if session_cfg is None or session_cfg.provider_name != "edictum":
+            raise PermissionError("模型动作来源会话配置已失效")
+        provider = manager.provider_registry.get("edictum")
+        if not isinstance(provider, EdictumProvider):
+            raise PermissionError("模型动作来源 Provider 已失效")
+        provider.config_manager.reload()
+        resolved = manager.provider_registry.resolve_definition(session_cfg.session_type_name or "", "edictum")
+        if resolved is None or not resolved[1].enabled:
+            raise PermissionError("模型动作来源命名配置已停用")
+        definition = resolved[1]
+        route: list[object] = [identity["chat_type"], identity["chat_id"]]
+        plugins = None
+        if identity["chat_type"] == "GroupMessage":
+            source_group = identity["chat_id"]
+            snapshot = self._group_directory_store(adapter_id).runtime_snapshot(self_id)
+            if (not adapter.config.enable or not adapter.config.settings.get("enable_group", True)
+                    or snapshot.membership.get(source_group) != "joined"
+                    or not snapshot.exceptions.get(source_group, snapshot.mode == "all")):
+                raise PermissionError("模型动作来源群已停用")
+            explicit, route_generation = snapshot.routes.get(source_group, ({}, 0))
+            group_values = session_values(explicit)
+            platform = self._group_platform_snapshot(adapter_id)
+            binding = group_values.get("binding") or {
+                "provider": platform.get("session_provider") or "session_class",
+                "config_name": platform.get("session_type") or "",
+            }
+            if (not isinstance(binding, dict) or binding.get("provider") != "edictum"
+                    or binding.get("config_name") != session_cfg.session_type_name):
+                raise PermissionError("模型动作来源群路由已变化")
+            scope = group_values.get("scope") or platform.get("settings", {}).get("context_scope", "legacy_user")
+            route.extend([route_generation, binding, scope])
+            if "plugins" in group_values:
+                from satrap.core.type import UserCall
+
+                plugins = manager._group_plugin_target(
+                    session_cfg, UserCall(group_session_overrides={"plugins": group_values["plugins"]}),
+                )
+        if plugins is None:
+            instance = session_cfg.session_config or {}
+            plugins = instance.get("plugins", definition.metadata.get("plugins", []))
+        specs = resolve_runtime_specs(session, parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog)
+        spec = next((item for item in specs if item.name == "group_admin"), None)
+        tool_name = identity["tool_name"]
+        if (spec is None or not spec.enabled or not spec.capabilities.get("tools", {}).get(tool_name, False)):
+            raise PermissionError("模型动作来源管理插件或工具已停用")
+        config = spec.config
+        callers = sorted(set(_lines(config.get("allowed_callers"))))
+        groups = sorted(set(_lines(config.get("allowed_groups"))))
+        if (config.get("write_tools_enabled") is not True
+                or callers and identity["actor_id"] not in callers
+                or groups and target_group not in groups):
+            raise PermissionError("模型动作来源写权限已撤销")
+        payload = [route, session_id, tool_name, True, callers, groups, target_group]
+        return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
+
     async def submit_group_action(
         self, adapter_id: str, self_id: str, group_id: str, action_id: str,
         action_type: str, params: dict[str, object], *, actor_kind: str,
@@ -1251,10 +1343,16 @@ class BackendManager:
 
         normalized, secret_flag = normalize_action_params(action_type, params, self_id)
         authorization = current_model_action_authorization() if actor_kind == "model" else None
+        source_fingerprint = ""
         if actor_kind == "model":
             if authorization is None or authorization.identity["adapter_id"] != adapter_id or authorization.identity["self_id"] != self_id:
                 raise PermissionError("模型群动作缺少可信来源")
-            authorization.verify(group_id)
+            source_fingerprint = self._model_source_permission_fingerprint(authorization, group_id)
+            if authorization.source_session is not None:
+                authorization = ModelActionAuthorization(
+                    {**authorization.identity, "auth_fingerprint": source_fingerprint},
+                    authorization.verify, authorization.source_session,
+                )
         model_origin = authorization.identity if authorization is not None else None
         store = await self._group_action_store(adapter_id)
         existing = await asyncio.to_thread(store.get, self_id, group_id, action_id)
@@ -1274,6 +1372,8 @@ class BackendManager:
                     or entry["sub_type"] != normalized["sub_type"]
                     or time.time() - entry["received_at"] >= adapter.request_flags.ledger.ttl):
                 raise PermissionError("群请求 flag 未登记、已过期或归属不符")
+        if authorization is not None and self._model_source_permission_fingerprint(authorization, group_id) != source_fingerprint:
+            raise PermissionError("模型动作来源授权已变化")
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
             actor_kind, version, approval_required=mode == "approval_required", model_origin=model_origin,
@@ -1329,15 +1429,23 @@ class BackendManager:
             adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action)
             if version != record["policy_revision"]:
                 raise AdminActionRejected("审批策略或连接代次已变化")
+            preflight: Callable[[], None] | None = None
             if record["actor_kind"] == "model":
                 persisted_origin = await asyncio.to_thread(store.model_origin, self_id, group_id, action_id)
                 authorization = self._group_action_authorizers.get(action_id)
                 if authorization is None or persisted_origin is None or dict(authorization.identity) != persisted_origin:
                     raise ModelActionAuthorizationError("model_source_unavailable")
-                try:
-                    authorization.verify(group_id)
-                except Exception as error:
-                    raise ModelActionAuthorizationError("model_permission_revoked") from error
+                expected_fingerprint = persisted_origin.get("auth_fingerprint", "")
+
+                def verify_preflight() -> None:
+                    """在平台写调用前复核来源群最新授权及目标群资格"""
+                    try:
+                        if (not adapter.allows_management_target(group_id)
+                                or self._model_source_permission_fingerprint(authorization, group_id) != expected_fingerprint):
+                            raise PermissionError("模型动作来源或目标授权已变化")
+                    except Exception as error:
+                        raise ModelActionAuthorizationError("model_permission_revoked") from error
+                preflight = verify_preflight
             params = dict(record["params"])
             flag = self._group_action_flags.get(action_id)
             if "flag_digest" in params:
@@ -1347,7 +1455,11 @@ class BackendManager:
                 params["flag"] = flag
             method = getattr(adapter.admin, action)
             started = True
-            await method(group_id, **params)
+            if preflight is None:
+                await method(group_id, **params)
+            else:
+                with bind_group_action_preflight(preflight):
+                    await method(group_id, **params)
             state, reason = "succeeded", "platform_confirmed"
         except ModelActionAuthorizationError as error:
             state, reason = "failed", str(error)

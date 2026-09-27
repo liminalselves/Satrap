@@ -325,6 +325,8 @@ class OneBotAdapter(PlatformAdapter):
         if state is None:
             return "applied", active_revision, None
         current = {(session_id, generation) for session_id, generation in active_instances.items()}
+        state.applied_sessions.intersection_update(current)
+        state.failed_sessions = {key: reason for key, reason in state.failed_sessions.items() if key in current}
         if not current:
             return "applied", active_revision, None
         failed = current & state.failed_sessions.keys()

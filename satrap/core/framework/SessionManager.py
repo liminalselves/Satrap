@@ -1346,9 +1346,9 @@ class SessionManager:
                         await self._prepare_session_async(entry.session)
                         await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
                     except Exception as error:
-                        self._report_group_apply(user_call, session_id, entry.instance_generation, str(error))
+                        self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), str(error))
                         raise
-                    self._report_group_apply(user_call, session_id, entry.instance_generation, None)
+                    self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), None)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
