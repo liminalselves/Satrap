@@ -581,6 +581,7 @@ class PipelineScheduler:
                     route=route,
                     origin=event.call_origin,
                     group_session_overrides=event.group_session_overrides if not event.is_private_chat() else None,
+                    group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
                 )
                 if batch:
                     window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))

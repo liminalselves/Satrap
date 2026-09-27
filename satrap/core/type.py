@@ -269,6 +269,8 @@ class UserCall:
     """本轮可信来源, 不从消息正文或模型参数解析"""
     group_session_overrides: dict[str, object] | None = None
     """当前群已核验的会话覆盖快照, 不持久化为实例配置"""
+    group_config_revision: int | None = None
+    """本轮会话覆盖对应的群配置修订号"""
 
 @dataclass
 class LLMConfig:

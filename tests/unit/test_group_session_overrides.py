@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import threading
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from pathlib import Path
 from typing import Any, cast
 
@@ -162,6 +163,27 @@ async def test_model_reload_reapplies_group_override_and_same_name_config(monkey
     await manager.reload_model_configs_async()
     await manager._apply_group_session_overrides(cfg, cast(Any, session), base_call, None)
     assert session.llm == ("base", 2)
+
+
+@pytest.mark.asyncio
+async def test_retry_group_session_apply_reports_failure_and_recovery_without_turn() -> None:
+    manager = object.__new__(SessionManager)
+    cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock())
+    manager.pool = cast(Any, SimpleNamespace(list_entries=lambda: {"sid": entry}))
+    manager.store = cast(Any, SimpleNamespace(get=lambda _: cfg))
+    manager._group_plugin_target = cast(Any, lambda *_: [])
+    manager._prepare_session_async = cast(Any, AsyncMock())
+    apply = AsyncMock(side_effect=[RuntimeError("群插件配置应用失败"), None])
+    manager._apply_group_session_overrides = cast(Any, apply)
+    reports: list[tuple[str, str | None]] = []
+    manager.group_apply_reporter = lambda call, session_id, error: reports.append((session_id, error))
+    call = UserCall(group_config_revision=2, group_session_overrides={"plugins": []})
+
+    assert not await manager.retry_group_session_apply_async("sid", call)
+    assert await manager.retry_group_session_apply_async("sid", call)
+    assert reports == [("sid", "群插件配置应用失败"), ("sid", None)]
+    assert apply.await_count == 2
 
 
 @pytest.mark.asyncio

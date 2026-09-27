@@ -3,17 +3,21 @@ from __future__ import annotations
 
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from typing import Any, cast
 import asyncio
 import json
 
 import pytest
 
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
+from satrap.core.call_context import CallOrigin
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.document import save_config_document
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.type import SessionConfig, UserCall
 
 
 def _runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter]:
@@ -52,6 +56,89 @@ async def test_sync_deduplicates_and_publishes_complete_snapshot(tmp_path: Path)
     assert adapter.admin.fetch_group_directory.await_count == 1
     assert (await backend.group_sync_status("bot", "100", first["sync_id"]))["complete"] is True
     assert (await backend.list_groups("bot", "100"))["items"][0]["group_id"] == "123"
+
+
+@pytest.mark.asyncio
+async def test_group_session_apply_status_and_retry_reaches_failed_instance(tmp_path: Path) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.confirm_membership("100", "456", True)
+    store.patch_group("100", "456", "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    store.patch_group("100", "456", "session", {
+        "prompt": {"mode": "value", "value": "新提示词"},
+    }, expected_revision=1)
+    await adapter.refresh_group_access("100")
+    pending = await backend.group_config("bot", "100", "456")
+    assert pending["apply_status"] == "pending"
+    assert pending["active_revision"] == 1
+    adapter.report_group_session_apply("100", "456", 2, "sid", "群插件配置应用失败")
+    failed = await backend.group_config("bot", "100", "456")
+    assert failed["apply_status"] == "failed"
+    assert failed["apply_error"] == "群插件配置应用失败"
+
+    async def retry(session_id, call):
+        assert session_id == "sid"
+        assert call.group_session_overrides == {"prompt": "新提示词"}
+        adapter.report_group_session_apply("100", "456", 2, session_id, None)
+        return True
+
+    runtime = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: {}),
+                              retry_group_session_apply_async=retry)
+    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
+    recovered = await backend.apply_group_config("bot", "100", "456", 2)
+    assert recovered["apply_status"] == "applied"
+    assert recovered["active_revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    store.confirm_membership("100", "456", True)
+    store.patch_group("100", "456", "session", {
+        "prompt": {"mode": "value", "value": "新提示词"},
+    }, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    manager = backend._create_session_manager("bot")
+    backend._platform_runtimes["bot"] = cast(Any, (manager, None))
+    cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock())
+    monkeypatch.setattr(manager, "_resolve_or_create_session_config", lambda _: cfg)
+    monkeypatch.setattr(manager, "_acquire_or_create_entry_async", AsyncMock(return_value=entry))
+    monkeypatch.setattr(manager.pool, "list_entries", lambda: {"sid": entry})
+    monkeypatch.setattr(manager.pool, "release", lambda _: None)
+    monkeypatch.setattr(manager.store, "get", lambda _: cfg)
+    monkeypatch.setattr(manager, "_group_plugin_target", lambda *_: None)
+    monkeypatch.setattr(manager, "_prepare_session_async", AsyncMock())
+    monkeypatch.setattr(manager, "cleanup_idle_sessions_async", AsyncMock())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fail_after_wait(*_):
+        entered.set()
+        await release.wait()
+        raise RuntimeError("群插件配置应用失败")
+
+    monkeypatch.setattr(manager, "_apply_group_session_overrides", fail_after_wait)
+    call = UserCall(session_id="sid", group_config_revision=1, group_session_overrides={"prompt": "新提示词"},
+                    origin=CallOrigin("bot", "100", "GroupMessage", "456", "123", "1", "request"))
+    turn = asyncio.create_task(manager.handle_call_async(call))
+    await entered.wait()
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
+    release.set()
+    assert await turn == ""
+    failed = await backend.group_config("bot", "100", "456")
+    assert failed["apply_status"] == "failed"
+    assert failed["apply_error"] == "群插件配置应用失败"
+
+    monkeypatch.setattr(manager, "_apply_group_session_overrides", AsyncMock())
+    recovered = await backend.apply_group_config("bot", "100", "456", 1)
+    assert recovered["apply_status"] == "applied"
 
 
 @pytest.mark.asyncio

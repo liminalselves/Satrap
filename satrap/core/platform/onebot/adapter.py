@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from collections import OrderedDict
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 import asyncio
 import hashlib
 import inspect
@@ -66,6 +66,16 @@ _RECEIPT_TO_SEGMENT_STATUS = {"success": "sent", "partial": "partial", "failed":
 
 _ATTEMPT_FINALIZE_TIMEOUT = 2.0
 """发送尝试收尾的有界等待秒数, 超时保持未确认而不是谎报终态"""
+
+
+@dataclass
+class GroupSessionApplyState:
+    """记录当前群会话覆盖在活跃实例上的应用结果"""
+
+    session_revision: int
+    previous_active_revision: int | None
+    applied_sessions: set[str] = field(default_factory=set)
+    failed_sessions: dict[str, str] = field(default_factory=dict)
 
 
 def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
@@ -178,6 +188,8 @@ class OneBotAdapter(PlatformAdapter):
         self._send_attempt_recorder: SendAttemptRecorder | None = None
         self._group_access_store: GroupConfigStore | None = None
         self._group_access_snapshot: GroupRuntimeSnapshot | None = None
+        self._group_session_apply: dict[str, GroupSessionApplyState] = {}
+        self._paused_groups: set[str] = set()
         self._group_access_lock = asyncio.Lock()
         self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
         self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
@@ -227,22 +239,95 @@ class OneBotAdapter(PlatformAdapter):
                 await asyncio.to_thread(store.adopt_legacy, incoming_self, self.config.settings)
             except GroupLegacyConflict:
                 self._group_access_snapshot = None
+                self._group_session_apply.clear()
                 raise
             prepared = await asyncio.to_thread(store.runtime_snapshot, incoming_self)
+            if snapshot is None or snapshot.self_id != incoming_self:
+                self._group_session_apply.clear()
+                for group_id, route in prepared.routes.items():
+                    if route[0]:
+                        self._group_session_apply[group_id] = GroupSessionApplyState(
+                            prepared.revisions.get(group_id, 0), None,
+                        )
+            else:
+                for group_id, route in prepared.routes.items():
+                    prior_route = snapshot.routes.get(group_id, ({}, 0))
+                    if route[0] != prior_route[0]:
+                        previous_state = self._group_session_apply.get(group_id)
+                        previous_active = (
+                            snapshot.revisions.get(group_id, 0)
+                            if previous_state is None or (previous_state.applied_sessions and not previous_state.failed_sessions)
+                            else previous_state.previous_active_revision
+                        )
+                        self._group_session_apply[group_id] = GroupSessionApplyState(
+                            prepared.revisions.get(group_id, 0), previous_active,
+                        )
             self._group_access_snapshot = prepared
             return True
 
-    def group_route(self, group_id: str) -> tuple[dict[str, object], int]:
-        """返回已应用的群会话配置和路由代次"""
-        if self._group_access_store is None:
-            return {}, 0
+    def group_session_apply_status(
+        self, group_id: str, saved_revision: int, active_session_ids: set[str],
+    ) -> tuple[str, int | None, str | None]:
+        """汇总策略快照与会话实例的应用状态"""
         snapshot = self._group_access_snapshot
         if snapshot is None or snapshot.self_id != self.bot_self_id:
-            return {}, -1
-        return snapshot.routes.get(group_id, ({}, 0))
+            return "pending", None, None
+        active_revision = snapshot.revisions.get(group_id, 0)
+        if active_revision != saved_revision:
+            return "pending", active_revision, None
+        state = self._group_session_apply.get(group_id)
+        if state is None:
+            return "applied", active_revision, None
+        if not active_session_ids:
+            active_session_ids = state.applied_sessions | set(state.failed_sessions)
+        if state.failed_sessions:
+            return "failed", state.previous_active_revision, next(iter(state.failed_sessions.values()))
+        if not active_session_ids or not active_session_ids.issubset(state.applied_sessions):
+            return "pending", state.previous_active_revision, None
+        return "applied", active_revision, None
+
+    def report_group_session_apply(
+        self, self_id: str, group_id: str, revision: int, session_id: str, error: str | None,
+    ) -> None:
+        """只接受当前账号和当前修订的安全轮次应用结果"""
+        snapshot = self._group_access_snapshot
+        state = self._group_session_apply.get(group_id)
+        if (snapshot is None or snapshot.self_id != self_id or state is None
+                or snapshot.revisions.get(group_id, 0) != revision):
+            return
+        if error is None:
+            state.failed_sessions.pop(session_id, None)
+            state.applied_sessions.add(session_id)
+        else:
+            state.applied_sessions.discard(session_id)
+            state.failed_sessions[session_id] = error
+
+    def failed_group_session_ids(self, group_id: str) -> tuple[str, ...]:
+        """返回当前群覆盖应用失败的会话实例 ID"""
+        state = self._group_session_apply.get(group_id)
+        return tuple(state.failed_sessions) if state is not None else ()
+
+    def group_route(self, group_id: str) -> tuple[dict[str, object], int]:
+        """返回已应用的群会话配置和路由代次"""
+        settings, generation, _ = self.group_route_revision(group_id)
+        return settings, generation
+
+    def group_route_revision(self, group_id: str) -> tuple[dict[str, object], int, int | None]:
+        """从单一快照取得群会话配置, 路由代次和修订号"""
+        if group_id in self._paused_groups:
+            return {}, -1, None
+        if self._group_access_store is None:
+            return {}, 0, None
+        snapshot = self._group_access_snapshot
+        if snapshot is None or snapshot.self_id != self.bot_self_id:
+            return {}, -1, None
+        settings, generation = snapshot.routes.get(group_id, ({}, 0))
+        return settings, generation, snapshot.revisions.get(group_id, 0)
 
     def allows_management_target(self, group_id: str) -> bool:
         """校验已确认成员关系, 不借用聊天响应启停判断管理资格"""
+        if group_id in self._paused_groups:
+            return False
         if self._group_access_store is None:
             return self.allows_group(group_id)
         snapshot = self._group_access_snapshot
@@ -289,6 +374,16 @@ class OneBotAdapter(PlatformAdapter):
         if expected_self_id != self.bot_self_id or self._group_access_store is None:
             raise ValueError("机器人账号已变化或群配置存储不可用")
         await self._ensure_group_access(expected_self_id, force=True)
+
+    def pause_group_access(self, group_id: str) -> bool:
+        """配置提交期间暂停目标群的新业务受理"""
+        already_paused = group_id in self._paused_groups
+        self._paused_groups.add(group_id)
+        return already_paused
+
+    def resume_group_access(self, group_id: str) -> None:
+        """目标群配置成功刷新后恢复按新快照判定"""
+        self._paused_groups.discard(group_id)
 
     def set_send_attempt_recorder(self, recorder: SendAttemptRecorder | None) -> None:
         """
@@ -532,6 +627,8 @@ class OneBotAdapter(PlatformAdapter):
         - 群聊已启用且目标在允许范围内时返回 True
         """
         settings = self.config.settings
+        if group_id in self._paused_groups:
+            return False
         if self._group_access_store is not None:
             snapshot = self._group_access_snapshot
             if snapshot is None or snapshot.self_id != self.bot_self_id:

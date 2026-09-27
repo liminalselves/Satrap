@@ -360,12 +360,19 @@ class MessageEvent:
         self.session_provider = session_provider
         self.session_type = session_type
         self.group_route_generation = 0
+        self.group_config_revision: int | None = None
         self.group_session_overrides: dict[str, object] = {}
         group_route = getattr(adapter, "group_route", None)
         if self.get_group_id() and callable(group_route):
             from satrap.core.config.group_session import session_values
 
-            route_result = group_route(self.get_group_id())
+            route_revision = getattr(adapter, "group_route_revision", None)
+            route_result = route_revision(self.get_group_id()) if callable(route_revision) else group_route(self.get_group_id())
+            if isinstance(route_result, tuple) and len(route_result) == 3:
+                route_settings, generation, revision = route_result
+                if isinstance(revision, int):
+                    self.group_config_revision = revision
+                route_result = (route_settings, generation)
             if not isinstance(route_result, tuple) or len(route_result) != 2:
                 raise RuntimeError("群会话路由快照无效")
             route_settings, generation = route_result

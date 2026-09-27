@@ -182,3 +182,21 @@ async def test_refresh_keeps_unrelated_groups_until_complete_and_on_failure(tmp_
         await adapter.refresh_group_access("100")
     assert adapter.allows_group("789")
     assert adapter.group_route("789")[1] == 0
+
+
+@pytest.mark.asyncio
+async def test_target_pause_keeps_other_group_available(tmp_path: Path) -> None:
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"group_management_version": 1}))
+    store = GroupConfigStore(tmp_path / "platform.db")
+    adapter.set_group_access_store(store)
+    await adapter._handle_meta({"self_id": "100", "meta_event_type": "lifecycle", "sub_type": "connect"})
+    for group_id in ("123", "789"):
+        store.patch_group("100", group_id, "policy", {"enabled": {"mode": "value", "value": True}}, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    adapter.pause_group_access("123")
+    assert not adapter.allows_group("123")
+    assert adapter.group_route("123")[1] == -1
+    assert adapter.allows_group("789")
+    assert adapter.group_route("789")[1] == 0
+    adapter.resume_group_access("123")
+    assert adapter.allows_group("123")

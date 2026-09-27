@@ -201,6 +201,7 @@ class BackendManager:
         self._platform_apply_lock = asyncio.Lock()
         self._group_sync_tasks: dict[tuple[str, str], tuple[str, asyncio.Task[None]]] = {}
         self._group_sync_lock = asyncio.Lock()
+        self._group_patch_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
         self._group_action_stores: dict[str, GroupActionStore] = {}
         self._group_action_lock = asyncio.Lock()
         self._group_action_flags: dict[str, str] = {}
@@ -656,16 +657,22 @@ class BackendManager:
             raise RuntimeError("群事件配置数据损坏")
         event_overrides = event_values(raw_events)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
-        active_revision = (
-            adapter.group_active_revision(group_id)
-            if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id == self_id else None
-        )
+        active_revision: int | None = None
+        apply_status = "pending"
+        apply_error: str | None = None
+        if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id == self_id:
+            active_ids: set[str] = set()
+            if runtime is not None:
+                active_ids = set(instance_summary["current_session_ids"]) & set(runtime[0].pool.list_entries())
+            apply_status, active_revision, apply_error = adapter.group_session_apply_status(
+                group_id, config["revision"], active_ids,
+            )
         return {
             "account": self_id, "current_account": adapter.bot_self_id if isinstance(adapter, OneBotAdapter) else "",
             "group": record, "explicit": config["explicit"],
             "revision": config["revision"], "saved_revision": config["revision"],
             "active_revision": active_revision,
-            "apply_status": "applied" if active_revision == config["revision"] else "pending",
+            "apply_status": apply_status, **({"apply_error": apply_error} if apply_error else {}),
             "route_generation": config["route_generation"],
             "session_instances": instance_summary,
             "base_revision": self._group_base_revision(adapter_id, platform, raw_session),
@@ -810,15 +817,26 @@ class BackendManager:
             adapter_id, platform, previous_session,
         ):
             raise GroupConfigConflict("平台或命名资源配置已变化, 请刷新后重试")
-        await asyncio.to_thread(
-            store.patch_group, self_id, group_id, section, values,
-            expected_revision=expected_revision,
-        )
-        try:
-            await adapter.refresh_group_access(self_id)
-        except Exception as error:
-            result = await self.group_config(adapter_id, self_id, group_id)
-            return {**result, "apply_status": "failed", "apply_error": type(error).__name__}
+        lock = self._group_patch_locks.setdefault((adapter_id, self_id, group_id), asyncio.Lock())
+        async with lock:
+            paused = section in {"policy", "session"}
+            already_paused = adapter.pause_group_access(group_id) if paused else False
+            try:
+                await asyncio.to_thread(
+                    store.patch_group, self_id, group_id, section, values,
+                    expected_revision=expected_revision,
+                )
+            except Exception:
+                if paused and not already_paused:
+                    adapter.resume_group_access(group_id)
+                raise
+            try:
+                await adapter.refresh_group_access(self_id)
+            except Exception as error:
+                result = await self.group_config(adapter_id, self_id, group_id)
+                return {**result, "apply_status": "failed", "apply_error": type(error).__name__}
+            if paused:
+                adapter.resume_group_access(group_id)
         return await self.group_config(adapter_id, self_id, group_id)
 
     async def apply_group_config(
@@ -834,8 +852,34 @@ class BackendManager:
         current = await self.group_config(adapter_id, self_id, group_id)
         if current["saved_revision"] != saved_revision:
             raise GroupConfigConflict("群配置已变化, 请刷新后重试")
-        await adapter.refresh_group_access(self_id)
+        lock = self._group_patch_locks.setdefault((adapter_id, self_id, group_id), asyncio.Lock())
+        async with lock:
+            await adapter.refresh_group_access(self_id)
+            adapter.resume_group_access(group_id)
+        from satrap.core.type import UserCall
+
+        runtime = self.get_platform_runtime(adapter_id)
+        if runtime is not None:
+            route, _ = adapter.group_route(group_id)
+            from satrap.core.config.group_session import session_values
+
+            overrides = {key: value for key, value in session_values(route).items()
+                         if key in {"model", "prompt", "plugins"}}
+            retry_ids = adapter.failed_group_session_ids(group_id)
+            for session_id in retry_ids:
+                await runtime[0].retry_group_session_apply_async(
+                    session_id,
+                    UserCall(group_session_overrides=overrides, group_config_revision=saved_revision,
+                             origin=self._group_retry_origin(adapter_id, self_id, group_id)),
+                )
         return await self.group_config(adapter_id, self_id, group_id)
+
+    @staticmethod
+    def _group_retry_origin(adapter_id: str, self_id: str, group_id: str):
+        """构造仅供状态回传的群配置重试来源, 不赋予模型管理调用权限"""
+        from satrap.core.call_context import CallOrigin
+
+        return CallOrigin(adapter_id, self_id, "GroupConfigRetry", group_id, "", "", "")
 
     async def dry_run_group_policy(
         self, adapter_id: str, self_id: str, group_id: str, *, expected_revision: int,
@@ -2259,6 +2303,19 @@ class BackendManager:
         manager.class_cfg_mgr = self._session_cls_cfg
         # 关联 ModelConfigManager 用于会话内按名称查找 LLM 配置
         manager.model_config_manager = self._model_cfg
+        def report_group_apply(call, session_id, error):
+            origin = call.origin
+            if origin is None or origin.adapter_id != platform_id or call.group_config_revision is None:
+                return
+            from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+            adapter = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
+            if isinstance(adapter, OneBotAdapter):
+                adapter.report_group_session_apply(
+                    origin.self_id, origin.chat_id, call.group_config_revision, session_id, error,
+                )
+
+        manager.group_apply_reporter = report_group_apply
         if self._edictum_cfg is not None and self._edictum_types is not None:
             manager.register_provider(
                 EdictumProvider(

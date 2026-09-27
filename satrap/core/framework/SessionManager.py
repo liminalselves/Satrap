@@ -16,7 +16,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import string
-from typing import Any, Awaitable, Dict, List, Optional, Type, cast, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, cast, TYPE_CHECKING
 import json
 import time
 
@@ -763,6 +763,7 @@ class SessionManager:
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
+        self.group_apply_reporter: Callable[[UserCall, str, str | None], None] | None = None
         self.provider_registry = SessionProviderRegistry()
         self.session_class_provider = SessionClassProvider(
             self.registry,
@@ -1334,10 +1335,15 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     if self.pool.list_entries().get(session_id) is not entry:
                         return ""
-                    group_plugins = self._group_plugin_target(session_cfg, user_call)
-                    setattr(entry.session, "_satrap_group_plugins", group_plugins)
-                    await self._prepare_session_async(entry.session)
-                    await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
+                    try:
+                        group_plugins = self._group_plugin_target(session_cfg, user_call)
+                        setattr(entry.session, "_satrap_group_plugins", group_plugins)
+                        await self._prepare_session_async(entry.session)
+                        await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
+                    except Exception as error:
+                        self._report_group_apply(user_call, session_id, str(error))
+                        raise
+                    self._report_group_apply(user_call, session_id, None)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
@@ -1402,6 +1408,38 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
+
+    def _report_group_apply(self, user_call: UserCall, session_id: str, error: str | None) -> None:
+        """将群会话安全轮次的应用结果交给平台运行时"""
+        reporter = getattr(self, "group_apply_reporter", None)
+        if reporter is None or user_call.group_config_revision is None:
+            return
+        try:
+            reporter(user_call, session_id, error)
+        except Exception as report_error:
+            logger.error(f"[SessionManager] 群配置应用状态上报失败: {report_error}")
+
+    async def retry_group_session_apply_async(
+        self, session_id: str, user_call: UserCall,
+    ) -> bool:
+        """在现有实例的会话锁内重试覆盖应用, 不发起模型对话"""
+        entry = self.pool.list_entries().get(session_id)
+        session_cfg = self.store.get(session_id)
+        if entry is None or session_cfg is None:
+            return False
+        async with entry.async_operation_lock:
+            if self.pool.list_entries().get(session_id) is not entry:
+                return False
+            try:
+                plugins = self._group_plugin_target(session_cfg, user_call)
+                setattr(entry.session, "_satrap_group_plugins", plugins)
+                await self._prepare_session_async(entry.session)
+                await self._apply_group_session_overrides(session_cfg, entry.session, user_call, plugins)
+            except Exception as error:
+                self._report_group_apply(user_call, session_id, str(error))
+                return False
+            self._report_group_apply(user_call, session_id, None)
+            return True
 
     def _group_plugin_target(self, session_cfg: SessionConfig, user_call: UserCall) -> list[object] | None:
         """合并群插件设置, 保留会话实例插件配置的最高优先级"""
@@ -2330,7 +2368,9 @@ class SessionManager:
                 reset_llm(new_llm)
             elif workflow is not None and hasattr(workflow, "llm"):
                 workflow.llm = new_llm
-        setattr(session, "_satrap_group_model_name", llm_cfg.name)   # 所有模型引用更新成功后记录实际应用名称
+        applied_name = getattr(llm_cfg, "name", None)
+        setattr(session, "_satrap_group_model_name", applied_name if isinstance(applied_name, str) else None)
+        # 所有模型引用更新成功后记录实际应用名称, 未命名配置保留待重试状态
         logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     def _persist_config(self, config: SessionConfig) -> None:

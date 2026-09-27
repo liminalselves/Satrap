@@ -62,6 +62,7 @@ class GroupDirectoryStore(GroupConfigStore):
             ).fetchall()}
             if "context_sessions" not in tables:
                 return {"known_scoped_count": 0, "current_route_count": 0, "session_ids": [],
+                        "current_session_ids": [],
                         "override_counts": {"model": 0, "prompt": 0, "plugins": 0}}
             routes = connection.execute(
                 "SELECT context_key, session_id FROM context_sessions "
@@ -97,7 +98,7 @@ class GroupDirectoryStore(GroupConfigStore):
                         if key in config:
                             counts[field] += 1
         return {"known_scoped_count": len(session_ids), "current_route_count": len(current_ids),
-                "session_ids": sorted(session_ids),
+                "session_ids": sorted(session_ids), "current_session_ids": sorted(current_ids),
                 "override_counts": counts}
 
     def begin_sync(self, self_id: str, connection_generation: int, token: str) -> int:
