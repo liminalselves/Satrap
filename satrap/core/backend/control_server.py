@@ -1072,7 +1072,13 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             record = await asyncio.to_thread(store.read_account, self_id)
             if record is None:
                 return 404, {"error": "账号群配置不存在", "reason": "account_not_found"}
-            return 200, {**record, "current": current == self_id, "offline_snapshot": True}
+            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+            from satrap.core.platform.onebot.group_action_types import action_metadata
+
+            counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
+            return 200, {**record, "current": current == self_id, "offline_snapshot": True,
+                         "approval_actions": [action_metadata(action) for action in sorted(GROUP_APPROVAL_ACTIONS)],
+                         "approval_inheriting_counts": counts}
         if ctx.method == "PATCH" and parts[4:] == ["settings"]:
             if _check_backend_health().get("running"):
                 return 409, {"error": "后端正在运行, 请使用运行时群配置接口", "reason": "use_runtime_api"}

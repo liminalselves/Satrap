@@ -56,6 +56,8 @@ export interface GroupSettings {
   self_id: string;
   mode: 'selected' | 'all';
   approval_defaults: Record<string, 'approval_required' | 'auto_execute'>;
+  approval_actions: Array<{ action_type: string; risk: 'high' | 'normal' }>;
+  approval_inheriting_counts: Record<string, number>;
   revision: number;
   migrated_at: number;
   last_bound_at: number;

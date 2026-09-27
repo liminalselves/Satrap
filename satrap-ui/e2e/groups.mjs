@@ -29,6 +29,8 @@ try {
   let syncMode = 'complete';
   let settingsMode = 'selected';
   let settingsRevision = 1;
+  let settingsApprovalDefaults = {};
+  const settingsWrites = [];
   let holdOldList = false;
   let releaseOldList = null;
   let config = {
@@ -161,10 +163,15 @@ try {
       const payload = request.postDataJSON();
       assert.equal(payload.expected_self_id, '100');
       assert.equal(payload.expected_revision, settingsRevision);
+      settingsWrites.push(payload);
       settingsMode = payload.mode;
+      settingsApprovalDefaults = payload.approval_defaults;
       settingsRevision += 1;
     }
-    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: url.searchParams.get('account') || '100', mode: settingsMode, approval_defaults: {},
+    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: url.searchParams.get('account') || '100', mode: settingsMode,
+      approval_defaults: settingsApprovalDefaults,
+      approval_actions: [{ action_type: 'kick_group_member', risk: 'high' }],
+      approval_inheriting_counts: { kick_group_member: 1 },
       revision: settingsRevision, migrated_at: 1_790_000_000, last_bound_at: 1_790_000_000,
       legacy_adopted: true, current: true, apply_status: 'applied' });
     if (pathname === '/api/platforms/ob/groups/accounts' && unbound) return reply({
@@ -211,6 +218,18 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-list.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('button', { name: '管理默认设置' }).click();
+  await page.getByText('当前继承群 1').waitFor();
+  await page.getByText('移出成员', { exact: true }).locator('..').locator('select').selectOption('auto_execute');
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/groups/settings') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: '保存默认设置' }).click(),
+  ]);
+  assert.deepEqual(settingsWrites.at(-1).approval_defaults, { kick_group_member: 'auto_execute' });
+  assert.equal(settingsMode, 'selected');
+  await page.getByRole('button', { name: '管理默认设置' }).click();
+  assert.equal(await page.getByText('移出成员', { exact: true }).locator('..').locator('select').inputValue(), 'auto_execute');
+  await page.getByRole('button', { name: '取消' }).click();
   await page.getByRole('button', { name: '修改接入模式' }).click();
   await page.getByLabel('全部群, 含以后新加入群').check();
   await page.getByRole('button', { name: '保存模式' }).click();

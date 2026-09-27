@@ -15,7 +15,7 @@
 
 ## 配置与运行时
 
-群配置分 `policy`、`session`、`approval`、`events` 四个区域, 各区域独立保存。`expected_revision` 防止覆盖其他页面的新修改, `base_revision` 包含平台绑定及命名资源依赖; 任一变化均需重读。API 字段以 `{ "mode": "inherit" }` 或 `{ "mode": "value", "value": ... }` 表达, 显式空提示词和继承不同。保存后检查 `apply_status`、`saved_revision`、`active_revision`; 应用失败可用 `/config/apply` 重试同一保存版本。
+群配置分 `policy`、`session`、`approval`、`events` 四个区域, 各区域独立保存。`expected_revision` 防止覆盖其他页面的新修改, `base_revision` 包含平台绑定及命名资源依赖; 任一变化均需重读。API 字段以 `{ "mode": "inherit" }` 或 `{ "mode": "value", "value": ... }` 表达, 显式空提示词和继承不同。保存后检查 `apply_status`、`saved_revision`、`active_revision`; 应用失败可用 `/config/apply` 重试同一保存版本。群列表的“管理默认设置”编辑账号级审批默认值, 并显示各动作当前已加入的继承群数量; 群详情“本群审批设置”只编辑逐群覆盖。切换自动执行仅影响新请求, 不执行已有待审批动作。
 
 会话绑定可继承平台, 或指定 SessionClass/Edictum 命名配置; 范围可继承旧 `legacy_user`, 或指定 `group_member`、`group_shared`。绑定或范围切换递增群路由代次, 新消息进入新会话, 旧历史保留。群模型、提示词和插件覆盖目前由具备相应能力的 Edictum 类型支持; 不支持的 SessionClass 或 Edictum 类型在 UI 标明且服务端拒绝。实例显式覆盖优先于群覆盖。插件参数只接受其 schema 允许的会话覆盖字段; 模型引用只存名称, 不复制凭据。删除或重命名被群引用的命名会话、模型和插件资源时进行严格扫描。
 
@@ -30,7 +30,7 @@
 | `GET /accounts` | 当前账号和历史账号 |
 | `GET /?account=...&q=...&membership=...&response=...&page=...&page_size=...` | 群目录分页、总数、同步状态 |
 | `POST /sync`, `GET /sync/{sync_id}?account=...` | 显式同步和状态查询; POST 返回 202 |
-| `GET/PATCH /settings` | 账号接入模式及默认审批策略; PATCH 带 `mode`、`approval_defaults`、`expected_revision` |
+| `GET/PATCH /settings` | 账号接入模式及默认审批策略; GET 附动作风险元数据与已加入继承群数量, PATCH 带 `mode`、`approval_defaults`、`expected_revision` |
 | `GET /bindings?account=...` | 命名会话、模型和插件可用项 |
 | `GET/PATCH /{group}/config` | 显式值、有效值、来源、能力与修订; PATCH 带 `section`、`values`、`expected_revision`、`base_revision` |
 | `POST /{group}/config/apply` | 带 `saved_revision` 重试应用 |

@@ -5,13 +5,8 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { useGroupContext } from './GroupLayout';
+import { groupActionLabels } from './groupActionLabels';
 
-const labels: Record<string, string> = {
-  recall_message: '撤回消息', kick_group_member: '移出成员', ban_group_member: '禁言成员',
-  set_group_whole_ban: '全员禁言', ban_anonymous: '禁言匿名成员', set_group_admin: '设置管理员',
-  set_group_anonymous: '匿名聊天', set_group_card: '设置名片', set_group_name: '修改群名',
-  set_group_special_title: '设置头衔', leave_group: '退出或解散群', handle_group_request: '处理加群请求',
-};
 const fields: Record<string, string> = {
   message_id: '消息 ID', user_id: '成员 QQ', reject_add_request: '拒绝再次加群',
   duration: '秒数', enable: '开启', flag: '请求 flag', card: '群名片', name: '群名',
@@ -152,7 +147,7 @@ export function GroupManage() {
           const metadata = types.find((item) => item.action_type === action);
           const effective = config.effective.approval[action];
           return <label key={action} className="block rounded-lg border border-glass-border p-3 text-sm">
-            <span className="font-medium">{labels[action] || action}</span>
+            <span className="font-medium">{groupActionLabels[action] || action}</span>
             <span className="ml-2 text-text-secondary">{metadata?.risk === 'high' ? '高影响' : '普通'} · 当前{effective === 'approval_required' ? '需审批' : '自动执行'} · {config.sources.approval[action] || '默认'}</span>
             <select className="glass-input mt-2 w-full" value={approvalDraft[action] || 'inherit'}
               disabled={historical || approvalBusy}
@@ -171,7 +166,7 @@ export function GroupManage() {
       <label className="block text-sm">动作
         <select className="glass-input mt-1 w-full max-w-md" value={type} disabled={!ready || busy || !!operationId}
           onChange={(event) => { setType(event.target.value); setValues({}); setResult(null); }}>
-          {types.map((item) => <option key={item.action_type} value={item.action_type}>{labels[item.action_type] || item.action_type}</option>)}
+          {types.map((item) => <option key={item.action_type} value={item.action_type}>{groupActionLabels[item.action_type] || item.action_type}</option>)}
         </select>
       </label>
       {selected && <>

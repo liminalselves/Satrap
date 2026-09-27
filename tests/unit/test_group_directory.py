@@ -95,3 +95,21 @@ def test_pagination_and_counts_use_full_identity_snapshot(tmp_path: Path) -> Non
     assert second["counts"]["joined"] == 54
     assert second["counts"]["response_enabled"] == 1
     assert store.list_groups("100", query="群5", membership="all")["total"] == 6
+
+
+def test_approval_inheritance_counts_only_joined_groups(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.begin_sync("100", 1, "first")
+    store.finish_sync("100", 1, "first", [
+        {"group_id": "123"}, {"group_id": "456"}, {"group_id": "789"},
+    ], complete=True, truncated=False)
+    store.patch_group("100", "123", "approval", {
+        "kick_group_member": {"mode": "value", "value": "auto_execute"},
+    }, expected_revision=0)
+    store.patch_group("100", "456", "approval", {
+        "kick_group_member": {"mode": "inherit"},
+    }, expected_revision=0)
+    store.confirm_membership("100", "789", False)
+    counts = store.approval_inheritance_counts("100")
+    assert counts["kick_group_member"] == 1
+    assert counts["set_group_name"] == 2

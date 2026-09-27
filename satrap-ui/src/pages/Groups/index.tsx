@@ -11,12 +11,19 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { groupActionLabels } from './groupActionLabels';
 
 const MEMBERSHIPS = [
   ['joined', '已加入'], ['all', '全部'], ['left', '已离开'],
   ['unknown', '待确认'], ['config_only', '仅配置未发现'],
 ] as const;
 const RESPONSES = [['all', '全部响应状态'], ['enabled', '响应开启'], ['disabled', '响应关闭']] as const;
+type ApprovalDraft = Record<string, 'inherit' | 'approval_required' | 'auto_execute'>;
+
+function defaultsFrom(settings: GroupSettings): ApprovalDraft {
+  return Object.fromEntries(settings.approval_actions.map((item) => [item.action_type,
+    settings.approval_defaults[item.action_type] || 'inherit']));
+}
 
 function errorText(error: unknown): string {
   if (error instanceof ApiError) return error.code ? `${error.message} (${error.code})` : error.message;
@@ -63,6 +70,12 @@ export function Groups() {
   const [showMode, setShowMode] = useState(false);
   const [modeDraft, setModeDraft] = useState<'selected' | 'all'>('selected');
   const [modeSaving, setModeSaving] = useState(false);
+  const [showApproval, setShowApproval] = useState(false);
+  const [approvalDraft, setApprovalDraft] = useState<ApprovalDraft>({});
+  const [approvalBaseline, setApprovalBaseline] = useState('{}');
+  const [approvalSaving, setApprovalSaving] = useState(false);
+  const [approvalError, setApprovalError] = useState('');
+  const [approvalConflict, setApprovalConflict] = useState(false);
   const [syncId, setSyncId] = useState('');
   const [syncTicks, setSyncTicks] = useState(0);
   const listRequest = useRef(0);
@@ -73,6 +86,7 @@ export function Groups() {
   const waiting = !!accounts && !accounts.current_account;
   const visibleListing = listing?.account === account ? listing : null;
   const visibleSettings = settings?.self_id === account ? settings : null;
+  const approvalDirty = JSON.stringify(approvalDraft) !== approvalBaseline;
 
   const updateParams = useCallback((values: Record<string, string | null>) => {
     setParams((previous) => {
@@ -167,7 +181,20 @@ export function Groups() {
     if (modeDraft !== settings?.mode && !confirmDiscard()) return;
     setShowMode(false);
   }, [modeDraft, settings]);
-  useDirtyGuard(showMode && modeDraft !== settings?.mode);
+  const openApproval = useCallback(async () => {
+    if (!account) return;
+    try {
+      const result = await groupApi.settings(adapterId, account, isRunning);
+      const fresh = defaultsFrom(result);
+      setSettings(result); setApprovalDraft(fresh); setApprovalBaseline(JSON.stringify(fresh));
+      setApprovalError(''); setApprovalConflict(false); setShowApproval(true);
+    } catch (caught) { setError(errorText(caught)); }
+  }, [adapterId, account, isRunning]);
+  const closeApproval = useCallback(() => {
+    if (approvalDirty && !confirmDiscard()) return;
+    setShowApproval(false);
+  }, [approvalDirty]);
+  useDirtyGuard((showMode && modeDraft !== settings?.mode) || (showApproval && approvalDirty));
 
   const saveMode = useCallback(async () => {
     if (!settings || !account || modeSaving) return;
@@ -177,13 +204,31 @@ export function Groups() {
         expected_self_id: account, expected_revision: settings.revision,
         mode: modeDraft, approval_defaults: settings.approval_defaults,
       }, isRunning);
-      setSettings(result);
+      setSettings({ ...settings, ...result });
       setShowMode(false);
       await loadList();
       if (result.apply_status !== 'applied') setError('配置已保存, 尚未生效; 请在平台恢复后重试应用');
     } catch (caught) { setError(errorText(caught)); }
     finally { setModeSaving(false); }
   }, [settings, account, modeSaving, adapterId, modeDraft, isRunning, loadList]);
+  const saveApproval = useCallback(async () => {
+    if (!settings || !account || approvalSaving || !approvalDirty || approvalConflict) return;
+    const defaults = Object.fromEntries(Object.entries(approvalDraft)
+      .filter(([, mode]) => mode !== 'inherit')) as GroupSettings['approval_defaults'];
+    setApprovalSaving(true); setApprovalError('');
+    try {
+      const result = await groupApi.saveSettings(adapterId, {
+        expected_self_id: account, expected_revision: settings.revision,
+        mode: settings.mode, approval_defaults: defaults,
+      }, isRunning);
+      setSettings({ ...settings, ...result }); setApprovalBaseline(JSON.stringify(approvalDraft));
+      setShowApproval(false);
+      if (result.apply_status !== 'applied') setError('审批默认设置已保存, 尚未生效');
+    } catch (caught) {
+      setApprovalError(errorText(caught));
+      if (caught instanceof ApiError && caught.status === 409) setApprovalConflict(true);
+    } finally { setApprovalSaving(false); }
+  }, [settings, account, approvalSaving, approvalDirty, approvalConflict, approvalDraft, adapterId, isRunning]);
 
   const beginSync = useCallback(async () => {
     if (!account || historical || !isRunning) return;
@@ -241,6 +286,7 @@ export function Groups() {
               <RefreshCw className="mr-2 inline h-4 w-4" />同步群列表
             </Button>
             <Button variant="subtle" onClick={openMode} disabled={historical}>修改接入模式</Button>
+            <Button variant="subtle" onClick={openApproval} disabled={historical}>管理默认设置</Button>
           </div>
           {historical && <p className="text-sm text-text-secondary">当前连接账号不同, 历史账号只读。账号选择只切换查看数据</p>}
           <div className="flex flex-wrap gap-3 text-sm text-text-secondary" aria-live="polite">
@@ -311,6 +357,45 @@ export function Groups() {
           <label className="flex items-center gap-2"><input type="radio" name="group-mode" checked={modeDraft === 'selected'} onChange={() => setModeDraft('selected')} />仅所选群</label>
           <label className="flex items-center gap-2"><input type="radio" name="group-mode" checked={modeDraft === 'all'} onChange={() => setModeDraft('all')} />全部群, 含以后新加入群</label>
           <div className="flex justify-end gap-2"><Button variant="subtle" onClick={closeMode}>取消</Button><Button variant="primary" onClick={saveMode} disabled={modeSaving || !settings}>保存模式</Button></div>
+        </div>
+      </Modal>
+      <Modal open={showApproval} onClose={closeApproval} title="平台群管理默认审批" size="lg">
+        <div className="space-y-4 text-sm text-text-secondary">
+          <p>只影响继承本账号默认值的群和以后新提交的动作。已有待审批请求不会自动执行</p>
+          {approvalError && <p className="text-error" role="alert">{approvalError}</p>}
+          {approvalConflict && <div className="space-y-2 rounded-lg border border-warning p-3" role="alert">
+            <p>账号设置已变化, 草稿仍保留</p>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={async () => {
+                if (!account) return;
+                try { setSettings(await groupApi.settings(adapterId, account, isRunning)); }
+                catch (caught) { setApprovalError(errorText(caught)); }
+              }}>查看服务器最新值</Button>
+              <Button size="sm" variant="subtle" onClick={() => navigator.clipboard.writeText(JSON.stringify(approvalDraft, null, 2))}>复制我的草稿</Button>
+              <Button size="sm" variant="subtle" onClick={async () => {
+                if (!account) return;
+                try {
+                  const latest = await groupApi.settings(adapterId, account, isRunning);
+                  const fresh = defaultsFrom(latest);
+                  setSettings(latest); setApprovalDraft(fresh); setApprovalBaseline(JSON.stringify(fresh));
+                  setApprovalConflict(false); setApprovalError('');
+                } catch (caught) { setApprovalError(errorText(caught)); }
+              }}>放弃草稿并重新加载</Button>
+            </div>
+          </div>}
+          <div className="grid gap-3 md:grid-cols-2">
+            {(settings?.approval_actions || []).map((item) => <label key={item.action_type} className="block rounded-lg border border-glass-border p-3">
+              <span className="font-medium text-text-primary">{groupActionLabels[item.action_type] || item.action_type}</span>
+              <span className="ml-2">{item.risk === 'high' ? '高影响' : '普通'} · 当前继承群 {settings?.approval_inheriting_counts?.[item.action_type] ?? 0}</span>
+              <select className="glass-input mt-2 w-full" value={approvalDraft[item.action_type] || 'inherit'}
+                disabled={approvalSaving || approvalConflict}
+                onChange={(event) => setApprovalDraft((old) => ({ ...old, [item.action_type]: event.target.value as ApprovalDraft[string] }))}>
+                <option value="inherit">系统默认</option><option value="approval_required">需审批</option><option value="auto_execute">自动执行</option>
+              </select>
+            </label>)}
+          </div>
+          <div className="flex justify-end gap-2"><Button variant="subtle" onClick={closeApproval}>取消</Button>
+            <Button variant="primary" onClick={saveApproval} disabled={!approvalDirty || approvalSaving || approvalConflict}>保存默认设置</Button></div>
         </div>
       </Modal>
     </div>

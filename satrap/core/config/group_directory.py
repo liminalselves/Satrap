@@ -28,6 +28,29 @@ class GroupDirectoryStore(GroupConfigStore):
         """
         super().__init__(database)
 
+    def approval_inheritance_counts(self, self_id: str) -> dict[str, int]:
+        """统计当前已加入且继承账号审批默认值的群数"""
+        from satrap.core.config.group_approval import approval_values
+        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+
+        _identity(self_id)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT c.config_json FROM group_directory AS d "
+                "LEFT JOIN group_configs AS c ON c.self_id=d.self_id AND c.group_id=d.group_id "
+                "WHERE d.self_id=? AND d.membership='joined'", (self_id,),
+            ).fetchall()
+        counts = {action: 0 for action in sorted(GROUP_APPROVAL_ACTIONS)}
+        for row in rows:
+            explicit = json.loads(row["config_json"]) if row["config_json"] else {}
+            if not isinstance(explicit, dict) or not isinstance(explicit.get("approval", {}), dict):
+                raise RuntimeError("群审批设置数据损坏")
+            overrides = approval_values(explicit.get("approval", {}))
+            for action in counts:
+                if action not in overrides:
+                    counts[action] += 1
+        return counts
+
     def begin_sync(self, self_id: str, connection_generation: int, token: str) -> int:
         """
         登记当前账号和连接的同步任务

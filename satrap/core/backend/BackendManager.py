@@ -365,9 +365,15 @@ class BackendManager:
         account = await asyncio.to_thread(store.read_account, self_id)
         if account is None:
             raise LookupError("账号群配置不存在")
+        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+        from satrap.core.platform.onebot.group_action_types import action_metadata
+
+        counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         current = str(getattr(adapter, "bot_self_id", "") or "")
-        return {**account, "current": current == self_id}
+        return {**account, "current": current == self_id,
+                "approval_actions": [action_metadata(action) for action in sorted(GROUP_APPROVAL_ACTIONS)],
+                "approval_inheriting_counts": counts}
 
     async def patch_group_settings(
         self, adapter_id: str, self_id: str, expected_revision: int, mode: str,
