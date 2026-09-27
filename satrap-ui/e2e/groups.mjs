@@ -18,12 +18,16 @@ try {
   const writes = [];
   const decisions = [];
   const actionPosts = [];
+  const dryRuns = [];
+  const rejectedActions = [];
   let lostAction = null;
   let lostSend = null;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
     membership: 'joined', confirmed_at: 1_790_000_000, response_enabled: false, response_source: 'account' };
   let unbound = true;
   let syncMode = 'complete';
+  let settingsMode = 'selected';
+  let settingsRevision = 1;
   let config = {
     account: '100', current_account: '100', group: row, explicit: { policy: {}, session: {}, events: {}, approval: {} },
     revision: 0, saved_revision: 0, active_revision: 0, apply_status: 'applied', route_generation: 0,
@@ -40,6 +44,7 @@ try {
   };
   let conflict = false;
   let actionState = 'pending';
+  let actionReject = 0;
   await context.route(`${origin}/ui-config.json`, (route) => route.fulfill({ json: {
     backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872',
   } }));
@@ -72,6 +77,15 @@ try {
       }
       return reply(config);
     }
+    if (pathname === '/api/platforms/ob/groups/456/dry-run' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      dryRuns.push(payload);
+      assert.equal(payload.expected_self_id, '100');
+      assert.equal(payload.expected_revision, config.revision);
+      return reply({ response_enabled: payload.values.enabled?.value === true,
+        explicit: { triggered: true, reason: 'at_self' },
+        automatic: { decision: { triggered: false, reason: 'disabled' } }, draft: true });
+    }
     if (pathname.endsWith('/actions/action-123456/decision') && request.method() === 'POST') {
       decisions.push(request.postDataJSON());
       actionState = 'succeeded';
@@ -87,6 +101,11 @@ try {
     }
     if (pathname === '/api/platforms/ob/groups/456/actions' && request.method() === 'POST') {
       const payload = request.postDataJSON();
+      if (actionReject) {
+        rejectedActions.push(payload);
+        return reply({ error: actionReject === 403 ? '机器人没有群管理权限' : '群名不能为空',
+          code: actionReject === 403 ? 'group_permission_denied' : 'invalid_params' }, actionReject);
+      }
       actionPosts.push(payload);
       lostAction = { ...payload, self_id: '100', group_id: '456', actor_kind: 'panel', state: 'unknown',
         created_at: 1_790_000_000, expires_at: null, decision_at: null, executed_at: null,
@@ -111,6 +130,9 @@ try {
       { action_type: 'set_group_name', schema: { name: 'string' }, risk: 'normal',
         approval_mode: 'auto_execute', approval_source: 'default', available: true,
         capability: 'unknown', membership: 'joined' },
+      { action_type: 'kick_group_member', schema: { user_id: 'string' }, risk: 'high',
+        approval_mode: 'approval_required', approval_source: 'default', available: false,
+        capability: 'unsupported', membership: 'joined' },
     ] });
     if (pathname === '/api/platforms/ob/groups/bindings') return reply({ account: '100',
       items: [{ provider: 'edictum', config_name: 'simple', enabled: true, available: true,
@@ -123,8 +145,16 @@ try {
     });
     if (pathname === '/api/platforms/ob/groups/456/info') return reply({ group_name: row.group_name, member_count: 42, max_member_count: 500 });
     if (pathname === '/api/platforms/ob/groups/456/members') return reply({ items: [], total_loaded: 0, page: 1, page_size: 25, truncated: false, complete: true });
-    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: '100', mode: 'selected', approval_defaults: {},
-      revision: 1, migrated_at: 1_790_000_000, last_bound_at: 1_790_000_000, legacy_adopted: true, current: true });
+    if (pathname === '/api/platforms/ob/groups/settings' && request.method() === 'PATCH') {
+      const payload = request.postDataJSON();
+      assert.equal(payload.expected_self_id, '100');
+      assert.equal(payload.expected_revision, settingsRevision);
+      settingsMode = payload.mode;
+      settingsRevision += 1;
+    }
+    if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: '100', mode: settingsMode, approval_defaults: {},
+      revision: settingsRevision, migrated_at: 1_790_000_000, last_bound_at: 1_790_000_000,
+      legacy_adopted: true, current: true, apply_status: 'applied' });
     if (pathname === '/api/platforms/ob/groups/accounts' && unbound) return reply({
       items: [], current_account: '', waiting_for_account: true,
     });
@@ -133,8 +163,8 @@ try {
         { self_id: '101', mode: 'selected', revision: 1, last_bound_at: 1_790_000_000 }],
       current_account: '100', waiting_for_account: false,
     });
-    if (pathname === '/api/platforms/ob/groups') return reply({ items: [row], total: 1, page: 1, page_size: 25,
-      counts: { joined: 1, response_enabled: 0, configured: 0 }, account: url.searchParams.get('account') || '100',
+    if (pathname === '/api/platforms/ob/groups') return reply({ items: [{ ...row, response_enabled: settingsMode === 'all' }], total: 1, page: 1, page_size: 25,
+      counts: { joined: 1, response_enabled: settingsMode === 'all' ? 1 : 0, configured: 0 }, account: url.searchParams.get('account') || '100',
       current_account: '100', account_generation: 1,
       sync: { status: syncMode, sync_id: 'sync-1', complete: syncMode === 'complete', truncated: syncMode !== 'complete',
         reason: syncMode === 'complete' ? null : 'invalid_entry',
@@ -164,6 +194,16 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-list.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('button', { name: '修改接入模式' }).click();
+  await page.getByLabel('全部群, 含以后新加入群').check();
+  await page.getByRole('button', { name: '保存模式' }).click();
+  await page.getByText('响应开启 1').waitFor();
+  assert.equal(settingsMode, 'all');
+  await page.getByRole('button', { name: '修改接入模式' }).click();
+  await page.getByLabel('仅所选群').check();
+  await page.getByRole('button', { name: '保存模式' }).click();
+  await page.getByText('响应开启 0').waitFor();
+  assert.equal(settingsMode, 'selected');
   syncMode = 'partial';
   await page.reload();
   await page.getByText('同步不完整').waitFor();
@@ -180,6 +220,20 @@ try {
   await page.getByText('请先核实平台状态').waitFor();
   await page.getByRole('button', { name: '我已核实平台状态, 可以创建新操作' }).click();
   assert.equal(await page.getByPlaceholder('输入 1 到 1000 字符').inputValue(), '');
+  await page.getByRole('link', { name: '响应策略', exact: true }).click();
+  await page.locator('label:has-text("本群设置") select').selectOption('true');
+  await page.locator('label:has-text("示例消息") textarea').fill('@机器人 你好');
+  await page.getByLabel('示例消息 @机器人').check();
+  const policyWrites = writes.length;
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/groups/456/dry-run')),
+    page.getByRole('button', { name: '试算草稿' }).click(),
+  ]);
+  await page.getByText('基于当前草稿: 允许响应').waitFor();
+  assert.deepEqual(dryRuns.at(-1).values.enabled, { mode: 'value', value: true });
+  assert.deepEqual(dryRuns.at(-1).scenario.probe, { text: '@机器人 你好', at_self: true });
+  assert.equal(writes.length, policyWrites);
+  await page.locator('label:has-text("本群设置") select').selectOption('inherit');
   await page.getByRole('link', { name: '会话配置' }).click();
   await page.getByText('模型与提示词').waitFor();
   await page.locator('label:has-text("模型来源") select').first().selectOption('value');
@@ -208,7 +262,10 @@ try {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.getByRole('link', { name: '审批与记录' }).click();
   await page.getByText('action-123456').waitFor();
-  await page.getByRole('button', { name: '批准' }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().endsWith('/actions/action-123456/decision')),
+    page.getByRole('button', { name: '批准' }).click(),
+  ]);
   assert.equal(decisions.length, 1);
   assert.equal(decisions[0].expected_self_id, '100');
   await page.getByRole('button', { name: '刷新' }).click();
@@ -220,6 +277,22 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.getByRole('link', { name: '群管理' }).click();
+  await page.locator('label:has-text("动作") select').selectOption('kick_group_member');
+  await page.getByText('此动作当前不可用: 平台已确认不支持').waitFor();
+  assert.equal(await page.getByRole('button', { name: '提交管理动作' }).isDisabled(), true);
+  await page.locator('label:has-text("动作") select').selectOption('set_group_name');
+  actionReject = 403;
+  await page.locator('label:has-text("群名") input').fill('新群名');
+  await page.getByRole('button', { name: '提交管理动作' }).click();
+  await page.getByText('机器人没有群管理权限').waitFor();
+  assert.equal(rejectedActions.length, 1);
+  await page.getByRole('button', { name: '开始新操作' }).click();
+  actionReject = 400;
+  await page.getByRole('button', { name: '提交管理动作' }).click();
+  await page.getByText('群名不能为空').waitFor();
+  assert.equal(rejectedActions.length, 2);
+  await page.getByRole('button', { name: '开始新操作' }).click();
+  actionReject = 0;
   await page.locator('label:has-text("群名") input').fill('新群名');
   await page.getByRole('button', { name: '提交管理动作' }).click();
   await page.getByText('连接中断').waitFor();
