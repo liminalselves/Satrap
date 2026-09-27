@@ -19,8 +19,11 @@ try {
   const decisions = [];
   const actionPosts = [];
   let lostAction = null;
+  let lostSend = null;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
     membership: 'joined', confirmed_at: 1_790_000_000, response_enabled: false, response_source: 'account' };
+  let unbound = true;
+  let syncMode = 'complete';
   let config = {
     account: '100', current_account: '100', group: row, explicit: { policy: {}, session: {}, events: {}, approval: {} },
     revision: 0, saved_revision: 0, active_revision: 0, apply_status: 'applied', route_generation: 0,
@@ -32,6 +35,7 @@ try {
       session: { binding: 'platform', scope: 'platform', model: 'named_config', prompt: 'named_config' },
       approval: { kick_group_member: 'default' }, events: { group_ban: 'default' } },
     capabilities: { policy_fields: ['enabled'], session_fields: ['binding', 'scope', 'model', 'prompt', 'plugins'],
+      binding_available: true, model_reference_available: true,
       approval_actions: ['kick_group_member'], event_kinds: ['group_ban'] },
   };
   let conflict = false;
@@ -73,6 +77,14 @@ try {
       actionState = 'succeeded';
       return reply({ action_id: 'action-123456', state: actionState });
     }
+    if (pathname === '/api/platforms/ob/groups/456/send' && request.method() === 'POST') {
+      const payload = request.postDataJSON();
+      lostSend = { action_id: payload.action_id, self_id: '100', group_id: '456',
+        action_type: 'send_message', params: { message_length: payload.message.length }, actor_kind: 'panel',
+        state: 'unknown', created_at: 1_790_000_000, expires_at: null, decision_at: null,
+        executed_at: null, result: { reason: 'interrupted' } };
+      return reply({ error: '连接中断', reason: 'group_service_unavailable' }, 503);
+    }
     if (pathname === '/api/platforms/ob/groups/456/actions' && request.method() === 'POST') {
       const payload = request.postDataJSON();
       actionPosts.push(payload);
@@ -81,9 +93,10 @@ try {
         result: { reason: 'interrupted' } };
       return reply({ error: '连接中断', reason: 'group_service_unavailable' }, 503);
     }
-    if (pathname.startsWith('/api/platforms/ob/groups/456/actions/') && request.method() === 'GET' && lostAction) {
-      assert.equal(pathname.split('/').at(-1), lostAction.action_id);
-      return reply(lostAction);
+    if (pathname.startsWith('/api/platforms/ob/groups/456/actions/') && request.method() === 'GET') {
+      const id = pathname.split('/').at(-1);
+      if (lostAction?.action_id === id) return reply(lostAction);
+      if (lostSend?.action_id === id) return reply(lostSend);
     }
     if (pathname === '/api/platforms/ob/groups/456/actions') return reply({
       items: [{ action_id: 'action-123456', self_id: '100', group_id: '456', action_type: 'kick_group_member',
@@ -112,6 +125,9 @@ try {
     if (pathname === '/api/platforms/ob/groups/456/members') return reply({ items: [], total_loaded: 0, page: 1, page_size: 25, truncated: false, complete: true });
     if (pathname === '/api/platforms/ob/groups/settings') return reply({ self_id: '100', mode: 'selected', approval_defaults: {},
       revision: 1, migrated_at: 1_790_000_000, last_bound_at: 1_790_000_000, legacy_adopted: true, current: true });
+    if (pathname === '/api/platforms/ob/groups/accounts' && unbound) return reply({
+      items: [], current_account: '', waiting_for_account: true,
+    });
     if (pathname === '/api/platforms/ob/groups/accounts') return reply({
       items: [{ self_id: '100', mode: 'selected', revision: 1, last_bound_at: 1_790_000_000 },
         { self_id: '101', mode: 'selected', revision: 1, last_bound_at: 1_790_000_000 }],
@@ -120,7 +136,8 @@ try {
     if (pathname === '/api/platforms/ob/groups') return reply({ items: [row], total: 1, page: 1, page_size: 25,
       counts: { joined: 1, response_enabled: 0, configured: 0 }, account: url.searchParams.get('account') || '100',
       current_account: '100', account_generation: 1,
-      sync: { status: 'complete', sync_id: 'sync-1', complete: true, truncated: false, reason: null,
+      sync: { status: syncMode, sync_id: 'sync-1', complete: syncMode === 'complete', truncated: syncMode !== 'complete',
+        reason: syncMode === 'complete' ? null : 'invalid_entry',
         started_at: 1_790_000_000, completed_at: 1_790_000_001, last_complete_at: 1_790_000_001, connection_generation: 1 } });
     const defaults = {
       '/api/health': { running: true, adapters: { ob: { config_type: 'onebot', status: 'running', started: true } } },
@@ -132,6 +149,10 @@ try {
   const errors = [];
   page.on('pageerror', (error) => errors.push(error.message));
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
+  await page.goto(`${origin}/platforms/ob/groups`);
+  await page.getByText('等待机器人连接并确认账号').waitFor();
+  assert.equal(await page.getByText('测试交流群').count(), 0);
+  unbound = false;
   await page.goto(`${origin}/platforms/ob/groups?account=100`);
   await page.getByText('测试交流群').last().waitFor();
   assert.equal(await page.getByText('关闭', { exact: true }).count() > 0, true);
@@ -143,7 +164,22 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-list.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  syncMode = 'partial';
+  await page.reload();
+  await page.getByText('同步不完整').waitFor();
+  assert.equal(await page.getByText('测试交流群').last().isVisible(), true);
+  syncMode = 'complete';
+  await page.reload();
+  await page.getByText('测试交流群').last().waitFor();
   await page.getByRole('link', { name: '进入' }).click();
+  await page.getByPlaceholder('输入 1 到 1000 字符').fill('测试发送');
+  await page.getByRole('button', { name: '发送', exact: true }).click();
+  await page.getByText('连接中断').waitFor();
+  assert.equal(await page.getByRole('button', { name: '新操作' }).isDisabled(), true);
+  await page.getByRole('button', { name: '按操作 ID 查询' }).click();
+  await page.getByText('请先核实平台状态').waitFor();
+  await page.getByRole('button', { name: '我已核实平台状态, 可以创建新操作' }).click();
+  assert.equal(await page.getByPlaceholder('输入 1 到 1000 字符').inputValue(), '');
   await page.getByRole('link', { name: '会话配置' }).click();
   await page.getByText('模型与提示词').waitFor();
   await page.locator('label:has-text("模型来源") select').first().selectOption('value');

@@ -15,6 +15,7 @@ from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
 from satrap.core.platform.onebot.group_action_types import normalize_action_params
+from satrap.core.platform.receipt import SendReceipt
 
 
 def test_pending_decision_is_atomic_and_cannot_replay(tmp_path: Path) -> None:
@@ -156,3 +157,11 @@ async def test_runtime_approval_and_auto_mode_execute_exactly_once(tmp_path: Pat
     metadata = await backend.group_action_types("bot", "100", "456")
     name_action = next(item for item in metadata["items"] if item["action_type"] == "set_group_name")
     assert name_action["capability"] == "unsupported" and name_action["available"] is False
+    adapter.send_management_message = AsyncMock(return_value=SendReceipt("unknown", reason="network_timeout"))
+    manual = await backend.send_group_message("bot", "100", "456", "action-send-1", "直接发送")
+    assert manual["state"] == "unknown"
+    repeated_send = await backend.send_group_message("bot", "100", "456", "action-send-1", "直接发送")
+    assert repeated_send == manual
+    adapter.send_management_message.assert_awaited_once_with("456", "直接发送")
+    with pytest.raises(GroupConfigConflict):
+        await backend.send_group_message("bot", "100", "456", "action-send-1", "另一条消息")

@@ -94,7 +94,8 @@ export interface GroupConfigResult {
     approval: Record<string, 'approval_required' | 'auto_execute'>; events: Record<string, boolean> };
   sources: { policy: Record<string, { source: string; source_index: number | null; source_label: string } | null>;
     session: Record<string, string>; approval: Record<string, string>; events: Record<string, string> };
-  capabilities: { policy_fields: string[]; session_fields: string[]; approval_actions: string[]; event_kinds: string[] };
+  capabilities: { policy_fields: string[]; session_fields: string[]; approval_actions: string[]; event_kinds: string[];
+    binding_available?: boolean | null; model_reference_available?: boolean | null };
   offline_snapshot?: boolean;
 }
 

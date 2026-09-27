@@ -601,10 +601,12 @@ class BackendManager:
         defaults: dict[str, object] = {}
         session_fields = ["binding", "scope"]
         runtime = self.get_platform_runtime(adapter_id)
+        binding_available: bool | None = None
         if runtime is not None and selected["config_name"]:
             resolved_definition = runtime[0].provider_registry.resolve_definition(
                 str(selected["config_name"]), str(selected["provider"]),
             )
+            binding_available = resolved_definition is not None and resolved_definition[1].enabled
             if resolved_definition is not None:
                 definition = resolved_definition[1]
                 model_name = definition.params.get(definition.model_key or "model_name")
@@ -620,7 +622,14 @@ class BackendManager:
                     type_definition = self._edictum_types.get(type_name) if self._edictum_types else None
                     if type_definition and type_definition.supports_plugins and type_definition.plugin_installer:
                         session_fields.append("plugins")
+        elif runtime is not None:
+            binding_available = False
         session_effective, session_sources = resolve_group_session(platform, raw_session, defaults)
+        model_name = session_effective.get("model")
+        model_available: bool | None = None
+        if isinstance(model_name, str) and model_name and self._model_cfg is not None:
+            model_config = self._model_cfg.get_llm_config(name=model_name)
+            model_available = model_config is not None and bool(model_config.api_key)
         raw_approval = config["explicit"].get("approval", {})
         if not isinstance(raw_approval, dict):
             raise RuntimeError("群审批配置数据损坏")
@@ -654,6 +663,8 @@ class BackendManager:
                         "events": {kind: "group" if kind in event_overrides else "default" for kind in sorted(EVENT_KINDS)}},
             "capabilities": {"policy_fields": ["enabled", *sorted(GROUP_KEYS)],
                              "session_fields": session_fields,
+                             "binding_available": binding_available,
+                             "model_reference_available": model_available,
                              "approval_actions": sorted(GROUP_APPROVAL_ACTIONS),
                              "event_kinds": sorted(EVENT_KINDS)},
         }

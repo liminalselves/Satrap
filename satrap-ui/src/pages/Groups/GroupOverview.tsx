@@ -20,8 +20,8 @@ export function GroupOverview() {
     ['账号已确认', Boolean(account) && !historical, '/platforms'],
     ['机器人仍在此群', config.group.membership === 'joined', `${path}/members${query}`],
     ['本群响应已开启', config.effective.policy.enabled === true, `${path}/policy${query}`],
-    ['会话绑定已指定', Boolean(binding?.config_name), `${path}/session${query}`],
-    ['模型配置引用可用', null, `${path}/session${query}`],
+    ['会话绑定可用', config.capabilities.binding_available ?? null, `${path}/session${query}`],
+    ['模型配置引用可用', config.capabilities.model_reference_available ?? null, '/models'],
   ] as const;
   const [sendText, setSendText] = useState('');
   const [sendId, setSendId] = useState('');
@@ -33,6 +33,7 @@ export function GroupOverview() {
   const [error, setError] = useState('');
   const canSend = isRunning && !historical && config.group.membership === 'joined';
   const canWake = canSend && config.effective.policy.enabled === true;
+  const resetSend = () => { setSendId(''); setSendResult(null); setSendText(''); setError(''); };
   const submitSend = async () => {
     if (!canSend || busy || !sendText.trim()) return;
     const id = sendId || crypto.randomUUID(); setSendId(id); setBusy('send'); setError('');
@@ -83,7 +84,8 @@ export function GroupOverview() {
         <p className="text-sm text-text-secondary">会话: {binding?.provider || '未知'} / {binding?.config_name || '未指定'} · 范围: {String(config.effective.session.scope || '未知')}</p>
         <p className="text-sm text-text-secondary">会话路由代次: {config.route_generation}</p>
         <div className="flex gap-3 text-sm"><Link className="text-accent hover:underline" to={`${path}/policy${query}`}>编辑响应策略 →</Link>
-          <Link className="text-accent hover:underline" to={`${path}/events${query}`}>查看诊断 →</Link></div>
+          <Link className="text-accent hover:underline" to={`${path}/events${query}`}>查看诊断 →</Link>
+          <Link className="text-accent hover:underline" to="/models">配置模型 →</Link></div>
       </Card>
     </div>
     <div className="grid gap-4 lg:grid-cols-2">
@@ -104,9 +106,11 @@ export function GroupOverview() {
           placeholder="输入 1 到 1000 字符" onChange={(event) => setSendText(event.target.value)} />
         <div className="flex flex-wrap gap-2"><Button onClick={submitSend} disabled={!canSend || !!busy || !sendText.trim()}>发送</Button>
           <Button size="sm" variant="subtle" onClick={inspectSend} disabled={!sendId}>按操作 ID 查询</Button>
-          <Button size="sm" variant="subtle" onClick={() => { setSendId(''); setSendResult(null); }} disabled={!sendId || !!busy}>新操作</Button></div>
+          <Button size="sm" variant="subtle" onClick={resetSend}
+            disabled={!sendId || !!busy || !sendResult || ['unknown', 'executing', 'pending'].includes(sendResult.state)}>新操作</Button></div>
         {sendId && <p role="status" className="break-all text-sm">操作 ID: {sendId} · {sendResult?.state || '结果待查询'}
           {sendResult?.state === 'unknown' ? ' · 请先核实平台状态' : ''}</p>}
+        {sendResult?.state === 'unknown' && <Button size="sm" variant="subtle" onClick={resetSend}>我已核实平台状态, 可以创建新操作</Button>}
       </Card>
     </div>
   </div>;

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupPolicyValue } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
@@ -177,6 +178,10 @@ export function GroupSession() {
         </label>
         {selected && (!selected.available || !selected.enabled) && <p className="text-sm text-warning">所选命名配置已删除或停用, 请重新选择</p>}
       </div>}
+      <p className="text-sm text-text-secondary">命名配置与模型资源在原管理页维护; 修改原配置可能影响其他群。
+        <Link className="ml-2 text-accent hover:underline" to="/sessions">打开或复制命名配置</Link>
+        <Link className="ml-2 text-accent hover:underline" to="/models">创建模型配置</Link>
+      </p>
       {unsupportedOverrides.length > 0 && <div role="alert" className="space-y-2 text-sm text-warning">
         <p>目标配置不支持已有的 {unsupportedOverrides.join('、')} 覆盖。请明确恢复继承后再保存, 现有值不会自动丢弃</p>
         <div className="flex flex-wrap gap-2">
