@@ -1,5 +1,7 @@
 # 平台接入
 
+OneBot 的群目录、逐群配置、审批和迁移详见 [OneBot 群管理](groups.md)
+
 Satrap 用统一的 `PlatformAdapter` 把不同聊天平台接入后端。平台消息会被转换成统一事件, 交给 `PipelineScheduler`, 再路由到对应 Session。
 
 ## 平台配置结构

@@ -41,6 +41,7 @@
 ### platform/ 平台接入
 
 - [平台接入](platform/platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
+- [OneBot 群管理](platform/groups.md): 群目录、逐群响应与会话覆盖、审批、事件、迁移和 HTTP API
 
 ### ui/ 展示层与前端
 
