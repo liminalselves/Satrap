@@ -56,10 +56,19 @@ export function GroupSession() {
   const [loadingOptions, setLoadingOptions] = useState(false);
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
+  const [applying, setApplying] = useState(false);
   const [showImpact, setShowImpact] = useState(false);
   const dirty = JSON.stringify(draft) !== baseline;
   const explicit = config.explicit.session;
   useDirtyGuard(dirty);
+
+  const retryApply = async () => {
+    if (!isRunning || historical || applying || dirty) return;
+    setApplying(true);
+    try { setConfig(await groupApi.applyConfig(adapterId, groupId, account, config.saved_revision)); setError(''); }
+    catch (caught) { setError(errorText(caught)); }
+    finally { setApplying(false); }
+  };
 
   useEffect(() => {
     if (dirty) return;
@@ -277,8 +286,11 @@ export function GroupSession() {
       <p className="text-sm text-text-secondary">切换绑定或范围后, 后续请求创建新会话。原历史保留且不自动合并</p>
     </Card>
     {!historical && <Card className="flex flex-wrap items-center justify-between gap-3">
-      <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? '配置已生效' : '配置待应用'}</span>
-      <Button variant="primary" onClick={() => setShowImpact(true)} disabled={!canSave}>保存并应用</Button>
+      <span className="text-sm text-text-secondary">{dirty ? '有未保存修改' : config.apply_status === 'applied' ? '配置已生效' : config.apply_status === 'failed' ? '配置应用失败' : '将在下次会话安全轮次应用'}</span>
+      <div className="flex gap-2">
+        {config.apply_status === 'failed' && <Button variant="subtle" onClick={retryApply} disabled={!isRunning || applying || dirty}>重试应用</Button>}
+        <Button variant="primary" onClick={() => setShowImpact(true)} disabled={!canSave}>保存并应用</Button>
+      </div>
     </Card>}
     <Modal open={showImpact} onClose={() => setShowImpact(false)} title={routeChanged ? '切换会话绑定或范围' : '应用会话覆盖'}>
       <div className="space-y-4 text-sm text-text-secondary">

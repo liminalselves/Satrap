@@ -115,9 +115,10 @@ export function GroupLayout() {
         <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
           <Badge variant={group.membership === 'joined' ? 'success' : 'default'}>{membership}</Badge>
           <Badge variant={enabled ? 'success' : 'default'}>响应{enabled ? '开启' : '关闭'}</Badge>
-          <span className="text-text-secondary">配置修订 {config.saved_revision} · {config.apply_status === 'applied' ? '已生效' : '已保存, 待应用'}</span>
+          <span className="text-text-secondary">配置修订 {config.saved_revision} · {config.apply_status === 'applied' ? '已生效' : config.apply_status === 'failed' ? '应用失败' : '已保存, 待应用'}</span>
           <button type="button" className="text-accent hover:underline" onClick={() => navigator.clipboard.writeText(groupId)}>复制群号</button>
         </div>
+        {config.apply_status === 'failed' && config.apply_error && <p className="text-sm text-error" role="alert">应用失败: {config.apply_error}</p>}
         {historical && <p className="text-sm text-warning">当前连接账号不同, 此账号的群配置只读</p>}
         {!isRunning && <p className="text-sm text-warning">{historical
           ? '后端离线或未确认绑定账号, 此页仅可查看历史快照'
