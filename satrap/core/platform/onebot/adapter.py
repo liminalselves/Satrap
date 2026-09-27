@@ -75,6 +75,7 @@ class GroupSessionApplyState:
     session_revision: int
     route_generation: int
     previous_active_revision: int | None
+    observed_sessions: set[tuple[str, str]] = field(default_factory=set)
     applied_sessions: set[tuple[str, str]] = field(default_factory=set)
     failed_sessions: dict[tuple[str, str], str] = field(default_factory=dict)
 
@@ -256,7 +257,8 @@ class OneBotAdapter(PlatformAdapter):
             else:
                 for group_id, route in prepared.routes.items():
                     prior_route = snapshot.routes.get(group_id, ({}, 0))
-                    if route[0] != prior_route[0]:
+                    if (route[0] != prior_route[0]
+                            or prepared.revisions.get(group_id, 0) != snapshot.revisions.get(group_id, 0)):
                         previous_state = self._group_session_apply.get(group_id)
                         previous_active = (
                             snapshot.revisions.get(group_id, 0)
@@ -265,6 +267,8 @@ class OneBotAdapter(PlatformAdapter):
                         )
                         self._group_session_apply[group_id] = GroupSessionApplyState(
                             prepared.revisions.get(group_id, 0), route[1], previous_active,
+                            observed_sessions=(set(previous_state.observed_sessions)
+                                               if previous_state is not None and route[1] == prior_route[1] else set()),
                         )
             self._group_access_snapshot = prepared
             self._account_mode_restrictions = {
@@ -325,6 +329,7 @@ class OneBotAdapter(PlatformAdapter):
         if state is None:
             return "applied", active_revision, None
         current = {(session_id, generation) for session_id, generation in active_instances.items()}
+        state.observed_sessions.intersection_update(current)
         state.applied_sessions.intersection_update(current)
         state.failed_sessions = {key: reason for key, reason in state.failed_sessions.items() if key in current}
         if not current:
@@ -349,12 +354,39 @@ class OneBotAdapter(PlatformAdapter):
                 or snapshot.routes.get(group_id, ({}, 0))[1] != route_generation):
             return
         key = (session_id, instance_generation)
+        state.observed_sessions.add(key)
         if error is None:
             state.failed_sessions.pop(key, None)
             state.applied_sessions.add(key)
         else:
             state.applied_sessions.discard(key)
             state.failed_sessions[key] = error
+
+    def observe_group_session(
+        self, self_id: str, group_id: str, revision: int, route_generation: int,
+        session_id: str, instance_generation: str,
+    ) -> None:
+        """记录可信群调用当前使用的会话实例, 支持旧版共享路由"""
+        snapshot = self._group_access_snapshot
+        if (snapshot is None or snapshot.self_id != self_id
+                or snapshot.revisions.get(group_id, 0) != revision
+                or snapshot.routes.get(group_id, ({}, 0))[1] != route_generation):
+            return
+        state = self._group_session_apply.get(group_id)
+        if state is None:
+            state = GroupSessionApplyState(revision, route_generation, None)
+            self._group_session_apply[group_id] = state
+        if state.session_revision == revision and state.route_generation == route_generation:
+            state.observed_sessions.add((session_id, instance_generation))
+
+    def observed_group_session_ids(
+        self, group_id: str, revision: int, route_generation: int,
+    ) -> tuple[tuple[str, str], ...]:
+        """返回本群当前修订和路由代次的可信实例关联"""
+        state = self._group_session_apply.get(group_id)
+        if state is None or state.session_revision != revision or state.route_generation != route_generation:
+            return ()
+        return tuple(state.observed_sessions)
 
     def failed_group_session_ids(self, group_id: str, active_instances: dict[str, str]) -> tuple[tuple[str, str], ...]:
         """返回当前群覆盖应用失败的会话实例标识"""

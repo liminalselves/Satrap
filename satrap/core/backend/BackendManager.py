@@ -613,6 +613,23 @@ class BackendManager:
         encoded = json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    @staticmethod
+    def _current_group_instances(
+        adapter: Any, manager: SessionManager, group_id: str, revision: int,
+        route_generation: int, scoped_ids: list[str],
+    ) -> dict[str, str]:
+        """合并范围路由和可信群调用关联, 只保留当前池实例"""
+        entries = manager.pool.list_entries()
+        current = {
+            session_id: entries[session_id].instance_generation
+            for session_id in scoped_ids if session_id in entries
+        }
+        for session_id, generation in adapter.observed_group_session_ids(group_id, revision, route_generation):
+            entry = entries.get(session_id)
+            if entry is not None and entry.instance_generation == generation:
+                current[session_id] = generation
+        return current
+
     async def group_config(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
         """返回单群显式配置, 有效策略来源与已应用修订"""
         from satrap.core.config.group_approval import effective_approval
@@ -705,11 +722,10 @@ class BackendManager:
         if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id == self_id:
             active_instances: dict[str, str] = {}
             if runtime is not None:
-                entries = runtime[0].pool.list_entries()
-                active_instances = {
-                    session_id: entries[session_id].instance_generation
-                    for session_id in instance_summary["current_session_ids"] if session_id in entries
-                }
+                active_instances = self._current_group_instances(
+                    adapter, runtime[0], group_id, config["revision"], config["route_generation"],
+                    instance_summary["current_session_ids"],
+                )
             active_instance_count = len(active_instances)
             apply_status, active_revision, apply_error = adapter.group_session_apply_status(
                 group_id, config["revision"], active_instances,
@@ -916,11 +932,10 @@ class BackendManager:
 
             overrides = {key: value for key, value in session_values(route).items()
                          if key in {"model", "prompt", "plugins"}}
-            entries = runtime[0].pool.list_entries()
-            active_instances = {
-                session_id: entries[session_id].instance_generation
-                for session_id in current["session_instances"]["current_session_ids"] if session_id in entries
-            }
+            active_instances = self._current_group_instances(
+                adapter, runtime[0], group_id, saved_revision, route_generation,
+                current["session_instances"]["current_session_ids"],
+            )
             retry_ids = adapter.failed_group_session_ids(group_id, active_instances)
             config_store = self._group_directory_store(adapter_id)
             for session_id, instance_generation in retry_ids:
@@ -934,7 +949,10 @@ class BackendManager:
                     return (entry is not None and entry.instance_generation == instance_generation
                             and generation == route_generation and revision == route_revision
                             and saved["revision"] == saved_revision
-                            and saved["route_generation"] == route_generation)
+                            and saved["route_generation"] == route_generation
+                            and (session_id, instance_generation) in adapter.observed_group_session_ids(
+                                group_id, saved_revision, route_generation,
+                            ))
 
                 await runtime[0].retry_group_session_apply_async(
                     session_id,
@@ -2477,6 +2495,23 @@ class BackendManager:
         manager.class_cfg_mgr = self._session_cls_cfg
         # 关联 ModelConfigManager 用于会话内按名称查找 LLM 配置
         manager.model_config_manager = self._model_cfg
+        def observe_group_apply(call, session_id, instance_generation):
+            origin = call.origin
+            if (origin is None or origin.chat_type != "GroupMessage" or origin.adapter_id != platform_id
+                    or call.group_config_revision is None or call.group_route_generation is None):
+                return
+            from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+            adapter = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
+            entry = manager.pool.list_entries().get(session_id)
+            if (isinstance(adapter, OneBotAdapter) and entry is not None
+                    and entry.instance_generation == instance_generation):
+                adapter.observe_group_session(
+                    origin.self_id, origin.chat_id, call.group_config_revision, call.group_route_generation,
+                    session_id, instance_generation,
+                )
+
+        manager.group_apply_observer = observe_group_apply
         def report_group_apply(call, session_id, instance_generation, error):
             origin = call.origin
             if (origin is None or origin.adapter_id != platform_id or call.group_config_revision is None

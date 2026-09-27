@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, Mapping, cast
 import asyncio
 import json
 import sqlite3
@@ -110,7 +110,7 @@ async def test_group_session_apply_status_and_retry_reaches_failed_instance(tmp_
 
 
 @pytest.mark.asyncio
-async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
+async def test_slow_legacy_group_session_turn_reports_pending_then_failed_then_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     backend, adapter = _runtime(tmp_path)
@@ -122,10 +122,6 @@ async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
     }, expected_revision=0)
     await adapter.refresh_group_access("100")
     generation = (await backend.group_config("bot", "100", "456"))["route_generation"]
-    route = ConversationRoute("123", "bot", "simple", "edictum", "group_member", "100", "456", generation)
-    with sqlite3.connect(backend.platform_db_path("bot")) as connection:
-        connection.execute("CREATE TABLE context_sessions (context_key TEXT, platform TEXT, session_id TEXT)")
-        connection.execute("INSERT INTO context_sessions VALUES (?, ?, ?)", (route.key, "bot", "sid"))
     manager = backend._create_session_manager("bot")
     backend._platform_runtimes["bot"] = cast(Any, (manager, None))
     cfg = SessionConfig(session_id="sid", session_type_name="named", provider_name="edictum")
@@ -152,16 +148,83 @@ async def test_slow_group_session_turn_reports_pending_then_failed_then_retry(
                     origin=CallOrigin("bot", "100", "GroupMessage", "456", "123", "1", "request"))
     turn = asyncio.create_task(manager.handle_call_async(call))
     await entered.wait()
-    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"
+    pending = await backend.group_config("bot", "100", "456")
+    assert pending["apply_status"] == "pending" and pending["active_instance_count"] == 1
     release.set()
     assert await turn == ""
     failed = await backend.group_config("bot", "100", "456")
-    assert failed["apply_status"] == "failed"
+    assert failed["apply_status"] == "failed" and failed["active_instance_count"] == 1
     assert failed["apply_error"] == "群插件配置应用失败"
 
     monkeypatch.setattr(manager, "_apply_group_session_overrides", AsyncMock())
     recovered = await backend.apply_group_config("bot", "100", "456", 1)
-    assert recovered["apply_status"] == "applied"
+    assert recovered["apply_status"] == "applied" and recovered["active_instance_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_shared_legacy_instance_keeps_group_results_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend, adapter = _runtime(tmp_path)
+    store = GroupDirectoryStore(backend.platform_db_path("bot"))
+    store.adopt_legacy("100", {"group_management_version": 1})
+    for group_id in ("456", "789"):
+        store.confirm_membership("100", group_id, True)
+        store.patch_group("100", group_id, "session", {
+            "prompt": {"mode": "value", "value": f"群 {group_id}"},
+        }, expected_revision=0)
+    await adapter.refresh_group_access("100")
+    manager = backend._create_session_manager("bot")
+    backend._platform_runtimes["bot"] = cast(Any, (manager, None))
+    cfg = SessionConfig(session_id="legacy-sid", session_type_name="named", provider_name="edictum")
+    entry = SimpleNamespace(session=SimpleNamespace(), async_operation_lock=asyncio.Lock(), instance_generation="first")
+    monkeypatch.setattr(manager, "_resolve_or_create_session_config", lambda _: cfg)
+    monkeypatch.setattr(manager, "_acquire_or_create_entry_async", AsyncMock(return_value=entry))
+    monkeypatch.setattr(manager.pool, "list_entries", lambda: {"legacy-sid": entry})
+    monkeypatch.setattr(manager.pool, "release", lambda _: None)
+    monkeypatch.setattr(manager.store, "get", lambda _: cfg)
+    monkeypatch.setattr(manager, "_group_plugin_target", lambda *_: None)
+    monkeypatch.setattr(manager, "_prepare_session_async", AsyncMock())
+    monkeypatch.setattr(manager, "_invoke_sync_entry", lambda *_: "ok")
+    monkeypatch.setattr(manager, "cleanup_idle_sessions_async", AsyncMock())
+
+    async def apply(_, __, call: UserCall, ___) -> None:
+        if call.origin is not None and call.origin.chat_id == "789":
+            raise RuntimeError("群 B 应用失败")
+
+    monkeypatch.setattr(manager, "_apply_group_session_overrides", apply)
+
+    def call(group_id: str) -> UserCall:
+        return UserCall(session_id="legacy-sid", group_config_revision=1, group_route_generation=0,
+                        group_session_overrides={"prompt": f"群 {group_id}"},
+                        origin=CallOrigin("bot", "100", "GroupMessage", group_id, "123", "1", "request"))
+
+    assert await manager.handle_call_async(call("456")) == "ok"
+    assert await manager.handle_call_async(call("789")) == ""
+    group_a = await backend.group_config("bot", "100", "456")
+    group_b = await backend.group_config("bot", "100", "789")
+    assert group_a["apply_status"] == "applied" and group_a["active_instance_count"] == 1
+    assert group_b["apply_status"] == "failed" and group_b["active_instance_count"] == 1
+    monkeypatch.setattr(manager, "_apply_group_session_overrides", AsyncMock())
+    recovered = await backend.apply_group_config("bot", "100", "789", 1)
+    assert recovered["apply_status"] == "applied" and recovered["active_instance_count"] == 1
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
+
+    store.patch_group("100", "789", "session", {
+        "prompt": {"mode": "value", "value": "群 B 新配置"},
+    }, expected_revision=1)
+    await adapter.refresh_group_access("100")
+    reporter = manager.group_apply_reporter
+    assert reporter is not None
+    reporter(call("789"), "legacy-sid", "first", None)
+    changed = await backend.group_config("bot", "100", "789")
+    assert changed["apply_status"] == "pending" and changed["active_instance_count"] == 1
+    assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "applied"
+
+    entry.instance_generation = "second"
+    assert (await backend.group_config("bot", "100", "789"))["active_instance_count"] == 0
+    reporter(call("789"), "legacy-sid", "first", "迟到失败")
+    assert (await backend.group_config("bot", "100", "789"))["apply_status"] == "applied"
 
 
 @pytest.mark.asyncio
@@ -233,7 +296,8 @@ async def test_account_mode_restriction_preserves_explicit_groups_and_survives_c
     monkeypatch.setattr(adapter, "refresh_group_access", original)
     recovered = await backend.apply_group_settings("bot", "100", 3)
     assert recovered["apply_status"] == "applied" and recovered["active_revision"] == 3
-    assert store.read_account("100")["revision"] == 3
+    account = store.read_account("100")
+    assert account is not None and account["revision"] == 3
     assert adapter.allows_group("456") and not adapter.allows_group("789")
     assert adapter.allows_management_target("789")
 
@@ -250,14 +314,19 @@ async def test_account_mode_restriction_survives_uncertain_commit(
     await adapter.refresh_group_access("100")
     original = GroupDirectoryStore.patch_account
 
-    def commit_then_fail(self: GroupDirectoryStore, *args: object, **kwargs: object) -> dict[str, object]:
-        original(self, *args, **kwargs)
+    def commit_then_fail(
+        self: GroupDirectoryStore, self_id: str, *, expected_revision: int,
+        mode: str, approval_defaults: Mapping[str, object],
+    ) -> dict[str, Any]:
+        original(self, self_id, expected_revision=expected_revision, mode=mode,
+                 approval_defaults=approval_defaults)
         raise RuntimeError("commit result unknown")
 
     monkeypatch.setattr(GroupDirectoryStore, "patch_account", commit_then_fail)
     with pytest.raises(RuntimeError, match="unknown"):
         await backend.patch_group_settings("bot", "100", 2, "selected", {})
-    assert store.read_account("100")["revision"] == 3
+    account = store.read_account("100")
+    assert account is not None and account["revision"] == 3
     assert not adapter.allows_group("456")
     assert adapter.allows_management_target("456")
 

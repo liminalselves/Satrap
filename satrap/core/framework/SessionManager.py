@@ -769,6 +769,7 @@ class SessionManager:
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
         self.group_apply_reporter: Callable[[UserCall, str, str, str | None], None] | None = None
+        self.group_apply_observer: Callable[[UserCall, str, str], None] | None = None
         self.provider_registry = SessionProviderRegistry()
         self.session_class_provider = SessionClassProvider(
             self.registry,
@@ -1340,6 +1341,7 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     if self.pool.list_entries().get(session_id) is not entry:
                         return ""
+                    self._observe_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""))
                     try:
                         group_plugins = self._group_plugin_target(session_cfg, user_call)
                         setattr(entry.session, "_satrap_group_plugins", group_plugins)
@@ -1413,6 +1415,16 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
+
+    def _observe_group_apply(self, user_call: UserCall, session_id: str, instance_generation: str) -> None:
+        """把群调用与当前实例的可信关联交给平台运行时"""
+        observer = getattr(self, "group_apply_observer", None)
+        if observer is None or user_call.group_config_revision is None:
+            return
+        try:
+            observer(user_call, session_id, instance_generation)
+        except Exception as error:
+            logger.error(f"[SessionManager] 群会话实例关联上报失败: {error}")
 
     def _report_group_apply(
         self, user_call: UserCall, session_id: str, instance_generation: str, error: str | None,
