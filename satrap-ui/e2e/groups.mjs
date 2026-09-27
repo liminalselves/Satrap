@@ -21,6 +21,9 @@ try {
   const dryRuns = [];
   const rejectedActions = [];
   let eventReads = 0;
+  let actionReads = 0;
+  let holdPendingActions = false;
+  let releasePendingActions = null;
   let lostAction = null;
   let lostSend = null;
   const row = { group_id: '456', group_name: '测试交流群', member_count: 42, max_member_count: 500,
@@ -137,12 +140,18 @@ try {
       if (lostAction?.action_id === id) return reply(lostAction);
       if (lostSend?.action_id === id) return reply(lostSend);
     }
-    if (pathname === '/api/platforms/ob/groups/456/actions') return reply({
-      items: [{ action_id: 'action-123456', self_id: '100', group_id: '456', action_type: 'kick_group_member',
+    if (pathname === '/api/platforms/ob/groups/456/actions') {
+      actionReads += 1;
+      const filter = url.searchParams.get('state') || 'pending';
+      if (filter === 'pending' && holdPendingActions) await new Promise((resolve) => { releasePendingActions = resolve; });
+      return reply({
+      items: [{ action_id: filter === 'succeeded' ? 'action-succeeded' : 'action-123456',
+        self_id: '100', group_id: '456', action_type: 'kick_group_member',
         params: { user_id: '42' }, actor_kind: 'model', state: actionState,
         created_at: 1_790_000_000, expires_at: 1_790_000_600, decision_at: null, executed_at: null, result: null }],
       total: 1, page: 1, page_size: 25,
     });
+    }
     if (pathname === '/api/platforms/ob/groups/456/config') return reply({ ...config, account: url.searchParams.get('account') || '100' });
     if (pathname === '/api/platforms/ob/groups/456/events') {
       eventReads += 1;
@@ -404,7 +413,37 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('select').first().selectOption('all');
+  await page.getByText('action-123456').waitFor();
+  holdPendingActions = true;
+  await Promise.all([
+    page.waitForRequest((request) => request.url().includes('/groups/456/actions?')
+      && request.url().includes('state=pending')),
+    page.locator('select').first().selectOption('pending'),
+  ]);
+  await page.locator('select').first().selectOption('succeeded');
+  await page.getByText('action-succeeded').waitFor();
+  const staleActionResponse = page.waitForResponse((response) => response.url().includes('/groups/456/actions?')
+    && response.url().includes('state=pending'));
+  holdPendingActions = false;
+  releasePendingActions();
+  await staleActionResponse;
+  await page.waitForTimeout(100);
+  assert.equal(await page.getByText('action-123456').count(), 0);
+  await page.locator('select').first().selectOption('all');
+  await page.getByText('action-123456').waitFor();
+  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
+  const hiddenActionReads = actionReads;
+  await page.waitForTimeout(10_300);
+  assert.equal(actionReads, hiddenActionReads);
+  await page.evaluate(() => { delete document.visibilityState; });
+  await page.waitForTimeout(10_300);
+  assert.equal(actionReads > hiddenActionReads, true);
   await page.getByRole('link', { name: '群管理' }).click();
+  const afterActionsLeave = actionReads;
+  await page.waitForTimeout(10_300);
+  assert.equal(actionReads, afterActionsLeave);
   await page.getByText('移出成员', { exact: true }).locator('..').locator('select').selectOption('auto_execute');
   await Promise.all([
     page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
@@ -484,7 +523,7 @@ try {
   page.once('dialog', async (dialog) => { await dialog.accept(); });
   await page.getByRole('link', { name: '返回群列表' }).click();
   await page.getByLabel('查看账号').selectOption('101');
-  await page.getByText('历史账号群').first().waitFor();
+  await page.getByRole('cell', { name: /历史账号群/ }).waitFor();
   await page.getByRole('link', { name: '进入' }).click();
   await page.getByRole('link', { name: '会话配置' }).click();
   await page.getByText('当前连接账号不同, 此账号的群配置只读').waitFor();
