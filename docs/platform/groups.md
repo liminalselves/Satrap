@@ -51,3 +51,5 @@
 ## 验证
 
 离线回归运行 `python -m pytest -q`、`python -m pyright -p .pyrightcfg/pyrightconfig.json`, 前端运行 `npm test`、`npm run lint`、`npm run build`。`node e2e/groups.mjs` 使用真实页面和 API 客户端覆盖列表、会话覆盖、审批、冲突草稿及窄屏布局, 截图存于本地 `satrap-ui/test-results/groups/`。`python scripts/probe_snowluma.py --help` 提供 SnowLuma 联调入口; 实际连接验证需本地 SnowLuma 环境。自动测试使用 QQ 协议模拟和模型替身, 不能代替真实 QQ 网络或真实模型供应商验收。
+
+逐项页面验收与尚缺的首次接入连续流程见 [Issue #1 群管理验收记录](groups-acceptance.md)。
