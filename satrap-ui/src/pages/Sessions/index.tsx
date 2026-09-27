@@ -3,6 +3,8 @@ import { Modal } from '@/components/ui/Modal';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
 import { controlApi } from '@/api/control';
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
+import { groupApi } from '@/api/groups';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Button } from '@/components/ui/Button';
@@ -31,6 +33,11 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions() {
+  const [searchParams] = useSearchParams();
+  const groupAdapter = searchParams.get('groupAdapter') || '';
+  const groupAccount = searchParams.get('groupAccount') || '';
+  const groupId = searchParams.get('groupId') || '';
+  const groupFilter = Boolean(groupAdapter && groupAccount && groupId);
   const [showWakeModal, setShowWakeModal] = useState(false);
   const [ragSession, setRagSession] = useState<RuntimeSession | null>(null);
   const [overrideSession, setOverrideSession] = useState<RuntimeSession | null>(null);
@@ -53,6 +60,8 @@ export function Sessions() {
   const [selectedScanPath, setSelectedScanPath] = useState('');
   const [discovered, setDiscovered] = useState<DiscoveredSessionClass[]>([]);
   const [runtimeSessions, setRuntimeSessions] = useState<RuntimeSession[]>([]);
+  const [groupSessionIds, setGroupSessionIds] = useState<string[] | null>(null);
+  const [groupFilterError, setGroupFilterError] = useState('');
   const [selectedRuntimeIds, setSelectedRuntimeIds] = useState<Set<string>>(() => new Set());
   const [scanning, setScanning] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,6 +77,20 @@ export function Sessions() {
     session_id: '', adapter_id: '', llm_name: '', params: '{}',
   });
   const backendRunning = isRunning;
+  useEffect(() => {
+    setSelectedRuntimeIds(new Set());
+    if (!groupFilter) { setGroupSessionIds(null); setGroupFilterError(''); return; }
+    let cancelled = false;
+    setGroupSessionIds(null); setGroupFilterError('');
+    groupApi.config(groupAdapter, groupId, groupAccount, backendRunning).then((result) => {
+      if (!cancelled) setGroupSessionIds(result.session_instances?.session_ids || []);
+    }).catch((error) => { if (!cancelled) setGroupFilterError(error instanceof Error ? error.message : '群实例筛选失败'); });
+    return () => { cancelled = true; };
+  }, [groupAdapter, groupAccount, groupId, groupFilter, backendRunning]);
+  const visibleRuntimeSessions = useMemo(() => groupFilter
+    ? runtimeSessions.filter((session) => session.platform_id === groupAdapter
+      && groupSessionIds?.includes(session.session_id))
+    : runtimeSessions, [groupFilter, runtimeSessions, groupAdapter, groupSessionIds]);
 
   const fetchRuntimeSessions = useCallback(async () => {
     try {
@@ -324,9 +347,9 @@ export function Sessions() {
 
   const toggleAllRuntimeSelection = useCallback((checked: boolean) => {
     setSelectedRuntimeIds(checked
-      ? new Set(runtimeSessions.map(runtimeKey))
+      ? new Set(visibleRuntimeSessions.map(runtimeKey))
       : new Set());
-  }, [runtimeSessions]);
+  }, [visibleRuntimeSessions]);
 
   const handleDeleteRuntime = useCallback(async (session: RuntimeSession) => {
     if (!confirm(`确定要删除 ${session.platform_id} 的会话实例 "${session.session_id}" 吗? 此操作会同时清理用户绑定和上下文路由`)) return;
@@ -343,7 +366,8 @@ export function Sessions() {
   }, [backendRunning, fetchRuntimeSessions]);
 
   const handleBulkDeleteRuntime = useCallback(async (mode: 'empty' | 'single' | 'selected') => {
-    const selectedRefs = runtimeSessions
+    if (groupFilter && mode !== 'selected') return;
+    const selectedRefs = visibleRuntimeSessions
       .filter((session) => selectedRuntimeIds.has(runtimeKey(session)))
       .map((session) => ({ platform_id: session.platform_id, session_id: session.session_id }));
     if (mode === 'selected' && selectedRefs.length === 0) {
@@ -370,7 +394,7 @@ export function Sessions() {
     } finally {
       setDeleting(false);
     }
-  }, [backendRunning, fetchRuntimeSessions, runtimeSessions, selectedRuntimeIds]);
+  }, [backendRunning, fetchRuntimeSessions, visibleRuntimeSessions, selectedRuntimeIds, groupFilter]);
 
   const columns: Column<SessionClassItem>[] = useMemo(() => [
     { key: 'name', title: '名称', render: (item) => <span className="font-medium">{item.name}</span> },
@@ -395,8 +419,8 @@ export function Sessions() {
     },
   ], [handleDisable, handleEnable, handleUnregister, openCreateSession, openEdit]);
 
-  const allRuntimeSelected = runtimeSessions.length > 0
-    && runtimeSessions.every((session) => selectedRuntimeIds.has(runtimeKey(session)));
+  const allRuntimeSelected = visibleRuntimeSessions.length > 0
+    && visibleRuntimeSessions.every((session) => selectedRuntimeIds.has(runtimeKey(session)));
   const runtimeColumns: Column<RuntimeSession>[] = useMemo(() => [
     {
       key: 'selection',
@@ -620,11 +644,13 @@ export function Sessions() {
             <p className="mt-1 text-sm text-text-secondary">
               已持久化的平台 Provider 会话实例, 不包含 Chat 对话历史 · {backendRunning ? '后端热管理' : '后端已停止, 当前为冷管理'}
             </p>
+            {groupFilter && <p className="mt-1 text-sm text-text-secondary">筛选机器人 {groupAccount} 的群 {groupId}: 已归属 {groupSessionIds?.length ?? '读取中'} 个范围会话。旧版按用户共享的历史无法按群筛选。<Link className="ml-2 text-accent" to="/sessions">清除筛选</Link></p>}
+            {groupFilterError && <p role="alert" className="mt-1 text-sm text-error">{groupFilterError}</p>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button size="sm" disabled={!backendRunning} onClick={() => setShowWakeModal(true)}>手动唤醒群聊</Button>
-            <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('empty')}>删除无消息</Button>
-            <Button variant="danger" size="sm" disabled={deleting} onClick={() => handleBulkDeleteRuntime('single')}>删除仅 1 条</Button>
+            <Button variant="danger" size="sm" disabled={deleting || groupFilter} onClick={() => handleBulkDeleteRuntime('empty')}>删除无消息</Button>
+            <Button variant="danger" size="sm" disabled={deleting || groupFilter} onClick={() => handleBulkDeleteRuntime('single')}>删除仅 1 条</Button>
             <Button variant="danger" size="sm" disabled={deleting || selectedRuntimeIds.size === 0} onClick={() => handleBulkDeleteRuntime('selected')}>
               删除所选{selectedRuntimeIds.size > 0 ? ` (${selectedRuntimeIds.size})` : ''}
             </Button>
@@ -635,9 +661,9 @@ export function Sessions() {
         </div>
         <DataTable
           columns={runtimeColumns}
-          data={runtimeSessions}
+          data={visibleRuntimeSessions}
           keyExtractor={runtimeKey}
-          emptyMessage="暂无会话实例"
+          emptyMessage={groupFilter ? '此群没有已加载的可归属实例' : '暂无会话实例'}
           scrollClassName="h-[32rem] max-h-[55vh]"
           stickyHeader
         />

@@ -204,7 +204,14 @@ try {
     }
     const defaults = {
       '/api/health': { running: true, adapters: { ob: { config_type: 'onebot', status: 'running', started: true } } },
-      '/status': { running: true }, '/api/sessions': { sessions: [] }, '/config/session-instances': { sessions: [] },
+      '/status': { running: true },
+      '/api/sessions': { sessions: [
+        { platform_id: 'ob', session_id: 'session-a', provider_name: 'edictum', session_type: 'simple',
+          active: false, created_at: 1_790_000_000, last_used_at: 1_790_000_000, message_count: 2 },
+        { platform_id: 'ob', session_id: 'session-b', provider_name: 'edictum', session_type: 'simple',
+          active: false, created_at: 1_790_000_000, last_used_at: 1_790_000_000, message_count: 1 },
+      ] }, '/config/session-instances': { sessions: [] },
+      '/config/session-classes': {}, '/config/models': {},
     };
     return reply(defaults[pathname] || { ok: true });
   });
@@ -348,6 +355,13 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-session.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.getByRole('link', { name: '查看本群可归属实例' }).click();
+  await page.getByText('筛选机器人 100 的群 456').waitFor();
+  assert.equal(await page.getByRole('link', { name: '清除筛选' }).count(), 1);
+  await page.getByText('session-a', { exact: true }).waitFor();
+  assert.equal(await page.getByText('session-b', { exact: true }).count(), 0);
+  await page.goBack();
+  await page.getByText('模型与提示词').waitFor();
   await page.locator('label:has-text("范围来源") select').selectOption('value');
   await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
   await page.getByRole('button', { name: '保存并应用' }).click();

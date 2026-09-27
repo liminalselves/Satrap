@@ -186,7 +186,7 @@ export function GroupSession() {
       <div className="space-y-1 text-sm text-text-secondary">
         <p>当前路由可归属实例: {instanceSummary?.current_route_count ?? '待读取'}; 含旧路由共 {instanceSummary?.known_scoped_count ?? '待读取'}。旧版按用户共享的历史无法可靠按群统计</p>
         <p>实例显式覆盖: 模型 {instanceSummary?.override_counts.model ?? '—'}, 提示词 {instanceSummary?.override_counts.prompt ?? '—'}, 插件 {instanceSummary?.override_counts.plugins ?? '—'}</p>
-        <Link className="text-accent hover:underline" to="/sessions">打开会话实例管理</Link>
+        <Link className="text-accent hover:underline" to={`/sessions?${new URLSearchParams({ groupAdapter: adapterId, groupAccount: account, groupId })}`}>查看本群可归属实例</Link>
         {instanceSummary?.session_ids.length ? <p className="break-all">本群可归属实例 ID: {instanceSummary.session_ids.join(', ')}</p> : null}
       </div>
       {unsupportedOverrides.length > 0 && <div role="alert" className="space-y-2 text-sm text-warning">
