@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import unicodedata
 
 from satrap.core.components import BaseMessageComponent, Node, Plain
@@ -42,6 +43,10 @@ PTT_TEXT_TIMEOUT = 25
 """fetch_ptt_text 等待秒数, 覆盖 SnowLuma/NapCat 内部 20 秒转写等待"""
 RECORD_OUT_FORMATS = frozenset({"mp3", "amr", "wma", "m4a", "spx", "ogg", "wav", "flac"})
 """get_record out_format 允许值, 与 NapCat/SnowLuma 一致"""
+GROUP_DIRECTORY_LIMIT = 10000
+"""一次群目录同步允许确认的最多条目数"""
+GROUP_DIRECTORY_BYTES = 4 * 1024 * 1024
+"""一次群目录响应允许确认的最大 UTF-8 JSON 字节数"""
 """单个管理动作含等待的最长秒数"""
 
 WRITE_ACTIONS = frozenset({
@@ -313,8 +318,10 @@ class OneBotAdmin:
         参数:
         - group_id: 已归一化群 ID
         """
-        if not self._adapter.allows_group(group_id):
-            raise AdminActionRejected("目标群不在当前实例允许范围内")
+        if not self._adapter.allows_management_target(group_id):
+            if self._adapter._group_access_store is None:
+                raise AdminActionRejected("目标群不在当前实例允许范围内")
+            raise AdminActionRejected("目标群成员关系未确认或已离开")
 
     async def get_group_list(self) -> list[dict[str, Any]]:
         """
@@ -333,6 +340,53 @@ class OneBotAdmin:
             data = cast(dict[str, Any], item)
             groups.append({key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count")})
         return groups
+
+    async def fetch_group_directory(self) -> dict[str, Any]:
+        """
+        获取带完整性证据的群目录, 截断或坏条目不能用于退群判定
+
+        返回:
+        - items 为可信群条目; complete 仅在全部条目合法且未超限时为 True
+        """
+        result = await self._call("get_group_list")
+        if not isinstance(result, list):
+            raise AdminActionUnconfirmed("群目录响应格式不符")
+        size = len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))
+        over_limit = len(result) > GROUP_DIRECTORY_LIMIT or size > GROUP_DIRECTORY_BYTES
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        invalid = False
+        for raw in result[:GROUP_DIRECTORY_LIMIT]:
+            if not isinstance(raw, dict):
+                invalid = True
+                continue
+            data = cast(dict[str, Any], raw)
+            group_id = str(data.get("group_id") or "")
+            if not re.fullmatch(r"[1-9][0-9]*", group_id) or group_id in seen:
+                invalid = True
+                continue
+            name = data.get("group_name")
+            if name is not None and (not isinstance(name, str) or len(name) > 200):
+                invalid = True
+                continue
+            counts: dict[str, int | None] = {}
+            for key in ("member_count", "max_member_count"):
+                count = data.get(key)
+                if count is None:
+                    counts[key] = None
+                elif isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    counts[key] = count
+                else:
+                    invalid = True
+                    counts[key] = None
+            seen.add(group_id)
+            items.append({"group_id": group_id, "group_name": name, **counts})
+        truncated = over_limit or invalid
+        reason = "limit_exceeded" if over_limit else "invalid_entries" if invalid else None
+        return {
+            "items": items, "complete": not truncated, "truncated": truncated,
+            "reason": reason, "raw_count": len(result),
+        }
 
     async def get_group_info(self, group_id: Any) -> dict[str, Any]:
         """
@@ -879,7 +933,6 @@ class OneBotAdmin:
         不自动重试, 同一 flag 不可重放
         """
         gid = normalize_group_id(group_id)
-        self._check_group(gid)
         if sub_type not in {"add", "invite"}:
             raise ValueError("sub_type 必须为 add 或 invite")
         if not isinstance(approve, bool):

@@ -1334,7 +1334,10 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     if self.pool.list_entries().get(session_id) is not entry:
                         return ""
+                    group_plugins = self._group_plugin_target(session_cfg, user_call)
+                    setattr(entry.session, "_satrap_group_plugins", group_plugins)
                     await self._prepare_session_async(entry.session)
+                    await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
@@ -1399,6 +1402,77 @@ class SessionManager:
         except Exception as e:
             logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
             return ""
+
+    def _group_plugin_target(self, session_cfg: SessionConfig, user_call: UserCall) -> list[object] | None:
+        """合并群插件设置, 保留会话实例插件配置的最高优先级"""
+        overrides = user_call.group_session_overrides or {}
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return None
+        instance = session_cfg.session_config or {}
+        if "plugins" in instance:
+            plugins = instance["plugins"]
+            return plugins if isinstance(plugins, list) else None
+        if "plugins" not in overrides:
+            return None
+        from satrap.core.config.group_session import resolve_group_session
+
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        explicit = {"plugins": {"mode": "value", "value": overrides["plugins"]}}
+        effective, _ = resolve_group_session(
+            {}, explicit, {"plugins": resolved[1].metadata.get("plugins", [])},
+        )
+        plugins = effective["plugins"]
+        return plugins if isinstance(plugins, list) else None
+
+    async def _apply_group_session_overrides(
+        self, session_cfg: SessionConfig, session: Session | AsyncSession,
+        user_call: UserCall, group_plugins: list[object] | None,
+    ) -> None:
+        """在本轮会话锁内应用群配置, 不覆盖持久化的实例显式设置"""
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return
+        overrides = user_call.group_session_overrides or {}
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        provider, definition = resolved
+        instance = session_cfg.session_config or {}
+        base_model = instance.get("model_name") or definition.params.get("model_name") or "default"
+        model_name = str(base_model if "model_name" in instance else overrides.get("model", base_model))
+        applied_model = getattr(session, "_satrap_group_model_name", str(base_model))
+        if model_name != applied_model:
+            model_cfg = self._model_cfg_mgr.get_llm_config(name=model_name) if self._model_cfg_mgr else None
+            if model_cfg is None or not model_cfg.api_key:
+                raise ValueError("群模型配置不存在或缺少必要凭据")
+            llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
+            self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
+            setattr(session, "_satrap_group_model_name", model_name)
+        base_prompt = instance.get("system_prompt", definition.params.get("system_prompt"))
+        prompt = base_prompt if "system_prompt" in instance else overrides.get("prompt", base_prompt)
+        if prompt is None and hasattr(session, "_satrap_group_prompt"):
+            prompt = ""
+        if isinstance(prompt, str) and prompt != getattr(session, "_satrap_group_prompt", base_prompt):
+            setattr(session, "_init_system_prompt", prompt)
+            contexts = session._all_contexts()
+            for context in contexts.values():
+                result = context.reset_system_prompt(prompt)
+                if inspect.isawaitable(result):
+                    await result
+            setattr(session, "_satrap_group_prompt", prompt)
+        if group_plugins is not None:
+            reconcile = getattr(provider, "reconcile_session_plugins_async", None)
+            if callable(reconcile):
+                outcome = reconcile(session, desired_plugins=group_plugins)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                if not isinstance(outcome, dict) or not outcome.get("ok", False):
+                    raise RuntimeError("群插件配置应用失败")
 
     def reload_model_configs(self) -> None:
         """同步重载活跃同步会话的 LLM 实例"""

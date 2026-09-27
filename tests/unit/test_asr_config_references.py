@@ -322,7 +322,7 @@ class TestScanCompleteness:
         database.parent.mkdir(parents=True, exist_ok=True)
         SessionOverrideStore(database)
         connection = sqlite3.connect(str(database))
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
         connection.execute("PRAGMA user_version = 3")
         connection.commit()
         connection.close()

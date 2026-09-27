@@ -274,13 +274,13 @@ class TestExecution:
         config = {"write_tools_enabled": True}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-            missing = await tool.execute(flag="f1", sub_type="add", approve=True)
             bad = await tool.execute(flag="f1", sub_type="other", approve=True, group_id="456")
+            missing = await tool.execute(flag="f1", sub_type="add", approve=True)
             ok = await tool.execute(flag="f1", sub_type="add", approve=False, reason="拒绝", group_id="456")
-        assert missing["status"] == "error" and "group_id" in missing["error"]
         assert bad["status"] == "error" and "sub_type" in bad["error"]
-        assert ok == {"status": "ok"}
-        adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=False, reason="拒绝")
+        assert missing == {"status": "ok"}
+        assert ok["status"] == "error"
+        adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=True, reason="")
 
     @pytest.mark.asyncio
     async def test_unknown_platform_returns_unsupported(self):

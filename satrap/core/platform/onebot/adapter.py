@@ -32,6 +32,8 @@ from satrap.core.platform.onebot.onebot_utils import (
     group_session_id,
 )
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, policy_default
+from satrap.core.config.group_store import GroupConfigStore
+from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
@@ -173,6 +175,143 @@ class OneBotAdapter(PlatformAdapter):
         self._heartbeats = 0
         self._last_heartbeat_at = 0.0
         self._send_attempt_recorder: SendAttemptRecorder | None = None
+        self._group_access_store: GroupConfigStore | None = None
+        self._group_access_account = ""
+        self._group_access_mode: str | None = None
+        self._group_access_exceptions: dict[str, bool] = {}
+        self._group_policies: dict[str, dict[str, object]] = {}
+        self._group_active_revisions: dict[str, int] = {}
+        self._group_routes: dict[str, tuple[dict[str, object], int]] = {}
+        self._group_event_options: dict[str, dict[str, bool]] = {}
+        self._management_membership: dict[str, str] = {}
+        self._group_access_lock = asyncio.Lock()
+        self._group_sync_handler: Callable[[], Awaitable[object]] | None = None
+        self.group_action_handler: Callable[[str, str, dict[str, object]], Awaitable[dict[str, Any]]] | None = None
+
+    def set_group_access_store(self, store: GroupConfigStore) -> None:
+        """
+        装配平台数据库中的逐群接入配置
+
+        参数:
+        - store: 已完成结构迁移的群配置存储
+        """
+        self._group_access_store = store
+
+    def set_group_sync_handler(self, handler: Callable[[], Awaitable[object]]) -> None:
+        """
+        装配连接确认后触发群目录同步的回调
+
+        参数:
+        - handler: 返回同步任务标识的异步回调
+        """
+        self._group_sync_handler = handler
+
+    async def _ensure_group_access(self, incoming_self: str, *, force: bool = False) -> bool:
+        """
+        采用可信账号的旧配置并装载接入快照, 异账号保持拒绝
+
+        参数:
+        - incoming_self: 入站事件或连接确认的机器人账号
+        - force: 重连时重新核验旧配置源并刷新快照
+
+        返回:
+        - 账号有效且快照可用时返回 True
+        """
+        store = self._group_access_store
+        if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
+            return False
+        if store is None:
+            return True
+        if self._group_access_account == incoming_self and self._group_access_mode is not None and not force:
+            return True
+        async with self._group_access_lock:
+            if self._group_access_account == incoming_self and self._group_access_mode is not None and not force:
+                return True
+            try:
+                await asyncio.to_thread(store.adopt_legacy, incoming_self, self.config.settings)
+                mode, exceptions = await asyncio.to_thread(store.access_snapshot, incoming_self)
+                policies = await asyncio.to_thread(store.policy_snapshot, incoming_self)
+                revisions = await asyncio.to_thread(store.revision_snapshot, incoming_self)
+                routes = await asyncio.to_thread(store.route_snapshot, incoming_self)
+                events = await asyncio.to_thread(store.event_snapshot, incoming_self)
+                membership = (
+                    await asyncio.to_thread(store.membership_snapshot, incoming_self)
+                    if isinstance(store, GroupDirectoryStore) else {}
+                )
+            except Exception:
+                self._group_access_mode = None
+                self._group_access_exceptions = {}
+                self._group_policies = {}
+                self._group_active_revisions = {}
+                self._group_routes = {}
+                self._group_event_options = {}
+                self._management_membership = {}
+                raise
+            self._group_access_account = incoming_self
+            self._group_access_mode = mode
+            self._group_access_exceptions = exceptions
+            self._group_policies = policies
+            self._group_active_revisions = revisions
+            self._group_routes = routes
+            self._group_event_options = events
+            self._management_membership = membership
+            return True
+
+    def group_route(self, group_id: str) -> tuple[dict[str, object], int]:
+        """返回已应用的群会话配置和路由代次"""
+        if self._group_access_store is None:
+            return {}, 0
+        if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+            return {}, -1
+        return self._group_routes.get(group_id, ({}, 0))
+
+    def allows_management_target(self, group_id: str) -> bool:
+        """校验已确认成员关系, 不借用聊天响应启停判断管理资格"""
+        if self._group_access_store is None:
+            return self.allows_group(group_id)
+        return (
+            self.bot_self_id == self._group_access_account
+            and self._group_access_mode is not None
+            and self._management_membership.get(group_id) == "joined"
+        )
+
+    async def refresh_management_membership(self, expected_self_id: str) -> None:
+        """目录同步后刷新当前账号的管理目标成员关系快照"""
+        if expected_self_id != self.bot_self_id or not isinstance(self._group_access_store, GroupDirectoryStore):
+            raise ValueError("机器人账号已变化或目录存储不可用")
+        self._management_membership = await asyncio.to_thread(
+            self._group_access_store.membership_snapshot, expected_self_id,
+        )
+
+    def group_active_revision(self, group_id: str) -> int | None:
+        """返回当前账号已装载的群配置修订号"""
+        if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+            return None
+        return self._group_active_revisions.get(group_id, 0)
+
+    def resolve_policy_settings(self, group_id: str) -> dict[str, Any]:
+        """取得与入站群消息同一快照的有效策略"""
+        from satrap.core.config.group_policy import resolve_group_policy
+        from satrap.core.config.wake_overrides import resolve_wake_settings
+
+        if self._group_access_store is None:
+            return resolve_wake_settings(self.config.settings, group_id)
+        resolved, _ = resolve_group_policy(
+            self.config.settings, group_id, self._group_policies.get(group_id, {}),
+        )
+        return resolved
+
+    async def refresh_group_access(self, expected_self_id: str) -> None:
+        """
+        配置提交后刷新当前账号的响应快照
+
+        参数:
+        - expected_self_id: 提交请求固定的机器人账号
+        """
+        if expected_self_id != self.bot_self_id or self._group_access_store is None:
+            raise ValueError("机器人账号已变化或群配置存储不可用")
+        self._group_access_mode = None
+        await self._ensure_group_access(expected_self_id, force=True)
 
     def set_send_attempt_recorder(self, recorder: SendAttemptRecorder | None) -> None:
         """
@@ -332,6 +471,8 @@ class OneBotAdapter(PlatformAdapter):
             self.bot_self_id = incoming_self
             self.client_self_id = incoming_self
         meta_type = str(event.get("meta_event_type") or "")
+        if not await self._ensure_group_access(incoming_self, force=meta_type == "lifecycle" and event.get("sub_type") == "connect"):
+            return
         if meta_type == "lifecycle":
             sub_type = str(event.get("sub_type") or "")
             if sub_type == "connect":
@@ -342,6 +483,11 @@ class OneBotAdapter(PlatformAdapter):
                 self._capability_states.clear()
                 # 新代次被动重新学习, 不沿用上一连接的任何结论
                 logger.info(f"[OneBotAdapter] OneBot 客户端已连接 adapter={self.config.id} self_id={incoming_self} generation={self._connection_generation}")
+                if self._group_sync_handler is not None:
+                    try:
+                        await self._group_sync_handler()
+                    except Exception as error:
+                        logger.warning(f"[OneBotAdapter] 连接后群目录同步未启动: {type(error).__name__}: {error}")
             elif sub_type == "disable":
                 self._client_connected = False
         elif meta_type == "heartbeat":
@@ -391,6 +537,9 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: 事件
         """
+        if not await self._ensure_group_access(str(event.get("self_id") or "")):
+            self._ingress_rejections["account"] += 1
+            return
         if not self.allows_group(str(event.get("group_id", ""))):
             return
         await self._handle_message_event(event)
@@ -406,6 +555,13 @@ class OneBotAdapter(PlatformAdapter):
         - 群聊已启用且目标在允许范围内时返回 True
         """
         settings = self.config.settings
+        if self._group_access_store is not None:
+            if self._group_access_mode is None or self._group_access_account != self.bot_self_id:
+                return False
+            enabled = self._group_access_exceptions.get(group_id, self._group_access_mode == "all")
+            return self.config.enable and bool(settings.get("enable_group", True)) and enabled
+        if settings.get("group_management_version") == 1:
+            return False
         groups = normalize_group_whitelist(settings.get("group_whitelist", []))
         return self.config.enable and bool(settings.get("enable_group", True)) and (not groups or group_id in groups)
 
@@ -584,6 +740,20 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - event: OneBot 原始 notice
         """
+        incoming_self = str(event.get("self_id") or "")
+        if await self._ensure_group_access(incoming_self):
+            notice_type = str(event.get("notice_type") or "")
+            if notice_type in {"group_increase", "group_decrease"} and str(event.get("user_id") or "") == incoming_self:
+                group_id = str(event.get("group_id") or "")
+                if group_id.isascii() and group_id.isdecimal() and int(group_id) > 0:
+                    store = self._group_access_store
+                    if isinstance(store, GroupDirectoryStore):
+                        await asyncio.to_thread(
+                            store.confirm_membership, incoming_self, group_id, notice_type == "group_increase",
+                        )
+                        self._management_membership[group_id] = "joined" if notice_type == "group_increase" else "left"
+                elif self._group_sync_handler is not None:
+                    await self._group_sync_handler()
         await self._emit_notice(event)
 
     async def _handle_request(self, event: dict[str, Any]) -> None:
@@ -637,6 +807,9 @@ class OneBotAdapter(PlatformAdapter):
         参数:
         - raw: notice 或 request 原始事件
         """
+        if not await self._ensure_group_access(str(raw.get("self_id") or "")):
+            self._ingress_rejections["account"] += 1
+            return
         payload = build_onebot_notice(raw, self.bot_self_id)
         if payload is None:
             self._ingress_rejections["account"] += 1
@@ -645,9 +818,12 @@ class OneBotAdapter(PlatformAdapter):
         enabled = self.config.settings.get("notice_types")
         if isinstance(enabled, list) and event_type not in cast(list[object], enabled) and payload.category not in cast(list[object], enabled):
             return
-        if payload.group_id and not self.allows_group(payload.group_id):
-            return
-        # 群范围外的通知静默丢弃, 好友请求等无群事件不受白名单影响
+        if payload.group_id:
+            if self._group_access_store is None and not self.allows_group(payload.group_id):
+                return
+            event_kind = "group_request" if payload.category == "request" and payload.kind == "group" else payload.kind
+            if self._group_access_store is not None and not self._group_event_options.get(payload.group_id, {}).get(event_kind, True):
+                return
         session_id = group_session_id(payload.group_id) if payload.group_id else private_session_id(payload.user_id) if payload.user_id else ""
         extras: dict[str, Any] = {"payload": payload}
         attachment = notice_attachment(payload)
@@ -950,6 +1126,21 @@ class OneBotAdapter(PlatformAdapter):
             # 转换阶段的异常只留下固定原因码会丢掉排查线索, 复用发送失败回执记录类型
             return self._failed_receipt(session_id, "message", "message_conversion_failed", error)
 
+    async def send_management_message(self, group_id: str, text: str) -> SendReceipt:
+        """经管理服务授权后向已确认加入的群发送单条纯文本消息"""
+        from satrap.core.platform.onebot.onebot_utils import group_session_id
+
+        if not self.allows_management_target(group_id):
+            return SendReceipt("failed", reason="membership_unconfirmed")
+        session_id = group_session_id(group_id)
+        try:
+            return await self._outbound.run(
+                session_id,
+                lambda: self._send_chunk(session_id, MessageChain.from_text(text), management=True),
+            )
+        except (RuntimeError, asyncio.TimeoutError):
+            return SendReceipt("failed", reason="send_queue_unavailable")
+
     async def _send_forward(self, session_id: str, nodes: list[Node], limit: int) -> SendReceipt:
         """
         通过专用转发接口发送合并转发节点, 实现不支持时降级为分段发送
@@ -1098,7 +1289,7 @@ class OneBotAdapter(PlatformAdapter):
                 break
         return combine_receipts(receipts)
 
-    async def _send_chunk(self, session_id: str, message: MessageChain) -> SendReceipt:
+    async def _send_chunk(self, session_id: str, message: MessageChain, *, management: bool = False) -> SendReceipt:
         """
         按 OneBot 会话 ID 发送完整消息链
 
@@ -1113,7 +1304,10 @@ class OneBotAdapter(PlatformAdapter):
             self._warn_limited("client_unavailable", "[OneBotAdapter] 客户端未初始化, 无法发送消息")
             return SendReceipt("failed", reason="client_unavailable")
 
-        if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
+        if is_group_session(session_id) and not (
+            self.allows_management_target(extract_group_id(session_id)) if management
+            else self.allows_group(extract_group_id(session_id))
+        ):
             raise PermissionError("目标群不在当前适配器允许范围内")
 
         segments = await message_chain_to_onebot_segments(message.components)

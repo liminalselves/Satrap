@@ -18,22 +18,30 @@ class ConversationRoute:
     scope: str = "legacy_user"
     self_id: str = ""
     group_id: str = ""
+    generation: int = 0
 
     def __post_init__(self) -> None:
         """拒绝未知范围及缺少账号或群身份的隔离路由"""
         if self.scope not in {"legacy_user", "group_member", "group"}:
             raise ValueError("context_scope 必须为 legacy_user, group_member 或 group")
-        if self.scope != "legacy_user" and (not self.self_id or not self.group_id):
+        if (self.scope != "legacy_user" or self.generation > 0) and (not self.self_id or not self.group_id):
             raise ValueError("群上下文隔离需要机器人账号和群 ID")
+        if self.generation < 0:
+            raise ValueError("路由代次不能为负数")
 
     @cached_property
     def key(self) -> str | None:
         """返回独立命名空间的上下文键, 旧范围返回 None 以保留旧键; 路由不可变, 结果按实例缓存"""
-        if self.scope == "legacy_user":
+        if self.scope == "legacy_user" and self.generation == 0:
             return None
+        parts: list[object] = [
+            self.platform, self.provider, self.session_type, self.scope, self.self_id,
+            self.group_id, self.user_id if self.scope != "group" else "",
+        ]
+        if self.generation:
+            parts.append(self.generation)
         return "scoped:v1:" + json.dumps(
-            [self.platform, self.provider, self.session_type, self.scope, self.self_id,
-             self.group_id, self.user_id if self.scope == "group_member" else ""],
+            parts,
             ensure_ascii=True, separators=(",", ":"),
         )
 

@@ -29,6 +29,7 @@ import signal
 from typing import Any, cast
 import base64
 import json
+import hashlib
 import sys
 import os
 
@@ -39,6 +40,8 @@ from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.config.session_overrides import OverrideConflictError
+from satrap.core.config.group_directory import GroupDirectoryStore
+from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
@@ -603,6 +606,7 @@ def _is_control_api_path(path: str) -> bool:
         "/config",
         "/chat/history",
         "/storage",
+        "/platforms",
     ))
 
 
@@ -611,6 +615,28 @@ def _asr_in_use_checker(config_name: str) -> list[dict[str, str]]:
     from satrap.core.config.asr_references import list_asr_config_references
 
     return list_asr_config_references(config_name, config_path=CONFIG_PATH, layout=_configured_storage_layout())
+
+
+def _llm_in_use_checker(config_name: str) -> list[dict[str, str]]:
+    """删除或重命名模型前扫描已保存的逐群模型引用"""
+    from satrap.core.config.group_references import list_group_references
+
+    platforms = load_config_document(CONFIG_PATH).get("platforms", [])
+    if not isinstance(platforms, list):
+        raise ValueError("平台配置不是数组")
+    ids = [str(item.get("id") or "") for item in platforms if isinstance(item, dict)]
+    return list_group_references("llm", config_name, layout=_configured_storage_layout(), platform_ids=ids)
+
+
+def _named_group_references(target: str, name: str) -> list[dict[str, str]]:
+    """控制服务删除或重命名会话配置前扫描群绑定"""
+    from satrap.core.config.group_references import list_group_references
+
+    platforms = load_config_document(CONFIG_PATH).get("platforms", [])
+    if not isinstance(platforms, list):
+        raise ValueError("平台配置不是数组")
+    ids = [str(item.get("id") or "") for item in platforms if isinstance(item, dict)]
+    return list_group_references(target, name, layout=_configured_storage_layout(), platform_ids=ids)
 
 
 def _model_config_service() -> ModelConfigService:
@@ -627,7 +653,10 @@ def _model_config_service() -> ModelConfigService:
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    return ModelConfigService(ModelConfigManager(storage_path=storage_path, asr_in_use_checker=_asr_in_use_checker))
+    return ModelConfigService(ModelConfigManager(
+        storage_path=storage_path, asr_in_use_checker=_asr_in_use_checker,
+        llm_in_use_checker=_llm_in_use_checker,
+    ))
 
 
 def _session_class_config_service() -> SessionClassConfigService:
@@ -648,7 +677,9 @@ def _session_class_config_service() -> SessionClassConfigService:
         storage_path=storage_path,
         session_scan_paths=_configured_session_scan_paths(config_data),
     )
-    return SessionClassConfigService(manager)
+    return SessionClassConfigService(
+        manager, reference_checker=lambda name: _named_group_references("session_class", name),
+    )
 
 
 def _edictum_config_service() -> EdictumConfigService:
@@ -668,7 +699,10 @@ def _edictum_config_service() -> EdictumConfigService:
     registry = create_default_edictum_type_registry()
     manager = EdictumConfigManager(registry, storage_path=storage_path)
     models = _model_config_service().manager
-    return EdictumConfigService(manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"))
+    return EdictumConfigService(
+        manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
+        reference_checker=lambda name: _named_group_references("edictum", name),
+    )
 
 
 def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | None:
@@ -982,6 +1016,180 @@ class _RouteContext:
     raw_path: str
     reader: asyncio.StreamReader
     raw_request: bytes
+
+
+async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    后端停止时读取和编辑已确认账号的群目录与接入模式
+
+    参数:
+    - ctx: 控制路由请求上下文
+
+    返回:
+    - 群目录接口响应; 路径不属于此区段时返回 None
+    """
+    parts = ctx.path.split("/")
+    if len(parts) < 4 or parts[1] != "platforms" or parts[3] != "groups":
+        return None
+    adapter_id = urllib.parse.unquote(parts[2])
+    try:
+        document = load_config_document(CONFIG_PATH)
+        platform = next(
+            (item for item in validate_platforms(document.get("platforms", [])) if item["id"] == adapter_id),
+            None,
+        )
+        if platform is None or platform["type"] not in {"onebot", "aiocqhttp"}:
+            return 404, {"error": "OneBot 平台不存在", "reason": "platform_not_found"}
+        layout = _configured_storage_layout(document)
+        store = await asyncio.to_thread(GroupDirectoryStore, layout.platform_db(adapter_id))
+        accounts = await asyncio.to_thread(store.list_accounts)
+        configured = str(platform["settings"].get("self_id") or "")
+        current = (
+            configured if any(item["self_id"] == configured for item in accounts)
+            else "" if configured else str(accounts[0]["self_id"]) if accounts else ""
+        )
+        if ctx.method == "GET" and parts[4:] == ["accounts"]:
+            return 200, {"items": accounts, "current_account": current,
+                         "waiting_for_account": not current, "offline_snapshot": True}
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+        self_id = query.get("account", [""])[0]
+        if ctx.method == "GET" and parts[4:] == []:
+            if not self_id:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            listing, sync = await asyncio.gather(
+                asyncio.to_thread(
+                    store.list_groups, self_id, query=query.get("q", [""])[0],
+                    membership=query.get("membership", ["joined"])[0],
+                    response=query.get("response", ["all"])[0],
+                    page=int(query.get("page", ["1"])[0]),
+                    page_size=int(query.get("page_size", ["25"])[0]),
+                    response_gate=bool(platform.get("enable", True)) and bool(platform["settings"].get("enable_group", True)),
+                ),
+                asyncio.to_thread(store.sync_status, self_id),
+            )
+            return 200, {**listing, "account": self_id, "current_account": current,
+                         "account_generation": None, "sync": sync, "offline_snapshot": True}
+        if ctx.method == "GET" and parts[4:] == ["settings"]:
+            if not self_id:
+                return 400, {"error": "account 必填", "reason": "missing_account"}
+            record = await asyncio.to_thread(store.read_account, self_id)
+            if record is None:
+                return 404, {"error": "账号群配置不存在", "reason": "account_not_found"}
+            return 200, {**record, "current": current == self_id, "offline_snapshot": True}
+        if ctx.method == "PATCH" and parts[4:] == ["settings"]:
+            if _check_backend_health().get("running"):
+                return 409, {"error": "后端正在运行, 请使用运行时群配置接口", "reason": "use_runtime_api"}
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            expected_self_id = payload.get("expected_self_id")
+            revision = payload.get("expected_revision")
+            mode = payload.get("mode")
+            defaults = payload.get("approval_defaults", {})
+            if (not isinstance(expected_self_id, str) or not isinstance(revision, int)
+                    or isinstance(revision, bool) or not isinstance(mode, str) or not isinstance(defaults, dict)):
+                return 400, {"error": "群接入设置参数无效", "reason": "invalid_settings"}
+            if not current or expected_self_id != current:
+                return 409, {"error": "机器人账号已变化或尚未确认", "reason": "account_changed"}
+            saved = await asyncio.to_thread(
+                store.patch_account, expected_self_id, expected_revision=revision,
+                mode=mode, approval_defaults=cast(dict[str, object], defaults),
+            )
+            return 200, {**saved, "apply_status": "pending"}
+        if len(parts) == 6 and parts[5] == "config" and ctx.method in {"GET", "PATCH"}:
+            from satrap.core.config.group_approval import effective_approval
+            from satrap.core.config.group_events import EVENT_KINDS, event_values
+            from satrap.core.config.group_policy import policy_values, resolve_group_policy
+            from satrap.core.config.group_session import resolve_group_session
+            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+            from satrap.core.config.wake_overrides import GROUP_KEYS
+
+            group_id = urllib.parse.unquote(parts[4])
+            if ctx.method == "GET":
+                if not self_id:
+                    return 400, {"error": "account 必填", "reason": "missing_account"}
+                account = await asyncio.to_thread(store.read_account, self_id)
+                record = await asyncio.to_thread(store.group_record, self_id, group_id)
+                if account is None or record is None:
+                    return 404, {"error": "群记录不存在", "reason": "group_record_not_found"}
+            else:
+                if _check_backend_health().get("running"):
+                    return 409, {"error": "后端正在运行, 请使用运行时群配置接口", "reason": "use_runtime_api"}
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                expected_self_id = payload.get("expected_self_id")
+                revision = payload.get("expected_revision")
+                base = payload.get("base_revision")
+                section = payload.get("section")
+                values = payload.get("values")
+                if (not isinstance(expected_self_id, str) or not isinstance(revision, int)
+                        or isinstance(revision, bool) or not isinstance(base, str)
+                        or section not in {"policy", "approval", "events"} or not isinstance(values, dict)):
+                    return 400, {"error": "群配置参数无效", "reason": "invalid_group_config"}
+                fingerprint = hashlib.sha256(json.dumps(platform, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+                if base != fingerprint:
+                    return 409, {"error": "平台基础配置已变化", "reason": "group_config_conflict"}
+                if not current or expected_self_id != current:
+                    return 409, {"error": "机器人账号已变化", "reason": "account_changed"}
+                if not await asyncio.to_thread(store.group_exists, expected_self_id, group_id):
+                    return 404, {"error": "群记录不存在", "reason": "group_record_not_found"}
+                await asyncio.to_thread(
+                    store.patch_group, expected_self_id, group_id, section, cast(dict[str, object], values),
+                    expected_revision=revision,
+                )
+                self_id = expected_self_id
+                account = await asyncio.to_thread(store.read_account, self_id)
+                record = await asyncio.to_thread(store.group_record, self_id, group_id)
+                if account is None or record is None:
+                    raise RuntimeError("群配置保存后读取失败")
+            config = await asyncio.to_thread(store.read_group, self_id, group_id)
+            raw_policy = config["explicit"].get("policy", {})
+            if not isinstance(raw_policy, dict):
+                raise RuntimeError("群策略数据损坏")
+            values = policy_values(raw_policy)
+            resolved, sources = resolve_group_policy(platform["settings"], group_id, raw_policy)
+            gate = bool(platform.get("enable", True)) and bool(platform["settings"].get("enable_group", True))
+            enabled = gate and bool(values.get("enabled", account["mode"] == "all"))
+            source = "platform" if not gate else "group" if "enabled" in values else "account"
+            effective = {key: resolved.get(key) for key in sorted(GROUP_KEYS)}
+            effective["enabled"] = enabled
+            sources["enabled"] = {"source": source, "source_index": None,
+                                  "source_label": {"platform": "平台总开关", "group": "本群", "account": "账号接入模式"}[source]}
+            session_explicit = config["explicit"].get("session", {})
+            approval_explicit = config["explicit"].get("approval", {})
+            events_explicit = config["explicit"].get("events", {})
+            if (not isinstance(session_explicit, dict) or not isinstance(approval_explicit, dict)
+                    or not isinstance(events_explicit, dict)):
+                raise RuntimeError("群配置数据损坏")
+            session_effective, session_sources = resolve_group_session(platform, session_explicit)
+            event_overrides = event_values(events_explicit)
+            approval_pairs = {
+                action: effective_approval(action, account["approval_defaults"], approval_explicit)
+                for action in sorted(GROUP_APPROVAL_ACTIONS)
+            }
+            return 200, {
+                "account": self_id, "current_account": current, "group": record,
+                "explicit": config["explicit"], "revision": config["revision"],
+                "saved_revision": config["revision"], "active_revision": None,
+                "apply_status": "pending", "route_generation": config["route_generation"],
+                "base_revision": hashlib.sha256(json.dumps(platform, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
+                "effective": {"policy": effective, "session": session_effective,
+                              "approval": {action: pair[0] for action, pair in approval_pairs.items()},
+                              "events": {kind: event_overrides.get(kind, True) for kind in sorted(EVENT_KINDS)}},
+                "sources": {"policy": {key: sources.get(key) for key in (*sorted(GROUP_KEYS), "enabled")},
+                            "session": session_sources,
+                            "approval": {action: pair[1] for action, pair in approval_pairs.items()},
+                            "events": {kind: "group" if kind in event_overrides else "default" for kind in sorted(EVENT_KINDS)}},
+                "capabilities": {"policy_fields": ["enabled", *sorted(GROUP_KEYS)],
+                                 "session_fields": ["binding", "scope"],
+                                 "approval_actions": sorted(GROUP_APPROVAL_ACTIONS),
+                                 "event_kinds": sorted(EVENT_KINDS)},
+                "offline_snapshot": True,
+            }
+    except (GroupConfigConflict, GroupLegacyConflict) as error:
+        return 409, {"error": str(error), "reason": "group_config_conflict"}
+    except (OSError, RuntimeError) as error:
+        return 503, {"error": str(error), "reason": "group_service_unavailable"}
+    except (ValueError, json.JSONDecodeError) as error:
+        return 400, {"error": str(error), "reason": "invalid_group_query"}
+    return None
 
 
 async def _route_ui_config_status(ctx: _RouteContext) -> ControlResponse | None:
@@ -2197,6 +2405,7 @@ async def _handle_request(
             _route_chat_history,
             _route_lifecycle,
             _route_config_document,
+            _route_group_directory,
             _route_models,
             _route_wake_dry_run,
             _route_session_class_collection_get,

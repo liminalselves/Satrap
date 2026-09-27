@@ -1,6 +1,7 @@
 """会话类配置共享领域服务"""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
@@ -22,7 +23,10 @@ _ALLOWED_FIELDS = {
 class SessionClassConfigService:
     """供平台后端和控制服务共用的会话类配置增删改查服务"""
 
-    def __init__(self, manager: SessionClassConfigManager) -> None:
+    def __init__(
+        self, manager: SessionClassConfigManager,
+        reference_checker: Callable[[str], list[dict[str, str]]] | None = None,
+    ) -> None:
         """
         初始化会话类配置服务
 
@@ -30,6 +34,20 @@ class SessionClassConfigService:
         - manager: 会话类配置管理器
         """
         self.manager = manager
+        self.reference_checker = reference_checker
+
+    def _guard_reference(self, name: str) -> None:
+        """命名配置仍被群绑定时拒绝删除或重命名"""
+        from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+
+        if self.reference_checker is None:
+            return
+        try:
+            references = self.reference_checker(name)
+        except Exception as error:
+            raise ConfigReferenceScanError("session_class", name, type(error).__name__) from error
+        if references:
+            raise ConfigInUseError("session_class", name, references)
 
     def list_configs(self) -> dict[str, dict[str, Any]]:
         """
@@ -97,7 +115,12 @@ class SessionClassConfigService:
             if "class_path" in cleaned
             else None
         )
-        return self.manager.update_entry(
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            if new_name is not None and new_name != current_name:
+                self._guard_reference(current_name)
+            return self.manager.update_entry(
             current_name,
             new_name=new_name,
             class_path=class_path,
@@ -132,7 +155,12 @@ class SessionClassConfigService:
         返回:
         - bool: 是否找到并删除配置
         """
-        return self.manager.remove_config(self._validate_name(name))
+        current_name = self._validate_name(name)
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            self._guard_reference(current_name)
+            return self.manager.remove_config(current_name)
 
     @staticmethod
     def _validate_name(value: object) -> str:

@@ -347,9 +347,43 @@ class MessageEvent:
         self.platform_meta = platform_meta
         self.adapter = adapter
         self.queued_at = monotonic()
-        self.policy_settings = resolve_wake_settings(adapter.config.settings, self.get_group_id()) if isinstance(adapter, PlatformAdapter) else {}
+        resolve_group_policy = getattr(adapter, "resolve_policy_settings", None)
+        resolved_policy = (
+            resolve_group_policy(self.get_group_id())
+            if callable(resolve_group_policy)
+            else resolve_wake_settings(adapter.config.settings, self.get_group_id())
+            if isinstance(adapter, PlatformAdapter) else {}
+        )
+        if not isinstance(resolved_policy, dict):
+            raise RuntimeError("群策略快照无效")
+        self.policy_settings: dict[str, Any] = resolved_policy
         self.session_provider = session_provider
         self.session_type = session_type
+        self.group_route_generation = 0
+        self.group_session_overrides: dict[str, object] = {}
+        group_route = getattr(adapter, "group_route", None)
+        if self.get_group_id() and callable(group_route):
+            from satrap.core.config.group_session import session_values
+
+            route_result = group_route(self.get_group_id())
+            if not isinstance(route_result, tuple) or len(route_result) != 2:
+                raise RuntimeError("群会话路由快照无效")
+            route_settings, generation = route_result
+            if not isinstance(route_settings, dict) or not isinstance(generation, int):
+                raise RuntimeError("群会话路由快照无效")
+            route_values = session_values(route_settings)
+            binding = route_values.get("binding")
+            if isinstance(binding, dict):
+                self.session_provider = str(binding["provider"])
+                self.session_type = str(binding["config_name"])
+            scope = route_values.get("scope")
+            if scope in {"group_member", "group_shared"}:
+                self.policy_settings["context_scope"] = "group" if scope == "group_shared" else "group_member"
+            self.group_session_overrides = {
+                key: value for key, value in route_values.items()
+                if key in {"model", "prompt", "plugins"}
+            }
+            self.group_route_generation = generation
 
         mt = platform_message.type.value if isinstance(platform_message.type, PlatformMessageType) else str(platform_message.type)
         self.session = MessageSession(
@@ -821,6 +855,11 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
+                group_route = getattr(self.adapter, "group_route", None)
+                if self.get_group_id() and callable(group_route):
+                    route_result = group_route(self.get_group_id())
+                    if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
+                        raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
                 result = await self.adapter.send_message(
                     self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
                     purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
@@ -846,6 +885,11 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
+                group_route = getattr(self.adapter, "group_route", None)
+                if self.get_group_id() and callable(group_route):
+                    route_result = group_route(self.get_group_id())
+                    if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
+                        raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
                 result = await self.adapter.send_stream(
                     self.session_id, self._decorate_stream(generator), use_fallback=use_fallback
                 )

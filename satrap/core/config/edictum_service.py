@@ -1,6 +1,7 @@
 """Edictum 冷配置共享领域服务"""
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, cast
 
 from satrap.edictum.plugin_settings import validate_plugin_settings
@@ -30,6 +31,7 @@ class EdictumConfigService:
         manager: EdictumConfigManager,
         type_registry: EdictumTypeRegistry,
         *, models: Any = None, rag: Any = None,
+        reference_checker: Callable[[str], list[dict[str, str]]] | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置服务
@@ -43,6 +45,20 @@ class EdictumConfigService:
         self.plugin_catalog = PluginCatalog()
         self.models = models
         self.rag = rag
+        self.reference_checker = reference_checker
+
+    def _guard_reference(self, name: str) -> None:
+        """命名配置仍被群绑定时拒绝删除或重命名"""
+        from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+
+        if self.reference_checker is None:
+            return
+        try:
+            references = self.reference_checker(name)
+        except Exception as error:
+            raise ConfigReferenceScanError("edictum", name, type(error).__name__) from error
+        if references:
+            raise ConfigInUseError("edictum", name, references)
 
     def list_types(self) -> list[dict[str, Any]]:
         """
@@ -117,7 +133,12 @@ class EdictumConfigService:
         if "plugins" in cleaned:
             self._validate_plugin_values(cleaned["plugins"])
         new_name = str(cleaned.pop("name")).strip() if "name" in cleaned else None
-        return self.manager.update(name, cleaned, new_name=new_name)
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            if new_name is not None and new_name != name:
+                self._guard_reference(name)
+            return self.manager.update(name, cleaned, new_name=new_name)
 
     def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         """
@@ -142,7 +163,11 @@ class EdictumConfigService:
         返回:
         - bool: 是否找到并删除配置
         """
-        return self.manager.delete(name)
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            self._guard_reference(name)
+            return self.manager.delete(name)
 
     def _validate_plugin_values(self, plugins: list[Any]) -> None:
         """命名配置保存前校验显式参数及继承后的模型和知识库引用"""

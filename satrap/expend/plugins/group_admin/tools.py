@@ -1,7 +1,7 @@
 """OneBot 群管理同步和异步模型工具, 权限以来源身份为准, 写操作默认关闭"""
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Coroutine
 from typing import Any, TypeVar, cast, overload
 
 import asyncio
@@ -173,7 +173,41 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     - Coroutine: 待执行的管理动作
     """
     needs_group = _DEFINITIONS[name][4]
-    gid = _group_id(origin, allowed, kwargs) if needs_group else ""
+    if name == "group_admin_handle_group_request" and not str(kwargs.get("group_id") or "").strip():
+        flag = str(kwargs.get("flag") or "")
+        adapter = admin._adapter
+        entry = adapter.request_flags.ledger.lookup(adapter.config.id, adapter.bot_self_id, "group", flag)
+        if entry is None:
+            raise ValueError("群请求目标无法从原请求账本确认, 请显式指定 group_id")
+        target = str(entry["group_id"])
+        gid = _group_id(origin, allowed, {"group_id": target})
+    else:
+        gid = _group_id(origin, allowed, kwargs) if needs_group else ""
+    action_names = {
+        "group_admin_recall_message": "recall_message", "group_admin_kick": "kick_group_member",
+        "group_admin_ban": "ban_group_member", "group_admin_whole_ban": "set_group_whole_ban",
+        "group_admin_ban_anonymous": "ban_anonymous", "group_admin_set_admin": "set_group_admin",
+        "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_card": "set_group_card",
+        "group_admin_set_name": "set_group_name", "group_admin_set_title": "set_group_special_title",
+        "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
+    }
+    handler = getattr(admin._adapter, "group_action_handler", None)
+    if name in action_names and callable(handler):
+        action = action_names[name]
+        from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
+
+        params: dict[str, object] = {
+            key: value for key, value in kwargs.items() if key in ACTION_FIELDS[action]
+        }
+        for key in ("enable", "approve", "dismiss", "reject_add_request"):
+            if key in params:
+                params[key] = _as_bool(params[key], key)
+
+        async def submit() -> dict[str, Any]:
+            """把已授权的模型群管理请求交给统一审批与执行服务"""
+            return await cast(Awaitable[dict[str, Any]], handler(gid, action, params))
+
+        return submit()
     if name == "group_admin_list_groups":
         return admin.get_group_list()
     if name == "group_admin_get_group_info":

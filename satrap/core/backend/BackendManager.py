@@ -11,6 +11,7 @@ import asyncio
 from pathlib import Path
 import secrets
 import signal
+import time
 from typing import (
     Any,
     Awaitable,
@@ -27,6 +28,10 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
+from satrap.core.config.group_store import GroupConfigStore
+from satrap.core.config.group_directory import GroupDirectoryStore
+from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.config.group_events import GroupEventBuffer
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.core.framework.UserManager import UserManager
 from satrap.core.pipeline.rate_limiter import RateLimiter
@@ -191,6 +196,12 @@ class BackendManager:
         self._platform_active_configs: dict[str, dict[str, Any]] = {}
         self._platform_config_results: list[dict[str, Any]] = []
         self._platform_apply_lock = asyncio.Lock()
+        self._group_sync_tasks: dict[tuple[str, str], tuple[str, asyncio.Task[None]]] = {}
+        self._group_sync_lock = asyncio.Lock()
+        self._group_action_stores: dict[str, GroupActionStore] = {}
+        self._group_action_lock = asyncio.Lock()
+        self._group_action_flags: dict[str, str] = {}
+        self._group_events = GroupEventBuffer()
 
         self._model_cfg: ModelConfigManager | None = None
         # 子管理器 (按依赖顺序)
@@ -304,6 +315,900 @@ class BackendManager:
         - str: 平台实例的 `platform.db` 路径
         """
         return str(self._storage.platform_db(platform_id))
+
+    def _group_directory_store(self, adapter_id: str) -> GroupDirectoryStore:
+        """
+        为已配置的 OneBot 实例打开群目录数据库
+
+        参数:
+        - adapter_id: 平台实例 ID
+
+        返回:
+        - 与平台会话共用数据库的群目录存储
+        """
+        if not any(
+            isinstance(item, dict) and item.get("id") == adapter_id
+            and item.get("type") in {"onebot", "aiocqhttp"}
+            for item in self.config.platforms
+        ):
+            raise ValueError("OneBot 平台不存在")
+        return GroupDirectoryStore(self._storage.platform_db(adapter_id))
+
+    async def group_accounts(self, adapter_id: str) -> dict[str, Any]:
+        """
+        列出当前平台的已确认账号和运行时绑定账号
+
+        参数:
+        - adapter_id: OneBot 平台实例 ID
+
+        返回:
+        - 历史账号摘要与当前可信账号
+        """
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        accounts = await asyncio.to_thread(store.list_accounts)
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        current = str(getattr(adapter, "bot_self_id", "") or "")
+        return {"items": accounts, "current_account": current, "waiting_for_account": not current}
+
+    async def group_settings(self, adapter_id: str, self_id: str) -> dict[str, Any]:
+        """
+        读取当前或历史账号的群接入与审批默认设置
+
+        参数:
+        - adapter_id: OneBot 平台实例 ID
+        - self_id: 固定的机器人账号
+
+        返回:
+        - 账号设置与是否为当前运行账号
+        """
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        account = await asyncio.to_thread(store.read_account, self_id)
+        if account is None:
+            raise LookupError("账号群配置不存在")
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        current = str(getattr(adapter, "bot_self_id", "") or "")
+        return {**account, "current": current == self_id}
+
+    async def patch_group_settings(
+        self, adapter_id: str, self_id: str, expected_revision: int, mode: str,
+        approval_defaults: dict[str, object],
+    ) -> dict[str, Any]:
+        """
+        保存当前账号的接入模式和管理动作默认审批设置
+
+        参数:
+        - adapter_id: OneBot 平台实例 ID
+        - self_id: 请求固定的机器人账号
+        - expected_revision: 读取时的账号设置修订号
+        - mode: selected 或 all
+        - approval_defaults: 已由服务层校验的审批默认值
+
+        返回:
+        - 持久设置与运行时应用状态
+        """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        saved = await asyncio.to_thread(
+            store.patch_account, self_id, expected_revision=expected_revision,
+            mode=mode, approval_defaults=approval_defaults,
+        )
+        try:
+            await adapter.refresh_group_access(self_id)
+        except Exception as error:
+            return {**saved, "apply_status": "failed", "apply_error": type(error).__name__}
+        return {**saved, "apply_status": "applied"}
+
+    async def list_groups(
+        self, adapter_id: str, self_id: str, *, query: str = "", membership: str = "joined",
+        response: str = "all", page: int = 1, page_size: int = 25,
+    ) -> dict[str, Any]:
+        """
+        读取固定账号的群目录快照和整体统计
+
+        参数:
+        - adapter_id: 已配置的 OneBot 实例 ID
+        - self_id: 页面固定的机器人账号
+        - query: 群名或群号筛选
+        - membership: 成员关系筛选
+        - response: 有效响应筛选
+        - page: 页号
+        - page_size: 每页条目数
+
+        返回:
+        - 分页结果、同步状态和当前账号代次
+        """
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        platform = next(item for item in self.config.platforms if item.get("id") == adapter_id)
+        response_gate = bool(platform.get("enable", True)) and bool(platform.get("settings", {}).get("enable_group", True))
+        listing, sync = await asyncio.gather(
+            asyncio.to_thread(store.list_groups, self_id, query=query, membership=membership,
+                              response=response, page=page, page_size=page_size,
+                              response_gate=response_gate),
+            asyncio.to_thread(store.sync_status, self_id),
+        )
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        current = str(getattr(adapter, "bot_self_id", "") or "")
+        generation = adapter.connection_generation() if isinstance(adapter, OneBotAdapter) and current == self_id else None
+        return {**listing, "account": self_id, "current_account": current,
+                "account_generation": generation, "sync": sync}
+
+    async def trigger_group_sync(self, adapter_id: str, expected_self_id: str) -> dict[str, Any]:
+        """
+        启动或复用当前账号的单个群目录同步任务
+
+        参数:
+        - adapter_id: OneBot 平台实例 ID
+        - expected_self_id: 调用方固定的机器人账号
+
+        返回:
+        - 任务 ID 与运行状态
+        """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter):
+            raise ValueError("OneBot 平台不存在")
+        if not expected_self_id or adapter.bot_self_id != expected_self_id:
+            raise ValueError("机器人账号已变化")
+        if not adapter.config.enable or adapter._bot is None or (adapter._meta_hooked and not adapter._client_connected):
+            raise RuntimeError("OneBot 平台未连接")
+        await adapter._ensure_group_access(expected_self_id)
+        key = (adapter_id, expected_self_id)
+        async with self._group_sync_lock:
+            existing = self._group_sync_tasks.get(key)
+            if existing is not None and not existing[1].done():
+                return {"sync_id": existing[0], "status": "running", "reused": True}
+            store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+            token = secrets.token_urlsafe(24)
+            generation = adapter.connection_generation()
+            await asyncio.to_thread(store.begin_sync, expected_self_id, generation, token)
+            task = asyncio.create_task(
+                self._run_group_sync(adapter, store, expected_self_id, generation, token),
+                name=f"group-sync:{adapter_id}:{expected_self_id}",
+            )
+            self._group_sync_tasks[key] = (token, task)
+            return {"sync_id": token, "status": "running", "reused": False}
+
+    async def _run_group_sync(
+        self, adapter: Any, store: GroupDirectoryStore, self_id: str, generation: int, token: str,
+    ) -> None:
+        """
+        执行一次有界同步并丢弃旧实例或旧连接的迟到结果
+
+        参数:
+        - adapter: 发起同步时的 OneBot 适配器对象
+        - store: 当前平台的目录存储
+        - self_id: 发起同步时确认的账号
+        - generation: 发起同步时的连接代次
+        - token: 本次同步的随机令牌
+        """
+        try:
+            result = await adapter.admin.fetch_group_directory()
+            current = self._adapter_mgr.get_adapter(adapter.config.id) if self._adapter_mgr else None
+            if current is not adapter or adapter.bot_self_id != self_id or adapter.connection_generation() != generation:
+                await asyncio.to_thread(store.fail_sync, self_id, generation, token, "stale_connection")
+                return
+            committed = await asyncio.to_thread(
+                store.finish_sync, self_id, generation, token, result["items"],
+                complete=result["complete"], truncated=result["truncated"], reason=result["reason"],
+            )
+            if committed:
+                await adapter.refresh_management_membership(self_id)
+        except asyncio.CancelledError:
+            await asyncio.to_thread(store.fail_sync, self_id, generation, token, "interrupted")
+            raise
+        except Exception as error:
+            logger.warning(f"[BackendManager] 群目录同步失败 adapter={adapter.config.id} self_id={self_id}: {type(error).__name__}: {error}")
+            await asyncio.to_thread(store.fail_sync, self_id, generation, token, type(error).__name__)
+
+    async def group_sync_status(self, adapter_id: str, self_id: str, sync_id: str) -> dict[str, Any]:
+        """
+        查询账号内固定同步任务的状态
+
+        参数:
+        - adapter_id: OneBot 平台实例 ID
+        - self_id: 固定机器人账号
+        - sync_id: 启动时返回的任务 ID
+
+        返回:
+        - 完整性, 截断原因和时间; 任务不属于此账号时抛出异常
+        """
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        result = await asyncio.to_thread(store.sync_status, self_id)
+        if result["sync_id"] != sync_id:
+            raise LookupError("同步任务不存在")
+        key = (adapter_id, self_id)
+        task = self._group_sync_tasks.get(key)
+        if result["status"] == "running" and (task is None or task[0] != sync_id):
+            await asyncio.to_thread(store.fail_sync, self_id, result["connection_generation"], sync_id, "interrupted_restart")
+            result = await asyncio.to_thread(store.sync_status, self_id)
+        return result
+
+    def _group_platform_snapshot(self, adapter_id: str) -> dict[str, Any]:
+        """取得当前运行平台策略快照供群策略合并和基础版本核验"""
+        active = self._platform_active_configs.get(adapter_id)
+        if active is not None:
+            return active
+        return next(item for item in self.config.platforms if item.get("id") == adapter_id)
+
+    def _group_base_revision(
+        self, adapter_id: str, platform: dict[str, Any], session: dict[str, object],
+    ) -> str:
+        """绑定的命名资源或模型目录变化时使群编辑基础版本失效"""
+        from satrap.core.config.group_session import session_values
+
+        binding = session_values(session).get("binding")
+        if not isinstance(binding, dict):
+            binding = {"provider": platform.get("session_provider") or "session_class",
+                       "config_name": platform.get("session_type") or ""}
+        provider = str(binding["provider"])
+        name = str(binding["config_name"])
+        named: object = None
+        if provider == "edictum" and self._edictum_cfg is not None:
+            named = self._edictum_cfg.get_config(name)
+        elif provider == "session_class" and self._session_cls_cfg is not None:
+            named = self._session_cls_cfg.get_config(name)
+        model_configs = self._model_cfg.list_llm_configs(mask_api_key=False) if self._model_cfg else {}
+        payload = {"platform": platform, "binding": binding, "named": named,
+                   "models": model_configs, "adapter_id": adapter_id}
+        encoded = json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    async def group_config(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
+        """返回单群显式配置, 有效策略来源与已应用修订"""
+        from satrap.core.config.group_approval import effective_approval
+        from satrap.core.config.group_events import EVENT_KINDS, event_values
+        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+        from satrap.core.config.group_policy import policy_values, resolve_group_policy
+        from satrap.core.config.group_session import resolve_group_session, session_values
+        from satrap.core.config.wake_overrides import GROUP_KEYS
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        account, record, config = await asyncio.gather(
+            asyncio.to_thread(store.read_account, self_id),
+            asyncio.to_thread(store.group_record, self_id, group_id),
+            asyncio.to_thread(store.read_group, self_id, group_id),
+        )
+        if account is None or record is None:
+            raise LookupError("群记录不存在")
+        platform = self._group_platform_snapshot(adapter_id)
+        raw_policy = config["explicit"].get("policy", {})
+        if not isinstance(raw_policy, dict):
+            raise RuntimeError("群策略数据损坏")
+        values = policy_values(raw_policy)
+        resolved, origins = resolve_group_policy(platform.get("settings", {}), group_id, raw_policy)
+        gate = bool(platform.get("enable", True)) and bool(platform.get("settings", {}).get("enable_group", True))
+        enabled = gate and bool(values.get("enabled", account["mode"] == "all"))
+        source = "platform" if not gate else "group" if "enabled" in values else "account"
+        effective = {key: resolved.get(key) for key in sorted(GROUP_KEYS)}
+        effective["enabled"] = enabled
+        origins["enabled"] = {"source": source, "source_index": None,
+                              "source_label": {"platform": "平台总开关", "group": "本群", "account": "账号接入模式"}[source]}
+        raw_session = config["explicit"].get("session", {})
+        if not isinstance(raw_session, dict):
+            raise RuntimeError("群会话配置数据损坏")
+        selected = session_values(raw_session).get("binding")
+        if not isinstance(selected, dict):
+            selected = {"provider": platform.get("session_provider") or "session_class",
+                        "config_name": platform.get("session_type") or ""}
+        defaults: dict[str, object] = {}
+        session_fields = ["binding", "scope"]
+        runtime = self.get_platform_runtime(adapter_id)
+        if runtime is not None and selected["config_name"]:
+            resolved_definition = runtime[0].provider_registry.resolve_definition(
+                str(selected["config_name"]), str(selected["provider"]),
+            )
+            if resolved_definition is not None:
+                definition = resolved_definition[1]
+                model_name = definition.params.get(definition.model_key or "model_name")
+                if isinstance(model_name, str):
+                    defaults["model"] = model_name
+                prompt = definition.params.get("system_prompt")
+                if isinstance(prompt, str):
+                    defaults["prompt"] = prompt
+                if definition.provider_name == "edictum":
+                    defaults["plugins"] = definition.metadata.get("plugins", [])
+                    session_fields.extend(["model", "prompt"])
+                    type_name = str(definition.metadata.get("edictum_type") or "")
+                    type_definition = self._edictum_types.get(type_name) if self._edictum_types else None
+                    if type_definition and type_definition.supports_plugins and type_definition.plugin_installer:
+                        session_fields.append("plugins")
+        session_effective, session_sources = resolve_group_session(platform, raw_session, defaults)
+        raw_approval = config["explicit"].get("approval", {})
+        if not isinstance(raw_approval, dict):
+            raise RuntimeError("群审批配置数据损坏")
+        approval_pairs = {
+            action: effective_approval(action, account["approval_defaults"], raw_approval)
+            for action in sorted(GROUP_APPROVAL_ACTIONS)
+        }
+        raw_events = config["explicit"].get("events", {})
+        if not isinstance(raw_events, dict):
+            raise RuntimeError("群事件配置数据损坏")
+        event_overrides = event_values(raw_events)
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        active_revision = (
+            adapter.group_active_revision(group_id)
+            if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id == self_id else None
+        )
+        return {
+            "account": self_id, "current_account": adapter.bot_self_id if isinstance(adapter, OneBotAdapter) else "",
+            "group": record, "explicit": config["explicit"],
+            "revision": config["revision"], "saved_revision": config["revision"],
+            "active_revision": active_revision,
+            "apply_status": "applied" if active_revision == config["revision"] else "pending",
+            "route_generation": config["route_generation"],
+            "base_revision": self._group_base_revision(adapter_id, platform, raw_session),
+            "effective": {"policy": effective, "session": session_effective,
+                          "approval": {action: pair[0] for action, pair in approval_pairs.items()},
+                          "events": {kind: event_overrides.get(kind, True) for kind in sorted(EVENT_KINDS)}},
+            "sources": {"policy": {key: origins.get(key) for key in (*sorted(GROUP_KEYS), "enabled")},
+                        "session": session_sources,
+                        "approval": {action: pair[1] for action, pair in approval_pairs.items()},
+                        "events": {kind: "group" if kind in event_overrides else "default" for kind in sorted(EVENT_KINDS)}},
+            "capabilities": {"policy_fields": ["enabled", *sorted(GROUP_KEYS)],
+                             "session_fields": session_fields,
+                             "approval_actions": sorted(GROUP_APPROVAL_ACTIONS),
+                             "event_kinds": sorted(EVENT_KINDS)},
+        }
+
+    async def group_binding_options(self, adapter_id: str, self_id: str) -> dict[str, Any]:
+        """列出当前运行时可解析的命名会话定义供群绑定选择"""
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        if await asyncio.to_thread(store.read_account, self_id) is None:
+            raise LookupError("账号群配置不存在")
+        runtime = self.get_platform_runtime(adapter_id)
+        if runtime is None:
+            raise RuntimeError("平台会话运行时不可用")
+        names: set[tuple[str, str]] = set()
+        if self._session_cls_cfg is not None:
+            classes = await asyncio.to_thread(self._session_cls_cfg.list_configs)
+            names.update(("session_class", name) for name in classes)
+        if self._edictum_cfg is not None:
+            edictum = await asyncio.to_thread(self._edictum_cfg.list_configs)
+            names.update(("edictum", name) for name in edictum)
+        platform = self._group_platform_snapshot(adapter_id)
+        if platform.get("session_type"):
+            names.add((str(platform.get("session_provider") or "session_class"), str(platform["session_type"])))
+        items: list[dict[str, Any]] = []
+        for provider, name in sorted(names):
+            resolved = await asyncio.to_thread(runtime[0].provider_registry.resolve_definition, name, provider)
+            if resolved is None:
+                items.append({"provider": provider, "config_name": name, "enabled": False,
+                              "available": False, "description": "命名配置已删除"})
+                continue
+            definition = resolved[1]
+            fields = ["binding", "scope"]
+            if definition.provider_name == "edictum":
+                fields.extend(["model", "prompt"])
+                type_name = str(definition.metadata.get("edictum_type") or "")
+                type_definition = self._edictum_types.get(type_name) if self._edictum_types else None
+                if type_definition and type_definition.supports_plugins and type_definition.plugin_installer:
+                    fields.append("plugins")
+            items.append({"provider": provider, "config_name": name, "enabled": definition.enabled,
+                          "available": True, "description": definition.description,
+                          "session_fields": fields})
+        models = []
+        if self._model_cfg is not None:
+            model_configs = await asyncio.to_thread(self._model_cfg.list_llm_configs, True)
+            models = sorted(model_configs)
+        plugins: list[dict[str, Any]] = []
+        edictum_provider = runtime[0].provider_registry.get("edictum")
+        if edictum_provider is not None:
+            catalog = getattr(edictum_provider, "plugin_catalog", None)
+            if catalog is not None:
+                plugins = catalog.list_payloads()
+        return {"items": items, "account": self_id, "models": models, "plugins": plugins}
+
+    async def patch_group_config(
+        self, adapter_id: str, self_id: str, group_id: str, *, expected_revision: int,
+        base_revision: str, section: str, values: dict[str, object],
+    ) -> dict[str, Any]:
+        """核验当前账号与基础版本后按区域保存并刷新单群运行策略"""
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.config.group_session import session_values
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if section not in {"policy", "session", "approval", "events"}:
+            raise ValueError("未知群配置区域")
+        if section == "session":
+            session = session_values(values)
+            binding = session.get("binding")
+            platform_for_binding = self._group_platform_snapshot(adapter_id)
+            if not isinstance(binding, dict):
+                binding = {"provider": platform_for_binding.get("session_provider") or "session_class",
+                           "config_name": platform_for_binding.get("session_type") or ""}
+            runtime = self.get_platform_runtime(adapter_id)
+            if runtime is None:
+                raise RuntimeError("平台会话运行时不可用")
+            resolved = await asyncio.to_thread(
+                runtime[0].provider_registry.resolve_definition,
+                str(binding["config_name"]), str(binding["provider"]),
+            )
+            if resolved is None or not resolved[1].enabled:
+                raise ValueError("命名会话配置不存在或已禁用")
+            definition = resolved[1]
+            if set(session) & {"model", "prompt", "plugins"}:
+                if definition.provider_name != "edictum":
+                    raise ValueError("当前 SessionClass 不支持群级模型, 提示词或插件覆盖")
+            if "model" in session:
+                model_name = str(session["model"])
+                model = self._model_cfg.get_llm_config(name=model_name) if self._model_cfg else None
+                if model is None or not model.api_key:
+                    raise ValueError("模型配置不存在或缺少必要凭据")
+            if "plugins" in session:
+                from satrap.edictum.plugin_config import validate_config_values
+                from satrap.edictum.plugin_config import PluginConfigManager
+                from satrap.edictum.plugin_settings import validate_plugin_settings
+                from satrap.edictum.plugin_spec import parse_plugin_specs
+
+                type_name = str(definition.metadata.get("edictum_type") or "")
+                type_definition = self._edictum_types.get(type_name) if self._edictum_types else None
+                if not type_definition or not type_definition.supports_plugins or not type_definition.plugin_installer:
+                    raise ValueError("当前 Edictum 类型不支持插件覆盖")
+                provider = resolved[0]
+                catalog = getattr(provider, "plugin_catalog", None)
+                if catalog is None:
+                    raise ValueError("插件目录不可用")
+                plugin_values = session["plugins"]
+                if not isinstance(plugin_values, list):
+                    raise ValueError("插件覆盖必须是数组")
+                normalized = [{"name": item["name"], "enabled": item["mode"] == "enabled",
+                               "config": item.get("config", {})} for item in plugin_values]
+                parse_plugin_specs(normalized, catalog, require_available=True)
+                for item in normalized:
+                    entry = catalog.get(item["name"])
+                    if entry is None:
+                        raise ValueError("插件不存在")
+                    cleaned = validate_config_values(entry.config_schema, item["config"], session_override=True)
+                    inherited = PluginConfigManager().resolve(item["name"], entry.config_schema, cleaned)
+                    validate_plugin_settings(
+                        item["name"], entry.config_schema, inherited, models=self._model_cfg,
+                    )
+        platform = self._group_platform_snapshot(adapter_id)
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        if not await asyncio.to_thread(store.group_exists, self_id, group_id):
+            raise LookupError("群记录不存在")
+        previous = await asyncio.to_thread(store.read_group, self_id, group_id)
+        previous_session = previous["explicit"].get("session", {})
+        if not isinstance(previous_session, dict) or base_revision != self._group_base_revision(
+            adapter_id, platform, previous_session,
+        ):
+            raise GroupConfigConflict("平台或命名资源配置已变化, 请刷新后重试")
+        await asyncio.to_thread(
+            store.patch_group, self_id, group_id, section, values,
+            expected_revision=expected_revision,
+        )
+        try:
+            await adapter.refresh_group_access(self_id)
+        except Exception as error:
+            result = await self.group_config(adapter_id, self_id, group_id)
+            return {**result, "apply_status": "failed", "apply_error": type(error).__name__}
+        return await self.group_config(adapter_id, self_id, group_id)
+
+    async def apply_group_config(
+        self, adapter_id: str, self_id: str, group_id: str, saved_revision: int,
+    ) -> dict[str, Any]:
+        """只重试当前保存修订的运行时应用, 不重复写入配置"""
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        current = await self.group_config(adapter_id, self_id, group_id)
+        if current["saved_revision"] != saved_revision:
+            raise GroupConfigConflict("群配置已变化, 请刷新后重试")
+        await adapter.refresh_group_access(self_id)
+        return await self.group_config(adapter_id, self_id, group_id)
+
+    async def dry_run_group_policy(
+        self, adapter_id: str, self_id: str, group_id: str, *, expected_revision: int,
+        base_revision: str, values: dict[str, object], scenario: dict[str, object],
+    ) -> dict[str, Any]:
+        """使用已保存平台设置和未保存群草稿进行无副作用唤醒试算"""
+        from satrap.core.config.group_policy import policy_values
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.pipeline.wake_dry_run import dry_run_wake
+
+        current = await self.group_config(adapter_id, self_id, group_id)
+        if current["revision"] != expected_revision or current["base_revision"] != base_revision:
+            raise GroupConfigConflict("试算基础配置已变化, 请刷新后重试")
+        override = policy_values(values)
+        platform = self._group_platform_snapshot(adapter_id)
+        settings = dict(platform.get("settings", {}))
+        settings["wake_group_overrides"] = {
+            group_id: {key: value for key, value in override.items() if key != "enabled"},
+        }
+        data: dict[str, object] = {"settings": settings, "group_id": group_id}
+        for key in ("local_time", "probe", "steps"):
+            if key in scenario:
+                data[key] = scenario[key]
+        result = await dry_run_wake(data)
+        gate = bool(platform.get("enable", True)) and bool(settings.get("enable_group", True))
+        account_store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        account = await asyncio.to_thread(account_store.read_account, self_id)
+        if account is None:
+            raise LookupError("账号群配置不存在")
+        result["response_enabled"] = gate and bool(override.get("enabled", account["mode"] == "all"))
+        result["draft"] = True
+        result["saved_revision"] = expected_revision
+        return result
+
+    async def _group_action_store(self, adapter_id: str) -> GroupActionStore:
+        """每个平台进程只恢复一次执行中动作, 避免重复提交网络动作"""
+        async with self._group_action_lock:
+            existing = self._group_action_stores.get(adapter_id)
+            if existing is not None:
+                return existing
+            self._group_directory_store(adapter_id)
+            store = await asyncio.to_thread(
+                GroupActionStore, self._storage.platform_db(adapter_id), recover=True,
+            )
+            self._group_action_stores[adapter_id] = store
+            return store
+
+    async def _group_action_context(
+        self, adapter_id: str, self_id: str, group_id: str, action_type: str,
+    ) -> tuple[Any, GroupActionStore, str, int]:
+        """确认群目标、账号代次和有效审批模式并生成策略指纹"""
+        from satrap.core.config.group_approval import effective_approval
+        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        if action_type not in GROUP_APPROVAL_ACTIONS:
+            raise ValueError("动作不属于逐群审批范围")
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if adapter.get_client() is None:
+            raise RuntimeError("OneBot 平台未连接")
+        if action_type != "handle_group_request" and not adapter.allows_management_target(group_id):
+            raise PermissionError("机器人当前成员关系未确认或已离开目标群")
+        store = await self._group_action_store(adapter_id)
+        account, group = await asyncio.gather(
+            asyncio.to_thread(store.read_account, self_id),
+            asyncio.to_thread(store.read_group, self_id, group_id),
+        )
+        if account is None:
+            raise LookupError("账号群配置不存在")
+        raw_approval = group["explicit"].get("approval", {})
+        if not isinstance(raw_approval, dict):
+            raise RuntimeError("群审批配置数据损坏")
+        mode, _ = effective_approval(action_type, account["approval_defaults"], raw_approval)
+        version_payload = json.dumps(
+            [account["revision"], group["revision"], adapter.connection_generation(),
+             adapter.bot_self_id, action_type, mode],
+            ensure_ascii=True, separators=(",", ":"),
+        )
+        version = int(hashlib.sha256(version_payload.encode("utf-8")).hexdigest()[:15], 16)
+        return adapter, store, mode, version
+
+    async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
+        """返回当前群的动作参数结构、风险和有效审批模式"""
+        from satrap.core.config.group_approval import effective_approval
+        from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS, action_metadata
+
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        account, group, record = await asyncio.gather(
+            asyncio.to_thread(store.read_account, self_id),
+            asyncio.to_thread(store.read_group, self_id, group_id),
+            asyncio.to_thread(store.group_record, self_id, group_id),
+        )
+        if account is None or record is None:
+            raise LookupError("群记录不存在")
+        approval = group["explicit"].get("approval", {})
+        if not isinstance(approval, dict):
+            raise RuntimeError("群审批配置数据损坏")
+        items: list[dict[str, Any]] = []
+        for action in ACTION_FIELDS:
+            mode, source = effective_approval(action, account["approval_defaults"], approval)
+            items.append({**action_metadata(action), "approval_mode": mode, "approval_source": source,
+                          "membership": record["membership"], "capability": "unknown",
+                          "available": record["membership"] == "joined" or action == "handle_group_request"})
+        return {"items": items, "account": self_id, "group_id": group_id}
+
+    async def group_members(
+        self, adapter_id: str, self_id: str, group_id: str, *,
+        query: str = "", page: int = 1, page_size: int = 25,
+    ) -> dict[str, Any]:
+        """按需从 OneBot 读取成员, 对已取集合分页并明确截断边界"""
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if adapter.get_client() is None:
+            raise RuntimeError("OneBot 平台未连接")
+        if not adapter.allows_management_target(group_id):
+            raise PermissionError("机器人当前成员关系未确认或已离开目标群")
+        if page < 1 or page_size not in {25, 50, 100} or len(query) > 100:
+            raise ValueError("成员查询或分页参数无效")
+        members = await adapter.admin.get_group_member_list(group_id)
+        truncated = len(members) >= 2048
+        needle = query.strip().lower()
+        filtered = [item for item in members if not needle or any(
+            needle in str(item.get(key) or "").lower() for key in ("user_id", "nickname", "card")
+        )]
+        offset = (page - 1) * page_size
+        return {"items": filtered[offset:offset + page_size], "total_loaded": len(filtered),
+                "page": page, "page_size": page_size, "truncated": truncated,
+                "complete": not truncated, "account": self_id, "group_id": group_id}
+
+    async def group_events(self, adapter_id: str, self_id: str, group_id: str, *, limit: int = 50) -> dict[str, Any]:
+        """按当前群的显式可见设置查询内存中的脱敏近期事件"""
+        from satrap.core.config.group_events import event_values
+
+        store = await asyncio.to_thread(self._group_directory_store, adapter_id)
+        if not await asyncio.to_thread(store.group_exists, self_id, group_id):
+            raise LookupError("群记录不存在")
+        config = await asyncio.to_thread(store.read_group, self_id, group_id)
+        explicit = config["explicit"].get("events", {})
+        if not isinstance(explicit, dict):
+            raise RuntimeError("群事件配置数据损坏")
+        return self._group_events.list(adapter_id, self_id, group_id,
+                                       visibility=event_values(explicit), limit=limit)
+
+    def group_request_diagnostics(
+        self, adapter_id: str, self_id: str, group_id: str, *,
+        stage: str = "", request_id: str = "", limit: int = 50,
+    ) -> dict[str, Any]:
+        """在诊断存储内部按平台、账号、群和阶段过滤请求"""
+        scheduler = self._scheduler
+        if scheduler is None:
+            return {"records": [], "available": False, "reason": "scheduler_unavailable"}
+        return {
+            "records": scheduler.request_diagnostics.list_requests(
+                adapter_id, stages=parse_stages(stage), request_id=request_id,
+                limit=limit, self_id=self_id, group_id=group_id,
+            ),
+            "available": True,
+            **scheduler.request_diagnostics.stats(adapter_id),
+        }
+
+    def group_request_diagnostic_detail(
+        self, adapter_id: str, self_id: str, group_id: str, request_id: str,
+    ) -> dict[str, Any]:
+        """只返回与指定群身份严格相符的阶段明细"""
+        scheduler = self._scheduler
+        if scheduler is None:
+            return {"status": "unknown", "reason": "scheduler_unavailable"}
+        detail = scheduler.request_diagnostics.get_request(request_id, adapter_id)
+        if detail is None:
+            raise LookupError("群请求诊断不存在")
+        records = detail["records"]
+        if not isinstance(records, list) or not records or any(
+            not isinstance(row, dict) or row.get("self_id") != self_id
+            or row.get("session_id") != f"group%{group_id}" for row in records
+        ):
+            raise LookupError("群请求诊断不存在")
+        return detail
+
+    async def group_info(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
+        """按已确认成员关系读取指定群的 OneBot 群信息"""
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if adapter.get_client() is None:
+            raise RuntimeError("OneBot 平台未连接")
+        return await adapter.admin.get_group_info(group_id)
+
+    async def send_group_message(
+        self, adapter_id: str, self_id: str, group_id: str, action_id: str, message: str,
+    ) -> dict[str, Any]:
+        """显式管理发送先持久占位, 使用同 ID 查询恢复未知回执"""
+        from satrap.core.config.group_actions import action_fingerprint
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        if not isinstance(message, str) or not message.strip() or len(message) > 1000:
+            raise ValueError("手动发送正文必须为 1 到 1000 字符")
+        params: dict[str, object] = {
+            "message_digest": hashlib.sha256(message.encode("utf-8")).hexdigest(),
+            "message_length": len(message),
+        }
+        store = await self._group_action_store(adapter_id)
+        existing = await asyncio.to_thread(store.get, self_id, group_id, action_id)
+        if existing is not None:
+            if existing["fingerprint"] != action_fingerprint(self_id, group_id, "send_message", params, "panel"):
+                raise GroupConfigConflict("相同 action_id 已用于不同动作")
+            return existing
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if adapter.get_client() is None:
+            raise RuntimeError("OneBot 平台未连接")
+        if not adapter.allows_management_target(group_id):
+            raise PermissionError("机器人当前成员关系未确认或已离开目标群")
+        version = adapter.connection_generation()
+        record, created = await asyncio.to_thread(
+            store.submit, action_id, self_id, group_id, "send_message", params, "panel", version,
+            approval_required=False,
+        )
+        if not created:
+            return record
+        try:
+            if (self._adapter_mgr is None or self._adapter_mgr.get_adapter(adapter_id) is not adapter
+                    or adapter.bot_self_id != self_id or adapter.connection_generation() != version):
+                state, reason, message_ids = "failed", "adapter_changed", []
+            else:
+                receipt = await adapter.send_management_message(group_id, message)
+                state = "succeeded" if receipt.status == "success" else "unknown" if receipt.status in {"partial", "unknown"} else "failed"
+                reason, message_ids = receipt.reason or receipt.status, list(receipt.message_ids)
+        except BaseException:
+            await asyncio.to_thread(store.settle, self_id, group_id, action_id, "unknown", "interrupted")
+            raise
+        return await asyncio.to_thread(
+            store.settle, self_id, group_id, action_id, state, reason, {"message_ids": message_ids},
+        )
+
+    async def wake_group(
+        self, adapter_id: str, self_id: str, group_id: str, request_id: str, prompt: str,
+    ) -> dict[str, Any]:
+        """固定可信账号和群目标, 复用手动唤醒的持久受理链路"""
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        if not isinstance(prompt, str):
+            raise ValueError("唤醒文本无效")
+        return await self.wake_platform(
+            {"adapter_id": adapter_id, "group_id": group_id, "user_id": self_id,
+             "prompt": prompt, "request_id": request_id},
+            operator="management",
+        )
+
+    async def group_wake_status(
+        self, adapter_id: str, self_id: str, group_id: str, request_id: str,
+    ) -> dict[str, Any]:
+        """仅在账号和目标群都匹配时返回手动唤醒状态"""
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+            raise ValueError("机器人账号已变化")
+        result = await self.manual_wake_status(request_id, adapter_id)
+        if result.get("reason") in {"store_unavailable", "store_degraded"}:
+            return result
+        if result.get("target") != f"group:{group_id}":
+            raise LookupError("群手动唤醒记录不存在")
+        return result
+
+    async def group_actions(
+        self, adapter_id: str, self_id: str, group_id: str, *,
+        state: str = "pending", page: int = 1, page_size: int = 25,
+    ) -> dict[str, Any]:
+        """读取固定群的有界审批和执行记录"""
+        store = await self._group_action_store(adapter_id)
+        return await asyncio.to_thread(store.list, self_id, group_id, state=state, page=page, page_size=page_size)
+
+    async def group_action(self, adapter_id: str, self_id: str, group_id: str, action_id: str) -> dict[str, Any]:
+        """按固定群身份查询单个动作, 供响应丢失后按原 ID 恢复"""
+        store = await self._group_action_store(adapter_id)
+        result = await asyncio.to_thread(store.get, self_id, group_id, action_id)
+        if result is None:
+            raise LookupError("管理动作不存在")
+        return result
+
+    async def submit_group_action(
+        self, adapter_id: str, self_id: str, group_id: str, action_id: str,
+        action_type: str, params: dict[str, object], *, actor_kind: str,
+    ) -> dict[str, Any]:
+        """校验目标和参数, 按策略持久登记审批或原子占用后执行"""
+        from satrap.core.config.group_actions import action_fingerprint
+        from satrap.core.config.group_store import GroupConfigConflict
+        from satrap.core.platform.onebot.group_action_types import normalize_action_params
+
+        normalized, secret_flag = normalize_action_params(action_type, params, self_id)
+        store = await self._group_action_store(adapter_id)
+        existing = await asyncio.to_thread(store.get, self_id, group_id, action_id)
+        if existing is not None:
+            expected = action_fingerprint(self_id, group_id, action_type, normalized, actor_kind)
+            if existing["fingerprint"] != expected:
+                raise GroupConfigConflict("相同 action_id 已用于不同动作")
+            return existing
+        adapter, store, mode, version = await self._group_action_context(
+            adapter_id, self_id, group_id, action_type,
+        )
+        if action_type == "handle_group_request":
+            if secret_flag is None:
+                raise ValueError("群请求缺少 flag")
+            entry = adapter.request_flags.ledger.lookup(adapter_id, self_id, "group", secret_flag)
+            if (entry is None or entry["state"] != "available" or entry["group_id"] != group_id
+                    or entry["sub_type"] != normalized["sub_type"]
+                    or time.time() - entry["received_at"] >= adapter.request_flags.ledger.ttl):
+                raise PermissionError("群请求 flag 未登记、已过期或归属不符")
+        record, created = await asyncio.to_thread(
+            store.submit, action_id, self_id, group_id, action_type, normalized,
+            actor_kind, version, approval_required=mode == "approval_required",
+        )
+        if not created:
+            return record
+        if secret_flag is not None:
+            self._group_action_flags[action_id] = secret_flag
+        if mode == "approval_required":
+            return record
+        return await self._execute_group_action(adapter_id, self_id, group_id, action_id, record)
+
+    async def decide_group_action(
+        self, adapter_id: str, self_id: str, group_id: str, action_id: str,
+        *, approve: bool,
+    ) -> dict[str, Any]:
+        """人工批准或拒绝固定群的待审批动作, 并发只占用一次"""
+        current = await self.group_action(adapter_id, self_id, group_id, action_id)
+        if approve:
+            _, store, _, version = await self._group_action_context(
+                adapter_id, self_id, group_id, current["action_type"],
+            )
+        else:
+            from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+            adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+            if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
+                raise ValueError("机器人账号已变化")
+            store = await self._group_action_store(adapter_id)
+            version = int(current["policy_revision"])
+        decided = await asyncio.to_thread(
+            store.decide, self_id, group_id, action_id, approve=approve, policy_revision=version,
+        )
+        if not approve:
+            self._group_action_flags.pop(action_id, None)
+            return decided
+        return await self._execute_group_action(adapter_id, self_id, group_id, action_id, decided)
+
+    async def _execute_group_action(
+        self, adapter_id: str, self_id: str, group_id: str, action_id: str,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        """占用后再次核验策略与成员关系, 按 OneBot 结果保守结算"""
+        from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
+
+        store = await self._group_action_store(adapter_id)
+        action = str(record["action_type"])
+        started = False
+        try:
+            adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action)
+            if version != record["policy_revision"]:
+                raise AdminActionRejected("审批策略或连接代次已变化")
+            params = dict(record["params"])
+            flag = self._group_action_flags.get(action_id)
+            if "flag_digest" in params:
+                params.pop("flag_digest")
+                if flag is None:
+                    raise AdminActionRejected("请求 flag 已失效, 需要重新提交")
+                params["flag"] = flag
+            method = getattr(adapter.admin, action)
+            started = True
+            await method(group_id, **params)
+            state, reason = "succeeded", "platform_confirmed"
+        except (AdminActionRejected, UnsupportedAdminAction, PermissionError, ValueError) as error:
+            state, reason = "failed", type(error).__name__
+        except (AdminActionUnconfirmed, asyncio.TimeoutError) as error:
+            state, reason = "unknown", type(error).__name__
+        except Exception as error:
+            state, reason = ("unknown" if started else "failed"), type(error).__name__
+        except BaseException:
+            await asyncio.to_thread(store.settle, self_id, group_id, action_id, "unknown", "interrupted")
+            raise
+        finally:
+            self._group_action_flags.pop(action_id, None)
+        try:
+            return await asyncio.to_thread(store.settle, self_id, group_id, action_id, state, reason)
+        except Exception as error:
+            logger.error(f"[BackendManager] 群动作结果落库失败 action_id={action_id} state={state}: {type(error).__name__}")
+            raise RuntimeError("群动作已发出但结果持久化失败, 平台结果未知") from error
 
     def get_platform_runtime(self, platform_id: str) -> tuple[SessionManager, UserManager] | None:
         """
@@ -807,6 +1712,17 @@ class BackendManager:
                         results.append(result)
                         continue
                     changed = {key for key in set(old_settings) | set(new_settings) if old_settings.get(key) != new_settings.get(key)}
+                    if candidate["type"] in {"onebot", "aiocqhttp"}:
+                        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
+                        if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id:
+                            try:
+                                store = GroupConfigStore(self._storage.platform_db(platform_id))
+                                await asyncio.to_thread(store.check_legacy_source, adapter.bot_self_id, new_settings)
+                            except Exception as error:
+                                result.update(status="failed", reason="legacy_group_config_conflict", error=str(error))
+                                results.append(result)
+                                continue
                     runtime_usable = not self._running or not adapter.config.enable or (adapter.started and adapter._run_task is not None and not adapter._run_task.done())
                     if runtime_usable and previous == proposed and (not changed or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
                         adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})))
@@ -852,6 +1768,8 @@ class BackendManager:
         - platform_id: 目标平台 ID
         - candidate: 已校验的目标配置, None 表示删除
         """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
         manager = self._adapter_mgr
         dispatcher = self._dispatcher
         if manager is None or dispatcher is None:
@@ -877,6 +1795,13 @@ class BackendManager:
             ), event_handler=old.event_handler if old else self.platform_events)
             if replacement is None:
                 raise ValueError("平台类型不可用")
+            if isinstance(replacement, OneBotAdapter):
+                replacement.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(platform_id)))
+                replacement.set_group_sync_handler(lambda: self.trigger_group_sync(platform_id, replacement.bot_self_id))
+                replacement.group_action_handler = lambda group_id, action_type, params: self.submit_group_action(
+                    platform_id, replacement.bot_self_id, group_id, secrets.token_hex(16),
+                    action_type, params, actor_kind="model",
+                )
             self._attach_send_attempt_recorder(replacement)
             self._attach_request_ledger(replacement)
         try:
@@ -896,10 +1821,21 @@ class BackendManager:
                 manager._adapters[platform_id] = replacement
                 self._platform_runtimes[platform_id][0].plugin_environment = PluginEnvironment("platform", replacement.config.type)
                 await dispatcher.attach_adapter(replacement)
+                if isinstance(replacement, OneBotAdapter) and replacement._client_connected and replacement.bot_self_id:
+                    await self.trigger_group_sync(platform_id, replacement.bot_self_id)
             else:
                 manager._adapters.pop(platform_id, None)
             if self._scheduler is not None:
                 self._scheduler.set_platform_runtimes(self._platform_runtimes)
+            if isinstance(old, OneBotAdapter) and old.bot_self_id and (
+                candidate is None or isinstance(replacement, OneBotAdapter)
+                and replacement.bot_self_id and replacement.bot_self_id != old.bot_self_id
+            ):
+                store = await self._group_action_store(platform_id)
+                await asyncio.to_thread(
+                    store.expire_account, old.bot_self_id,
+                    "platform_deleted" if candidate is None else "account_changed",
+                )
         except BaseException as error:
             logger.warning(f"[BackendManager] 平台 {platform_id} 替换失败, 回滚旧实例: {type(error).__name__}: {error}")
             try:
@@ -1185,6 +2121,7 @@ class BackendManager:
         self._model_cfg = ModelConfigManager(
             storage_path=self.config.model_config_path,
             asr_in_use_checker=self._check_asr_in_use,
+            llm_in_use_checker=self._check_llm_in_use,
         )
         logger.info("[BackendManager] ModelConfigManager 就绪")
 
@@ -1196,6 +2133,24 @@ class BackendManager:
             config_name,
             platforms=list(self.config.platforms),
             layout=self._storage,
+        )
+
+    def _check_llm_in_use(self, config_name: str) -> list[dict[str, str]]:
+        """模型删除或重命名前扫描全部当前平台的群覆盖"""
+        from satrap.core.config.group_references import list_group_references
+
+        return list_group_references(
+            "llm", config_name, layout=self._storage,
+            platform_ids=[str(item.get("id") or "") for item in self.config.platforms],
+        )
+
+    def group_resource_references(self, target: str, name: str) -> list[dict[str, str]]:
+        """命名会话配置变更前扫描群绑定"""
+        from satrap.core.config.group_references import list_group_references
+
+        return list_group_references(
+            target, name, layout=self._storage,
+            platform_ids=[str(item.get("id") or "") for item in self.config.platforms],
         )
 
     def _init_session_class_config(self):
@@ -1403,6 +2358,8 @@ class BackendManager:
         - ptype: 平台类型
         - pcfg: 原始平台配置
         """
+        from satrap.core.platform.onebot.adapter import OneBotAdapter
+
         if self._adapter_mgr is None:
             raise RuntimeError("平台运行时未初始化")
         session_provider = str(pcfg.get("session_provider", SESSION_CLASS_PROVIDER)).strip() or SESSION_CLASS_PROVIDER
@@ -1424,6 +2381,13 @@ class BackendManager:
         adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
         if adapter is None:
             raise ValueError("平台类型不可用")
+        if isinstance(adapter, OneBotAdapter):
+            adapter.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(pid)))
+            adapter.set_group_sync_handler(lambda: self.trigger_group_sync(pid, adapter.bot_self_id))
+            adapter.group_action_handler = lambda group_id, action_type, params: self.submit_group_action(
+                pid, adapter.bot_self_id, group_id, secrets.token_hex(16),
+                action_type, params, actor_kind="model",
+            )
         self._attach_send_attempt_recorder(adapter)
         self._attach_request_ledger(adapter)
         self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
@@ -1446,6 +2410,8 @@ class BackendManager:
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
         if self.platform_events.closed:
             self.platform_events = PlatformEventHub()
+        self._group_events = GroupEventBuffer()
+        self.platform_events.subscribe("*", self._group_events.append)
         set_current_hub(self.platform_events)
         set_current_adapter_manager(self._adapter_mgr)
 

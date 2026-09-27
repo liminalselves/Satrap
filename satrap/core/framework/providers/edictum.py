@@ -376,7 +376,9 @@ class EdictumProvider:
         if models is not None:
             models.reload()
         if not any(item.status == "pending" for item in state.plugins):
-            result = await self.reconcile_session_plugins_async(session)
+            result = await self.reconcile_session_plugins_async(
+                session, desired_plugins=getattr(session, "_satrap_group_plugins", None),
+            )
             if not result.get("ok", False):
                 raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
             return
