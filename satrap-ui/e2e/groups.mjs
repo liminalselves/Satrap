@@ -73,11 +73,18 @@ try {
       assert.equal(payload.expected_self_id, '100');
       assert.equal(payload.expected_revision, config.revision);
       config = structuredClone(config);
+      const previousSection = config.explicit[payload.section];
       config.explicit[payload.section] = payload.values;
       config.revision += 1;
       config.saved_revision = config.revision;
       config.active_revision = config.revision;
       if (payload.section === 'session') {
+        if (JSON.stringify(previousSection?.binding) !== JSON.stringify(payload.values.binding)
+          || JSON.stringify(previousSection?.scope) !== JSON.stringify(payload.values.scope)) {
+          config.route_generation += 1;
+          config.session_instances.current_route_count = 0;
+        }
+        config.effective.session.scope = payload.values.scope?.value || 'legacy_user';
         for (const key of ['model', 'prompt', 'plugins']) {
           if (payload.values[key]?.mode === 'value') {
             config.effective.session[key] = payload.values[key].value;
@@ -529,6 +536,21 @@ try {
   await page.getByText('当前连接账号不同, 此账号的群配置只读').waitFor();
   assert.equal(await page.locator('label:has-text("范围来源") select').inputValue(), 'inherit');
   assert.equal(await page.getByRole('button', { name: '保存并应用' }).count(), 0);
+  conflict = false;
+  await page.goto(`${origin}/platforms/ob/groups/456/session?account=100`);
+  await page.getByText('模型与提示词').waitFor();
+  await page.locator('label:has-text("范围来源") select').selectOption('value');
+  await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+  await page.getByRole('button', { name: '保存并应用' }).click();
+  await Promise.all([
+    page.waitForResponse((response) => response.url().includes('/groups/456/config') && response.request().method() === 'PATCH'),
+    page.getByRole('button', { name: '确认保存并切换' }).click(),
+  ]);
+  assert.deepEqual(writes.at(-1).values.scope, { mode: 'value', value: 'group_shared' });
+  assert.equal(config.route_generation, 1);
+  await page.getByText('当前路由可归属实例: 0').waitFor();
+  await page.getByRole('link', { name: '查看本群可归属实例' }).click();
+  await page.getByText('session-a', { exact: true }).waitFor();
   assert.deepEqual(errors, []);
   console.log(`groups E2E passed; screenshots: ${artifacts}`);
 } finally {
