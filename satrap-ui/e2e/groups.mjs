@@ -260,6 +260,20 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-session.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('label:has-text("范围来源") select').selectOption('value');
+  await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+  await page.getByRole('button', { name: '保存并应用' }).click();
+  const impactDialog = page.getByRole('dialog', { name: '切换会话绑定或范围' });
+  await impactDialog.getByText('此后使用新会话; 原历史保留, 不自动迁移').waitFor();
+  assert.equal(await impactDialog.evaluate((element) => element.contains(document.activeElement)), true);
+  await page.keyboard.press('Shift+Tab');
+  assert.equal(await impactDialog.getByRole('button', { name: '确认保存并切换' })
+    .evaluate((element) => element === document.activeElement), true);
+  await page.getByRole('button', { name: '取消' }).click();
+  assert.equal(await page.getByRole('button', { name: '保存并应用' })
+    .evaluate((element) => element === document.activeElement), true);
+  await page.locator('label:has-text("本群范围") select').selectOption('group_member');
+  await page.locator('label:has-text("范围来源") select').selectOption('inherit');
   await page.getByRole('link', { name: '审批与记录' }).click();
   await page.getByText('action-123456').waitFor();
   await Promise.all([
@@ -333,6 +347,18 @@ try {
   await page.getByRole('button', { name: '提示词恢复继承' }).click();
   await page.getByRole('button', { name: '插件恢复继承' }).click();
   assert.equal(await page.getByRole('button', { name: '保存并应用' }).isEnabled(), true);
+  await page.locator('label:has-text("范围来源") select').selectOption('value');
+  await page.locator('label:has-text("本群范围") select').selectOption('group_shared');
+  let discardPrompt = 0;
+  page.once('dialog', async (dialog) => {
+    assert.equal(dialog.message(), '当前表单有未保存的修改, 确定放弃吗?');
+    discardPrompt += 1;
+    await dialog.dismiss();
+  });
+  await page.getByRole('link', { name: '响应策略', exact: true }).click();
+  assert.equal(discardPrompt, 1);
+  assert.equal(new URL(page.url()).pathname.endsWith('/session'), true);
+  assert.equal(await page.locator('label:has-text("本群范围") select').inputValue(), 'group_shared');
   assert.deepEqual(errors, []);
   console.log(`groups E2E passed; screenshots: ${artifacts}`);
 } finally {
