@@ -2,8 +2,10 @@ from pathlib import Path
 from pathlib import Path
 from pathlib import Path
 import base64
+import asyncio
 import pytest
 import os
+from typing import Any, cast
 
 from satrap.core.components import (
     At,
@@ -27,6 +29,7 @@ from satrap.core.components import (
     Unknown,
     Video,
     file_token_service,
+    preferred_media_source,
     set_callback_api_base,
 )
 
@@ -209,6 +212,25 @@ async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
         "type": "file",
         "data": {"name": "video.bin", "file": str(path)},
     }
+
+
+def test_resolved_path_is_not_serialized():
+    image = Image(file="9f2c.image", url="https://cdn/a.png")
+    image.resolved_path = "C:/tmp/satrap-media-abc.png"
+
+    for payload in (image.toDict(), asyncio.run(image.to_dict())):
+        # 临时路径不得随出站报文泄漏到平台
+        assert "resolved_path" not in cast(dict[str, Any], payload["data"])
+
+
+def test_preferred_media_source_priority():
+    image = Image(file="9f2c.image", url="https://cdn/a.png")
+    assert preferred_media_source(image) == "https://cdn/a.png"
+
+    image.resolved_path = "C:/tmp/satrap-media-abc.png"
+    assert preferred_media_source(image) == "C:/tmp/satrap-media-abc.png"
+
+    assert preferred_media_source(Image(file="9f2c.image")) == "9f2c.image"
 
 
 def test_component_types_mapping_contains_astrbot_keys():

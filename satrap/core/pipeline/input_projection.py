@@ -12,7 +12,7 @@ from typing import Any, cast
 
 from satrap.core.pipeline.attachments import AttachmentResult, render_attachments
 from satrap.core.config.platform_policy import policy_default
-from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply
+from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply, preferred_media_source
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.log import logger
@@ -23,6 +23,12 @@ FORWARD_TEXT_LIMIT = 2000
 """单条转发投影进入模型输入的最大字符数"""
 FORWARD_RESOLVE_LIMIT = 2
 """每事件最多回源的顶层转发数"""
+MEDIA_PLACEHOLDERS: dict[str, str] = {"image": "[图片]", "video": "[视频]"}
+"""媒体类型到正文占位的映射, 与平台层生成的占位保持一致"""
+MEDIA_FAILED_TEXT: dict[str, str] = {"image": "[图片读取失败]", "video": "[视频读取失败]"}
+"""媒体解析失败时覆盖原占位的提示, 让模型不会以为自己已经拿到该媒体"""
+MEDIA_FAILED_FEEDBACK = "图片读取失败，暂时无法处理该图片。"
+"""纯媒体全部失败且无可读正文时回复的固定文案"""
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
@@ -48,6 +54,39 @@ class ProjectedInput:
     """none, resolved, partial 或 failed"""
     """none, resolved, partial, unavailable 或 disabled"""
     notes: tuple[str, ...] = field(default_factory=tuple)
+    media_only_unavailable: bool = False
+    """消息除失败媒体外没有任何可读内容, 调用方应直接反馈而不调用模型"""
+
+
+def media_groups(
+    components: list[BaseMessageComponent], media_type: str,
+) -> list[tuple[str, tuple[BaseMessageComponent, ...]]]:
+    """
+    从组件列表按来源归组指定类型媒体
+
+    参数:
+    - components: 组件列表
+    - media_type: image 或 video
+
+    返回:
+    - list[tuple[str, tuple[BaseMessageComponent, ...]]]: 来源与共享该来源的组件, 去重保序;
+      无来源的组件不产生条目
+    """
+    groups: dict[str, list[BaseMessageComponent]] = {}
+    order: list[str] = []
+    for comp in components:
+        ctype = safe_getattr(comp, "type")
+        ctype_str = str(safe_getattr(ctype, "value", ctype))
+        if ctype_str.lower() != media_type:
+            continue
+        source = preferred_media_source(comp)
+        if not source:
+            continue
+        if source not in groups:
+            groups[source] = []
+            order.append(source)
+        groups[source].append(comp)
+    return [(source, tuple(groups[source])) for source in order]
 
 
 def media_sources(components: list[BaseMessageComponent], media_type: str) -> list[str]:
@@ -59,18 +98,9 @@ def media_sources(components: list[BaseMessageComponent], media_type: str) -> li
     - media_type: image 或 video
 
     返回:
-    - list[str]: URL 或文件路径, 去重保序
+    - list[str]: URL 或文件路径, 去重保序; 无来源的组件不产生条目
     """
-    urls: list[str] = []
-    for comp in components:
-        ctype = safe_getattr(comp, "type")
-        ctype_str = str(safe_getattr(ctype, "value", ctype))
-        if ctype_str.lower() != media_type:
-            continue
-        url = safe_getattr_str(comp, "url") or safe_getattr_str(comp, "file")
-        if url and url not in urls:
-            urls.append(url)
-    return urls
+    return [source for source, _ in media_groups(components, media_type)]
 
 
 async def resolve_quotes(event: MessageEvent) -> str:
@@ -158,17 +188,41 @@ async def resolve_forwards(event: MessageEvent) -> str:
     return "unavailable" if enabled else "disabled"
 
 
-def _components_brief_text(components: list[BaseMessageComponent]) -> str:
+def media_failures(event: MessageEvent) -> dict[str, str]:
+    """
+    取本次请求的媒体解析失败项
+
+    参数:
+    - event: 当前事件
+
+    返回:
+    - dict[str, str]: 解析失败的来源到原因码; 未运行解析阶段时为空字典
+    """
+    results = event.get_extra("media_resolution")
+    failures: dict[str, str] = {}
+    if not isinstance(results, (list, tuple)):
+        return failures
+    for item in cast(list[Any], results):
+        source = safe_getattr_str(item, "source")
+        status = safe_getattr_str(item, "status")
+        if source and status and status != "resolved":
+            failures[source] = safe_getattr_str(item, "reason") or "media_unavailable"
+    return failures
+
+
+def _components_brief_text(components: list[BaseMessageComponent], failures: dict[str, str] | None = None) -> str:
     """
     生成节点正文的单行摘要, 嵌套转发与引用只保留占位
 
     参数:
     - components: 节点正文组件
+    - failures: 媒体解析失败项, 命中时该媒体输出失败提示而不是普通占位
 
     返回:
     - str: 供转发投影使用的纯文本摘要
     """
     parts: list[str] = []
+    failed = failures or {}
     for comp in components:
         ctype = safe_getattr(comp, "type")
         ctype_str = str(safe_getattr(ctype, "value", ctype)).lower()
@@ -176,10 +230,10 @@ def _components_brief_text(components: list[BaseMessageComponent]) -> str:
             parts.append(safe_getattr_str(comp, "text"))
         elif ctype_str == "at":
             parts.append(f"@{safe_getattr_str(comp, 'qq')}")
-        elif ctype_str == "image":
-            parts.append("[图片]")
-        elif ctype_str == "video":
-            parts.append("[视频]")
+        elif ctype_str in ("image", "video"):
+            parts.append(
+                MEDIA_FAILED_TEXT[ctype_str] if preferred_media_source(comp) in failed else MEDIA_PLACEHOLDERS[ctype_str]
+            )
         elif ctype_str == "record":
             parts.append("[语音]")
         elif ctype_str == "file":
@@ -191,6 +245,34 @@ def _components_brief_text(components: list[BaseMessageComponent]) -> str:
         elif ctype_str == "reply":
             parts.append("[回复]")
     return "".join(parts)
+
+
+def _rewrite_media_placeholders(
+    text: str, components: list[BaseMessageComponent], failures: dict[str, str],
+) -> str:
+    """
+    按组件顺序把解析失败的媒体占位覆盖为失败提示
+
+    参数:
+    - text: 由同一批组件生成的正文, 每个媒体组件对应一个占位
+    - components: 生成该正文的组件, 顺序必须与正文一致
+    - failures: 媒体解析失败项
+
+    返回:
+    - str: 失败媒体占位已覆盖的正文; 未失败时原样返回
+    """
+    if not failures:
+        return text
+    for comp in components:
+        ctype = safe_getattr(comp, "type")
+        ctype_str = str(safe_getattr(ctype, "value", ctype)).lower()
+        if ctype_str not in MEDIA_FAILED_TEXT:
+            continue
+        if preferred_media_source(comp) not in failures:
+            continue
+        # 按顺序逐个替换首个占位, 与组件一一对齐, 不使用无差别的全局替换
+        text = text.replace(MEDIA_PLACEHOLDERS[ctype_str], MEDIA_FAILED_TEXT[ctype_str], 1)
+    return text
 
 
 @dataclass
@@ -261,34 +343,138 @@ class ProjectionBudget:
         return "\n".join([*rendered, body]).rstrip("\n")
 
 
+@dataclass(frozen=True)
+class MediaItem:
+    """一条被选中进入模型的媒体及其来源组件"""
+
+    source: str
+    """选中时的来源, 同时作为去重键; 解析成功后组件上的 resolved_path 才是实际提交来源"""
+    media_type: str
+    """image 或 video"""
+    origin: str
+    """top, quote 或 forward"""
+    components: tuple[BaseMessageComponent, ...]
+    """共享该来源的组件, 解析结果需要写回全部组件以保证去重结论稳定"""
+
+
 class _MediaBudget:
     """引用与转发媒体共享的数量预算, 超出时记录一次诊断说明"""
 
     def __init__(self, limit: int, images: list[str], videos: list[str], notes: list[str]) -> None:
         self.remaining = limit
         self.images, self.videos, self.notes = images, videos, notes
+        self.items: list[MediaItem] = []
+        """并入成功的条目, 供下载侧知道哪些组件需要解析"""
 
-    def merge(self, components: list[BaseMessageComponent], note: str) -> None:
+    def merge(self, components: list[BaseMessageComponent], note: str, origin: str = "context") -> None:
         """
         把组件中的图片与视频并入顶层媒体列表
 
         参数:
         - components: 引用或转发节点的组件
         - note: 预算耗尽时写入的说明
+        - origin: 条目归属, quote 或 forward
         """
         for media_type, target in (("image", self.images), ("video", self.videos)):
-            for url in media_sources(components, media_type):
+            for source, grouped in media_groups(components, media_type):
                 if self.remaining <= 0:
                     self.notes.append(note)
                     break
                 # 预算耗尽只跳过当前媒体类型, 另一类型仍须检查
-                if url not in target:
-                    target.append(url)
+                if source not in target:
+                    target.append(source)
                     self.remaining -= 1
+                    self.items.append(MediaItem(source, media_type, origin, grouped))
+
+
+@dataclass(frozen=True)
+class MediaSelection:
+    """一次请求的媒体选中结果, 由下载侧与投影侧共用同一份选中真相"""
+
+    items: tuple[MediaItem, ...]
+    top_notes: tuple[str, ...] = ()
+    quote_notes: tuple[str, ...] = ()
+    forward_notes: tuple[tuple[str, ...], ...] = ()
+    """按转发顺序逐条记录, 供投影侧在对应转发位置插入预算说明"""
+
+    def sources(self, media_type: str) -> list[str]:
+        """
+        取指定类型的选中来源, 顺序与投影写入 ProjectedInput 的顺序一致
+
+        参数:
+        - media_type: image 或 video
+
+        返回:
+        - list[str]: 选中来源列表
+        """
+        return [item.source for item in self.items if item.media_type == media_type]
+
+
+def select_media(event: MessageEvent, quote_status: str) -> MediaSelection:
+    """
+    按 input_media_limit 选中会进入模型的媒体, 顶层截断与引用/转发共享同一预算
+
+    参数:
+    - event: 已完成引用与转发补全的事件
+    - quote_status: resolve_quotes 的结果, 只有 resolved 的引用才参与媒体合并
+
+    返回:
+    - MediaSelection: 有序列出去重后的选中条目与各阶段预算说明;
+      未解析的引用与转发不产生条目, 与投影的可见性判断保持一致
+    """
+    top = event.get_messages()
+    media_limit = int(event.policy_settings.get("input_media_limit", policy_default("input_media_limit")))
+    notes: list[str] = []
+
+    # Step.1 顶层媒体先按预算实际截断, 余量再供引用与转发消耗
+    top_images = media_groups(top, "image")
+    top_videos = media_groups(top, "video")
+    top_notes: tuple[str, ...] = ()
+    if len(top_images) + len(top_videos) > media_limit:
+        top_videos = top_videos[: max(0, media_limit - len(top_images))]
+        top_images = top_images[: media_limit]
+        notes.append("top_media_truncated")
+        top_notes = ("top_media_truncated",)
+    images: list[str] = []
+    videos: list[str] = []
+    items: list[MediaItem] = []
+    for media_type, target, groups in (("image", images, top_images), ("video", videos, top_videos)):
+        for source, components in groups:
+            target.append(source)
+            items.append(MediaItem(source, media_type, "top", components))
+    budget = _MediaBudget(media_limit - len(images) - len(videos), images, videos, notes)
+
+    # Step.2 引用媒体并入共享预算
+    quote_notes: tuple[str, ...] = ()
+    replies = [c for c in top if c.type == PlatformComponentType.Reply]
+    if replies and quote_status == "resolved":
+        chain = safe_getattr(replies[0], "chain")
+        quoted_components = (
+            [c for c in cast(list[Any], chain) if isinstance(c, BaseMessageComponent)]
+            if isinstance(chain, list) else []
+        )
+        before = len(notes)
+        budget.merge(quoted_components, "quote_media_truncated", "quote")
+        quote_notes = tuple(notes[before:])
+
+    # Step.3 逐个转发节点的媒体并入共享预算, 说明按转发分组以便投影就位插入
+    forward_notes: list[tuple[str, ...]] = []
+    for forward in [c for c in top if c.type == PlatformComponentType.Forward and isinstance(c, Forward)]:
+        before = len(notes)
+        for node in forward.nodes or []:
+            content = safe_getattr(node, "content")
+            node_components = (
+                [c for c in cast(list[Any], content) if isinstance(c, BaseMessageComponent)]
+                if isinstance(content, list) else []
+            )
+            budget.merge(node_components, "forward_media_truncated", "forward")
+        forward_notes.append(tuple(notes[before:]))
+    return MediaSelection((*items, *budget.items), top_notes, quote_notes, tuple(forward_notes))
 
 
 def project_input(
     event: MessageEvent, quote_status: str, forward_status: str = "none", attachments: tuple[AttachmentResult, ...] = (),
+    selection: MediaSelection | None = None,
 ) -> ProjectedInput:
     """
     组装当前正文与引用/转发上下文, 合并顶层与补全内容的媒体
@@ -298,23 +484,29 @@ def project_input(
     - quote_status: resolve_quotes 的结果
     - forward_status: resolve_forwards 的结果
     - attachments: resolve_attachments 的结果, 语音转写与文件正文作为资料块前置
+    - selection: 已算出的媒体选中结果, 调度器传入解析阶段使用的同一份; 缺省时就地重算
 
     返回:
     - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹;
       顶层媒体按 input_media_limit 实际裁剪, 文本总量按 input_text_limit 记账拼接
     """
     top = event.get_messages()
-    media_limit = int(event.policy_settings.get("input_media_limit", policy_default("input_media_limit")))
-    images = media_sources(top, "image")
-    videos = media_sources(top, "video")
-    notes: list[str] = []
-    if len(images) + len(videos) > media_limit:
-        # 顶层存量实际截断列表本身, 余量再供引用/转发媒体消耗
-        videos = videos[: max(0, media_limit - len(images))]
-        images = images[: media_limit]
-        notes.append("top_media_truncated")
-    message = event.get_message_str()
-    budget = _MediaBudget(media_limit - len(images) - len(videos), images, videos, notes)
+    selection = selection if selection is not None else select_media(event, quote_status)
+    failures = media_failures(event)
+    images: list[str] = []
+    videos: list[str] = []
+    failed_types: set[str] = set()
+    for item in selection.items:
+        # 解析成功的条目提交本地文件, 失败的条目必须排除, 否则模型层会再次对它发起回源
+        source = "" if item.source in failures else preferred_media_source(item.components[0]) if item.components else item.source
+        if not source:
+            failed_types.add(item.media_type)
+            continue
+        (images if item.media_type == "image" else videos).append(source)
+    notes: list[str] = list(selection.top_notes)
+    for source, reason in failures.items():
+        notes.append(f"media_failed:{reason}" if source else "media_failed")
+    message = _rewrite_media_placeholders(event.get_message_str(), top, failures)
     quote_blocks: list[_ContextBlock] = []
     forward_blocks: list[_ContextBlock] = []
     attachment_blocks: list[_ContextBlock] = []
@@ -333,13 +525,14 @@ def project_input(
             sender = safe_getattr_str(reply, "sender_nickname") or safe_getattr_str(reply, "sender_id") or "未知"
             own = safe_getattr_str(reply, "sender_id") == event.get_self_id()
             label = "机器人自己" if own else sender
-            budget.merge(quoted_components, "quote_media_truncated")
-            quoted_display = quoted_text or "(仅含附件)"
+            notes.extend(selection.quote_notes)
+            quoted_display = _rewrite_media_placeholders(quoted_text, quoted_components, failures) or "(仅含附件)"
             quote_blocks.append(_ContextBlock("quote", f"[引用 {label} 的消息: ", quoted_display, "]"))
         elif quote_status in {"unavailable", "disabled"}:
             quote_blocks.append(_ContextBlock("quote", "[引用了一条无法获取原文的消息]", ""))
             notes.append(f"quote_{quote_status}")
-    for forward in [c for c in top if c.type == PlatformComponentType.Forward and isinstance(c, Forward)]:
+    forwards = [c for c in top if c.type == PlatformComponentType.Forward and isinstance(c, Forward)]
+    for index, forward in enumerate(forwards):
         nodes = forward.nodes
         if not nodes:
             notes.append("forward_unresolved")
@@ -351,8 +544,9 @@ def project_input(
             name = safe_getattr_str(node, "name") or safe_getattr_str(node, "uin") or "未知"
             content = safe_getattr(node, "content")
             node_components = [c for c in cast(list[Any], content) if isinstance(c, BaseMessageComponent)] if isinstance(content, list) else []
-            lines.append(f"- {name}: {_components_brief_text(node_components) or '(仅含附件)'}")
-            budget.merge(node_components, "forward_media_truncated")
+            lines.append(f"- {name}: {_components_brief_text(node_components, failures) or '(仅含附件)'}")
+        if index < len(selection.forward_notes):
+            notes.extend(selection.forward_notes[index])
         block = "\n".join(lines)
         if len(block) > FORWARD_TEXT_LIMIT:
             block = block[:FORWARD_TEXT_LIMIT] + "…"
@@ -375,7 +569,13 @@ def project_input(
             attachment_blocks.append(_ContextBlock("attachment", "", block))
     text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
     message = ProjectionBudget(text_limit).assemble(message, [*attachment_blocks, *forward_blocks, *quote_blocks], notes)
+    # 判定必须在占位覆盖之后做: 覆盖后的正文非空, 不能用空正文判断是否值得调用模型
+    body = message
+    for placeholder in ("[图片]", "[视频]", *MEDIA_FAILED_TEXT.values()):
+        body = body.replace(placeholder, "")
+    media_only_unavailable = bool(failed_types) and not images and not videos and not body.strip()
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),
-        quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status, notes=tuple(notes),
+        quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status,
+        notes=tuple(notes), media_only_unavailable=media_only_unavailable,
     )

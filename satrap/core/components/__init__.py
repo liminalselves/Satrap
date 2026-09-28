@@ -33,6 +33,7 @@ from .message import (
     file_token_service,
     get_callback_api_base,
     get_satrap_temp_path,
+    preferred_media_source,
     set_callback_api_base,
 )
 
@@ -70,5 +71,6 @@ __all__ = [
     "file_token_service",
     "get_callback_api_base",
     "get_satrap_temp_path",
+    "preferred_media_source",
     "set_callback_api_base",
 ]

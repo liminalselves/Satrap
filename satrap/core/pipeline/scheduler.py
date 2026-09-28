@@ -32,7 +32,15 @@ from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
 from satrap.core.pipeline.wake_window import PendingText, WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
-from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
+from satrap.core.pipeline.input_projection import (
+    MEDIA_FAILED_FEEDBACK,
+    media_sources,
+    project_input,
+    resolve_forwards,
+    resolve_quotes,
+    select_media,
+)
+from satrap.core.pipeline.media_resolve import resolve_media
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError, SendAttemptRecord
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
@@ -564,10 +572,22 @@ class PipelineScheduler:
                 quote_status = await resolve_quotes(event)
                 forward_status = await resolve_forwards(event)
                 attachments = await resolve_attachments(event, self.asr_resolver)
-                projected = project_input(event, quote_status, forward_status, attachments)
+                # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
+                selection = select_media(event, quote_status)
+                media_results = await resolve_media(event, selection)
+                event.set_extra("media_resolution", media_results)
+                projected = project_input(event, quote_status, forward_status, attachments, selection)
                 event.set_extra("input_projection", projected)
-                self._record_projection(event, quote_status, forward_status, attachments, projected)
+                # 只把失败的媒体送进诊断通道: 解析成功的条目不需要诊断码
+                diagnostic_items = [*(item for item in media_results if item.status != "resolved"), *attachments]
+                self._record_projection(event, quote_status, forward_status, diagnostic_items, projected)
                 message, images, videos = projected.message, list(projected.images), list(projected.videos)
+                if projected.media_only_unavailable:
+                    # 纯媒体消息的媒体全部解析失败: 确定性反馈后结束, 不调用模型
+                    if self.error_feedback:
+                        await self._send_feedback(event, MEDIA_FAILED_FEEDBACK)
+                    manual_detail = "media_unavailable"
+                    return
                 if not message and not images and not videos:
                     manual_detail = "empty_message"
                     return

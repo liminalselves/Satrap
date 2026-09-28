@@ -69,6 +69,7 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "get_group_member_info": ("read", "获取群成员信息"),
     "get_group_honor_info": ("read", "获取群荣誉信息"),
     "get_record": ("read", "获取语音并由实现服务端转码 (get_record out_format)"),
+    "get_image": ("read", "获取图片信息并刷新已过期的上报地址 (get_image)"),
     "fetch_ptt_text": ("read", "QQ 原生语音转文字 (fetch_ptt_text)"),
     "recall_message": ("write", "撤回消息 (delete_msg)"),
     "kick_group_member": ("write", "移出群成员"),
@@ -97,6 +98,7 @@ _CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
     "get_group_member_info": ("get_group_member_info",),
     "get_group_honor_info": ("get_group_honor_info",),
     "get_record": ("get_record",),
+    "get_image": ("get_image",),
     "fetch_ptt_text": ("fetch_ptt_text",),
     "recall_message": ("delete_msg",),
     "kick_group_member": ("set_group_kick",),
@@ -464,6 +466,35 @@ class OneBotAdmin:
             "group_id", "user_id", "nickname", "card", "role", "join_time",
             "last_sent_time", "title", "level", "sex", "shut_up_timestamp",
         )}
+
+    async def get_image(self, file: str) -> dict[str, Any]:
+        """
+        回源读取实现缓存的图片信息, 用于刷新已过期的上报地址
+
+        参数:
+        - file: 上报 image 段的 file 或 url 字段
+
+        返回:
+        - dict[str, Any]: file, url 与 file_name; url 是重新解析后的可下载地址;
+          实现不支持该动作时抛 UnsupportedAdminAction, 图片不在实现缓存时抛 AdminActionRejected
+        """
+        source = str(file).strip()
+        if not source:
+            raise ValueError("图片标识不能为空")
+        if len(source) > 512 or any(unicodedata.category(ch) == "Cc" for ch in source):
+            # 合法值是实现自定义的文件 ID 或 URL, 不做路径语义假设, 只挡控制字符与异常长度
+            raise ValueError("图片标识超长或含控制字符")
+        result = await self._call("get_image", timeout=ADMIN_TIMEOUT, file=source)
+        payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        url = str(payload.get("url") or "")
+        if not url:
+            # 实现返回空地址说明图片已不在其缓存中, 无法恢复
+            raise AdminActionRejected("实现未返回可下载的图片地址")
+        return {
+            "file": str(payload.get("file") or source),
+            "url": url,
+            "file_name": str(payload.get("file_name") or ""),
+        }
 
     async def get_record(self, file: str, out_format: str, max_bytes: int) -> bytes:
         """

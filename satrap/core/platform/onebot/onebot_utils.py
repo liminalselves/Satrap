@@ -22,6 +22,7 @@ from satrap.core.components import (
     Reply,
     Unknown,
     Video,
+    preferred_media_source,
 )
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
 
@@ -164,14 +165,13 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
             components.append(Face(id=data.get("id", "")))
             text_parts.append(f"[表情:{data.get('id', '')}]")
         elif seg_type == "image":
-            source = str(data.get("url") or data.get("file") or "")
-            components.append(Image(file=source, url=str(data.get("url", ""))))
+            components.append(Image(file=str(data.get("file", "")), url=str(data.get("url", ""))))
             text_parts.append("[图片]")
         elif seg_type == "record":
-            components.append(Record(file=str(data.get("url") or data.get("file") or "")))
+            components.append(Record(file=str(data.get("file", "")), url=str(data.get("url", ""))))
             text_parts.append("[语音]")
         elif seg_type == "video":
-            components.append(Video(file=str(data.get("url") or data.get("file") or "")))
+            components.append(Video(file=str(data.get("file", "")), url=str(data.get("url", ""))))
             text_parts.append("[视频]")
         elif seg_type == "file":
             components.append(
@@ -290,11 +290,11 @@ async def component_to_onebot_segment(component: BaseMessageComponent) -> dict[s
     if isinstance(component, Face):
         return {"type": "face", "data": {"id": str(component.id)}}
     if isinstance(component, Image):
-        return {"type": "image", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "image", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, Record):
-        return {"type": "record", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "record", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, Video):
-        return {"type": "video", "data": {"file": _normalize_file_source(component.file or component.url or "")}}
+        return {"type": "video", "data": {"file": _normalize_file_source(preferred_media_source(component))}}
     if isinstance(component, File):
         return await component.to_dict()
     if isinstance(component, Reply):

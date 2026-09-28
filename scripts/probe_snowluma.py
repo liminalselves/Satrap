@@ -14,7 +14,7 @@ import re
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import MessageChain
-from satrap.core.components import File, Plain
+from satrap.core.components import File, Image, Plain
 from satrap.core.platform import PlatformConfig
 from satrap.core.config.group_directory import GroupDirectoryStore
 
@@ -231,6 +231,22 @@ async def probe(installation: Path) -> dict[str, object]:
             assert second_group.get_group_id() == "20001" and second_group.get_message_str() == "第二群"
             adapter._event_queue.task_done()
 
+            # 入站图片: SnowLuma 上报形态为 {url, file: fileId, sub_type, summary},
+            # 两个标识都必须保留, 否则后续无法经 get_image 刷新过期的 url
+            await command({"type": "event", "event": {"time": 1, "self_id": 10000, "post_type": "message",
+                "message_type": "group", "sub_type": "normal", "group_id": 20000, "user_id": 30000,
+                "message_id": 5, "sender": {"user_id": 30000, "nickname": "probe"},
+                "message": [{"type": "image", "data": {
+                    "url": "https://multimedia.example.invalid/download?rkey=probe",
+                    "file": "probe-image.image", "sub_type": 0, "summary": "[图片]"}}]}})
+            image_event = await asyncio.wait_for(adapter._event_queue.get(), 5)
+            images = [item for item in image_event.get_messages() if isinstance(item, Image)]
+            assert len(images) == 1, images
+            assert images[0].file == "probe-image.image", images[0].file
+            assert images[0].url == "https://multimedia.example.invalid/download?rkey=probe", images[0].url
+            assert "[图片]" in image_event.get_message_str()
+            adapter._event_queue.task_done()
+
             # 混合链分流: Plain/File/Plain 按原序经真实网络层到达模拟 QQ 动作
             await command({"type": "dump_actions"})
             assert (await asyncio.wait_for(process.stdout.readline(), 5)).startswith(b"ACTIONS ")
@@ -289,6 +305,7 @@ async def probe(installation: Path) -> dict[str, object]:
             return {"version": json.loads((installation / "package.json").read_text(encoding="utf-8"))["version"],
                     "bundle_sha256": digest, "event_roundtrips": 3, "group_isolation": "selected_then_enabled", "correlated_actions": 4, "reconnect": "passed", "wrong_token": "rejected",
                     "mixed_chain": "ordered_upload_split", "partial": "confirmed_prefix", "drop": "unknown", "file_fallback": "unknown:file_delivery_unconfirmed",
+                    "inbound_image": "file_and_url_preserved",
                     "transport": "installed WsClientAdapter and native websocket", "qq": "simulated"}
         finally:
             if process is not None and process.returncode is None:

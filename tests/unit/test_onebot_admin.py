@@ -196,6 +196,29 @@ class TestVoiceActions:
             await adapter.admin.get_record("f", "wav", max_bytes=10)
 
     @pytest.mark.asyncio
+    async def test_get_image_normalizes_refreshed_url(self):
+        adapter = _adapter()
+        adapter._bot.get_image.return_value = {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+        info = await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.assert_awaited_once_with(file="9f2c.image")
+        assert info == {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+
+    @pytest.mark.asyncio
+    async def test_get_image_rejects_empty_source_and_missing_url(self):
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="图片标识"):
+            await adapter.admin.get_image("   ")
+        with pytest.raises(ValueError, match="控制字符"):
+            await adapter.admin.get_image("a\nb")
+        # 实现返回空地址表示图片已不在缓存, 不可当作成功
+        adapter._bot.get_image.return_value = {"file": "9f2c.image", "url": ""}
+        with pytest.raises(AdminActionRejected, match="图片地址"):
+            await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.side_effect = ActionFailed({"retcode": 10002})
+        with pytest.raises(UnsupportedAdminAction):
+            await adapter.admin.get_image("9f2c.image")
+
+    @pytest.mark.asyncio
     async def test_fetch_ptt_text_returns_text_or_empty(self):
         adapter = _adapter()
         adapter._bot.fetch_ptt_text.return_value = {"text": "你好"}
