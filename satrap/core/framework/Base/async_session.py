@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 import inspect, uuid
+from functools import wraps
 from pathlib import Path
 from typing import Optional, Callable, Any, Awaitable
 from typing import TYPE_CHECKING
@@ -38,6 +39,8 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
                 await self._ensure_initialized()
                 return await run(self, *args, **kw)
 
+            # 包装必须透传原签名: 参数适配按 run 签名决定是否传入 img_urls, *args 会让媒体输入被静默丢弃
+            wraps(run)(_wrapped_run)
             cls.run = _wrapped_run
 
     plugin_override_store: "SessionOverrideStore | None" = None

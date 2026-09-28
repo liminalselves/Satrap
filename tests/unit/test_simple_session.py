@@ -24,8 +24,9 @@ import time
 
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.utils.skills import SkillsManager
-from satrap.core.type import LLMCallResponse, LLMCallStreamEvent
+from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, UserCall
 from satrap.edictum import (
     AsyncSimpleSession,
     HandlerAbortError,
@@ -239,6 +240,30 @@ def test_run_multimodal_img_urls(tmp_path: Path):
     user = next(m for m in llm.calls[0]["messages"] if m["role"] == "user")
     assert user["content"][1]["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
     assert len(user["content"]) == 2
+
+
+def test_async_run_signature_forwards_media_params(tmp_path: Path):
+    """
+    平台入口: run 签名须暴露媒体参数, 否则 SessionManager 的参数适配会静默丢弃 img_urls
+
+    参数:
+    - tmp_path: tmp路径
+    """
+    session = AsyncSimpleSession(
+        "conv-media", _FakeAsyncLLM(), db_path=str(tmp_path / "chat.db"), enable_checkpoint=False,
+    )
+    call = UserCall(
+        session_id="conv-media", session_provider="edictum", session_type="onebot-edictum",
+        message="[图片]看图", img_urls=["data:image/png;base64,aW1hZ2U="],
+        video_urls=["data:video/mp4;base64,aW1hZ2U="],
+    )
+
+    assert SessionManager._build_run_args(session.run, call) == (
+        "[图片]看图", ["data:image/png;base64,aW1hZ2U="],
+    )
+    assert SessionManager._build_media_kwargs(session.run, call) == {
+        "video_urls": ["data:video/mp4;base64,aW1hZ2U="],
+    }
 
 
 # ================= 工具管理 =================
