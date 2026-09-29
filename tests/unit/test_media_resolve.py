@@ -219,7 +219,35 @@ class TestResolveMedia:
         assert [item.status for item in results] == ["resolved"]
         assert [item.reason for item in results] == ["image_url_refreshed"]
         assert calls == ["https://cdn/expired.png", "https://cdn/fresh.png"]
-        adapter._bot.get_image.assert_awaited_once_with(file="https://cdn/expired.png")
+        # 必须优先用入站保留的原始标识请求刷新, 旧地址只是靠 URL alias 才可用的兜底
+        adapter._bot.get_image.assert_awaited_once_with(file="9f2c.image")
+        event.cleanup_temporary_local_files()
+
+    @pytest.mark.asyncio
+    async def test_refresh_falls_back_to_reported_url(self, monkeypatch: pytest.MonkeyPatch):
+        adapter, event = await make_event({}, [
+            {"type": "image", "data": {"file": "9f2c.image", "url": "https://cdn/expired.png"}},
+            {"type": "at", "data": {"qq": "10000"}},
+        ])
+
+        async def fake_get_image(**kwargs: object) -> dict[str, str]:
+            """只在以上报地址请求时返回刷新后的地址, 模拟不认原始标识的实现"""
+            if kwargs.get("file") == "https://cdn/expired.png":
+                return {"file": "fresh.png", "url": "https://cdn/fresh.png"}
+            return {"file": "", "url": ""}
+
+        adapter._bot.get_image.side_effect = fake_get_image
+        calls = _patch_download(monkeypatch, [RuntimeError("HTTP 400"), PNG])
+        selection = select_media(event, "none")
+
+        results = await resolve_media(event, selection)
+
+        assert [item.status for item in results] == ["resolved"]
+        assert calls == ["https://cdn/expired.png", "https://cdn/fresh.png"]
+        # 原始标识未被识别时仍要退回上报地址, 不能直接判定失败
+        assert [call.kwargs["file"] for call in adapter._bot.get_image.await_args_list] == [
+            "9f2c.image", "https://cdn/expired.png",
+        ]
         event.cleanup_temporary_local_files()
 
     @pytest.mark.asyncio

@@ -2,7 +2,8 @@
 入站媒体解析与 OneBot 回源刷新
 
 在唤醒与限流之后把选中进入模型的 OneBot 上报媒体解析为本地文件: 优先直连上报地址,
-图片在地址过期时经实现动作 get_image 刷新后重试, 视频没有对应的回源动作只做直连;
+图片在地址过期时先以入站保留的原始标识、再以上报地址经实现动作 get_image 刷新后重试,
+视频没有对应的回源动作只做直连;
 解析结果写回组件的 resolved_path, 临时文件随事件清理, 失败只记录状态供投影降级,
 下载始终经事件级出站策略, 不在通用 LLM 媒体层做平台回源
 """
@@ -24,6 +25,7 @@ from satrap.core.pipeline.attachments import _admin_action, _download
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import MessageEvent
 from satrap.core.utils.media import MAX_MEDIA_BYTES
+from satrap.core.type import safe_getattr_str
 
 from satrap.core.log import logger
 
@@ -174,8 +176,12 @@ async def _resolve_item(
 
     # Step.2 图片经实现动作取回刷新后的地址再试, 视频无对应动作只走降级
     if item.media_type == "image" and get_image is not None:
-        fresh = await _refresh_image_url(get_image, source)
-        if fresh and fresh != source:
+        for key in _image_refresh_keys(item, source):
+            fresh = await _refresh_image_url(get_image, key)
+            if not fresh or fresh == source:
+                continue
+            if key != source:
+                logger.debug("[media_resolve] 原始图片标识未被实现识别, 已回退上报地址刷新")
             try:
                 result = await _download_into(event, item, fresh, trusted, verify_tls, allow_plaintext)
                 return MediaResult(source, "image", "resolved", "image_url_refreshed", result.path)
@@ -190,19 +196,19 @@ async def _resolve_item(
     return MediaResult(source, "video", "failed", "video_download_failed" if is_http else "video_unsupported_by_implementation")
 
 
-async def _refresh_image_url(get_image: Any, source: str) -> str:
+async def _refresh_image_url(get_image: Any, key: str) -> str:
     """
     经实现动作取回刷新后的图片地址
 
     参数:
     - get_image: 适配器 admin 上的图片回源动作
-    - source: 上报的图片标识或地址
+    - key: 请求键, 入站保留的原始图片标识或上报地址
 
     返回:
     - str: 刷新后的地址; 实现不支持、图片不在缓存或响应异常时返回空串
     """
     try:
-        info = cast(dict[str, Any], await get_image(source))
+        info = cast(dict[str, Any], await get_image(key))
     except UnsupportedAdminAction:
         logger.debug("[media_resolve] 当前实现不支持 get_image")
         return ""
@@ -218,6 +224,27 @@ async def _refresh_image_url(get_image: Any, source: str) -> str:
     if not isinstance(info, dict):
         return ""
     return str(cast(dict[str, Any], info).get("url") or "")
+
+
+def _image_refresh_keys(item: MediaItem, source: str) -> tuple[str, ...]:
+    """
+    按优先级排出 get_image 的请求键
+
+    参数:
+    - item: 选中条目, 组件上保留着入站 image 段的 file 标识
+    - source: 选中时的来源, 通常是上报地址
+
+    返回:
+    - tuple[str, ...]: 去重后的请求键; 原始标识在前, 上报地址只作为兜底
+    """
+    keys: list[str] = []
+    for component in item.components:
+        file_key = safe_getattr_str(component, "file")
+        if file_key and file_key not in keys:
+            keys.append(file_key)
+    if source and source not in keys:
+        keys.append(source)
+    return tuple(keys)
 
 
 async def _download_into(
