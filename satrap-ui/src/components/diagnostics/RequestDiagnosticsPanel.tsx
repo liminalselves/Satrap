@@ -40,6 +40,8 @@ const REASON_LABELS: Record<string, string> = {
   video_media_budget_dropped: '视频超出本事件媒体预算',
   video_unsupported_by_implementation: '当前实现不支持视频回源',
   media_unavailable: '媒体无法获取',
+  command_candidate: '平台命令入口已冻结正文',
+  operator_required: '受保护命令缺少操作员授权',
   not_found: '未找到该请求记录',
   scheduler_unavailable: '调度器未运行, 近期诊断不可用',
   nil: '无',

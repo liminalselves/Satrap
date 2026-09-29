@@ -108,6 +108,7 @@ export const POLICY_FIELD_LABELS: Record<string, string> = {
   media_insecure_tls: '跳过 TLS 校验',
   media_plaintext_http: '允许明文 HTTP',
   media_trusted_hosts: '媒体主机列表',
+  command_operators: '命令操作员名单',
   notice_types: '通知订阅类型',
   wake_mode: '自动参与模式',
   wake_message_threshold: '自动参与消息阈值',

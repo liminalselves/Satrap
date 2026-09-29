@@ -47,6 +47,8 @@ FROZEN_HOT_KEYS = frozenset({
     "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private",
     "input_text_limit", "input_media_limit", "message_text_limit", "asr_model", "voice_transcribe",
     "attachment_extract", "media_trusted_hosts", "media_insecure_tls", "media_plaintext_http",
+    # 命令入口的 operator 名单属平台级热更新字段: 登记后无需重启即可生效
+    "command_operators",
 })
 """迁移前的 BackendManager 手写 hot_keys"""
 
@@ -178,9 +180,18 @@ class TestGeneratedContract:
 
     def test_generated_json_excludes_backend_only_message(self):
         payload = json.loads(GENERATED.read_text(encoding="utf-8"))
-        assert payload["version"] == 1
+        assert payload["version"] == 2
         for entry in payload["fields"]:
             assert "message" not in entry
+
+    def test_generated_json_carries_command_operators(self):
+        # 命令入口的操作员名单必须进入生成契约, 前端编辑器与表单字段由它构建
+        payload = json.loads(GENERATED.read_text(encoding="utf-8"))
+        entry = next(field for field in payload["fields"] if field["key"] == "command_operators")
+        assert entry == {
+            "key": "command_operators", "kind": "list", "scope": "platform",
+            "hot_reload": True, "display_in_preview": False, "max_items": 32, "max_length": 64,
+        }
 
 
 class TestSharedCases:

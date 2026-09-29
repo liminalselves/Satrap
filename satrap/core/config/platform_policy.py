@@ -172,6 +172,10 @@ POLICY_FIELD_CONTRACT: dict[str, PolicyField] = {
         "kind": "list", "scope": "platform", "hot_reload": True, "display_in_preview": False,
         "max_items": 32, "max_length": 253,
     },
+    "command_operators": {
+        "kind": "list", "scope": "platform", "hot_reload": True, "display_in_preview": False,
+        "max_items": 32, "max_length": 64,
+    },
     "notice_types": {
         "kind": "notice_types", "scope": "platform", "hot_reload": False, "display_in_preview": False,
         "max_items": 64, "nullable": True,

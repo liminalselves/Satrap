@@ -380,6 +380,7 @@ export function Platforms() {
         { key: 'settings.media_insecure_tls', label: '媒体下载跳过 TLS 证书校验', type: 'checkbox', placeholder: '默认关闭; 仅对下方登记的主机生效 (自签证书场景), 公网下载始终校验' },
         { key: 'settings.media_plaintext_http', label: '允许公网明文 HTTP 媒体下载', type: 'checkbox', placeholder: '默认关闭; 开启后公网 http:// 附件地址也允许下载, 明文传输可被窃听篡改; 登记主机不受影响' },
         { key: 'settings.media_trusted_hosts', label: '允许访问私网的媒体主机（可选）', type: 'textarea', rows: 2, placeholder: '每行一个主机名; SnowLuma 提供的内网下载地址需在此登记, 否则出站防护会拒绝' },
+        { key: 'settings.command_operators', label: '命令操作员名单（留空则拒绝全部受保护命令）', type: 'textarea', rows: 2, placeholder: '每行一个平台用户 ID; 只有名单内的成员能执行 /approve 与 /plan, 群管理员身份不作数' },
         { key: 'settings.wake_words', label: '唤醒词（留空不启用词语触发）', type: 'textarea', rows: 3, placeholder: '每行一个唤醒词, 匹配当前消息正文' },
         { key: 'settings.wake_dry_run_preview', label: '唤醒规则试算预览', type: 'custom', render: () => <WakeDryRunPanel settings={previewSettings} blockedReason={draftError} /> },
       ];
@@ -436,6 +437,7 @@ export function Platforms() {
     'settings.voice_transcribe': formData.settings.voice_transcribe ?? 'asr',
     'settings.attachment_extract': formData.settings.attachment_extract ?? true,
     'settings.media_trusted_hosts': Array.isArray(formData.settings.media_trusted_hosts) ? formData.settings.media_trusted_hosts.join('\n') : formData.settings.media_trusted_hosts ?? '',
+    'settings.command_operators': Array.isArray(formData.settings.command_operators) ? formData.settings.command_operators.join('\n') : formData.settings.command_operators ?? '',
     'settings.wake_group_overrides': groupDraftRows,
     'settings.wake_time_rules': timeDraftRows,
     'settings.wake_dry_run_preview': undefined,

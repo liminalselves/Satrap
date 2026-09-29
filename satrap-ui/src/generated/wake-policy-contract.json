@@ -18,6 +18,15 @@
     {
       "display_in_preview": false,
       "hot_reload": true,
+      "key": "command_operators",
+      "kind": "list",
+      "max_items": 32,
+      "max_length": 64,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
       "key": "context_scope",
       "kind": "scope",
       "scope": "platform"
@@ -299,5 +308,5 @@
       "scope": "group"
     }
   ],
-  "version": 1
+  "version": 2
 }

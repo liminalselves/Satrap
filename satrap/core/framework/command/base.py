@@ -1,5 +1,11 @@
 from typing import Any, Optional, Dict, List, Tuple
 
+DEFAULT_COMMAND_PREFIX = "/"
+"""默认命令前缀, 命令处理器构造默认值与平台命令入口判定共用同一事实来源"""
+
+DEFAULT_COMMAND_PARAM_SPLIT = " "
+"""默认命令参数分隔符, 平台入口取命令名与会话层解析共用同一事实来源"""
+
 
 class _CommandRegistry:
     commands: Dict[str, Any]

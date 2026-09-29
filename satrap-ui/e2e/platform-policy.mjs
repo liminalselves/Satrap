@@ -289,9 +289,14 @@ try {
   const overriddenTalkHint = await talkField.getAttribute('placeholder');
   assert.doesNotMatch(overriddenTalkHint, /被显式阈值覆盖|关闭自动参与/);
   await talkField.fill('0');
+  // 命令操作员名单: 每行一项, 保存为字符串列表; 提示写明只有名单内的成员能执行受保护命令
+  const operators = dialog.getByLabel('命令操作员名单', { exact: false });
+  assert.match(await operators.getAttribute('placeholder'), /只有名单内的成员能执行/);
+  await operators.fill(' 10001 \n\n10002 ');
   await dialog.getByRole('button', { name: '保存修改' }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(writes.at(-1).id, 'legacy-bot');
+  assert.deepEqual(writes.at(-1).settings.command_operators, ['10001', '10002']);
   assert.equal(writes.at(-1).settings.input_text_limit, 500);
   assert.equal(writes.at(-1).settings.input_media_limit, 4);
   // 0 按数字保存, 不能被当作空值丢弃
@@ -301,6 +306,8 @@ try {
   await legacyRow.getByTitle('编辑', { exact: true }).click();
   assert.equal(await dialog.getByLabel('单条消息输入文本预算', { exact: false }).inputValue(), '500');
   assert.equal(await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).inputValue(), '4');
+  // 列表往返: 保存的数组在表单里还原成每行一项的文本
+  assert.equal(await dialog.getByLabel('命令操作员名单', { exact: false }).inputValue(), '10001\n10002');
   const reopenedTalk = dialog.getByLabel('发言频率偏好 talk_value', { exact: false });
   assert.equal(await reopenedTalk.inputValue(), '0');
   // 清空表示未设置: 保存后该键被删除, 其余字段不受影响

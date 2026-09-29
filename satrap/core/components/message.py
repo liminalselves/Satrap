@@ -568,6 +568,22 @@ class AtAll(At):
         super().__init__(**kwargs)
 
 
+def is_self_mention(component: BaseMessageComponent, self_id: str) -> bool:
+    """
+    判断组件是否为仅指向机器人自身的提及
+
+    参数:
+    - component: 待判定组件
+    - self_id: 机器人自身的平台 ID, 为空时恒为 False
+
+    返回:
+    - bool: 组件是 self 的 At 时为 True; AtAll 与空 self_id 一律为 False
+    """
+    if not self_id or not isinstance(component, At) or isinstance(component, AtAll):
+        return False
+    return str(component.qq) != "all" and str(component.qq) == self_id
+
+
 class RPS(BaseMessageComponent):
     """猜拳消息组件"""
 

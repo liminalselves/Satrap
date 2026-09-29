@@ -63,7 +63,7 @@ export function normalizePlatformSettings(
       const value = settings[key];
       if (typeof value === 'string') normalized[key] = value.split('\n').map((item) => item.trim()).filter(Boolean);
     }
-    for (const key of ['notice_types', 'media_trusted_hosts']) {
+    for (const key of ['notice_types', 'media_trusted_hosts', 'command_operators']) {
       const value = settings[key];
       if (typeof value !== 'string') continue;
       const items = value.split('\n').map((item) => item.trim()).filter(Boolean);
@@ -91,7 +91,7 @@ export function normalizePlatformSettings(
     return normalized;
   }
   if (type === 'misskey') {
-    return {
+    const normalized: Record<string, unknown> = {
       ...settings,
       base_url: String(settings.base_url ?? ''),
       api_token: String(settings.api_token ?? ''),
@@ -101,6 +101,14 @@ export function normalizePlatformSettings(
       misskey_default_visibility: String(settings.misskey_default_visibility ?? 'public'),
       misskey_local_only: Boolean(settings.misskey_local_only ?? false),
     };
+    // 命令操作员名单属平台级字段且对全部适配器生效, 表单同样以每行一项提交
+    const operators = settings.command_operators;
+    if (typeof operators === 'string') {
+      const items = operators.split('\n').map((item) => item.trim()).filter(Boolean);
+      if (items.length) normalized.command_operators = items;
+      else delete normalized.command_operators;
+    }
+    return normalized;
   }
   return settings;
 }

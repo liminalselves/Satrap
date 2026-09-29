@@ -24,6 +24,12 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.config.platform_policy import normalize_group_whitelist, policy_default
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
+from satrap.core.pipeline.command_entry import (
+    OPERATOR_REQUIRED_FEEDBACK,
+    command_name_from_text,
+    extract_command_candidate,
+    is_operator_only_command,
+)
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import PlatformComponentType
@@ -365,6 +371,13 @@ class PipelineScheduler:
             turn_id=self._request_turn_ids(event),
         )
 
+    def _record_command(self, event: MessageEvent) -> None:
+        """平台命令入口命中: 只记既有投影阶段, 命令不产生附件与窗口产物"""
+        self._record_diagnostic(
+            event, "projection", "ok", reason_code="command_candidate",
+            reason="平台命令入口已冻结正文, 跳过上下文补全", turn_id=self._request_turn_ids(event),
+        )
+
     async def _await_send_settlement(self, store: ManualWakeStore, request_id: str, adapter_id: str) -> dict[str, Any] | None:
         """
         有界等待发送尝试收尾后再归并, 收尾超时仍返回当时证据
@@ -456,11 +469,22 @@ class PipelineScheduler:
             self._apply_wake_policy(event)
             if not event.is_private_chat() and not event.is_wake_up() and event.policy_settings.get("wake_on_quote_self") is True:
                 await self._apply_quote_wake(event)
+            # Step.2.1 平台命令入口: 在唤醒窗口与输入投影之前冻结纯命令正文, 合成事件不参与判定
+            command_text = (
+                extract_command_candidate(event)
+                if manual_ticket is None and deadline_ticket is None
+                else None
+            )
             pending = manual_ticket.snapshot if manual_ticket is not None else ()
+            automatic_eligible = (
+                not event.is_private_chat()
+                and event.policy_settings.get("wake_mode", policy_default("wake_mode")) in {"frequency", "necessity"}
+                and self._automatic_policy_current(event)
+            )
             automatic = False
             if manual_ticket is not None:
                 event.is_wake = True
-            elif not event.is_private_chat() and event.policy_settings.get("wake_mode", policy_default("wake_mode")) in {"frequency", "necessity"} and self._automatic_policy_current(event):
+            elif automatic_eligible and command_text is None:
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
                 if not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
@@ -492,7 +516,8 @@ class PipelineScheduler:
                 c.type in {PlatformComponentType.Reply, PlatformComponentType.Forward, PlatformComponentType.Record, PlatformComponentType.File}
                 for c in top_components
             )
-            if not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
+            # 命令候选的正文由组件渲染得到, 不依赖平台侧渲染文本, 因此不受该空值判定约束
+            if command_text is None and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -513,6 +538,18 @@ class PipelineScheduler:
                     )
                     manual_detail = "rate_limited"
                     return
+
+            # Step.3.1 受保护命令要求已授权操作员: 判定晚于限流, 拒绝同样受同一限流约束
+            if command_text is not None and not self._operator_allowed(event, command_text):
+                if self.error_feedback:
+                    await self._send_feedback(event, OPERATOR_REQUIRED_FEEDBACK)
+                receipt = event.last_send_receipt
+                self._record_rejection(
+                    event, "projection", "受保护命令仅允许已授权操作员执行", reason_code="operator_required",
+                    send_status=receipt.status if receipt is not None else "",
+                )
+                manual_detail = "operator_required"
+                return
 
             # Step.5 通过 UserManager 解析目标会话 (路由不依赖投影, 仍在会话锁外)
             session_id = event.session_id
@@ -568,29 +605,36 @@ class PipelineScheduler:
                         return
                     if batch:
                         self.wake_timers.cancel_route(event)
-                # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
-                quote_status = await resolve_quotes(event)
-                forward_status = await resolve_forwards(event)
-                attachments = await resolve_attachments(event, self.asr_resolver)
-                # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
-                selection = select_media(event, quote_status)
-                media_results = await resolve_media(event, selection)
-                event.set_extra("media_resolution", media_results)
-                projected = project_input(event, quote_status, forward_status, attachments, selection)
-                event.set_extra("input_projection", projected)
-                # 只把失败的媒体送进诊断通道: 解析成功的条目不需要诊断码
-                diagnostic_items = [*(item for item in media_results if item.status != "resolved"), *attachments]
-                self._record_projection(event, quote_status, forward_status, diagnostic_items, projected)
-                message, images, videos = projected.message, list(projected.images), list(projected.videos)
-                if projected.media_only_unavailable:
-                    # 纯媒体消息的媒体全部解析失败: 确定性反馈后结束, 不调用模型
-                    if self.error_feedback:
-                        await self._send_feedback(event, MEDIA_FAILED_FEEDBACK)
-                    manual_detail = "media_unavailable"
-                    return
-                if not message and not images and not videos:
-                    manual_detail = "empty_message"
-                    return
+                images: list[str] = []
+                videos: list[str] = []
+                if command_text is not None:
+                    # Step.4 命令候选: 冻结正文即唯一输入, 跳过引用/转发/附件/媒体与投影, 不产生无用下载
+                    message = command_text
+                    self._record_command(event)
+                else:
+                    # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
+                    quote_status = await resolve_quotes(event)
+                    forward_status = await resolve_forwards(event)
+                    attachments = await resolve_attachments(event, self.asr_resolver)
+                    # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
+                    selection = select_media(event, quote_status)
+                    media_results = await resolve_media(event, selection)
+                    event.set_extra("media_resolution", media_results)
+                    projected = project_input(event, quote_status, forward_status, attachments, selection)
+                    event.set_extra("input_projection", projected)
+                    # 只把失败的媒体送进诊断通道: 解析成功的条目不需要诊断码
+                    diagnostic_items = [*(item for item in media_results if item.status != "resolved"), *attachments]
+                    self._record_projection(event, quote_status, forward_status, diagnostic_items, projected)
+                    message, images, videos = projected.message, list(projected.images), list(projected.videos)
+                    if projected.media_only_unavailable:
+                        # 纯媒体消息的媒体全部解析失败: 确定性反馈后结束, 不调用模型
+                        if self.error_feedback:
+                            await self._send_feedback(event, MEDIA_FAILED_FEEDBACK)
+                        manual_detail = "media_unavailable"
+                        return
+                    if not message and not images and not videos:
+                        manual_detail = "empty_message"
+                        return
                 user_call = UserCall(
                     session_id=session_id,
                     session_provider=event.session_provider,
@@ -653,11 +697,13 @@ class PipelineScheduler:
                         await self._send_feedback(event, "请求超时, 请稍后重试")
                     manual_detail = "llm_timeout"
                     return
-                self._record_diagnostic(
-                    event, "model", "ok", reason_code="completed",
-                    reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
-                    turn_id=self._request_turn_ids(event),
-                )
+                if command_text is None:
+                    self._record_diagnostic(
+                        event, "model", "ok", reason_code="completed",
+                        reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
+                        turn_id=self._request_turn_ids(event),
+                    )
+                # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
 
                 if response and not event.has_send_operation():
                     await event.send(MessageChain.from_text(response))
@@ -771,6 +817,29 @@ class PipelineScheduler:
         )
         keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
         return all(current.get(key) == event.policy_settings.get(key) for key in keys)
+
+    @staticmethod
+    def _operator_allowed(event: MessageEvent, command_text: str) -> bool:
+        """
+        判定受保护命令的发起者是否为已授权操作员
+
+        参数:
+        - event: 当前事件
+        - command_text: 平台入口冻结的命令正文
+
+        返回:
+        - bool: 非受保护命令或非平台来源为 True; 名单缺失/为空/不匹配一律为 False
+        """
+        if not is_operator_only_command(command_name_from_text(command_text)):
+            return True
+        origin = event.call_origin
+        # 管理面与库内直调已过管理面认证, 不继承为平台操作员
+        if origin.actor_kind != "platform_user":
+            return True
+        operators = event.policy_settings.get("command_operators")
+        if not origin.actor_id or not isinstance(operators, list):
+            return False
+        return any(isinstance(item, str) and item.strip() == origin.actor_id for item in operators)
 
     @staticmethod
     async def _apply_quote_wake(event: MessageEvent) -> None:

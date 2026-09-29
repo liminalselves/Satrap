@@ -73,6 +73,8 @@ Copy-Item config.example.yaml config.yaml
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
 | `platforms` | `[]` | 平台适配器实例配置 |
 
+平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
+
 ## 模型配置
 
 常用命令:
