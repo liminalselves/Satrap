@@ -257,6 +257,8 @@ class MyPlatformAdapter(PlatformAdapter):
 
 当前支持 OneBot 策略在线应用, 事件持有接收时的策略副本; 群范围在执行/发送前仍检查当前权限。文件读取或校验失败保留旧生效值, 返回 `failed`。连接、会话绑定、容量以及新增/删除/停用实例通过定向生命周期协调应用, 不打断其他平台工作器。新实例确认就绪后才更新生效版本, 失败时恢复旧实例; 如果旧实例也恢复失败, 生效版本返回空且状态为 failed。后端未运行或没有分发器时保留 pending_restart。
 
+会话绑定的可用性只在平台进入启用状态时强制校验。`enable: false` 的平台不建立连接也不接收消息, 因此它的 `session_type` 与 `session_provider` 允许缺失或不可用: 配置保存与重载都会成功, 实例保持惰性 (不产生分发工作器), 页面显示为已生效但未启用, 也不会为此解析会话定义。把 `enable` 切回 `true` 时若绑定仍不可用则拒绝启用并保留原实例与原生效版本 (`status: failed`, `old_runtime_preserved: true`), 不会回退到 `default_session_type` 或别的会话类; `session_provider` 本身不存在时按既有的未知 Provider 报错, 同样不创建实例。启用中的平台绑定失效依旧拒绝应用, 与既有一致。保存阶段的配置校验只看 `id`、`type`、`settings` 与 `enable`, 不检查绑定是否存在, 因此这类配置可以正常保存。
+
 OneBot 就绪探针核验当前实例的独立本地 HTTP 标识, 不将端口被其他服务占用当成启动成功。该检查仅验证 Satrap 监听服务, 不表示 SnowLuma 或 QQ 已连通。
 # 自动参与的群与时段覆盖
 
