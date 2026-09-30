@@ -75,7 +75,7 @@ Copy-Item config.example.yaml config.yaml
 
 平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
 
-平台实例的 `session_type` 与 `session_provider` 在保存阶段不做存在性校验, 可以先保存一个暂时不可用的绑定。可用性只在平台启用时强制: `enable: false` 的平台允许绑定缺失或失效, 重载成功且实例保持惰性; 切回 `enable: true` 时绑定仍不可用则拒绝启用, 保留原实例与原生效版本, 且不会回退到 `default_session_type`。详见[平台接入](../platform/platforms.md)的配置保存与生效一节。
+平台实例的 `session_type` 与 `session_provider` 在保存阶段不做存在性校验, 可以先保存一个暂时不可用的绑定。可用性只在平台启用时强制: `enable: false` 的平台允许绑定缺失或失效, 重载成功且实例保持惰性; `enable: true` 时只有定义或 Provider 不存在才拒绝应用 (保留原实例与原生效版本, 不回退到 `default_session_type`), 而绑定的会话定义被禁用时平台照常连接与启动, 该绑定的消息在进入唤醒与窗口之前被丢弃, 重新启用定义后无需重建平台即恢复。详见[平台接入](../platform/platforms.md)的配置保存与生效一节与[会话 Provider 与 Edictum 冷配置](../edictum/session-providers.md)的 `enabled` 完整效果。
 
 ## 模型配置
 
