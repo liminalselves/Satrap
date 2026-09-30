@@ -13,6 +13,8 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
 from satrap.core.framework.providers import (
+    BindingState,
+    BindingStatus,
     EdictumProvider,
     SessionClassProvider,
     SessionProviderDefinition,
@@ -130,9 +132,10 @@ class _CapturingAsyncSession(AsyncSession):
 class _FakeProvider:
     """用于验证统一 Provider 分发的测试实现"""
 
-    def __init__(self, provider_name: str, definition_name: str) -> None:
+    def __init__(self, provider_name: str, definition_name: str, *, enabled: bool = True) -> None:
         self.provider_name = provider_name
         self.definition_name = definition_name
+        self.enabled = enabled
         self.received: SessionConfig | None = None
 
     def has_definition(self, name: str) -> bool:
@@ -145,6 +148,7 @@ class _FakeProvider:
             name=name,
             provider_name=self.provider_name,
             is_async=False,
+            enabled=self.enabled,
             params={"marker": "provider-default"},
         )
 
@@ -172,6 +176,31 @@ def test_provider_registry_resolves_explicit_and_unique_definitions() -> None:
     registry.register(third)
     with pytest.raises(ValueError, match="歧义"):
         registry.resolve_definition("assistant")
+
+
+def test_binding_status_distinguishes_runnable_disabled_and_invalid() -> None:
+    """三态判定区分可运行, 已禁用与失效, 并保留既有 Provider 与定义诊断文本"""
+    registry = SessionProviderRegistry()
+    registry.register(_FakeProvider("first", "runnable"))
+    registry.register(_FakeProvider("second", "disabled", enabled=False))
+
+    assert registry.binding_status("runnable", "first") == BindingStatus(BindingState.RUNNABLE)
+
+    disabled = registry.binding_status("disabled", "second")
+    assert disabled.state is BindingState.DISABLED
+    assert disabled.reason == "会话定义已禁用: provider=second, name=disabled"
+
+    missing = registry.binding_status("missing", "first")
+    assert missing.state is BindingState.INVALID
+    assert missing.reason == "会话定义不可用 provider=first, name=missing"
+
+    # Provider 未注册与名称歧义都归入失效, 但原始诊断文本原样保留
+    unknown = registry.binding_status("runnable", "nope")
+    assert unknown.state is BindingState.INVALID and unknown.reason == "未知会话 Provider: nope"
+    registry.register(_FakeProvider("third", "runnable"))
+    ambiguous = registry.binding_status("runnable")
+    assert ambiguous.state is BindingState.INVALID
+    assert ambiguous.reason.startswith("会话定义名称存在歧义: runnable")
 
 
 def test_session_class_provider_preserves_constructor_compatibility() -> None:

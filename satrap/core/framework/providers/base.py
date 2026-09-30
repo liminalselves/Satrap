@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 import threading
 from typing import Any, Protocol, runtime_checkable
 
@@ -17,6 +18,27 @@ from satrap.core.type import SessionConfig
 
 SESSION_CLASS_PROVIDER = "session_class"
 """传统扫描式 Session 类 Provider 名称"""
+
+
+class BindingState(str, Enum):
+    """命名会话绑定在运行时是否可执行的判定结果"""
+
+    RUNNABLE = "runnable"
+    """定义存在且未被禁用, 可以创建并运行会话"""
+
+    DISABLED = "disabled"
+    """定义存在但被禁用, 属于正常配置状态而非配置错误"""
+
+    INVALID = "invalid"
+    """Provider 未注册, 定义不存在或名称歧义, 属于配置错误"""
+
+
+@dataclass(frozen=True)
+class BindingStatus:
+    """绑定判定结果, 保留既有诊断文本供生命周期与诊断输出复用"""
+
+    state: BindingState
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -169,6 +191,32 @@ class SessionProviderRegistry:
             provider_names = ", ".join(item[0].provider_name for item in matches)
             raise ValueError(f"会话定义名称存在歧义: {definition_name}, Providers: {provider_names}")
         return matches[0] if matches else None
+
+    def binding_status(self, definition_name: str, provider_name: str | None = None) -> BindingStatus:
+        """
+        判定命名会话绑定此刻是否可执行
+
+        与 resolve_definition 的区别在于把"未命中"与"已禁用"区分为两种状态:
+        前者是配置错误, 后者是正常配置状态, 调用方据此决定是拒绝加载还是仅暂缓执行
+
+        参数:
+        - definition_name: 命名会话定义名称
+        - provider_name: 可选 Provider 名称
+
+        返回:
+        - BindingStatus: RUNNABLE/DISABLED/INVALID 及对应诊断文本
+        """
+        location = f"provider={provider_name or ''}, name={definition_name}"
+        try:
+            resolved = self.resolve_definition(definition_name, provider_name)
+        except ValueError as error:
+            # 未知 Provider 与名称歧义属于既有诊断, 原样透出以便调用方定位配置错误
+            return BindingStatus(BindingState.INVALID, str(error))
+        if resolved is None:
+            return BindingStatus(BindingState.INVALID, f"会话定义不可用 {location}")
+        if not resolved[1].enabled:
+            return BindingStatus(BindingState.DISABLED, f"会话定义已禁用: {location}")
+        return BindingStatus(BindingState.RUNNABLE)
 
     def list_names(self) -> list[str]:
         """
