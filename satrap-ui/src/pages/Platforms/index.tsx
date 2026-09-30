@@ -19,6 +19,7 @@ import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnos
 import { fromGroupRows, fromTimeRows, toGroupRows, toTimeRows } from '@/utils/wakeOverrides';
 import { WakeOverrideEditor } from './WakeOverrideEditor';
 import { WakeDryRunPanel } from './WakeDryRunPanel';
+import { PlatformConnectionTest } from './PlatformConnectionTest';
 import { AdapterStatus } from '@/components/common/AdapterStatus';
 import type { FormField } from '@/components/common';
 import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
@@ -30,6 +31,7 @@ export function Platforms() {
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
+  const [testingPlatformId, setTestingPlatformId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -568,6 +570,8 @@ export function Platforms() {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                <Button size="sm" variant="default" onClick={() => setTestingPlatformId(platform.id)}
+                  aria-label={`测试连接 ${platform.id}`}>测试连接</Button>
                 {(platform.type === 'onebot' || platform.type === 'aiocqhttp') && (
                   <Link className="glass-button px-3 py-1.5 text-sm" to={`/platforms/${encodeURIComponent(platform.id)}/groups`}>
                     管理群聊
@@ -596,6 +600,11 @@ export function Platforms() {
           </div>
         )}
       </Card>
+
+      <PlatformConnectionTest platform={platforms.find((item) => item.id === testingPlatformId) || null}
+        revision={revision}
+        identity={`${health?.runtime_id || ''}:${adapters[testingPlatformId || '']?.client_self_id || ''}:${adapters[testingPlatformId || '']?.status || ''}:${health?.platform_config?.find((item) => item.id === testingPlatformId)?.active_revision || ''}`}
+        onClose={() => setTestingPlatformId(null)} />
 
       {/* 编辑/新增模态框: 策略字段提示统一由契约校验器给 toast, 关闭浏览器原生校验 */}
       <FormModal

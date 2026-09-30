@@ -312,6 +312,7 @@ class BackendHTTPServer(MiniHTTPServer):
         """
         for handler in (
             self._route_ui_health_reload,
+            self._route_platform_connection,
             self._route_groups,
             self._route_edictum_runtime_plugins,
             self._route_storage,
@@ -329,6 +330,24 @@ class BackendHTTPServer(MiniHTTPServer):
             if response is not None:
                 return response
         return 404, {"error": f"unknown route: {method} {path}"}
+
+    async def _route_platform_connection(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        分发平台只读通信探测请求
+
+        参数:
+        - method: HTTP 请求方法
+        - path: 请求路径
+        - body: 请求正文, 此端点不接收凭据或目标地址
+
+        返回:
+        - RouteResponse | None: 通信结果, 不匹配时返回 None
+        """
+        parts = urlsplit(path).path.split("/")
+        if method != "POST" or len(parts) != 5 or parts[:3] != ["", "api", "platforms"] or parts[4] != "connection-test":
+            return None
+        result = await self.backend.check_platform_connection(unquote(parts[3]))
+        return 200, dataclasses.asdict(result)
 
     async def _route_groups(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """

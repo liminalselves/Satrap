@@ -40,6 +40,7 @@ from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_AC
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
+from satrap.core.platform.connection import ConnectionProbeError
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
@@ -1622,6 +1623,24 @@ class OneBotAdapter(PlatformAdapter):
         self._bot = None
         self._loop = None
         self._seen_messages.clear()
+
+    async def check_connection(self) -> None:
+        """通过当前 OneBot 连接读取版本信息, 断线或响应异常时抛出错误"""
+        bot = self.get_client()
+        account = self.bot_self_id
+        generation = self._connection_generation
+        if bot is None:
+            raise ConnectionProbeError("OneBot 客户端尚未连接")
+        method = getattr(bot, "get_version_info", None)
+        if not callable(method):
+            raise ConnectionProbeError("当前 OneBot 实现不支持版本信息请求")
+        call = cast(Callable[..., Awaitable[object]], method)
+        result = await call(self_id=account)
+        if (self.get_client() is not bot or self.bot_self_id != account
+                or self._connection_generation != generation):
+            raise ConnectionProbeError("检查期间 OneBot 连接已变化, 请重试")
+        if not isinstance(result, dict) or not isinstance(result.get("app_name"), str) or not result["app_name"]:
+            raise ConnectionProbeError("OneBot 返回了无效的版本信息")
 
     def get_client(self) -> Any:
         """

@@ -338,6 +338,10 @@ class PlatformAdapter(ABC):
         """
         return None
 
+    async def check_connection(self) -> None:
+        """发起只读平台请求并校验响应, 不支持时抛出 NotImplementedError"""
+        raise NotImplementedError
+
     # ---------- Webhook 管理 ----------
 
     async def webhook_callback(self, request: Any) -> Any:

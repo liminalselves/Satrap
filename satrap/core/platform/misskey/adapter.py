@@ -27,7 +27,8 @@ from satrap.core.platform.misskey.misskey_utils import (
     serialize_message_chain,
     upload_local_with_retries,
 )
-from satrap.core.platform.misskey.client import MisskeyAPI, StreamingClient
+from satrap.core.platform.misskey.client import AuthenticationError, MisskeyAPI, StreamingClient
+from satrap.core.platform.connection import ConnectionProbeError
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.components import Plain
@@ -95,6 +96,23 @@ class MisskeyAdapter(PlatformAdapter):
         self.bot_self_id = ""
         self._bot_username = ""
         self._user_cache: dict[str, dict[str, Any]] = {}
+
+    async def check_connection(self) -> None:
+        """通过当前 Misskey API 读取账号信息, 认证或响应异常时抛出错误"""
+        client = self._client
+        account = self.bot_self_id
+        if client is None or not self._running:
+            raise ConnectionProbeError("Misskey API 客户端尚未启动")
+        try:
+            user = await client.get_current_user()
+        except AuthenticationError as error:
+            raise ConnectionProbeError("Misskey 认证失败, 请检查令牌和账号读取权限") from error
+        if self._client is not client or self.bot_self_id != account or not self._running:
+            raise ConnectionProbeError("检查期间 Misskey 连接已变化, 请重试")
+        if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
+            raise ConnectionProbeError("Misskey 返回了无效的账号信息")
+        if account and user["id"] != account:
+            raise ConnectionProbeError("Misskey 返回的账号与当前连接不一致")
 
     def meta(self) -> PlatformMetadata:
         """

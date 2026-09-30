@@ -54,6 +54,7 @@ from satrap.edictum.registry import (
 from satrap.edictum.config import EdictumConfigManager
 from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
+from satrap.core.platform.connection import ConnectionProbeError, ConnectionProbeResult
 from satrap.core.platform import (
     EventDispatcher,
     PlatformAdapter,
@@ -341,6 +342,38 @@ class BackendManager:
         ):
             raise ValueError("OneBot 平台不存在")
         return GroupDirectoryStore(self._storage.platform_db(adapter_id))
+
+    async def check_platform_connection(self, adapter_id: str) -> ConnectionProbeResult:
+        """
+        对当前适配器执行有界只读通信请求
+
+        参数:
+        - adapter_id: 已启动的平台实例 ID
+
+        返回:
+        - ConnectionProbeResult: 实际请求结果与耗时, 失败不包含原始响应或凭据
+        """
+        started = time.monotonic()
+        adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
+        ok = False
+        detail = "平台未启动, 请先启动后端和对应适配器"
+        if adapter is not None and adapter.started:
+            try:
+                await asyncio.wait_for(adapter.check_connection(), timeout=8.0)
+                if self._adapter_mgr is None or self._adapter_mgr.get_adapter(adapter_id) is not adapter or not adapter.started:
+                    raise ConnectionProbeError("检查期间平台实例已变化, 请重试")
+                ok = True
+                detail = "通信正常, 对端已响应"
+            except asyncio.TimeoutError:
+                detail = "通信请求超时 (8 秒)"
+            except NotImplementedError:
+                detail = "此平台尚未支持通信检查"
+            except ConnectionProbeError as error:
+                detail = str(error)
+            except Exception as error:
+                detail = f"通信请求失败 ({type(error).__name__})"
+                # 不把第三方异常正文中的 URL, 令牌或响应内容返回管理界面
+        return ConnectionProbeResult(ok, detail, round((time.monotonic() - started) * 1000))
 
     async def group_accounts(self, adapter_id: str) -> dict[str, Any]:
         """
