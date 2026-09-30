@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
 import pytest
 from typing import Any, cast
@@ -38,6 +39,7 @@ class _EchoServer(MiniHTTPServer):
         websocket_idle_timeout: float = 300.0,
         websocket_ping_interval: float = 30.0,
         hold_websocket: bool = False,
+        log_errors: bool = False,
     ) -> None:
         """
         初始化可调请求限制的测试服务器
@@ -51,6 +53,7 @@ class _EchoServer(MiniHTTPServer):
         - websocket_idle_timeout: WebSocket 客户端空闲超时秒数
         - websocket_ping_interval: WebSocket 服务端 ping 间隔秒数
         - hold_websocket: 是否保持测试 WebSocket 不主动关闭
+        - log_errors: 是否开启连接异常日志, 日志级别断言用例需要打开
         """
         auth = ServerAuth.create(
             "127.0.0.1",
@@ -68,6 +71,7 @@ class _EchoServer(MiniHTTPServer):
             max_websocket_connections=max_websocket_connections,
             websocket_idle_timeout=websocket_idle_timeout,
             websocket_ping_interval=websocket_ping_interval,
+            log_errors=log_errors,
         )
         self._hold_websocket = hold_websocket
         self._websocket_release = asyncio.Event()
@@ -84,6 +88,33 @@ class _EchoServer(MiniHTTPServer):
         if self._hold_websocket:
             await self._websocket_release.wait()
         await self._ws_close(writer, 1000, "bye")
+
+
+class _FailingDispatchServer(_EchoServer):
+    """WebSocket 分发抛指定异常的测试服务器"""
+
+    def __init__(self, error: BaseException) -> None:
+        """
+        初始化固定抛出指定异常的分发器
+
+        参数:
+        - error: 分发会话时抛出的异常
+        """
+        super().__init__(log_errors=True)
+        self._dispatch_error = error
+
+    async def _ws_dispatch(
+        self, path: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        """
+        抛出预置异常
+
+        参数:
+        - path: 路径
+        - reader: 流读取器
+        - writer: 流写入器
+        """
+        raise self._dispatch_error
 
 
 class _MemoryWriter:
@@ -699,3 +730,47 @@ async def test_chat_server_manages_history_and_trash(tmp_path: Path):
 ])
 def test_query_values_are_decoded_once(query, expected):
     assert query_param("/api?value=" + query, "value") == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [ConnectionResetError("reset by peer"), asyncio.IncompleteReadError(b"partial", 4)],
+)
+async def test_websocket_normal_disconnect_is_not_error(error: BaseException, caplog: pytest.LogCaptureFixture):
+    """客户端正常断连与半包截断只记 DEBUG, 且连接计数照常释放"""
+    server = _FailingDispatchServer(error)
+    port = await _start_server(server)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await _raw_request(port, _websocket_request())
+            await _wait_for_counter(server, "_active_websockets", 0)
+    finally:
+        await server.stop()
+
+    messages = [(record.levelno, record.getMessage()) for record in caplog.records]
+    assert [message for level, message in messages if "[WebSocket] 连接处理异常" in message] == []
+    assert any(
+        level == logging.DEBUG and f"[WebSocket] 连接已断开: {type(error).__name__}" in message
+        for level, message in messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_websocket_unexpected_failure_is_still_error(caplog: pytest.LogCaptureFixture):
+    """非断连异常仍记 ERROR, 不被断连分类吞掉"""
+    server = _FailingDispatchServer(RuntimeError("dispatch boom"))
+    port = await _start_server(server)
+    try:
+        with caplog.at_level(logging.DEBUG):
+            await _raw_request(port, _websocket_request())
+            await _wait_for_counter(server, "_active_websockets", 0)
+    finally:
+        await server.stop()
+
+    messages = [(record.levelno, record.getMessage()) for record in caplog.records]
+    assert any(
+        level == logging.ERROR and "[WebSocket] 连接处理异常: RuntimeError" in message
+        for level, message in messages
+    )
+    assert [message for level, message in messages if "[WebSocket] 连接已断开" in message] == []

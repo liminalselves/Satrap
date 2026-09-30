@@ -548,7 +548,12 @@ class MiniHTTPServer:
             await asyncio.gather(*pending, return_exceptions=True)
             for task in done:
                 error = None if task.cancelled() else task.exception()
-                if error is not None and self._log_errors:
+                if error is None or not self._log_errors:
+                    continue
+                if isinstance(error, (ConnectionError, asyncio.IncompleteReadError)):
+                    # 客户端断开与半包截断属于正常断连: 平台实例替换与客户端重连都会走到这里
+                    logger.debug(f"[WebSocket] 连接已断开: {type(error).__name__}")
+                else:
                     logger.error(f"[WebSocket] 连接处理异常: {type(error).__name__}")
         finally:
             self._active_websockets -= 1
