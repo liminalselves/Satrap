@@ -10,6 +10,7 @@ import pytest
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.backend.BackendManager import BackendManager
+from satrap.core.framework.providers import BindingState, BindingStatus, SessionProviderRegistry
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.config.loader import ConfigLoader
 from satrap.core.platform import EventDispatcher, PlatformAdapter, PlatformAdapterManager, PlatformConfig
@@ -30,6 +31,23 @@ def _require_manager(backend: BackendManager) -> PlatformAdapterManager:
     manager = backend._adapter_mgr
     if manager is None:
         raise AssertionError("运行时装配缺失适配器管理器")
+    return manager
+
+
+def _scheduler_session_manager() -> AsyncMock:
+    """
+    构造管线测试用的会话管理器替身
+
+    返回:
+    - AsyncMock: 只记录 handle_call_async 调用, 绑定判定恒为可运行
+
+    这些用例只关心配置热更新对事件与窗口的影响, 因此不引入真实注册表
+    """
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    manager.provider_registry = SimpleNamespace(
+        binding_status=lambda *_args: BindingStatus(BindingState.RUNNABLE),
+    )
     return manager
 
 
@@ -91,8 +109,7 @@ async def test_input_budget_and_talk_value_are_hot_applied(tmp_path: Path):
     assert fresh.policy_settings["input_media_limit"] == 3
     assert fresh.policy_settings["wake_talk_value"] == 0
     # 新频率立即生效: talk_value=0 的自动参与不触发, 正文留在窗口等待显式唤醒
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _scheduler_session_manager()
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(fresh)
     manager.handle_call_async.assert_not_awaited()
@@ -116,8 +133,7 @@ async def test_reload_tracks_actual_file_and_updates_new_events_only(tmp_path):
     assert result["saved_revision"] == result["active_revision"]
     assert adapter.config.settings["wake_words"] == ["new"]
     assert old_event.policy_settings["wake_words"] == ["old"]
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _scheduler_session_manager()
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(old_event)
     for text in ["old", "new"]:
@@ -222,7 +238,7 @@ async def test_targeted_replace_rollback_disable_and_delete(tmp_path):
     adapters: dict[str, PlatformAdapter] = {"bot": old, "other": other}
     mgr._adapters = adapters
     backend._platform_active_configs = {"bot": deepcopy(platform)}
-    registry = SimpleNamespace(resolve_definition=lambda *args: (None, SimpleNamespace(enabled=True)))
+    registry = _BindingRegistry({"default": True}, {"session_class"})
     runtime = SimpleNamespace(provider_registry=registry, plugin_environment=None)
     # 鸭子类型替身: 运行时只读 provider_registry/plugin_environment
     backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
@@ -344,12 +360,35 @@ async def test_media_plaintext_http_toggle_is_hot_applied(tmp_path: Path):
 
 
 class _BindingRegistry:
-    """会话定义注册表替身: 按名字表答复, 并记录每次解析调用"""
+    """会话定义注册表替身: 按名字表答复三态, 并记录每次判定调用"""
 
     def __init__(self, definitions: dict[str, bool], providers: set[str]) -> None:
         self.definitions = definitions
         self.providers = providers
         self.calls: list[tuple[str, str | None]] = []
+
+    def binding_status(self, definition_name: str, provider_name: str | None = None) -> BindingStatus:
+        """
+        记录判定调用并答复三态
+
+        参数:
+        - definition_name: 会话定义名称
+        - provider_name: 会话 Provider 名称
+
+        返回:
+        - BindingStatus: 未登记的 Provider 与未登记的定义按失效处理, 定义存在但未启用按禁用处理
+
+        与生产实现同构, 生产实现自身的三态语义由 test_session_providers.py 覆盖
+        """
+        self.calls.append((definition_name, provider_name))
+        location = f"provider={provider_name or ''}, name={definition_name}"
+        if provider_name is not None and provider_name not in self.providers:
+            return BindingStatus(BindingState.INVALID, f"未知会话 Provider: {provider_name}")
+        if definition_name not in self.definitions:
+            return BindingStatus(BindingState.INVALID, f"会话定义不可用 {location}")
+        if not self.definitions[definition_name]:
+            return BindingStatus(BindingState.DISABLED, f"会话定义已禁用: {location}")
+        return BindingStatus(BindingState.RUNNABLE)
 
     def resolve_definition(self, definition_name: str, provider_name: str | None = None) -> tuple[object, object] | None:
         """
@@ -654,12 +693,16 @@ async def test_enabled_platform_with_missing_definition_is_rejected(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_disabled_definition_follows_platform_enable_flag(tmp_path: Path):
-    """绑定到已被禁用的会话定义: 平台禁用时应用成功, 平台启用时拒绝"""
+async def test_disabled_definition_keeps_platform_running(tmp_path: Path):
+    """绑定到已被禁用的会话定义: 平台仍属可应用状态, 启用时照常建实例并启动, 绑定按配置值保留"""
     life = _lifecycle_backend(tmp_path, _bound_platform(session_type="bot-session"), {"bot-session": False})
     life.platform["enable"] = True
     _write(life.path, life.platform)
-    assert (await life.backend.reload_platform_policies())[0]["status"] == "failed"
+    result = (await life.backend.reload_platform_policies())[0]
+    assert result["status"] == "applied"
+    current = _require_adapter(life.manager, "bot")
+    assert current is not life.old and current.config.enable is True and current.started is True
+    assert current.config.session_type == "bot-session"
     assert life.registry.calls == [("bot-session", "session_class")]
     life.platform["enable"] = False
     _write(life.path, life.platform)
@@ -676,6 +719,26 @@ async def test_delete_disabled_dangling_platform_applies(tmp_path: Path):
     assert result["status"] == "applied" and result["active_revision"] is None
     assert life.manager.get_adapter("bot") is None
     assert life.registry.calls == []
+
+
+@pytest.mark.asyncio
+async def test_init_platform_with_disabled_definition_starts(tmp_path: Path):
+    """启动路径: 定义存在但被禁用属可应用状态, 平台照常装配并启动, 绑定不被改写"""
+    backend, _, _, _ = setup_runtime(tmp_path)
+    manager = _require_manager(backend)
+    manager.registry.register("probe-runtime", _LifecycleAdapter)
+    manager._adapters = {}
+    registry = _BindingRegistry({"bot-session": False}, {"session_class"})
+    backend._platform_runtimes["bot"] = cast(Any, (SimpleNamespace(provider_registry=registry, plugin_environment=None), None))
+    backend._init_platform("bot", "probe-runtime", _bound_platform())
+    adapter = _require_adapter(manager, "bot")
+    assert adapter.config.enable is True and adapter.config.session_type == "bot-session"
+    assert registry.calls == [("bot-session", "session_class")]
+    try:
+        await manager.start_all()
+        assert adapter.started is True
+    finally:
+        await adapter.terminate()
 
 
 @pytest.mark.asyncio
@@ -704,39 +767,72 @@ async def test_init_platform_enabled_with_missing_definition_is_rejected(tmp_pat
     assert registry.calls == [("missing-session", "session_class")] * 2
 
 
+def _spy_binding_status(calls: list[tuple[str, str | None]], status: BindingStatus) -> Any:
+    """
+    构造记录调用的三态判定替身
+
+    参数:
+    - calls: 调用记录列表, 原地追加 (定义名, Provider 名)
+    - status: 恒定答复的判定结果
+
+    返回:
+    - Callable[..., BindingStatus]: 供替换注册表方法的无绑定函数, 用 staticmethod 包裹避免注入 self
+    """
+    def spy(definition_name: str, provider_name: str | None = None) -> BindingStatus:
+        calls.append((definition_name, provider_name))
+        return status
+    return spy
+
+
 @pytest.mark.asyncio
 async def test_shared_binding_judgment_gates_init_only_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """共享判定在启动路径上只对启用平台生效"""
+    """启动路径通过共享三态状态源判定: 失效时 fail-closed, 禁用平台完全不判定"""
     backend, _, _, _ = setup_runtime(tmp_path)
     manager = _require_manager(backend)
     manager.registry.register("probe-runtime", _LifecycleAdapter)
     manager._adapters = {}
-    registry = _BindingRegistry({"bot-session": True}, {"session_class"})
-    backend._platform_runtimes["bot"] = cast(Any, (SimpleNamespace(provider_registry=registry, plugin_environment=None), None))
-    monkeypatch.setattr(BackendManager, "_session_definition_available", staticmethod(lambda *_args, **_kwargs: False))
+    runtime = SimpleNamespace(provider_registry=SessionProviderRegistry(), plugin_environment=None)
+    backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        SessionProviderRegistry, "binding_status",
+        staticmethod(_spy_binding_status(calls, BindingStatus(BindingState.INVALID, "绑定判定失效"))),
+    )
     pcfg = _bound_platform()
-    with pytest.raises(ValueError, match="会话定义不可用"):
+    with pytest.raises(ValueError, match="绑定判定失效"):
         backend._init_platform("bot", "probe-runtime", pcfg)
+    assert calls == [("bot-session", "session_class")]
     backend._init_platform("bot", "probe-runtime", dict(pcfg, enable=False))
     adapter = _require_adapter(manager, "bot")
     assert adapter.config.enable is False and adapter.started is False
+    assert calls == [("bot-session", "session_class")]
 
 
 @pytest.mark.asyncio
 async def test_shared_binding_judgment_gates_reload_only_when_enabled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """共享判定在定向替换路径上只对启用平台生效"""
+    """定向替换路径通过同一状态源判定: 失效时拒绝并保留旧实例, 禁用平台完全不判定"""
     life = _lifecycle_backend(tmp_path, _bound_platform(), {"bot-session": True, "bot-session-2": True})
-    monkeypatch.setattr(BackendManager, "_session_definition_available", staticmethod(lambda *_args, **_kwargs: False))
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        SessionProviderRegistry, "binding_status",
+        staticmethod(_spy_binding_status(calls, BindingStatus(BindingState.INVALID, "绑定判定失效"))),
+    )
+    life.backend._platform_runtimes["bot"][0].provider_registry = SessionProviderRegistry()
     life.platform["session_type"] = "bot-session-2"
     _write(life.path, life.platform)
+    with pytest.raises(ValueError, match="绑定判定失效"):
+        await life.backend._replace_platform_instance("bot", life.platform)
+    assert calls == [("bot-session-2", "session_class")]
     assert (await life.backend.reload_platform_policies())[0]["status"] == "failed"
     assert life.manager.get_adapter("bot") is life.old
+    assert calls == [("bot-session-2", "session_class")] * 2
     life.platform["enable"] = False
     _write(life.path, life.platform)
     result = (await life.backend.reload_platform_policies())[0]
     assert result["status"] == "applied"
     current = _require_adapter(life.manager, "bot")
     assert current is not life.old and current.config.enable is False and current.started is False
+    assert calls == [("bot-session-2", "session_class")] * 2
 
 
 @pytest.mark.asyncio

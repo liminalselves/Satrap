@@ -43,7 +43,7 @@ from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError
 from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES, parse_stages
-from satrap.core.framework.providers import EdictumProvider, SESSION_CLASS_PROVIDER
+from satrap.core.framework.providers import BindingState, EdictumProvider, SESSION_CLASS_PROVIDER
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.edictum.registry import (
@@ -2091,11 +2091,9 @@ class BackendManager:
             platform_type = str(candidate["type"])
             session_type = self._resolve_platform_session_type(platform_type, str(candidate.get("session_type", "")), provider)
             session_manager, _ = self._ensure_platform_runtime(platform_id)
-            # 禁用平台不接收消息, 可执行的会话定义只在进入启用状态时才是前置条件, 故禁用时不解析绑定
-            if bool(candidate.get("enable", True)) and not self._session_definition_available(
-                session_manager, session_type, provider
-            ):
-                raise ValueError("平台绑定的会话定义不可用")
+            # 禁用平台不接收消息, 会话定义只在进入启用状态时才是执行前置条件, 故禁用时不判定绑定
+            if bool(candidate.get("enable", True)):
+                self._require_platform_binding(session_manager, session_type, provider, "平台绑定的")
             replacement = manager.registry.create(PlatformConfig(
                 id=platform_id, type=platform_type, session_provider=provider, session_type=session_type,
                 enable=bool(candidate.get("enable", True)), settings=deepcopy(candidate.get("settings", {})),
@@ -2692,23 +2690,23 @@ class BackendManager:
         return self.config.default_session_type
 
     @staticmethod
-    def _session_definition_available(session_manager: SessionManager, session_type: str, session_provider: str) -> bool:
+    def _require_platform_binding(session_manager: SessionManager, session_type: str, session_provider: str, prefix: str) -> None:
         """
-        判定平台绑定的命名会话定义此刻是否可执行
+        启用平台加载前的绑定前置校验, 只对配置错误 fail-closed
 
         参数:
         - session_manager: 平台实例运行时
         - session_type: 已解析的会话类配置名称
         - session_provider: 会话 Provider 名称
+        - prefix: 异常文本前缀, 用于区分定向替换与启动路径
 
-        返回:
-        - bool: 定义存在且未被禁用时为真
-
-        只读会话定义注册表, 不含是否已启动一类运行时状态, 因此启用路径用它做前置校验, 禁用路径可以完全不调用它
-        provider 名称不存在时由 resolve_definition 抛出未知 Provider 异常, 本函数不做转换也不吞掉
+        只读会话定义注册表, 不含是否已启动一类运行时状态
+        定义存在但被禁用属于正常配置状态: 平台照常创建并启动, 由消息入口的执行闸门逐条拦截
+        Provider 未注册, 定义不存在或名称歧义属于配置错误: 抛出原始诊断文本, 不做转换也不吞掉
         """
-        resolved = session_manager.provider_registry.resolve_definition(session_type, session_provider)
-        return resolved is not None and resolved[1].enabled
+        status = session_manager.provider_registry.binding_status(session_type, session_provider)
+        if status.state is BindingState.INVALID:
+            raise ValueError(f"{prefix}{status.reason}")
 
     def _init_platform(self, pid: str, ptype: str, pcfg: dict[str, Any]) -> None:
         """
@@ -2732,11 +2730,9 @@ class BackendManager:
         platform_session_manager, _ = self._ensure_platform_runtime(pid)
         platform_session_manager.plugin_environment = PluginEnvironment("platform", ptype)
         session_type = self._resolve_platform_session_type(ptype, configured_session_type, session_provider)
-        # 与定向替换同一规则: 禁用平台不解析绑定, 启用平台仍 fail-closed
-        if bool(pcfg.get("enable", True)) and not self._session_definition_available(
-            platform_session_manager, session_type, session_provider
-        ):
-            raise ValueError(f"会话定义不可用 provider={session_provider}, name={session_type}")
+        # 与定向替换同一规则: 禁用平台不判定绑定, 启用平台只对配置错误 fail-closed
+        if bool(pcfg.get("enable", True)):
+            self._require_platform_binding(platform_session_manager, session_type, session_provider, "")
         platform_config = PlatformConfig(
             id=pid, type=ptype, session_provider=session_provider, session_type=session_type,
             enable=bool(pcfg.get("enable", True)), settings=settings,
