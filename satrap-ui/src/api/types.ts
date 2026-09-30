@@ -11,6 +11,7 @@ export interface PlatformConfigApplication {
 
 export interface BackendHealth {
   running: boolean;
+  runtime_id?: string;
   adapters?: Record<string, AdapterInfo>;
   platform_config?: PlatformConfigApplication[];
   error?: string;
@@ -24,6 +25,7 @@ export interface AdapterInfo {
   session_type?: string;
   type?: string;
   last_error?: string;
+  client_self_id?: string;
 }
 
 export interface LLMConfig {

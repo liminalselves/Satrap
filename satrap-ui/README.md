@@ -102,6 +102,11 @@ STATIC_DIR = Path(__file__).parent.parent.parent.parent / "satrap-ui" / "dist"
 2. 启动后端: `python -m satrap.main run`
 3. 访问: `http://127.0.0.1:19870`
 
+## 状态与平台检查
+
+管理页共用全局状态订阅和轮询. 控制服务的最新运行状态优先, 不可用时使用可达后端的 health;
+两者都不可达时显示状态未知. 启停按钮等待实际状态确认, 处理中不会重复发起操作
+
 ## 浏览器支持
 
 - Chrome 90+

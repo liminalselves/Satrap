@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from '@/utils/constants';
+import type { AdapterInfo } from './types';
 
 export interface LogMessage {
   type: 'log';
@@ -12,14 +13,7 @@ export interface StatusMessage {
   type: 'status';
   data: {
     running: boolean;
-    adapters: Record<string, {
-      status: string;
-      started: boolean;
-      config_type?: string;
-      session_type?: string;
-      type?: string;
-      last_error?: string;
-    }>;
+    adapters: Record<string, AdapterInfo>;
   };
 }
 
@@ -48,6 +42,7 @@ export class SatrapWebSocket {
   private handlers: WebSocketEventHandler = {};
   private endpoint: string;
   private isIntentionallyClosed = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(endpoint: WebSocketEndpoint) {
     this.endpoint = endpoint;
@@ -60,6 +55,7 @@ export class SatrapWebSocket {
   }
 
   private _connect() {
+    if (this.isIntentionallyClosed) return;
     try {
       const wsUrl = getApiBaseUrl().replace(/^http/, 'ws') + this.endpoint;
       this.ws = new WebSocket(wsUrl);
@@ -116,7 +112,9 @@ export class SatrapWebSocket {
     const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts);
     console.log(`[WebSocket] Reconnecting in ${delay}ms... (attempt ${this.reconnectAttempts + 1})`);
     
-    setTimeout(() => {
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.isIntentionallyClosed) return;
       this.reconnectAttempts++;
       this._connect();
     }, delay);
@@ -124,6 +122,8 @@ export class SatrapWebSocket {
 
   disconnect() {
     this.isIntentionallyClosed = true;
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
     if (this.ws) {
       this.ws.close(1000, 'Client disconnected');
       this.ws = null;

@@ -12,7 +12,6 @@ import { PageHeader, FormModal, ActionButtons, EmptyState } from '@/components/c
 import { Plus, Edit2, Trash2, RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
 import { backendApi } from '@/api/backend';
-import { edictumApi } from '@/api/edictum';
 import { normalizePlatformSettings, platformSettingsSummary, TALK_VALUE_HINT, validatePlatformPolicy } from '@/utils/adminMigration';
 import { formNumericLimits, formRangeSuffix, formRangeText } from '@/utils/wakePolicyContract';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
@@ -20,17 +19,17 @@ import { RequestDiagnosticsPanel } from '@/components/diagnostics/RequestDiagnos
 import { fromGroupRows, fromTimeRows, toGroupRows, toTimeRows } from '@/utils/wakeOverrides';
 import { WakeOverrideEditor } from './WakeOverrideEditor';
 import { WakeDryRunPanel } from './WakeDryRunPanel';
+import { AdapterStatus } from '@/components/common/AdapterStatus';
 import type { FormField } from '@/components/common';
 import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
-import type { EdictumSessionConfig, PlatformConfig } from '@/api/types';
+import type { PlatformConfig } from '@/api/types';
 
 export function Platforms() {
-  const { health, refreshHealth } = useBackendStore();
-  const { sessionClasses, fetchSessionClasses, asrConfigs, fetchModels } = useConfigStore();
+  const { health, isRunning, refreshHealth } = useBackendStore();
+  const { sessionClasses, fetchSessionClasses, asrConfigs, fetchModels, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore();
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
-  const [edictumConfigs, setEdictumConfigs] = useState<Record<string, EdictumSessionConfig>>({});
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showModal, setShowModal] = useState(false);
@@ -72,14 +71,6 @@ export function Platforms() {
       toast('error', '读取平台配置失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
     } finally {
       setLoading(false);
-    }
-  }, []);
-
-  const loadEdictumConfigs = useCallback(async () => {
-    try {
-      setEdictumConfigs(await edictumApi.list());
-    } catch {
-      setEdictumConfigs({});
     }
   }, []);
 
@@ -493,7 +484,7 @@ export function Platforms() {
       />
 
       {/* 运行中的适配器 */}
-      {health?.running && Object.keys(adapters).length > 0 && (
+      {isRunning && Object.keys(adapters).length > 0 && (
         <Card>
           <h3 className="text-lg font-semibold text-text-primary mb-4">运行中的适配器</h3>
           <div className="space-y-3">
@@ -514,12 +505,7 @@ export function Platforms() {
                   </div>
                 </div>
                 <div className="flex items-center gap-3">
-                  <Badge variant={info.status === 'running' ? 'success' : info.status === 'error' ? 'error' : 'warning'}>
-                    {info.status}
-                  </Badge>
-                  <Badge variant={info.started ? 'success' : 'default'}>
-                    {info.started ? '已启动' : '未启动'}
-                  </Badge>
+                  <AdapterStatus info={info} application={health?.platform_config?.find((item) => item.id === id)} />
                   {info.last_error && (
                     <span className="text-error text-sm">{info.last_error}</span>
                   )}
