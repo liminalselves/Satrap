@@ -81,6 +81,87 @@ async def test_standard_stream_capture_preserves_output_and_publishes_lines() ->
         stream.unsubscribe(subscription.subscription_id)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+@pytest.mark.parametrize("template", [
+    "[2026-09-28 21:27:17.222] [{level}]: 配置已刷新",
+    "[2026-09-28 21:27:17,222] {level} in __init__: 配置已刷新",
+    "[{level}]: 配置已刷新",
+])
+async def test_capture_uses_header_level_on_stderr(level: str, template: str) -> None:
+    """标准流中的日志头级别应覆盖 stderr 默认级别"""
+    wrapped = io.StringIO()
+    stream = StandardLogStream()
+    capture = StandardStreamCapture(wrapped, stream, "ERROR")
+    subscription = stream.subscribe(history_limit=0)
+    content = template.format(level=level)
+    try:
+        capture.write(content + "\n")
+        entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
+        assert (entry.content, entry.level) == (content, level)
+        assert wrapped.getvalue() == content + "\n"
+    finally:
+        stream.unsubscribe(subscription.subscription_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("content", "default_level", "expected_level"), [
+    ("[INFO]: 正文包含 [ERROR]", "ERROR", "INFO"),
+    ("[2026-09-28 21:27:17.222] [INFO]: 正文包含 [CRITICAL]", "ERROR", "INFO"),
+    ("[2026-09-28 21:27:17,222] WARNING in __init__: 正文包含 [ERROR]", "ERROR", "WARNING"),
+    ("普通输出包含 [ERROR]", "INFO", "INFO"),
+    ("普通输出包含 [INFO]", "ERROR", "ERROR"),
+    ("[2026-09-28 21:27:17.222] 正文包含 [INFO]", "ERROR", "ERROR"),
+    ("[UNKNOWN]: 正文包含 [INFO]", "ERROR", "ERROR"),
+    ("plain stdout", "INFO", "INFO"),
+    ("plain stderr", "ERROR", "ERROR"),
+    ('  File "[INFO]", line 1, in execute', "ERROR", "ERROR"),
+    ("ConnectionResetError", "ERROR", "ERROR"),
+])
+async def test_capture_ignores_levels_in_body(
+    content: str, default_level: str, expected_level: str,
+) -> None:
+    """正文和异常堆栈中的级别标记不应覆盖日志头或默认级别"""
+    stream = StandardLogStream()
+    capture = StandardStreamCapture(io.StringIO(), stream, default_level)
+    subscription = stream.subscribe(history_limit=0)
+    try:
+        capture.write(content + "\n")
+        entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
+        assert (entry.content, entry.level) == (content, expected_level)
+    finally:
+        stream.unsubscribe(subscription.subscription_id)
+
+
+@pytest.mark.asyncio
+async def test_capture_parses_colored_split_header_and_flushes_tail() -> None:
+    """分段写入和 flush 均应在清理颜色后解析完整日志头"""
+    wrapped = io.StringIO()
+    stream = StandardLogStream()
+    capture = StandardStreamCapture(wrapped, stream, "ERROR")
+    subscription = stream.subscribe(history_limit=0)
+    first = "\x1b[32m[2026-09-28 21:27:17.222] [INFO]: 配置已刷新\x1b[0m"
+    tail = "[2026-09-28 21:27:18,568] WARNING in __init__: 应用失败"
+    try:
+        capture.write(first[:30])
+        assert subscription.queue.empty()
+        capture.write(first[30:] + "\r\n" + tail[:40])
+        entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
+        assert (entry.content, entry.level) == (
+            "[2026-09-28 21:27:17.222] [INFO]: 配置已刷新", "INFO",
+        )
+        capture.write(tail[40:])
+        capture.flush()
+        entry = await asyncio.wait_for(subscription.queue.get(), timeout=1)
+        assert (entry.content, entry.level) == (tail, "WARNING")
+        capture.flush()
+        await asyncio.sleep(0)
+        assert subscription.queue.empty()
+        assert wrapped.getvalue() == first + "\r\n" + tail
+    finally:
+        stream.unsubscribe(subscription.subscription_id)
+
+
 class _Reader:
     """可控制 EOF 状态的 WebSocket 测试读取器"""
 
@@ -101,7 +182,10 @@ async def test_websocket_logs_use_standard_stream_without_log_file(
 ) -> None:
     """日志 WebSocket 应发送内存标准流的历史与实时输出"""
     standard_log_stream.clear()
-    standard_log_stream.publish("history from std", "INFO")
+    capture = StandardStreamCapture(io.StringIO(), standard_log_stream, "ERROR")
+    history = "[2026-09-28 21:27:17,222] INFO in __init__: 配置已刷新"
+    live = "[WARNING]: 应用失败, 正文包含 [ERROR]"
+    capture.write(history + "\n")
     server = BackendHTTPServer(BackendManager())
     reader = _Reader()
     sent: list[dict[str, Any]] = []
@@ -122,7 +206,7 @@ async def test_websocket_logs_use_standard_stream_without_log_file(
     ))
     await asyncio.sleep(0)
 
-    standard_log_stream.publish("live from std", "ERROR")
+    capture.write(live + "\n")
     for _ in range(10):
         if len(sent) >= 2:
             break
@@ -132,5 +216,5 @@ async def test_websocket_logs_use_standard_stream_without_log_file(
     standard_log_stream.publish("wake", "DEBUG")
     await asyncio.wait_for(task, timeout=1)
 
-    assert sent[0]["data"] == {"content": "history from std", "level": "INFO"}
-    assert sent[1]["data"] == {"content": "live from std", "level": "ERROR"}
+    assert sent[0]["data"] == {"content": history, "level": "INFO"}
+    assert sent[1]["data"] == {"content": live, "level": "WARNING"}
