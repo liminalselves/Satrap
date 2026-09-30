@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Play, Plus, Power, PowerOff, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
+import { Plus, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
 
 import { edictumApi } from '@/api/edictum';
 import { sessionApi } from '@/api/session';
 import { controlApi } from '@/api/control';
 import type { ConfigReloadResult } from '@/api/backend';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import type {
   EdictumAvailablePlugin,
   EdictumSessionConfig,
@@ -19,6 +20,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { toast } from '@/components/ui/Toast';
 import { EdictumPluginManager } from './EdictumPluginManager';
+import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
 
 interface EdictumConfigItem {
   name: string;
@@ -61,7 +63,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
   const { isRunning, reloadConfig } = useBackendStore();
   const [types, setTypes] = useState<EdictumTypeDefinition[]>([]);
   const [availablePlugins, setAvailablePlugins] = useState<EdictumAvailablePlugin[]>([]);
-  const [configs, setConfigs] = useState<Record<string, EdictumSessionConfig>>({});
+  const { edictumConfigs: configs, fetchEdictumConfigs } = useConfigStore();
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -87,22 +89,21 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [availableTypes, plugins, storedConfigs, platformResult] = await Promise.all([
+      const [availableTypes, plugins, platformResult] = await Promise.all([
         edictumApi.listTypes(),
         edictumApi.listPlugins(),
-        edictumApi.list(),
         controlApi.listPlatforms(),
+        fetchEdictumConfigs(),
       ]);
       setTypes(availableTypes);
       setAvailablePlugins(plugins);
-      setConfigs(storedConfigs);
       setPlatforms(platformResult.platforms || []);
     } catch (error) {
       toast('error', '读取 Edictum 配置失败: ' + (error instanceof Error ? error.message : '未知错误'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchEdictumConfigs]);
 
   useEffect(() => {
     void refresh();
@@ -183,21 +184,6 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       setSaving(false);
     }
   }, [editingName, form, isRunning, refresh]);
-
-  const setEnabled = useCallback(async (name: string, enabled: boolean) => {
-    try {
-      if (enabled) await edictumApi.enable(name);
-      else await edictumApi.disable(name);
-      const reloaded = !isRunning || await reloadConfig();
-      toast(
-        reloaded ? 'success' : 'warning',
-        reloaded ? `${name} 已${enabled ? '启用' : '禁用'}` : `${name} 已更新, 但后端热加载失败`,
-      );
-      await refresh();
-    } catch (error) {
-      toast('error', '状态更新失败: ' + (error instanceof Error ? error.message : '未知错误'));
-    }
-  }, [isRunning, refresh, reloadConfig]);
 
   const remove = useCallback(async (name: string) => {
     if (!confirm(`确定要删除 Edictum 配置 "${name}" 吗?`)) return;
@@ -362,9 +348,8 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       key: 'enabled',
       title: '状态',
       render: (item) => (
-        <Badge variant={item.config.enabled ? 'success' : 'default'}>
-          {item.config.enabled ? '启用' : '禁用'}
-        </Badge>
+        <SessionEnabledToggle provider="edictum" name={item.name} enabled={item.config.enabled}
+          onChanged={async () => { await refresh(); await onRuntimeCreated?.(); }} />
       ),
     },
     {
@@ -372,12 +357,10 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       title: '操作',
       render: (item) => (
         <ActionButtons actions={[
-          item.config.enabled
-            ? { key: 'disable', icon: <PowerOff className="h-4 w-4" />, onClick: () => setEnabled(item.name, false), title: '禁用' }
-            : { key: 'enable', icon: <Power className="h-4 w-4" />, onClick: () => setEnabled(item.name, true), title: '启用' },
           {
             key: 'create-runtime',
-            icon: <Play className={`h-4 w-4 ${creatingName === item.name ? 'animate-pulse' : ''}`} />,
+            label: '创建会话',
+            icon: <Plus className={`h-4 w-4 ${creatingName === item.name ? 'animate-pulse' : ''}`} />,
             onClick: () => createRuntime(item.name),
             title: isRunning ? '创建并激活会话' : '冷创建持久化会话',
             disabled: !item.config.enabled || creatingName !== null,
@@ -393,7 +376,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         ]} />
       ),
     },
-  ], [createRuntime, creatingName, isRunning, openEdit, remove, setEnabled, typeMap]);
+  ], [createRuntime, creatingName, isRunning, openEdit, remove, refresh, onRuntimeCreated, typeMap]);
 
   const fields = useMemo<FormField[]>(() => [
     { key: 'name', label: '配置名称', required: true, placeholder: '如: platform-assistant' },

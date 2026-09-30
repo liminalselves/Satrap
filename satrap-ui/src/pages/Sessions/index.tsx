@@ -16,11 +16,12 @@ import { sessionApi } from '@/api/session';
 import { edictumApi } from '@/api/edictum';
 import { classNameToConfigName } from '@/utils/adminMigration';
 import { PageHeader, DataTable, FormModal, ActionButtons } from '@/components/common';
-import { Plus, Power, PowerOff, Trash2, Settings, Search, FolderPlus, Play, RefreshCw, RotateCcw } from 'lucide-react';
+import { Plus, Trash2, Settings, Search, FolderPlus, RefreshCw, RotateCcw } from 'lucide-react';
 import type { Column, FormField } from '@/components/common';
 import type { DiscoveredSessionClass, RuntimeSession, SessionClassConfig } from '@/api/types';
 import { EdictumSessionsPanel } from './EdictumSessionsPanel';
 import { ManualWakeModal } from './ManualWakeModal';
+import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
 
 interface SessionClassItem {
   name: string;
@@ -214,26 +215,6 @@ export function Sessions() {
     }
   }, [fetchSessionClasses, registerForm]);
 
-  const handleEnable = useCallback(async (name: string) => {
-    try {
-      await sessionApi.enable(name);
-      toast('success', `已启用 ${name}`);
-      await fetchSessionClasses();
-    } catch (e) {
-      toast('error', '启用失败: ' + (e instanceof Error ? e.message : '未知错误'));
-    }
-  }, [fetchSessionClasses]);
-
-  const handleDisable = useCallback(async (name: string) => {
-    try {
-      await sessionApi.disable(name);
-      toast('success', `已禁用 ${name}`);
-      await fetchSessionClasses();
-    } catch (e) {
-      toast('error', '禁用失败: ' + (e instanceof Error ? e.message : '未知错误'));
-    }
-  }, [fetchSessionClasses]);
-
   const handleUnregister = useCallback(async (name: string) => {
     if (!confirm(`确定要注销会话类 "${name}" 吗?`)) return;
     try {
@@ -401,23 +382,21 @@ export function Sessions() {
     { key: 'class_path', title: 'Class Path', render: (item) => <span className="font-mono text-sm text-text-secondary">{item.config.class_path}</span> },
     {
       key: 'enabled', title: '状态', render: (item) => (
-        <Badge variant={item.config.enabled ? 'success' : 'default'}>{item.config.enabled ? '启用' : '禁用'}</Badge>
+        <SessionEnabledToggle provider="session_class" name={item.name} enabled={item.config.enabled}
+          onChanged={async () => { await fetchSessionClasses(); await fetchRuntimeSessions(); }} />
       ),
     },
     { key: 'model_key', title: '模型键', render: (item) => item.config.model_key || '-' },
     {
       key: 'actions', title: '操作', render: (item) => (
         <ActionButtons actions={[
-          item.config.enabled
-            ? { key: 'disable', icon: <PowerOff className="h-4 w-4" />, onClick: () => handleDisable(item.name), title: '禁用' }
-            : { key: 'enable', icon: <Power className="h-4 w-4" />, onClick: () => handleEnable(item.name), title: '启用' },
-          { key: 'create', icon: <Play className="h-4 w-4" />, onClick: () => openCreateSession(item.name), title: '创建会话' },
+          { key: 'create', icon: <Plus className="h-4 w-4" />, label: '创建会话', onClick: () => openCreateSession(item.name), title: '创建会话' },
           { key: 'edit', icon: <Settings className="h-4 w-4" />, onClick: () => openEdit(item.name), title: '编辑配置' },
           { key: 'delete', icon: <Trash2 className="h-4 w-4" />, onClick: () => handleUnregister(item.name), title: '注销', className: 'text-error hover:text-error' },
         ]} />
       ),
     },
-  ], [handleDisable, handleEnable, handleUnregister, openCreateSession, openEdit]);
+  ], [fetchSessionClasses, fetchRuntimeSessions, handleUnregister, openCreateSession, openEdit]);
 
   const allRuntimeSelected = visibleRuntimeSessions.length > 0
     && visibleRuntimeSessions.every((session) => selectedRuntimeIds.has(runtimeKey(session)));
