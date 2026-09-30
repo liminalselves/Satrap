@@ -18,6 +18,7 @@ from aiocqhttp.exceptions import ActionFailed
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformConfig
 from satrap.core.type import ASRConfig
+from satrap.core.framework.providers import BindingState, BindingStatus
 
 
 async def make_event(segments: list[dict[str, object]], settings: dict[str, object] | None = None):
@@ -30,6 +31,20 @@ async def make_event(segments: list[dict[str, object]], settings: dict[str, obje
     await adapter._handle_group_message({"self_id": 10000, "user_id": 123, "group_id": 456, "message_id": 77, "message_type": "group",
         "message": [{"type": "at", "data": {"qq": "10000"}}, *segments]})
     return adapter, adapter._event_queue.get_nowait()
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def record(url: str = "https://media.example.com/voice.amr.wav") -> dict[str, object]:
@@ -304,6 +319,7 @@ async def test_scheduler_passes_attachment_context_to_session(monkeypatch: pytes
 
     monkeypatch.setattr(module, "_transcribe", transcribe)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = "好的"
     scheduler = PipelineScheduler(manager)
     scheduler.asr_resolver = lambda name: asr_config()
@@ -322,6 +338,7 @@ async def test_unwoken_voice_message_never_downloads(monkeypatch: pytest.MonkeyP
     download, calls = fake_download({"https://media.example.com/voice.amr.wav": b"RIFF"})
     monkeypatch.setattr(module, "safe_async_get", download)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     scheduler.asr_resolver = lambda name: asr_config()
     await scheduler.execute(event)

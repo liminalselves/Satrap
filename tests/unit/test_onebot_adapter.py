@@ -19,6 +19,21 @@ from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import At, AtAll, Face, File, Image, Json, Plain, Reply, Unknown
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
 from satrap.core.type import PlatformMessage, PlatformMessageType
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 class FakeOneBotClient:
@@ -329,6 +344,7 @@ async def test_raw_group_wake_reaches_session(segments, expected):
 
     adapter = make_adapter({"wake_words": ["小助手"]})
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     await adapter._handle_group_message({
         "self_id": 10000, "user_id": 123, "group_id": 456,
@@ -347,6 +363,7 @@ async def test_unwoken_chatter_preserves_execution_budget():
 
     adapter = make_adapter()
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager, RateLimiter(rate=0.01, burst=1))
     for message_id, text in enumerate(["普通聊天", "普通聊天", None], start=789):
@@ -402,6 +419,7 @@ async def test_queued_group_cannot_bypass_tightened_scope():
     event.is_wake = True
     adapter.config.settings["group_whitelist"] = ["789"]
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     processor = AsyncMock(return_value=True)
     scheduler.add_preprocessor(processor)

@@ -14,6 +14,21 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import Forward, Image, Node, Nodes, Plain, Reply
 from satrap.core.platform.event import MessageChain
 from satrap.core.platform import PlatformConfig
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def forward_payload(nodes: list[dict[str, object]] | None = None, **extra: object) -> dict[str, object]:
@@ -223,6 +238,7 @@ class TestResolveAndProjection:
         ])
         adapter._bot.get_forward_msg.return_value = forward_payload()
         manager = AsyncMock()
+        manager.provider_registry = _RunnableRegistry()
         manager.handle_call_async.return_value = "收到"
         await PipelineScheduler(manager).execute(event)
         call = manager.handle_call_async.call_args.args[0]
@@ -236,6 +252,7 @@ class TestResolveAndProjection:
             {"type": "text", "data": {"text": "没叫机器人"}},
         ])
         manager = AsyncMock()
+        manager.provider_registry = _RunnableRegistry()
         await PipelineScheduler(manager).execute(event)
         adapter._bot.get_forward_msg.assert_not_awaited()
         manager.handle_call_async.assert_not_awaited()

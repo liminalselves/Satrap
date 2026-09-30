@@ -29,6 +29,21 @@ from satrap.core.components import At, AtAll, BaseMessageComponent, Image, Plain
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import PlatformAdapter, PlatformConfig
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def _event(
@@ -211,6 +226,7 @@ class _FakeSessionManager:
     """记录 handle_call_async 调用的假 SessionManager"""
 
     class_cfg_mgr = None
+    provider_registry = _RunnableRegistry()
 
     def __init__(self, response: str = "回复"):
         self.response = response

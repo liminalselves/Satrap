@@ -21,6 +21,7 @@ from typing import (
 )
 
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.providers import BindingState
 from satrap.core.config.platform_policy import normalize_group_whitelist, policy_default
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
@@ -464,6 +465,28 @@ class PipelineScheduler:
                 return
             if not self._allows_source(event) or not await self._check_permission(event):
                 return
+
+            # Step.1.5 会话绑定闸门: 定义被禁用或失效时在入窗与排程前拒绝,
+            # 否则禁用期间的消息会被窗口或定时器留存, 恢复后补进模型; 也不消耗额度与媒体解析
+            if event.session_type:
+                binding = session_manager.provider_registry.binding_status(event.session_type, event.session_provider)
+                if binding.state is not BindingState.RUNNABLE:
+                    disabled = binding.state is BindingState.DISABLED
+                    # 定义被禁用属于正常配置状态, 逐条 DEBUG; 绑定失效属于配置错误, 必须对运维可见
+                    if disabled:
+                        logger.debug(
+                            f"[PipelineScheduler] 会话定义已禁用, 消息丢弃 adapter={source_platform_id} "
+                            f"provider={event.session_provider} type={event.session_type}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[PipelineScheduler] 会话绑定不可用, 消息丢弃 adapter={source_platform_id} "
+                            f"provider={event.session_provider} type={event.session_type}: {binding.reason}"
+                        )
+                    reason_code = "binding_disabled" if disabled else "binding_invalid"
+                    self._record_rejection(event, "projection", binding.reason, reason_code=reason_code)
+                    manual_detail = reason_code
+                    return
 
             # Step.2 评估独立唤醒规则并记录命中原因
             self._apply_wake_policy(event)

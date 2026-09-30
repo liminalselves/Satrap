@@ -21,6 +21,21 @@ from satrap.core.platform.event import MessageChain
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.receipt import SendReceipt
 import satrap.core.pipeline.manual_wake_store as store_module
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter, Any, ManualWakeStore]:
@@ -28,6 +43,7 @@ def runtime(tmp_path: Path) -> tuple[BackendManager, OneBotAdapter, Any, ManualW
     backend = BackendManager()
     backend._running = True
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     store = ManualWakeStore(tmp_path / "manual_wake_store.json")
@@ -847,7 +863,9 @@ class TestSendOutcomeAdjudication:
         async def cancelled(*args: Any, **kwargs: Any) -> str:
             raise asyncio.CancelledError()
 
-        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=cancelled))
+        replacement_manager = AsyncMock(handle_call_async=cancelled)
+        replacement_manager.provider_registry = _RunnableRegistry()
+        scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("cancel0"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
         with pytest.raises(asyncio.CancelledError):
@@ -880,7 +898,9 @@ class TestSendOutcomeAdjudication:
                 await pending
             return ""
 
-        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=send_two_then_cancel))
+        replacement_manager = AsyncMock(handle_call_async=send_two_then_cancel)
+        replacement_manager.provider_registry = _RunnableRegistry()
+        scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("cancel1"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
@@ -909,7 +929,9 @@ class TestSendOutcomeAdjudication:
             await asyncio.sleep(5)
             return ""
 
-        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=tool_then_hang))
+        replacement_manager = AsyncMock(handle_call_async=tool_then_hang)
+        replacement_manager.provider_registry = _RunnableRegistry()
+        scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("timeout"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
@@ -930,7 +952,9 @@ class TestSendOutcomeAdjudication:
         async def plain_failure(*args: Any, **kwargs: Any) -> str:
             raise RuntimeError("llm down")
 
-        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=plain_failure))
+        replacement_manager = AsyncMock(handle_call_async=plain_failure)
+        replacement_manager.provider_registry = _RunnableRegistry()
+        scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("feedback"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
         await scheduler.execute(event)
@@ -956,7 +980,9 @@ class TestSendOutcomeAdjudication:
             await event.send(MessageChain.from_text("业务回复"))
             return ""
 
-        scheduler.session_manager = cast(Any, AsyncMock(handle_call_async=reply))
+        replacement_manager = AsyncMock(handle_call_async=reply)
+        replacement_manager.provider_registry = _RunnableRegistry()
+        scheduler.session_manager = cast(Any, replacement_manager)
         assert (await backend.wake_platform(_payload("notrack"), operator="management"))["status"] == "accepted"
         event = adapter._event_queue.get_nowait()
         monkeypatch.setattr(store, "_save_current_locked", broken_save)

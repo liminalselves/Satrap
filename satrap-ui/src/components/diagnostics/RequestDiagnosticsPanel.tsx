@@ -42,6 +42,8 @@ const REASON_LABELS: Record<string, string> = {
   media_unavailable: '媒体无法获取',
   command_candidate: '平台命令入口已冻结正文',
   operator_required: '受保护命令缺少操作员授权',
+  binding_disabled: '会话定义已禁用, 消息未进入会话',
+  binding_invalid: '会话绑定不可用, 消息未进入会话',
   not_found: '未找到该请求记录',
   scheduler_unavailable: '调度器未运行, 近期诊断不可用',
   nil: '无',
