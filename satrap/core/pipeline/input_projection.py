@@ -13,7 +13,8 @@ from typing import Any, cast
 from satrap.core.pipeline.attachments import AttachmentResult, render_attachments
 from satrap.core.config.platform_policy import policy_default
 from satrap.core.components import BaseMessageComponent, Forward, Image, Node, PlatformComponentType, Reply, preferred_media_source
-from satrap.core.pipeline.wake_window import PendingImage, PendingMessage, sender_label
+from satrap.core.pipeline.wake_window import PendingImage, PendingMessage, display_label, sender_label
+from satrap.core.platform.identity import BotIdentity
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.log import logger
@@ -400,6 +401,7 @@ class MediaSelection:
     window_messages: tuple[WindowInput, ...] = ()
     window_notes: tuple[str, ...] = ()
     window_synthetic: bool = False
+    self_identity: BotIdentity | None = None
 
     def sources(self, media_type: str) -> list[str]:
         """
@@ -426,6 +428,28 @@ WINDOW_MEDIA_DROPPED = "[图片未纳入本次输入]"
 """未选中或没有来源的窗口图片占位, 计入文本预算"""
 
 
+def bot_identity_block(event: MessageEvent, identity: BotIdentity | None) -> str:
+    """
+    将确认的自身资料标注为当前机器人身份, 不混同发言者或人设名称
+
+    参数:
+    - event: 当前事件固定的账号及群
+    - identity: 平台确认的机器人资料, 缺失或来源不符时不生成标记
+
+    返回:
+    - str: 已清理显示字段的身份标记, 无可用昵称和名片时为空
+    """
+    if identity is None or identity.self_id != event.get_self_id() or (identity.group_id and identity.group_id != event.get_group_id()):
+        return ""
+    nickname, card = display_label(identity.nickname), display_label(identity.group_card)
+    if not nickname and not card:
+        return ""
+    fields = [f"账号 ID {display_label(identity.self_id)}", f"账号昵称 {nickname or '未获取'}"]
+    if card:
+        fields.append(f"本群名片 {card}")
+    return f"[你当前的平台机器人身份: {', '.join(fields)}]"
+
+
 def select_window_media(
     event: MessageEvent, selection: MediaSelection, snapshot: tuple[PendingMessage, ...],
     quote_status: str, forward_status: str, attachments: tuple[AttachmentResult, ...], synthetic: bool,
@@ -448,10 +472,13 @@ def select_window_media(
     if not snapshot and not synthetic:
         return selection
     if synthetic:
-        selection = MediaSelection((), window_synthetic=True)
-    base = project_input(event, quote_status, forward_status, attachments, selection)
+        selection = MediaSelection((), window_synthetic=True, self_identity=selection.self_identity)
+    base = project_input(event, quote_status, forward_status, attachments, replace(selection, self_identity=None))
     text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
     reserve = len(base.message) + (1 if base.message else 0)
+    identity_header = bot_identity_block(event, selection.self_identity)
+    if identity_header and len(base.message) + len(identity_header) + 1 <= text_limit:
+        reserve += len(identity_header) + 1
     reserve += sum(len(item.components) * len(MEDIA_FAILED_TEXT[item.media_type]) for item in selection.items)
     # 当前媒体失败可能扩大占位, 先保守预留, 避免已下载窗口图片的来源标记被最终裁掉
     remaining = max(0, text_limit - reserve)
@@ -711,6 +738,12 @@ def project_input(
     for placeholder in ("[图片]", "[视频]", WINDOW_MEDIA_DROPPED, *MEDIA_FAILED_TEXT.values()):
         body = body.replace(placeholder, "")
     media_only_unavailable = bool(failed_types) and not images and not videos and not body.strip()
+    identity_header = bot_identity_block(event, selection.self_identity)
+    if identity_header and (message or images or videos):
+        if len(identity_header) + len(message) + 1 <= text_limit:
+            message = f"{identity_header}\n{message}".rstrip("\n")
+        else:
+            notes.append("bot_identity_budget_dropped")
     return ProjectedInput(
         message=message, images=tuple(images), videos=tuple(videos),
         quote_status=quote_status, forward_status=forward_status, attachment_status=attachment_status,

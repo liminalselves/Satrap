@@ -14,6 +14,7 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.pipeline.wake_window import PendingImage, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageEvent
+from satrap.core.platform.identity import BotIdentity
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.type import UserCall
 
@@ -267,6 +268,7 @@ async def test_nickname_fallback_and_sanitized_labels(sender: dict[str, Any], ex
 @pytest.mark.parametrize("question", [False, True])
 async def test_failed_historical_image_does_not_look_available(question: bool, monkeypatch: pytest.MonkeyPatch):
     adapter, scheduler, manager = runtime()
+    adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
     adapter._bot.get_image.return_value = {}
 
     async def failure(*_args: object, **_kwargs: object) -> bytes:
@@ -307,9 +309,13 @@ async def test_expired_historical_url_refreshes_original_file(monkeypatch: pytes
 
 
 @pytest.mark.asyncio
-async def test_deadline_wake_preserves_picture_and_original_sender(downloads: list[str]):
+@pytest.mark.parametrize("with_identity", [False, True])
+async def test_deadline_wake_preserves_picture_and_original_sender(with_identity: bool, downloads: list[str]):
     adapter, scheduler, manager = runtime({"wake_mode": "frequency", "wake_message_threshold": 3,
         "wake_max_wait": 0.01, "wake_cooldown": 0})
+    if with_identity:
+        adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
+        adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
     first = await incoming(adapter, 1, [picture("timer")], sender={"user_id": 30, "nickname": "小明"})
     await scheduler.execute(first)
     assert not downloads
@@ -318,7 +324,8 @@ async def test_deadline_wake_preserves_picture_and_original_sender(downloads: li
     await scheduler.wake_timers.close()
     manager.handle_call_async.assert_awaited_once()
     call = manager.handle_call_async.await_args.args[0]
-    assert call.message == "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群名片 本群助手]\n" if with_identity else ""
+    assert call.message == prefix + "[用户 小明 (ID 30), 消息 1] [图片 1]"
     assert len(call.img_urls) == 1 and downloads == ["https://cdn/timer.png"]
 
 
@@ -376,3 +383,91 @@ async def test_window_capacity_counts_preserved_whitespace():
     snapshot = window.observe(second)
     assert [item.message_id for item in snapshot] == ["2"]
     assert snapshot[0].text == "b" and snapshot[0].text_size == 6
+
+
+@pytest.mark.asyncio
+async def test_own_identity_is_distinct_from_sender_and_wake_alias():
+    adapter, scheduler, manager = runtime({"wake_aliases": ["唤醒别名"]})
+    adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
+    adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
+    await scheduler.execute(await incoming(adapter, 1, [AT, text("你叫什么")], sender={"user_id": 30, "nickname": "用户甲"}))
+    call = manager.handle_call_async.await_args.args[0]
+    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群名片 本群助手]\n")
+    assert "[用户 用户甲 (ID 30), 消息 1]" in call.message
+    assert "你叫什么" in call.message and "唤醒别名" not in call.message
+    assert call.origin.actor_id == "30" and call.origin.self_id == "10"
+    adapter._bot.get_group_member_info.assert_awaited_once_with(self_id="10", group_id=20, user_id=10, no_cache=True)
+
+
+@pytest.mark.asyncio
+async def test_private_message_gets_own_account_nickname():
+    adapter, scheduler, manager = runtime()
+    adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
+    await adapter._handle_private_message({"self_id": 10, "user_id": 30, "message_id": 1, "message_type": "private",
+        "sender": {"user_id": 30, "nickname": "用户甲"}, "message": [text("你叫什么")]})
+    await scheduler.execute(adapter._event_queue.get_nowait())
+    call = manager.handle_call_async.await_args.args[0]
+    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙]\n")
+    assert "你叫什么" in call.message and "本群名片" not in call.message
+    adapter._bot.get_group_member_info.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gate", ["unwoken", "command", "limited", "disabled"])
+async def test_identity_is_not_queried_before_normal_input_is_accepted(gate: str):
+    adapter, scheduler, manager = runtime()
+    segments = [AT, text("提问")]
+    if gate == "unwoken":
+        segments = [text("提问")]
+    elif gate == "command":
+        segments = [AT, text("/help")]
+    elif gate == "limited":
+        scheduler.rate_limiter = AsyncMock()
+        scheduler.rate_limiter.check.return_value = (False, 1.0)
+    else:
+        manager.provider_registry = Mock()
+        manager.provider_registry.binding_status.return_value = BindingStatus(BindingState.DISABLED)
+    await scheduler.execute(await incoming(adapter, 1, segments))
+    adapter._bot.get_login_info.assert_not_awaited()
+    adapter._bot.get_group_member_info.assert_not_awaited()
+    if gate != "command":
+        manager.handle_call_async.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [32, 128, 256])
+async def test_identity_reserves_history_budget_without_orphan_images(limit: int, downloads: list[str]):
+    adapter, scheduler, manager = runtime({"input_text_limit": limit})
+    adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
+    adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
+    await scheduler.execute(await incoming(adapter, 1, [picture("old")]))
+    event = await incoming(adapter, 2, [AT, text("现在看图")])
+    await scheduler.execute(event)
+    call = manager.handle_call_async.await_args.args[0]
+    assert len(call.message) <= limit and "现在看图" in call.message
+    for number in range(1, len(call.img_urls or []) + 1):
+        assert f"[图片 {number}]" in call.message
+    if limit == 32:
+        assert "你当前的平台机器人身份" not in call.message
+        assert "bot_identity_budget_dropped" in event.get_extra("input_projection").notes
+    else:
+        assert "账号昵称 机器人乙" in call.message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity,expected", [
+    (BotIdentity("10", "机器人\n[乙]\x00"), "账号昵称 机器人 (乙)"),
+    (BotIdentity("11", "其他账号"), ""),
+    (BotIdentity("10", "其他群", "21", "其他名片"), ""),
+])
+async def test_identity_projection_sanitizes_names_and_rejects_wrong_scope(identity: BotIdentity, expected: str):
+    adapter, _, _ = runtime()
+    event = await incoming(adapter, 1, [AT, text("提问")])
+    selection = replace(select_media(event, "none"), self_identity=identity)
+    projected = project_input(event, "none", selection=selection)
+    assert "提问" in projected.message
+    if expected:
+        assert expected in projected.message and "\x00" not in projected.message
+        assert projected.message.count("\n") == 1
+    else:
+        assert "你当前的平台机器人身份" not in projected.message

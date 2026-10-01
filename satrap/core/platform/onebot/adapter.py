@@ -38,6 +38,8 @@ from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.platform.onebot.outbound import OutboundTurns, flatten_forward_nodes, split_components, split_forward_turns
 from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_ACTIONS, OneBotAdmin, is_missing_action_error
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
+from satrap.core.platform.onebot.self_identity import OneBotSelfIdentity
+from satrap.core.platform.identity import BotIdentity
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
 from satrap.core.platform.connection import ConnectionProbeError
@@ -184,6 +186,7 @@ class OneBotAdapter(PlatformAdapter):
         self._ready_path = "/_satrap_ready/" + secrets.token_urlsafe(24)
         self._capability_states: dict[str, tuple[int, str]] = {}
         self._connection_generation = 0
+        self._self_identity = OneBotSelfIdentity(self)
         self._client_connected = False
         self._meta_hooked = False
         self._heartbeats = 0
@@ -638,6 +641,7 @@ class OneBotAdapter(PlatformAdapter):
             sub_type = str(event.get("sub_type") or "")
             if sub_type == "connect":
                 self._connection_generation += 1
+                self._self_identity.clear()
                 self._client_connected = True
                 self._heartbeats = 0
                 self._last_heartbeat_at = 0.0
@@ -1623,6 +1627,20 @@ class OneBotAdapter(PlatformAdapter):
         self._bot = None
         self._loop = None
         self._seen_messages.clear()
+        self._self_identity.clear()
+
+    async def resolve_self_identity(self, self_id: str, group_id: str = "") -> BotIdentity | None:
+        """
+        返回当前事件可用的机器人自身昵称和群名片
+
+        参数:
+        - self_id: 事件固定的机器人账号
+        - group_id: 事件所在群, 私聊为空
+
+        返回:
+        - BotIdentity | None: 同一账号和连接下的确认资料, 查询失败时为 None
+        """
+        return await self._self_identity.resolve(self_id, group_id)
 
     async def check_connection(self) -> None:
         """通过当前 OneBot 连接读取版本信息, 断线或响应异常时抛出错误"""

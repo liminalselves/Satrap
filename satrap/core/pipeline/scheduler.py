@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import replace
 import asyncio
 from time import monotonic, time
 import inspect
@@ -642,6 +643,9 @@ class PipelineScheduler:
                     attachments = () if window_synthetic else await resolve_attachments(event, self.asr_resolver)
                     # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
                     selection = select_media(event, quote_status)
+                    if isinstance(event.adapter, OneBotAdapter):
+                        identity = await event.adapter.resolve_self_identity(event.get_self_id(), event.get_group_id())
+                        selection = replace(selection, self_identity=identity)
                     window_batch = batch if window_synthetic else tuple(item for item in batch if item.request_id != event.call_origin.request_id)
                     selection = select_window_media(event, selection, window_batch, quote_status, forward_status, attachments, window_synthetic)
                     media_results = await resolve_media(event, selection)
