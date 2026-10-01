@@ -202,7 +202,7 @@ satrap platform remove misskey1
 satrap platform wake qq_bot --group 20000 --user 30000 --prompt "请总结刚才的讨论"
 ```
 
-`platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内的待处理正文; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
+`platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内待处理的文字和图片; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
 
 被拒绝时响应体为 `{"status": "rejected", "request_id": ..., "reason": <稳定原因码>}`: 参数类原因 (`invalid_request_id`, `invalid_prompt`, `invalid_message_id_or_conflicting_prompt`, `explicit_group_and_route_user_required`) 返回 400, 其余 (`queue_full`, `request_capacity`, `store_unavailable`, `request_id_conflict`, `adapter_changed`, `adapter_unavailable`, `backend_unavailable`, `source_unavailable`, `message_lookup_failed_or_scope_mismatch`, `message_convert_failed`, `invalid_fields_or_operator`) 返回 409; 状态查询接口沿用 404 `not_found` 与 503 `store_unavailable`/`store_degraded`。存储锁等待超时或锁文件不可用按 `store_unavailable` 上报, 不退化成通用 500。控制面板把原因码翻成可操作文案, 未知码回显原始码; CLI 的 HTTP 错误在响应只有 `reason` 时同样给出该码。
 
@@ -264,7 +264,18 @@ class MyPlatformAdapter(PlatformAdapter):
 OneBot 就绪探针核验当前实例的独立本地 HTTP 标识, 不将端口被其他服务占用当成启动成功。该检查仅验证 Satrap 监听服务, 不表示 SnowLuma 或 QQ 已连通。
 # 自动参与的群与时段覆盖
 
-OneBot 默认使用 `wake_mode: explicit`, 只处理明确唤醒。可选 `frequency` 按正文数量触发, 或 `necessity` 按本地必要性评分触发。`wake_message_threshold` 默认 3, `wake_cooldown` 默认 30 秒, `wake_score_threshold` 默认 0.65。单独附件和 @全体不计数。
+OneBot 默认使用 `wake_mode: explicit`, 只在明确唤醒后调用会话。可选 `frequency` 按窗口消息数量触发, 或 `necessity` 按本地必要性评分触发。`wake_message_threshold` 默认 3, `wake_cooldown` 默认 30 秒, `wake_score_threshold` 默认 0.65。含正文或图片的消息计数; 只有 @全体、语音或文件的消息不计数。
+
+### 未唤醒消息的短期上下文
+
+三种唤醒模式都收集通过来源、权限和会话绑定检查的群消息, 唤醒策略只决定何时调用会话。窗口记录顶层文字、图片的原始 `file`/`url` 和接收时的昵称, 收集时不下载图片。`context_scope: group` 共享本群成员的窗口; `group_member` 与 `legacy_user` 只读取当前成员的窗口。平台实例、机器人账号、群、Provider、会话类型和群路由代次均隔离。
+
+- 每个窗口最多保留 32 条消息、8192 个文字字符、32 个图片引用, 单条最多 8 个图片引用; 最多 512 个窗口, 消息在 120 秒后过期。超过窗口容量时淘汰最早消息, 单条超额图片保留省略说明。图片引用字段超过 4096 字符时不保留其来源
+- 例如先发送未带 @ 的图片, 随后 `@机器人 这张图是什么`, 会将仍在窗口里的图片与当前提问一并处理。单独 `@机器人` 也可处理已有窗口; 尚未提交的窗口可由管理端手动唤醒, 自动参与模式还可由最长等待触发
+- 当前消息的文字及补全内容优先占用 `input_text_limit`; 余量给最近的窗口消息, 最终窗口按接收顺序呈现。来源标记、图片占位和分隔符均计入预算, 没有文字额度显示来源的历史图片不会下载
+- 图片与当前消息、引用、转发共用 `input_media_limit`: 当前媒体优先, 其次引用与转发, 最后最近的窗口图片。同来源图片只解析一次; 窗口图片以 `[图片 N]` 对应本轮图片输入顺序, 超出预算或无来源时标记 `[图片未纳入本次输入]`, 下载失败时标记 `[图片读取失败]`
+- 消息来源显示为 `[用户 小明 (ID 123), 消息 789]`, 昵称缺失时依次使用群名片、用户 ID。显示字段移除控制字符并折叠换行, 当前消息的昵称标记仅使用正文和补全内容之外的剩余额度; 权限和路由仍使用真实 ID。窗口保留接收时昵称, 后续改名不修改旧消息的来源
+- 限流前已收集的内容仍留在窗口, 成功认领后只提交一次。认领后失败不会自动重放; 图片临时文件归属于实际处理事件并在该事件结束时清理。该窗口用于尚未提交的短期消息, 不作为长期媒体缓存
 
 以下示例在本机时间 23:00 至次日 07:00 停止自动参与, 但群 123 使用独立的评分策略。显式 @机器人不受自动参与时段和冷却阻挡。
 
@@ -339,7 +350,7 @@ python scripts/sync_wake_policy_contract.py --check  # 只校验生成物是否�
 
 剥离范围仅限正文之前。`@bot /plan x @bot` 的尾随提及不被剥离: 群聊下它不构成"前置于正文的显式 @bot", 因此不是命令; 私聊下它留在命令参数里。平台侧只用默认前缀与默认参数分隔符做语法级判定, 会话若用自定义 `cmd_prefix` 构造, 平台层不跟随, 该会话的命令不会被平台入口识别; 命令是否注册, 是否被 `disable_command` 停用仍由会话层唯一决定, 未知 `/foo` 照旧落到模型。由此未知命令会失去窗口上下文 (它的正文已被冻结为候选), 这是本轮接受的可见行为变化。
 
-命令不读取也不写入唤醒窗口: 频率与必要性模式下命令不发生 `observe`, 既不把自身存进窗口, 也不消费既有待处理正文。命令也不引入唤醒旁路 —— 群内 `@bot` 本来就命中提及规则, 而由唤醒词, 引用机器人或必要性阈值唤醒的 `/xxx` 只是普通消息。群内不带 `@bot` 的裸 `/help` 不会执行也不会有提示 (提示等于绕开唤醒门主动外发), 可发现性由文档与 `/help` 自身承担。
+命令不读取也不写入唤醒窗口: 所有唤醒模式下命令都不发生 `observe`, 既不把自身存进窗口, 也不消费既有待处理文字或图片。命令也不引入唤醒旁路 —— 群内 `@bot` 本来就命中提及规则, 而由唤醒词, 引用机器人或必要性阈值唤醒的 `/xxx` 只是普通消息。群内不带 `@bot` 的裸 `/help` 不会执行也不会有提示 (提示等于绕开唤醒门主动外发), 可发现性由文档与 `/help` 自身承担。
 
 ### 高权限命令的操作员名单
 
@@ -381,7 +392,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 - `get_image` 只能取回实现仍在其缓存中的图片: 图片已被实现淘汰时该动作失败, 此时无法恢复。这项限制无法由 Satrap 侧绕过; SnowLuma 的图片缓存对 `file`, `fileName` 与 `url` 建别名, 但按 `url` 别名查找属实现特定行为, 因此只作为原始标识失效后的兜底
 - 失败占位: 解析失败的图片把正文中的 `[图片]` 覆盖为 `[图片读取失败]` (视频为 `[视频读取失败]`), 占位不并存; 混合正文继续正常调用模型, 模型因此不会误以为自己已拿到该媒体。若消息除失败媒体外没有任何可读正文, 不调用模型, 直接回复 `图片读取失败，暂时无法处理该图片。`
 - 失败原因码进入补全阶段诊断, 形如 `image:failed:image_url_refreshed`; 平台页与手动唤醒弹窗按图片/视频给出中文标签
-- 已知限制: 本轮不覆盖"先前消息里的图片在后续轮次被追问"这类短期上下文保留问题, 该场景另行处理
+- 未唤醒窗口中的图片在本轮认领后通过同一解析流程处理, 包括原始 `file` 刷新, 失败降级和临时文件清理; 窗口过期或平台缓存已淘汰的图片无法恢复
 
 ## 语音转写与文件正文
 

@@ -152,7 +152,7 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
         toast('info', '此请求已受理, 未重复提交');
         setTracking({ requestId: request.current.id, adapterId: form.adapter_id });
       } else if (result.status === 'no_pending') {
-        toast('info', '此群与成员范围内没有待处理正文');
+        toast('info', '此群与成员范围内没有待处理消息');
         return;
       } else {
         throw new Error(result.reason || '请求被拒绝');
@@ -169,7 +169,7 @@ export function ManualWakeModal({ onClose }: { onClose: () => void }) {
     { key: 'adapter_id', label: '平台实例', type: 'select', options: [{ value: '', label: '请选择 OneBot 平台' }, ...platforms.map((item) => ({ value: item.id, label: item.id }))] },
     { key: 'group_id', label: '目标群号', type: 'text' },
     { key: 'user_id', label: '会话成员 ID（用于选择上下文，不代表操作者）', type: 'text' },
-    { key: 'prompt', label: '唤醒正文（可选）', type: 'textarea', rows: 4, placeholder: '正文和消息 ID 均为空时, 处理此范围待处理正文' },
+    { key: 'prompt', label: '唤醒正文（可选）', type: 'textarea', rows: 4, placeholder: '正文和消息 ID 均为空时, 处理此范围待处理的文字和图片' },
     { key: 'message_id', label: '指定消息 ID（可选，须属于目标群和成员）', type: 'text' },
   ];
   if (tracking) {
