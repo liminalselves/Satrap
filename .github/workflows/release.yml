@@ -1,0 +1,80 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: utf-8
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: satrap-ui/package-lock.json
+      - name: Build portable package
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          python scripts/build_release.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify relocated package
+        env:
+          RELEASE_REF_TYPE: ${{ github.ref_type }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
+        run: |
+          [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+          [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+          $releaseZip = Get-ChildItem -LiteralPath dist -Filter '*.zip' | Select-Object -First 1
+          $verifyRoot = Join-Path $env:RUNNER_TEMP 'Satrap 中文路径 smoke'
+          Expand-Archive -LiteralPath $releaseZip.FullName -DestinationPath $verifyRoot
+          $releaseRoot = Get-ChildItem -LiteralPath $verifyRoot -Directory | Select-Object -First 1
+          & (Join-Path $releaseRoot.FullName 'runtime/python.exe') -X utf8 (Join-Path $releaseRoot.FullName 'release/smoke_release.py')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($env:RELEASE_REF_TYPE -eq 'tag') {
+            $releaseInfo = Get-Content -Raw -Encoding utf8 -LiteralPath (Join-Path $releaseRoot.FullName 'release.json') | ConvertFrom-Json
+            if ($env:RELEASE_REF_NAME -ne "v$($releaseInfo.version)") { throw '标签与 setup.py 的发行版本不一致' }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Satrap-windows-x64
+          path: dist/*
+          if-no-files-found: error
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Satrap-windows-x64
+          path: dist
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release create "$RELEASE_TAG" dist/* --verify-tag --title "Satrap $RELEASE_TAG" --generate-notes

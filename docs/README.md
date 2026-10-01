@@ -7,6 +7,7 @@
 ### getting-started/ 入门
 
 - [快速开始](getting-started/quick-start.md): 安装, 文本与图片调用, 流式输出, 一个最小工具
+- [发行包](getting-started/release.md): Windows 便携包使用, 升级, 构建与自动发布
 - [配置说明](getting-started/configuration.md): `config.yaml`, 模型配置, Session 类配置和环境变量
 - [常见问题](getting-started/faq.md): 常见报错, 配置排查, 图片与上下文问题
 

@@ -38,6 +38,7 @@ install_requires = [
     "aiofiles>=23.2.0",
     "pyyaml>=6.0.0",
     "packaging>=23.0",
+    "mcp>=2.0.0,<3",
 ]
 
 extras_require = {
@@ -46,6 +47,11 @@ extras_require = {
     ],
     "audio": [
         "av>=15,<19",
+    ],
+    "documents": [
+        "openpyxl>=3.1.0",
+        "python-docx>=1.1.0",
+        "pdfplumber>=0.11.0",
     ],
 }
 extras_require["all"] = sorted({dep for deps in extras_require.values() for dep in deps})
