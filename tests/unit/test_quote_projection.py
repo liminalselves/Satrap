@@ -58,7 +58,7 @@ async def test_quote_is_resolved_into_reply_fields_and_projected_with_marker():
     reply = event.get_messages()[0]
     assert isinstance(reply, Reply) and reply.message_str == "原文" and reply.sender_nickname == "小明" and reply.sender_id == "321"
     projected = project_input(event, status)
-    assert projected.message == "[引用 小明 的消息: 原文]\n@10000 这个对吗"
+    assert projected.message == "[引用 小明 的消息: 原文]\n[用户 123, 消息 77] @10000 这个对吗"
     adapter._bot.get_msg.assert_awaited_once_with(message_id=5)
 
 
@@ -92,7 +92,7 @@ async def test_unavailable_quote_keeps_current_message_and_marks_status():
     status = await resolve_quotes(event)
     projected = project_input(event, status)
     assert status == "unavailable"
-    assert projected.message == "[引用了一条无法获取原文的消息]\n@10000 这个对吗"
+    assert projected.message == "[引用了一条无法获取原文的消息]\n[用户 123, 消息 77] @10000 这个对吗"
     assert "quote_unavailable" in projected.notes
 
 

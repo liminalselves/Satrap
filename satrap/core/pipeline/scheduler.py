@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import replace
 import asyncio
 from time import monotonic, time
 import inspect
@@ -36,7 +35,7 @@ from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import PlatformComponentType
 from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
 from satrap.core.pipeline.input_projection import (
@@ -46,6 +45,7 @@ from satrap.core.pipeline.input_projection import (
     resolve_forwards,
     resolve_quotes,
     select_media,
+    select_window_media,
 )
 from satrap.core.pipeline.media_resolve import resolve_media
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
@@ -507,9 +507,9 @@ class PipelineScheduler:
             automatic = False
             if manual_ticket is not None:
                 event.is_wake = True
-            elif automatic_eligible and command_text is None:
+            elif not event.is_private_chat() and command_text is None:
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
-                if not event.is_wake_up():
+                if automatic_eligible and not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
                     event.set_extra("wake_decision", decision)
                     if decision.triggered:
@@ -540,7 +540,7 @@ class PipelineScheduler:
                 for c in top_components
             )
             # 命令候选的正文由组件渲染得到, 不依赖平台侧渲染文本, 因此不受该空值判定约束
-            if command_text is None and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
+            if command_text is None and not pending and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -619,7 +619,7 @@ class PipelineScheduler:
                     return
                 if manual_ticket is not None and manual_ticket.cancelled:
                     return
-                batch: tuple[PendingText, ...] = ()
+                batch: tuple[PendingMessage, ...] = ()
                 if pending:
                     batch = self.wake_window.claim(event, pending, automatic, deadline=deadline_ticket is not None)
                     if automatic and not batch:
@@ -636,11 +636,14 @@ class PipelineScheduler:
                     self._record_command(event)
                 else:
                     # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
-                    quote_status = await resolve_quotes(event)
-                    forward_status = await resolve_forwards(event)
-                    attachments = await resolve_attachments(event, self.asr_resolver)
+                    window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
+                    quote_status = "none" if window_synthetic else await resolve_quotes(event)
+                    forward_status = "none" if window_synthetic else await resolve_forwards(event)
+                    attachments = () if window_synthetic else await resolve_attachments(event, self.asr_resolver)
                     # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
                     selection = select_media(event, quote_status)
+                    window_batch = batch if window_synthetic else tuple(item for item in batch if item.request_id != event.call_origin.request_id)
+                    selection = select_window_media(event, selection, window_batch, quote_status, forward_status, attachments, window_synthetic)
                     media_results = await resolve_media(event, selection)
                     event.set_extra("media_resolution", media_results)
                     projected = project_input(event, quote_status, forward_status, attachments, selection)
@@ -671,35 +674,6 @@ class PipelineScheduler:
                     group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
                     group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
                 )
-                if batch:
-                    window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
-                    text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
-                    window_note: str | None = None
-                    if window_synthetic:
-                        # 窗口类合成事件 (待处理手动唤醒/定时补偿): projected 正文来自快照拼接或陈旧副本,
-                        # 以实际成功 claim 的内容为唯一输入, 不叠加 projected 避免重复整段窗口
-                        user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
-                        if len(user_call.message) > text_limit:
-                            user_call.message = user_call.message[: text_limit - 1] + "…"
-                            window_note = "window_budget_truncated"
-                    else:
-                        # 真实当前消息: 保留引用/转发/附件补全投影, 批次剔除自身后作为先前窗口上下文追加
-                        current_request_id = event.call_origin.request_id
-                        others = tuple(item for item in batch if item.request_id != current_request_id)
-                        if others:
-                            lines = "\n".join(f"- [用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in others)
-                            window_block = f"[先前窗口消息 {len(others)} 条:\n{lines}]"
-                            # 窗口块消耗投影剩余额度, 分隔符与截断提示计入总量
-                            remaining = text_limit - len(user_call.message) - 1 if user_call.message else text_limit
-                            if remaining >= 2:
-                                if len(window_block) > remaining:
-                                    window_block = window_block[: remaining - 1] + "…"
-                                    window_note = "window_budget_truncated"
-                                user_call.message = f"{user_call.message}\n{window_block}" if user_call.message else window_block
-                            else:
-                                window_note = "window_budget_dropped"
-                    if window_note is not None:
-                        event.set_extra("input_projection", replace(projected, notes=(*projected.notes, window_note)))
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
                     # 已受理请求要求发送证据: 记录不可用时工具与回复不得冒充可恢复

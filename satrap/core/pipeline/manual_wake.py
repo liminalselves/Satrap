@@ -6,7 +6,7 @@ from time import monotonic
 import hashlib
 import json
 
-from satrap.core.pipeline.wake_window import PendingText
+from satrap.core.pipeline.wake_window import PendingMessage
 from satrap.core.platform.event import MessageEvent
 from satrap.core.log import logger
 
@@ -20,7 +20,7 @@ class ManualWakeTicket:
     """手动请求与可选待处理窗口快照"""
 
     request_id: str
-    snapshot: tuple[PendingText, ...] = ()
+    snapshot: tuple[PendingMessage, ...] = ()
     cancelled: bool = False
     status: str = "pending"
     event_ref: ReferenceType[MessageEvent] | None = None

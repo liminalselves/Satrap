@@ -88,7 +88,7 @@ async def test_voice_is_transcribed_and_projected(monkeypatch: pytest.MonkeyPatc
     assert calls[0][1] == module.AUDIO_MAX_BYTES
     assert event.get_messages()[1].text == "你好世界"
     projected = project_input(event, "none", "none", results)
-    assert projected.message == "[语音 转写内容: 你好世界]\n@10000"
+    assert projected.message == "[语音 转写内容: 你好世界]\n[用户 123, 消息 77] @10000"
     assert projected.attachment_status == "resolved"
     again = await resolve_attachments(event, lambda name: asr_config())
     assert again[0].text == "你好世界" and len(calls) == 1

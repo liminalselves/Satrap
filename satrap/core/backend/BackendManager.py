@@ -1753,7 +1753,7 @@ class BackendManager:
         if not prompt.strip() and not snapshot and not message_id:
             return {"status": "no_pending", "request_id": request_id}
         if snapshot:
-            event.message_str = "\n".join(item.text for item in snapshot)
+            event.message_str = "\n".join(item.preview for item in snapshot)
         event._call_origin = replace(event.call_origin, actor_id=operator, actor_kind="management", route_user_id=str(user_id), request_id=request_id)
         store = self._manual_wake_store
         # 接受事务: 查重 + 持久占位 + 入队由同一把异步锁保护, 成功落盘后才返回 accepted

@@ -93,6 +93,29 @@ async def test_manual_pending_window_and_stop_guard():
 
 
 @pytest.mark.asyncio
+async def test_manual_explicit_window_rebuilds_images_and_original_nickname(monkeypatch: pytest.MonkeyPatch):
+    backend, adapter, manager = runtime()
+    adapter._bot = AsyncMock()
+    download = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + bytes(32))
+    monkeypatch.setattr("satrap.core.pipeline.media_resolve._download", download)
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "sender": {"user_id": 30, "nickname": "小明"},
+        "message": [{"type": "image", "data": {"file": "original.image", "url": "https://cdn/original.png"}}]})
+    await _scheduler(backend).execute(adapter._event_queue.get_nowait())
+    download.assert_not_awaited()
+    payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "request_id": "picture-window"}
+    assert (await backend.wake_platform(payload, operator="management"))["status"] == "accepted"
+    manual = adapter._event_queue.get_nowait()
+    await _scheduler(backend).execute(manual)
+    manager.handle_call_async.assert_awaited_once()
+    call = manager.handle_call_async.await_args.args[0]
+    assert call.message == "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert len(call.img_urls) == 1 and call.origin.actor_kind == "management"
+    download.assert_awaited_once()
+    assert (await backend.wake_platform({**payload, "request_id": "empty-picture-window"}, operator="management"))["status"] == "no_pending"
+
+
+@pytest.mark.asyncio
 async def test_manual_rejects_forged_actor_disabled_platform_and_full_queue():
     backend, adapter, _ = runtime()
     payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "prompt": "hello", "request_id": "one"}

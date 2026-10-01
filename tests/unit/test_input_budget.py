@@ -202,7 +202,7 @@ class TestWindowBlockBudget:
         scheduler = PipelineScheduler(cast(SessionManager, manager))
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
             "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 5, "wake_cooldown": 0,
-            "input_text_limit": 60,
+            "input_text_limit": 100,
         }))
         adapter.started = True
         adapter._bot = AsyncMock()
@@ -218,8 +218,8 @@ class TestWindowBlockBudget:
         await scheduler.execute(event)
         manager.handle_call_async.assert_awaited_once()
         user_call = manager.handle_call_async.await_args.args[0]
-        assert len(user_call.message) <= 60
-        assert user_call.message.startswith("@10" + "正" * 40)
+        assert len(user_call.message) <= 100
+        assert user_call.message.startswith("[用户 30, 消息 2] @10" + "正" * 40)
         assert "[先前窗口消息" in user_call.message
         projected = event.get_extra("input_projection")
         assert "window_budget_truncated" in projected.notes

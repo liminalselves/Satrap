@@ -7,12 +7,13 @@
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, cast
 
 from satrap.core.pipeline.attachments import AttachmentResult, render_attachments
 from satrap.core.config.platform_policy import policy_default
-from satrap.core.components import BaseMessageComponent, Forward, Node, PlatformComponentType, Reply, preferred_media_source
+from satrap.core.components import BaseMessageComponent, Forward, Image, Node, PlatformComponentType, Reply, preferred_media_source
+from satrap.core.pipeline.wake_window import PendingImage, PendingMessage, sender_label
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.core.log import logger
@@ -352,7 +353,7 @@ class MediaItem:
     media_type: str
     """image 或 video"""
     origin: str
-    """top, quote 或 forward"""
+    """top, quote, forward 或 window"""
     components: tuple[BaseMessageComponent, ...]
     """共享该来源的组件, 解析结果需要写回全部组件以保证去重结论稳定"""
 
@@ -396,6 +397,9 @@ class MediaSelection:
     quote_notes: tuple[str, ...] = ()
     forward_notes: tuple[tuple[str, ...], ...] = ()
     """按转发顺序逐条记录, 供投影侧在对应转发位置插入预算说明"""
+    window_messages: tuple[WindowInput, ...] = ()
+    window_notes: tuple[str, ...] = ()
+    window_synthetic: bool = False
 
     def sources(self, media_type: str) -> list[str]:
         """
@@ -408,6 +412,100 @@ class MediaSelection:
         - list[str]: 选中来源列表
         """
         return [item.source for item in self.items if item.media_type == media_type]
+
+
+@dataclass(frozen=True)
+class WindowInput:
+    """本轮临时重建的窗口正文与图片组件, 不写回长期快照"""
+
+    label: str
+    parts: tuple[str | Image, ...]
+
+
+WINDOW_MEDIA_DROPPED = "[图片未纳入本次输入]"
+"""未选中或没有来源的窗口图片占位, 计入文本预算"""
+
+
+def select_window_media(
+    event: MessageEvent, selection: MediaSelection, snapshot: tuple[PendingMessage, ...],
+    quote_status: str, forward_status: str, attachments: tuple[AttachmentResult, ...], synthetic: bool,
+) -> MediaSelection:
+    """
+    先预留当前输入和完整图片标记, 再按最近消息优先合并窗口媒体
+
+    参数:
+    - event: 当前已通过限流的事件
+    - selection: 当前消息, 引用及转发的媒体选中结果
+    - snapshot: 实际认领的窗口消息, 真实事件已剔除当前消息
+    - quote_status: 引用回源状态
+    - forward_status: 转发补全状态
+    - attachments: 当前事件的附件投影结果
+    - synthetic: 是否只使用认领窗口, 不投影合成事件的正文和组件
+
+    返回:
+    - MediaSelection: 共用预算的媒体和可完整显示来源的窗口片段
+    """
+    if not snapshot and not synthetic:
+        return selection
+    if synthetic:
+        selection = MediaSelection((), window_synthetic=True)
+    base = project_input(event, quote_status, forward_status, attachments, selection)
+    text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
+    reserve = len(base.message) + (1 if base.message else 0)
+    reserve += sum(len(item.components) * len(MEDIA_FAILED_TEXT[item.media_type]) for item in selection.items)
+    # 当前媒体失败可能扩大占位, 先保守预留, 避免已下载窗口图片的来源标记被最终裁掉
+    remaining = max(0, text_limit - reserve)
+    rows: list[WindowInput] = []
+    notes: list[str] = []
+    for item in reversed(snapshot):
+        label = sender_label(item.nickname, item.actor_id, item.message_id)
+        header = label + " " if synthetic else f"[先前窗口消息: {label} "
+        suffix = "" if synthetic else "]"
+        available = remaining - len(header) - len(suffix) - 1
+        if available < 1:
+            notes.append("window_budget_dropped")
+            continue
+        parts: list[str | Image] = []
+        used = 0
+        snapshot_parts = item.parts or (item.text,)
+        if item.omitted_images:
+            snapshot_parts = (*snapshot_parts, f"[另有 {item.omitted_images} 张图片超出窗口容量]")
+            notes.append("window_media_storage_truncated")
+        for part in snapshot_parts:
+            if isinstance(part, PendingImage):
+                if used + len(WINDOW_MEDIA_DROPPED) > available:
+                    notes.append("window_budget_truncated")
+                    break
+                parts.append(Image(file=part.file, url=part.url or None))
+                used += len(WINDOW_MEDIA_DROPPED)
+            else:
+                take = min(len(part), available - used)
+                if take:
+                    parts.append(part[:take])
+                    used += take
+                if take < len(part):
+                    notes.append("window_budget_truncated")
+                    break
+        if not parts:
+            continue
+        rows.append(WindowInput(header, tuple(parts)))
+        remaining -= len(header) + len(suffix) + used + 1
+    items = list(selection.items)
+    media_limit = int(event.policy_settings.get("input_media_limit", policy_default("input_media_limit")))
+    for row in rows:
+        for part in row.parts:
+            if not isinstance(part, Image):
+                continue
+            source = preferred_media_source(part)
+            existing = next((index for index, item in enumerate(items) if item.source == source and item.media_type == "image"), None)
+            if source and existing is not None:
+                items[existing] = replace(items[existing], components=(*items[existing].components, part))
+            elif source and len(items) < media_limit:
+                items.append(MediaItem(source, "image", "window", (part,)))
+            else:
+                notes.append("window_media_truncated" if source else "window_media_unavailable")
+    return replace(selection, items=tuple(items), window_messages=tuple(reversed(rows)),
+                   window_notes=tuple(dict.fromkeys(notes)), window_synthetic=synthetic)
 
 
 def select_media(event: MessageEvent, quote_status: str) -> MediaSelection:
@@ -490,8 +588,8 @@ def project_input(
     - ProjectedInput: 文本与媒体来源, 引用, 转发与附件内容以明确标记包裹;
       顶层媒体按 input_media_limit 实际裁剪, 文本总量按 input_text_limit 记账拼接
     """
-    top = event.get_messages()
     selection = selection if selection is not None else select_media(event, quote_status)
+    top = [] if selection.window_synthetic else event.get_messages()
     failures = media_failures(event)
     images: list[str] = []
     videos: list[str] = []
@@ -503,10 +601,10 @@ def project_input(
             failed_types.add(item.media_type)
             continue
         (images if item.media_type == "image" else videos).append(source)
-    notes: list[str] = list(selection.top_notes)
+    notes: list[str] = [*selection.top_notes, *selection.window_notes]
     for source, reason in failures.items():
         notes.append(f"media_failed:{reason}" if source else "media_failed")
-    message = _rewrite_media_placeholders(event.get_message_str(), top, failures)
+    message = "" if selection.window_synthetic else _rewrite_media_placeholders(event.get_message_str(), top, failures)
     quote_blocks: list[_ContextBlock] = []
     forward_blocks: list[_ContextBlock] = []
     attachment_blocks: list[_ContextBlock] = []
@@ -553,7 +651,7 @@ def project_input(
             notes.append("forward_truncated")
         forward_blocks.append(_ContextBlock("forward", f"[转发消息 {len(lines)} 条:\n", block, "]"))
     attachment_status = "none"
-    if attachments:
+    if attachments and not selection.window_synthetic:
         for placeholder in ("[语音]", "[文件]"):
             for _ in range(sum(1 for item in attachments if (item.kind == "record") == (placeholder == "[语音]"))):
                 message = message.replace(placeholder, "", 1)
@@ -568,10 +666,49 @@ def project_input(
         if block:
             attachment_blocks.append(_ContextBlock("attachment", "", block))
     text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
-    message = ProjectionBudget(text_limit).assemble(message, [*attachment_blocks, *forward_blocks, *quote_blocks], notes)
+    blocks = [*attachment_blocks, *forward_blocks, *quote_blocks]
+    assembled = ProjectionBudget(text_limit).assemble(message, blocks, notes)
+    source_label = ""
+    if message and not event.is_private_chat() and not selection.window_synthetic and event.call_origin.actor_kind != "management":
+        origin = event.call_origin
+        source_label = sender_label(event.get_sender_name(), origin.actor_id, origin.source_message_id) + " "
+        if len(source_label) + len(assembled) <= text_limit:
+            message = source_label + message
+            assembled = ProjectionBudget(text_limit).assemble(message, blocks, notes)
+        else:
+            source_label = ""
+            notes.append("sender_label_budget_dropped")
+    message = assembled
     # 判定必须在占位覆盖之后做: 覆盖后的正文非空, 不能用空正文判断是否值得调用模型
-    body = message
-    for placeholder in ("[图片]", "[视频]", *MEDIA_FAILED_TEXT.values()):
+    body = message.replace(source_label, "", 1) if source_label else message
+    if top and all(component.type in {PlatformComponentType.Image, PlatformComponentType.Video}
+                   or (component.type == PlatformComponentType.At and safe_getattr_str(component, "qq") == event.get_self_id())
+                   or (component.type == PlatformComponentType.Plain and not safe_getattr_str(component, "text").strip())
+                   for component in top):
+        body = ""
+    # 只有媒体和机器人寻址的当前消息不算可读正文, 发送者标记也不改变该结论
+    selected_components = {id(component): item for item in selection.items for component in item.components}
+    window_lines: list[str] = []
+    for row in selection.window_messages:
+        parts: list[str] = []
+        for part in row.parts:
+            if isinstance(part, str):
+                parts.append(part)
+                body += part
+                continue
+            item = selected_components.get(id(part))
+            if item is None:
+                parts.append(WINDOW_MEDIA_DROPPED)
+                failed_types.add("image")
+            elif item.source in failures:
+                parts.append(MEDIA_FAILED_TEXT["image"])
+            else:
+                resolved = preferred_media_source(part)
+                parts.append(f"[图片 {images.index(resolved) + 1}]" if resolved in images else WINDOW_MEDIA_DROPPED)
+        window_lines.append(row.label + "".join(parts).strip() + ("" if selection.window_synthetic else "]"))
+    if window_lines:
+        message = "\n".join([*([message] if message else []), *window_lines])
+    for placeholder in ("[图片]", "[视频]", WINDOW_MEDIA_DROPPED, *MEDIA_FAILED_TEXT.values()):
         body = body.replace(placeholder, "")
     media_only_unavailable = bool(failed_types) and not images and not videos and not body.strip()
     return ProjectedInput(

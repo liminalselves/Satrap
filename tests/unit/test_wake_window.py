@@ -123,7 +123,7 @@ async def test_queued_event_cannot_restore_disabled_automatic_policy():
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(queued)
     manager.handle_call_async.assert_not_awaited()
-    assert not scheduler.wake_window._pending
+    assert [item.text for item in scheduler.wake_window.peek(queued)] == ["正文"]
 
 
 @pytest.mark.asyncio

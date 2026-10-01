@@ -752,7 +752,7 @@ async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.Mo
     """无 prompt 待处理手动唤醒: 输入仅为实际认领批次, 不叠加合成事件正文"""
     from unittest.mock import AsyncMock
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
-    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.pipeline.wake_window import PendingMessage
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
     manager = _runnable_async_session_manager()
@@ -763,10 +763,10 @@ async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.Mo
     await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
         "message_type": "group", "message": [{"type": "text", "data": {"text": "窗口甲\n窗口乙"}}]})
     event = adapter._event_queue.get_nowait()
-    snapshot = (PendingText("r1", "30", "1", "窗口甲", 0.0), PendingText("r2", "30", "2", "窗口乙", 0.0))
+    snapshot = (PendingMessage("r1", "30", "1", "窗口甲", 0.0), PendingMessage("r2", "30", "2", "窗口乙", 0.0))
     scheduler.manual_wakes.tickets[event] = ManualWakeTicket("req-1", snapshot)
 
-    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingMessage, ...]:
         return snapshot
 
     monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
@@ -781,7 +781,7 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     """定时补偿唤醒: 以到期实际认领为准, 定时器保存的陈旧正文副本不进入输入"""
     from unittest.mock import AsyncMock
     from satrap.core.pipeline.wake_timers import DeadlineTicket
-    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.pipeline.wake_window import PendingMessage
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
     manager = _runnable_async_session_manager()
@@ -793,10 +793,10 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
         "message_type": "group", "message": [{"type": "text", "data": {"text": "旧副本"}}]})
     event = adapter._event_queue.get_nowait()
-    snapshot = (PendingText("r1", "30", "1", "实际认领", 0.0),)
+    snapshot = (PendingMessage("r1", "30", "1", "实际认领", 0.0),)
     scheduler.wake_timers.tickets[event] = DeadlineTicket(snapshot=snapshot)
 
-    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingMessage, ...]:
         return snapshot
 
     monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
@@ -1065,7 +1065,7 @@ async def test_rejected_message_does_not_consume_rate_limit_and_recovers_without
     accepted = _group_event(harness.adapter, message_str="恢复后消息")
     accepted.is_wake = True
     await harness.scheduler.execute(accepted)
-    assert [call.message for call in harness.manager.calls] == ["恢复后消息"]
+    assert [call.message for call in harness.manager.calls] == ["[用户 User (ID user-1), 消息 msg-1] 恢复后消息"]
     # 恢复后仍走完整管线: 回复经同一适配器外发
     assert [getattr(chain.components[0], "text", "") for _, chain in harness.adapter.sent] == ["回复"]
 
@@ -1075,10 +1075,10 @@ async def test_manual_and_deadline_sources_are_rejected_when_binding_disabled():
     """手动唤醒与定时补偿来源同样在闸门被拒, 快照不进入会话"""
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
     from satrap.core.pipeline.wake_timers import DeadlineTicket
-    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.pipeline.wake_window import PendingMessage
 
     harness = _gate_harness({"dummy": False})
-    snapshot = (PendingText("r1", "user-1", "1", "禁用期窗口正文", 0.0),)
+    snapshot = (PendingMessage("r1", "user-1", "1", "禁用期窗口正文", 0.0),)
     manual = _group_event(harness.adapter, message_str="手动唤醒")
     harness.scheduler.manual_wakes.tickets[manual] = ManualWakeTicket("req-manual", snapshot)
     deadline = _group_event(harness.adapter, message_str="定时补偿")
@@ -1157,7 +1157,7 @@ async def test_gate_uses_real_registry_disabled_definition(tmp_path: Path):
     accepted = _group_event(adapter, message_str="恢复后消息")
     accepted.is_wake = True
     await scheduler.execute(accepted)
-    assert [call.message for call in manager.calls] == ["恢复后消息"]
+    assert [call.message for call in manager.calls] == ["[用户 User (ID user-1), 消息 msg-1] 恢复后消息"]
 
 
 @pytest.mark.asyncio

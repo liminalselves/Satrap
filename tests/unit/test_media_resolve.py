@@ -413,7 +413,7 @@ class TestFailedMediaProjection:
         projected = project_input(event, "none")
 
         assert projected.images == ()
-        assert projected.message.strip() == "[图片读取失败]"
+        assert projected.message.strip() == "[用户 123, 消息 77] [图片读取失败]"
         assert projected.media_only_unavailable is True
 
     @pytest.mark.asyncio
@@ -428,7 +428,7 @@ class TestFailedMediaProjection:
         projected = project_input(event, "none")
 
         assert projected.videos == ()
-        assert projected.message.strip() == "[视频读取失败]"
+        assert projected.message.strip() == "[用户 123, 消息 77] [视频读取失败]"
         assert projected.media_only_unavailable is True
 
     @pytest.mark.asyncio

@@ -30,7 +30,7 @@ from satrap.core.config.platform_policy import (
 from satrap.core.config.wake_overrides import AUTOMATIC_KEYS, GROUP_KEYS
 from satrap.core.pipeline.input_projection import project_input
 from satrap.core.pipeline.wake_dry_run import dry_run_wake
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -285,8 +285,8 @@ class TestPolicyDefaultSingleSource:
         adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "frequency"}))
         window = WakeWindow()
         event = await _event(adapter)
-        snapshot: tuple[PendingText, ...] = (
-            PendingText(request_id="r1", actor_id="30", message_id="1", text="正文", received_at=0.0),
+        snapshot: tuple[PendingMessage, ...] = (
+            PendingMessage(request_id="r1", actor_id="30", message_id="1", text="正文", received_at=0.0),
         )
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_max_wait", 0)
         assert window.decide(event, snapshot, 10, deadline=True).rule != "max_wait"
@@ -317,7 +317,7 @@ class TestPolicyDefaultSingleSource:
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10)
         assert len(project_input(event, "none").message) <= 10
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10000)
-        assert len(project_input(event, "none").message) == 200
+        assert project_input(event, "none").message == "[用户 30, 消息 1] " + "x" * 200
 
     @pytest.mark.asyncio
     async def test_wake_mode_default_in_dry_run(self, monkeypatch: pytest.MonkeyPatch):

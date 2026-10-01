@@ -344,7 +344,7 @@ async def test_command_skips_window_observe_in_frequency_mode():
 
     assert len(manager.calls) == 2
     merged = manager.calls[1].message
-    assert "[先前窗口消息 3 条" in merged
+    assert merged.count("[先前窗口消息:") == 3
     for index in range(3):
         assert f"闲聊 {index}" in merged
 
@@ -492,7 +492,7 @@ async def test_wake_word_woken_slash_message_is_not_command():
     await scheduler.execute(event)
 
     assert len(manager.calls) == 1
-    assert manager.calls[0].message == "小撒 /help"
+    assert manager.calls[0].message == "[用户 User (ID user-1), 消息 msg-user-1] 小撒 /help"
 
 
 @pytest.mark.asyncio
