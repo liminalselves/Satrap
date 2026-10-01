@@ -13,6 +13,7 @@
     "test:e2e:wake": "node e2e/manual-wake.mjs",
     "test:e2e:asr": "node e2e/asr-models.mjs",
     "test:e2e:forms": "node e2e/form-required.mjs",
+    "test:e2e:edictum": "node e2e/edictum-settings.mjs",
     "test:e2e": "node e2e/chat-reconnect.mjs",
     "preview": "vite preview",
     "benchmark": "npm run build && node benchmarks/run.mjs",

@@ -529,7 +529,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         open={pluginManagerName !== null}
         configName={pluginManagerName}
         availablePlugins={availablePlugins}
-        configuredPlugins={pluginManagerName ? configs[pluginManagerName]?.plugins || [] : []}
+        configuredPlugins={pluginManagerName ? configs[pluginManagerName]?.plugins : undefined}
         saving={pluginSaving}
         onClose={() => setPluginManagerName(null)}
         onSave={savePlugins}

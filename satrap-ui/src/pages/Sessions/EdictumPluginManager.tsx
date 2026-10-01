@@ -1,7 +1,7 @@
 import { PluginConfigFields, type ModelOptions, type ConfigOption } from '@/components/common/PluginConfigFields';
 import { ragApi } from '@/api/rag';
 import { controlApi } from '@/api/control';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Puzzle, Trash2 } from 'lucide-react';
 
 import type {
@@ -32,7 +32,7 @@ interface EdictumPluginManagerProps {
   open: boolean;
   configName: string | null;
   availablePlugins: EdictumAvailablePlugin[];
-  configuredPlugins: EdictumSessionConfig['plugins'];
+  configuredPlugins: EdictumSessionConfig['plugins'] | undefined;
   saving: boolean;
   onClose: () => void;
   onSave: (plugins: EdictumSessionConfig['plugins']) => void | Promise<void>;
@@ -69,6 +69,7 @@ export function EdictumPluginManager({
   onSave,
 }: EdictumPluginManagerProps) {
   const [states, setStates] = useState<Record<string, ManagedPluginState>>({});
+  const draftConfigName = useRef<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOptions>({});
   const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
   const [modelError, setModelError] = useState('');
@@ -85,8 +86,14 @@ export function EdictumPluginManager({
 
 
   useEffect(() => {
-    if (open) setStates(normalizeConfiguredPlugins(configuredPlugins));
-  }, [configuredPlugins, open]);
+    if (!open) {
+      draftConfigName.current = null;
+      return;
+    }
+    if (!configName || configuredPlugins === undefined || draftConfigName.current === configName) return;
+    setStates(normalizeConfiguredPlugins(configuredPlugins));
+    draftConfigName.current = configName; // 同一次编辑期间的后台刷新不能覆盖草稿
+  }, [configName, configuredPlugins, open]);
 
   const pluginMap = useMemo(
     () => Object.fromEntries(availablePlugins.map((plugin) => [plugin.name, plugin])),
