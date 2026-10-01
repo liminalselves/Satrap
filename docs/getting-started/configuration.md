@@ -71,8 +71,23 @@ Copy-Item config.example.yaml config.yaml
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
-| `media_allowed_roots` | `[]`(默认白名单) | 消息组件媒体来源白名单根目录, 留空使用默认 (`.satrap` 数据目录, 沙箱目录与系统临时目录) |
+| `media_allowed_roots` | `null` | 本地媒体允许目录, 仅接受字符串列表或 null; 规则见下文 |
 | `platforms` | `[]` | 平台适配器实例配置 |
+
+### 媒体来源白名单
+
+`media_allowed_roots` 为 `null` 或空列表时允许 `.satrap/sandbox`、系统临时目录, 以及实际 `data_root` 下的以下目录及其子目录:
+
+- `platforms/<平台键>/cache`
+- `platforms/<平台键>/sessions/<会话键>/{uploads,artifacts,sandbox,cache}`
+
+不按任意祖先目录名放行, 因此数据根中的数据库、用户、项目、索引和回收站不属于默认媒体目录。如果把 `data_root` 放在系统临时目录下, 系统临时目录的默认授权仍然生效。
+
+非空列表完全替换上述默认授权, 包括系统临时目录。`SATRAP_EXTRA_MEDIA_ROOTS` 始终追加目录, 用当前系统的路径分隔符分隔 (Windows 为 `;`, Unix 为 `:`); 配置列表中的路径不按此分隔符拆分, 允许 Windows 目录名含 `;`。路径在校验时解析符号链接和 `..`。
+
+下载和内联媒体的临时文件位于实际 `data_root` 的 `platforms/<local平台键>/cache/temp`。使用显式白名单且需要下载、Base64 转换或文件回调时, 必须将该缓存目录或其父目录列入白名单; 未授权时拒绝落盘, 不额外扩大权限。HTTP(S) 来源可直接交给平台处理。
+
+本地来源支持裸路径和标准 `file:` URI, URI 中的 `#`、`%` 和中文文件名须转义 (Python 可用 `Path.as_uri()`)。所有本地路径先校验授权, 不以文件是否存在决定是否检查; Windows 支持 UNC authority, Unix 拒绝非本机 authority。此白名单约束的是 Satrap 允许外发的路径, 不证明独立部署的 OneBot 服务能访问同一文件系统。
 
 ## 模型配置
 

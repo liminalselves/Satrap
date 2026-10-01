@@ -37,7 +37,8 @@ from satrap.core.platform.onebot.admin import ADMIN_CAPABILITIES, _CAPABILITY_AC
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
-from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_media_path, file_uri_to_path
+from satrap.core.utils.paths import MediaSourcePermissionError, normalize_media_source
+from satrap.core.server_auth import is_loopback_host
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, PlatformEvent, register_platform_adapter
@@ -64,15 +65,6 @@ _RECEIPT_TO_SEGMENT_STATUS = {"success": "sent", "partial": "partial", "failed":
 
 _ATTEMPT_FINALIZE_TIMEOUT = 2.0
 """发送尝试收尾的有界等待秒数, 超时保持未确认而不是谎报终态"""
-
-_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"}
-"""视为回环监听的地址, 空鉴权只允许出现在这些地址上"""
-
-
-def _is_loopback_host(host: str) -> bool:
-    """判断监听地址是否为回环地址"""
-    return host.strip("[]").lower() in _LOOPBACK_HOSTS
-
 
 def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
     """段摘要: 组件类型与关键字段的散列及正文字符数, 不落正文原文"""
@@ -223,7 +215,7 @@ class OneBotAdapter(PlatformAdapter):
             self.record_error("[OneBotAdapter] 未安装 aiocqhttp, 无法启动 OneBot 适配器")
             return
         if not self.access_token:
-            if _is_loopback_host(self.host):
+            if is_loopback_host(self.host):
                 logger.warning(
                     "[OneBotAdapter] 未配置 access_token, 反向 WebSocket 端口本机任意进程可伪造事件; "
                     "建议在平台 settings 中设置 access_token"
@@ -1032,22 +1024,13 @@ class OneBotAdapter(PlatformAdapter):
             return SendReceipt("failed", reason="client_unavailable")
         if is_group_session(session_id) and not self.allows_group(extract_group_id(session_id)):
             raise PermissionError("目标群不在当前适配器允许范围内")
-        raw_file = (component.file_ or "").strip()
-        source = ""
-        if raw_file:
-            local_path = file_uri_to_path(raw_file)
-            if raw_file.startswith("file://") or os.path.exists(local_path):
-                try:
-                    # file URI 即使指向不存在路径也必须先过白名单, 禁止原字符串透传给 OneBot 实现读取
-                    source = ensure_allowed_media_path(local_path)
-                except MediaSourcePermissionError as error:
-                    return self._failed_receipt(session_id, "file", "media_source_denied", error)
-            else:
-                source = raw_file
-        elif component.url:
-            source = component.url.strip()
-        if not source:
+        raw_source = component.file_ or component.url or ""
+        if not raw_source:
             return SendReceipt("failed", reason="empty_file")
+        try:
+            source = normalize_media_source(raw_source)
+        except MediaSourcePermissionError as error:
+            return self._failed_receipt(session_id, "file", "media_source_denied", error)
         name = (component.name or "").strip() or os.path.basename(source) or "file"
 
         upload_action = "upload_group_file" if is_group_session(session_id) else "upload_private_file"

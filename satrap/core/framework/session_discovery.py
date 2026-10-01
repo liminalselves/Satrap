@@ -1,13 +1,19 @@
-"""会话类模块的扫描, 发现与动态导入工具"""
+"""
+可信目录中的会话类发现与模块加载
+
+为 CLI 和管理 API 扫描 Session 类, 按文件来源加载模块,
+与 SessionClassConfigManager 共用模块命名, 保留包导入并在加载失败时恢复注册
+"""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-import hashlib
-import importlib
 import importlib.util
+from dataclasses import asdict, dataclass
+import importlib
+import hashlib
 import inspect
 from pathlib import Path
 from typing import Any, Type, cast
+from types import ModuleType
 import sys
 
 from satrap.core.framework.Base import AsyncSession, Session
@@ -20,35 +26,54 @@ USER_SESSION_MODULE_PREFIX = "satrap_user_sessions_"
 """扫描目录内会话模块的合成模块名前缀, 避免与标准库及已安装包同名冲突"""
 
 
-def load_session_module(module_name: str, file_path: Path):
+def load_session_module(module_name: str, file_path: Path) -> ModuleType:
     """
-    按文件路径显式加载会话模块, 不依赖 sys.path 查找顺序
+    按可信文件路径加载会话模块, 每次只执行一次顶层代码
 
-    模块已加载且源码一致时重载以支持热更新, 否则经 spec_from_file_location
-    注册进 sys.modules; 同名标准库或三方包文件 (如 json.py) 也能正确加载
+    同源模块使用新对象更新, 加载失败时恢复旧注册;
+    普通包先导入并校验父包, 保留包内相对导入
 
     参数:
-    - module_name: 合成模块名
+    - module_name: 扫描目录生成的稳定模块名
     - file_path: 模块源码路径
 
     返回:
-    - ModuleType: 已加载或重载的模块对象
+    - ModuleType: 加载成功的模块对象, 来源冲突或执行失败时抛出异常
     """
     resolved = file_path.resolve()
     existing = sys.modules.get(module_name)
-    existing_source = getattr(existing, "__file__", None) if existing is not None else None
-    if existing is not None and existing_source and Path(existing_source).resolve() == resolved:
-        try:
-            return importlib.reload(existing)
-        except ImportError:
-            # 点分模块名缺少已注册父包时无法 reload, 丢弃旧模块按文件重新加载
-            sys.modules.pop(module_name, None)
+    existing_source = getattr(existing, "__file__", None)
+    if existing is not None and (
+        not existing_source or Path(existing_source).resolve() != resolved
+    ):
+        raise ImportError(f"会话模块名已被其他来源占用: {module_name}")
+    parent_name, _, child_name = module_name.rpartition(".")
+    parent = importlib.import_module(parent_name) if parent_name else None
+    if parent is not None and not any(
+        Path(path).resolve() == resolved.parent for path in getattr(parent, "__path__", ())
+    ):
+        raise ImportError(f"会话模块父包来源不一致: {parent_name}")
+    if existing is None and module_name in sys.modules:
+        imported = sys.modules[module_name]
+        imported_source = getattr(imported, "__file__", None)
+        if not imported_source or Path(imported_source).resolve() != resolved:
+            raise ImportError(f"会话模块名已被其他来源占用: {module_name}")
+        return imported
     spec = importlib.util.spec_from_file_location(module_name, resolved)
     if spec is None or spec.loader is None:
         raise ImportError(f"无法从文件构造会话模块: {resolved}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
-    spec.loader.exec_module(module)
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if existing is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = existing
+        raise
+    if parent is not None:
+        setattr(parent, child_name, module)
     return module
 
 
@@ -288,9 +313,8 @@ def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
     """
     根据扫描目录和文件路径生成稳定模块名
 
-    点开头目录 (如 .satrap/session) 无法构成合法包路径, 使用带专属前缀的
-    合成模块名并经文件路径显式加载, 不遮蔽标准库与已安装包; 其余目录沿用
-    相对 cwd 的真实模块路径
+    cwd 顶层文件和非法包路径使用专属前缀, 避免占用标准库模块名;
+    合法包目录保留真实模块路径, 支持包内相对导入
 
     参数:
     - scan_path: scan路径
@@ -303,19 +327,29 @@ def _module_name_for_file(scan_path: Path, file_path: Path) -> str:
     file_resolved = file_path.resolve()
     try:
         rel = file_resolved.relative_to(cwd)
-        if any(p.startswith(".") for p in rel.parts):
+        parts = rel.with_suffix("").parts
+        if len(parts) == 1 or any(not part.isidentifier() for part in parts):
             return _user_session_module_name(scan_path, file_path)
-        return ".".join(rel.with_suffix("").parts)
+        return ".".join(parts)
     except ValueError:
         rel = file_resolved.relative_to(scan_path.parent.resolve())
         parts = rel.with_suffix("").parts
-        if any(p.startswith(".") for p in parts):
+        if any(not part.isidentifier() for part in parts):
             return _user_session_module_name(scan_path, file_path)
         return ".".join(parts)
 
 
 def _user_session_module_name(scan_path: Path, file_path: Path) -> str:
-    """生成扫描目录内会话文件的合成模块名, 带扫描路径摘要避免多目录同名冲突"""
+    """
+    生成带扫描路径摘要的合成模块名
+
+    参数:
+    - scan_path: 已配置的扫描目录
+    - file_path: 扫描目录内的 Python 文件
+
+    返回:
+    - str: 带文件名和目录摘要的模块名, 避免多目录同名冲突
+    """
     digest = hashlib.sha1(str(scan_path.resolve()).encode("utf-8")).hexdigest()[:8]
     return f"{USER_SESSION_MODULE_PREFIX}{file_path.stem}_{digest}"
 

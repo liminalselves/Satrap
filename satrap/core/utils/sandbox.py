@@ -1,12 +1,13 @@
 """受限代码执行环境与沙箱路径安全检查"""
-import subprocess
 from collections.abc import Iterable
+import subprocess
 from pathlib import Path
-import shutil
 from typing import Dict, Any
+import shutil
 import os
 
 from satrap.core.utils.proc_env import sanitized_child_env
+
 from satrap.core.log import logger
 
 

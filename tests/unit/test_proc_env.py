@@ -51,3 +51,13 @@ def test_overrides_win_over_stripped_values(monkeypatch):
     env = sanitized_child_env(MY_TOKEN="safe")
 
     assert env["MY_TOKEN"] == "safe"
+
+
+def test_allowlist_respects_platform_case_rules(monkeypatch):
+    from satrap.core.utils import proc_env
+    monkeypatch.setattr(proc_env.os, "environ", {"SERVICE_API_KEY": "test", "PATH": "bin"})
+    monkeypatch.setattr(proc_env.os, "name", "nt")
+    assert sanitized_child_env(allow=["service_api_key"])["SERVICE_API_KEY"] == "test"
+    monkeypatch.setattr(proc_env.os, "name", "posix")
+    assert "SERVICE_API_KEY" not in sanitized_child_env(allow=["service_api_key"])
+    assert sanitized_child_env(allow=["SERVICE_API_KEY"])["SERVICE_API_KEY"] == "test"

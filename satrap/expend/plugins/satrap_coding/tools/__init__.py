@@ -1,4 +1,9 @@
-"""编程插件工具兼容入口, 配置仍以此模块为唯一来源"""
+"""
+编程插件工具构造入口
+
+应用插件配置并构造同步或异步工具, 绑定会话权限引擎与工作区,
+将环境变量放行列表按工具实例注入, 不保存为跨会话共享权限
+"""
 
 from __future__ import annotations
 import subprocess
@@ -53,9 +58,6 @@ from .constants import (
     _SUBAGENT_PROMPT,
     DEFAULT_SANDBOX_ROOT,
 )
-
-ALLOWED_ENV_VARS: frozenset[str] = frozenset()
-"""shell 子进程环境剥敏时显式放行的变量名, 由插件配置 allowed_env_vars 更新"""
 from .sync_read import (
     ReadFileTool,
     ListDirTool,
@@ -91,6 +93,23 @@ from .shell import _resolve_shell_executable, _prepare_shell, _run_shell
 from satrap.core.log import logger
 
 
+def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
+    """
+    解析插件配置中的 shell 环境变量放行列表
+
+    参数:
+    - config: 插件配置
+
+    返回:
+    - frozenset[str]: 显式放行的环境变量名, 未配置或为空时返回空集合
+    """
+    return frozenset(
+        name.strip()
+        for name in str(config.get("allowed_env_vars") or "").split(",")
+        if name.strip()
+    )
+
+
 def _apply_config(config: dict[str, Any]) -> None:
     """
     把合成配置应用到模块级死参 (WORKSPACE_ROOT/DATA_ROOT/SANDBOX_ROOT/超时/保护目录)
@@ -106,7 +125,7 @@ def _apply_config(config: dict[str, Any]) -> None:
     """
     if not config:
         return
-    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS, ALLOWED_ENV_VARS
+    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS
     if config.get("workspace_root"):
         WORKSPACE_ROOT = Path(str(config["workspace_root"])).resolve()
         DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
@@ -119,12 +138,6 @@ def _apply_config(config: dict[str, Any]) -> None:
             d.strip() for d in str(config["protected_dirs"]).split(",") if d.strip()
         )
         _PROTECTED_DIRS = (".satrap", ".git", "node_modules") + extra
-    # 空配置同样要覆盖运行态值, 避免上一次配置的 allowlist 泄漏到后续会话
-    ALLOWED_ENV_VARS = frozenset(
-        name.strip()
-        for name in str(config.get("allowed_env_vars") or "").split(",")
-        if name.strip()
-    )
 
 
 def get_tools(
@@ -143,6 +156,7 @@ def get_tools(
     - list[Any]: 按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
     """
     _apply_config(config or {})
+    allowed_env = parse_allowed_env_vars(config or {})
 
     session_cache_root = safe_getattr(session, "coding_cache_root")
     state_root = (
@@ -155,7 +169,7 @@ def get_tools(
     if isinstance(session, AsyncSimpleSession):
         tools: list[Any] = [
             AsyncAskUserTool(),
-            AsyncShellTool(engine),
+            AsyncShellTool(engine, allowed_env),
             AsyncSubAgentTool(session.llm, session.tools_manager),
             AsyncReadFileTool(),
             AsyncWriteFileTool(engine),
@@ -169,7 +183,7 @@ def get_tools(
     else:
         tools = [
             AskUserTool(),
-            ShellTool(engine),
+            ShellTool(engine, allowed_env),
             SubAgentTool(session.llm, session.tools_manager),
             ReadFileTool(),
             WriteFileTool(engine),

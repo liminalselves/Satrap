@@ -1,6 +1,4 @@
 from pathlib import Path
-from pathlib import Path
-from pathlib import Path
 import base64
 import pytest
 import os
@@ -199,7 +197,7 @@ async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
 
     assert await Video.fromFileSystem(str(path)).to_dict() == {
         "type": "video",
-        "data": {"file": f"file:///{os.path.abspath(path)}"},
+        "data": {"file": path.resolve().as_uri()},
     }
     assert await File(name="video.bin", file=str(path)).to_dict() == {
         "type": "file",

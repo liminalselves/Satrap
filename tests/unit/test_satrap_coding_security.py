@@ -124,12 +124,44 @@ async def test_shell_rechecks_scope_after_approval(tmp_path, monkeypatch, asynch
     assert "执行已取消" in result
 
 
-def test_empty_allowed_env_vars_clears_runtime_allowlist(monkeypatch):
-    """插件配置从非空改为空时必须清空模块运行态 allowlist, 不能泄漏旧会话配置"""
-    monkeypatch.setattr(coding, "ALLOWED_ENV_VARS", frozenset())
+def test_allowed_env_vars_parse_per_session():
+    """allowlist 按会话配置解析, 空配置得到空集合, 不存在跨会话共享的模块级状态"""
+    assert coding.parse_allowed_env_vars({"allowed_env_vars": "TEST_API_KEY,OTHER_TOKEN"}) == frozenset(
+        {"TEST_API_KEY", "OTHER_TOKEN"}
+    )
+    assert coding.parse_allowed_env_vars({"allowed_env_vars": ""}) == frozenset()
+    assert coding.parse_allowed_env_vars({}) == frozenset()
+    assert not hasattr(coding, "ALLOWED_ENV_VARS")
 
-    coding._apply_config({"allowed_env_vars": "TEST_API_KEY,OTHER_TOKEN"})
-    assert coding.ALLOWED_ENV_VARS == frozenset({"TEST_API_KEY", "OTHER_TOKEN"})
 
-    coding._apply_config({"allowed_env_vars": ""})
-    assert coding.ALLOWED_ENV_VARS == frozenset()
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatch, asynchronous):
+    import asyncio
+    from satrap.edictum import SimpleSession, AsyncSimpleSession
+    from satrap.core.utils import proc_env
+
+    base = AsyncSimpleSession if asynchronous else SimpleSession
+    class FakeSession(base):
+        def __init__(self):
+            self._wf = SimpleNamespace(llm=None, tools_manager=None)
+            self.coding_workspace_root = tmp_path
+            self.user_input_provider = lambda *args: "y"
+
+    def state(session, root):
+        return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl"), "todos": {}}
+
+    monkeypatch.setattr(coding, "get_plugin_state", state)
+    monkeypatch.setattr(proc_env.os, "environ", {"FIRST_TOKEN": "first", "LAST_API_KEY": "last"})
+    def run(args, workdir, timeout, allow=frozenset()):
+        return ",".join(sorted(proc_env.sanitized_child_env(allow=allow)))
+    monkeypatch.setattr(coding, "_run_shell", run)
+    configurations = [{"allowed_env_vars": "FIRST_TOKEN"}, {"allowed_env_vars": ""}, {"allowed_env_vars": "LAST_API_KEY"}]
+    tools = [next(tool for tool in coding.get_tools(FakeSession(), config)
+                  if isinstance(tool, (coding.ShellTool, coding.AsyncShellTool))) for config in configurations]
+    async def execute(tool):
+        if isinstance(tool, coding.AsyncShellTool):
+            return await tool.execute("echo audit")
+        return tool.execute("echo audit")
+    assert [await execute(tool) for tool in [*tools, tools[0]]] == ["FIRST_TOKEN", "", "LAST_API_KEY", "FIRST_TOKEN"]
+    if asynchronous:
+        assert await asyncio.gather(*(execute(tool) for tool in tools)) == ["FIRST_TOKEN", "", "LAST_API_KEY"]

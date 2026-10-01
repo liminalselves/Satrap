@@ -1,8 +1,10 @@
+"""编程工具的固定 Shell 参数, 授权说明与子进程执行"""
 from __future__ import annotations
 import subprocess
 from pathlib import Path
 import shutil
 import os
+
 from satrap.expend.plugins.satrap_coding.core.command_gate import classify_command
 from satrap.expend.plugins.satrap_coding.core.permission import RiskLevel
 from satrap.core.utils.proc_env import sanitized_child_env
@@ -66,7 +68,18 @@ def _prepare_shell(
 
 
 def _run_shell(args: list[str], workdir: Path, timeout: int, allow: frozenset[str] = frozenset()) -> str:
-    """以 UTF-8 执行已经批准的固定参数, 同步和异步共用; allow 显式放行剥敏排除的环境变量"""
+    """
+    以 UTF-8 执行已经批准的固定参数, 同步和异步工具共用
+
+    参数:
+    - args: 已批准的命令参数
+    - workdir: 执行目录
+    - timeout: 超时秒数
+    - allow: 当前工具实例显式放行的环境变量名
+
+    返回:
+    - str: 有界输出或执行错误说明
+    """
     try:
         result = subprocess.run(
             args,

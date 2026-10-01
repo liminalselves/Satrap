@@ -1,286 +1,133 @@
-# 安全审查报告 (issue #12)
+# 安全审查与修复报告 (issue #12 / PR #15)
 
-- 关联 issue: #12 安全性审查 (数据安全, 代码沙箱等安全相关代码的系统性审查和检验)
-- 审查分支: `review/issue-12`; 基线: `main` @ `1ecb13c` (2026-09-19, 工作区干净)
-- 方式: 只读审查, 按风险面分 3 个切片 (网络 API 与前端 / 代码执行与沙箱 / 数据与平台适配器) 独立核查后汇总定级; `satrap/api/` 由汇总方补充核查
-- 增量复审: 2026-09-26, 同步 main `1ecb13c` → `31604d6` (79 提交: issue #10 整改与冗余清理, 新增唤醒管线 / group_admin 插件 / ASR 调用 / 存储持久化原语); 初审问题逐条复核, 新增代码按两个切片 (唤醒管线与平台层 / 插件·ASR·存储·配置) 审查, 结论见"增量复审记录"
-- 威胁模型: 项目默认仅供本人本地使用 (非多租户公网服务); 不可信输入源为 ① 远程平台用户消息 (Misskey / OneBot, 可经提示注入影响 LLM 行为), ② LLM 生成的代码与工具调用, ③ 本机其他进程 (共享机器场景)
-- 级别定义: P0 致命 (直接可利用, 须立即修) / P1 高 (实际风险, 优先修) / P2 中 (设计性风险或纵深防御缺口) / P3 低 (加固项与信息性)
+## 范围与当前结论
 
-## 结论总览
+- 分支: `review/issue-12`; 初审基线 `1ecb13c`, 2026-09-26 增量复审基线 `31604d6`
+- 当前状态: 2026-10-01, 对 `31604d6` 至当前工作区的 PR 差异复核并修复已确认的问题; 最新修正尚未提交
+- 使用边界: 默认本人本地使用, 不引入多租户策略或 OS 隔离架构; 重点核查平台消息中的媒体来源, 模型工具执行和可信代码加载
+- 初审及增量复审共记录 19 项, 未发现 P0; 下文历史发现描述的是修复前状态, 不是当前缺陷清单
+- 当前相关回归通过, 全量单元测试未全绿; 平台调用链使用模拟客户端验证, 未完成真实 OneBot / Misskey 上传验收
 
-整体防御水位较高: 鉴权 / CORS / 路径校验 / SQL 参数化 / SSRF 防护等基础设施均有真实实现 (见"确认安全"清单)。未发现 P0。
+以前修复记录中的“Misskey 自动覆盖”“任意媒体目录名即可排除回收站”“全部修正”“唤醒单独运行全过”等结论缺乏对应证据, 已撤回。当前状态仅以下文修复表和验证记录为准, 不以历次测试通过数累计证明没有回归。
 
-| 级别 | 初审 | 复审后 | 编号 |
+## 历史发现及处理状态
+
+级别: P1 为高风险, P2 为明确边界缺口, P3 为加固或信息项。代码定位使用模块与函数名, 历史行号不适用于当前工作区。
+
+| 编号 | 级别 | 修复前证据与影响 | 当前处理 |
 | --- | --- | --- | --- |
-| P0 | 0 | 0 | — |
-| P1 | 1 | 1 | 问题 1 |
-| P2 | 4 | 5 | 问题 2-5, 16 |
-| P3 | 10 | 13 | 问题 6-15, 17-19 |
+| 1 | P1 | `message.py` 的 `convert_to_file_path` / `convert_to_base64`, OneBot 来源封装及专用文件上传, Misskey 来源解析均能将未经授权的本地路径交给读取或上传入口 | 已统一来源校验并补平台调用链回归; 远程消息诱导外发的完整攻击链未实测 |
+| 2 | P2 | OneBot `access_token` 默认空, 反向 WebSocket 可接收本机进程伪造的事件; 非回环监听扩大可达范围 | 空 token 在回环监听时告警, 非回环时拒绝启动; 复用 `server_auth.is_loopback_host` |
+| 3 | P2 | `CodeSandbox._execute` 只有工作目录与超时, 执行的 Python 仍可访问系统资源和父进程密钥 | 子进程环境剥敏已接入; 审批仍必需, 未提供 OS 隔离 |
+| 4 | P2 | `satrap_coding/tools/shell.py` 批准后的 shell 继承完整环境; 文件中的密钥仍可由命令读取 | 子进程环境剥敏和每会话显式放行已接入; 不宣称能阻止任意命令访问系统文件 |
+| 5 | P2 | `session_discovery` 顶层导入会执行用户代码, 扫描路径置于 `sys.path` 首位可能遮蔽标准库 | 可信目录说明, 路径末尾追加, 显式加载与冲突/失败处理已修正; 目录内代码仍会执行 |
+| 6 | P3 | `server_auth` 的 `os.open(..., 0o600)` 在 Windows 不设置 ACL; 非回环 HTTP 传 token 无 TLS | 本 PR 未改; 单用户默认场景不新增 ACL/TLS 架构 |
+| 7 | P3 | `/ui-config.json` 免鉴权返回服务 host/port, 不含 token | 保留前端 bootstrap 设计 |
+| 8 | P3 | 部分 API 的 `str(error)` 和配置路径会回显内部路径, 仅持 token 调用方可达 | 未改, 不在本轮授权范围 |
+| 9 | P3 | 文件注册 debug 日志打印完整回调 token URL | 日志改为 token 前 8 位加掩码 |
+| 10 | P3 | `SatrapFileTokenService` 映射无 TTL/数量限制, 回调 URL 可留在平台记录中; `/api/file/` 路由未实现 | 注册增加 24h TTL 与 1024 条上限并校验来源; 不宣称回调文件服务可用 |
+| 11 | P3 | 主 Bearer token 长期固定, 无轮换 API; 前端从 fragment 读取后抹除 token | 未改; fragment 不进入 Referer/服务端请求日志 |
+| 12 | P3 | Misskey 显式允许不安全下载时可对同源实例跳过证书校验 | 保留默认关闭、同源与重定向约束; 未改 |
+| 13 | P3 | `satrap_coding/tools/file_core.py` 的用户正则 `re.search` 无超时, 可能阻塞工具线程 | 未改; 不安装新依赖, 不添加线程补丁 |
+| 14 | P3 | agent spawn payload 含模型 key, 部分调用允许不安全 base URL | 本 PR 未改该传递路径 |
+| 15 | P3 | 平台成员可用审批斜杠命令改变自己会话的模式; shell 始终 ASK, 系统保护目录仍独立拒绝 | 保留已有边界, 不等于远程成员可批准本地执行 |
+| 16 | P2 | `group_admin` 开启写操作且 `allowed_callers` 为空时跳过成员检查, 未接逐次人工审批 | 空调用者列表拒绝写操作; 可配置高危动作逐次审批, 无通道时拒绝 |
+| 17 | P3 | 群窗口合成的 `[用户 ..., 消息 ...]` 文本标记可由成员正文伪造, 但不能改变冻结的调用来源 | 未改提示词格式, 不属于本轮修复 |
+| 18 | P3 | 群管理只读工具默认不限成员, 可将名册带入模型上下文 | 新增可选 `allowed_read_callers`, 留空仍保持不限成员 |
+| 19 | P3 | OneBot 合并转发展示名可由工具参数指定, `uin` 固定机器人账号但昵称可误导 | 未改转发展示语义 |
 
-初审 15 项问题在 2026-09-26 增量复审中逐条复核, 均未消除 (逐项状态见文末"增量复审记录"); 新增问题 16-19。
+### 原始可达性与限制
 
----
+问题 1 的本地读取/上传原语已由源码确认。远程成员提供本地路径, 再经管线或模型组装回回复链的完整攻击路径未复现, 不把推测写成已完成利用。
 
-## P1
+问题 3/4 的已有审批边界仍保留: 无本地 `user_input_provider` 即拒绝代码执行或 shell 执行。环境变量过滤不是进程隔离, 也不阻止已批准的代码读取配置文件。
 
-### 问题 1: 消息组件可读取本地任意路径并随消息外发到远程平台
+问题 16 依赖用户主动开启写开关。原有适配器群范围检查、请求 flag 归属/状态/TTL 账本和冻结调用来源未移除。人工审批在插件配置开启时执行, 不替代这些权限检查。
 
-状态: 原语级已证实 (三段代码路径全部核实); 端到端利用链推测 (依赖管线如何把入站组件带回回复链, 本次未复现)。
+## 当前修复与行为契约
 
-证据:
+### 媒体来源与配置
 
-1. 组件读取本地路径无目录白名单 — `satrap/core/components/message.py`:
-   - `:409-413` `convert_to_file_path`: `file://` 源只检查 `os.path.exists` 即返回绝对路径;
-   - `:424-425`: 非 http/base64 的裸路径同样 `exists → abspath` 放行;
-   - `:436-437` `convert_to_base64`: `file://` 源直接读全文转 base64。
-   - 对比: 下载**目标**路径有白名单 (`File._download_file` `:944-947` 的 `is_relative_to` 检查), 但读取**来源**没有。
-2. OneBot 发送链路透传并主动封装本地路径 — `platform/onebot/onebot_utils.py:295-298` `_normalize_file_source`: `file://` 原样返回, 裸路径转 `file:///{abspath}` 交给 OneBot 客户端读取发送。
-3. Misskey 发送链路上传本地路径 — `platform/misskey/misskey_utils.py:472-481` (`resolve_component_url_or_path` 对非 http 字符串按本地路径返回) → `adapter.py:453-461` → `client.py:642-644` `open(file_path, "rb")` 上传到远程 Misskey Drive。`file://` 前缀会在 `open()` 失败, 裸绝对路径成功。
-4. 入站攻击面 — `onebot_utils.py:157-175`: image/record/video/file 段的 `data.get("file")` / `data.get("url")` 不做值校验直接进入组件 `file` 字段; `misskey_utils.py:352-371` 入站文件同样构造组件。
+- `core/utils/paths.py` 统一分类 HTTP(S)、Base64、Data URL、裸路径与 `file:` URI; 所有本地来源先校验授权, 不依据文件是否存在决定是否检查
+- URI 用标准 parser 和 percent-decoding 解析, 生成端用 `Path.as_uri()`; 中文、`#`、字面 `%20` 文件名可以往返, 无效 URI 与越界来源统一抛 `MediaSourcePermissionError`
+- 默认目录按实际存储布局识别, 不因任意祖先包含 `uploads` / `cache` 就放行; 校验和消息临时缓存共用后端实际 `StorageLayout.root`
+- 配置只接受字符串列表或 null, 缓存键直接使用路径元组, 不拆分 Windows 路径中的分号
+- 消息组件、token 注册、OneBot 专用文件上传/消息段封装及转发视频、Misskey 上传来源解析均接入校验; 权限拒绝不能被属性回退吞掉
+- 保留 `File.get_file(True)` 的 URL 优先, 普通获取的本地文件优先与白名单内缺失文件的下载回退; 同步属性的普通下载失败仍记录日志并返回空字符串, 权限拒绝向外传播; 保留 Misskey 通用 `get_file` 对象接口
+- 白名单内不存在的路径仍可交给独立 OneBot 服务处理, 不强制 Satrap 与 OneBot 共享文件系统
 
-可达链 (推测部分): 远程用户发送带 `file://C:/Users/.../config.yaml` 之类 file 字段的消息 → 组件进入会话管线 → LLM 回复或跨平台转发再次携带该组件 → 适配器发送时读取本地文件并上传到远程平台。远程用户无法直接批准工具, 但可通过提示注入影响 LLM 组装回复内容。
+默认授权、显式覆盖、环境变量追加、系统临时目录边界和下载缓存要求只有一个说明来源: [媒体来源白名单](../getting-started/configuration.md#媒体来源白名单)。不要把整个数据根当作默认授权, 也不要忽略系统临时目录自身的授权。
 
-修复方向: `convert_to_file_path` / `convert_to_base64` / 两个适配器的上传路径统一加来源白名单 — 仅允许 `.satrap` 数据目录与会话 uploads/临时目录 (复用 `File._download_file` 已有的 `is_relative_to` 模式), 白名单外的路径拒绝并记日志。
+### 会话模块加载
 
----
+- 扫描目录只追加到 `sys.path` 末尾; cwd 顶层文件和非法包路径使用带目录摘要的合成名, 普通包保留真实模块名与相对 import
+- 加载前校验已有同名模块和父包来源, 不覆盖标准库或其他来源的模块
+- 首次执行失败移除半初始化注册, 更新失败恢复旧模块; `SessionClassConfigManager` 不因用户依赖抛 `ImportError` 再执行一次
+- 父包初始化已导入同源子模块时直接复用该次结果, 避免首次扫描重复执行顶层代码
 
-## P2
+### 子进程环境与审批
 
-### 问题 2: OneBot 适配器默认无鉴权, 本机任意进程可注入伪造事件
+- `sanitized_child_env` 按完整尾部分段、忽略大小写识别密钥类名称, 保留 `TOKENIZERS_PARALLELISM` 等正常名称
+- allowlist 匹配遵循平台规则: Windows 忽略大小写, Unix 区分大小写
+- coding shell 的 allowlist 是每个工具实例的 `frozenset`, 空配置不继承其他会话权限; sandbox 独立接受自身插件配置
+- 群管理工具绑定会话, 执行时读取当前审批 provider, 支持安装后注入与替换; 同步通道返回协程时关闭协程并拒绝执行
+- 审批前校验目标群范围, 提问显示实际目标, 不以来源群替代显式目标
 
-状态: 已证实 (kwargs 构造层面); aiocqhttp 库在 token 非空时才校验, 其源码未核。
+## 验证记录 (2026-10-01)
 
-证据: `platform/onebot/adapter.py:59-60` (`access_token`/`secret` 默认空串), `:89-94` (未配置时反向 WS 服务端不启用鉴权, 默认 `127.0.0.1:8080`), `:162-176` (收到的消息无二次鉴权进入管线), `:170-172` (`self_id` 直接取自事件)。
+使用项目 `.venv/Scripts/python.exe`, 命令设 `PYTHONUTF8=1`。Pyright 显式指定同一解释器, 不安装缺失依赖或加入忽略规则。
 
-影响: 本机任意进程可连 8080 发伪造消息事件 (可携带问题 1 的 `file://` 组件) 进入 LLM 管线并触发回复; 配置 `host: 0.0.0.0` 时暴露到局域网 (代码不阻止)。
+### 修复前基线
 
-修复方向: `access_token` 为空时拒绝启动反向 WS 或输出显著告警; 文档标注默认不安全的组合。与问题 1 组合时影响升级, 建议同批修复。
+- 相关回归 182 项通过
+- 全量单元测试: 2243 passed / 6 failed / 8 skipped
+- 五个固定失败: AMR 附件转换、ASR 测试音频转换、数据库恢复两个子进程测试、minihttp 413 原因短语断言
+- 另一失败位于唤醒时序, 不同运行失败用例不同; 不能笼统归为“单独运行全过”
+- 实现类型检查曾有 group_admin 重载重叠错误, 本 PR 已修正返回类型
 
-### 问题 3: CodeSandbox 名为沙箱, 实际只有"工作目录 + 超时"约束, 无 OS 级隔离
+### 当前验证
 
-状态: 已证实 (无隔离 + 默认拒绝兜底均已证实)。
+- 相关回归覆盖 12 个测试文件: 媒体边界、消息组件、OneBot、Misskey、会话发现/注册、群管理、环境变量、coding、sandbox、后端启动和配置文档
+- 最终相关回归: **232 passed**, 7.05s; 包含同步下载错误/权限拒绝分流和父包提前导入子模块的单次执行验证
+- 完整 PR 的 17 个 Python 实现文件: Pyright **0 errors / 0 warnings / 0 informations**; 改动 Python 文件语法检查通过, `git diff --check` 无空白错误
+- 最终源码的全量单元测试: **2294 passed / 5 failed / 8 skipped**, 101.27s; 五项失败均与修复前固定失败一致
+- 较早的一次全量运行: 2289 passed / 6 failed / 8 skipped, 109.18s; 多出的唤醒失败在最终运行未出现, 不据此认定时序问题已解决
 
-证据: `core/utils/sandbox.py:58-65` 仅 `subprocess.run([...], cwd=..., timeout=...)`; `:93-103` `run()` 直接 `['-c', code]` 执行 LLM 提供的任意代码 — 代码内可 `open()` 任意路径、`requests` 任意地址、读 `os.environ` (含全部 API key)。`_safe_join` (`:26-43`) 只保护文件操作的路径参数, 不约束执行的代码本身。项目自己的审批文案承认了这一点 (`expend/plugins/base_take/tools/utils.py:95`: "代码沙箱仅限制工作目录, 代码仍可访问系统资源")。
+全量失败及较早运行的时序观察:
 
-兜底 (已证实有效): 执行必须过 `execution_authorizer` (`expend/tools/sandbox_tools/sync.py:42-71`), provider 缺失时默认拒绝 (`utils.py:91-93`); `user_input_provider` 仅在本地 Chat UI 会话注入 (`display/service.py:838/1380`), 平台会话未设置 — 远程平台用户无法批准执行。
-
-修复方向: 执行前最小化子进程 `os.environ` (至少剥离 `SATRAP_API_TOKEN` 与模型 key 相关变量); 在平台接入文档固化"user_input_provider 不得接远程通道"约束 (防回归); 长期可评估真实隔离 (Job Object / 受限令牌)。
-
-### 问题 4: shell 工具批准执行的命令继承完整进程环境变量 (含密钥)
-
-状态: 已证实 (审批闸门本身未被绕过; 环境泄露面证实)。
-
-证据: `expend/plugins/satrap_coding/tools/shell.py:44-59` 整条 LLM 命令交给 `cmd /C` 或 `powershell -Command` (解释器即 shell, 命令内容天然任意执行, 安全闸门是审批而非拼接); `:79` `env={**os.environ, ...}` — 批准的命令可读父进程全部环境变量与 `config.yaml` 中的模型 key。审批文案已披露"可访问当前进程资源" (`:60-63`)。
-
-闸门 (已证实无策略绕过): `core/command_gate.py` 黑名单仅辅助分类; `permission.py:386-387` 硬编码 shell 操作一律 `ASK`, 任何模式 / 持久规则 / judge 结果都不能放行 (`:399-413` 只能收窄为 deny/ask)。输出截断 2 万字符、超时 1-3600s、审批后 TOCTOU 复核 (`sync_interaction.py:138-143`) 均已实现。
-
-修复方向: 与问题 3 同批做子进程环境最小化。远程平台用户无法批准 shell (无 provider 即拒绝, `approval.py:233-237`), 剩余风险是诱导本地用户点"y"的社会工程, 审批 UI 显示完整命令可缓解。
-
-### 问题 5: session_scan_paths 目录下的 .py 顶层代码会被执行, 且 sys.path[0] 污染可遮蔽标准库
-
-状态: 已证实 (执行点与当前无免审批写入路径均已证实; 属纵深防御缺口)。
-
-证据: `core/framework/session_discovery.py:80-81` `importlib.import_module` + `reload` — 扫描目录下每个非 `_` 开头的 .py 顶层代码直接执行; `SessionClassManager.py:220` 惰性导入注册的类。`session_discovery.py:151-157` `sys.path.insert(0, import_root)` 且模块名用裸文件名 (`:251-271`) — 扫描目录放一个 `json.py` / `requests.py` 即可在整个后端进程遮蔽后续同名 import。
-
-边界 (已证实): 管理端点只能扫描/创建 ⊆ 配置的 session_scan_paths (`http_api.py:698-706`, `control_server.py:1909-1933`); 默认扫描目录 `.satrap/session` 在项目 `.satrap` 下, 切片内所有 LLM 可达写入路径均被挡 (文件工具拒绝 `.satrap`: `satrap_coding/tools/constants.py:24` + `paths.py:130-133`; CodeSandbox 锁在 `.satrap/sandbox`; shell 需审批)。
-
-修复方向: `sys.path` 改为 append 且用独立命名空间导入, 避免遮蔽; 文档把 `session_scan_paths` 标注为"代码执行目录"。回归警惕: 任何未来新增"远程可写文件到 `.satrap/` 下"的功能 (上传 / 解压 / 同步) 都会与 `.satrap/plugins` 即放即执行 (`edictum/plugin.py:250-265`) 组合成无审批 RCE。
-
----
-
-## P3 (加固项)
-
-### 问题 6: Windows 下 .satrap/api-token 文件权限设置不生效; 非回环绑定时 token 走明文 HTTP
-
-`core/server_auth.py:194` 的 `os.open(..., 0o600)` 在 win32 上 mode 参数仅映射只读位, 不设 ACL, 共享机器上其他本地账户可见 (单用户场景无影响, 共享机器场景视为 P2)。`cli/client.py:644-646` Bearer token 经明文 HTTP 发送 — 远程绑定 (文档支持的场景) 时网络路径上的攻击者可截获。修复方向: Windows 下用 icacls/ACL 收紧或文档标注; 远程绑定场景考虑 TLS 反代。
-
-### 问题 7: GET /ui-config.json 免鉴权, 泄露服务拓扑
-
-`core/utils/minihttp.py:386-389` 跳过鉴权门; 返回三个服务的 host:port (`control_server.py:968-987`, `http_api.py:311-315`)。默认回环下仅本机进程可见; 不泄露 token; 属前端 bootstrap 的有意设计。可选加固: 响应最小化。
-
-### 问题 8: API 错误响应直接回显 str(e), 可能泄露服务器内部路径
-
-`control_server.py:1272-1273/1288-1289`, `http_api.py:485-486/923-924`, `display/server.py:343-344/451-452` 等; `GET /config` 还返回 `"path": str(CONFIG_PATH)` (`:1269`)。仅持 token 调用方可达。修复方向: 统一的错误净化 helper。
-
-### 问题 9: debug 日志打印携带文件访问 token 的完整 URL
-
-`core/components/message.py:461, :962` — `logger.debug(f"已注册: {callback_host}/api/file/{token}")`。URL 即凭据, 日志落盘等于泄露单文件访问权。修复方向: 脱敏 token 后缀。
-
-### 问题 10: SatrapFileTokenService 注册无过期 / 撤销; /api/file/ 路由当前未实现
-
-`message.py:164-201` `_files` 字典只增不减; `Video.to_dict` (`:506-513`) / `File.to_dict` (`:972-978`) 会把本地路径替换为 `{callback_host}/api/file/{token}` 发进平台消息 (留在远程平台记录里)。`set_callback_api_base` 仓内无调用方, 功能休眠。启用前必须给路由加鉴权并给 token 加 TTL (静态资源服务发生在鉴权之前, `minihttp.py:382`)。
-
-### 问题 11: 引导 token 经 URL fragment 传递; 主 token 无轮换 / 撤销机制
-
-`satrap-ui/src/api/auth.ts:6-14` 从 `#token=` 读取后 `history.replaceState` 抹除 (不进 Referer / 服务端日志; 不入 localStorage)。`server_auth.py:168-206` 主 token 长期固定, 无 TTL / 轮换 API (Cookie 会话有 8h TTL 可撤销, Bearer 主 token 没有)。低危, 可选加固: token 轮换命令。
-
-### 问题 12: Misskey ssl_verify=False 下载回退
-
-`platform/misskey/client.py:765-775` — 仅当 `allow_insecure_downloads` 显式开启 (默认 False, `adapter.py:87`) 且 URL 与实例同源 (`outbound/utils.py:301-325`) 才回退; `:730-731` 二次兜底, `:739` 重定向锁源。下载内容写入 uuid 临时文件后上传为媒体附件, 不执行。残余: 与自建实例之间的中间人可篡改媒体内容。双条件 opt-in, 可接受; 其余全部出站请求默认校验证书 (grep 证实 `ssl=False` 仅此受控路径)。
-
-### 问题 13: grep_files 的 LLM 提供正则无超时, 恶性回溯正则可挂住工具线程
-
-`satrap_coding/tools/file_core.py:180` `re.compile(pattern)` 后逐行 search。仅可用性 (DoS), 无提权。修复方向: 复杂度预检或带超时执行。
-
-### 问题 14: spawn 子进程 payload 携带 api_key; allow_insecure_base_url 默认开启
-
-`expend/tools/agent/utils.py:80` (api_key 进 payload, spawn 命令行参数在本机其他用户可见), `:92` (`allow_insecure_base_url: True`)。本地单用户影响极小; 与问题 3/4 的环境最小化同批处理。
-
-### 问题 15: 远程平台用户可对自己会话执行 /approve mode full 等斜杠命令
-
-`edictum/simple_session/async_.py:242-248` 平台消息同样过 `cmd_process`; `satrap_coding/commands.py:127-131` `/approve mode full` 持久化到该会话。影响已封顶 (已证实): 平台会话文件工具锁在独立会话沙箱 (`SessionManager.py:2306-2307`), shell 任何模式都需本地 provider, `.satrap/.git/.env` 独立拦截不受 mode 影响 (`file_core.py:56-58`); `/approve rule` 只能加 0-1 级规则 (`:139-143`)。信息性: 文档注明"平台消息可切换自己会话的审批模式"即可。
-
----
-
-## 增量复审新增发现 (2026-09-26, 基线 31604d6)
-
-### 问题 16 (新增, P2): group_admin 插件写工具 fail-open — 写开关一开且白名单留空即任意群成员可驱动管理操作
-
-状态: 已证实 (配置语义与"未接审批闸门"均已核实); 实际利用依赖用户显式开启写开关。
-
-证据: `expend/plugins/group_admin/tools.py:125-130` — `write_tools_enabled` 开启后, `allowed_callers` 为空时调用者检查整体跳过 (fail-open), `allowed_groups` 同理; `meta.yaml:8-14` — 写开关默认 `false`, `allowed_callers` 默认空 ("留空不限制调用者"); `onebot/admin.py:257-307` — 工具动作直接经 `OneBotAdmin._call` 下发 OneBot 动作 (kick/ban/whole_ban/set_admin/recall 等, `tools.py:47-100`); 全仓 `execution_authorizer` 仅存在于 sandbox_tools 与 base_take — **group_admin 写工具未接入任何按次审批闸门**, 且全文无频率限制。
-
-可达路径: 群成员消息 → 唤醒机器人 → 提示注入诱导 LLM 调用 `group_admin_kick` 等写工具 → 真实踢人/禁言/撤回。
-
-缓解 (已证实): 写开关默认关闭; 群范围双层校验 (插件 `allowed_groups` `tools.py:156-157` + 适配器 `allows_group` `admin.py:309-317`); 审批类动作有 flag 账本归属/状态/TTL 校验 (`admin.py:838-900`); 审计日志只记 flag 摘要不落原文 (`admin.py:297-306`); 参数面校验完善 (ID 强制十进制、时长上限、nodes 限额)。
-
-修复方向: `allowed_callers` 为空时写操作默认拒绝 (fail-closed); 或写动作接入与 code_sandbox 一致的 `execution_authorizer` 逐次审批; 写动作按 (actor, action) 加最小频率限制。
-
-### 问题 17 (新增, P3): 群窗口合成 prompt 的框架标记可被成员正文伪造
-
-`core/pipeline/scheduler.py:584, 593-594` — 窗口批次合成为 `[用户 {actor_id}, 消息 {message_id}] {text}` 时成员正文未做框架样式转义, 群成员可发送含同类标记的文本伪造消息归属/窗口边界。属"正文即数据"的固有提示注入面, 无权限越界; 建议转义或在系统提示词声明标记不可信。
-
-### 问题 18 (新增, P3): group_admin 只读工具无调用者限制, 可批量导出全群名册
-
-`tools.py:128-130` 调用者检查仅覆盖写操作; `admin.py:355-379` 成员列表返回昵称/名片/角色/入群时间等, 上限 2048 条。任意群成员经注入可一次性把全群名册导出进模型上下文, 并可能随回复外泄给 LLM 提供商。
-
-### 问题 19 (新增, P3): send_forward 节点昵称可任意指定, 可伪造"他人发言"
-
-`onebot/admin.py:619-623` — 合并转发节点的展示名由模型参数控制 (截断 30 字符); `uin` 固定为机器人自身账号 (`:611-613`, 不可伪造), 但客户端展示昵称可冒充其他成员, 制造误导性转发截图。
-
----
-
-## 确认安全 (已证实的正面结论)
-
-- **HTTP 鉴权统一强制**: 后端 / 聊天 / 控制三服务全部路由过 `authorized()` (仅 `/ui-config.json` 与静态资源例外); WebSocket 升级前校验 origin + 鉴权 (`minihttp.py:512-517`); 15 个控制路由逐一核对均在门内; `/api/shutdown` 在门后。
-- **token 机制**: `secrets.token_urlsafe(32)` 生成 (约 192 bit), `hmac.compare_digest` 常数时间校验 (`server_auth.py:341`); 非回环绑定强制显式 ≥32 字符 token, 否则拒绝启动 (`:296-300`); `.satrap/` 在 .gitignore 内 (验证过 check-ignore)。
-- **CORS**: 精确 Origin 白名单 (本机端口 + 显式 env), 非白名单一律 403, 无通配反射; CSRF 面封闭 (写操作需 Authorization 头或 SameSite=Strict Cookie)。
-- **workspace_roots 真实强制**: `resolve()` 后 `is_relative_to` 校验 (`display/service.py:2099-2119`), 抗 `..` / 绝对路径 / 符号链接; `.satrap` 硬编码 denied; 上传剥离目录成分 (`:2277`), conversation_id 经 slug+sha256 净化 (`storage/layout.py:24-39`)。
-- **前端无 XSS sink**: React/TSX 全仓无 `dangerouslySetInnerHTML` / `innerHTML` / `eval`; LLM 输出经 react-markdown 且未启用 rehype-raw (原始 HTML 不渲染); token 不入 localStorage; 会话凭据为 HttpOnly + SameSite=Strict Cookie, 服务端只存 SHA-256 摘要。
-- **SQL 全参数化 / 白名单**: 动态表名 / 列名均来自硬编码白名单或同表行键 (`storage/database.py:69-74` 等); LIKE 通配符转义 (`:34-45`)。
-- **反序列化**: yaml 全 `safe_load` (`config/_yaml.py:22` 等); msgpack 无 object_hook (`core/database/__init__.py:38`); pickle 仅同进程 spawn 父子传递, 不跨信任边界 (`expend/tools/agent/sync.py:109-137`)。
-- **subprocess**: 全仓仅 4 处, 全部列表参数, 无 `shell=True`, 参数无不可信拼接。
-- **SSRF 防护完整**: `core/utils/outbound/` — 绝对 URL 校验、拒绝 URL 内凭据、逐 IP `is_global` 校验、DNS 解析钉定防重绑定、重定向逐跳复检、响应字节上限。
-- **代码 / 插件加载**: 官方插件在包内; 用户技能目录只执行可信代码根下的 tools.py (`core/utils/skills/manager.py:72-86`), 其余只当文本; `.satrap/plugins` 即放即执行但 LLM 写不进 `.satrap`。
-- **tempfile**: 全部随机名 + `os.replace` 原子替换, 无 `mktemp` / 固定路径竞态; 回收 / 恢复路径系统性地拒绝符号链接 (`storage/maintenance.py:121-157` 等)。
-- **配置脱敏**: `GET /config` 与 CLI `config show` 均按字段名脱敏 (`core/config/document.py:16-92`), 回填保留原值; misskey WS 日志有 secret 脱敏 filter (`client.py:40-68`)。
-- **资源限制**: shell / 沙箱 / subagent / 工具输出均有超时与大小上限 (问题 13 的正则是唯一缺口); 出站抓取有私网防护与 8MiB 上限。
-
-增量复审新增正面结论 (31604d6 新代码中证实):
-
-- **新增 HTTP 端点全部在鉴权门内**: `POST /api/platforms/wake` 及 wake 拒绝/诊断查询、`POST /config/wake-dry-run`、ASR 测试、`POST /api/config/reload` 均过 `authorized()`; manual wake 不能无鉴权触发, `operator` 取服务端常量并禁止从 payload 读取 (`BackendManager.py:461-463`)。
-- **审批执行链加固**: flag 登记先核验账号 (`adapter.py:609-631`); 占用在持久事务内校验归属/状态/TTL 并原子落盘 (`request_registry.py:524-551`); 审批先 occupy 后网络动作, 超时记 unknown 不可重放 (`admin.py:838-900`); 审计日志只记 sha256 摘要。
-- **诊断/回执最小化**: 只存脱敏原因码与定位字段, 不存正文/音频/密钥/供应商响应 (`request_diagnostics.py:336-338`); 管线错误对平台只发固定文案 (`scheduler.py:645-648`)。
-- **ASR 链路**: 密钥锁定 (`APICall/ASRCall/base.py:38`, `lock_api_key` 默认 True); base_url 拒绝 URL 内嵌凭据与非回环明文 HTTP (`utils:103-141`); 音频三级获取全走出站防护 (16MiB/4 条/90s 预算), PyAV 内存转码无子进程 (`audio_convert.py:184-218`)。
-- **存储新原语**: `storage/durability.py`/`persist.py` — 严格 json 校验, 无 pickle/yaml.load; 同目录临时文件 + `os.replace`; fail-safe 顺序固定 (先持久标记后隔离); `file_lock.py` 修复 POSIX inode 双持有竞态。
-- **配置面**: `_yaml.py` 用 CSafeLoader (保持 safe_load 语义); 配置写入加文件锁 + sha256 乐观并发 (409 冲突检测) + 原子写; `plugin_config.py` 修复 `bool("false")==True` fail-open。
-- **来源身份机制**: `call_context.py` ContextVar 在入站边界冻结, 会话结束撤销, 模型参数无法伪造调用来源 (`SessionManager.py:2355-2381`); 群上下文 scope 用 sha256 摘要隔离 (`conversation.py`)。
-- **资源上限全面**: 窗口三表有界 (`wake_window.py:27-43`), 诊断 256 请求×16 条, 发送队列 64, `_seen_messages` 4096, 附件总预算 90s。
-
----
-
-## 审查覆盖清单
-
-基线 `1ecb13c`, 分支 `review/issue-12`。总量: satrap 包 66,334 行 Python, satrap-ui/src 约 15,048 行 TS/TSX。
-
-**全读** (逐行): `core/backend/` 全部 5 文件 (control_server 2222 行, http_api 1133 行, BackendManager, static_ui, ui_config); `core/platform/` 全部 8 文件; `core/storage/` 全部 6 文件; `core/database/__init__.py`; `core/server_auth.py`; `core/utils/minihttp.py`; `core/components/message.py`; `core/utils/sandbox.py`, `outbound/` 全部, `media.py`, `paths.py`; `core/framework/SessionClassManager.py`, `session_discovery.py`; `edictum/plugin.py`, `plugin_runtime.py`, `config.py`, `registry.py`, `plugin_resources.py`; `expend/` 插件工具层大部 (satrap_coding tools 全部, sandbox_tools, tools/agent, base_take 关键文件); `satrap/api/` 全部 3 文件; `cli/cmd_control.py`, `client.py`, `common.py`, `backend_lock.py`, `cmd_platform.py`; `satrap-ui/src/api/auth.ts`, `client.ts`, `websocket.ts` 等关键文件。
-
-**部分读** (定向区段 + 危险模式全量 grep 交叉): `satrap-ui/src` 其余 (全仓 sink 扫描: dangerouslySetInnerHTML/innerHTML/eval/localStorage/href/window.open/createObjectURL/硬编码 token 均无命中); `display/service.py` (2682 行, 路径 / 上传 / 媒体 / 审批区段精读), `recorder.py` (SQL 清单 grep 全参数化); `edictum/simple_session` 编排文件, `plugin_spec/catalog/compatibility/plugin_config/plugin_settings` (grep 无网络 / 写文件 / exec); `expend/` 其余 (memory_store SQL 参数化抽样, rag 工具路径白名单); `core/config/document.py` (脱敏 / 合并逻辑完整); `core/utils/skills/`。
-
-**仅 grep 扫描** (无危险模式命中): `cli/` 其余 16 文件; `core/framework/Base/execution/` 引擎层; `main.py` argparse 面。
-
-**未纳入** (排除理由): `tests/` 135 文件 (验证工具而非风险面; 修复时在此补安全回归测试); `satrap-ui` 的测试 / benchmarks / e2e; `node_modules` / `package-lock.json` (依赖 CVE 比对未做, requirements.txt 下限版本较新); `docs/` (除作为规范依据引用); `scripts/` 7 个开发脚本 (本地开发用, 未审查 — 待办项)。
-
-**增量复审覆盖 (1ecb13c → 31604d6)**: 新文件全读 — pipeline 11 个 (manual_wake, manual_wake_store, wake_policy/window/timers/dry_run, request_diagnostics, input_projection, attachments, audio_convert, scheduler 全文), onebot 新模块 (admin.py, outbound.py, request_registry.py), platform/receipt.py, notices.py, group_admin 插件 3 文件, ASRCall 5 文件, config 新文件 (asr_references, wake_overrides, platform_policy), storage/durability.py, persist.py, call_context.py, ManualWakeModal.tsx 等。修改文件 diff 全读 + 安全区段精读 — onebot/adapter.py (1270 行全文), BackendManager, control_server, http_api, message.py 转换函数与 token 服务, onebot_utils, document.py, session_discovery, UserManager, SessionManager, edictum plugin_config/resources/settings, cli 变更, config.example.yaml。全仓新增行危险原语扫描 (subprocess/eval/exec/pickle/yaml.load/__import__/ctypes/mktemp): 仅命中开发脚本 `scripts/probe_snowluma.py:160-164` (本地 node 调用, 列表参数, 无运行时导入路径, P3 信息)。未覆盖移交: misskey/adapter.py 仅 diff (8 行签名对齐), e2e 脚本内容, scripts/ 其余。
-
-## 验证缺口 (诚实声明)
-
-1. 静态审查为主: 问题 1 的端到端利用链、问题 2 的伪造事件注入均未实际复现 (原语级代码路径已证实)。
-2. `aiocqhttp` 库在 token 非空时的校验行为未读其源码。
-3. 依赖版本未做 CVE 数据库比对。
-4. 本次为只读审查, 未运行测试套件做基线确认。
-5. `scripts/` 下 PowerShell / bat 启动脚本未审查。
-
-## 修复路线建议 (Gate 建议)
-
-均为 `Local Fix Only` 级别, 无需重构; 全部改动需你授权后另行实施:
-
-| 批次 | 内容 | 预算 |
+| 测试 | 实际失败证据 | 与修复前对照 |
 | --- | --- | --- |
-| 第一批 | 问题 1: 消息组件读取来源白名单 (message.py + 两个适配器上传侧) | 1-3 文件, ≤120 行 |
-| 第二批 | 问题 2-5, 16: OneBot 空 token 拒绝启动 / 告警; sandbox 与 shell 子进程环境最小化; session_discovery 的 sys.path 改造; group_admin 写操作 fail-closed (空 allowed_callers 拒绝) 并接入审批或加频率限制 | 分 4 个独立小补丁 |
-| 第三批 | 问题 6-15, 17-19 按需: 优先 9/10 (日志与 token 生命周期)、13 (ReDoS)、18 (名册导出); 7/8/11/12/14/15/17/19 进 backlog | 各 ≤30 行 |
-| 收尾 | 每批修复补安全回归测试 (tests/ 下新增); 更新平台接入文档 (user_input_provider 约束、session_scan_paths 定性、OneBot token 要求、group_admin 写开关语义) | — |
+| `test_attachments::test_amr_voice_is_converted_locally` | 转换结果为空, 当前环境无 `av` | 与基线相同 |
+| `test_model_config_service::test_asr_test_endpoint_probes_and_converts_audio` | `ValueError: amr 需要本地转码, 请安装 av 包` | 与基线相同 |
+| `test_database_recovery::test_process_exit_after_sql_commit_recovers` | 子进程将 `logging.FileHandler` 替换为函数, 后续 `BaseRotatingHandler` 继承失败 | 与基线相同 |
+| `test_database_recovery::test_cross_process_writers_and_stale_cache_publish` | 同一 `TypeError: function() argument 'code' must be code, not str` | 与基线相同 |
+| `test_minihttp::test_request_body_over_limit_returns_413` | 实际 `413 Request Entity Too Large`, 测试要求 `413 Content Too Large` | 与基线相同 |
+| `test_wake_window::test_max_wait_applies_to_necessity_mode` (较早运行) | 预期 await 1 次, 实际 0 次; 单独运行与最终全量运行均通过 | 基线也有唤醒时序失败, 但具体用例不同; 根因未确认 |
 
-## 修复记录 (2026-09-26, 分支 review/issue-12)
+跳过项包括集成测试、缺少 `av` / `reportlab` 和缺少测试图片。本轮没有改动音频、数据库恢复、minihttp 或唤醒策略实现, 不将这些失败掩盖为全量通过, 也不在本轮顺带修复。
 
-已实施第一批 + 第二批 + 第三批优先项, 共 8 个独立小修复:
+### 验收边界与范围门槛
 
-| 问题 | 修复方式 | 改动 |
-| --- | --- | --- |
-| 1 (P1) | 新增 `core/utils/paths.py` 的 `ensure_allowed_media_path` 白名单 (默认 `.satrap` 数据目录 + 系统临时目录, 可用 `SATRAP_EXTRA_MEDIA_ROOTS` 追加), 部署在 message.py 四个本地读取点、token 注册服务、OneBot `_normalize_file_source` 与 `_send_file` (拒绝时回执 `media_source_denied`); misskey 链路经 `convert_to_file_path` 自动覆盖 | 4 文件, +85 行 |
-| 2 (P2) | OneBot 适配器启动时空 `access_token`: 回环地址告警, 非回环地址拒绝启动 (`_is_loopback_host`) | adapter.py, +15 行 |
-| 3+4 (P2) | 新增 `core/utils/proc_env.py` `sanitized_child_env` (剥离名称含 KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL 的环境变量), sandbox 与 shell 子进程统一接入 | 3 文件, +31 行 |
-| 5 (P2) | `sys.path.insert(0)` 改为 `append` (扫描目录不再遮蔽标准库); config.example.yaml 与 configuration.md 标注扫描目录为"可信代码目录" | +3 行 |
-| 16 (P2) | `_resolve` 改为 fail-closed: 写操作要求 `allowed_callers` 非空, 留空即拒绝; meta.yaml 同步描述 | tools.py + meta.yaml |
-| 18 (P3) | 新增 `allowed_read_callers` 配置, 可选限制只读工具调用者 (留空保持不限制) | tools.py + meta.yaml |
-| 9 (P3) | 文件回调 URL 的 debug 日志只保留 token 前 8 位 | message.py 2 处 |
-| 10 (P3) | `SatrapFileTokenService` 增加 24h TTL 与 1024 条上限, 注册路径强制过白名单 (单点收口 `/api/file/` 暴露面) | message.py |
+- OneBot / Misskey 测试证明越界来源在平台 API 调用前拒绝, 合法来源参数保留; 模拟成功回执不证明真实文件送达
+- Windows 原生运行验证了路径往返和环境策略; POSIX / UNC parser 分支通过平台模拟覆盖, 未在独立 Linux 系统做整套验收
+- 本轮决策为多边界的局部修复, 不重写模块、不新增依赖; 与已授权十类问题关联的实现、测试和文档允许修改, 无关业务文件不在范围内
+- 默认 `staged-refactor` 范围检查要求最多 5 文件 / 200 行, 本轮累计未提交范围为 25 文件 (含 1 个新测试文件), 超过该门槛, **不能标为通过**; 未通过缩小 diff 视图或忽略未跟踪测试隐藏范围
+- 代码沿用项目开发规范, 补新增函数参数/返回说明, 去掉失真修复记录, 不为存量导入/格式进行全仓清洗
 
-**问题 13 (ReDoS) 未修**: 彻底修复需要引入 `regex` 依赖 (带超时参数) 或接受泄漏卡死线程的权衡, 留待决策; 其余 backlog 项 (6/7/8/11/12/14/15/17/19) 未动。
+## 审查覆盖与未验证内容
 
-**代码质量复审与修正 (2026-09-27)**: 安全修复完成后按 development-guidelines.md 做了一轮质量审查并全部修正 — ① 媒体白名单拒绝改用专属异常 `MediaSourcePermissionError` (继承 PermissionError), OneBot 发送链 5 个捕获点细分 `media_source_denied` 原因码并经 `_failed_receipt` 记 warning 日志, 不再与"目标范围拒绝" (`target_unavailable`) 混淆, 拒绝也不再静默; ② `get_allowed_media_roots` 内部改 `lru_cache` (以环境变量原始值为缓存键), 热路径不再每次做文件系统 resolve; ③ 6 处导入顺序对齐"路径字符数降序"规范; ④ `_resolve` docstring 补 fail-closed 约束; ⑤ `_LOOPBACK_HOSTS` 死条目清理; ⑥ 测试冗余行清理, 新增 2 条发送链 reason 断言 (image 段走 guard / file 段走分流)。改动区 228 用例全过, pyright 零新增错误。
+初审风险面全读: 后端服务与鉴权, 当时的平台适配器/存储模块, 消息组件, sandbox/outbound/媒体路径, 会话类加载, 插件加载及主要工具执行层。UI 鉴权入口精读, 其余 UI 与 CLI 采用定向读取和危险模式扫描, 不称为全仓逐行审查。
 
-**PR #15 审查意见修正 (2026-09-27, midway2333 request changes 六项)**: ① `_normalize_file_source` 的 `file://` 直达分支补白名单校验 (此前 `Image.fromFileSystem` 生成的 `file:///` 形式可绕过, 真实漏洞); ② 默认白名单从整个 `.satrap` 收窄到 `.satrap/data` + `.satrap/sandbox` + 系统 temp (不再包含 api-token 等敏感文件), 新增顶层配置 `media_allowed_roots` (非空完全替换默认, 经 BackendManager 启动注入, 管理面板配置页与 CLI 经通用配置文档自动支持), `lru_cache` 以配置覆盖值与环境变量原始值为键; ③ group_admin 新增高危分组 (kick/ban/whole_ban/ban_anonymous/set_admin/set_name/leave/handle_*_request) 与 `high_risk_approval` 配置, 开启后高危动作经 `user_input_provider` 逐次人工审批 (与 code_sandbox 同口径), 无审批通道的会话直接拒绝; ④ session_discovery 改合成模块名 (`satrap_user_sessions_<stem>_<hash>`) + `spec_from_file_location` 按文件显式加载 (含点分模块名 reload 无父包时的重载兜底), 同名标准库文件可正确加载且不遮蔽, `sys.path` 保持 append; ⑤ `sanitized_child_env` 改"完整尾部分段"匹配 (`(?:^|_)(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)S?$`), TOKENIZERS_PARALLELISM 等正常变量不再误删; ⑥ sandbox 与 shell 分别支持 `allowed_env_vars` 配置 (逗号分隔) 显式放行受限凭据。新增回归测试 8 条 (file:// 拒绝、标准库同名会话文件加载、proc_env 四例、高危审批三态), 更新 2 处 shell 桩签名。改动区 158 用例全过, 全量 2235 passed (存量环境失败集不变), pyright 零新增错误。
+`1ecb13c` 至 `31604d6` 的增量复审精读请求管线、群管理/OneBot 管理与请求账本、ASR、持久化原语和来源身份; 修改模块结合 diff 与关键区段核对。当前复核范围为完整 PR 差异及其调用方和回归测试, 不重复开展无边界全仓审查。
 
-**PR #15 第二次审查修正 (2026-09-27, 两项)**: ① `File` 专用上传路径仍用 `removeprefix("file:///")`, 在 Unix 会吞掉绝对路径根 `/` 并使不存在的 file URI 原样透传; 新增公共 `file_uri_to_path` 统一处理 message/OneBot utils/adapter 三处, Unix `file:///absolute/path` 保留根斜杠, Windows `file:///C:/path` 仅去掉盘符前额外斜杠, File 的 file URI 无论文件是否存在都必须先过白名单, 不再向 OneBot 实现原样透传。② `sanitized_child_env` 的敏感变量正则恢复 `re.IGNORECASE`; satrap_coding `_apply_config` 无条件覆盖 `ALLOWED_ENV_VARS`, 空字符串会清空旧运行态 allowlist。新增 4 条精确回归断言 (File file URI 拒绝、Unix URI 解析、lowercase 密钥剥离、allowlist 非空→空), 相关测试 176 用例全过, pyright 0 error/warning。
+历史正面证据包括 HTTP 鉴权与精确 CORS、配置脱敏、安全 YAML/SQL 参数化、出站 URL/DNS/重定向检查、请求账本归属与状态检查、冻结调用来源及持久化原子替换。这些是已检查区段的证据, 不构成对未来代码或未覆盖路径的保证。
 
-验证结果: 新增 5 个安全回归测试 (媒体白名单拒绝/放行、OneBot 来源拒绝、group_admin fail-closed 与只读白名单), 并把 8 处既有写工具测试更新到 fail-closed 契约; 改动区 9 个测试文件 226 用例全过; 全量 unit 2228 passed / 8 skipped — 5 个稳定失败 (attachments AMR, database_recovery ×2, minihttp 413, model_config ASR) 经干净基线对照确认为环境存量问题, wake_window 为全量并发下的时序抖动 (单独运行全过, 两次全量失败集合不同); pyright 对全部改动文件 0 新增错误 (`get_tools` 重载告警在 HEAD 上已存在)。
+保留缺口:
 
-## 残余风险与回归警惕
+1. 未实测媒体外发攻击链、伪造 OneBot 事件或真实平台上传, 未核 aiocqhttp token 校验源码
+2. 未比对依赖 CVE 数据库, 未审全部开发/启动脚本和 UI e2e 脚本
+3. 未逐分支验收唤醒业务状态机; 较早全量运行的唤醒失败原因未确认
+4. 文件回调路由未实现, 注册映射的 TTL 和容量限制不代表文件服务可用
+5. 代码 sandbox / shell 仍依赖用户审批, 没有 OS 隔离; 媒体授权与实际读取之间也不是原子的文件系统隔离
 
-- workspace `resolve()` 校验与工具实际读写之间存在 TOCTOU 窗口, 需要本地文件系统写权限, 超出"远程消息进入"威胁模型, 接受。
-- `SATRAP_TRUSTED_DOWNLOAD_HOSTS` 可放行指定内网主机 — 若配置指向内部敏感服务, 远程用户可控的媒体 URL 可触达; 属运维配置责任, 文档应标注。
-- 回归警惕三件事 (未来代码审查时复查): ① 任何能远程写入 `.satrap/` 的新端点会与扫描目录导入 / `.satrap/plugins` 即放即执行组合成无审批 RCE; ② `user_input_provider` 一旦接到远程通道, code_sandbox / shell 审批闸门即失效为远程 RCE; ③ `MCPServerExporter` 支持 sse/http 传输但仓内无调用, 启用前需独立审查。
-
----
-
-## 增量复审记录 (2026-09-26, 基线 1ecb13c → 31604d6)
-
-### 初审问题逐条复核状态
-
-| 问题 | 状态 | 复核证据 |
-| --- | --- | --- |
-| 1 (P1) | **仍在** | `message.py:401-437` (convert_to_file_path `:409-413`/`:424-425`, convert_to_base64 `:436-437`); `onebot_utils.py:293, :382-386`; 新增佐证 `adapter.py:1011-1024` (`_send_file` 对 `file:///` 与本地路径 `os.path.abspath` 后直接 upload); `misskey_utils.py:482-484` |
-| 2 (P2) | **仍在并扩展** | `adapter.py:147, :217-222` (空 token 不启用鉴权, 默认 127.0.0.1:8080); 新增: 空 `self_id` 采纳首个上报账号 (`:327-333, :544-550`), 就绪探针 `/_satrap_ready/<token>` 为无鉴权本地端点 (`:168, :224-228, :1237-1250`) |
-| 3 (P2) | 仍在 | `core/utils/sandbox.py` 本区间无变更 |
-| 4 (P2) | 仍在 | `satrap_coding/tools/shell.py` 无变更 |
-| 5 (P2) | 仍在 | `session_discovery.py:80-81` (import+reload), `:155-156` (`sys.path.insert(0)`) |
-| 6 (P3) | 仍在 | `server_auth.py` 无变更 |
-| 7 (P3) | 仍在 | `minihttp.py:386-389` 免鉴权面未变 |
-| 8 (P3) | **仍在并扩展** | `control_server.py:1465-1468` 新增 ASR 测试 502 分支回显异常文本; 改善项: 管线错误对平台只发固定文案 (`scheduler.py:645-648`), 诊断只存脱敏原因码 |
-| 9 (P3) | 仍在 | `message.py:461, :964` |
-| 10 (P3) | 仍在 | `message.py:185, :512, :979` |
-| 11 (P3) | 仍在 | `satrap-ui/src/api/auth.ts` 无变更 |
-| 12 (P3) | 仍在 | `misskey/client.py` 无变更 |
-| 13 (P3) | 仍在 | `file_core.py:180` 无变更 |
-| 14 (P3) | 仍在 | `expend/tools/agent/` 无变更 |
-| 15 (P3) | 仍在 | `simple_session/` 与 `satrap_coding/commands.py` 无变更 |
-
-### 增量验证缺口
-
-1. 仍为静态审查: 问题 16 开启写开关后的实际行为、问题 1 端到端链均未运行验证。
-2. 唤醒策略决策树 (wake_policy/manual_wake 状态机) 只审了边界与存储, 未逐分支验证业务正确性 (issue #10 已有独立复核覆盖该面)。
-3. `scripts/` 其余脚本、`satrap-ui/e2e/` 脚本内容仍未审。
-4. `aiocqhttp` 校验行为、依赖 CVE 比对两项缺口延续。
+剩余历史项维持上表状态, 本轮不扩展到依赖、OS 隔离、TLS/ACL 或其他架构修改。

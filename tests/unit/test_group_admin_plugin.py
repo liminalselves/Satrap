@@ -159,14 +159,48 @@ class TestPermissionGate:
 
         config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
-        tool.user_input_provider = provider
+        tool.session.user_input_provider = provider
         with bind_call_origin(_origin()):
             approved = await tool.execute(user_id="321")
-            tool.user_input_provider = lambda question, options: "n"
+            tool.session.user_input_provider = lambda question, options: "n"
             denied = await tool.execute(user_id="322")
         assert approved == {"status": "ok"}
         assert denied["status"] == "error" and "未获人工批准" in denied["error"]
         assert "group_admin_kick" in answers[0]
+        adapter._bot.set_group_kick.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_approval_uses_explicit_target_and_rejects_scope_before_prompt(self):
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "789", "high_risk_approval": True}
+        tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+        provider = AsyncMock(return_value="允许")
+        tool.session.user_input_provider = provider
+        with bind_call_origin(_origin()):
+            denied = await tool.execute(user_id="321")
+            assert denied["status"] == "error" and "目标群" in denied["error"]
+            provider.assert_not_awaited()
+            result = await tool.execute(user_id="321", group_id="789")
+        assert result == {"status": "ok"}
+        assert "目标 789" in provider.call_args.args[0]
+        adapter._bot.set_group_kick.assert_awaited_once_with(group_id=789, user_id=321, reject_add_request=False)
+
+    def test_sync_approval_closes_unawaited_coroutine(self):
+        import inspect
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        from types import SimpleNamespace
+        from satrap.expend.plugins.group_admin.tools import GroupAdminTool
+        session = SimpleNamespace(user_input_provider=None)
+        tool = next(t for t in get_tools(cast(Session, session), config) if t.tool_name == "group_admin_kick")
+        assert isinstance(tool, GroupAdminTool)
+        async def answer():
+            return "允许"
+        coroutine = answer()
+        session.user_input_provider = lambda question, options: coroutine
+        with pytest.raises(PermissionError, match="异步结果"):
+            tool._authorize_high_risk_sync("group_admin_kick", _origin(), {"user_id": "321"})
+        assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
 
     @pytest.mark.asyncio
     async def test_read_callers_allowlist_gates_read_tools(self):

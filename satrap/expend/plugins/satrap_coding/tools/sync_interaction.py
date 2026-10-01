@@ -80,15 +80,17 @@ class ShellTool(Tool):
         "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
     }
 
-    def __init__(self, engine: PermissionEngine) -> None:
+    def __init__(self, engine: PermissionEngine, allowed_env: frozenset[str] = frozenset()) -> None:
         """
         初始化 ShellTool
 
         参数:
         - engine: 执行引擎
+        - allowed_env: 本会话 shell 子进程显式放行的环境变量名
         """
         super().__init__()
         self.engine = engine
+        self.allowed_env = allowed_env
         self._session: SimpleSession | None = None
 
     def execute(
@@ -141,8 +143,7 @@ class ShellTool(Tool):
             or workdir_path.resolve() != workdir_path
         ):
             return "执行已取消: 审批期间计划模式或工作区发生变化"
-        from . import ALLOWED_ENV_VARS
-        return _run_shell(args, workdir_path, timeout_value, allow=ALLOWED_ENV_VARS)
+        return _run_shell(args, workdir_path, timeout_value, allow=self.allowed_env)
 
     def _bind(self, session: SimpleSession) -> None:
         """
