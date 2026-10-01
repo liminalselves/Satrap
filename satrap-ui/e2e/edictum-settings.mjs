@@ -11,7 +11,7 @@ try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const configs = {
-    assistant: { edictum_type: 'async_simple', enabled: true, description: '', model_name: 'probe', params: {}, plugins: [] },
+    assistant: { edictum_type: 'async_simple', enabled: true, description: '', model_name: 'probe', params: { system_prompt: '旧提示词', custom: '保留参数' }, plugins: [] },
   };
   const writes = [];
   let configReads = 0;
@@ -88,7 +88,21 @@ try {
   await dialog.getByLabel('note', { exact: true }).waitFor();
   assert.equal(await dialog.getByRole('button', { name: '添加', exact: true }).count(), 0);
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  await page.getByTitle('编辑配置', { exact: true }).click();
+  assert.equal(await dialog.getByLabel('系统提示词', { exact: true }).inputValue(), '旧提示词');
+  assert.deepEqual(JSON.parse(await dialog.getByLabel('其他会话参数 (JSON 对象)', { exact: true }).inputValue()), { custom: '保留参数' });
+  await dialog.getByLabel('系统提示词', { exact: true }).fill('你是群聊助手\n使用中文回复');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.deepEqual(configs.assistant.params, { custom: '保留参数', system_prompt: '你是群聊助手\n使用中文回复' });
+  await page.getByTitle('编辑配置', { exact: true }).click();
+  await dialog.getByLabel('系统提示词', { exact: true }).fill('');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(configs.assistant.params.system_prompt, '');
   console.log('PASS: Edictum 插件草稿跨轮询保留, 保存失败保留, 取消重开和保存重开正确初始化');
+  console.log('PASS: Edictum 提示词从旧 JSON 回填, 修改和清空正常保存, 其他参数保留');
 } finally {
   if (browser) await browser.close();
   await server.close();

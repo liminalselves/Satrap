@@ -105,7 +105,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         if self._initialized:
             return
         await self.ctx.initialize()
-        if self.system_prompt:
+        if self.system_prompt is not None:
             await self.ctx.reset_system_prompt(self.system_prompt)
         self._initialized = True
 

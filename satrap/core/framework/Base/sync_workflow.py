@@ -112,7 +112,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         self.thinking_callback = thinking_callback
 
         self.ctx.load_context()
-        if system_prompt:
+        if system_prompt is not None:
             self.ctx.reset_system_prompt(system_prompt)
 
         self.content_callback = content_callback

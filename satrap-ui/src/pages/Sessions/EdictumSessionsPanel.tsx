@@ -21,6 +21,7 @@ import { Card } from '@/components/ui/Card';
 import { toast } from '@/components/ui/Toast';
 import { EdictumPluginManager } from './EdictumPluginManager';
 import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
+import { readEdictumParams, writeEdictumParams } from '@/utils/edictumParams';
 
 interface EdictumConfigItem {
   name: string;
@@ -30,14 +31,6 @@ interface EdictumConfigItem {
 interface EdictumSessionsPanelProps {
   llmNames: string[];
   onRuntimeCreated?: () => void | Promise<void>;
-}
-
-function parseJsonObject(value: string, label: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${label}必须是 JSON 对象`);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
@@ -82,6 +75,8 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     enabled: true,
     description: '',
     model_name: '',
+    system_prompt_enabled: false,
+    system_prompt: '',
     params: '{}',
     plugins: '[]',
   });
@@ -117,6 +112,8 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       enabled: true,
       description: '',
       model_name: llmNames[0] || '',
+      system_prompt_enabled: false,
+      system_prompt: '',
       params: '{}',
       plugins: '[]',
     });
@@ -133,7 +130,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       enabled: config.enabled,
       description: config.description || '',
       model_name: config.model_name || '',
-      params: JSON.stringify(config.params || {}, null, 2),
+      ...readEdictumParams(config.params || {}, ['simple', 'async_simple'].includes(config.edictum_type)),
       plugins: JSON.stringify(config.plugins || [], null, 2),
     });
     setModalOpen(true);
@@ -154,7 +151,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         enabled: form.enabled,
         description: form.description,
         model_name: form.model_name,
-        params: parseJsonObject(form.params, '参数'),
+        params: writeEdictumParams(form, ['simple', 'async_simple'].includes(typeName)),
         plugins: parsePlugins(form.plugins),
       };
       if (isRunning && editingName) {
@@ -398,8 +395,12 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       options: [{ value: '', label: '暂不绑定' }, ...llmNames.map((name) => ({ value: name, label: name }))],
     },
     { key: 'description', label: '描述', placeholder: '说明该命名会话的用途' },
-    { key: 'params', label: '会话参数 (JSON 对象)', type: 'textarea', rows: 10 },
-  ], [llmNames, types]);
+    ...(['simple', 'async_simple'].includes(form.edictum_type) ? [
+      { key: 'system_prompt_enabled', label: '配置系统提示词', type: 'checkbox' as const, placeholder: '启用后使用下方提示词, 空文本会清空已有提示词' },
+      { key: 'system_prompt', label: '系统提示词', type: 'textarea' as const, rows: 6, disabled: !form.system_prompt_enabled, placeholder: '填写 bot 的角色、行为要求和回复风格' },
+    ] : []),
+    { key: 'params', label: '其他会话参数 (JSON 对象)', type: 'textarea', rows: 6 },
+  ], [llmNames, types, form.edictum_type, form.system_prompt_enabled]);
 
   return (
     <div className="space-y-4">
