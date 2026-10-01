@@ -21,4 +21,12 @@ describe('Edictum 提示词配置', () => {
     const form = readEdictumParams({ system_prompt: '自定义', custom: 3 }, false);
     expect(writeEdictumParams(form, false)).toEqual({ system_prompt: '自定义', custom: 3 });
   });
+
+  it('迁移旧生成参数, 保留零温度并支持恢复继承', () => {
+    const form = readEdictumParams({ thinking: 'high', temperature: 0, model_params: { top_p: 0.8, max_tokens: 2048 }, custom: 1 }, true);
+    expect(writeEdictumParams(form, true)).toEqual({ thinking: 'high', model_params: { temperature: 0, top_p: 0.8, max_tokens: 2048 }, custom: 1 });
+    expect(writeEdictumParams({ ...form, thinking: '', temperature: undefined, top_p: undefined, max_tokens: undefined }, true)).toEqual({ custom: 1 });
+    expect(() => writeEdictumParams({ ...form, top_p: 0 }, true)).toThrow('top_p');
+    expect(() => writeEdictumParams({ ...form, max_tokens: 1.5 }, true)).toThrow('正整数');
+  });
 });

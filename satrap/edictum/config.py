@@ -17,6 +17,7 @@ from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
 from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
+from satrap.edictum.settings import normalize_session_settings
 
 from satrap.core.log import logger
 
@@ -114,6 +115,8 @@ class EdictumConfigManager:
         params = raw.get("params", {})
         if not isinstance(params, dict):
             raise ValueError("params 必须是对象")
+        if type_name in {"simple", "async_simple"}:
+            params = normalize_session_settings(params)
         model_name = str(raw.get("model_name", "")).strip()
         return {
             "provider": EDICTUM_PROVIDER,

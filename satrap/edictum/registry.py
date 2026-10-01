@@ -218,6 +218,15 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
         "additionalProperties": True,
         "properties": {
             "system_prompt": {"type": ["string", "null"]},
+            "thinking": {"type": "string", "enum": ["off", "low", "medium", "high", "xhigh", "max", "ultra"]},
+            "model_params": {
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "temperature": {"type": "number", "minimum": 0, "maximum": 2},
+                    "top_p": {"type": "number", "exclusiveMinimum": 0, "maximum": 1},
+                    "max_tokens": {"type": "integer", "minimum": 1},
+                },
+            },
             "db_path": {"type": "string"},
             "enable_checkpoint": {"type": "boolean"},
             "stream": {"type": "boolean"},

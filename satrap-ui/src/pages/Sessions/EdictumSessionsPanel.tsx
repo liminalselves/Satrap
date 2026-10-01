@@ -22,6 +22,7 @@ import { toast } from '@/components/ui/Toast';
 import { EdictumPluginManager } from './EdictumPluginManager';
 import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
 import { readEdictumParams, writeEdictumParams } from '@/utils/edictumParams';
+import { getThinkingOptions } from '@/utils/constants';
 
 interface EdictumConfigItem {
   name: string;
@@ -56,7 +57,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
   const { isRunning, reloadConfig } = useBackendStore();
   const [types, setTypes] = useState<EdictumTypeDefinition[]>([]);
   const [availablePlugins, setAvailablePlugins] = useState<EdictumAvailablePlugin[]>([]);
-  const { edictumConfigs: configs, fetchEdictumConfigs } = useConfigStore();
+  const { edictumConfigs: configs, fetchEdictumConfigs, llmConfigs } = useConfigStore();
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -75,9 +76,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     enabled: true,
     description: '',
     model_name: '',
-    system_prompt_enabled: false,
-    system_prompt: '',
-    params: '{}',
+    ...readEdictumParams({}, true),
     plugins: '[]',
   });
 
@@ -112,9 +111,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       enabled: true,
       description: '',
       model_name: llmNames[0] || '',
-      system_prompt_enabled: false,
-      system_prompt: '',
-      params: '{}',
+      ...readEdictumParams({}, true),
       plugins: '[]',
     });
     setModalOpen(true);
@@ -145,6 +142,10 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     }
     setSaving(true);
     try {
+      if (['simple', 'async_simple'].includes(typeName) && form.thinking
+        && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)) {
+        throw new Error('绑定模型不支持当前思考强度, 请重新选择');
+      }
       const payload = {
         name,
         edictum_type: typeName,
@@ -180,7 +181,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     } finally {
       setSaving(false);
     }
-  }, [editingName, form, isRunning, refresh]);
+  }, [editingName, form, isRunning, refresh, llmConfigs]);
 
   const remove = useCallback(async (name: string) => {
     if (!confirm(`确定要删除 Edictum 配置 "${name}" 吗?`)) return;
@@ -398,9 +399,16 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     ...(['simple', 'async_simple'].includes(form.edictum_type) ? [
       { key: 'system_prompt_enabled', label: '配置系统提示词', type: 'checkbox' as const, placeholder: '启用后使用下方提示词, 空文本会清空已有提示词' },
       { key: 'system_prompt', label: '系统提示词', type: 'textarea' as const, rows: 6, disabled: !form.system_prompt_enabled, placeholder: '填写 bot 的角色、行为要求和回复风格' },
+      { key: 'thinking', label: '默认思考强度', type: 'select' as const,
+        options: [{ value: '', label: '默认 (关闭)' }, ...getThinkingOptions(llmConfigs[form.model_name]),
+          ...(form.thinking && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)
+            ? [{ value: form.thinking, label: `${form.thinking} (当前模型不支持, 请重新选择)` }] : [])] },
+      { key: 'temperature', label: '温度', type: 'number' as const, min: 0, max: 2, step: 0.01, placeholder: '留空继承绑定模型配置' },
+      { key: 'top_p', label: 'top_p', type: 'number' as const, min: 0, max: 1, step: 0.01, placeholder: '留空继承绑定模型配置' },
+      { key: 'max_tokens', label: '最大输出 token 数', type: 'number' as const, min: 1, step: 1, placeholder: '留空继承绑定模型配置' },
     ] : []),
     { key: 'params', label: '其他会话参数 (JSON 对象)', type: 'textarea', rows: 6 },
-  ], [llmNames, types, form.edictum_type, form.system_prompt_enabled]);
+  ], [llmNames, types, form.edictum_type, form.system_prompt_enabled, form.thinking, form.model_name, llmConfigs]);
 
   return (
     <div className="space-y-4">
@@ -495,7 +503,16 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         title={editingName ? `编辑 Edictum 配置: ${editingName}` : '新建 Edictum 配置'}
         fields={fields}
         values={form}
-        onChange={(key, value) => setForm((current) => ({ ...current, [key]: value }))}
+        onChange={(key, value) => {
+          if (key === 'edictum_type') {
+            try {
+              const params = writeEdictumParams(form, ['simple', 'async_simple'].includes(form.edictum_type));
+              setForm((current) => ({ ...current, edictum_type: String(value), ...readEdictumParams(params, ['simple', 'async_simple'].includes(String(value))) }));
+            } catch (error) {
+              toast('error', error instanceof Error ? error.message : '会话参数无效');
+            }
+          } else setForm((current) => ({ ...current, [key]: value }));
+        }}
         onSubmit={save}
         submitText={editingName ? '保存' : '创建'}
         loading={saving}

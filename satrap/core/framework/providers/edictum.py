@@ -35,6 +35,7 @@ from satrap.edictum.registry import (
     EdictumTypeRegistry,
 )
 from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.settings import normalize_session_settings
 from satrap.core.type import SessionConfig
 
 from satrap.core.log import logger
@@ -237,7 +238,9 @@ class EdictumProvider:
         signature = inspect.signature(factory)
         parameters = signature.parameters
         has_var_kw = any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
-        payload = dict(session_config.session_config or {})
+        payload = {**definition.params, **(session_config.session_config or {})}
+        if type_name in {"simple", "async_simple"}:
+            payload = normalize_session_settings(payload)
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)

@@ -39,7 +39,7 @@ try {
     }
     const responses = {
       '/api/health': { running: false, adapters: {} },
-      '/config/models': { probe: { model_name: 'probe' } },
+      '/config/models': { probe: { model: 'probe', thinking_fields: ['reasoning_effort'], thinking_levels: ['low', 'high'] } },
       '/config/session-classes': { configs: {} },
       '/config/platforms': { platforms: [] },
       '/api/sessions': { sessions: [] },
@@ -101,8 +101,25 @@ try {
   await dialog.getByRole('button', { name: '保存', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(configs.assistant.params.system_prompt, '');
+  await page.getByTitle('编辑配置', { exact: true }).click();
+  await dialog.getByLabel('默认思考强度', { exact: true }).selectOption('high');
+  assert.equal(await dialog.getByLabel('默认思考强度', { exact: true }).getByRole('option', { name: '中', exact: true }).count(), 0);
+  await dialog.getByLabel('温度', { exact: true }).fill('0');
+  await dialog.getByLabel('top_p', { exact: true }).fill('0.8');
+  await dialog.getByLabel('最大输出 token 数', { exact: true }).fill('2048');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.equal(configs.assistant.params.thinking, 'high');
+  assert.deepEqual(configs.assistant.params.model_params, { temperature: 0, top_p: 0.8, max_tokens: 2048 });
+  await page.getByTitle('编辑配置', { exact: true }).click();
+  assert.equal(await dialog.getByLabel('温度', { exact: true }).inputValue(), '0');
+  await dialog.getByLabel('温度', { exact: true }).fill('');
+  await dialog.getByRole('button', { name: '保存', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  assert.deepEqual(configs.assistant.params.model_params, { top_p: 0.8, max_tokens: 2048 });
   console.log('PASS: Edictum 插件草稿跨轮询保留, 保存失败保留, 取消重开和保存重开正确初始化');
   console.log('PASS: Edictum 提示词从旧 JSON 回填, 修改和清空正常保存, 其他参数保留');
+  console.log('PASS: 思考强度按模型选项配置, 生成参数保存回填, 零值与恢复继承有效');
 } finally {
   if (browser) await browser.close();
   await server.close();
