@@ -1120,6 +1120,7 @@ class SessionManager:
             refreshed = self.store.get(session_id) or config
             candidate = self._create_entry(refreshed, add_to_pool=False)
             if candidate is None:
+                await self._persist_session_contexts(old_session)
                 mark_failed("候选会话创建失败")
                 return {
                     "ok": False,
@@ -1134,6 +1135,7 @@ class SessionManager:
                     await self._prepare_session_async(candidate.session)
             except Exception as error:
                 await self._release_session_memory_async(candidate.session)
+                await self._persist_session_contexts(old_session)
                 mark_failed(str(error))
                 return {
                     "ok": False,
@@ -1146,6 +1148,9 @@ class SessionManager:
 
             if not self.pool.replace(session_id, entry, candidate):
                 await self._release_session_memory_async(candidate.session)
+                current = self.pool.get(session_id)
+                if current is not None:
+                    await self._persist_session_contexts(current.session)
                 return {
                     "ok": False,
                     "action": "restart",
@@ -1155,6 +1160,7 @@ class SessionManager:
                     "error": "会话运行时已变化",
                 }
             await self._release_session_memory_async(old_session)
+            await self._persist_session_contexts(candidate.session)
             logger.info(f"[SessionManager] 会话已热重启: {session_id}")
             return {
                 "ok": True,
@@ -1169,6 +1175,22 @@ class SessionManager:
                 return await restart_locked()
             with entry.sync_operation_lock:
                 return await restart_locked()
+
+    @staticmethod
+    async def _persist_session_contexts(session: Session | AsyncSession) -> None:
+        """
+        在热重启操作锁内恢复最终实例的上下文数据库
+
+        参数:
+        - session: 成功时的新实例或失败时保留的旧实例
+        """
+        if safe_getattr(session, "session_ctx") is None:
+            return
+        for context in session._all_contexts().values():
+            context._mark_dirty()   # 候选初始化与插件清理可能改写同一数据库, 最终实例的上下文为准
+            synced = context._sync()
+            if inspect.isawaitable(synced):
+                await synced
 
     async def unload_session_async(self, session_id: str) -> dict[str, Any]:
         """
@@ -1521,7 +1543,9 @@ class SessionManager:
             setattr(session, "_init_system_prompt", prompt)
             contexts = session._all_contexts()
             for context in contexts.values():
-                result = context.reset_system_prompt(prompt)
+                compose_prompt = safe_getattr_callable(session, "compose_system_prompt")
+                effective_prompt = compose_prompt(prompt, context) if compose_prompt is not None else prompt
+                result = context.reset_system_prompt(effective_prompt)
                 if inspect.isawaitable(result):
                     await result
             setattr(session, "_satrap_group_prompt", prompt)

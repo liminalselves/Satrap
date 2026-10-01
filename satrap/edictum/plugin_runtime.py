@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 
 from satrap.edictum.plugin_spec import PluginSpec
-from satrap.edictum.plugin_settings import EffectivePluginConfig
+from satrap.edictum.plugin_settings import EffectivePluginConfig, PluginInstallConfig
 from satrap.edictum.plugin import CAPABILITY_KINDS
 
 
@@ -243,7 +243,8 @@ def install_plugin_spec(installer: PluginInstaller, spec: PluginSpec) -> tuple[o
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
+    config_type = EffectivePluginConfig if spec.config_resolved else PluginInstallConfig
+    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills")))
     try:
         changes = apply_plugin_capabilities(plugin, spec)
     except Exception as error:
@@ -267,7 +268,8 @@ async def install_plugin_spec_async(
     """
     if not spec.path:
         raise ValueError(f"插件不存在: {spec.name}")
-    plugin = installer(spec.path, EffectivePluginConfig(spec.config) if spec.config_resolved else spec.config)
+    config_type = EffectivePluginConfig if spec.config_resolved else PluginInstallConfig
+    plugin = installer(spec.path, config_type(spec.config, initial_skills=spec.capabilities.get("skills")))
     if inspect.isawaitable(plugin):
         plugin = await plugin
     try:

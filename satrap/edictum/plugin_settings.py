@@ -11,7 +11,22 @@ from satrap.edictum.plugin_resources import model_reference_fingerprint, MODEL_T
 from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
 
 
-class EffectivePluginConfig(dict[str, Any]):
+class PluginInstallConfig(dict[str, Any]):
+    """安装参数携带首次技能状态, 不混入插件业务配置字段"""
+
+    def __init__(self, values: dict[str, Any], *, initial_skills: dict[str, bool] | None = None):
+        """
+        构建兼容字典的安装参数
+
+        参数:
+        - values: 插件业务配置
+        - initial_skills: 首次安装的技能独立开关, 默认 None 使用启用状态
+        """
+        super().__init__(values)
+        self.initial_skills = dict(initial_skills or {})
+
+
+class EffectivePluginConfig(PluginInstallConfig):
     """运行协调器已合成的配置快照, 回滚时不能再次读取最新覆盖"""
 
 

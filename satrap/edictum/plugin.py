@@ -217,18 +217,19 @@ def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, s
     return descriptions
 
 
-def _load_module(path: Path, module_name: str) -> ModuleType | None:
+def _load_module(path: Path, module_name: str, *, fresh: bool = False) -> ModuleType | None:
     """
     动态加载插件模块或同名包 (入口不存在返回 None)
 
     参数:
     - path: 路径
     - module_name: module名称
+    - fresh: 是否重新实例化模块, 默认 False 复用已加载模块
 
     返回:
     - 已加载模块; 文件不存在时返回 None
 
-    若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
+    fresh 为 False 时, 若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
     避免同一文件被加载两次导致模块级状态 (如工具引用的 WORKSPACE_ROOT) 分裂
     """
     if not path.is_file() and path.suffix == ".py":
@@ -240,11 +241,11 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
         _refresh_module_index()
 
         existing = _module_index_by_name.get(module_name)
-        if existing is not None and existing.resolved_path == resolved_path:
+        if not fresh and existing is not None and existing.resolved_path == resolved_path:
             return existing.module
 
         indexed_module = _module_index_by_path.get(resolved_path)
-        if indexed_module is not None:
+        if not fresh and indexed_module is not None:
             return indexed_module
 
         spec = importlib.util.spec_from_file_location(module_name, str(path))
@@ -567,7 +568,8 @@ def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
             md = entry / "skill.md"
             if md.is_file():
                 found.append(Skill.from_file(str(md), default_name=entry.name))
-    mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills")
+    mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills", fresh=True)
+    # 技能含工具和连接实例, 每次安装独立创建, 避免旧会话清理新会话的资源
     if mod is not None:
         declared = safe_getattr_list(mod, "skills")
         if declared:
