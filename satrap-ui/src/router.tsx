@@ -1,5 +1,5 @@
 import { lazy, Suspense, type ReactElement } from 'react';
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })));
@@ -22,9 +22,16 @@ const GroupPolicy = lazy(() => import('@/pages/Groups/GroupPolicy').then((module
 const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((module) => ({ default: module.GroupSession })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
+const Conversations = lazy(() => import('@/pages/Conversations').then((module) => ({ default: module.Conversations })));
 const Users = lazy(() => import('@/pages/Users').then((module) => ({ default: module.Users })));
 const Settings = lazy(() => import('@/pages/Settings').then((module) => ({ default: module.Settings })));
 const Chat = lazy(() => import('@/pages/Chat').then((module) => ({ default: module.Chat })));
+
+function LegacyAdminRoute({ destination }: { destination: string }) {
+  const location = useLocation();
+  const target = destination === '/agents' && new URLSearchParams(location.search).has('groupAdapter') ? '/conversations/instances' : destination;
+  return <Navigate replace to={`${target}${location.search}${location.hash}`} />;
+}
 
 function lazyRoute(element: ReactElement) {
   return (
@@ -46,7 +53,11 @@ export const router = createBrowserRouter([
       { path: 'rag', element: lazyRoute(<Rag />) },
       { path: 'plugins', element: lazyRoute(<Plugins />) },
       { path: 'plugins/:name', element: lazyRoute(<PluginDetail />) },
-      { path: 'sessions', element: lazyRoute(<Sessions />) },
+      { path: 'agents', element: lazyRoute(<Sessions />) },
+      { path: 'conversations', element: lazyRoute(<Conversations />) },
+      { path: 'conversations/instances', element: lazyRoute(<Sessions view="instances" />) },
+      { path: 'conversations/versions', element: lazyRoute(<Checkpoints />) },
+      { path: 'sessions', element: <LegacyAdminRoute destination="/agents" /> },
       { path: 'platforms', element: lazyRoute(<Platforms />) },
       { path: 'platforms/:adapterId/groups', element: lazyRoute(<Groups />) },
       { path: 'platforms/:adapterId/groups/:groupId', element: lazyRoute(<GroupLayout />), children: [
@@ -61,7 +72,7 @@ export const router = createBrowserRouter([
         { path: ':section', element: lazyRoute(<GroupInvalidSection />) },
       ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
-      { path: 'checkpoints', element: lazyRoute(<Checkpoints />) },
+      { path: 'checkpoints', element: <LegacyAdminRoute destination="/conversations/versions" /> },
       { path: 'users', element: lazyRoute(<Users />) },
       { path: 'settings', element: lazyRoute(<Settings />) },
     ],

@@ -207,7 +207,7 @@ try {
   await page.getByText('使用配置已保存', { exact: true }).waitFor();
   assert.equal(locations[0].present, false);
   await page.getByLabel('使用位置', { exact: true }).selectOption('edictum:assistant');
-  assert.equal(await page.getByRole('link', { name: '打开命名配置参数' }).getAttribute('href'), '/sessions?edictum=assistant');
+  assert.equal(await page.getByRole('link', { name: '打开命名配置参数' }).getAttribute('href'), '/agents?edictum=assistant');
   const screenshots = path.resolve(root, '..', '.satrap', 'plugin-management-preview');
   await mkdir(screenshots, { recursive: true });
   await page.screenshot({ path: path.join(screenshots, 'desktop.png'), fullPage: true });

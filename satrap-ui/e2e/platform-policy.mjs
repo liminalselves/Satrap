@@ -400,7 +400,7 @@ try {
   let navConfirmCount = 0;
   const navHandler = (nativeDialog) => { navConfirmCount += 1; void nativeDialog[navAction](); };
   page.on('dialog', navHandler);
-  const sessionsLink = page.getByRole('link', { name: '会话管理' });
+  const sessionsLink = page.getByRole('link', { name: 'Agent 配置' });
   const linkBox = await sessionsLink.boundingBox();
   const linkCenter = { x: linkBox.x + linkBox.width / 2, y: linkBox.y + linkBox.height / 2 };
   await page.mouse.click(linkCenter.x, linkCenter.y);
@@ -415,7 +415,7 @@ try {
   assert.equal(navConfirmCount, 2);
   assert.ok(page.url().endsWith('/platforms'));
   await sessionsLink.click();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   page.off('dialog', navHandler);
 
   // ── 批次8 (B8): 草稿行由表单持有, 校验只报错不删行 ──
@@ -604,7 +604,7 @@ try {
   assert.ok(page.url().endsWith('/platforms'));
   backAction = 'accept';
   await historyBack();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   assert.equal(backConfirmCount, 3);
   page.off('dialog', backHandler);
   // 非脏状态下的前进/后退不拦截
@@ -615,15 +615,15 @@ try {
   await historyBack();
   await page.waitForURL('**/platforms');
   await historyForward();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   page.off('dialog', quietHandler);
   assert.equal(unexpectedConfirm, 0);
   // /chat 独立页直达与管理页直达仍按原路由装配渲染
   await page.goto(`${origin}/chat`);
   await page.getByTitle('返回管理面板').waitFor();
-  assert.equal(await page.getByRole('link', { name: '会话管理' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: 'Agent 配置' }).count(), 0);
   await page.goto(`${origin}/platforms`);
-  await page.getByRole('link', { name: '会话管理' }).waitFor();
+  await page.getByRole('link', { name: 'Agent 配置' }).waitFor();
   await page.getByRole('heading', { name: '请求阶段诊断' }).waitFor();
 
   assert.deepEqual(errors, []);

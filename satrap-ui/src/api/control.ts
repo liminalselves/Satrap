@@ -14,6 +14,8 @@ import type {
   PlatformConfig,
   RuntimeSession,
   SessionClassConfig,
+  ConversationRecord,
+  ConversationDataSnapshot,
 } from './types';
 import type { StorageAuditResult } from './storage';
 import type {
@@ -239,6 +241,9 @@ export function parseEdictumConfigs(data: unknown): Record<string, EdictumSessio
 }
 
 export const controlApi = {
+  listConversationPlatforms: async (): Promise<{ platforms: string[] }> => (await controlClient.get<{ platforms: string[] }>('/config/conversations/platforms')).data,
+  listConversationRecords: async (platformId: string, query = '', offset = 0): Promise<{ items: ConversationRecord[]; total: number }> => (await controlClient.get<{ items: ConversationRecord[]; total: number }>('/config/conversations', { params: { platform_id: platformId, q: query, offset, limit: 40 } })).data,
+  conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,
   refreshChatHistoryStorage: async () => (await controlClient.post<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('/chat/history/storage', {}, { timeout: 300000 })).data,
   ragList: async (platformId: string, sessionId: string, kbId: string) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId } })).data,
   ragAction: async (platformId: string, sessionId: string, payload: Record<string, unknown>) => (await controlClient.post<Record<string, unknown>>('/config/rag', payload, { params: { platform_id: platformId, session_id: sessionId }, timeout: 300000 })).data,

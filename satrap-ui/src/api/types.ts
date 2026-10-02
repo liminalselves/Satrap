@@ -305,6 +305,41 @@ export interface Checkpoint {
   created_at: number;
 }
 
+export interface ConversationRecord {
+  conversation_id: string;
+  title: string;
+  message_count: number;
+  history_count: number;
+  context_ids: string[];
+}
+
+export interface ConversationDataItem {
+  index: number;
+  role?: string;
+  content?: unknown;
+  reasoning_content?: string | null;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  user_input?: string;
+  answer?: string;
+  thinking?: string | null;
+  created_at?: number;
+  [key: string]: unknown;
+}
+
+export interface ConversationDataSnapshot {
+  ok: boolean;
+  conversation_id: string;
+  layer: 'context' | 'history';
+  revision: string;
+  total: number;
+  items: ConversationDataItem[];
+  source: 'memory' | 'storage';
+  backups: Array<{ id: string; layer: string; reason: string; created_at: number }>;
+  saved?: boolean;
+  backup_id?: string;
+}
+
 export interface UserInfo {
   user_id: string;
   user_platform?: string;

@@ -33,7 +33,7 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 );
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
-export function Sessions() {
+export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' }) {
   const [searchParams] = useSearchParams();
   const groupAdapter = searchParams.get('groupAdapter') || '';
   const groupAccount = searchParams.get('groupAccount') || '';
@@ -137,8 +137,8 @@ export function Sessions() {
   useEffect(() => {
     fetchSessionClasses();
     fetchModels('llm');
-    fetchRuntimeSessions();
-  }, [fetchModels, fetchRuntimeSessions, fetchSessionClasses]);
+    if (view === 'instances') void fetchRuntimeSessions();
+  }, [fetchModels, fetchRuntimeSessions, fetchSessionClasses, view]);
 
   const tableData: SessionClassItem[] = useMemo(
     () => Object.entries(sessionClasses).map(([name, config]) => ({ name, config })),
@@ -565,14 +565,15 @@ export function Sessions() {
         onClose={() => setOverrideSession(null)}
       />
       <PageHeader
-        title="会话管理"
-        description="管理扫描式会话类、Edictum 命名配置和运行时会话"
+        title={view === 'agents' ? 'Agent 配置' : '对话实例'}
+        description={view === 'agents' ? '配置 Agent 的会话类模板、模型和 Edictum 执行流程' : '管理已创建的平台实例、运行状态和实例级参数'}
+        actions={<Link className="text-sm text-accent" to={view === 'agents' ? '/conversations/instances' : '/conversations'}>{view === 'agents' ? '查看已创建实例' : '返回对话记录'}</Link>}
       />
 
-      <Tabs defaultValue={searchParams.has('edictum') ? 'edictum' : 'session-classes'}>
+      {view === 'agents' && <Tabs defaultValue={searchParams.has('edictum') ? 'edictum' : 'session-classes'}>
         <TabsList>
-          <TabsTrigger value="session-classes">会话类</TabsTrigger>
-          <TabsTrigger value="edictum">Edictum 会话</TabsTrigger>
+          <TabsTrigger value="session-classes">会话类模板</TabsTrigger>
+          <TabsTrigger value="edictum">Edictum 流程</TabsTrigger>
         </TabsList>
 
         <TabsContent value="session-classes" className="space-y-4">
@@ -614,16 +615,16 @@ export function Sessions() {
         <TabsContent value="edictum">
           <EdictumSessionsPanel llmNames={llmNames} onRuntimeCreated={fetchRuntimeSessions} />
         </TabsContent>
-      </Tabs>
+      </Tabs>}
 
-      <Card>
+      {view === 'instances' && <Card>
         <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold text-text-primary">会话实例</h3>
             <p className="mt-1 text-sm text-text-secondary">
               已持久化的平台 Provider 会话实例, 不包含 Chat 对话历史 · {backendRunning ? '后端热管理' : '后端已停止, 当前为冷管理'}
             </p>
-            {groupFilter && <p className="mt-1 text-sm text-text-secondary">筛选机器人 {groupAccount} 的群 {groupId}: 已归属 {groupSessionIds?.length ?? '读取中'} 个范围会话。旧版按用户共享的历史无法按群筛选。<Link className="ml-2 text-accent" to="/sessions">清除筛选</Link></p>}
+            {groupFilter && <p className="mt-1 text-sm text-text-secondary">筛选机器人 {groupAccount} 的群 {groupId}: 已归属 {groupSessionIds?.length ?? '读取中'} 个范围会话。旧版按用户共享的历史无法按群筛选。<Link className="ml-2 text-accent" to="/conversations/instances">清除筛选</Link></p>}
             {groupFilterError && <p role="alert" className="mt-1 text-sm text-error">{groupFilterError}</p>}
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
@@ -646,7 +647,7 @@ export function Sessions() {
           scrollClassName="h-[32rem] max-h-[55vh]"
           stickyHeader
         />
-      </Card>
+      </Card>}
 
       {showWakeModal && <ManualWakeModal onClose={() => setShowWakeModal(false)} />}
       <FormModal open={showRegisterModal} onClose={() => setShowRegisterModal(false)} title="注册新会话类" fields={registerFields} values={registerForm} onChange={(key, value) => setRegisterForm((current) => ({ ...current, [key]: value }))} onSubmit={handleRegister} submitText="注册" loading={saving} size="lg" />

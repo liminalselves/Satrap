@@ -149,8 +149,8 @@ try {
   assert.equal(probeCalls, 4);
   await dialog.getByRole('button', { name: '关闭检查', exact: true }).click();
 
-  await page.locator('aside').getByRole('link', { name: '会话管理', exact: true }).click();
-  await page.getByText('Edictum 会话', { exact: true }).click();
+  await page.locator('aside').getByRole('link', { name: 'Agent 配置', exact: true }).click();
+  await page.getByText('Edictum 流程', { exact: true }).click();
   const switchNamed = page.getByRole('switch', { name: '会话配置 named' });
   state.saveFailure = true;
   await switchNamed.click();
@@ -180,7 +180,7 @@ try {
   await page.getByRole('button', { name: '启动后端', exact: true }).waitFor();
   await page.locator('header').getByText('后端未运行', { exact: true }).waitFor();
   const reloadsBeforeStoppedToggle = state.reloads;
-  await page.locator('aside').getByRole('link', { name: '会话管理', exact: true }).click();
+  await page.locator('aside').getByRole('link', { name: 'Agent 配置', exact: true }).click();
   await page.getByRole('switch', { name: '会话配置 demo' }).click();
   await page.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
   assert.equal(sessions.demo.enabled, true);

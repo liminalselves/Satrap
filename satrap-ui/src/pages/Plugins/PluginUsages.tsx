@@ -100,7 +100,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
         {!location.parent_enabled && <p className="text-sm text-text-tertiary">此命名配置已停用，运行实例还需启用对应会话。</p>}
         <div className="flex flex-wrap items-center gap-3">
           {draft.present ? <><label className="flex items-center gap-2 text-sm"><input aria-label="启用插件" type="checkbox" checked={draft.enabled} disabled={busy || (!location.availability.allowed && !draft.enabled)} onChange={(event) => { setDraft({ ...draft, enabled: event.target.checked }); setSaved(false); }} />启用插件</label><Button size="sm" variant="danger" disabled={busy} onClick={() => { setDraft({ ...draft, present: false }); setSaved(false); }}>移除</Button></> : <Button disabled={busy || !location.availability.allowed} onClick={() => { setDraft({ ...draft, present: true, enabled: true }); setSaved(false); }}>添加到此位置</Button>}
-          {location.kind === 'edictum' && <Link className="text-sm text-accent" to={`/sessions?edictum=${encodeURIComponent(location.id)}`}>打开命名配置参数</Link>}
+          {location.kind === 'edictum' && <Link className="text-sm text-accent" to={`/agents?edictum=${encodeURIComponent(location.id)}`}>打开命名配置参数</Link>}
           {location.kind === 'chat' && <Link className="text-sm text-accent" to="/chat">打开 Chat</Link>}
         </div>
         {draft.present && <PluginCapabilities capabilities={plugin.capabilities} values={draft.capabilities} active={draft.enabled} disabled={busy} onChange={(kind, name, enabled) => { setDraft({ ...draft, capabilities: { ...draft.capabilities, [kind]: { ...draft.capabilities[kind], [name]: enabled } } }); setSaved(false); }} />}

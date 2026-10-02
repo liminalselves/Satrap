@@ -53,7 +53,7 @@ try {
   });
   await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
   await page.goto(origin + '/sessions');
-  await page.getByRole('button', { name: 'Edictum 会话', exact: true }).click();
+  await page.getByRole('button', { name: 'Edictum 流程', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await page.getByTitle('管理插件', { exact: true }).click();
   await dialog.getByRole('button', { name: '添加', exact: true }).click();

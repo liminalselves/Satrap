@@ -47,6 +47,7 @@
 ### ui/ 展示层与前端
 
 - [聊天展示层](ui/chat-display.md): 面向前端聊天页的独立实时服务 (录制 / 会话编排 / WebSocket / HTTP API)
+- [Agent 配置与对话记录](ui/conversation-management.md): 配置与实例入口, 分别维护模型上下文和 Chat 展示历史, 修改备份与恢复
 - [UI 设计系统](ui/ui-design-system.md): 前端设计规范与组件约定
 
 ### development/ 开发规范

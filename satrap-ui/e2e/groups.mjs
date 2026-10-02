@@ -311,7 +311,7 @@ try {
   await page.getByText('base', { exact: true }).last().waitFor();
   assert.equal(modelConfigs.base.model, 'fixture-model');
   await page.goto(`${origin}/sessions`);
-  await page.getByRole('button', { name: 'Edictum 会话' }).click();
+  await page.getByRole('button', { name: 'Edictum 流程' }).click();
   await page.getByRole('button', { name: '新建 Edictum 配置' }).click();
   await page.getByLabel('配置名称').fill('simple');
   await page.getByLabel('绑定 LLM').selectOption('base');
