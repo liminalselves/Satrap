@@ -1,6 +1,8 @@
 from pathlib import Path
 import pytest
 import sys
+import os
+import tempfile
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -27,3 +29,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     for item in items:
         if "integration" in item.keywords:
             item.add_marker(skip_integration)
+
+
+def pytest_configure(config):
+    """测试收集前隔离默认存储目录, 子进程继承相同环境"""
+    config._satrap_original_data_root = os.environ.get("SATRAP_DATA_ROOT")
+    config._satrap_test_data = tempfile.TemporaryDirectory(prefix="satrap-tests-")
+    os.environ["SATRAP_DATA_ROOT"] = config._satrap_test_data.name
+
+
+def pytest_unconfigure(config):
+    """恢复环境并清理隔离测试目录"""
+    original = getattr(config, "_satrap_original_data_root", None)
+    if original is None:
+        os.environ.pop("SATRAP_DATA_ROOT", None)
+    else:
+        os.environ["SATRAP_DATA_ROOT"] = original
+    temporary = getattr(config, "_satrap_test_data", None)
+    if temporary is not None:
+        temporary.cleanup()

@@ -62,15 +62,39 @@ def _build_context_request_stats(
     )
 
 
-def _new_context(context_id: str, *, db_path: str) -> ContextManager:
-    """保留兼容入口的上下文构造注入点"""
+def _new_context(context_id: str, *, db_path: str, persistent: bool = True) -> ContextManager:
+    """
+    保留兼容入口的上下文构造注入点
+
+    参数:
+    - context_id: 上下文标识
+    - db_path: 数据库路径
+    - persistent: 是否允许持久化, 默认 True
+
+    返回:
+    - 同步上下文管理器
+    """
     from . import ContextManager
 
+    if not persistent:
+        return ContextManager(context_id, db_path=db_path, persistent=False)
     return ContextManager(context_id, db_path=db_path)
 
 
-def _new_async_context(context_id: str, *, db_path: str) -> AsyncContextManager:
-    """保留兼容入口的异步上下文构造注入点"""
+def _new_async_context(context_id: str, *, db_path: str, persistent: bool = True) -> AsyncContextManager:
+    """
+    保留兼容入口的异步上下文构造注入点
+
+    参数:
+    - context_id: 上下文标识
+    - db_path: 数据库路径
+    - persistent: 是否允许持久化, 默认 True
+
+    返回:
+    - 异步上下文管理器
+    """
     from . import AsyncContextManager
 
+    if not persistent:
+        return AsyncContextManager(context_id, db_path=db_path, persistent=False)
     return AsyncContextManager(context_id, db_path=db_path)

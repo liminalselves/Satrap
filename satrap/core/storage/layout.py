@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import hashlib
 from pathlib import Path
 import shutil
@@ -61,7 +62,8 @@ class StorageLayout:
         参数:
         - root: 可选数据根目录, 默认 `.satrap/data`
         """
-        self.root = Path(root).resolve() if root is not None else (get_data_dir() / "data").resolve()
+        configured_root = root if root is not None else os.getenv("SATRAP_DATA_ROOT") or get_data_dir() / "data"
+        self.root = Path(configured_root).resolve()
 
     @property
     def platforms_root(self) -> Path:

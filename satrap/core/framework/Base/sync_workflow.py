@@ -44,8 +44,9 @@ class ModelWorkflowFramework(_WorkflowCore):
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], None]] = None,
         *,
-        db_path: str = get_db_path(),
+        db_path: str | None = None,
         recoverable: bool = False,
+        persist_context: bool = True,
     ):
         """
         模型工作流框架, 负责管理模型的调用和工作流的执行
@@ -68,6 +69,7 @@ class ModelWorkflowFramework(_WorkflowCore):
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
         - db_path: 上下文与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
         - recoverable: 是否启用可恢复 Agent 执行, 默认 False; 为 True 时将模型与工具步骤持久化到 db_path
+        - persist_context: 是否保存消息和运行状态, 子代理使用 False
 
         恢复边界:
         - full_agent 和 stream_full_agent 共用执行循环, recoverable 仅控制步骤记录与恢复
@@ -101,10 +103,13 @@ class ModelWorkflowFramework(_WorkflowCore):
         # 或者集成进 `Session` 类中, 以实现复杂多模型 Agent 与会话管理
         ```
         """
+        if recoverable and not persist_context:
+            logger.warning("纯内存工作流不能启用持久化执行恢复")
+            raise ValueError("纯内存工作流不能启用持久化执行恢复")
         self.recoverable = recoverable
         self.last_run_id: str | None = None
         self.llm = llm
-        self.ctx = _new_context(context_id, db_path=db_path)
+        self.ctx = _new_context(context_id, db_path=db_path or get_db_path(), persistent=persist_context)
         self.tools_manager = tools_manager if tools_manager else ToolsManager()
         # 如果未提供工具管理器, 则创建一个空的工具管理器实例
 

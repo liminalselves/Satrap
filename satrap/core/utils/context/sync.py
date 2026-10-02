@@ -32,7 +32,7 @@ class ContextManager(_SyncSummary):
         self,
         conversation_id: Union[int, str],
         keep_in_memory: bool = False,
-        db_path: str = get_db_path(),
+        db_path: str | None = None,
         max_context: int = 128000,
         history_ratio: float = 0.7,
         context_threshold: float = 0.8,
@@ -42,6 +42,7 @@ class ContextManager(_SyncSummary):
         enable_checkpoint: bool = False,
         auto_checkpoint: bool = True,
         summary_keep_recent_turns: int = 6,
+        *, persistent: bool = True,
     ):
         """
         初始化上下文管理器
@@ -60,10 +61,11 @@ class ContextManager(_SyncSummary):
             - "sliding": 滑动窗口策略, 删除旧消息, 保持上下文长度在截断底线以下
             - "mid_truncate": 中间截断策略, 从中间截断上下文, 不删除旧消息
             - "summarize": 总结旧轮次并保留最近 summary_keep_recent_turns 轮原文
-        - summary_keep_recent_turns: 总结压缩时必须原样保留的最近轮数, 默认 6
         - state_store: 状态检查点存储实例, 传入后启用检查点/回滚/分支能力
         - enable_checkpoint: 为 True 时自动创建指向当前库的 StateStore, 与显式传入 state_store 二选一
         - auto_checkpoint: 启用检查点后, 每次写入用户/机器人消息自动保存稳定检查点 (同水位去重), 默认 True
+        - summary_keep_recent_turns: 总结压缩时必须原样保留的最近轮数, 默认 6
+        - persistent: 是否读写持久化数据, False 时仅使用内存且不能启用检查点
 
         返回:
         - None
@@ -80,7 +82,11 @@ class ContextManager(_SyncSummary):
                 f"历史上下文比例必须在 (0, 1] 区间: history_ratio={history_ratio}，退回默认值"
             )
 
-        self.db_path = db_path
+        if not persistent and (state_store is not None or enable_checkpoint):
+            logger.warning("纯内存上下文不能启用持久化检查点")
+            raise ValueError("纯内存上下文不能启用持久化检查点")
+        self.persistent = persistent
+        self.db_path = db_path if db_path is not None else get_db_path()
         self.conversation_id = str(conversation_id)
         self.keep_in_memory = keep_in_memory
         self.auto_checkpoint = auto_checkpoint
