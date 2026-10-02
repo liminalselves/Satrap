@@ -156,6 +156,47 @@ async def test_control_rag_and_session_overrides_share_scope_and_revision(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_conversation_user_directory_dynamic_platforms_cold_reads_and_conflicts(tmp_path, monkeypatch):
+    from satrap.core.framework.UserManager import UserInfoStore
+    from satrap.core.type import UserInfo
+
+    _use_config(monkeypatch, tmp_path)
+    document = json.loads(control_server.CONFIG_PATH.read_text(encoding="utf-8"))
+    document["platforms"] = [{"id": "new-instance", "type": "future"}]
+    control_server.CONFIG_PATH.write_text(json.dumps(document), encoding="utf-8")
+    layout = control_server._configured_storage_layout()
+    layout.ensure_platform("removed-instance", platform_type="former")
+    for platform in ("new-instance", "removed-instance"):
+        UserInfoStore(layout.platform_db(platform)).upsert(UserInfo(user_id="same", user_nickname=platform))
+    url = "/config/conversations/users"
+    assert b"401" in (await _request(url, authorized=False)).split(b"\r\n", 1)[0]
+    before = layout.platform_db("removed-instance").read_bytes()
+    all_users = _json_body(await _request(url))
+    assert {(item["platform_id"], item["user_id"]) for item in all_users["items"]} == {("new-instance", "same"), ("removed-instance", "same")}
+    assert layout.platform_db("removed-instance").read_bytes() == before
+    filtered = _json_body(await _request(url + "?platform_type=former&q=removed&offset=0&limit=1"))
+    assert filtered["total"] == 1 and filtered["items"][0]["platform_id"] == "removed-instance"
+    assert _json_body(await _request(url + "?offset=1&limit=1"))["items"][0] == all_users["items"][1]
+    detail = _json_body(await _request(url + "?platform_id=new-instance&user_id=same"))["user"]
+    payload = {"action": "update", "platform_id": "new-instance", "user_id": "same", "nickname": "修改", "expected_revision": detail["revision"]}
+    saved = await _request(url, "POST", json.dumps(payload).encode())
+    assert _json_body(saved)["user"]["user_nickname"] == "修改"
+    assert b"409" in (await _request(url, "POST", json.dumps(payload).encode())).split(b"\r\n", 1)[0]
+    assert b"400" in (await _request(url, "POST", json.dumps({**payload, "platform_id": "../../unknown"}).encode())).split(b"\r\n", 1)[0]
+    other = _json_body(await _request(url + "?platform_id=removed-instance&user_id=same"))["user"]
+    assert other["user_nickname"] == "removed-instance"
+    created = _json_body(await _request(url, "POST", json.dumps({"action": "create", "platform_id": "new-instance", "user_id": "created", "nickname": "", "expected_revision": all_users["new_revision"]}).encode()))
+    assert created["user"]["has_profile"]
+    manifest = layout.platform_root("new-instance") / "platform.json"
+    assert json.loads(manifest.read_text(encoding="utf-8"))["platform_type"] == "future"
+    monkeypatch.setattr(control_server.UserDirectoryService, "records", lambda self: (_ for _ in ()).throw(OSError("读失败")) if self.platform["id"] == "removed-instance" else [])
+    partial = _json_body(await _request(url))
+    assert partial["warnings"] == ["removed-instance: 用户资料读取失败"]
+    assert b"500" in (await _request(url + "?platform_id=removed-instance")).split(b"\r\n", 1)[0]
+    assert b"200" in (await _request("/status")).split(b"\r\n", 1)[0]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "method,path",
     [

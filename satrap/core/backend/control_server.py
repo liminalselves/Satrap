@@ -50,6 +50,7 @@ from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.conversation_runtime import perform_data_operation
+from satrap.core.config.user_directory import UserDirectoryService, UserDirectoryConflict, missing_profile_revision
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
@@ -1904,6 +1905,82 @@ def _conversation_data_request(url: str, payload: dict[str, Any]) -> tuple[int, 
         raise
 
 
+async def _route_conversation_users(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    从动态平台目录查询和维护用户资料, 支持后端未运行时浏览
+
+    参数:
+    - ctx: 已认证的控制请求
+
+    返回:
+    - 分页目录, 单个用户详情或修改结果; 所有失败在此边界捕获并记录
+    """
+    if ctx.path != "/config/conversations/users" or ctx.method not in {"GET", "POST"}:
+        return None
+    platform = ""
+    identity = ""
+    try:
+        document = load_config_document(CONFIG_PATH)
+        layout = _configured_storage_layout(document)
+        descriptors = platform_catalog(layout, document)
+        if ctx.method == "POST":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            platform = payload.get("platform_id", "")
+            identity = payload.get("user_id", "")
+            descriptor = next((item for item in descriptors if item["id"] == platform), None)
+            if descriptor is None:
+                raise ValueError("请选择目录中的平台实例")
+            if payload.get("action") == "create":
+                if not isinstance(identity, str) or not identity.strip() or not isinstance(payload.get("nickname", ""), str):
+                    raise ValueError("用户 ID 和昵称必须是有效文本")
+                await RAG_WORKERS.run(layout.ensure_platform, platform, platform_type=descriptor["type"])
+            service = UserDirectoryService(layout.platform_db(platform), descriptor)
+            return 200, await RAG_WORKERS.run(service.mutate, payload)
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+        platform = query.get("platform_id", [""])[0]
+        identity = query.get("user_id", [""])[0]
+        selected = [item for item in descriptors if not platform or item["id"] == platform]
+        platform_type = query.get("platform_type", [""])[0]
+        selected = [item for item in selected if not platform_type or item["type"] == platform_type]
+        if platform and not selected:
+            raise ValueError("平台实例不存在或不属于所选类型")
+        items = []
+        warnings = []
+        for descriptor in selected:
+            try:
+                service = UserDirectoryService(layout.platform_db(descriptor["id"]), descriptor)
+                items.extend(await RAG_WORKERS.run(service.records))
+            except Exception as error:
+                logger.error(f"[用户目录] 读取失败: {descriptor['id']}, {error}\n{traceback.format_exc()}")
+                if platform:
+                    raise
+                warnings.append(f"{descriptor['id']}: 用户资料读取失败")
+        if identity:
+            if not platform:
+                raise ValueError("查看用户详情必须指定平台实例")
+            return 200, {"user": next((item for item in items if item["user_id"] == identity), None)}
+        text = query.get("q", [""])[0].casefold()
+        matched = [item for item in items if not text or text in f"{item['user_id']} {item['user_nickname']} {item['platform_id']}".casefold()]
+        offset = max(0, int(query.get("offset", ["0"])[0]))
+        limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
+        return 200, {"items": matched[offset:offset + limit], "total": len(matched), "warnings": warnings, "new_revision": missing_profile_revision()}
+    except UserDirectoryConflict as error:
+        logger.warning(f"[用户资料] 编辑冲突: {platform}/{identity}, {error}")
+        return 409, {"error": str(error)}
+    except KeyError as error:
+        logger.warning(f"[用户资料] 数据不存在: {platform}/{identity}, {error}")
+        return 404, {"error": str(error)}
+    except (ValueError, TypeError) as error:
+        logger.warning(f"[用户资料] 请求无效: {platform}/{identity}, {error}")
+        return 400, {"error": str(error)}
+    except WorkerBusyError as error:
+        logger.warning(f"[用户资料] 工作队列已满: {error}")
+        return 503, {"error": str(error)}
+    except Exception as error:
+        logger.error(f"[用户资料] 操作失败: {platform}/{identity}, {error}\n{traceback.format_exc()}")
+        return 500, {"error": "用户资料操作失败, 请查看控制服务日志"}
+
+
 async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
     """
     对话目录只读查询和冷热统一的数据操作入口
@@ -2755,6 +2832,7 @@ async def _handle_request(
             _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
+            _route_conversation_users,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_config,
