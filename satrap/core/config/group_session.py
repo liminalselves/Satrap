@@ -55,6 +55,30 @@ def session_values(explicit: Mapping[str, object]) -> dict[str, object]:
     return result
 
 
+def group_binding_chain(platform: Mapping[str, Any], explicit: Mapping[str, object]) -> list[dict[str, str]]:
+    """
+    展示平台默认, 群聊类型和本群覆盖的完整绑定继承链
+
+    参数:
+    - platform: 已解析平台默认配置的快照
+    - explicit: 本群显式会话设置
+
+    返回:
+    - 各层的绑定, 模式与来源, 继承层显示实际继承结果
+    """
+    default = {"provider": str(platform.get("session_provider") or "session_class"),
+               "config_name": str(platform.get("session_type") or "")}
+    by_kind, source = resolve_agent_binding(platform, "group")
+    override = session_values(explicit).get("binding")
+    selected = override if isinstance(override, dict) else by_kind
+    return [
+        {"source": "platform", "mode": "value", **default},
+        {"source": "conversation_kind", "mode": "value" if source == "conversation_kind" else "inherit", **by_kind},
+        {"source": "group", "mode": "value" if isinstance(override, dict) else "inherit",
+         "provider": str(selected["provider"]), "config_name": str(selected["config_name"])},
+    ]
+
+
 def resolve_group_session(
     platform: Mapping[str, Any], explicit: Mapping[str, object],
     defaults: Mapping[str, object] | None = None,

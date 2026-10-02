@@ -90,6 +90,7 @@ async def test_group_session_apply_status_and_retry_reaches_failed_instance(tmp_
         return True
 
     runtime = SimpleNamespace(pool=SimpleNamespace(list_entries=lambda: entries),
+                              provider_registry=SimpleNamespace(resolve_definition=lambda *_: None),
                               retry_group_session_apply_async=retry)
     backend._platform_runtimes["bot"] = cast(Any, (runtime, None))
     assert (await backend.group_config("bot", "100", "456"))["apply_status"] == "pending"

@@ -9,21 +9,26 @@
 | 批次 | 状态 |
 | --- | --- |
 | 1. 通用路由契约和配置解析 | 已实现后端: 类型覆盖, 单群继承, v2 隔离键, 持久代次, 切换失效与旧配置兼容 |
-| 2. 前端路由设置与应用状态 | 待实施; 后端已有替换/热更新的代次协调, 下一步增加动态表单与完整继承来源 |
+| 2. 前端路由设置与应用状态 | 已实现: 冷适配器声明, 动态选择器, 完整继承链, 保存/应用状态与重试, 跨入口配置引用保护 |
 | 3. 平台消息档案和只读工具 | 待实施 |
 | 4. 结构化回复宿主通道 | 待实施 |
 | 5. group_chat 插件与 skill | 待实施 |
 
 第一批验证包含真实 SessionManager/UserManager 的私聊和跨群隔离, 重启保持, 无消息切换, 显式单群绑定保持, 流式发送失效和存储失败回退
 
+第二批验证覆盖冷目录中的额外类型, 旧表单保存不启用新路由, 分类型选择/恢复继承, 缺少或停用配置, 并发冲突和脏草稿, 应用失败重试, 所有引用入口和当前路由实例统计
+相关后端回归 736 项通过, 后续引用保护检查 106 项通过; 前端 225 项测试和路由/平台策略/群管理浏览器回归通过, 完成窄屏视觉检查
+
 ## 1. 已核查的基础
+
+以下区分已有消息/插件基础与本轮第一批新增代码, 不把后端已实现等同于前端或插件已完成
 
 - `core/components/message.py` 已有 Plain, Reply, At, Image 等组件; `MessageChain` 和适配器发送通道可以承载组合消息
 - `MessageEvent.decorate_reply()` 会按策略追加引用和 @当前发送者; 结构化回复需要明确覆盖此行为
 - `core/call_context.py` 已有按轮次冻结的 CallOrigin, 包含平台实例, 机器人账号, 对话, 发言者和来源消息 ID; 工具应复用此可信来源
 - `group_admin` 已有 OneBot 成员列表, 成员详情和单条消息回源能力; 群聊插件复用底层读取能力, 独立于管理动作工具
-- 平台配置只有 `session_provider + session_type` 一套默认绑定; 单个群可以通过 `group_session.py` 和群会话页面覆盖绑定, 模型, 提示词和插件
-- 当前 `ConversationRoute` 只支持 legacy_user, group_member 和 group; legacy_user 没有对话类型隔离键
+- 原平台配置使用 `session_provider + session_type` 一套默认绑定; 第一批已新增 `session_bindings`, 单个群仍可以通过 `group_session.py` 和群会话页面覆盖绑定, 模型, 提示词和插件
+- 第一批已扩展 `ConversationRoute` 为 v2 对话隔离键, 支持 private 和 conversation; 未启用新路由的 legacy_user 保持旧键
 - `chat_history` 保存模型角色, 内容和工具调用, 不包含完整的平台消息身份结构; 短消息窗口有容量和 TTL, 不能承担历史检索
 - 插件支持同步/异步工具, handler 和 skill; 安装时已激活启用的 skill, 群聊 skill 应复用此路径
 
@@ -150,7 +155,7 @@ skill 规定:
 ### 4.1 配置结构与优先级
 
 保留现有 session_provider/session_type 作为平台默认, 新增 session_bindings 映射存对话类型覆盖
-以下为拟新增字段, 不是当前可直接使用的配置:
+以下字段第一批后端已支持, 前端选择器和完整配置引用保护仍待实现:
 
 ```yaml
 session_provider: edictum
@@ -213,6 +218,46 @@ UI 展示已保存/已应用/应用失败及原因, 提供重试, 不把保存�
 继承时显示实际配置和来源; 表单保存保留并发修订校验与脏草稿保护
 群详情现有 Agent 设置展示完整继承链和群内覆盖
 对话记录展示实际使用的 Agent 与对话类型, 与平台消息档案的归属分别标注
+
+控制服务在后端未运行时也返回已安装适配器的对话类型声明, UI 不依赖实时连接或硬编码平台列表来生成路由行
+旧配置打开后直接保存不会自动启用新隔离路由; 已保存但当前适配器不再声明的类型保留并提示, 不静默删除
+被平台默认, 对话类型或单群绑定引用的 Agent 配置, 删除/重命名前列出引用并阻止留下悬空绑定; 控制 API 与 CLI 使用相同检查
+
+### 4.4 具体改动落点与接口
+
+| 层级 | 改动位置 | 职责 |
+| --- | --- | --- |
+| 适配器声明 | `core/platform/` 与各适配器 | 归一对话身份, 声明成员读取/消息回源/组件发送能力; 平台专有协议仅在适配器内实现 |
+| Agent 路由 | `core/config/agent_routing.py`, `core/conversation.py`, `core/platform/event.py`, `core/pipeline/scheduler.py` | 解析继承, 冻结路由, 隔离上下文, 切换时废止旧轮次; 第一批已实现 |
+| 配置服务 | `core/backend/control_server.py`, `core/backend/BackendManager.py`, 配置引用服务 | 返回适配器声明, 校验绑定, 协调保存/应用, 防止被引用配置删除或改名 |
+| 消息档案 | 拟新增 `core/config/platform_messages.py`, 接入现有平台数据库与维护调度 | 采集/去重/查询/删除标记/保留期, 不依赖模型是否被唤醒 |
+| 群聊服务 | 拟新增 `core/group_chat/` | 基于可信轮次身份调用当前群能力, 核验成员与消息归属, 生成统一查询结果与回复草稿 |
+| 发送宿主 | `core/call_context.py`, `core/pipeline/scheduler.py`, `core/platform/event.py` | 建立可撤销轮次作用域, 缓冲输出, 成功结束后单次发送, 记录回执 |
+| 官方插件 | 拟新增 `expend/plugins/group_chat/` | 注册六个工具, 环境 handler 和 skill; 只通过宿主接口访问平台 |
+| 前端 | `satrap-ui/src/pages/Platforms/`, 群设置与对话记录页面, 对应 API 类型 | 动态路由选择, 继承来源/应用状态, 独立平台消息档案查看与删除 |
+
+工具查询结果统一使用以下形状, 单条查询使用 item, 列表查询使用 items:
+
+```json
+{
+  "ok": true,
+  "items": [],
+  "source": "local_archive",
+  "coverage": {"archived_from": null, "archived_to": null, "complete": false},
+  "has_more": false,
+  "next_cursor": null,
+  "truncated": false
+}
+```
+
+coverage 表示本地实际采集范围, 不承诺该时间段涵盖平台全部消息; 查询失败不能包装成空的成功结果
+游标绑定当前对话与查询条件, 同时间消息使用稳定次序分页; 正文超预算标记 truncated, 不截断身份与引用字段
+统一错误包含 code, message 和可重试状态, 至少区分 unsupported, unavailable, archive_unavailable, invalid_argument, ambiguous_member, unverified_target, wrong_conversation, stale_call 和 already_prepared
+后台记录来源轮次与失败位置, 在请求/任务边界捕获异常; 一个群查询或发送失败不终止平台接收进程
+
+平台消息档案保留期属于平台设置, 默认 30 天, 不随某套 Agent 或插件启停而改变
+插件配置仅管理查询条数, 文本预算和成员缓存时效等工具行为, 平台能力缺失时展示具体不可用原因
+前端档案接口沿用现有对话记录身份与授权校验, 提供列表/详情/搜索/删除; 不向模型提供可任意填写平台或群号的档案入口
 
 ## 5. 后续功能边界
 

@@ -620,9 +620,11 @@ class BackendManager:
     def _group_platform_snapshot(self, adapter_id: str) -> dict[str, Any]:
         """取得当前运行平台策略快照供群策略合并和基础版本核验"""
         active = self._platform_active_configs.get(adapter_id)
-        if active is not None:
-            return active
-        return next(item for item in self.config.platforms if item.get("id") == adapter_id)
+        platform = active if active is not None else next(item for item in self.config.platforms if item.get("id") == adapter_id)
+        return {**platform, "session_type": self._resolve_platform_session_type(
+            str(platform.get("type") or ""), str(platform.get("session_type") or ""),
+            str(platform.get("session_provider") or "session_class"),
+        )}
 
     def _group_base_revision(
         self, adapter_id: str, platform: dict[str, Any], session: dict[str, object],
@@ -669,7 +671,7 @@ class BackendManager:
         from satrap.core.config.group_events import EVENT_KINDS, event_values
         from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
         from satrap.core.config.group_policy import policy_values, resolve_group_policy
-        from satrap.core.config.group_session import resolve_group_session, session_values
+        from satrap.core.config.group_session import group_binding_chain, resolve_group_session, session_values
         from satrap.core.config.wake_overrides import GROUP_KEYS
         from satrap.core.platform.onebot.adapter import OneBotAdapter
 
@@ -775,6 +777,7 @@ class BackendManager:
             "effective": {"policy": effective, "session": session_effective,
                           "approval": {action: pair[0] for action, pair in approval_pairs.items()},
                           "events": {kind: event_overrides.get(kind, True) for kind in sorted(EVENT_KINDS)}},
+            "binding_chain": group_binding_chain(platform, raw_session),
             "sources": {"policy": {key: origins.get(key) for key in (*sorted(GROUP_KEYS), "enabled")},
                         "session": session_sources,
                         "approval": {action: pair[1] for action, pair in approval_pairs.items()},
@@ -805,6 +808,9 @@ class BackendManager:
         platform = self._group_platform_snapshot(adapter_id)
         if platform.get("session_type"):
             names.add((str(platform.get("session_provider") or "session_class"), str(platform["session_type"])))
+        for binding in validate_session_bindings(platform.get("session_bindings")).values():
+            if binding["mode"] == "value":
+                names.add((binding["provider"], binding["config_name"]))
         items: list[dict[str, Any]] = []
         for provider, name in sorted(names):
             resolved = await asyncio.to_thread(runtime[0].provider_registry.resolve_definition, name, provider)
@@ -2494,12 +2500,24 @@ class BackendManager:
         )
 
     def group_resource_references(self, target: str, name: str) -> list[dict[str, str]]:
-        """命名会话配置变更前扫描群绑定"""
-        from satrap.core.config.group_references import list_group_references
+        """
+        命名会话配置变更前扫描已保存和实际运行的 Agent 绑定
 
-        return list_group_references(
-            target, name, layout=self._storage,
-            platform_ids=[str(item.get("id") or "") for item in self.config.platforms],
+        参数:
+        - target: session_class 或 edictum
+        - name: 命名配置名称
+
+        返回:
+        - 平台默认, 对话类型和单群的结构化引用
+        """
+        from satrap.core.config.agent_references import list_agent_references
+
+        platforms = list(self.config.platforms)
+        platforms.extend(item for item in self._platform_active_configs.values() if item not in platforms)
+        return list_agent_references(
+            target, name, layout=self._storage, platforms=platforms,
+            default_session_type=self.config.default_session_type,
+            session_classes=self._session_cls_cfg.list_configs() if self._session_cls_cfg else None,
         )
 
     def _init_session_class_config(self):

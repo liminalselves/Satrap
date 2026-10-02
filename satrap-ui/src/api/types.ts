@@ -26,6 +26,20 @@ export interface AdapterInfo {
   type?: string;
   last_error?: string;
   client_self_id?: string;
+  conversation_kinds?: Record<string, string>;
+  session_bindings?: Record<string, AgentBinding>;
+}
+
+export type AgentBinding = { mode: 'inherit' } | {
+  mode: 'value'; provider: 'session_class' | 'edictum'; config_name: string;
+};
+
+export interface AdapterDeclaration {
+  type: string;
+  display_name: string;
+  conversation_kinds: Record<string, string>;
+  status: 'available' | 'unavailable';
+  error?: string;
 }
 
 export interface LLMConfig {
@@ -284,6 +298,7 @@ export interface PlatformConfig {
   type: string;
   session_provider?: string;
   session_type?: string;
+  session_bindings?: Record<string, AgentBinding>;
   settings: Record<string, unknown>;
 }
 

@@ -18,7 +18,7 @@ const errorText = (error: unknown) => axios.isAxiosError<{ error?: string; detai
 const readable = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
 const roles: Record<string, string> = { system: '系统提示词', developer: '开发者提示词', user: '用户', assistant: '助手', tool: '工具结果' };
 
-const facetNames: Record<string, string> = { agent: 'Agent', provider: '流程类型', scope: '会话范围', target: '群 / 目标', user: '用户', project: '项目', model: '模型', source: '来源', kind: '记录类别' };
+const facetNames: Record<string, string> = { agent: 'Agent', provider: '流程类型', scope: '会话范围', conversation_kind: '对话类型', target: '群 / 目标', user: '用户', project: '项目', model: '模型', source: '来源', kind: '记录类别' };
 
 function RecordTags({ record }: { record: ConversationRecord }) {
   return <div className="flex flex-wrap gap-1">{Object.entries(record.facets || {}).flatMap(([key, values]) => values.map((value) => <Badge key={`${key}:${value}`} variant="info" className="max-w-full break-all">{record.facet_names?.[key] || facetNames[key] || key}: {record.facet_labels?.[`${key}:${value}`] || value}</Badge>))}{record.tags?.map((tag) => <Badge key={tag} variant="warning" className="max-w-full break-all">{tag}</Badge>)}</div>;
@@ -73,7 +73,7 @@ export function Conversations() {
       if (!data.items && data.platforms.length) setSearch((current) => { const next = new URLSearchParams(current); if (!next.get('platform')) next.set('platform', data.platforms[0]); return next; });
     }).catch((error) => { if (!disposed) setError(errorText(error)); });
     return () => { disposed = true; };
-  }, []);
+  }, [setSearch]);
   useEffect(() => {
     let disposed = false;
     if (userView) { setLoading(false); return; }

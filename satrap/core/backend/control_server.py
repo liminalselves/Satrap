@@ -643,14 +643,38 @@ def _llm_in_use_checker(config_name: str) -> list[dict[str, str]]:
 
 
 def _named_group_references(target: str, name: str) -> list[dict[str, str]]:
-    """控制服务删除或重命名会话配置前扫描群绑定"""
-    from satrap.core.config.group_references import list_group_references
+    """
+    控制服务删除或重命名会话配置前扫描已保存和实际运行的绑定
 
-    platforms = load_config_document(CONFIG_PATH).get("platforms", [])
+    参数:
+    - target: session_class 或 edictum
+    - name: 命名配置名称
+
+    返回:
+    - 所有绑定层的结构化引用, 运行声明不完整时抛出异常
+    """
+    from satrap.core.config.agent_references import list_agent_references
+
+    document = load_config_document(CONFIG_PATH)
+    platforms = document.get("platforms", [])
     if not isinstance(platforms, list):
         raise ValueError("平台配置不是数组")
-    ids = [str(item.get("id") or "") for item in platforms if isinstance(item, dict)]
-    return list_group_references(target, name, layout=_configured_storage_layout(), platform_ids=ids)
+    platforms = list(platforms)
+    health = _check_backend_health()
+    if health.get("running"):
+        adapters = health.get("adapters")
+        if not isinstance(adapters, dict):
+            raise RuntimeError("无法核查运行中的 Agent 绑定")
+        for adapter_id, adapter in adapters.items():
+            if not isinstance(adapter, dict) or not adapter.get("session_provider") or not adapter.get("session_type"):
+                raise RuntimeError("运行中的适配器缺少 Agent 绑定声明")
+            platforms.append({"id": adapter_id, "type": adapter.get("config_type") or adapter.get("type"),
+                              "session_provider": adapter["session_provider"], "session_type": adapter["session_type"],
+                              "session_bindings": adapter.get("session_bindings", {})})
+    classes = _session_class_config_service().manager.list_configs() if target == "session_class" else None
+    return list_agent_references(target, name, platforms=platforms, layout=_configured_storage_layout(),
+                                 default_session_type=str(document.get("default_session_type") or "default"),
+                                 session_classes=classes)
 
 
 def _model_config_service() -> ModelConfigService:
@@ -1121,7 +1145,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             from satrap.core.config.group_approval import effective_approval
             from satrap.core.config.group_events import EVENT_KINDS, event_values
             from satrap.core.config.group_policy import policy_values, resolve_group_policy
-            from satrap.core.config.group_session import resolve_group_session
+            from satrap.core.config.group_session import group_binding_chain, resolve_group_session
             from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
             from satrap.core.config.wake_overrides import GROUP_KEYS
 
@@ -1184,7 +1208,13 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             if (not isinstance(session_explicit, dict) or not isinstance(approval_explicit, dict)
                     or not isinstance(events_explicit, dict)):
                 raise RuntimeError("群配置数据损坏")
-            session_effective, session_sources = resolve_group_session(platform, session_explicit)
+            session_platform = platform
+            if not platform.get("session_type"):
+                provider = platform.get("session_provider") or "session_class"
+                classes = await asyncio.to_thread(_session_class_config_service().manager.list_configs) if provider == "session_class" else {}
+                default_name = platform["type"] if platform["type"] in classes else str(document.get("default_session_type") or "default")
+                session_platform = {**platform, "session_type": default_name}
+            session_effective, session_sources = resolve_group_session(session_platform, session_explicit)
             event_overrides = event_values(events_explicit)
             approval_pairs = {
                 action: effective_approval(action, account["approval_defaults"], approval_explicit)
@@ -1196,6 +1226,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 "saved_revision": config["revision"], "active_revision": None,
                 "apply_status": "pending", "route_generation": config["route_generation"],
                 "session_instances": instance_summary,
+                "binding_chain": group_binding_chain(session_platform, session_explicit),
                 "base_revision": hashlib.sha256(json.dumps(platform, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode("utf-8")).hexdigest(),
                 "effective": {"policy": effective, "session": session_effective,
                               "approval": {action: pair[0] for action, pair in approval_pairs.items()},
@@ -1614,11 +1645,15 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "GET" and ctx.path == "/config/platforms":
         try:
+            from satrap.core.platform.catalog import adapter_catalog
+
             config_data = load_config_document(CONFIG_PATH)
             platforms = validate_platforms(config_data.get("platforms", []))
             return 200, {
                 "ok": True,
                 "platforms": redact_config_document(platforms),
+                "adapter_types": adapter_catalog(),
+                "default_session_type": str(config_data.get("default_session_type") or "default"),
                 "exists": CONFIG_PATH.exists(),
                 "revision": config_document_revision(config_data),
             }
@@ -2632,6 +2667,10 @@ async def _route_edictum_mutations(ctx: _RouteContext) -> ControlResponse | None
                     return 200, {"ok": True}
                 return 404, {"error": "not found"}
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except ConfigInUseError as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+        except ConfigReferenceScanError as e:
+            return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -2744,6 +2783,10 @@ async def _route_session_class_details(ctx: _RouteContext) -> ControlResponse | 
                     return 200, {"ok": True}
                 return 404, {"error": "not found"}
             return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
+        except ConfigInUseError as e:
+            return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+        except ConfigReferenceScanError as e:
+            return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
         except (json.JSONDecodeError, OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 

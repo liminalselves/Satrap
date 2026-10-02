@@ -58,7 +58,7 @@ class GroupDirectoryStore(GroupConfigStore):
         _identity(self_id, group_id)
         with closing(self._connect()) as connection:
             tables = {str(row["name"]) for row in connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('context_sessions', 'session_configs')",
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('context_sessions', 'session_configs', 'agent_route_versions')",
             ).fetchall()}
             if "context_sessions" not in tables:
                 return {"known_scoped_count": 0, "current_route_count": 0, "session_ids": [],
@@ -70,6 +70,13 @@ class GroupDirectoryStore(GroupConfigStore):
             ).fetchall()
             session_ids: set[str] = set()
             current_ids: set[str] = set()
+            binding_revision = None
+            if "agent_route_versions" in tables:
+                binding_row = connection.execute(
+                    "SELECT revision FROM agent_route_versions WHERE self_id=? AND kind='group' AND chat_id=?",
+                    (self_id, group_id),
+                ).fetchone()
+                binding_revision = int(binding_row["revision"]) if binding_row else None
             for route in routes:
                 key = str(route["context_key"])
                 try:
@@ -77,11 +84,13 @@ class GroupDirectoryStore(GroupConfigStore):
                 except (ValueError, TypeError):
                     continue
                 if (isinstance(parts, list) and len(parts) in {7, 8, 11}
-                        and parts[0] == platform_id and parts[4] == self_id and parts[5] == group_id):
+                        and parts[0] == platform_id and parts[4] == self_id and parts[5] == group_id
+                        and (len(parts) != 11 or (parts[8] == "group" and parts[9] == group_id))):
                     session_id = str(route["session_id"])
                     session_ids.add(session_id)
                     route_generation = parts[7] if len(parts) >= 8 else 0
-                    if type(route_generation) is int and route_generation == generation:
+                    binding_current = parts[10] == binding_revision if len(parts) == 11 else binding_revision is None
+                    if type(route_generation) is int and route_generation == generation and binding_current:
                         current_ids.add(session_id)
             counts = {"model": 0, "prompt": 0, "plugins": 0}
             if "session_configs" in tables:

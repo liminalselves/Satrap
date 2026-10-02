@@ -48,16 +48,25 @@ class EdictumConfigService:
         self.reference_checker = reference_checker
 
     def _guard_reference(self, name: str) -> None:
-        """命名配置仍被群绑定时拒绝删除或重命名"""
+        """
+        命名配置仍被 Agent 路由绑定时拒绝删除或重命名
+
+        参数:
+        - name: 待变更的配置名称
+        """
         from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+        from satrap.core.log import logger
+        import traceback
 
         if self.reference_checker is None:
             return
         try:
             references = self.reference_checker(name)
         except Exception as error:
+            logger.error(f"[Agent 配置] edictum/{name} 引用扫描失败: {error}\n{traceback.format_exc()}")
             raise ConfigReferenceScanError("edictum", name, type(error).__name__) from error
         if references:
+            logger.warning(f"[Agent 配置] 拒绝变更被引用的 edictum/{name}: {references}")
             raise ConfigInUseError("edictum", name, references)
 
     def list_types(self) -> list[dict[str, Any]]:

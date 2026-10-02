@@ -322,7 +322,7 @@ try {
   await page.getByRole('button', { name: '添加平台' }).click();
   await page.getByLabel('平台名称').fill('ob');
   await page.getByLabel('类型', { exact: true }).selectOption('onebot');
-  await page.getByLabel('会话 Provider').selectOption('edictum');
+  await page.getByLabel('平台默认 Provider').selectOption('edictum');
   await page.getByLabel('Edictum 命名配置').selectOption('simple');
   await page.getByLabel('Self ID').fill('100');
   await page.getByLabel('Host').fill('127.0.0.1');

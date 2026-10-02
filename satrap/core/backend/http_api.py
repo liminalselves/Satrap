@@ -23,6 +23,7 @@ from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConfl
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
@@ -1053,6 +1054,10 @@ class BackendHTTPServer(MiniHTTPServer):
                     if service.delete(name):
                         return 200, {"ok": True}
                     return 404, {"error": "not found"}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
             except Exception as e:
                 return 400, {"error": str(e)}
 
@@ -1332,18 +1337,30 @@ class BackendHTTPServer(MiniHTTPServer):
                     reference_checker=lambda current: backend.group_resource_references("session_class", current),
                 ).update(name, payload)
                 return 200, {"ok": True, "config": updated}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
             except Exception as e:
                 return 400, {"error": str(e)}
         # 接口: PUT /api/config/session-classes/{name}
 
         if method == "DELETE" and path.startswith(path_prefix) and backend.session_class_mgr:
             name = unquote(path[len(path_prefix):])
-            if SessionClassConfigService(
-                backend.session_class_mgr,
-                reference_checker=lambda current: backend.group_resource_references("session_class", current),
-            ).delete(name):
-                return 200, {"ok": True}
-            return 404, {"error": "not found"}
+            try:
+                if SessionClassConfigService(
+                    backend.session_class_mgr,
+                    reference_checker=lambda current: backend.group_resource_references("session_class", current),
+                ).delete(name):
+                    return 200, {"ok": True}
+                return 404, {"error": "not found"}
+            except ConfigInUseError as e:
+                return 409, {"ok": False, "error": str(e), "code": "config_in_use", "references": e.references}
+            except ConfigReferenceScanError as e:
+                return 503, {"ok": False, "error": str(e), "code": "agent_reference_scan_failed", "reason": e.reason}
+            except Exception as error:
+                logger.error(f"[Agent 配置] 删除 session_class/{name} 失败: {error}\n{traceback.format_exc()}")
+                return 400, {"error": str(error)}
         # 接口: DELETE /api/config/session-classes/{name}
 
         return None

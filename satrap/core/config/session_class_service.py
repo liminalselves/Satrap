@@ -3,8 +3,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any, cast
+import traceback
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+from satrap.core.log import logger
 
 
 _ALLOWED_FIELDS = {
@@ -37,7 +39,12 @@ class SessionClassConfigService:
         self.reference_checker = reference_checker
 
     def _guard_reference(self, name: str) -> None:
-        """命名配置仍被群绑定时拒绝删除或重命名"""
+        """
+        命名配置仍被 Agent 路由绑定时拒绝删除或重命名
+
+        参数:
+        - name: 待变更的配置名称
+        """
         from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 
         if self.reference_checker is None:
@@ -45,8 +52,10 @@ class SessionClassConfigService:
         try:
             references = self.reference_checker(name)
         except Exception as error:
+            logger.error(f"[Agent 配置] session_class/{name} 引用扫描失败: {error}\n{traceback.format_exc()}")
             raise ConfigReferenceScanError("session_class", name, type(error).__name__) from error
         if references:
+            logger.warning(f"[Agent 配置] 拒绝变更被引用的 session_class/{name}: {references}")
             raise ConfigInUseError("session_class", name, references)
 
     def list_configs(self) -> dict[str, dict[str, Any]]:

@@ -9,6 +9,7 @@ import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { useGroupContext } from './GroupLayout';
 
 type Provider = 'session_class' | 'edictum';
+const sourceLabels: Record<string, string> = { platform: '平台默认', conversation_kind: '群聊类型设置', group: '本群覆盖', named_config: 'Agent 命名配置' };
 interface Draft {
   bindingMode: 'inherit' | 'value';
   provider: Provider;
@@ -157,12 +158,16 @@ export function GroupSession() {
     {error && <Card role="alert" className="border border-error text-error">{error}</Card>}
     <Card className="space-y-4">
       <h2 className="text-lg font-semibold">会话绑定</h2>
-      <p className="text-sm text-text-secondary">当前: {binding?.provider || '未知'} / {binding?.config_name || '未指定'} · 来源: {config.sources.session.binding || '平台'}</p>
+      <p className="text-sm text-text-secondary">平台默认 → 群聊类型设置 → 本群覆盖</p>
+      {config.binding_chain?.map((layer) => <p key={layer.source} className="text-sm text-text-secondary">
+        {sourceLabels[layer.source] || layer.source}: {layer.mode === 'inherit' ? '继承 · ' : ''}{layer.provider} / {layer.config_name || '未指定'}
+      </p>)}
+      <p className="text-sm text-text-secondary">当前: {binding?.provider || '未知'} / {binding?.config_name || '未指定'} · 来源: {sourceLabels[config.sources.session.binding] || config.sources.session.binding || '平台默认'}</p>
       <label className="block text-sm">绑定来源
         <select className="glass-input mt-1 w-full max-w-md" value={draft.bindingMode}
           onChange={(event) => setDraft((old) => ({ ...old, bindingMode: event.target.value as Draft['bindingMode'] }))}
           disabled={historical || saving}>
-          <option value="inherit">继承平台</option><option value="value">本群指定</option>
+          <option value="inherit">继承群聊 Agent（未指定时使用平台默认）</option><option value="value">本群指定</option>
         </select>
       </label>
       {draft.bindingMode === 'value' && <div className="grid gap-3 md:grid-cols-2">
@@ -268,7 +273,7 @@ export function GroupSession() {
     </Card>
     <Card className="space-y-4">
       <h2 className="text-lg font-semibold">会话范围</h2>
-      <p className="text-sm text-text-secondary">当前: {effectiveScope === 'group_shared' ? '全群共享' : effectiveScope === 'group_member' ? '按成员隔离' : '沿用平台旧范围'} · 来源: {config.sources.session.scope || '平台'}</p>
+      <p className="text-sm text-text-secondary">当前: {effectiveScope === 'group_shared' ? '全群共享' : effectiveScope === 'group_member' ? '按成员隔离' : '沿用平台旧范围'} · 来源: {sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'}</p>
       <label className="block text-sm">范围来源
         <select className="glass-input mt-1 w-full max-w-md" value={draft.scopeMode}
           onChange={(event) => setDraft((old) => ({ ...old, scopeMode: event.target.value as Draft['scopeMode'] }))}
@@ -295,7 +300,7 @@ export function GroupSession() {
     <Modal open={showImpact} onClose={() => setShowImpact(false)} title={routeChanged ? '切换会话绑定或范围' : '应用会话覆盖'}>
       <div className="space-y-4 text-sm text-text-secondary">
         <p>旧绑定: {binding?.provider || '平台'} / {binding?.config_name || '未指定'}, 范围: {effectiveScope}</p>
-        <p>新绑定: {draft.bindingMode === 'inherit' ? '继承平台' : `${draft.provider} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : draft.scope}</p>
+        <p>新绑定: {draft.bindingMode === 'inherit' ? '继承群聊 Agent（未指定时使用平台默认）' : `${draft.provider} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : draft.scope}</p>
           <p>{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</p>
           {routeChanged && <p>当前路由可归属实例 {instanceSummary?.current_route_count ?? '未知'} 个; 旧路由和旧版按用户共享的历史会保留, 其中旧版历史可能未计入</p>}
         <div className="flex justify-end gap-2"><Button variant="subtle" onClick={() => setShowImpact(false)}>取消</Button><Button variant="primary" onClick={submit} disabled={saving}>{routeChanged ? '确认保存并切换' : '确认保存覆盖'}</Button></div>

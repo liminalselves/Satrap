@@ -148,6 +148,8 @@ export interface ConfigResult {
 export interface PlatformConfigResult extends ControlResult {
   revision?: string;
   platforms?: PlatformConfig[];
+  adapter_types?: import('./types').AdapterDeclaration[];
+  default_session_type?: string;
   exists?: boolean;
 }
 

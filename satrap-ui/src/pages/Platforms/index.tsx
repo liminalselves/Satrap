@@ -21,9 +21,10 @@ import { WakeOverrideEditor } from './WakeOverrideEditor';
 import { WakeDryRunPanel } from './WakeDryRunPanel';
 import { PlatformConnectionTest } from './PlatformConnectionTest';
 import { AdapterStatus } from '@/components/common/AdapterStatus';
+import { AgentRoutingEditor, agentOptions, bindingError } from './AgentRoutingEditor';
 import type { FormField } from '@/components/common';
 import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverrides';
-import type { PlatformConfig } from '@/api/types';
+import type { AdapterDeclaration, AgentBinding, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
   const { health, isRunning, refreshHealth } = useBackendStore();
@@ -31,6 +32,8 @@ export function Platforms() {
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
+  const [adapterTypes, setAdapterTypes] = useState<AdapterDeclaration[]>([]);
+  const [defaultSessionType, setDefaultSessionType] = useState('');
   const [testingPlatformId, setTestingPlatformId] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -47,11 +50,19 @@ export function Platforms() {
     type: 'misskey',
     session_provider: 'session_class',
     session_type: '',
+    session_bindings: {} as Record<string, AgentBinding>,
     settings: {} as Record<string, unknown>,
   });
 
   // 从 health 中提取适配器信息
   const adapters = useMemo(() => health?.adapters || {}, [health?.adapters]);
+  const routeDeclaration = adapterTypes.find((item) => item.type === formData.type);
+  const routeKinds = useMemo(() => routeDeclaration?.status === 'available' ? routeDeclaration.conversation_kinds
+    : Object.values(adapters).find((item) => (item.config_type || item.type) === formData.type)?.conversation_kinds || {},
+  [adapters, formData.type, routeDeclaration]);
+  const routeOptions = useMemo(() => agentOptions(sessionClasses, edictumConfigs), [sessionClasses, edictumConfigs]);
+  const inheritedName = formData.session_type || (formData.session_provider === 'session_class'
+    ? (sessionClasses[formData.type] ? formData.type : defaultSessionType) : '');
 
   // 诊断面板: 平台筛选来自运行中的适配器与已配置平台
   const [diagnosticsAdapter, setDiagnosticsAdapter] = useState('');
@@ -68,6 +79,8 @@ export function Platforms() {
       const result = await controlApi.listPlatforms();
       if (!result.ok) throw new Error(result.error || '读取失败');
       setPlatforms(result.platforms || []);
+      setAdapterTypes(result.adapter_types || []);
+      setDefaultSessionType(result.default_session_type || '');
       setRevision(result.revision || '');
     } catch (e) {
       toast('error', '读取平台配置失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
@@ -85,7 +98,7 @@ export function Platforms() {
   }, [fetchModels, fetchSessionClasses, loadEdictumConfigs, loadPlatforms, refreshHealth]);
 
   const handleAdd = useCallback(() => {
-    const initial = { enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', settings: {} as Record<string, unknown> };
+    const initial = { enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', session_bindings: {} as Record<string, AgentBinding>, settings: {} as Record<string, unknown> };
     const groups: GroupOverrideRow[] = [];
     const times: TimeRuleRow[] = [];
     setEditingPlatform(null);
@@ -105,6 +118,7 @@ export function Platforms() {
       type: platform.type,
       session_provider: platform.session_provider || 'session_class',
       session_type: platform.session_type || '',
+      session_bindings: platform.session_bindings || {},
       settings: platform.settings,
     };
     const groups = toGroupRows(platform.settings?.wake_group_overrides);
@@ -186,6 +200,18 @@ export function Platforms() {
       toast('error', 'EdictumProvider 必须绑定一个命名配置');
       return;
     }
+    if (formData.session_type) {
+      const selected = routeOptions.find((item) => item.provider === formData.session_provider && item.name === formData.session_type);
+      if (!selected?.enabled) {
+        toast('error', '平台默认 Agent 配置已删除或停用, 请重新选择');
+        return;
+      }
+    }
+    const routeError = bindingError(formData.session_bindings, routeKinds, routeOptions, routeDeclaration?.status === 'available');
+    if (routeError) {
+      toast('error', routeError);
+      return;
+    }
     if (formData.type === 'onebot' || formData.type === 'aiocqhttp') {
       // 草稿行的字段级错误优先于范围校验: 保留的行必须先补全或删除
       if (draftError) {
@@ -219,6 +245,8 @@ export function Platforms() {
         type: formData.type,
         session_provider: formData.session_provider,
         session_type: formData.session_type || undefined,
+        ...(Object.keys(formData.session_bindings).length ? { session_bindings: formData.session_bindings }
+          : editingPlatform?.session_bindings ? { session_bindings: {} } : {}),
         settings: normalizePlatformSettings(formData.type, settings),
       };
       const result = editingPlatform
@@ -241,7 +269,7 @@ export function Platforms() {
     } finally {
       setSaving(false);
     }
-  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftError, draftRevision, settingsDraft]);
+  }, [editingPlatform, formData, health?.running, rawSettings, applySavedPlatform, draftError, draftRevision, settingsDraft, routeDeclaration, routeKinds, routeOptions]);
 
   const handleFieldChange = useCallback((key: string, value: unknown) => {
     // 草稿行由表单持有, 不落回 settings, 避免未完成行被规范化吞掉
@@ -286,6 +314,7 @@ export function Platforms() {
   // 表单字段
   const formFields = useMemo<FormField[]>(() => {
     const typeOptions = new Set<string>(PLATFORM_TYPES);
+    adapterTypes.forEach((item) => typeOptions.add(item.type));
     platforms.forEach((platform) => typeOptions.add(platform.type));
     Object.values(adapters).forEach((info) => {
       const type = String(info.config_type || info.type || '').trim();
@@ -302,7 +331,7 @@ export function Platforms() {
       },
       {
         key: 'session_provider',
-        label: '会话 Provider',
+        label: '平台默认 Provider',
         type: 'select',
         options: [
           { value: 'session_class', label: 'SessionClassProvider' },
@@ -311,7 +340,7 @@ export function Platforms() {
       },
       {
         key: 'session_type',
-        label: formData.session_provider === 'edictum' ? 'Edictum 命名配置' : '默认会话类',
+        label: formData.session_provider === 'edictum' ? '平台默认 Agent（Edictum 命名配置）' : '平台默认 Agent（默认会话类）',
         type: 'select',
         options: [
           {
@@ -329,7 +358,16 @@ export function Platforms() {
                 value: name,
                 label: config.enabled ? name : `${name}（已停用）`,
               }))),
+          ...(formData.session_type && !routeOptions.some((item) => item.provider === formData.session_provider && item.name === formData.session_type)
+            ? [{ value: formData.session_type, label: `${formData.session_type}（已删除）` }] : []),
         ],
+      },
+      {
+        key: 'session_bindings', label: 'Agent 路由', type: 'custom',
+        render: () => <AgentRoutingEditor bindings={formData.session_bindings} kinds={routeKinds} options={routeOptions}
+          defaultProvider={formData.session_provider} defaultName={inheritedName}
+          declarationError={!Object.keys(routeKinds).length ? routeDeclaration?.error || '未取得适配器的对话类型声明, 已保存的路由保留' : undefined}
+          onChange={(next) => handleFieldChange('session_bindings', next)} />,
       },
     ];
 
@@ -401,7 +439,7 @@ export function Platforms() {
       ...baseFields,
       { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
     ];
-  }, [adapters, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_provider, formData.type, groupConversion, groupDraftRows, platforms, previewSettings, sessionClasses, timeConversion, timeDraftRows]);
+  }, [adapters, adapterTypes, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_bindings, formData.session_provider, formData.session_type, formData.type, groupConversion, groupDraftRows, handleFieldChange, inheritedName, platforms, previewSettings, routeDeclaration, routeKinds, routeOptions, sessionClasses, timeConversion, timeDraftRows]);
 
   // 表单值
   const formValues = useMemo(() => ({
@@ -410,6 +448,7 @@ export function Platforms() {
     type: formData.type,
     session_provider: formData.session_provider,
     session_type: formData.session_type,
+    session_bindings: formData.session_bindings,
     'settings.host': formData.settings.host,
     'settings.port': formData.settings.port,
     'settings.access_token': formData.settings.access_token,
@@ -470,6 +509,7 @@ export function Platforms() {
                 refreshHealth();
                 loadPlatforms();
                 loadEdictumConfigs();
+                fetchSessionClasses();
                 setDiagnosticsRefreshKey((key) => key + 1);
               }}
               disabled={loading}
@@ -530,6 +570,8 @@ export function Platforms() {
                 </Badge>
                 <p className="mt-1 text-xs text-text-secondary">保存版本 {item.saved_revision?.slice(0, 12) || '未知'} · 生效版本 {item.active_revision?.slice(0, 12) || '无'}</p>
                 {(item.error || item.reason) && <p className="mt-1 text-text-secondary">{item.error || item.reason}</p>}
+                {item.status === 'failed' && <Button className="mt-2" size="sm" variant="subtle" disabled={loading || saving || !isRunning}
+                  onClick={() => { void applySavedPlatform(item.id, revision); }}>重试应用 {item.id}</Button>}
               </div>
             ))}
           </div>
@@ -568,6 +610,11 @@ export function Platforms() {
                   <p className="mt-1 max-w-2xl truncate text-xs text-text-secondary">
                     {platformSettingsSummary(platform.type, platform.settings)}
                   </p>
+                  {!!Object.keys(platform.session_bindings || {}).length && <div className="mt-2 flex flex-wrap gap-2">
+                    {Object.entries(platform.session_bindings || {}).map(([kind, binding]) => <Badge key={kind} variant="info">
+                      {adapterTypes.find((item) => item.type === platform.type)?.conversation_kinds[kind] || kind}: {binding.mode === 'inherit' ? '继承平台默认' : binding.config_name}
+                    </Badge>)}
+                  </div>}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                 <Button size="sm" variant="default" onClick={() => setTestingPlatformId(platform.id)}
