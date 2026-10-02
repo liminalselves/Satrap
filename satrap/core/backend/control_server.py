@@ -1878,6 +1878,17 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - ControlResponse | None: 路径不属于本区段时返回 None
     """
+    if ctx.method == "GET" and ctx.path == "/config/plugins":
+        from satrap.core.config.plugin_service import PluginManagementService
+        from satrap.display.plugins import ChatPluginRegistry
+
+        try:
+            service = _edictum_config_service()
+            plugins = PluginManagementService(service.plugin_catalog, service.list_configs(), ChatPluginRegistry())
+            return 200, {"plugins": plugins.list_plugins()}
+        except (OSError, TypeError, ValueError) as e:
+            return 400, {"error": str(e)}
+
     if ctx.method == "GET" and ctx.path == "/config/edictum/types":
         try:
             return 200, {"types": _edictum_config_service().list_types()}

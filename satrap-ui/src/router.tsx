@@ -5,6 +5,8 @@ import { AppLayout } from '@/components/layout/AppLayout';
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })));
 const Models = lazy(() => import('@/pages/Models').then((module) => ({ default: module.Models })));
 const Rag = lazy(() => import('@/pages/Rag').then((module) => ({ default: module.Rag })));
+const Plugins = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.Plugins })));
+const PluginDetail = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.PluginDetail })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
 const Groups = lazy(() => import('@/pages/Groups').then((module) => ({ default: module.Groups })));
@@ -42,6 +44,8 @@ export const router = createBrowserRouter([
       { index: true, element: lazyRoute(<Dashboard />) },
       { path: 'models', element: lazyRoute(<Models />) },
       { path: 'rag', element: lazyRoute(<Rag />) },
+      { path: 'plugins', element: lazyRoute(<Plugins />) },
+      { path: 'plugins/:name', element: lazyRoute(<PluginDetail />) },
       { path: 'sessions', element: lazyRoute(<Sessions />) },
       { path: 'platforms', element: lazyRoute(<Platforms />) },
       { path: 'platforms/:adapterId/groups', element: lazyRoute(<Groups />) },

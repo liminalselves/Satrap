@@ -134,6 +134,15 @@ export interface EdictumAvailablePlugin {
   description: string;
   config_schema: Record<string, EdictumPluginConfigField>;
   capabilities: Record<string, Record<string, string>>;
+  compatibility?: { satrap?: string };
+  applicability?: { session_types?: string[]; platforms?: string[] | '*' };
+}
+
+export interface ManagedPlugin extends EdictumAvailablePlugin {
+  source: 'builtin' | 'user';
+  usage_count: number;
+  edictum_configs: string[];
+  chat_enabled: boolean;
 }
 
 export interface EdictumSessionConfig {

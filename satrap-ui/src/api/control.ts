@@ -479,6 +479,11 @@ export const controlApi = {
     return parseEdictumTypes(response.data);
   },
 
+  listPlugins: async (): Promise<import('./types').ManagedPlugin[]> => {
+    const response = await controlClient.get<{ plugins: import('./types').ManagedPlugin[] }>('/config/plugins');
+    return response.data.plugins;
+  },
+
   listEdictumPlugins: async (): Promise<EdictumAvailablePlugin[]> => {
     const response = await controlClient.get<{ plugins: EdictumAvailablePlugin[] }>(
       '/config/edictum/plugins',

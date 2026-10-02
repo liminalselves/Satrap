@@ -9,6 +9,7 @@ import {
   GitBranch,
   Users,
   Settings,
+  Puzzle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
@@ -18,6 +19,7 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘', color: 'accent' },
   { path: '/models', icon: Cpu, label: '模型配置', color: 'purple' },
   { path: '/rag', icon: Database, label: '知识库', color: 'teal' },
+  { path: '/plugins', icon: Puzzle, label: '插件管理', color: 'purple' },
   { path: '/sessions', icon: MessageSquare, label: '会话管理', color: 'teal' },
   { path: '/platforms', icon: Globe, label: '平台状态', color: 'pink' },
   { path: '/logs', icon: ScrollText, label: '日志监控', color: 'orange' },
