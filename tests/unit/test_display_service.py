@@ -58,6 +58,40 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
     await task
 
 
+@pytest.mark.asyncio
+async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        cid = await service.create_conversation()
+        await service.send(cid, "原始输入")
+        await _wait_conversation_task(service, cid)
+        conversation = _must_conversation(service, cid)
+        context_id = conversation.session.ctx.conversation_id
+        server = ChatHTTPServer(service)
+        request = {"conversation_id": context_id, "layer": "context"}
+        status, current = await server._route("POST", "/api/chat/conversation-data", json.dumps(request).encode("utf-8"))
+        assert status == 200
+        assert current["source"] == "memory"
+        edited_index = next(item["index"] for item in current["items"] if item["role"] == "user")
+        status, saved = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "edit", "index": edited_index, "content": "模型上下文输入", "expected_revision": current["revision"]}).encode("utf-8"))
+        assert status == 200 and saved["saved"]
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+        assert conversation.recorder.list_turns()[0]["user_input"] == "原始输入"
+        history_request = {"conversation_id": cid, "layer": "history"}
+        _, history = await server._route("POST", "/api/chat/conversation-data", json.dumps(history_request).encode("utf-8"))
+        status, _ = await server._route("POST", "/api/chat/conversation-data", json.dumps({**history_request, "action": "edit", "index": 0, "user_input": "只修改展示", "answer": "展示答案", "expected_revision": history["revision"]}).encode("utf-8"))
+        assert status == 200
+        assert conversation.recorder.list_turns()[0]["answer"] == "展示答案"
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+        await service.send(cid, "后续输入")
+        status, refused = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "clear", "expected_revision": saved["revision"]}).encode("utf-8"))
+        assert status == 409 and "进行" in refused["error"]
+        await _wait_conversation_task(service, cid)
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+    finally:
+        await service.close()
+
+
 # ---------- ChatPluginRegistry 测试 ----------
 
 

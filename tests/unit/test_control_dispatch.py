@@ -559,3 +559,56 @@ def test_plugin_runtime_distinguishes_stopped_service_and_timeout(monkeypatch, r
     monkeypatch.setattr(control_server.urllib.request, "urlopen", fail_request)
     result = control_server._plugin_runtime_request("Chat", "http://127.0.0.1:1/api/chat/plugins/reconcile")
     assert result["status"] == status
+
+
+@pytest.mark.asyncio
+async def test_conversation_cold_data_routes_auth_and_timeout_never_falls_back(tmp_path, monkeypatch):
+    from satrap.core.storage import StorageLayout
+    from satrap.core.utils.context import ContextManager
+
+    layout = StorageLayout(tmp_path / "data")
+    layout.ensure_platform("test-platform")
+    database = layout.platform_db("test-platform")
+    context = ContextManager("test-conversation", db_path=str(database))
+    context.add_chat("输入", "回答")
+    monkeypatch.setattr(control_server, "_configured_storage_layout", lambda: layout)
+    monkeypatch.setattr(control_server, "_conversation_data_request", lambda url, payload: None)
+    try:
+        assert b"401" in (await _request("/config/conversations", authorized=False)).split(b"\r\n", 1)[0]
+        platforms = _json_body(await _request("/config/conversations/platforms"))
+        assert "test-platform" in platforms["platforms"]
+        catalog = _json_body(await _request("/config/conversations?platform_id=test-platform"))
+        assert catalog["items"][0]["conversation_id"] == "test-conversation"
+        request = {"platform_id": "test-platform", "conversation_id": "test-conversation", "layer": "context"}
+        current = _json_body(await _request("/config/conversations/data", "POST", json.dumps(request).encode("utf-8")))
+        edited = {**request, "action": "edit", "index": 0, "content": "修改输入", "expected_revision": current["revision"]}
+        saved = _json_body(await _request("/config/conversations/data", "POST", json.dumps(edited).encode("utf-8")))
+        assert saved["saved"] and saved["items"][0]["content"] == "修改输入"
+        assert b"409" in (await _request("/config/conversations/data", "POST", json.dumps(edited).encode("utf-8"))).split(b"\r\n", 1)[0]
+        def timeout(url, payload):
+            raise TimeoutError("不能认定服务停止")
+        monkeypatch.setattr(control_server, "_conversation_data_request", timeout)
+        errors = []
+        monkeypatch.setattr(control_server.logger, "error", errors.append)
+        edited["expected_revision"] = saved["revision"]
+        failed = await _request("/config/conversations/data", "POST", json.dumps({**edited, "content": "不应保存"}).encode("utf-8"))
+        assert b"500" in failed.split(b"\r\n", 1)[0]
+        context.load_context()
+        assert context.get_context()[0]["content"] == "修改输入"
+        assert "Traceback" in errors[0] and "test-conversation" in errors[0]
+    finally:
+        context.close()
+
+
+@pytest.mark.parametrize("reason,stopped", [(ConnectionRefusedError(), True), (TimeoutError(), False)])
+def test_conversation_proxy_requires_explicit_connection_refusal(monkeypatch, reason, stopped):
+    def fail(request, **kwargs):
+        assert request.get_header("Authorization").startswith("Bearer ")
+        assert json.loads(request.data)["conversation_id"] == "conversation"
+        raise control_server.urllib.error.URLError(reason)
+    monkeypatch.setattr(control_server.urllib.request, "urlopen", fail)
+    if stopped:
+        assert control_server._conversation_data_request("http://127.0.0.1:1/api/conversation-data", {"conversation_id": "conversation"}) is None
+    else:
+        with pytest.raises(control_server.urllib.error.URLError):
+            control_server._conversation_data_request("http://127.0.0.1:1/api/conversation-data", {"conversation_id": "conversation"})

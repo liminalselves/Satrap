@@ -18,6 +18,7 @@ _RESTORABLE_TABLES = frozenset({
     "display_turn_variants",
     "display_tool_calls",
     "chat_history",
+    "conversation_data_backups",
     "agent_runs",
     "agent_steps",
     "agent_step_inputs",
@@ -146,6 +147,10 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
                 "conversation_id = ? OR conversation_id LIKE ? ESCAPE '\\'",
                 (session_id, related_pattern),
             ),
+            "conversation_data_backups": (
+                "conversation_id = ? OR conversation_id LIKE ? ESCAPE '\\'",
+                (session_id, related_pattern),
+            ),
             "state_scopes": (
                 "namespace = ? AND (scope_id = ? OR scope_id LIKE ? ESCAPE '\\')",
                 ("conversation", session_id, related_pattern),
@@ -235,6 +240,8 @@ def restore_session_domain(
             from satrap.core.rag import ensure_rag_tables
             # RAG 依赖 storage 包且会加载可选 FAISS, 延迟到知识库恢复时导入
             ensure_rag_tables(connection)
+        if "conversation_data_backups" in records:
+            connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
         tables = _table_names(connection)
         schemas: dict[str, set[str]] = {}
         for table in records:
@@ -277,6 +284,7 @@ def restore_session_domain(
                 scope_column = {
                     "agent_runs": "scope",
                     "chat_history": "conversation_id", "state_scopes": "scope_id",
+                    "conversation_data_backups": "conversation_id",
                     "state_checkpoints": "scope_id", "state_snapshots": "scope_id", "memories": "scope",
                 }.get(table)
                 if scope_column:
@@ -415,6 +423,8 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
                 "OR conversation_id LIKE ? ESCAPE '\\'",
                 (session_id, related_pattern),
             )
+        if "conversation_data_backups" in tables:
+            connection.execute("DELETE FROM conversation_data_backups WHERE conversation_id=? OR conversation_id LIKE ? ESCAPE '\\'", (session_id, related_pattern))
         if "context_runtime_state" in tables:
             connection.execute(
                 "DELETE FROM context_runtime_state WHERE conversation_id = ? "

@@ -46,9 +46,11 @@ import base64
 import signal
 from typing import Any, cast
 import json
+import traceback
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
+from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
 from satrap.edictum.plugin_settings import model_options
@@ -188,6 +190,31 @@ class ChatHTTPServer(MiniHTTPServer):
                 "conversations": persisted,
                 "preloaded": len(svc._conversations) - persisted,
             }
+
+        if method == "POST" and clean == "/api/chat/conversation-data":
+            conversation = ""
+            try:
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("请求体必须是对象")
+                conversation = payload.get("conversation_id", "")
+                result = await svc.manage_conversation_data(payload)
+                if not result.get("ok"):
+                    logger.warning(f"[对话数据] Chat/{conversation} 操作被拒绝: {result.get('error')}")
+                    return 409, result
+                return 200, result
+            except ConversationDataConflict as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 编辑冲突: {error}")
+                return 409, {"error": str(error)}
+            except KeyError as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 数据不存在: {error}")
+                return 404, {"error": str(error)}
+            except (ValueError, TypeError) as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 请求无效: {error}")
+                return 400, {"error": str(error)}
+            except Exception as error:
+                logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
+                return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}

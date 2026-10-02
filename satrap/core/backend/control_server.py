@@ -18,6 +18,7 @@ import urllib.error
 import urllib.parse
 import dataclasses
 import subprocess
+import traceback
 import argparse
 import asyncio
 import binascii
@@ -46,6 +47,8 @@ from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConfl
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
+from satrap.core.config.conversation_runtime import perform_data_operation
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
 from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
@@ -1875,6 +1878,101 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+def _conversation_data_request(url: str, payload: dict[str, Any]) -> tuple[int, dict[str, Any]] | None:
+    """
+    将数据请求交给运行服务, 仅连接拒绝时允许冷管理
+
+    参数:
+    - url: 内部已知服务地址
+    - payload: 数据层及操作参数
+
+    返回:
+    - 运行服务响应; 明确未运行时返回 None, 超时等故障不进行冷写入
+    """
+    request = _authenticated_request(url, "POST")
+    request.data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return response.status, json.loads(response.read(16 * 1024 * 1024))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read(1024 * 1024))
+    except urllib.error.URLError as error:
+        if isinstance(error.reason, ConnectionRefusedError):
+            return None
+        raise
+
+
+async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    对话目录只读查询和冷热统一的数据操作入口
+
+    参数:
+    - ctx: 已认证的控制请求
+
+    返回:
+    - 数据响应, 不匹配时返回 None; 所有失败分支记录日志
+    """
+    prefix = "/config/conversations"
+    if ctx.path not in {prefix, prefix + "/platforms", prefix + "/data"} or ctx.method not in {"GET", "POST"}:
+        return None
+    platform = "local"
+    conversation = ""
+    try:
+        layout = _configured_storage_layout()
+        if ctx.path == prefix + "/platforms" and ctx.method == "GET":
+            platforms = {"local", "chat"}
+            for manifest in layout.platforms_root.glob("*/platform.json"):
+                try:
+                    value = json.loads(manifest.read_text(encoding="utf-8"))
+                    if isinstance(value.get("platform_id"), str):
+                        platforms.add(value["platform_id"])
+                except (OSError, ValueError, TypeError, AttributeError) as error:
+                    logger.warning(f"[对话数据] 读取平台目录失败: {manifest.name}, {error}")
+            return 200, {"platforms": sorted(platforms)}
+        if ctx.path == prefix and ctx.method == "GET":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            platform = query.get("platform_id", ["local"])[0]
+            service = ConversationDataService(layout.platform_db(platform))
+            return 200, await RAG_WORKERS.run(service.list_conversations, query.get("q", [""])[0], int(query.get("offset", ["0"])[0]), int(query.get("limit", ["40"])[0]))
+        if ctx.path != prefix + "/data" or ctx.method != "POST":
+            return None
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        platform = payload.get("platform_id", "local")
+        conversation = payload.get("conversation_id", "")
+        if not isinstance(platform, str) or not platform.strip() or not isinstance(conversation, str) or not conversation.strip():
+            raise ValueError("缺少有效的平台和对话 ID")
+        if platform == "chat":
+            url = f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/conversation-data"
+        else:
+            host, port = _configured_backend_address()
+            host = _connect_host(host)
+            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            url = f"http://{host}:{port}/api/conversation-data"
+        response = await RAG_WORKERS.run(_conversation_data_request, url, payload)
+        if response is not None:
+            if response[0] >= 400:
+                logger.warning(f"[对话数据] 运行服务拒绝操作: {platform}/{conversation}, HTTP {response[0]}, {response[1].get('error', '')}")
+            return response
+        logger.info(f"[对话数据] 服务未运行, 使用冷管理: {platform}/{conversation}")
+        return 200, await RAG_WORKERS.run(perform_data_operation, str(layout.platform_db(platform)), conversation, str(payload.get("layer", "context")), payload)
+    except ConversationDataConflict as error:
+        logger.warning(f"[对话数据] 编辑冲突: {platform}/{conversation}, {error}")
+        return 409, {"error": str(error)}
+    except KeyError as error:
+        logger.warning(f"[对话数据] 数据不存在: {platform}/{conversation}, {error}")
+        return 404, {"error": str(error)}
+    except (ValueError, TypeError) as error:
+        logger.warning(f"[对话数据] 请求无效: {platform}/{conversation}, {error}")
+        return 400, {"error": str(error)}
+    except WorkerBusyError as error:
+        logger.warning(f"[对话数据] 工作队列已满: {error}")
+        return 503, {"error": str(error)}
+    except Exception as error:
+        logger.error(f"[对话数据] 操作失败: {platform}/{conversation}, {error}\n{traceback.format_exc()}")
+        return 500, {"error": "对话数据操作失败, 请查看控制服务日志"}
+
+
 def _plugin_management_service() -> PluginManagementService:
     """
     创建复用冷配置与引用校验的插件管理服务
@@ -2643,6 +2741,7 @@ async def _handle_request(
             _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
+            _route_conversation_data,
             _route_plugin_install,
             _route_plugin_config,
             _route_plugin_usages,

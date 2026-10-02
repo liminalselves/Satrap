@@ -197,7 +197,8 @@ def _exclusive_conversation_operation(method: _OperationMethod) -> _OperationMet
     @wraps(method)
     async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
         conv = self._conversations.get(conversation_id)
-        if conversation_id in self._operations or (conv and conv.task is not None and not conv.task.done()):
+        data_editing = any(operation.state == "data_edit" and (identity.startswith(conversation_id + "_") or conversation_id.startswith(identity + "_")) for identity, operation in self._operations.items())
+        if conversation_id in self._operations or data_editing or (conv and conv.task is not None and not conv.task.done()):
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
         current = asyncio.current_task()
         if current is None:
@@ -223,6 +224,8 @@ def _shared_runtime_creation(method: _CreationMethod) -> _CreationMethod:
     """按会话 ID 共享创建任务, 防止预加载和发送构造两个运行时"""
     @wraps(method)
     async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> _Conversation:
+        if any(operation.state == "data_edit" and (identity == conversation_id or identity.startswith(conversation_id + "_")) for identity, operation in self._operations.items()):
+            raise ValueError("对话数据正在编辑, 请稍后再激活")
         existing = self._conversations.get(conversation_id)
         if existing is not None:
             return existing
@@ -2352,6 +2355,60 @@ class ChatService:
         """
         self._plugins.refresh()
         return self._plugin_update_result(await self._reconcile_chat_plugins())
+
+    async def manage_conversation_data(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        查找上下文所属对话, 保留现有 Chat 操作互斥规则
+
+        参数:
+        - payload: 对话数据读取或编辑参数
+
+        返回:
+        - 数据快照, 不激活尚未加载的历史对话
+        """
+        from satrap.core.config.conversation_data import ConversationDataConflict
+
+        conversation = payload.get("conversation_id", "")
+        layer = str(payload.get("layer", "context"))
+        if not isinstance(conversation, str) or not conversation:
+            raise ValueError("缺少对话 ID")
+        if any(conversation == identity or conversation.startswith(identity + "_") for identity in {*self._creation_tasks, *self._resume_tasks}):
+            raise ConversationDataConflict("此对话正在激活, 请等待完成后重新读取")
+        owner = next((conv.conversation_id for conv in self._conversations.values()
+                      if conv.conversation_id == conversation or conversation.startswith(conv.conversation_id + "_") or any(context.conversation_id == conversation for context in conv.session._all_contexts().values())), None)
+        if owner is None:
+            return await self._manage_conversation_data_reserved(conversation, conversation, layer, payload)
+        return await self._manage_conversation_data_reserved(owner, conversation, layer, payload)
+
+    @_exclusive_conversation_operation
+    async def _manage_conversation_data_reserved(self, owner: str, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        在 Chat 对话预留和插件锁内编辑, 提交后通知订阅页面重新同步
+
+        参数:
+        - owner: 活动 Chat 对话 ID
+        - conversation: 上下文或展示历史 ID
+        - layer: 数据层
+        - payload: 操作参数
+
+        返回:
+        - 最新快照和保存结果
+        """
+        from satrap.core.config.conversation_runtime import perform_data_operation
+
+        conv = self._conversations.get(owner)
+        self._operations[owner].state = "data_edit"
+        if conv is None:
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            return await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload)
+        async with conv.plugin_lock:
+            context = next((context for context in conv.session._all_contexts().values() if context.conversation_id == conversation), None)
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            result = await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload, context)
+            if result.get("saved"):
+                conv.recorder._next_turn_index = conv.recorder._load_max_turn_index() + 1
+                self._broadcast(conv, {"type": "resync_required"})
+            return result
 
     def plugin_runtime_snapshot(self) -> dict[str, Any]:
         """

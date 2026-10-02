@@ -14,8 +14,11 @@ import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 import json
+import traceback
 
 from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
+from satrap.core.config.conversation_runtime import manage_platform_data
+from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConflict
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.session_discovery import SessionClassDiscoveryService, create_default_session_dir
@@ -30,6 +33,8 @@ from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMain
 from satrap.core.type import safe_getattr, safe_getattr_str
 from satrap.api import checkpoint as checkpoint_api
 from satrap.api import user as user_api
+
+from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.backend.BackendManager import BackendManager
@@ -324,6 +329,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_session_class_items,
             self._route_models,
             self._route_user,
+            self._route_conversation_data,
             self._route_checkpoint,
         ):
             response = await handler(method, path, body)
@@ -1444,6 +1450,45 @@ class BackendHTTPServer(MiniHTTPServer):
                 return 400, {"error": str(e)}
 
         return None
+
+    async def _route_conversation_data(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        在活动实例的操作锁内查看或修改对话数据
+
+        参数:
+        - method: HTTP 方法
+        - path: 请求地址
+        - body: JSON 操作参数
+
+        返回:
+        - 明确的成功或失败响应, 不匹配时返回 None
+        """
+        if urlsplit(path).path != "/api/conversation-data" or method != "POST":
+            return None
+        platform = "local"
+        conversation = ""
+        try:
+            payload = _parse_json_object(body)
+            platform = payload.get("platform_id", "local")
+            conversation = payload.get("conversation_id", "")
+            if not isinstance(platform, str) or not platform:
+                raise ValueError("缺少平台 ID")
+            if not isinstance(conversation, str) or not conversation:
+                raise ValueError("缺少对话 ID")
+            manager = _platform_runtimes(self.backend).get(platform, (None, None))[0]
+            return 200, await manage_platform_data(_platform_db_path(self.backend, platform), manager, conversation, str(payload.get("layer", "context")), payload)
+        except ConversationDataConflict as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 编辑冲突: {error}")
+            return 409, {"error": str(error)}
+        except KeyError as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 数据不存在: {error}")
+            return 404, {"error": str(error)}
+        except (ValueError, TypeError) as error:
+            logger.warning(f"[对话数据] {platform}/{conversation} 请求无效: {error}")
+            return 400, {"error": str(error)}
+        except Exception as error:
+            logger.error(f"[对话数据] {platform}/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
+            return 500, {"error": "对话数据操作失败, 请查看后端日志"}
 
     async def _route_checkpoint(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """会话检查点 (列表 / 分支 / 血缘 / 审计 / 创建, 回滚, 重试, 分叉)"""
