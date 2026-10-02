@@ -21,7 +21,7 @@ try {
   const backups = { context: [], history: [] };
   let failSave = false;
   const requests = [];
-  const records = () => [{ conversation_id: 'conv-1', title: '测试对话', context_ids: ['conv-1_main'], message_count: contexts.length, history_count: history.length }];
+  const records = () => [{ conversation_id: 'conv-1', title: '测试对话', context_ids: ['conv-1_main'], message_count: contexts.length, history_count: history.length, platform_id: 'chat', supports_history: true }];
   const revision = (layer) => JSON.stringify(layer === 'context' ? contexts : history);
   await page.route('**/*', async (route) => {
     const request = route.request();
@@ -29,8 +29,12 @@ try {
     const pathname = url.pathname;
     if (!pathname.startsWith('/config') && !pathname.startsWith('/api') && pathname !== '/status' && pathname !== '/auth/session') return route.continue();
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
-    if (pathname === '/config/conversations/platforms') return route.fulfill({ json: { platforms: ['chat', 'local', 'onebot'] }, headers: cors });
-    if (pathname === '/config/conversations') return route.fulfill({ json: { items: url.searchParams.get('platform_id') === 'chat' ? records() : [], total: url.searchParams.get('platform_id') === 'chat' ? 1 : 0 }, headers: cors });
+    if (pathname === '/config/conversations/platforms') return route.fulfill({ json: { platforms: ['chat', 'local', 'future-instance'], items: [{ id: 'chat', type: 'chat', type_label: 'Chat', label: 'Chat', supports_history: true }, { id: 'local', type: 'local', type_label: '本地', label: '本地', supports_history: false }, { id: 'future-instance', type: 'future-type', type_label: '新增平台', label: '未来实例', supports_history: false }] }, headers: cors });
+    if (pathname === '/config/conversations') {
+      const future = { conversation_id: 'conv-1', title: '新增平台频道', context_ids: ['conv-1_main'], message_count: 3, history_count: 0, platform_id: 'future-instance', supports_history: false, facets: { channel: ['channel-1'] }, facet_labels: { 'channel:channel-1': '自定义频道' } };
+      const items = url.searchParams.get('platform_type') === 'future-type' || url.searchParams.get('platform_id') === 'future-instance' ? [future] : url.searchParams.get('scope') === 'all' ? [...records(), future] : url.searchParams.get('platform_id') === 'chat' ? records() : [];
+      return route.fulfill({ json: { items, total: items.length, facet_names: { channel: '频道' }, facets: { kind: [{ value: 'session', label: '会话' }, { value: 'legacy_child', label: '旧子代理记录' }], channel: [{ value: 'channel-1', label: '自定义频道' }] } }, headers: cors });
+    }
     if (pathname === '/config/conversations/data') {
       const body = request.postDataJSON();
       requests.push(body);
@@ -129,6 +133,15 @@ try {
   await page.locator('main').evaluate((element) => { element.scrollTop = 0; });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.screenshot({ path: path.join(output, 'mobile.png'), fullPage: true });
+  await page.goto(`${origin}/conversations`);
+  await page.getByRole('button').filter({ hasText: '新增平台频道' }).waitFor();
+  await page.getByLabel('平台类型', { exact: true }).selectOption('future-type');
+  await page.getByRole('button').filter({ hasText: '新增平台频道' }).click();
+  await page.waitForURL('**/conversations?**record_platform=future-instance**');
+  assert.equal(await page.getByRole('button', { name: 'Chat 展示历史', exact: true }).isDisabled(), true);
+  await page.getByLabel('筛选频道', { exact: true }).selectOption('channel-1');
+  assert.ok(page.url().includes('f.channel=channel-1'));
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   await page.goto(`${origin}/sessions?edictum=fixture`);
   await page.waitForURL('**/agents?edictum=fixture');
   await page.getByRole('heading', { name: 'Agent 配置', exact: true }).waitFor({ timeout: 10000 }).catch(async (error) => { console.error(await page.locator('body').innerText()); throw error; });

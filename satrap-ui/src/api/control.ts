@@ -14,7 +14,8 @@ import type {
   PlatformConfig,
   RuntimeSession,
   SessionClassConfig,
-  ConversationRecord,
+  ConversationCatalog,
+  ConversationPlatform,
   ConversationDataSnapshot,
 } from './types';
 import type { StorageAuditResult } from './storage';
@@ -241,8 +242,8 @@ export function parseEdictumConfigs(data: unknown): Record<string, EdictumSessio
 }
 
 export const controlApi = {
-  listConversationPlatforms: async (): Promise<{ platforms: string[] }> => (await controlClient.get<{ platforms: string[] }>('/config/conversations/platforms')).data,
-  listConversationRecords: async (platformId: string, query = '', offset = 0): Promise<{ items: ConversationRecord[]; total: number }> => (await controlClient.get<{ items: ConversationRecord[]; total: number }>('/config/conversations', { params: { platform_id: platformId, q: query, offset, limit: 40 } })).data,
+  listConversationPlatforms: async (): Promise<{ platforms: string[]; items?: ConversationPlatform[] }> => (await controlClient.get<{ platforms: string[]; items?: ConversationPlatform[] }>('/config/conversations/platforms')).data,
+  listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string> } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
   conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,
   refreshChatHistoryStorage: async () => (await controlClient.post<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('/chat/history/storage', {}, { timeout: 300000 })).data,
   ragList: async (platformId: string, sessionId: string, kbId: string) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId } })).data,

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import { Link, useSearchParams } from 'react-router-dom';
 import { controlApi } from '@/api/control';
-import type { ConversationDataItem, ConversationDataSnapshot, ConversationRecord } from '@/api/types';
+import type { ConversationDataItem, ConversationDataSnapshot, ConversationRecord, ConversationPlatform, ConversationCatalog } from '@/api/types';
 import { PageHeader } from '@/components/common';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -17,65 +17,92 @@ const errorText = (error: unknown) => axios.isAxiosError<{ error?: string; detai
 const readable = (value: unknown) => typeof value === 'string' ? value : JSON.stringify(value, null, 2) ?? '';
 const roles: Record<string, string> = { system: '系统提示词', developer: '开发者提示词', user: '用户', assistant: '助手', tool: '工具结果' };
 
+const facetNames: Record<string, string> = { agent: 'Agent', provider: '流程类型', scope: '会话范围', target: '群 / 目标', user: '用户', project: '项目', model: '模型', source: '来源', kind: '记录类别' };
+
+function RecordTags({ record }: { record: ConversationRecord }) {
+  return <div className="flex flex-wrap gap-1">{Object.entries(record.facets || {}).flatMap(([key, values]) => values.map((value) => <Badge key={`${key}:${value}`} variant="info" className="max-w-full break-all">{record.facet_names?.[key] || facetNames[key] || key}: {record.facet_labels?.[`${key}:${value}`] || value}</Badge>))}{record.tags?.map((tag) => <Badge key={tag} variant="warning" className="max-w-full break-all">{tag}</Badge>)}</div>;
+}
+
 export function Conversations() {
   const [search, setSearch] = useSearchParams();
-  const platform = search.get('platform') || 'chat';
+  const platform = search.get('platform') || '';
+  const platformType = search.get('type') || '';
   const selected = search.get('conversation') || '';
-  const [platforms, setPlatforms] = useState<string[]>(['chat', 'local']);
+  const recordPlatform = search.get('record_platform') || platform;
+  const filters = Object.fromEntries([...search.entries()].filter(([key]) => key.startsWith('f.')).map(([key, value]) => [key.slice(2), value]));
+  const filtersKey = JSON.stringify(filters);
+  const [platforms, setPlatforms] = useState<ConversationPlatform[]>([]);
   const [query, setQuery] = useState('');
   const [submitted, setSubmitted] = useState('');
   const [offset, setOffset] = useState(0);
-  const [result, setResult] = useState<{ items: ConversationRecord[]; total: number }>({ items: [], total: 0 });
+  const [result, setResult] = useState<ConversationCatalog>({ items: [], total: 0 });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [recordMeta, setRecordMeta] = useState<{ platform: string; selected: string; record: ConversationRecord }>();
+  const chooseFilter = (key: string, value: string) => {
+    const next = new URLSearchParams(search);
+    value ? next.set(key, value) : next.delete(key);
+    next.delete('conversation');
+    next.delete('record_platform');
+    if (key === 'type') next.delete('platform');
+    if (key === 'type' || key === 'platform') [...next.keys()].filter((key) => key.startsWith('f.')).forEach((key) => next.delete(key));
+    setSearch(next); setOffset(0);
+  };
   useEffect(() => {
-    if (!selected) return;
+    if (!selected || !recordPlatform) return;
     let disposed = false;
-    controlApi.listConversationRecords(platform, selected).then((data) => {
-      if (!disposed) setRecordMeta({ platform, selected, record: data.items.find((item) => item.conversation_id === selected || item.context_ids.includes(selected)) || { conversation_id: selected, title: selected, context_ids: [selected], message_count: 0, history_count: 0 } });
+    controlApi.listConversationRecords(recordPlatform, selected, 0, { filters: { kind: 'all' } }).then((data) => {
+      if (!disposed) setRecordMeta({ platform: recordPlatform, selected, record: data.items.find((item) => item.conversation_id === selected || item.context_ids.includes(selected)) || { conversation_id: selected, title: selected, context_ids: [selected], message_count: 0, history_count: 0 } });
     }).catch((error) => { if (!disposed) setError(errorText(error)); });
     return () => { disposed = true; };
-  }, [selected, platform, refresh]);
+  }, [selected, recordPlatform, refresh]);
   useEffect(() => {
     let disposed = false;
-    controlApi.listConversationPlatforms().then((data) => { if (!disposed) setPlatforms(data.platforms); }).catch((error) => { if (!disposed) setError(errorText(error)); });
+    controlApi.listConversationPlatforms().then((data) => {
+      if (disposed) return;
+      setPlatforms(data.items || data.platforms.map((id) => ({ id, type: 'unknown', type_label: '未知类型', label: id, supports_history: false })));
+      if (!data.items && data.platforms.length) setSearch((current) => { const next = new URLSearchParams(current); if (!next.get('platform')) next.set('platform', data.platforms[0]); return next; });
+    }).catch((error) => { if (!disposed) setError(errorText(error)); });
     return () => { disposed = true; };
   }, []);
   useEffect(() => {
     let disposed = false;
     setLoading(true); setError('');
-    controlApi.listConversationRecords(platform, submitted, offset).then((data) => { if (!disposed) setResult(data); })
+    controlApi.listConversationRecords(platform, submitted, offset, { type: platformType, filters: JSON.parse(filtersKey) }).then((data) => { if (!disposed) setResult({ ...data, items: data.items.map((item) => ({ ...item, platform_id: item.platform_id || platform })) }); })
       .catch((error) => { if (!disposed) setError(errorText(error)); }).finally(() => { if (!disposed) setLoading(false); });
     return () => { disposed = true; };
-  }, [platform, submitted, offset, refresh]);
-  const record = recordMeta?.platform === platform && recordMeta.selected === selected ? recordMeta.record : result.items.find((item) => item.conversation_id === selected);
+  }, [platform, platformType, submitted, offset, filtersKey, refresh]);
+  const record = recordMeta?.platform === recordPlatform && recordMeta.selected === selected ? recordMeta.record : result.items.find((item) => item.conversation_id === selected && item.platform_id === recordPlatform);
+  const names = { ...facetNames, ...result.facet_names };
+  const types = [...new Map(platforms.map((item) => [item.type, item.type_label])).entries()];
   return <div className="space-y-5">
-    <PageHeader title="对话记录" description="查看和维护已保存的上下文与历史对话" actions={<Link className="text-sm text-accent" to="/conversations/instances">管理对话实例</Link>} />
+    <PageHeader title="对话记录" description="按平台与归属查看和维护上下文、历史对话" actions={<Link className="text-sm text-accent" to="/conversations/instances">管理对话实例</Link>} />
     <Card className="space-y-3">
-      <form className="grid grid-cols-2 gap-3 sm:flex sm:flex-wrap" onSubmit={(event) => { event.preventDefault(); setSubmitted(query); setOffset(0); }}>
-        <select aria-label="记录平台" className="glass-input max-w-full" value={platform} onChange={(event) => { setSearch({ platform: event.target.value }); setOffset(0); }}>
-          {[...new Set([platform, ...platforms])].map((item) => <option key={item}>{item}</option>)}
-        </select>
-        <input aria-label="搜索对话" className="glass-input min-w-0 sm:flex-1" placeholder="搜索对话 ID 或 Chat 首条消息" value={query} onChange={(event) => setQuery(event.target.value)} />
-        <Button type="submit" disabled={loading}>搜索</Button>
-        <Button type="button" onClick={() => setRefresh((value) => value + 1)} disabled={loading}>刷新列表</Button>
+      <form className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); setSubmitted(query); setOffset(0); }}>
+        <label className="min-w-0 text-sm">平台类型<select aria-label="平台类型" className="glass-input mt-1 w-full" value={platformType} onChange={(event) => chooseFilter('type', event.target.value)}><option value="">全部类型</option>{types.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="min-w-0 text-sm">平台实例<select aria-label="记录平台" className="glass-input mt-1 w-full" value={platform} onChange={(event) => chooseFilter('platform', event.target.value)}><option value="">全部实例</option>{platform && !platforms.some((item) => item.id === platform) && <option value={platform}>{platform}</option>}{platforms.filter((item) => !platformType || item.type === platformType).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>)}</select></label>
+        <label className="min-w-0 text-sm">搜索<input aria-label="搜索对话" className="glass-input mt-1 w-full" placeholder="搜索 ID、群名、用户或元数据" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        {Object.entries(result.facets || {}).map(([key, values]) => <label key={key} className="min-w-0 text-sm">{names[key] || key}<select aria-label={`筛选${names[key] || key}`} className="glass-input mt-1 w-full" value={filters[key] || ''} onChange={(event) => chooseFilter(`f.${key}`, event.target.value)}><option value="">{key === 'kind' ? '默认（隐藏旧子代理）' : '全部'}</option>{key === 'kind' && <option value="all">全部类别（含旧子代理）</option>}{filters[key] && !values.some((item) => item.value === filters[key]) && filters[key] !== 'all' && <option value={filters[key]}>{filters[key]}</option>}{values.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>)}
+        <div className="flex flex-wrap items-end gap-2"><Button type="submit" disabled={loading}>搜索</Button><Button type="button" onClick={() => setRefresh((value) => value + 1)} disabled={loading}>刷新列表</Button><Button type="button" onClick={() => { setSearch({}); setQuery(''); setSubmitted(''); setOffset(0); }}>重置筛选</Button></div>
       </form>
       {error && <p role="alert" className="text-error">{error}</p>}
-      <p className="text-xs text-text-tertiary">共 {result.total} 个对话。选择对话后可查看其主上下文、工作流上下文及独立展示历史。</p>
+      {result.warnings?.map((warning) => <p key={warning} role="alert" className="text-warning">{warning}</p>)}
+      <p className="text-xs text-text-tertiary">共 {result.total} 个对话，按最近活动排序。旧数据无法确定的归属与时间会标明未知；旧子代理记录默认隐藏。</p>
     </Card>
-    <div className="grid items-start gap-4 xl:grid-cols-[20rem_minmax(0,1fr)]">
+    <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
       <Card className="min-w-0 space-y-2">
         {loading && <p role="status" className="text-sm">正在读取列表…</p>}
-        {!loading && !result.items.length && <p className="text-sm text-text-secondary">此平台暂无匹配的对话</p>}
-        {result.items.map((item) => <button key={item.conversation_id} className={`w-full space-y-1 rounded-lg p-3 text-left transition-colors ${selected === item.conversation_id ? 'bg-accent/10' : 'bg-glass hover:bg-glass-hover'}`} onClick={() => setSearch({ platform, conversation: item.conversation_id })}>
-          <p className="break-all font-medium">{item.title}</p><p className="break-all text-xs text-text-tertiary">{item.conversation_id}</p>
+        {!loading && !result.items.length && <p className="text-sm text-text-secondary">暂无匹配的对话</p>}
+        {result.items.map((item) => <button key={JSON.stringify([item.platform_id, item.conversation_id])} className={`w-full space-y-2 rounded-lg p-3 text-left transition-colors ${selected === item.conversation_id && recordPlatform === item.platform_id ? 'bg-accent/10' : 'bg-glass hover:bg-glass-hover'}`} onClick={() => { const next = new URLSearchParams(search); next.set('record_platform', item.platform_id || platform); next.set('conversation', item.conversation_id); setSearch(next); setOffset(0); }}>
+          <p className="break-all font-medium">{item.title}</p><p className="break-all text-xs text-text-tertiary">{item.platform_id} · {item.conversation_id}</p>
+          <RecordTags record={item} />
           <p className="text-xs text-text-secondary">{item.message_count} 条上下文消息 · {item.history_count} 轮展示历史</p>
+          <p className="text-xs text-text-tertiary">{item.last_activity_at ? `最近活动 ${formatTime(item.last_activity_at)}` : '活动时间未知'}</p>
         </button>)}
         <div className="flex justify-between gap-2 pt-2"><Button size="sm" disabled={offset === 0 || loading} onClick={() => setOffset((value) => Math.max(0, value - 40))}>上一页对话</Button><Button size="sm" disabled={offset + 40 >= result.total || loading} onClick={() => setOffset((value) => value + 40)}>下一页对话</Button></div>
       </Card>
-      {selected ? record ? <ConversationDetail key={`${platform}:${selected}`} platform={platform} record={record} requestedContext={selected} onSaved={() => setRefresh((value) => value + 1)} /> : <Card><p role="status">正在读取对话详情…</p></Card> : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>}
+      {selected && recordPlatform ? record ? <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onSaved={() => setRefresh((value) => value + 1)} /> : <Card><p role="status">正在读取对话详情…</p></Card> : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>}
     </div>
   </div>;
 }
@@ -89,10 +116,11 @@ function ConversationDetail({ platform, record, requestedContext, onSaved }: { p
   return <div className="min-w-0 space-y-4">
     <Card className="space-y-3">
       <h2 className="break-all text-lg font-semibold">{record.title}</h2>
-      <div className="flex flex-wrap gap-2"><Button variant={layer === 'context' ? 'primary' : 'ghost'} onClick={() => switchLayer('context')}>上下文</Button><Button variant={layer === 'history' ? 'primary' : 'ghost'} onClick={() => switchLayer('history')} disabled={platform !== 'chat'}>Chat 展示历史</Button>
+      <RecordTags record={record} />
+      <div className="flex flex-wrap gap-2"><Button variant={layer === 'context' ? 'primary' : 'ghost'} onClick={() => switchLayer('context')}>上下文</Button><Button variant={layer === 'history' ? 'primary' : 'ghost'} onClick={() => switchLayer('history')} disabled={!(record.supports_history ?? (record.history_count > 0))}>Chat 展示历史</Button>
         <Link className="self-center text-sm text-accent" to={`/conversations/versions?${new URLSearchParams({ platform, conversation: context })}`}>版本与恢复</Link>
       </div>
-      {layer === 'context' && <label className="block text-sm">上下文范围<select aria-label="上下文范围" className="glass-input mt-1 w-full" value={context} onChange={(event) => { if (!dirty || confirmDiscard()) { setDirty(false); setContext(event.target.value); } }}>{[...new Set([context, ...record.context_ids])].map((item) => <option key={item}>{item}</option>)}</select></label>}
+      {layer === 'context' && <label className="block text-sm">上下文范围<select aria-label="上下文范围" className="glass-input mt-1 w-full" value={context} onChange={(event) => { if (!dirty || confirmDiscard()) { setDirty(false); setContext(event.target.value); } }}>{[...new Set([context, ...record.context_ids])].map((item) => <option key={item} value={item}>{record.contexts?.find((context) => context.id === item)?.kind === 'main' ? `主上下文 · ${item}` : record.contexts?.find((context) => context.id === item)?.kind === 'shared' ? `会话共享上下文 · ${item}` : record.contexts?.find((context) => context.id === item)?.name ? `${record.contexts.find((context) => context.id === item)?.name} · ${item}` : item}</option>)}</select></label>}
       <p className="text-sm text-text-secondary">{layer === 'context' ? '修改此处会影响机器人后续使用的上下文，不改写 Chat 展示记录。这里展示保存的完整消息；模型请求还可能应用截断、总结及临时提示。' : '修改此处只改变 Chat 页面展示的历史，不改写模型上下文。已有回复版本与工具明细分别保留。'}</p>
     </Card>
     <DataPanel key={`${layer}:${context}`} platform={platform} conversation={layer === 'context' ? context : record.conversation_id} layer={layer} onDirty={setDirty} onSaved={onSaved} />

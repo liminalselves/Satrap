@@ -311,6 +311,31 @@ export interface ConversationRecord {
   message_count: number;
   history_count: number;
   context_ids: string[];
+  platform_id?: string;
+  platform_type?: string;
+  supports_history?: boolean;
+  facets?: Record<string, string[]>;
+  facet_labels?: Record<string, string>;
+  facet_names?: Record<string, string>;
+  tags?: string[];
+  last_activity_at?: number | null;
+  contexts?: { id: string; kind: string; name?: string | null }[];
+}
+
+export interface ConversationPlatform {
+  id: string;
+  type: string;
+  label: string;
+  type_label: string;
+  supports_history: boolean;
+}
+
+export interface ConversationCatalog {
+  items: ConversationRecord[];
+  total: number;
+  facets?: Record<string, { value: string; label: string }[]>;
+  warnings?: string[];
+  facet_names?: Record<string, string>;
 }
 
 export interface ConversationDataItem {
