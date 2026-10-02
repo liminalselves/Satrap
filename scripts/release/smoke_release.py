@@ -60,7 +60,7 @@ def free_ports() -> list[int]:
 
 def get(url: str, json_body: bool = True):
     """使用当前发行目录的令牌访问测试服务"""
-    token = (ROOT / ".satrap/api-token").read_text(encoding="utf-8").strip()
+    token = (ROOT / ".satrap/credentials/api-token").read_text(encoding="utf-8").strip()
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
     with HTTP.open(request, timeout=3) as response:
         body = response.read()

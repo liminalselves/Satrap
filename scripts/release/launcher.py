@@ -19,16 +19,46 @@ import webbrowser
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / ".satrap"
-STATE = DATA / "release-instance.json"
-STOP = DATA / "release-stop"
+STATE = DATA / "runtime" / "release-instance.json"
+STOP = DATA / "runtime" / "release-stop"
 CONTROL_URL = "http://127.0.0.1:19871"
 CHAT_URL = "http://127.0.0.1:19872"
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 SERVICE_MODULES = {"satrap.core.backend.control_server", "satrap.display.server", "satrap.main", "satrap"}
 
 
+def _runtime_path(name: str) -> Path:
+    """
+    返回本发行目录的运行文件路径并兼容旧位置
+
+    参数:
+    - name: 运行文件名
+
+    返回:
+    - runtime 下的路径, 活动旧锁仍使用旧位置
+    """
+    from satrap.core.runtime_paths import get_runtime_path
+
+    override = os.getenv("SATRAP_RUNTIME_ROOT")
+    return Path(override) / name if override else get_runtime_path(name, data_dir=DATA, require_idle=name.endswith(".lock"))
+
+
+def _credential_path() -> Path:
+    """
+    获取本发行目录的共享 API 令牌路径
+
+    返回:
+    - credentials 下的令牌文件, 兼容旧版迁移
+    """
+    from satrap.core.runtime_paths import get_credential_path
+
+    override = os.getenv("SATRAP_CREDENTIALS_ROOT")
+    return Path(override) / "api-token" if override else get_credential_path(data_dir=DATA)
+
+
 def configure_environment() -> None:
     """固定工作目录与 UTF-8, 子进程优先使用便携运行时"""
+    global STATE, STOP
     os.chdir(ROOT)
     os.environ.update(PYTHONUTF8="1", PYTHONIOENCODING="utf-8")
     os.environ["PATH"] = os.pathsep.join([
@@ -40,12 +70,15 @@ def configure_environment() -> None:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
     DATA.mkdir(parents=True, exist_ok=True)
+    STATE = _runtime_path("release-instance.json")
+    STOP = _runtime_path("release-stop")
+    STATE.parent.mkdir(parents=True, exist_ok=True)
 
 
 def request(url: str, method: str = "GET", timeout: float = 3) -> dict:
     """携带当前实例令牌访问本地管理接口"""
     token = os.environ.get("SATRAP_API_TOKEN", "").strip()
-    token_path = DATA / "api-token"
+    token_path = _credential_path()
     if not token and token_path.is_file():
         token = token_path.read_text(encoding="utf-8").strip()
     headers = {"Authorization": f"Bearer {token}"} if token else {}
@@ -71,7 +104,9 @@ class InstanceLock:
     """通过操作系统锁保证同一发行目录只有一个启动器"""
 
     def acquire(self) -> bool:
-        self.file = (DATA / "release.lock").open("a+b")
+        lock_path = _runtime_path("release.lock")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = lock_path.open("a+b")
         self.file.seek(0)
         if self.file.seek(0, 2) == 0:
             self.file.write(b"0")
@@ -319,7 +354,7 @@ def recover_services(ports: list[int], control_port: int) -> None:
             terminate_service(process)
     check_ports(ports, timeout=5 if services else 0)
     for filename in ("control_server.pid", "backend.pid"):
-        (DATA / filename).unlink(missing_ok=True)
+        _runtime_path(filename).unlink(missing_ok=True)
 
 
 def stop_ports(state: dict, control_port: int, chat_port: int) -> list[int]:
@@ -340,7 +375,7 @@ def open_browser(no_browser: bool) -> None:
         return
     token = os.environ.get("SATRAP_API_TOKEN", "").strip()
     if not token:
-        token = (DATA / "api-token").read_text(encoding="utf-8").strip()
+        token = _credential_path().read_text(encoding="utf-8").strip()
     webbrowser.open(f"{CONTROL_URL}/#token={token}")
 
 

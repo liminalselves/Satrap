@@ -37,6 +37,9 @@ JSON 配置统一保存在 `.satrap/config/`:
 ├── background-services/
 │   ├── stdout.log
 │   └── stderr.log
+├── credentials/
+│   └── api-token                   # 本地管理接口共享凭据
+├── runtime/                       # PID, 后端及发行启动器的实例锁
 ├── logs/                          # 按日期和进程划分的应用日志
 └── data/                          # 对话, 用户及运行状态
 ```
@@ -46,6 +49,8 @@ JSON 配置统一保存在 `.satrap/config/`:
 `SATRAP_CONFIG_ROOT` 可统一指定 JSON 配置目录, 设置后不迁移项目旧配置。单独指定的 `SATRAP_MODEL_CONFIG_PATH`、`SATRAP_SESSION_CLASS_CONFIG_PATH`、`SATRAP_EDICTUM_CONFIG_PATH`、`SATRAP_LOG_CONFIG` 或管理器显式路径继续优先。`config.yaml`、运行账本、对话备份和编码插件状态保留各自位置。
 
 `scripts/start-background-services.ps1 -Detach` 的启动输出写入 `background-services/stdout.log` 和 `stderr.log`, 与应用日志分开保存。
+
+`api-token` 保存到 `.satrap/credentials/`, PID 和后端实例锁保存到 `.satrap/runtime/`; 发行启动器的实例记录, 停止标记与锁也使用 `runtime/`。旧版默认文件首次使用时自动迁移, 令牌内容不变; 仍被持有的旧实例锁会继续使用旧路径, 避免绕过单实例保护。升级前应停止旧版本服务。`SATRAP_CREDENTIALS_ROOT` 和 `SATRAP_RUNTIME_ROOT` 可分别覆盖这两个目录。配置写入锁与数据写入锁仍随对应配置或数据库保存。
 
 ## 生成配置
 
@@ -198,9 +203,9 @@ satrap session enable assistant
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。
 
-管理 HTTP/WS 服务始终启用共享令牌鉴权。回环监听时首次启动会生成 `.satrap/api-token`, CLI 和开发脚本会自动读取该文件。浏览器管理界面由回环客户端和白名单 Origin 引导建立 HttpOnly 会话, Cookie 使用服务端保存且可撤销的随机会话 ID, 不包含 API token, 默认 8 小时过期。该引导流程信任本机进程与白名单前端; 如需关闭无 Bearer token 的回环引导, 设置 `SATRAP_LOOPBACK_BOOTSTRAP=0`。绑定 `0.0.0.0`、局域网地址或其他非回环地址时必须显式设置至少 32 个字符的 `SATRAP_API_TOKEN`, 否则服务拒绝启动。
+管理 HTTP/WS 服务始终启用共享令牌鉴权。回环监听时首次启动会生成 `.satrap/credentials/api-token`, CLI 和开发脚本会自动读取该文件。浏览器管理界面由回环客户端和白名单 Origin 引导建立 HttpOnly 会话, Cookie 使用服务端保存且可撤销的随机会话 ID, 不包含 API token, 默认 8 小时过期。该引导流程信任本机进程与白名单前端; 如需关闭无 Bearer token 的回环引导, 设置 `SATRAP_LOOPBACK_BOOTSTRAP=0`。绑定 `0.0.0.0`、局域网地址或其他非回环地址时必须显式设置至少 32 个字符的 `SATRAP_API_TOKEN`, 否则服务拒绝启动。
 
-跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/api-token` 提交到版本库或写入前端构建变量。
+跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/credentials/api-token` 提交到版本库或写入前端构建变量。
 
 内置 HTTP 服务默认限制 256 个并发连接和 64 个 WebSocket 连接。WebSocket 每 30 秒发送 ping, 连续 5 分钟未收到客户端帧时主动关闭; 客户端单帧上限为 64 KiB。前端静态产物可在鉴权前访问以支持登录引导, 因此构建目录仅应包含公开文件; 服务会拒绝隐藏文件和 source map。
 

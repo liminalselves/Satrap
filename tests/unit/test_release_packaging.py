@@ -28,13 +28,17 @@ def load_script(name: str, path: Path):
 
 @pytest.fixture
 def launcher(tmp_path, monkeypatch):
+    monkeypatch.delenv("SATRAP_RUNTIME_ROOT", raising=False)
+    monkeypatch.delenv("SATRAP_CREDENTIALS_ROOT", raising=False)
     module = load_script("release_launcher", ROOT / "scripts/release/launcher.py")
     monkeypatch.setattr(module, "ROOT", tmp_path)
     data = tmp_path / ".satrap"
     data.mkdir()
     monkeypatch.setattr(module, "DATA", data)
-    monkeypatch.setattr(module, "STATE", data / "release-instance.json")
-    monkeypatch.setattr(module, "STOP", data / "release-stop")
+    runtime = data / "runtime"
+    runtime.mkdir()
+    monkeypatch.setattr(module, "STATE", runtime / "release-instance.json")
+    monkeypatch.setattr(module, "STOP", runtime / "release-stop")
     return module
 
 

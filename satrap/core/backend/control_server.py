@@ -84,6 +84,7 @@ from satrap.core.utils.minihttp import (
     read_request_headers,
 )
 from satrap.core.server_auth import ServerAuth
+from satrap.core.runtime_paths import get_runtime_path
 from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import create_default_edictum_type_registry
@@ -103,9 +104,9 @@ DATA_DIR = PROJECT_ROOT / ".satrap"
 # 数据目录
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-CONTROL_PID_FILE = DATA_DIR / "control_server.pid"
+CONTROL_PID_FILE = get_runtime_path("control_server.pid")
 # PID 文件路径
-BACKEND_PID_FILE = DATA_DIR / "backend.pid"
+BACKEND_PID_FILE = get_runtime_path("backend.pid")
 
 
 @dataclasses.dataclass(frozen=True)

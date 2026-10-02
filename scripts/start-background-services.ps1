@@ -18,11 +18,16 @@ $env:PYTHONUTF8 = "1"
 
 $ProjectRoot = [IO.Path]::GetFullPath($ProjectRoot)
 $DataDir = Join-Path $ProjectRoot ".satrap"
+$RuntimeDir = if ($env:SATRAP_RUNTIME_ROOT) { $env:SATRAP_RUNTIME_ROOT } else { Join-Path $DataDir "runtime" }
+$CredentialsDir = if ($env:SATRAP_CREDENTIALS_ROOT) { $env:SATRAP_CREDENTIALS_ROOT } else { Join-Path $DataDir "credentials" }
 
 function Get-SatrapAuthHeaders {
     $token = $env:SATRAP_API_TOKEN
     if ([string]::IsNullOrWhiteSpace($token)) {
-        $tokenPath = Join-Path $DataDir "api-token"
+        $tokenPath = Join-Path $CredentialsDir "api-token"
+        if (-not $env:SATRAP_CREDENTIALS_ROOT -and -not (Test-Path -LiteralPath $tokenPath)) {
+            $tokenPath = Join-Path $DataDir "api-token"
+        }
         if (Test-Path -LiteralPath $tokenPath) {
             $token = (Get-Content -Raw -Encoding UTF8 -LiteralPath $tokenPath).Trim()
         }
@@ -243,7 +248,7 @@ function Stop-BackgroundServices {
         throw "$($service.Name)端口 $($service.Port) 被其他进程占用: $($ownerDescriptions -join ', ')"
     }
 
-    Remove-Item -LiteralPath (Join-Path $DataDir "control_server.pid") -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath (Join-Path $RuntimeDir "control_server.pid") -Force -ErrorAction SilentlyContinue
 }
 
 try {
