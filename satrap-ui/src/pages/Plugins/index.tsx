@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
 import type { ManagedPlugin } from '@/api/types';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { InstallPluginModal } from './InstallPluginModal';
 
 export const capabilityLabels: Record<string, string> = {
   tools: '工具', skills: '技能', mcp: 'MCP', handlers: '前处理', commands: '命令',
@@ -63,6 +64,8 @@ export function PluginOverview({ plugin }: { plugin: ManagedPlugin }) {
 }
 
 export function Plugins() {
+  const navigate = useNavigate();
+  const [installOpen, setInstallOpen] = useState(false);
   const { plugins, loading, error, refresh } = usePluginCatalog();
   const [query, setQuery] = useState('');
   const [source, setSource] = useState('');
@@ -76,7 +79,7 @@ export function Plugins() {
       && `${plugin.name} ${plugin.description} ${plugin.author}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
   });
   return <div className="space-y-6">
-    <PageHeader title="插件管理" description="查看内置与用户插件，管理配置和使用位置" actions={<Button onClick={refresh} disabled={loading}><RefreshCw size={16} className="mr-2" />刷新</Button>} />
+    <PageHeader className="flex-col items-start gap-3 sm:flex-row sm:items-center" title="插件管理" description="查看内置与用户插件，管理配置和使用位置" actions={<><Button variant="primary" onClick={() => setInstallOpen(true)}>安装插件</Button><Button onClick={refresh} disabled={loading}><RefreshCw size={16} className="mr-2" />刷新</Button></>} />
     <div className="flex flex-wrap gap-3">
       <input aria-label="搜索插件" className="glass-input min-w-0 flex-1" placeholder="搜索名称、作者或简介" value={query} onChange={(event) => setQuery(event.target.value)} />
       <select aria-label="插件来源" className="glass-input" value={source} onChange={(event) => setSource(event.target.value)}><option value="">全部来源</option><option value="builtin">内置</option><option value="user">用户</option></select>
@@ -95,6 +98,7 @@ export function Plugins() {
       </Link>)}</div>
       {!filtered.length && <p className="text-text-secondary">{plugins.length ? '没有匹配的插件' : '尚未发现插件'}</p>}
     </>}
+    {installOpen && <InstallPluginModal onClose={() => setInstallOpen(false)} onInstalled={(name) => { setInstallOpen(false); refresh(); navigate(`/plugins/${encodeURIComponent(name)}`); }} />}
   </div>;
 }
 

@@ -484,6 +484,20 @@ export const controlApi = {
     return response.data.plugins;
   },
 
+  previewPluginInstall: async (file: File): Promise<import('./types').PluginInstallPreview> => {
+    const response = await controlClient.post<import('./types').PluginInstallPreview>('/config/plugins/preview', file, { headers: { 'Content-Type': 'application/zip' }, timeout: 120000 });
+    return response.data;
+  },
+
+  installPlugin: async (token: string): Promise<{ ok: boolean; plugin: EdictumAvailablePlugin }> => {
+    const response = await controlClient.post<{ ok: boolean; plugin: EdictumAvailablePlugin }>('/config/plugins/install', { token });
+    return response.data;
+  },
+
+  discardPluginPreview: async (token: string): Promise<void> => {
+    await controlClient.post('/config/plugins/discard', { token });
+  },
+
   listEdictumPlugins: async (): Promise<EdictumAvailablePlugin[]> => {
     const response = await controlClient.get<{ plugins: EdictumAvailablePlugin[] }>(
       '/config/edictum/plugins',

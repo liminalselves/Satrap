@@ -145,6 +145,14 @@ export interface ManagedPlugin extends EdictumAvailablePlugin {
   chat_enabled: boolean;
 }
 
+export interface PluginInstallPreview {
+  token: string;
+  plugin: EdictumAvailablePlugin;
+  expires_in: number;
+  expanded_bytes: number;
+  file_count: number;
+}
+
 export interface EdictumSessionConfig {
   provider: 'edictum';
   edictum_type: string;

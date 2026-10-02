@@ -18,6 +18,8 @@ import json
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.backend import control_server
 from satrap.core.type import SessionConfig, EmbeddingConfig
+from satrap.edictum.plugin_archive import PluginArchiveInstaller
+from satrap.edictum.plugin_catalog import PluginCatalog
 
 
 class _BufferWriter:
@@ -471,3 +473,30 @@ async def test_control_shutdown_writes_response_and_schedules_exit(
 
     await asyncio.sleep(1.0)
     assert fake_os.exit_codes == [0]
+
+
+@pytest.mark.asyncio
+async def test_plugin_zip_preview_install_and_json_limit(tmp_path, monkeypatch):
+    """ZIP 上传独立限额, 两阶段安装保持现有 JSON 限制"""
+    import io
+    import zipfile
+
+    installer = PluginArchiveInstaller(PluginCatalog(tmp_path / "builtin", tmp_path / "plugins"))
+    monkeypatch.setattr(control_server, "PLUGIN_INSTALLER", installer)
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
+        archive.writestr("meta.yaml", "name: uploaded\nversion: '1'")
+        archive.writestr("payload.txt", "x" * (1024 * 1024 + 100))
+    response = await _request("/config/plugins/preview", "POST", buffer.getvalue())
+    assert b"200 OK" in response
+    preview = _json_body(response)
+    assert preview["plugin"]["name"] == "uploaded"
+    assert not installer.catalog.user_dir.exists()
+    response = await _request("/config/plugins/install", "POST", json.dumps({"token": preview["token"]}).encode("utf-8"))
+    assert b"200 OK" in response
+    assert (installer.catalog.user_dir / "uploaded" / "payload.txt").stat().st_size > 1024 * 1024
+    response = await _request("/config/plugins/install", "POST", b"x" * (1024 * 1024 + 1))
+    assert b"413" in response.split(b"\r\n", 1)[0]
+    response = await _request("/config/plugins/preview", "POST", b"corrupt")
+    assert b"400" in response.split(b"\r\n", 1)[0]
+    assert not list((tmp_path / ".plugin-install").iterdir())

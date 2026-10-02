@@ -32,6 +32,7 @@ import json
 import hashlib
 import sys
 import os
+import zipfile
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
 from satrap.core.log import logger
@@ -81,6 +82,8 @@ from satrap.core.utils.paths import get_project_root
 from satrap.display.recorder import query_conversations
 from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.plugin_archive import PluginArchiveInstaller, MAX_ARCHIVE_BYTES
+from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
 from satrap.core.rag import RagService
 
@@ -109,6 +112,7 @@ _backend_process: subprocess.Popen[bytes] | None = None
 # 后端进程
 
 CONFIG_PATH = find_config_path(PROJECT_ROOT)
+PLUGIN_INSTALLER = PluginArchiveInstaller(PluginCatalog())
 # 配置文件路径
 
 CORS_HEADERS = {
@@ -1868,6 +1872,36 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    处理 ZIP 预览、安装及取消, 保持普通 JSON 请求体限制
+
+    参数:
+    - ctx: 已通过认证的路由上下文
+
+    返回:
+    - 安装结果或校验错误, 不匹配时返回 None
+    """
+    if ctx.path not in {"/config/plugins/preview", "/config/plugins/install", "/config/plugins/discard"} or ctx.method != "POST":
+        return None
+    try:
+        if ctx.path.endswith("/preview"):
+            content = await read_request_body(ctx.reader, ctx.raw_request, max_bytes=MAX_ARCHIVE_BYTES, timeout=DEFAULT_BODY_TIMEOUT, required=True)
+            return 200, await RAG_WORKERS.run(PLUGIN_INSTALLER.preview, content)
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        token = payload.get("token")
+        if not isinstance(token, str) or not token:
+            raise ValueError("缺少安装预览凭据")
+        if ctx.path.endswith("/discard"):
+            await RAG_WORKERS.run(PLUGIN_INSTALLER.discard, token)
+            return 200, {"ok": True}
+        return 200, await RAG_WORKERS.run(PLUGIN_INSTALLER.install, token)
+    except WorkerBusyError as error:
+        return 503, {"error": str(error)}
+    except (OSError, TypeError, ValueError, zipfile.BadZipFile, RuntimeError) as error:
+        return 400, {"error": str(error)}
+
+
 async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     """
     Edictum 元数据与集合读取区段: types/plugins/sessions 的 GET
@@ -2434,6 +2468,7 @@ async def _handle_request(
             _route_wake_dry_run,
             _route_session_class_collection_get,
             _route_storage,
+            _route_plugin_install,
             _route_edictum_metadata,
             _route_session_instances,
             _route_session_plugin_config,

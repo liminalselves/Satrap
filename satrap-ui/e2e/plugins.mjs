@@ -18,11 +18,26 @@ try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
   const errors = [];
+  let installs = 0;
+  let discards = 0;
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: { backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' } }));
   await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/config/plugins/preview') {
+      assert.equal(route.request().headers()['content-type'], 'application/zip');
+      assert.equal(route.request().postData(), 'zip-preview-test');
+      return route.fulfill({ json: { token: 'test-token', plugin: { ...plugins[1], name: 'installed_probe' }, expires_in: 600, file_count: 2, expanded_bytes: 100 }, headers: cors });
+    }
+    if (pathname === '/config/plugins/discard') { discards++; return route.fulfill({ json: { ok: true }, headers: cors }); }
+    if (pathname === '/config/plugins/install') {
+      assert.equal(route.request().postDataJSON().token, 'test-token');
+      installs++;
+      const plugin = { ...plugins[1], name: 'installed_probe' };
+      plugins.push(plugin);
+      return route.fulfill({ json: { ok: true, plugin }, headers: cors });
+    }
     return route.fulfill({ json: pathname === '/config/plugins' ? { plugins } : { ok: true, running: false, adapters: {} }, headers: cors });
   });
   await page.routeWebSocket(/ws:\/\/127\.0\.0\.1:1987[012]\//, () => {});
@@ -41,8 +56,30 @@ try {
   await page.getByText('group_skill', { exact: true }).waitFor();
   await page.goto(origin + '/plugins/missing');
   await page.getByRole('alert').filter({ hasText: '插件不存在' }).waitFor();
+  await page.goto(origin + '/plugins');
+  await page.getByRole('button', { name: '安装插件', exact: true }).click();
+  const dialog = page.getByRole('dialog');
+  const file = { name: 'plugin.zip', mimeType: 'application/zip', buffer: Buffer.from('zip-preview-test') };
+  await dialog.getByLabel('插件压缩包').setInputFiles(file);
+  await dialog.getByRole('heading', { name: /installed_probe/ }).waitFor();
+  assert.equal(installs, 0);
+  const discarded = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/plugins/discard');
+  await dialog.getByRole('button', { name: '取消', exact: true }).click();
+  await dialog.waitFor({ state: 'hidden' });
+  await discarded;
+  assert.equal(discards, 1);
+  await page.getByRole('button', { name: '安装插件', exact: true }).click();
+  await dialog.getByLabel('插件压缩包').setInputFiles(file);
+  await dialog.getByRole('heading', { name: /installed_probe/ }).waitFor();
+  await dialog.getByRole('button', { name: '安装', exact: true }).click();
+  await page.getByRole('heading', { name: 'installed_probe', exact: true }).waitFor();
+  assert.equal(installs, 1);
+  assert.equal(plugins.at(-1).chat_enabled, false);
+  await page.getByRole('link', { name: '← 返回插件列表' }).click();
+  await page.getByRole('link', { name: /installed_probe/ }).waitFor();
   assert.deepEqual(errors, []);
   console.log('PASS: 插件目录搜索、来源与平台筛选、详情能力、直接打开和不存在提示');
+  console.log('PASS: ZIP 上传预览、取消清理、显式安装、打开详情及刷新列表');
 } finally {
   if (browser) await browser.close();
   await server.close();
