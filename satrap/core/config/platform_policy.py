@@ -265,6 +265,10 @@ def validate_event_limits(settings: Mapping[str, object]) -> None:
         value = settings["event_queue_ttl"]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise ValueError("event_queue_ttl 必须是有限的正数")
+    if "message_archive_retention_days" in settings:
+        value = settings["message_archive_retention_days"]
+        if type(value) is not int or not 1 <= value <= 3650:
+            raise ValueError("message_archive_retention_days 必须是 1 到 3650 的整数")
 
 
 _SCALAR_KINDS = frozenset({"int", "number", "bool", "enum", "text", "list"})

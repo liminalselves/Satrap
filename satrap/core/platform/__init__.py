@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
+from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -118,6 +119,7 @@ class PlatformAdapter(ABC):
         self.config = config
         config.session_bindings = validate_session_bindings(config.session_bindings)
         self.agent_route_store: AgentRouteStore | None = None
+        self.message_archive: PlatformMessageStore | None = None
         self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
@@ -234,6 +236,68 @@ class PlatformAdapter(ABC):
             elif scope == "legacy_user":
                 scope = "group_member" if kind == "group" else "conversation"
         return binding, source, scope, kind, chat_id, revision
+
+    def message_archive_scope(self, message: PlatformMessage) -> MessageScope:
+        """
+        从适配器归一的真实消息取得档案身份, 不依赖 Agent 绑定
+
+        参数:
+        - message: 当前已准入的真实平台消息
+
+        返回:
+        - 包含平台实例, 账号, 对话类型和对话 ID 的档案身份
+        """
+        kind = self.conversation_kind(message)
+        if kind not in self.conversation_kinds:
+            raise ValueError("消息档案需要适配器声明的对话类型")
+        chat_id = message.sender.user_id if kind == "private" else message.group_id or message.session_id
+        if kind == "private" and message.sender.user_id == message.self_id:
+            raise ValueError("自身私聊回显缺少已核验的接收方身份")
+        return MessageScope(self.config.id, message.self_id, kind, chat_id)
+
+    async def archive_message(self, message: PlatformMessage, *, direction: str = "inbound",
+                              scope: MessageScope | None = None) -> bool:
+        """
+        在唤醒模型之前采集准入消息, 存储失败只记录日志
+
+        参数:
+        - message: 已由适配器核验的真实平台消息
+        - direction: inbound 入站或 outbound 已确认出站
+        - scope: 适配器为自身私聊回显等情况核验的实际对话身份
+
+        返回:
+        - 新消息成功入档时返回 True, 未装配存储或失败时返回 False
+        """
+        store = self.message_archive
+        if store is None:
+            return False
+        try:
+            from satrap.core.platform.message_archive import archive_snapshot
+
+            identity = scope or self.message_archive_scope(message)
+            if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
+                raise ValueError("消息档案身份与原始消息不一致")
+            snapshot = archive_snapshot(message, direction=direction)
+            label = message.group.group_name or "" if message.group else ""
+            return await asyncio.to_thread(store.record, identity, snapshot, label=label)
+        except Exception as exc:
+            logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+            return False
+
+    async def archive_recall(self, scope: MessageScope, message_id: str) -> None:
+        """
+        标记已核验的撤回事件, 存储失败不打断平台事件接收
+
+        参数:
+        - scope: 适配器确认的撤回所属对话
+        - message_id: 被撤回的平台消息 ID
+        """
+        if self.message_archive is None:
+            return
+        try:
+            await asyncio.to_thread(self.message_archive.recall, scope, message_id)
+        except Exception as exc:
+            logger.error(f"[消息档案] 撤回标记失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
     def apply_agent_routes(self) -> int:
         """
@@ -1136,4 +1200,3 @@ __all__ = [
     "registry",
     "register_platform_adapter",
 ]
-

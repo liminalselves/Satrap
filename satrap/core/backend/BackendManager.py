@@ -30,6 +30,7 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
+from satrap.core.config.platform_messages import PlatformMessageStore
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
@@ -2146,6 +2147,10 @@ class BackendManager:
             if replacement is None:
                 raise ValueError("平台类型不可用")
             replacement.agent_route_store = AgentRouteStore(self._storage.platform_db(platform_id))
+            replacement.message_archive = PlatformMessageStore(
+                self._storage.platform_db(platform_id), platform_id,
+                retention_days=replacement.config.settings.get("message_archive_retention_days", 30),
+            )
             if isinstance(replacement, OneBotAdapter):
                 replacement.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(platform_id)))
                 replacement.set_group_sync_handler(lambda: self.trigger_group_sync(platform_id, replacement.bot_self_id))
@@ -2830,6 +2835,10 @@ class BackendManager:
         if adapter is None:
             raise ValueError("平台类型不可用")
         adapter.agent_route_store = AgentRouteStore(self._storage.platform_db(pid))
+        adapter.message_archive = PlatformMessageStore(
+            self._storage.platform_db(pid), pid,
+            retention_days=adapter.config.settings.get("message_archive_retention_days", 30),
+        )
         adapter.apply_agent_routes()
         if isinstance(adapter, OneBotAdapter):
             adapter.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(pid)))

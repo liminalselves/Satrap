@@ -231,6 +231,8 @@ class MisskeyAdapter(PlatformAdapter):
         - data: 通知数据
         """
         try:
+            if not self.config.enable:
+                return
             notification_type = data.get("type")
             if notification_type not in ("mention", "reply", "quote"):
                 return
@@ -238,6 +240,9 @@ class MisskeyAdapter(PlatformAdapter):
             if not isinstance(note, dict) or not self._is_bot_mentioned(note):
                 return
             message = await self.convert_message(note)
+            await self.archive_message(message, direction="outbound" if message.sender.user_id == self.bot_self_id else "inbound")
+            if message.sender.user_id == self.bot_self_id:
+                return
             self._commit_platform_message(message)
         except Exception as e:
             logger.error(f"[MisskeyAdapter] 处理通知失败: {e}")
@@ -250,15 +255,20 @@ class MisskeyAdapter(PlatformAdapter):
         - data: 聊天消息数据
         """
         try:
-            sender_id = str(data.get("fromUserId") or data.get("fromUser", {}).get("id", ""))
-            if sender_id == self.bot_self_id:
+            if not self.config.enable:
                 return
+            sender_id = str(data.get("fromUserId") or data.get("fromUser", {}).get("id", ""))
             if data.get("toRoomId"):
                 if not self.enable_room:
                     return
                 message = await self.convert_room_message(data)
             else:
+                if not self.enable_chat or sender_id == self.bot_self_id:
+                    return
                 message = await self.convert_chat_message(data)
+            await self.archive_message(message, direction="outbound" if sender_id == self.bot_self_id else "inbound")
+            if sender_id == self.bot_self_id:
+                return
             self._commit_platform_message(message)
         except Exception as e:
             logger.error(f"[MisskeyAdapter] 处理聊天消息失败: {e}")

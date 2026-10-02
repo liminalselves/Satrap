@@ -441,6 +441,8 @@ class MessageMember:
     """用户 id"""
     nickname: Optional[str] = None
     """用户昵称"""
+    card: Optional[str] = None
+    """接收时的群名片快照, 未提供时为 None"""
 
     def __str__(self) -> str:
         return (
@@ -500,6 +502,7 @@ class PlatformMessage:
     def __init__(self) -> None:
         """初始化 PlatformMessage"""
         self.timestamp = int(time.time())
+        self.timestamp_source = "local"
         self.group = None
 
     def __str__(self) -> str:

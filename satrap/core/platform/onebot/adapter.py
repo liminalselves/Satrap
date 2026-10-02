@@ -893,6 +893,13 @@ class OneBotAdapter(PlatformAdapter):
         self.client_self_id = incoming_self
         if str(event.get("user_id")) == incoming_self:
             self._ingress_rejections["self_echo"] += 1
+            if self.message_archive is not None:
+                try:
+                    echo = await self.convert_message(event)
+                    if echo.group_id:
+                        await self.archive_message(echo, direction="outbound")
+                except Exception as exc:
+                    logger.error(f"[消息档案] 自身回显转换失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
             return
         now = monotonic()
         while self._seen_messages and next(iter(self._seen_messages.values())) <= now:
@@ -912,6 +919,7 @@ class OneBotAdapter(PlatformAdapter):
         accepted = False
         try:
             message = await self.convert_message(event)
+            await self.archive_message(message)
             accepted = self._commit_platform_message(message)
         except Exception as e:
             logger.error(f"[OneBotAdapter] 处理消息失败: {e}")
@@ -930,6 +938,20 @@ class OneBotAdapter(PlatformAdapter):
         incoming_self = str(event.get("self_id") or "")
         if await self._ensure_group_access(incoming_self):
             notice_type = str(event.get("notice_type") or "")
+            if notice_type in {"group_recall", "friend_recall"} and self.config.enable:
+                from satrap.core.config.platform_messages import MessageScope
+
+                group_id = str(event.get("group_id") or "")
+                peer_id = str(event.get("user_id") or "")
+                raw_id = event.get("message_id")
+                message_id = str(raw_id) if isinstance(raw_id, (str, int)) and not isinstance(raw_id, bool) else ""
+                group_allowed = notice_type == "group_recall" and self.allows_group(group_id)
+                private_allowed = (notice_type == "friend_recall" and bool(self.config.settings.get("enable_private", True))
+                                   and bool(peer_id) and peer_id != incoming_self)
+                if message_id and (group_allowed or private_allowed):
+                    scope = MessageScope(self.config.id, incoming_self, "group" if group_allowed else "private",
+                                         group_id if group_allowed else peer_id)
+                    await self.archive_recall(scope, message_id)
             if notice_type in {"group_increase", "group_decrease"} and str(event.get("user_id") or "") == incoming_self:
                 group_id = str(event.get("group_id") or "")
                 if group_id.isascii() and group_id.isdecimal() and int(group_id) > 0:
