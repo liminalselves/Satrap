@@ -3,8 +3,8 @@
 Satrap 的配置分为三层:
 
 - **项目配置**: `config.yaml` / `config.json`, 用于后端, 平台和路径
-- **模型配置**: `.satrap/model_config.json`, 由 `satrap model` 管理
-- **Session 类配置**: `.satrap/session_class_config.json`, 由 `satrap session` 管理
+- **模型配置**: `.satrap/config/model_config.json`, 由 `satrap model` 管理
+- **Session 类配置**: `.satrap/config/session_class_config.json`, 由 `satrap session` 管理
 
 ## 配置文件位置
 
@@ -21,6 +21,31 @@ Satrap 的配置分为三层:
 9. `satrap/config.json`
 
 找不到配置时会创建 `.satrap/config.yaml`。
+
+JSON 配置统一保存在 `.satrap/config/`:
+
+```text
+.satrap/
+├── config.yaml
+├── config/
+│   ├── model_config.json
+│   ├── session_class_config.json
+│   ├── edictum_session_config.json
+│   ├── chat_plugins.json
+│   ├── logging.json
+│   └── plugins/                    # 各插件的全局 JSON 配置
+├── background-services/
+│   ├── stdout.log
+│   └── stderr.log
+├── logs/                          # 按日期和进程划分的应用日志
+└── data/                          # 对话, 用户及运行状态
+```
+
+首次使用默认路径时会将旧版根目录下对应 JSON 和 `plugin_config/` 自动迁移到新位置, 内容保持不变。新位置已有配置时优先使用新配置, 不覆盖任一份文件; 迁移失败时记录错误并继续使用旧配置, 避免生成空配置。升级前应先停止旧版本进程, 避免它们继续写入旧位置。
+
+`SATRAP_CONFIG_ROOT` 可统一指定 JSON 配置目录, 设置后不迁移项目旧配置。单独指定的 `SATRAP_MODEL_CONFIG_PATH`、`SATRAP_SESSION_CLASS_CONFIG_PATH`、`SATRAP_EDICTUM_CONFIG_PATH`、`SATRAP_LOG_CONFIG` 或管理器显式路径继续优先。`config.yaml`、运行账本、对话备份和编码插件状态保留各自位置。
+
+`scripts/start-background-services.ps1 -Detach` 的启动输出写入 `background-services/stdout.log` 和 `stderr.log`, 与应用日志分开保存。
 
 ## 生成配置
 
@@ -158,7 +183,7 @@ satrap session enable assistant
 
 ## 环境变量
 
-文件日志的保留策略在「设置 → 日志保留」独立管理, 默认自动保留 30 个自然日。配置位于 `.satrap/logging.json`, 修改无需重启后端, 详见 [日志保留](logging.md)。`SATRAP_LOG_ROOT` 和 `SATRAP_LOG_CONFIG` 分别覆盖日志目录与策略文件路径。
+文件日志的保留策略在「设置 → 日志保留」独立管理, 默认自动保留 30 个自然日。配置位于 `.satrap/config/logging.json`, 修改无需重启后端, 详见 [日志保留](logging.md)。`SATRAP_LOG_ROOT` 和 `SATRAP_LOG_CONFIG` 分别覆盖日志目录与策略文件路径。
 
 `ConfigLoader.merge_env()` 支持这些覆盖项:
 

@@ -5,7 +5,7 @@
 
 与平台后端 (BackendManager) 完全隔离:
 - 不初始化平台适配器 / 事件分发 / Pipeline / SessionManager / UserManager
-- 仅经 ModelConfigManager 读 .satrap/model_config.json (与平台后端同一份配置)
+- 仅经 ModelConfigManager 读 .satrap/config/model_config.json (与平台后端同一份配置)
 - 独立端口 (默认 19872), 独立进程: python -m satrap.display.server
 
 API (前缀 /api/chat/):

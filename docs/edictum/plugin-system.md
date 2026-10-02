@@ -145,7 +145,7 @@ plugin.list_capabilities()        # 展示插件内每项能力的实效状态 (
 声明了 `config_schema` 的插件支持运行时配置, 按**四级合并** (后者覆盖前者):
 
 ```text
-schema 默认 < 全局插件配置 (.satrap/plugin_config/<name>.json) < Edictum 命名配置 (session_class_config) < 当前会话覆盖
+schema 默认 < 全局插件配置 (.satrap/config/plugins/<name>.json) < Edictum 命名配置 (session_class_config) < 当前会话覆盖
 ```
 
 - **会话级覆盖**存平台库 `session_config_overrides` 表, 按会话与配置域隔离; 空值按 schema 校验, **删除键表示恢复继承**, 不保存合并结果, 对象和数组按字段整体替换;

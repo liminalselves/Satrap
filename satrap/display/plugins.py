@@ -4,7 +4,7 @@
 与平台后端隔离:
 - 扫描 satrap/expend/plugins (官方) + .satrap/plugins (用户) 拿插件清单,
   但默认不安装 -- 清单来自 meta.yaml 的能力声明 (parse_capability_descriptions)
-- 启用状态独立记录于 .satrap/chat_plugins.json (不碰 session_class_config.json),
+- 启用状态独立记录于 .satrap/config/chat_plugins.json (不碰 session_class_config.json),
   前端勾选后由 ChatService 对活动会话执行 install_plugin / uninstall_plugin
 
 启用状态 json 结构:
@@ -32,7 +32,6 @@ from satrap.core.config.document import ConfigRevisionConflict, config_document_
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
-from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.plugin import (
     PLUGINS_PRESET_DIR,
     USER_PLUGINS_DIR,
@@ -53,12 +52,14 @@ CAPABILITY_LABELS = {
 
 def _default_state_path() -> Path:
     """
-    插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+    插件启用状态 json 默认路径 (.satrap/config/chat_plugins.json)
 
     返回:
-    - Path: 插件启用状态 json 默认路径 (.satrap/chat_plugins.json)
+    - Path: 插件启用状态 json 默认路径 (.satrap/config/chat_plugins.json)
     """
-    return get_data_dir() / "chat_plugins.json"
+    from satrap.core.config_paths import get_config_path
+
+    return get_config_path("chat_plugins.json")
 
 
 class ChatPluginRegistry:

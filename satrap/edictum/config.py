@@ -15,7 +15,6 @@ import os
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
-from satrap.core.utils.paths import get_data_dir
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
 
@@ -59,7 +58,9 @@ class EdictumConfigManager:
         - Path: 环境变量路径或默认数据目录路径
         """
         env_path = os.getenv("SATRAP_EDICTUM_CONFIG_PATH")
-        return Path(env_path) if env_path else get_data_dir() / "edictum_session_config.json"
+        from satrap.core.config_paths import get_config_path
+
+        return Path(env_path) if env_path else get_config_path("edictum_session_config.json")
 
     @staticmethod
     def _normalize_name(value: object) -> str:

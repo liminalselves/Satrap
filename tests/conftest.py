@@ -33,11 +33,12 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_configure(config):
     """测试收集前隔离默认存储目录, 子进程继承相同环境"""
-    config._satrap_original_paths = {key: os.environ.get(key) for key in ("SATRAP_DATA_ROOT", "SATRAP_LOG_ROOT", "SATRAP_LOG_CONFIG")}
+    config._satrap_original_paths = {key: os.environ.get(key) for key in ("SATRAP_DATA_ROOT", "SATRAP_LOG_ROOT", "SATRAP_LOG_CONFIG", "SATRAP_CONFIG_ROOT")}
     config._satrap_test_data = tempfile.TemporaryDirectory(prefix="satrap-tests-")
     os.environ["SATRAP_DATA_ROOT"] = config._satrap_test_data.name
     os.environ["SATRAP_LOG_ROOT"] = str(Path(config._satrap_test_data.name) / "logs")
     os.environ["SATRAP_LOG_CONFIG"] = str(Path(config._satrap_test_data.name) / "logging.json")
+    os.environ["SATRAP_CONFIG_ROOT"] = str(Path(config._satrap_test_data.name) / "config")
 
 
 def pytest_unconfigure(config):

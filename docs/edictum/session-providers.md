@@ -20,7 +20,7 @@
 
 ## Edictum 冷配置
 
-冷配置默认存储于 `.satrap/edictum_session_config.json`, 可通过 `edictum_config_path` 或 `SATRAP_EDICTUM_CONFIG_PATH` 修改。文件首次创建时只包含空对象 `{}`, 不生成数字名称或空白占位配置。
+冷配置默认存储于 `.satrap/config/edictum_session_config.json`, 可通过 `edictum_config_path` 或 `SATRAP_EDICTUM_CONFIG_PATH` 修改。文件首次创建时只包含空对象 `{}`, 不生成数字名称或空白占位配置。
 
 每个命名配置包含:
 

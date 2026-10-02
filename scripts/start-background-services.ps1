@@ -59,9 +59,10 @@ if ($Detach) {
         }
     }
 
-    New-Item -ItemType Directory -Path $DataDir -Force | Out-Null
-    $stdoutPath = Join-Path $DataDir "background-services.stdout.log"
-    $stderrPath = Join-Path $DataDir "background-services.stderr.log"
+    $serviceLogDir = Join-Path $DataDir "background-services"
+    New-Item -ItemType Directory -Path $serviceLogDir -Force | Out-Null
+    $stdoutPath = Join-Path $serviceLogDir "stdout.log"
+    $stderrPath = Join-Path $serviceLogDir "stderr.log"
     $argumentList = @(
         "-NoProfile",
         "-ExecutionPolicy",

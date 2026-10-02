@@ -26,7 +26,7 @@
 
 ## 独立配置与接口
 
-日志策略独立保存在 `.satrap/logging.json`, 缺少文件时使用默认策略:
+日志策略独立保存在 `.satrap/config/logging.json`, 缺少文件时使用默认策略:
 
 ```json
 {

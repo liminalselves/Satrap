@@ -18,6 +18,7 @@ import time
 import os
 
 from satrap.core.log.managed import ManagedDailyHandler, LogFileLock, atomic_json, cleanup_logs, log_root, report_failure
+from satrap.core.config_paths import get_config_path
 
 
 class LoggingPolicyConflict(ValueError):
@@ -58,10 +59,11 @@ class LoggingPolicyStore:
         初始化日志管理路径
 
         参数:
-        - path: 配置路径, 默认 SATRAP_LOG_CONFIG 或项目 .satrap/logging.json
+        - path: 配置路径, 默认 SATRAP_LOG_CONFIG 或项目 .satrap/config/logging.json
         - root: 日志路径, 默认稳定的项目日志目录
         """
-        self.path = (path or Path(os.getenv("SATRAP_LOG_CONFIG") or Path(__file__).resolve().parents[3] / ".satrap" / "logging.json")).resolve()
+        configured_path = path or (Path(os.environ["SATRAP_LOG_CONFIG"]) if os.getenv("SATRAP_LOG_CONFIG") else get_config_path("logging.json"))
+        self.path = configured_path.resolve()
         self.root = (root or log_root()).resolve()
 
     def read(self) -> tuple[LoggingPolicy, str]:

@@ -232,7 +232,7 @@ satrap plugin config rag --show                      # 查看插件全局配置
 satrap plugin config rag --set top_k=5               # 修改配置 (按键类型严格校验)
 ```
 
-能力生效 = 插件启用 AND 能力独立启用。Chat 服务在线时写操作走 HTTP (活动会话即时同步); 离线时直写 `.satrap/chat_plugins.json` 与 `.satrap/plugin_config/`, 下次启动生效。
+能力生效 = 插件启用 AND 能力独立启用。Chat 服务在线时写操作走 HTTP (活动会话即时同步); 离线时直写 `.satrap/config/chat_plugins.json` 与 `.satrap/config/plugins/`, 下次启动生效。
 
 ## Edictum 配置管理
 
