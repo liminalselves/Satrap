@@ -54,6 +54,26 @@ class MisskeyAdapter(PlatformAdapter):
     """Misskey 平台适配器"""
 
     adapter_type = "misskey"
+    conversation_kinds = {"private": "私聊", "group": "房间群聊", "discussion": "帖子讨论"}
+
+    def conversation_kind(self, message: PlatformMessage) -> str:
+        """
+        按 Misskey 原始对话载体区分私聊, 房间和帖子
+
+        参数:
+        - message: 已归一的平台消息
+
+        返回:
+        - private, group, discussion 或未识别的 other
+        """
+        session_id = str(getattr(message, "session_id", ""))
+        if is_valid_chat_session_id(session_id):
+            return "private"
+        if is_valid_room_session_id(session_id):
+            return "group"
+        if is_valid_note_session_id(session_id):
+            return "discussion"
+        return super().conversation_kind(message)
 
     def __init__(
         self,

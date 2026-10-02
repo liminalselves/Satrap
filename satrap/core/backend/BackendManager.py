@@ -29,6 +29,7 @@ from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
+from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
@@ -631,8 +632,7 @@ class BackendManager:
 
         binding = session_values(session).get("binding")
         if not isinstance(binding, dict):
-            binding = {"provider": platform.get("session_provider") or "session_class",
-                       "config_name": platform.get("session_type") or ""}
+            binding, _ = resolve_agent_binding(platform, "group")
         provider = str(binding["provider"])
         name = str(binding["config_name"])
         named: object = None
@@ -702,8 +702,7 @@ class BackendManager:
             raise RuntimeError("群会话配置数据损坏")
         selected = session_values(raw_session).get("binding")
         if not isinstance(selected, dict):
-            selected = {"provider": platform.get("session_provider") or "session_class",
-                        "config_name": platform.get("session_type") or ""}
+            selected, _ = resolve_agent_binding(platform, "group")
         defaults: dict[str, object] = {}
         session_fields = ["binding", "scope"]
         runtime = self.get_platform_runtime(adapter_id)
@@ -855,8 +854,7 @@ class BackendManager:
             binding = session.get("binding")
             platform_for_binding = self._group_platform_snapshot(adapter_id)
             if not isinstance(binding, dict):
-                binding = {"provider": platform_for_binding.get("session_provider") or "session_class",
-                           "config_name": platform_for_binding.get("session_type") or ""}
+                binding, _ = resolve_agent_binding(platform_for_binding, "group")
             runtime = self.get_platform_runtime(adapter_id)
             if runtime is None:
                 raise RuntimeError("平台会话运行时不可用")
@@ -1350,10 +1348,7 @@ class BackendManager:
             explicit, route_generation = snapshot.routes.get(source_group, ({}, 0))
             group_values = session_values(explicit)
             platform = self._group_platform_snapshot(adapter_id)
-            binding = group_values.get("binding") or {
-                "provider": platform.get("session_provider") or "session_class",
-                "config_name": platform.get("session_type") or "",
-            }
+            binding = group_values.get("binding") or resolve_agent_binding(platform, "group")[0]
             if (not isinstance(binding, dict) or binding.get("provider") != "edictum"
                     or binding.get("config_name") != session_cfg.session_type_name):
                 raise PermissionError("模型动作来源群路由已变化")
@@ -2063,7 +2058,16 @@ class BackendManager:
                                 continue
                     runtime_usable = not self._running or not adapter.config.enable or (adapter.started and adapter._run_task is not None and not adapter._run_task.done())
                     if runtime_usable and previous == proposed and (not changed or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
+                        previous_runtime_config = adapter.config
                         adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})))
+                        try:
+                            await asyncio.to_thread(adapter.apply_agent_routes)
+                        except Exception as error:
+                            adapter.config = previous_runtime_config
+                            logger.warning(f"[BackendManager] Agent 路由应用失败, 保留旧配置: {platform_id}, {error}")
+                            result.update(status="failed", reason="agent_route_apply_failed", error=type(error).__name__, old_runtime_preserved=True)
+                            results.append(result)
+                            continue
                         if self._scheduler is not None and old_settings != new_settings:
                             self._scheduler.wake_window.clear_adapter(platform_id)
                             self._scheduler.wake_timers.clear_adapter(platform_id)
@@ -2127,12 +2131,15 @@ class BackendManager:
             # 禁用平台不接收消息, 会话定义只在进入启用状态时才是执行前置条件, 故禁用时不判定绑定
             if bool(candidate.get("enable", True)):
                 self._require_platform_binding(session_manager, session_type, provider, "平台绑定的")
+                self._require_agent_bindings(session_manager, platform_type, candidate.get("session_bindings"))
             replacement = manager.registry.create(PlatformConfig(
                 id=platform_id, type=platform_type, session_provider=provider, session_type=session_type,
                 enable=bool(candidate.get("enable", True)), settings=deepcopy(candidate.get("settings", {})),
+                session_bindings=validate_session_bindings(candidate.get("session_bindings")),
             ), event_handler=old.event_handler if old else self.platform_events)
             if replacement is None:
                 raise ValueError("平台类型不可用")
+            replacement.agent_route_store = AgentRouteStore(self._storage.platform_db(platform_id))
             if isinstance(replacement, OneBotAdapter):
                 replacement.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(platform_id)))
                 replacement.set_group_sync_handler(lambda: self.trigger_group_sync(platform_id, replacement.bot_self_id))
@@ -2157,6 +2164,7 @@ class BackendManager:
                     await replacement.start()
                     await replacement.wait_ready()
                 manager._adapters[platform_id] = replacement
+                await asyncio.to_thread(replacement.apply_agent_routes)
                 self._platform_runtimes[platform_id][0].plugin_environment = PluginEnvironment("platform", replacement.config.type)
                 await dispatcher.attach_adapter(replacement)
                 if isinstance(replacement, OneBotAdapter) and replacement._client_connected and replacement.bot_self_id:
@@ -2745,6 +2753,30 @@ class BackendManager:
         if status.state is BindingState.INVALID:
             raise ValueError(f"{prefix}{status.reason}")
 
+    def _require_agent_bindings(self, session_manager: SessionManager, platform_type: str, value: object) -> None:
+        """
+        校验适配器声明的对话类型和显式 Agent 配置
+
+        参数:
+        - session_manager: 平台会话运行时
+        - platform_type: 适配器类型
+        - value: 按对话类型声明的绑定
+        """
+        bindings = validate_session_bindings(value)
+        if not bindings:
+            return
+        adapter_class = self._adapter_mgr.registry.get(platform_type) if self._adapter_mgr else None
+        if adapter_class is None:
+            raise ValueError("平台类型不可用")
+        unknown = set(bindings) - set(adapter_class.conversation_kinds)
+        if unknown:
+            raise ValueError(f"适配器未声明对话类型: {', '.join(sorted(unknown))}")
+        for kind, selected in bindings.items():
+            if selected["mode"] == "value":
+                status = session_manager.provider_registry.binding_status(selected["config_name"], selected["provider"])
+                if status.state is not BindingState.RUNNABLE:
+                    raise ValueError(f"{kind} 的 Agent 绑定不可用: {status.reason}")
+
     def _init_platform(self, pid: str, ptype: str, pcfg: dict[str, Any]) -> None:
         """
         创建单个平台适配器, 配置或构造异常抛给调用方隔离处理
@@ -2770,13 +2802,17 @@ class BackendManager:
         # 与定向替换同一规则: 禁用平台不判定绑定, 启用平台只对配置错误 fail-closed
         if bool(pcfg.get("enable", True)):
             self._require_platform_binding(platform_session_manager, session_type, session_provider, "")
+            self._require_agent_bindings(platform_session_manager, ptype, pcfg.get("session_bindings"))
         platform_config = PlatformConfig(
             id=pid, type=ptype, session_provider=session_provider, session_type=session_type,
             enable=bool(pcfg.get("enable", True)), settings=settings,
+            session_bindings=validate_session_bindings(pcfg.get("session_bindings")),
         )
         adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
         if adapter is None:
             raise ValueError("平台类型不可用")
+        adapter.agent_route_store = AgentRouteStore(self._storage.platform_db(pid))
+        adapter.apply_agent_routes()
         if isinstance(adapter, OneBotAdapter):
             adapter.set_group_access_store(GroupDirectoryStore(self._storage.platform_db(pid)))
             adapter.set_group_sync_handler(lambda: self.trigger_group_sync(pid, adapter.bot_self_id))

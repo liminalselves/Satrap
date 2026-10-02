@@ -13,7 +13,8 @@ from abc import ABC, abstractmethod
 
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
-from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
+from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
+from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
 
@@ -43,6 +44,7 @@ class PlatformConfig:
     - type: 适配器类型 (如 misskey / aiocqhttp / telegram)
     - session_provider: 入站消息使用的会话 Provider 名称
     - session_type: 入站消息使用的命名会话配置
+    - session_bindings: 按适配器声明的对话类型覆盖完整 Agent 绑定
     - enable: 是否启用
     - settings: 适配器专属配置
     """
@@ -53,6 +55,7 @@ class PlatformConfig:
     settings: Dict[str, Any] = field(default_factory=dict[str, Any])
     session_provider: str = SESSION_CLASS_PROVIDER
     session_type: str = ""
+    session_bindings: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -87,6 +90,7 @@ class PlatformAdapter(ABC):
     adapter_type: str = ""
     display_name: str = ""
     conversation_catalog_fields: dict[str, str] = {}
+    conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
 
     @classmethod
     def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
@@ -112,6 +116,9 @@ class PlatformAdapter(ABC):
         - event_queue: 事件队列
         """
         self.config = config
+        config.session_bindings = validate_session_bindings(config.session_bindings)
+        self.agent_route_store: AgentRouteStore | None = None
+        self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
 
@@ -147,6 +154,101 @@ class PlatformAdapter(ABC):
         - str: 显式绑定的会话类名称, 未绑定时兼容回退到适配器类型
         """
         return (self.config.session_type or "").strip() or self.adapter_type
+
+    def conversation_kind(self, message: PlatformMessage) -> str:
+        """
+        将统一消息语义映射为对话类型, 适配器可覆盖扩展
+
+        参数:
+        - message: 已归一的平台消息
+
+        返回:
+        - private, group 或未识别的 other
+        """
+        value = getattr(message, "type", "")
+        value = getattr(value, "value", value)
+        return {"FriendMessage": "private", "GroupMessage": "group"}.get(str(value), "other")
+
+    def agent_route_state(self, message: PlatformMessage) -> tuple[dict[str, str], str, str, str, str, int]:
+        """
+        读取最终绑定和当前对话的持久隔离代次
+
+        参数:
+        - message: 已归一的平台消息, 身份来自入站边界
+
+        返回:
+        - 绑定, 来源, 范围, 对话类型, 对话 ID 与代次
+        """
+        from satrap.core.config.group_session import session_values
+
+        kind = self.conversation_kind(message)
+        if self.config.session_bindings and kind not in self.conversation_kinds:
+            logger.warning(f"[Agent 路由] 未声明的对话类型: {self.config.id}/{kind}")
+            raise ValueError("适配器尚未声明此事件的对话类型")
+        sender = getattr(message, "sender", None)
+        actor_id = str(getattr(sender, "user_id", "") or "")
+        group_id = str(getattr(message, "group_id", "") or "")
+        chat_id = actor_id if kind == "private" else group_id or str(getattr(message, "session_id", "") or "")
+        self_id = str(getattr(message, "self_id", "") or "")
+        binding, source = resolve_agent_binding({
+            "session_provider": self.get_session_provider(), "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+        }, kind)
+        scope = str(self.config.settings.get("context_scope", "legacy_user")) if kind == "group" else "legacy_user"
+        group_generation = 0
+        group_scope_override = False
+        group_route = getattr(self, "group_route", None)
+        if kind == "group" and group_id and callable(group_route):
+            route_result = group_route(group_id)
+            if (not isinstance(route_result, tuple) or len(route_result) != 2
+                    or not isinstance(route_result[0], dict) or type(route_result[1]) is not int):
+                logger.error(f"[Agent 路由] 群路由快照无效: {self.config.id}/{group_id}")
+                raise ValueError("群路由快照无效")
+            explicit, group_generation = route_result
+            values = session_values(explicit)
+            selected = values.get("binding")
+            if isinstance(selected, dict):
+                binding = {"provider": str(selected["provider"]), "config_name": str(selected["config_name"])}
+                source = "group"
+            if "scope" in values:
+                scope = "group" if values["scope"] == "group_shared" else "group_member"
+                group_scope_override = True
+        signature: tuple[object, ...] = (self.config.type, binding["provider"], binding["config_name"], scope,
+                                         group_generation, source, group_scope_override)
+        enabled = bool(self.config.session_bindings)
+        if enabled and (not self_id or not chat_id):
+            logger.warning(f"[Agent 路由] 缺少对话身份: {self.config.id}/{kind}")
+            raise ValueError("隔离 Agent 路由需要机器人账号与完整对话身份")
+        if self.agent_route_store is not None:
+            revision = self.agent_route_store.revision(self_id, kind, chat_id, signature, enabled=enabled)
+        else:
+            key = (self_id, kind, chat_id)
+            previous = self._agent_route_memory.get(key)
+            revision = 0
+            if enabled or previous is not None:
+                revision = previous[1] if previous and previous[0] == signature else (previous[1] + 1 if previous else 1)
+                self._agent_route_memory[key] = (signature, revision)
+        if revision:
+            if kind == "private":
+                scope = "private"
+            elif scope == "legacy_user":
+                scope = "group_member" if kind == "group" else "conversation"
+        return binding, source, scope, kind, chat_id, revision
+
+    def apply_agent_routes(self) -> int:
+        """
+        根据当前平台配置协调已有对话路由代次
+
+        返回:
+        - 受影响的已持久对话数, 未装配持久存储时为 0
+        """
+        if self.agent_route_store is None:
+            return 0
+        return self.agent_route_store.apply_platform({
+            "id": self.config.id, "type": self.config.type, "settings": self.config.settings,
+            "session_provider": self.get_session_provider(), "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+        })
 
     def get_session_provider(self) -> str:
         """
@@ -407,6 +509,8 @@ class PlatformAdapter(ABC):
             "config_type": self.config.type,
             "session_provider": self.get_session_provider(),
             "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+            "conversation_kinds": self.conversation_kinds,
         }
 
     # ---------- 消息发送 ----------

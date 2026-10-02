@@ -185,6 +185,35 @@ platforms:
 
 后端会根据平台实例, `session_type` 和用户来源构建会话 ID。不同平台实例上的同一用户会进入不同上下文, 避免消息串线。平台管理页可直接从已注册且启用的会话类中选择 `session_type`。
 
+### 按对话类型绑定 Agent
+
+`session_provider` 与 `session_type` 作为平台默认, 可用 `session_bindings` 分别绑定私聊和群聊:
+
+```yaml
+session_provider: edictum
+session_type: general-agent
+session_bindings:
+  private:
+    mode: value
+    provider: edictum
+    config_name: private-agent
+  group:
+    mode: value
+    provider: edictum
+    config_name: group-agent
+```
+
+每个显式绑定必须同时提供 Provider 和命名配置, `mode: inherit` 只继承平台默认, 不携带值
+优先级为单群显式绑定 > 对话类型绑定 > 平台默认; 群内模型, 提示词和插件覆盖作用于最终绑定
+对话类型由适配器声明, OneBot 支持 private/group, Misskey 另外区分 discussion 帖子讨论, 新适配器可声明自己的类型
+启用平台时显式对话类型绑定必须可用, 不存在或已禁用的显式 Agent 不会静默回退
+
+首次启用该字段后使用版本化的对话路由, 私聊和不同群各自隔离; 原 legacy_user 群范围升级为按群内成员隔离
+即使选择相同 Agent, 私聊和群聊也不会共用上下文; 指定群共享范围时, 同一群的成员共享上下文
+已启用新路由的对话在恢复平台继承后继续隔离, 不回到旧用户共享命名空间
+更换有效绑定或范围时持久推进代次, 没有新消息的连续切换也会生效; 旧排队事件与执行中回复不能向新路由发送
+已有对话保留可查看, 不自动把旧上下文拼接到新 Agent; 路由代次保存在原平台数据库, 不新增配置 JSON
+
 手动创建 Session 时可以通过 `adapter_id` 写入会话初始化参数, 供会话类或插件使用; 它不会改变平台入站路由, 入站会话类由平台的 `session_type` 决定:
 
 ```bash

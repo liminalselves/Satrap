@@ -82,12 +82,17 @@ def _route_metadata(row: dict[str, Any]) -> dict[str, str]:
     result = {key: str(row.get(key) or "") for key in ("user_id", "platform", "provider_name", "session_type", "session_id", "context_key")}
     result["scope"] = "legacy_user"
     key = str(row.get("context_key") or "")
-    if key.startswith("scoped:v1:"):
+    if key.startswith(("scoped:v1:", "scoped:v2:")):
         try:
-            parts = json.loads(key[len("scoped:v1:"):])
-            if not isinstance(parts, list) or len(parts) not in {7, 8} or any(not isinstance(value, str) for value in parts[:7]):
+            parts = json.loads(key.split(":", 2)[2])
+            expected_lengths = {11} if key.startswith("scoped:v2:") else {7, 8}
+            if not isinstance(parts, list) or len(parts) not in expected_lengths or any(not isinstance(value, str) for value in parts[:7]):
                 raise ValueError("路由字段无效")
             result.update(zip(("platform", "provider_name", "session_type", "scope", "self_id", "group_id", "user_id"), parts[:7]))
+            if key.startswith("scoped:v2:"):
+                if not isinstance(parts[8], str) or not isinstance(parts[9], str) or type(parts[10]) is not int:
+                    raise ValueError("对话路由身份无效")
+                result.update(conversation_kind=parts[8], conversation_id=parts[9], binding_generation=str(parts[10]))
         except (ValueError, TypeError) as error:
             logger.warning(f"[对话目录] 路由解码失败: {row.get('session_id')}, {error}")
             result["scope"] = "unknown"
@@ -173,7 +178,10 @@ def conversation_records(connection: sqlite3.Connection, platform: dict[str, Any
                     logger.error(f"[对话目录] 适配器标签读取失败: {identity}, {error}\n{traceback.format_exc()}")
                     tags.append("部分标签读取失败")
             scope = route["scope"]
-            add("scope", scope, {"legacy_user": "旧版用户共享", "group": "群共享", "group_member": "群成员独立", "unknown": "范围未知"}.get(scope, scope))
+            add("scope", scope, {"legacy_user": "旧版用户共享", "group": "群共享", "group_member": "群成员独立", "private": "私聊独立", "conversation": "对话共享", "unknown": "范围未知"}.get(scope, scope))
+            kind = route.get("conversation_kind")
+            if kind:
+                add("conversation_kind", kind, adapter.conversation_kinds.get(kind, kind) if adapter else kind)
             add("agent", route.get("session_type"))
             add("provider", route.get("provider_name"))
             user = route.get("user_id")

@@ -3,6 +3,7 @@ import pytest
 import sys
 import os
 import tempfile
+import gc
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +46,7 @@ def pytest_configure(config):
 
 def pytest_unconfigure(config):
     """恢复环境并清理隔离测试目录"""
+    gc.collect()   # 删除测试数据库前回收循环引用, 触发上下文连接的析构关闭
     if "satrap.core.log" in sys.modules:
         sys.modules["satrap.core.log"].logger.close()
     for key, original in getattr(config, "_satrap_original_paths", {}).items():

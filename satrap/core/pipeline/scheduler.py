@@ -580,8 +580,10 @@ class PipelineScheduler:
             route: ConversationRoute | None = None
             settings = event.policy_settings
             scope = str(settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
+            if event.agent_route_generation:
+                scope = event.agent_context_scope
             generation = event.group_route_generation if not event.is_private_chat() else 0
-            if (scope != "legacy_user" or generation > 0) and (not user_manager or not event.session_type):
+            if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
                 raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
             if user_manager and event.session_type:
                 platform_id, extra_params = self._resolve_route_adapter(event)
@@ -590,6 +592,8 @@ class PipelineScheduler:
                     session_type=event.session_type, provider=event.session_provider,
                     scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
                     generation=generation,
+                    conversation_kind=event.conversation_kind, conversation_id=event.conversation_id,
+                    binding_generation=event.agent_route_generation,
                 )
                 route_args = {"route": route} if scope != "legacy_user" or generation > 0 else {}
                 resolved = user_manager.resolve_session(
@@ -607,6 +611,9 @@ class PipelineScheduler:
                 session_id = resolved
 
             async with self._session_turn(session_manager, session_id):
+                if not event.agent_route_is_current():
+                    logger.debug(f"[PipelineScheduler] 丢弃旧 Agent 路由事件: {event.session_id}")
+                    return
                 from satrap.core.platform.onebot.adapter import OneBotAdapter
 
                 if (not event.is_private_chat() and isinstance(event.adapter, OneBotAdapter)
@@ -784,6 +791,9 @@ class PipelineScheduler:
             return True
         if not adapter.config.enable:
             return False
+        if not event.agent_route_is_current():
+            logger.debug(f"[PipelineScheduler] Agent 路由已变化: {event.session_id}")
+            return False
         settings = adapter.config.settings
         if adapter.config.type not in {"onebot", "aiocqhttp"}:
             return True
@@ -817,6 +827,10 @@ class PipelineScheduler:
             else resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
         )
         keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
+        if event.agent_route_generation:
+            if not event.agent_route_is_current():
+                return False
+            current["context_scope"] = event.agent_context_scope
         return all(current.get(key) == event.policy_settings.get(key) for key in keys)
 
     @staticmethod

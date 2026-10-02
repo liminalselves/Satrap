@@ -362,6 +362,11 @@ class MessageEvent:
         self.group_route_generation = 0
         self.group_config_revision: int | None = None
         self.group_session_overrides: dict[str, object] = {}
+        self.agent_route_generation = 0
+        self.agent_binding_source = "platform"
+        self.agent_context_scope = "legacy_user"
+        self.conversation_kind = ""
+        self.conversation_id = ""
         group_route = getattr(adapter, "group_route", None)
         if self.get_group_id() and callable(group_route):
             from satrap.core.config.group_session import session_values
@@ -391,6 +396,19 @@ class MessageEvent:
                 if key in {"model", "prompt", "plugins"}
             }
             self.group_route_generation = generation
+
+        if isinstance(adapter, PlatformAdapter):
+            binding, source, scope, kind, chat_id, route_generation = adapter.agent_route_state(platform_message)
+            self.agent_route_generation = route_generation
+            self.agent_binding_source = source
+            self.agent_context_scope = scope
+            self.conversation_kind = kind
+            self.conversation_id = chat_id
+            if route_generation:
+                self.session_provider = binding["provider"]
+                self.session_type = binding["config_name"]
+                if kind == "group":
+                    self.policy_settings["context_scope"] = scope
 
         mt = platform_message.type.value if isinstance(platform_message.type, PlatformMessageType) else str(platform_message.type)
         self.session = MessageSession(
@@ -427,6 +445,20 @@ class MessageEvent:
         - CallOrigin: 不随消息预处理和会话路由变化的身份
         """
         return self._call_origin
+
+    def agent_route_is_current(self) -> bool:
+        """
+        检查冻结的 Agent 绑定代次仍然有效
+
+        返回:
+        - 代次相同且绑定未变化时为 True, 旧排队事件不能进入新 Agent
+        """
+        if not isinstance(self.adapter, PlatformAdapter):
+            return True
+        binding, _, _, _, _, revision = self.adapter.agent_route_state(self.platform_message)
+        return revision == self.agent_route_generation and (
+            not revision or (binding["provider"], binding["config_name"]) == (self.session_provider, self.session_type)
+        )
 
     @property
     def unified_msg_origin(self) -> str:
@@ -862,6 +894,8 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
+                if not self.adapter.config.enable or not self.agent_route_is_current():
+                    raise PermissionError("Agent 路由已变化, 旧轮次禁止发送")
                 group_route = getattr(self.adapter, "group_route", None)
                 if self.get_group_id() and callable(group_route):
                     route_result = group_route(self.get_group_id())
@@ -892,6 +926,8 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
+                if not self.adapter.config.enable or not self.agent_route_is_current():
+                    raise PermissionError("Agent 路由已变化, 旧轮次禁止发送")
                 group_route = getattr(self.adapter, "group_route", None)
                 if self.get_group_id() and callable(group_route):
                     route_result = group_route(self.get_group_id())
@@ -954,6 +990,8 @@ class MessageEvent:
         """
         decorated = False
         async for chain in generator:
+            if not self.adapter.config.enable or not self.agent_route_is_current():
+                raise PermissionError("Agent 路由已变化, 停止旧轮次的流式发送")
             if not chain.components:
                 continue
             if decorated:

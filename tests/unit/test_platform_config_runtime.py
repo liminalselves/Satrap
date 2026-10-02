@@ -924,3 +924,20 @@ async def test_unknown_provider_and_missing_definition_conclude_identically(tmp_
         assert life.manager.get_adapter("bot") is not None
 
 
+@pytest.mark.asyncio
+async def test_route_store_failure_preserves_hot_platform_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    original = deepcopy(adapter.config.settings)
+    platform["settings"]["wake_words"] = ["new"]
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+
+    def fail_route_store() -> int:
+        raise OSError("路由存储不可用")
+
+    monkeypatch.setattr(adapter, "apply_agent_routes", fail_route_store)
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "failed" and result["reason"] == "agent_route_apply_failed"
+    assert result["old_runtime_preserved"] is True
+    assert adapter.config.settings == original
+
+

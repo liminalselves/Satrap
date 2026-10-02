@@ -66,21 +66,21 @@ class GroupDirectoryStore(GroupConfigStore):
                         "override_counts": {"model": 0, "prompt": 0, "plugins": 0}}
             routes = connection.execute(
                 "SELECT context_key, session_id FROM context_sessions "
-                "WHERE platform=? AND context_key LIKE 'scoped:v1:%'", (platform_id,),
+                "WHERE platform=? AND (context_key LIKE 'scoped:v1:%' OR context_key LIKE 'scoped:v2:%')", (platform_id,),
             ).fetchall()
             session_ids: set[str] = set()
             current_ids: set[str] = set()
             for route in routes:
                 key = str(route["context_key"])
                 try:
-                    parts = json.loads(key.removeprefix("scoped:v1:"))
+                    parts = json.loads(key.split(":", 2)[2])
                 except (ValueError, TypeError):
                     continue
-                if (isinstance(parts, list) and len(parts) in {7, 8}
+                if (isinstance(parts, list) and len(parts) in {7, 8, 11}
                         and parts[0] == platform_id and parts[4] == self_id and parts[5] == group_id):
                     session_id = str(route["session_id"])
                     session_ids.add(session_id)
-                    route_generation = parts[7] if len(parts) == 8 else 0
+                    route_generation = parts[7] if len(parts) >= 8 else 0
                     if type(route_generation) is int and route_generation == generation:
                         current_ids.add(session_id)
             counts = {"model": 0, "prompt": 0, "plugins": 0}

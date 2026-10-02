@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from satrap.core.config.agent_routing import resolve_agent_binding
+
 
 def session_values(explicit: Mapping[str, object]) -> dict[str, object]:
     """校验群会话配置并提取显式值"""
@@ -62,15 +64,16 @@ def resolve_group_session(
     settings = platform.get("settings", {})
     if not isinstance(settings, dict):
         raise ValueError("平台 settings 无效")
-    binding: object = {
-        "provider": platform.get("session_provider", "session_class"),
-        "config_name": platform.get("session_type", ""),
-    }
+    binding, binding_source = resolve_agent_binding(platform, "group")
     scope: object = settings.get("context_scope", "legacy_user")
+    scope_source = "platform"
     if scope == "group":
         scope = "group_shared"
+    elif scope == "legacy_user" and platform.get("session_bindings"):
+        scope = "group_member"
+        scope_source = "conversation_kind"
     effective: dict[str, object] = {"binding": binding, "scope": scope}
-    sources = {"binding": "platform", "scope": "platform"}
+    sources = {"binding": binding_source, "scope": scope_source}
     for key in ("model", "prompt", "plugins"):
         if defaults is not None and key in defaults:
             effective[key] = defaults[key]

@@ -16,6 +16,7 @@ from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
 from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.storage.file_lock import FileLock
+from satrap.core.config.agent_routing import validate_session_bindings
 
 
 MASKED_SECRET = "********"
@@ -306,6 +307,8 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         else:
             normalized.pop("session_type", None)
         normalized["settings"] = dict(cast(dict[str, Any], settings))
+        if "session_bindings" in normalized:
+            normalized["session_bindings"] = validate_session_bindings(normalized["session_bindings"])
         validate_event_limits(normalized["settings"])
         if platform_type in {"onebot", "aiocqhttp"}:
             if "group_management_version" in normalized["settings"] and (

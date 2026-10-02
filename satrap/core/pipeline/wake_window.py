@@ -125,6 +125,7 @@ class WakeWindow:
         scope = str(event.policy_settings.get("context_scope", "legacy_user"))
         return (origin.adapter_id, origin.self_id, origin.chat_type, origin.chat_id, scope,
                 event.session_provider, event.session_type or "", str(event.group_route_generation),
+                str(event.agent_route_generation),
                 "" if scope == "group" else origin.route_user_id or origin.actor_id)
 
     def observe(self, event: MessageEvent, now: float | None = None) -> tuple[PendingMessage, ...]:
