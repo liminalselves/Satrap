@@ -256,7 +256,7 @@ def _legacy_delete(path: Path) -> str:
         close(handle)
 
 
-def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None) -> dict[str, Any]:
+def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None, policy_revision: str | None = None, created_at: float | None = None) -> dict[str, Any]:
     """
     清理保留范围外的受管日志, 所有单文件失败均记录并继续
 
@@ -264,6 +264,8 @@ def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None) 
     - root: 日志根目录
     - retention_days: 包含当天的保留自然日数量
     - today: 可选日期, 默认本地当天; 测试使用固定日期
+    - policy_revision: 可选策略版本, 供跨进程维护协调
+    - created_at: 可选执行时间, 默认当前墙钟
 
     返回:
     - 删除, 跳过及失败列表; 目录锁和结果写入失败由调用边界捕获
@@ -273,7 +275,7 @@ def cleanup_logs(root: Path, retention_days: int, *, today: date | None = None) 
     root = root.resolve()
     current = today or date.today()
     cutoff = current - timedelta(days=retention_days - 1)
-    result: dict[str, Any] = {"created_at": time.time(), "retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": [], "skipped": [], "errors": []}
+    result: dict[str, Any] = {"created_at": time.time() if created_at is None else created_at, "policy_revision": policy_revision, "retention_days": retention_days, "cutoff": cutoff.isoformat(), "deleted": [], "skipped": [], "errors": []}
     with management_lock(root):
         runtimes = active_runtimes(root, prune=True)
         protected = {item.get("current_file") for item in runtimes}
@@ -372,6 +374,8 @@ class ManagedDailyHandler(logging.Handler):
         if self.stopped:
             return
         with self._io_lock:
+            if self.stopped:
+                return
             current = self.clock()
             if self.current_day == current and (self.stream is not None or not open_file):
                 return

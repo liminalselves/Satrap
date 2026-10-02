@@ -12,6 +12,7 @@ import atexit
 
 from satrap.core.log.managed import ManagedDailyHandler, cleanup_logs, log_root, report_failure
 from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
+from satrap.core.log.policy import LogMaintenance, LoggingPolicyStore
 
 
 class StandardLogHandler(logging.Handler):
@@ -74,6 +75,7 @@ class Logger:
         self.std_out, self.file_out = std_out, file_out
         self.max_log_days, self.max_file_lines = max_log_days, max_file_lines
         self._closed = False
+        self.maintenance: LogMaintenance | None = None
         self.stdout_logger = logging.Logger(f"{logger_name}_std", std_level)
         self.file_logger = logging.Logger(f"{logger_name}_file", file_level)
         datefmt = "%Y-%m-%d %H:%M:%S"
@@ -102,6 +104,9 @@ class Logger:
             self._cleanup_old_logs()
         if max_file_lines is not None:
             report_failure("max_file_lines 已弃用, 保留完整日志并使用按日期清理")
+        if file_name is None and max_log_days is None:
+            self.maintenance = LogMaintenance(self.file_handler, LoggingPolicyStore(root=root))
+            self.maintenance.start()
         atexit.register(self.close)
 
     @property
@@ -129,6 +134,8 @@ class Logger:
         if self._closed:
             return
         self._closed = True
+        if self.maintenance is not None:
+            self.maintenance.close()
         for output in (self.file_logger, self.stdout_logger):
             for handler in tuple(output.handlers):
                 output.removeHandler(handler)

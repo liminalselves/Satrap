@@ -670,6 +670,7 @@ async def _run(host: str, port: int) -> None:
 
 def main() -> None:
     """执行 `main` 操作"""
+    logger.set_service("chat")
     parser = argparse.ArgumentParser(description="Satrap 聊天展示层服务")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)

@@ -37,6 +37,7 @@ import zipfile
 
 from satrap.core.config.session_instance_service import SessionInstanceConfigService
 from satrap.core.log import logger
+from satrap.core.log.policy import LoggingPolicyStore, LoggingPolicyConflict
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_class_service import SessionClassConfigService
 from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError, ModelConfigManager
@@ -1512,6 +1513,46 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    独立管理日志策略, 保存不触发后端重启
+
+    参数:
+    - ctx: 已通过控制服务鉴权的请求上下文
+
+    返回:
+    - 策略快照或清理结果, 无关路径返回 None; 失败返回明确状态
+    """
+    if ctx.path not in {"/config/logging", "/config/logging/cleanup"}:
+        return None
+    try:
+        service = LoggingPolicyStore()
+        if ctx.method == "GET" and ctx.path == "/config/logging":
+            return 200, await RAG_WORKERS.run(service.snapshot)
+        if ctx.method == "PUT" and ctx.path == "/config/logging":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            return 200, await RAG_WORKERS.run(service.save, payload.get("policy"), payload.get("expected_revision"))
+        if ctx.method == "POST" and ctx.path == "/config/logging/cleanup":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            result = await RAG_WORKERS.run(service.cleanup, expected_revision=payload.get("expected_revision"))
+            assert result is not None
+            return 200, {"ok": not result["errors"], "result": result}
+        logger.warning(f"[ControlServer] 日志管理不支持请求方法: {ctx.method}, {ctx.path}")
+        return 405, {"ok": False, "error": "请求方法不支持"}
+    except LoggingPolicyConflict as error:
+        logger.warning(f"[ControlServer] 日志策略版本冲突: {error}")
+        return 409, {"ok": False, "error": str(error)}
+    except (WorkerBusyError, TimeoutError) as error:
+        logger.warning(f"[ControlServer] 日志管理忙碌: {error}")
+        return 503, {"ok": False, "error": str(error)}
+    except ValueError as error:
+        logger.warning(f"[ControlServer] 日志管理输入或配置无效: {error}")
+        return 400, {"ok": False, "error": str(error)}
+    except Exception as error:
+        logger.error(f"[ControlServer] 日志管理失败: {error}\n{traceback.format_exc()}")
+        return 500, {"ok": False, "error": "日志管理失败, 请查看日志"}
+
+
 async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     """
     配置文档与平台区段: /config, /config/default, /config/validate, /config/platforms
@@ -2826,6 +2867,7 @@ async def _handle_request(
             _route_ui_config_status,
             _route_chat_history,
             _route_lifecycle,
+            _route_logging,
             _route_config_document,
             _route_group_directory,
             _route_models,
@@ -2938,6 +2980,7 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
 
 def main():
     """入口函数"""
+    logger.set_service("control")
     parser = argparse.ArgumentParser(description="Backend Control Server")
     parser.add_argument("--host", default="127.0.0.1", help="Listen host")
     parser.add_argument("--port", type=int, default=19871, help="Listen port")
