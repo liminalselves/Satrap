@@ -7,11 +7,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
-from typing import Callable, Any
 import threading
 import traceback
+from datetime import date
 import hashlib
+from pathlib import Path
+from typing import Callable, Any
 import json
 import time
 import os
@@ -130,6 +131,14 @@ class LoggingPolicyStore:
         for field in ("deleted", "skipped", "errors"):
             if not isinstance(value.get(field), list):
                 raise ValueError("日志清理结果列表无效")
+        if any(not isinstance(item, str) for item in value["deleted"]):
+            raise ValueError("已删除文件记录无效")
+        for item in value["skipped"] + value["errors"]:
+            if not isinstance(item, dict) or not isinstance(item.get("file"), str) or not isinstance(item.get("reason"), str):
+                raise ValueError("清理状态条目无效")
+        if type(value.get("retention_days")) is not int or not isinstance(value.get("cutoff"), str):
+            raise ValueError("清理状态保留范围无效")
+        date.fromisoformat(value["cutoff"])
         return value
 
     def snapshot(self) -> dict[str, Any]:
@@ -149,7 +158,7 @@ class LoggingPolicyStore:
         maintenance_error = None
         try:
             maintenance_error = json.loads((self.root / ".cleanup-error.json").read_text(encoding="utf-8"))
-            if not isinstance(maintenance_error, dict):
+            if not isinstance(maintenance_error, dict) or type(maintenance_error.get("created_at")) not in (int, float) or not isinstance(maintenance_error.get("error"), str):
                 raise ValueError("维护失败记录格式无效")
         except FileNotFoundError:
             maintenance_error = None
@@ -184,9 +193,9 @@ class LoggingPolicyStore:
         """
         current = time.time() if now is None else now
         lock = self._lock()
-        if not lock.acquire(1):
-            raise TimeoutError("日志策略正在被其它操作使用")
         try:
+            if not lock.acquire(1):
+                raise TimeoutError("日志策略正在被其它操作使用")
             policy, revision = self.read()
             if automatic:
                 if not policy.enabled:
@@ -203,6 +212,11 @@ class LoggingPolicyStore:
             result = cleanup_logs(self.root, policy.retention_days, policy_revision=revision, created_at=current)
             (self.root / ".cleanup-error.json").unlink(missing_ok=True)
             return result
+        except LoggingPolicyConflict:
+            raise   # 客户端版本冲突不是维护任务失败, 不覆盖清理状态
+        except Exception as error:
+            self.record_failure(error)
+            raise
         finally:
             lock.release()
 
@@ -248,7 +262,6 @@ class LogMaintenance:
             self.store.cleanup(automatic=True, now=self.clock())
         except Exception as error:
             self._failure(f"自动日志清理失败: {error}\n{traceback.format_exc()}")
-            self.store.record_failure(error)
 
     def _run(self) -> None:
         """线程边界捕获维护故障, 启动后立即检查并可中断等待"""

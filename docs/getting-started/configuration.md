@@ -158,6 +158,8 @@ satrap session enable assistant
 
 ## 环境变量
 
+文件日志的保留策略在「设置 → 日志保留」独立管理, 默认自动保留 30 个自然日。配置位于 `.satrap/logging.json`, 修改无需重启后端, 详见 [日志保留](logging.md)。`SATRAP_LOG_ROOT` 和 `SATRAP_LOG_CONFIG` 分别覆盖日志目录与策略文件路径。
+
 `ConfigLoader.merge_env()` 支持这些覆盖项:
 
 | 环境变量 | 覆盖字段 |

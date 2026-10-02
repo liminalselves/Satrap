@@ -131,13 +131,19 @@ def test_write_failure_recovers_on_next_record(tmp_path, monkeypatch):
         handler.close()
 
 
-def test_corrupt_live_state_protects_all_process_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize("content", ["broken", "missing_current_file", "wrong_process"])
+def test_corrupt_live_state_protects_all_process_files(tmp_path, monkeypatch, content):
     failures = []
     monkeypatch.setattr("satrap.core.log.managed.report_failure", failures.append)
     handler = ManagedDailyHandler(tmp_path, clock=lambda: date(2020, 1, 1))
     try:
         handler.handle(_record("保留"))
-        (tmp_path / ".runtime" / f"{handler.identity}.json").write_text("broken", encoding="utf-8")
+        import json
+        if content == "missing_current_file":
+            content = json.dumps({"id": handler.identity})
+        elif content == "wrong_process":
+            content = json.dumps({"id": handler.identity, "current_file": "SATRAP-process-20200101-123-aaaaaaaaaaaaaaaa.log"})
+        (tmp_path / ".runtime" / f"{handler.identity}.json").write_text(content, encoding="utf-8")
         result = cleanup_logs(tmp_path, 30, today=date(2026, 10, 3))
         assert handler.current_file.exists() and result["skipped"] and failures
     finally:
@@ -182,3 +188,47 @@ def test_symlink_and_foreign_file_are_preserved(tmp_path):
     result = cleanup_logs(tmp_path, 30)
     assert outside.read_text(encoding="utf-8") == "外部数据"
     assert link.is_symlink() and result["skipped"]
+
+
+@pytest.mark.parametrize("name", [".runtime", ".locks"])
+def test_redirected_management_directory_cannot_touch_outside_files(tmp_path, name):
+    root = tmp_path / "logs"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "123-aaaaaaaaaaaaaaaa.json"
+    sentinel.write_text("不能删除", encoding="utf-8")
+    (outside / "runtime-123-aaaaaaaaaaaaaaaa.lock").write_bytes(b"\0")
+    target = root / name
+    if os.name == "nt":
+        command = "$taskUtf8 = [System.Text.UTF8Encoding]::new($false); [Console]::InputEncoding = $taskUtf8; [Console]::OutputEncoding = $taskUtf8; $OutputEncoding = $taskUtf8; chcp 65001 > $null; New-Item -ItemType Junction -Path $env:SATRAP_TEST_LINK -Target $env:SATRAP_TEST_TARGET | Out-Null"
+        completed = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command], env={**os.environ, "SATRAP_TEST_LINK": str(target), "SATRAP_TEST_TARGET": str(outside)}, text=True, encoding="utf-8", capture_output=True, timeout=15)
+        assert completed.returncode == 0, completed.stderr
+    else:
+        target.symlink_to(outside, target_is_directory=True)
+    try:
+        with pytest.raises(ValueError, match="重定向"):
+            cleanup_logs(root, 30)
+        assert sentinel.read_text(encoding="utf-8") == "不能删除"
+        assert (outside / "runtime-123-aaaaaaaaaaaaaaaa.lock").exists()
+    finally:
+        if os.name == "nt":
+            assert target.absolute().parent == root.resolve()
+            os.rmdir(target)
+        else:
+            target.unlink()
+
+
+def test_failure_diagnostics_cannot_raise_even_when_both_channels_fail(monkeypatch):
+    from satrap.core.log import managed
+    class BrokenStream:
+        def write(self, content):
+            raise OSError("stderr 故障")
+    monkeypatch.setattr(sys, "__stderr__", BrokenStream())
+    monkeypatch.setattr(managed.standard_log_stream, "publish", lambda *args: (_ for _ in ()).throw(RuntimeError("实时流故障")))
+    messages = []
+    monkeypatch.setattr(os, "write", lambda descriptor, content: messages.append(content))
+    managed.report_failure("文件故障")
+    assert "文件故障" in messages[0].decode("utf-8") and "实时流故障" in messages[0].decode("utf-8")
+    monkeypatch.setattr(os, "write", lambda *args: (_ for _ in ()).throw(OSError("输出不可用")))
+    managed.report_failure("全部通道故障")

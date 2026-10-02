@@ -121,6 +121,47 @@ def test_save_failure_preserves_original_and_retry_succeeds(tmp_path, monkeypatc
     assert store.save({"enabled": False, "retention_days": 60}, "missing")["policy"]["retention_days"] == 60
 
 
+@pytest.mark.parametrize("stage", ["path-resolution", "file-open"])
+def test_logger_initialization_failure_keeps_console_usable(tmp_path, monkeypatch, capsys, stage):
+    from satrap.core.log import Logger
+    failures = []
+    monkeypatch.setattr("satrap.core.log.report_failure", failures.append)
+    monkeypatch.setattr("satrap.core.log.managed.report_failure", failures.append)
+    if stage == "path-resolution":
+        monkeypatch.setattr("satrap.core.log.log_root", lambda: (_ for _ in ()).throw(OSError("日志目录不可解析")))
+    logger = Logger("invalid-root", std_out=True, file_name=str(tmp_path / "invalid\0path") if stage == "file-open" else None)
+    try:
+        logger.warning("业务仍可运行")
+        assert failures and logger.log_file is None
+        assert "业务仍可运行" in capsys.readouterr().err
+    finally:
+        logger.close()
+
+
+def test_corrupt_cleanup_result_is_visible_without_breaking_config(tmp_path, monkeypatch):
+    store = store_for(tmp_path)
+    store.root.mkdir()
+    (store.root / ".cleanup-result.json").write_text('{"created_at": 1, "deleted": [], "skipped": [null], "errors": []}', encoding="utf-8")
+    failures = []
+    monkeypatch.setattr("satrap.core.log.policy.report_failure", failures.append)
+    snapshot = store.snapshot()
+    assert snapshot["status_error"] and snapshot["last_cleanup"] is None and failures
+    assert snapshot["policy"]["retention_days"] == 30
+
+
+def test_manual_global_failure_is_saved_and_retry_clears_it(tmp_path, monkeypatch):
+    store = store_for(tmp_path)
+    from satrap.core.log import policy
+    original_cleanup = policy.cleanup_logs
+    monkeypatch.setattr(policy, "cleanup_logs", lambda *args, **kwargs: (_ for _ in ()).throw(PermissionError("维护目录不可写")))
+    with pytest.raises(PermissionError):
+        store.cleanup(expected_revision="missing")
+    assert store.snapshot()["maintenance_error"]["error"] == "维护目录不可写"
+    monkeypatch.setattr(policy, "cleanup_logs", original_cleanup)
+    assert store.cleanup(expected_revision="missing") is not None
+    assert store.snapshot()["maintenance_error"] is None
+
+
 def test_two_processes_coordinate_cleanup_and_keep_concurrent_records(tmp_path):
     store = store_for(tmp_path)
     old = expired(store.root)

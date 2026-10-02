@@ -4,15 +4,15 @@ Satrap 统一日志配置与输出接口
 控制台日志同步到实时流, 文件日志按日期和进程隔离,
 文件故障由独立诊断通道记录, 不中断调用日志的业务
 """
-from pathlib import Path
 import traceback
-import logging
 import colorlog
+import logging
+from pathlib import Path
 import atexit
 
 from satrap.core.log.managed import ManagedDailyHandler, cleanup_logs, log_root, report_failure
-from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
 from satrap.core.log.policy import LogMaintenance, LoggingPolicyStore
+from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
 
 
 class StandardLogHandler(logging.Handler):
@@ -78,6 +78,9 @@ class Logger:
         self.maintenance: LogMaintenance | None = None
         self.stdout_logger = logging.Logger(f"{logger_name}_std", std_level)
         self.file_logger = logging.Logger(f"{logger_name}_file", file_level)
+        self.stdout_logger.parent = logging.getLogger()
+        self.file_logger.parent = logging.getLogger()
+        # 保留根日志处理器和测试捕获的传播, 实例文件句柄仍独立
         datefmt = "%Y-%m-%d %H:%M:%S"
         plain_format = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
         handler = logging.StreamHandler()
@@ -93,20 +96,27 @@ class Logger:
             stream_handler.setLevel(std_level)
             stream_handler.setFormatter(logging.Formatter(plain_format, datefmt))
             self.stdout_logger.addHandler(stream_handler)
-        explicit_path = Path(file_name).resolve() if file_name else None
-        root = explicit_path.parent if explicit_path else (Path(output_dir) / "logs" if output_dir else log_root())
-        self.base_dir = str(root.resolve())
-        self.file_handler = ManagedDailyHandler(root, file_path=explicit_path)
-        self.file_handler.setLevel(file_level)
-        self.file_handler.setFormatter(logging.Formatter(plain_format, datefmt))
-        self.file_logger.addHandler(self.file_handler)
-        if max_log_days is not None:
-            self._cleanup_old_logs()
+        self.file_handler: ManagedDailyHandler | None = None
+        self.base_dir = ""
+        try:
+            explicit_path = Path(file_name).resolve() if file_name else None
+            root = explicit_path.parent if explicit_path else (Path(output_dir) / "logs" if output_dir else log_root())
+            self.base_dir = str(root.resolve())
+            self.file_handler = ManagedDailyHandler(root, file_path=explicit_path)
+            self.file_handler.setLevel(file_level)
+            self.file_handler.setFormatter(logging.Formatter(plain_format, datefmt))
+            self.file_logger.addHandler(self.file_handler)
+            if max_log_days is not None:
+                self._cleanup_old_logs()
+            if file_name is None and max_log_days is None:
+                self.maintenance = LogMaintenance(self.file_handler, LoggingPolicyStore(root=root))
+                self.maintenance.start()
+        except Exception as error:
+            report_failure(f"日志文件或维护配置初始化失败: {error}\n{traceback.format_exc()}")
+            if self.file_handler is None:
+                self.file_logger.addHandler(logging.NullHandler())
         if max_file_lines is not None:
             report_failure("max_file_lines 已弃用, 保留完整日志并使用按日期清理")
-        if file_name is None and max_log_days is None:
-            self.maintenance = LogMaintenance(self.file_handler, LoggingPolicyStore(root=root))
-            self.maintenance.start()
         atexit.register(self.close)
 
     @property
@@ -117,7 +127,7 @@ class Logger:
         返回:
         - 已打开文件的绝对路径, 尚未写入时返回 None
         """
-        path = self.file_handler.current_file
+        path = self.file_handler.current_file if self.file_handler else None
         return str(path) if path else None
 
     def set_service(self, service: str) -> None:
@@ -127,7 +137,8 @@ class Logger:
         参数:
         - service: 可扩展的服务名称
         """
-        self.file_handler.set_service(service)
+        if self.file_handler is not None:
+            self.file_handler.set_service(service)
 
     def close(self) -> None:
         """幂等关闭当前实例的全部日志句柄"""
@@ -139,7 +150,10 @@ class Logger:
         for output in (self.file_logger, self.stdout_logger):
             for handler in tuple(output.handlers):
                 output.removeHandler(handler)
-                handler.close()
+                try:
+                    handler.close()
+                except Exception as error:
+                    report_failure(f"日志处理器关闭失败: {error}\n{traceback.format_exc()}")
         atexit.unregister(self.close)
 
     def info(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:

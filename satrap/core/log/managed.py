@@ -7,14 +7,14 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Callable, Iterator, Any, BinaryIO, TextIO
 import threading
 import traceback
+from datetime import date, datetime, timedelta
 import logging
+from pathlib import Path
 import secrets
 import ctypes
+from typing import Callable, Iterator, Any, BinaryIO, TextIO
 import json
 import time
 import sys
@@ -32,6 +32,23 @@ else:
 _MANAGED = re.compile(r"^SATRAP-([a-z0-9_-]+)-(\d{8})-(\d+-[a-f0-9]{16})\.log$")
 _LEGACY = re.compile(r"^SATRAP-(\d{8})\.log$")
 _RUNTIME = re.compile(r"^runtime-(\d+-[a-f0-9]{16})\.lock$")
+
+
+def managed_subdirectory(root: Path, name: str) -> Path:
+    """
+    核对日志内部管理目录未被链接或 Windows junction 重定向
+
+    参数:
+    - root: 已解析的日志根目录
+    - name: 固定的内部目录名称
+
+    返回:
+    - 根目录内的真实路径, 重定向时抛出 ValueError 由调用边界处理
+    """
+    path = root / name
+    if path.is_symlink() or path.resolve() != path.absolute():
+        raise ValueError(f"日志管理目录不能重定向: {name}")
+    return path
 
 
 def report_failure(message: str) -> None:
@@ -55,7 +72,7 @@ def report_failure(message: str) -> None:
     except Exception as error:
         try:
             os.write(2, f"{content}\n[日志管理] 实时流报告失败: {error}\n".encode("utf-8"))
-        except OSError:
+        except Exception:
             return   # 全部诊断通道不可用时仍隔离日志故障, 此处不能递归报告
 
 
@@ -82,29 +99,33 @@ class LogFileLock:
         返回:
         - 已获取时返回 True, 有其它持有者时返回 False; 文件系统错误由调用边界处理
         """
+        if self.path.is_symlink() or self.path.resolve() != self.path.absolute():
+            raise ValueError("日志锁路径不能被链接重定向")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+b")
-        if handle.seek(0, 2) == 0:
-            handle.write(b"\0")
-            handle.flush()
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                handle.seek(0)
-                if os.name == "nt":
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                self.file = handle
-                return True
-            except OSError as error:
-                if error.errno not in {11, 13, 35, 36} and getattr(error, "winerror", None) not in {32, 33}:
-                    handle.close()
-                    raise
-                if time.monotonic() >= deadline:
-                    handle.close()
-                    return False
-                time.sleep(0.01)
+        try:
+            if handle.seek(0, 2) == 0:
+                handle.write(b"\0")
+                handle.flush()
+            deadline = time.monotonic() + timeout
+            while True:
+                try:
+                    handle.seek(0)
+                    if os.name == "nt":
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    else:
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    self.file = handle
+                    return True
+                except OSError as error:
+                    if error.errno not in {11, 13, 35, 36} and getattr(error, "winerror", None) not in {32, 33}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        return False
+                    time.sleep(0.01)
+        finally:
+            if self.file is not handle:
+                handle.close()   # 初始化, 等锁和控制信号失败也不能泄漏句柄
 
     def release(self) -> None:
         """释放锁和句柄, 进程异常退出时操作系统也会释放"""
@@ -133,7 +154,8 @@ def management_lock(root: Path, timeout: float = 1) -> Iterator[None]:
     返回:
     - 持有锁的上下文, 超时抛出 TimeoutError 由业务边界记录
     """
-    lock = LogFileLock(root / ".locks" / "maintenance.lock")
+    root = root.resolve()
+    lock = LogFileLock(managed_subdirectory(root, ".locks") / "maintenance.lock")
     if not lock.acquire(timeout):
         raise TimeoutError("日志目录正在执行其它管理操作")
     try:
@@ -150,6 +172,8 @@ def atomic_json(path: Path, payload: dict[str, Any]) -> None:
     - path: 管理目录内的目标文件
     - payload: JSON 对象
     """
+    if path.is_symlink() or path.resolve() != path.absolute():
+        raise ValueError("日志管理文件不能被链接重定向")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + f".{secrets.token_hex(8)}.tmp")
     try:
@@ -185,7 +209,9 @@ def active_runtimes(root: Path, *, prune: bool = False) -> list[dict[str, Any]]:
     - 活动进程状态, 状态文件损坏时标明未知并保护该进程全部文件
     """
     result = []
-    for path in (root / ".locks").glob("runtime-*.lock"):
+    lock_dir = managed_subdirectory(root, ".locks")
+    runtime_dir = managed_subdirectory(root, ".runtime")
+    for path in lock_dir.glob("runtime-*.lock"):
         match = _RUNTIME.fullmatch(path.name)
         if not match or path.is_symlink():
             continue
@@ -194,19 +220,25 @@ def active_runtimes(root: Path, *, prune: bool = False) -> list[dict[str, Any]]:
         if lock.acquire():
             lock.release()
             if prune:
-                state_path = root / ".runtime" / f"{identity}.json"
-                if not state_path.is_symlink() and state_path.resolve().parent == (root / ".runtime").resolve():
+                state_path = runtime_dir / f"{identity}.json"
+                if not state_path.is_symlink() and state_path.resolve().parent == runtime_dir:
                     state_path.unlink(missing_ok=True)
-                if path.resolve().parent == (root / ".locks").resolve():
+                if path.resolve().parent == lock_dir:
                     path.unlink(missing_ok=True)
             continue
         try:
-            state = json.loads((root / ".runtime" / f"{identity}.json").read_text(encoding="utf-8"))
-            if not isinstance(state, dict) or state.get("id") != identity:
+            state_path = runtime_dir / f"{identity}.json"
+            if state_path.is_symlink():
+                raise ValueError("日志进程状态文件不能为链接")
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or state.get("id") != identity or "current_file" not in state:
                 raise ValueError("进程状态格式无效")
             current_file = state.get("current_file")
             if current_file is not None and (not isinstance(current_file, str) or Path(current_file).name != current_file):
                 raise ValueError("活动文件名无效")
+            current_match = _MANAGED.fullmatch(current_file) if isinstance(current_file, str) else None
+            if current_match and current_match[3] != identity:
+                raise ValueError("活动文件不属于登记进程")
             result.append(state)
         except (OSError, ValueError, TypeError) as error:
             report_failure(f"进程状态读取失败: {identity}, {error}")
@@ -362,7 +394,7 @@ class ManagedDailyHandler(logging.Handler):
         """在目录锁内发布活动文件, 未成功登记的文件不允许写入"""
         self.state["current_file"] = self.current_file.name if self.current_file else None
         self.state["updated_at"] = time.time()
-        atomic_json(self.root / ".runtime" / f"{self.identity}.json", self.state)
+        atomic_json(managed_subdirectory(self.root, ".runtime") / f"{self.identity}.json", self.state)
 
     def tick(self, *, open_file: bool = False) -> None:
         """

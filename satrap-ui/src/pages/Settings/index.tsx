@@ -11,6 +11,7 @@ import { Save, RefreshCw, FileText, AlertCircle } from 'lucide-react';
 import { BackendControls, backendStateLabel } from '@/components/common/BackendControls';
 import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
+import { LogRetentionPanel } from './LogRetentionPanel';
 
 interface ConfigData {
   api?: {
@@ -37,6 +38,7 @@ export function Settings() {
   const [configPath, setConfigPath] = useState('');
   const [configExists, setConfigExists] = useState(false);
   const [controlAvailable, setControlAvailable] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('general');
 
   // 从控制服务加载配置
   const loadConfig = useCallback(async () => {
@@ -223,13 +225,18 @@ export function Settings() {
           </div>
         )}
 
-        <Tabs defaultValue="general">
+        <Tabs defaultValue="general" onValueChange={setSettingsTab}>
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
+            <TabsTrigger value="logging">日志保留</TabsTrigger>
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
+
+          <div hidden={settingsTab !== 'logging'}>
+            <LogRetentionPanel active={settingsTab === 'logging'} />
+          </div>
 
           <TabsContent value="general">
             <div className="grid grid-cols-2 gap-6">
