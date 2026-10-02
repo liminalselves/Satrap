@@ -9,12 +9,13 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 3
+PLATFORM_SCHEMA_VERSION = 4
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
     "group_accounts", "group_legacy_adoption", "group_configs", "group_directory", "group_sync_state", "group_actions",
 })
+_MESSAGE_TABLES = frozenset({"platform_message_chats", "platform_messages", "platform_message_backups"})
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
@@ -39,7 +40,8 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     """
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     existing = _tables(connection)
-    required = ({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
+    required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
+                | (_MESSAGE_TABLES if version >= 4 else set()))
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -113,3 +115,39 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     if version < 3:
         connection.execute("ALTER TABLE group_actions ADD COLUMN model_origin_json TEXT")
         connection.execute("PRAGMA user_version = 3")
+
+    if version < 4:
+        connection.execute(
+            "CREATE TABLE platform_message_chats ("
+            "scope_key TEXT PRIMARY KEY, adapter_id TEXT NOT NULL, self_id TEXT NOT NULL, "
+            "conversation_kind TEXT NOT NULL, chat_id TEXT NOT NULL, label TEXT NOT NULL DEFAULT '', "
+            "revision INTEGER NOT NULL DEFAULT 0, delete_before REAL, delete_token TEXT, "
+            "captured_from REAL, captured_to REAL)"
+        )
+        connection.execute(
+            "CREATE TABLE platform_messages ("
+            "scope_key TEXT NOT NULL, message_id TEXT NOT NULL, sender_id TEXT NOT NULL DEFAULT '', "
+            "nickname TEXT NOT NULL DEFAULT '', card TEXT NOT NULL DEFAULT '', message_time REAL NOT NULL, "
+            "received_at REAL NOT NULL, direction TEXT NOT NULL CHECK(direction IN ('inbound', 'outbound')), "
+            "text TEXT NOT NULL DEFAULT '', components_json TEXT NOT NULL DEFAULT '[]', "
+            "reply_to_message_id TEXT, mentions_json TEXT NOT NULL DEFAULT '[]', media_json TEXT NOT NULL DEFAULT '[]', "
+            "status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'recalled', 'deleted', 'expired')), "
+            "source TEXT NOT NULL, verified INTEGER NOT NULL DEFAULT 1, truncated INTEGER NOT NULL DEFAULT 0, "
+            "delete_token TEXT, time_source TEXT NOT NULL DEFAULT 'platform' CHECK(time_source IN ('platform', 'local')), "
+            "PRIMARY KEY(scope_key, message_id), "
+            "FOREIGN KEY(scope_key) REFERENCES platform_message_chats(scope_key))"
+        )
+        connection.execute(
+            "CREATE INDEX idx_platform_messages_time ON platform_messages(scope_key, status, message_time, message_id)"
+        )
+        connection.execute(
+            "CREATE INDEX idx_platform_messages_sender ON platform_messages(scope_key, sender_id, status, message_time, message_id)"
+        )
+        connection.execute(
+            "CREATE TABLE platform_message_backups ("
+            "backup_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, action TEXT NOT NULL, "
+            "created_at REAL NOT NULL, expires_at REAL NOT NULL, payload_json TEXT NOT NULL, "
+            "FOREIGN KEY(scope_key) REFERENCES platform_message_chats(scope_key))"
+        )
+        connection.execute("CREATE INDEX idx_platform_message_backups_expiry ON platform_message_backups(expires_at)")
+        connection.execute("PRAGMA user_version = 4")

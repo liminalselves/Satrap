@@ -11,6 +11,7 @@ import pytest
 
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.config.group_actions import GroupActionStore
+from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict
 from satrap.core.call_context import CallOrigin, bind_call_origin
@@ -112,12 +113,14 @@ def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> N
                  "panel", 1, approval_required=True)
     with sqlite3.connect(database) as connection:
         connection.execute("ALTER TABLE group_actions DROP COLUMN model_origin_json")
+        for table in ("platform_message_backups", "platform_messages", "platform_message_chats"):
+            connection.execute(f"DROP TABLE {table}")
         connection.execute("PRAGMA user_version = 2")
     migrated = GroupActionStore(database)
     record = migrated.get("100", "456", "legacy-action-1")
     assert record is not None and record["state"] == "pending"
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
         assert "model_origin_json" in {row[1] for row in connection.execute("PRAGMA table_info(group_actions)")}
 
 

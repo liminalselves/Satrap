@@ -10,6 +10,7 @@ import pytest
 from satrap.core.config.document import upsert_platform
 from satrap.core.config.group_store import GroupConfigConflict, GroupConfigStore, GroupLegacyConflict
 from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform import PlatformConfig
 from satrap.core.conversation import ConversationRoute
@@ -79,11 +80,11 @@ def test_override_store_uses_central_schema_without_downgrade(tmp_path: Path) ->
     database = tmp_path / "platform.db"
     SessionOverrideStore(database)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
-        connection.execute("PRAGMA user_version = 3")
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
+        connection.execute(f"PRAGMA user_version = {PLATFORM_SCHEMA_VERSION + 1}")
     SessionOverrideStore(database)
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION + 1
 
 
 def test_policy_values_reject_unknown_and_ambiguous_values(tmp_path: Path) -> None:
