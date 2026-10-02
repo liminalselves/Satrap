@@ -104,9 +104,6 @@ class LogFileLock:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         handle = self.path.open("a+b")
         try:
-            if handle.seek(0, 2) == 0:
-                handle.write(b"\0")
-                handle.flush()
             deadline = time.monotonic() + timeout
             while True:
                 try:
@@ -115,6 +112,10 @@ class LogFileLock:
                         msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
                     else:
                         fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    if handle.seek(0, 2) == 0:
+                        handle.write(b"\0")
+                        handle.flush()
+                    # 首字节只在获得锁后初始化, 防止并发创建时写入已被另一进程锁住的区域
                     self.file = handle
                     return True
                 except OSError as error:
