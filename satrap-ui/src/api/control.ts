@@ -17,6 +17,8 @@ import type {
   ConversationCatalog,
   ConversationPlatform,
   ConversationDataSnapshot,
+  ConversationUser,
+  ConversationUserCatalog,
 } from './types';
 import type { StorageAuditResult } from './storage';
 import type {
@@ -242,6 +244,13 @@ export function parseEdictumConfigs(data: unknown): Record<string, EdictumSessio
 }
 
 export const controlApi = {
+  listConversationUsers: async (platformId: string, query = '', offset = 0, type = ''): Promise<ConversationUserCatalog> => (await controlClient.get<ConversationUserCatalog>('/config/conversations/users', { params: { platform_id: platformId || undefined, platform_type: type || undefined, q: query, offset, limit: 40 } })).data,
+  getConversationUser: async (platformId: string, userId: string): Promise<{ user: ConversationUser | null }> => (await controlClient.get<{ user: ConversationUser | null }>('/config/conversations/users', { params: { platform_id: platformId, user_id: userId } })).data,
+  mutateConversationUser: async (platformId: string, userId: string, data: Record<string, unknown>): Promise<{ ok: boolean; user: ConversationUser | null }> => {
+    const result = (await controlClient.post<{ ok: boolean; user: ConversationUser | null; error?: string }>('/config/conversations/users', { ...data, platform_id: platformId, user_id: userId })).data;
+    if (!result.ok) throw new Error(result.error || '用户资料修改失败');
+    return result;
+  },
   listConversationPlatforms: async (): Promise<{ platforms: string[]; items?: ConversationPlatform[] }> => (await controlClient.get<{ platforms: string[]; items?: ConversationPlatform[] }>('/config/conversations/platforms')).data,
   listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string> } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
   conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,

@@ -23,7 +23,6 @@ const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((modu
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
 const Conversations = lazy(() => import('@/pages/Conversations').then((module) => ({ default: module.Conversations })));
-const Users = lazy(() => import('@/pages/Users').then((module) => ({ default: module.Users })));
 const Settings = lazy(() => import('@/pages/Settings').then((module) => ({ default: module.Settings })));
 const Chat = lazy(() => import('@/pages/Chat').then((module) => ({ default: module.Chat })));
 
@@ -31,6 +30,15 @@ function LegacyAdminRoute({ destination }: { destination: string }) {
   const location = useLocation();
   const target = destination === '/agents' && new URLSearchParams(location.search).has('groupAdapter') ? '/conversations/instances' : destination;
   return <Navigate replace to={`${target}${location.search}${location.hash}`} />;
+}
+
+function LegacyUsersRoute() {
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  query.set('view', 'users');
+  if (query.has('platform_id')) { query.set('platform', query.get('platform_id')!); query.delete('platform_id'); }
+  if (query.has('user_id')) { query.set('user', query.get('user_id')!); query.delete('user_id'); }
+  return <Navigate replace to={`/conversations?${query}${location.hash}`} />;
 }
 
 function lazyRoute(element: ReactElement) {
@@ -73,7 +81,7 @@ export const router = createBrowserRouter([
       ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
       { path: 'checkpoints', element: <LegacyAdminRoute destination="/conversations/versions" /> },
-      { path: 'users', element: lazyRoute(<Users />) },
+      { path: 'users', element: <LegacyUsersRoute /> },
       { path: 'settings', element: lazyRoute(<Settings />) },
     ],
   },

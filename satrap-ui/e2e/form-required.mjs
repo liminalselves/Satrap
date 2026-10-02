@@ -12,6 +12,7 @@ try {
   await server.listen();
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   const writes = [];
+  let user = { platform_id: 'test-platform', platform_label: '测试平台', platform_type: 'test', user_id: 'user-1', user_nickname: '甲', user_platform: 'test', user_session: [], has_profile: true, revision: 'v1', conversations: [], conversation_count: 0 };
   const cors = {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Credentials': 'true',
@@ -26,14 +27,21 @@ try {
     const request = route.request();
     const url = new URL(request.url());
     if (request.method() === 'POST') writes.push({ path: url.pathname, body: request.postDataJSON() });
+    if (url.pathname === '/config/conversations/users') {
+      if (request.method() === 'POST') {
+        const data = request.postDataJSON();
+        if (data.action === 'create') user = { ...user, user_id: data.user_id, revision: 'v2' };
+        if (data.action === 'associate') user = { ...user, user_session: [data.session_id], revision: 'v3' };
+        return route.fulfill({ json: { ok: true, user }, headers: cors });
+      }
+      return route.fulfill({ json: url.searchParams.has('user_id') ? { user } : { items: [user], total: 1, new_revision: 'missing' }, headers: cors });
+    }
     const responses = {
       '/api/health': { running: true, adapters: {} },
       '/config/models': {},
-      '/api/users': { users: [{ user_id: 'user-1', user_platform: 'onebot', user_nickname: '甲', user_session: [] }], count: 1 },
+      '/config/conversations/platforms': { platforms: ['test-platform'], items: [{ id: 'test-platform', type: 'test', type_label: '测试', label: '测试平台' }] },
       '/api/checkpoints': { conversation_id: 'conv-test', checkpoints: [{ checkpoint_id: 'ckpt-1', created_at: 1 }], branches: [] },
       '/api/checkpoint/audit': { mutations: [] },
-      '/api/user/create': { ok: true, created: true, user: { user_id: 'misskey:probe', user_platform: 'misskey', user_nickname: '', user_session: [] } },
-      '/api/user/bind': { ok: true, session_ids: ['sr7dws'] },
       '/api/checkpoint/fork': { ok: true, conversation_id: 'conv-test:fork:retry_v2' },
     };
     return route.fulfill({ json: responses[url.pathname] ?? { ok: true }, headers: cors });
@@ -59,35 +67,36 @@ try {
   await dialog.waitFor({ state: 'hidden' });
   assert.deepEqual(writesTo('/config/models').map((item) => item.path), ['/config/models/llm/probe-model']);
 
-  // 2. 用户: 用户 ID 必填, 空 ID 不发创建请求
+  // 2. 用户资料: 空 ID 不发创建请求
   await page.goto(origin + '/users');
-  await page.getByRole('button', { name: '新建用户', exact: true }).click();
-  const userId = dialog.getByLabel(/用户 ID/);
+  await page.getByRole('button', { name: '添加用户资料', exact: true }).click();
+  const userId = dialog.getByLabel('资料用户 ID');
   assert.equal(await userId.inputValue(), '');
-  await dialog.getByRole('button', { name: '创建', exact: true }).click();
+  const saveUser = dialog.getByRole('button', { name: '保存资料', exact: true });
+  assert.equal(await saveUser.isDisabled(), true);
+  await saveUser.evaluate((element) => element.click());
   await page.waitForTimeout(200);
-  assert.deepEqual(writesTo('/api/user/create'), []);
+  assert.deepEqual(writesTo('/config/conversations/users'), []);
   assert.equal(await dialog.isVisible(), true);
-  await userId.fill('misskey:probe');
-  await dialog.getByRole('button', { name: '创建', exact: true }).click();
+  await userId.fill('probe');
+  await saveUser.click();
   await dialog.waitFor({ state: 'hidden' });
-  assert.deepEqual(writesTo('/api/user/create').map((item) => item.body.user_id), ['misskey:probe']);
+  assert.deepEqual(writesTo('/config/conversations/users').map((item) => item.body.user_id), ['probe']);
 
-  // 3. 会话绑定: Session ID 必填, 空 ID 不发绑定请求 (详情面板需先选中用户)
-  await page.getByTitle('编辑').click();
-  await dialog.getByRole('button', { name: '取消', exact: true }).click();
-  await dialog.waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: '绑定', exact: true }).click();
-  const sessionId = dialog.getByLabel(/Session ID/);
+  // 3. 列表关联: 空对话 ID 不发请求
+  await page.getByRole('button', { name: '编辑用户资料', exact: true }).waitFor();
+  await page.getByText('高级资料操作', { exact: true }).click();
+  const sessionId = page.getByLabel('关联对话 ID');
   assert.equal(await sessionId.inputValue(), '');
-  await dialog.getByRole('button', { name: '绑定', exact: true }).click();
+  const associate = page.getByRole('button', { name: '添加关联', exact: true });
+  assert.equal(await associate.isDisabled(), true);
+  await associate.evaluate((element) => element.click());
   await page.waitForTimeout(200);
-  assert.deepEqual(writesTo('/api/user/bind'), []);
-  assert.equal(await dialog.isVisible(), true);
+  assert.deepEqual(writesTo('/config/conversations/users').filter((item) => item.body.action === 'associate'), []);
   await sessionId.fill('sr7dws');
-  await dialog.getByRole('button', { name: '绑定', exact: true }).click();
-  await dialog.waitFor({ state: 'hidden' });
-  assert.deepEqual(writesTo('/api/user/bind').map((item) => item.body.session_id), ['sr7dws']);
+  await associate.click();
+  await page.waitForFunction(() => document.body.textContent.includes('此用户暂无关联对话') && document.body.textContent.includes('编辑用户资料'));
+  assert.deepEqual(writesTo('/config/conversations/users').filter((item) => item.body.action === 'associate').map((item) => item.body.session_id), ['sr7dws']);
 
   // 4. 检查点分支: 分支名必填, 空分支名不发 Fork 请求
   await page.goto(origin + '/checkpoints');
@@ -105,7 +114,7 @@ try {
   await dialog.waitFor({ state: 'hidden' });
   assert.deepEqual(writesTo('/api/checkpoint/fork').map((item) => item.body.branch_name), ['retry_v2']);
 
-  console.log('PASS: 模型配置名称/用户 ID/绑定 Session ID/分支名为空时不发写请求且弹窗保留, 填写后正常提交');
+  console.log('PASS: 模型配置名称/用户 ID/关联对话 ID/分支名为空时不发写请求, 填写后正常提交');
 } finally {
   if (browser) await browser.close();
   await server.close();

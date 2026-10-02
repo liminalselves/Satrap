@@ -10,6 +10,7 @@ import { Modal } from '@/components/ui/Modal';
 import { Badge } from '@/components/ui/Badge';
 import { useDirtyGuard, confirmDiscard } from '@/hooks/useDirtyGuard';
 import { formatTime } from '@/utils/format';
+import { UserView } from './UserView';
 
 const errorText = (error: unknown) => axios.isAxiosError<{ error?: string; detail?: string }>(error)
   ? error.response?.data?.error || error.response?.data?.detail || error.message
@@ -25,6 +26,7 @@ function RecordTags({ record }: { record: ConversationRecord }) {
 
 export function Conversations() {
   const [search, setSearch] = useSearchParams();
+  const userView = search.get('view') === 'users';
   const platform = search.get('platform') || '';
   const platformType = search.get('type') || '';
   const selected = search.get('conversation') || '';
@@ -40,11 +42,17 @@ export function Conversations() {
   const [error, setError] = useState('');
   const [refresh, setRefresh] = useState(0);
   const [recordMeta, setRecordMeta] = useState<{ platform: string; selected: string; record: ConversationRecord }>();
+  const dirty = useRef({ user: false, context: false });
+  const setUserDirty = useCallback((value: boolean) => { dirty.current.user = value; }, []);
+  const setContextDirty = useCallback((value: boolean) => { dirty.current.context = value; }, []);
+  const hasUnsaved = useCallback(() => dirty.current.user || dirty.current.context, []);
+  useDirtyGuard(hasUnsaved);
   const chooseFilter = (key: string, value: string) => {
     const next = new URLSearchParams(search);
     value ? next.set(key, value) : next.delete(key);
     next.delete('conversation');
     next.delete('record_platform');
+    next.delete('user'); next.delete('user_platform');
     if (key === 'type') next.delete('platform');
     if (key === 'type' || key === 'platform') [...next.keys()].filter((key) => key.startsWith('f.')).forEach((key) => next.delete(key));
     setSearch(next); setOffset(0);
@@ -68,29 +76,34 @@ export function Conversations() {
   }, []);
   useEffect(() => {
     let disposed = false;
+    if (userView) { setLoading(false); return; }
     setLoading(true); setError('');
     controlApi.listConversationRecords(platform, submitted, offset, { type: platformType, filters: JSON.parse(filtersKey) }).then((data) => { if (!disposed) setResult({ ...data, items: data.items.map((item) => ({ ...item, platform_id: item.platform_id || platform })) }); })
       .catch((error) => { if (!disposed) setError(errorText(error)); }).finally(() => { if (!disposed) setLoading(false); });
     return () => { disposed = true; };
-  }, [platform, platformType, submitted, offset, filtersKey, refresh]);
+  }, [platform, platformType, submitted, offset, filtersKey, refresh, userView]);
   const record = recordMeta?.platform === recordPlatform && recordMeta.selected === selected ? recordMeta.record : result.items.find((item) => item.conversation_id === selected && item.platform_id === recordPlatform);
   const names = { ...facetNames, ...result.facet_names };
   const types = [...new Map(platforms.map((item) => [item.type, item.type_label])).entries()];
   return <div className="space-y-5">
     <PageHeader title="对话记录" description="按平台与归属查看和维护上下文、历史对话" actions={<Link className="text-sm text-accent" to="/conversations/instances">管理对话实例</Link>} />
+    <div className="flex gap-2" aria-label="记录查看方式">{[{ value: '', label: '按对话' }, { value: 'users', label: '按用户' }].map((item) => <Button key={item.label} variant={(item.value === 'users') === userView ? 'primary' : 'ghost'} onClick={() => { const next = new URLSearchParams(search); item.value ? next.set('view', item.value) : next.delete('view'); next.delete('user'); next.delete('user_platform'); next.delete('conversation'); next.delete('record_platform'); setSearch(next); setOffset(0); }}>{item.label}</Button>)}</div>
     <Card className="space-y-3">
       <form className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); setSubmitted(query); setOffset(0); }}>
         <label className="min-w-0 text-sm">平台类型<select aria-label="平台类型" className="glass-input mt-1 w-full" value={platformType} onChange={(event) => chooseFilter('type', event.target.value)}><option value="">全部类型</option>{types.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
         <label className="min-w-0 text-sm">平台实例<select aria-label="记录平台" className="glass-input mt-1 w-full" value={platform} onChange={(event) => chooseFilter('platform', event.target.value)}><option value="">全部实例</option>{platform && !platforms.some((item) => item.id === platform) && <option value={platform}>{platform}</option>}{platforms.filter((item) => !platformType || item.type === platformType).map((item) => <option key={item.id} value={item.id}>{item.label} · {item.type_label}</option>)}</select></label>
-        <label className="min-w-0 text-sm">搜索<input aria-label="搜索对话" className="glass-input mt-1 w-full" placeholder="搜索 ID、群名、用户或元数据" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
-        {Object.entries(result.facets || {}).map(([key, values]) => <label key={key} className="min-w-0 text-sm">{names[key] || key}<select aria-label={`筛选${names[key] || key}`} className="glass-input mt-1 w-full" value={filters[key] || ''} onChange={(event) => chooseFilter(`f.${key}`, event.target.value)}><option value="">{key === 'kind' ? '默认（隐藏旧子代理）' : '全部'}</option>{key === 'kind' && <option value="all">全部类别（含旧子代理）</option>}{filters[key] && !values.some((item) => item.value === filters[key]) && filters[key] !== 'all' && <option value={filters[key]}>{filters[key]}</option>}{values.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>)}
-        <div className="flex flex-wrap items-end gap-2"><Button type="submit" disabled={loading}>搜索</Button><Button type="button" onClick={() => setRefresh((value) => value + 1)} disabled={loading}>刷新列表</Button><Button type="button" onClick={() => { setSearch({}); setQuery(''); setSubmitted(''); setOffset(0); }}>重置筛选</Button></div>
+        <label className="min-w-0 text-sm">搜索<input aria-label={userView ? '搜索用户' : '搜索对话'} className="glass-input mt-1 w-full" placeholder={userView ? '搜索用户 ID、昵称或平台实例' : '搜索 ID、群名、用户或元数据'} value={query} onChange={(event) => setQuery(event.target.value)} /></label>
+        {!userView && Object.entries(result.facets || {}).map(([key, values]) => <label key={key} className="min-w-0 text-sm">{names[key] || key}<select aria-label={`筛选${names[key] || key}`} className="glass-input mt-1 w-full" value={filters[key] || ''} onChange={(event) => chooseFilter(`f.${key}`, event.target.value)}><option value="">{key === 'kind' ? '默认（隐藏旧子代理）' : '全部'}</option>{key === 'kind' && <option value="all">全部类别（含旧子代理）</option>}{filters[key] && !values.some((item) => item.value === filters[key]) && filters[key] !== 'all' && <option value={filters[key]}>{filters[key]}</option>}{values.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>)}
+        <div className="flex flex-wrap items-end gap-2"><Button type="submit" disabled={loading}>搜索</Button><Button type="button" onClick={() => setRefresh((value) => value + 1)} disabled={loading}>刷新列表</Button><Button type="button" onClick={() => { setSearch(userView ? { view: 'users' } : {}); setQuery(''); setSubmitted(''); setOffset(0); }}>重置筛选</Button></div>
       </form>
       {error && <p role="alert" className="text-error">{error}</p>}
-      {result.warnings?.map((warning) => <p key={warning} role="alert" className="text-warning">{warning}</p>)}
-      <p className="text-xs text-text-tertiary">共 {result.total} 个对话，按最近活动排序。旧数据无法确定的归属与时间会标明未知；旧子代理记录默认隐藏。</p>
+      {!userView && result.warnings?.map((warning) => <p key={warning} role="alert" className="text-warning">{warning}</p>)}
+      {!userView && <p className="text-xs text-text-tertiary">共 {result.total} 个对话，按最近活动排序。旧数据无法确定的归属与时间会标明未知；旧子代理记录默认隐藏。</p>}
     </Card>
-    <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
+    {userView ? <>
+      <UserView platform={platform} platformType={platformType} platforms={platforms} query={submitted} offset={offset} refresh={refresh} onDirty={setUserDirty} onOffset={setOffset} onRefresh={() => setRefresh((value) => value + 1)} onOpen={(platform, conversation) => { const next = new URLSearchParams(search); next.set('record_platform', platform); next.set('conversation', conversation); setSearch(next); }} />
+      {selected && recordPlatform && record && <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onDirty={setContextDirty} onSaved={() => setRefresh((value) => value + 1)} />}
+    </> : <div className="grid items-start gap-4 xl:grid-cols-[22rem_minmax(0,1fr)]">
       <Card className="min-w-0 space-y-2">
         {loading && <p role="status" className="text-sm">正在读取列表…</p>}
         {!loading && !result.items.length && <p className="text-sm text-text-secondary">暂无匹配的对话</p>}
@@ -102,16 +115,17 @@ export function Conversations() {
         </button>)}
         <div className="flex justify-between gap-2 pt-2"><Button size="sm" disabled={offset === 0 || loading} onClick={() => setOffset((value) => Math.max(0, value - 40))}>上一页对话</Button><Button size="sm" disabled={offset + 40 >= result.total || loading} onClick={() => setOffset((value) => value + 40)}>下一页对话</Button></div>
       </Card>
-      {selected && recordPlatform ? record ? <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onSaved={() => setRefresh((value) => value + 1)} /> : <Card><p role="status">正在读取对话详情…</p></Card> : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>}
-    </div>
+      {selected && recordPlatform ? record ? <ConversationDetail key={JSON.stringify([recordPlatform, selected])} platform={recordPlatform} record={record} requestedContext={selected} onDirty={setContextDirty} onSaved={() => setRefresh((value) => value + 1)} /> : <Card><p role="status">正在读取对话详情…</p></Card> : <Card><p className="text-text-secondary">从列表选择一个对话</p></Card>}
+    </div>}
   </div>;
 }
 
-function ConversationDetail({ platform, record, requestedContext, onSaved }: { platform: string; record: ConversationRecord; requestedContext: string; onSaved: () => void }) {
+function ConversationDetail({ platform, record, requestedContext, onDirty, onSaved }: { platform: string; record: ConversationRecord; requestedContext: string; onDirty: (dirty: boolean) => void; onSaved: () => void }) {
   const [layer, setLayer] = useState<'context' | 'history'>('context');
   const [context, setContext] = useState(record.context_ids.includes(requestedContext) ? requestedContext : record.context_ids[0] || record.conversation_id);
   const [dirty, setDirty] = useState(false);
-  useDirtyGuard(dirty);
+  useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
+  useEffect(() => () => onDirty(false), [onDirty]);
   const switchLayer = (next: 'context' | 'history') => { if (next !== layer && (!dirty || confirmDiscard())) { setDirty(false); setLayer(next); } };
   return <div className="min-w-0 space-y-4">
     <Card className="space-y-3">

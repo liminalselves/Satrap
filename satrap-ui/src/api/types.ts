@@ -365,6 +365,24 @@ export interface ConversationDataSnapshot {
   backup_id?: string;
 }
 
+export interface ConversationUser extends UserInfo {
+  platform_id: string;
+  platform_label: string;
+  platform_type: string;
+  has_profile: boolean;
+  revision: string;
+  conversation_count: number;
+  warning?: string;
+  conversations: { conversation_id: string; title: string; exists: boolean; manual: boolean; routed: boolean; last_activity_at: number | null }[];
+}
+
+export interface ConversationUserCatalog {
+  items: ConversationUser[];
+  total: number;
+  warnings?: string[];
+  new_revision: string;
+}
+
 export interface UserInfo {
   user_id: string;
   user_platform?: string;
