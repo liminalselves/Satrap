@@ -7,6 +7,8 @@ import { PageHeader } from '@/components/common/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { InstallPluginModal } from './InstallPluginModal';
+import { GlobalPluginSettings } from './GlobalPluginSettings';
+import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 
 export const capabilityLabels: Record<string, string> = {
   tools: '工具', skills: '技能', mcp: 'MCP', handlers: '前处理', commands: '命令',
@@ -103,6 +105,9 @@ export function Plugins() {
 }
 
 export function PluginDetail() {
+  const [tab, setTab] = useState('overview');
+  const [dirty, setDirty] = useState(false);
+  useDirtyGuard(dirty);
   const { name } = useParams();
   const { plugins, loading, error, refresh } = usePluginCatalog();
   const plugin = plugins.find((item) => item.name === name);
@@ -110,6 +115,7 @@ export function PluginDetail() {
     <Link to="/plugins" className="text-sm text-accent">← 返回插件列表</Link>
     <PageHeader title={name || '插件详情'} actions={<Button onClick={refresh} disabled={loading}>刷新</Button>} />
     {error && <p role="alert" className="text-error">{error}</p>}
-    {loading ? <p role="status">正在读取插件…</p> : plugin ? <PluginOverview plugin={plugin} /> : !error && <p role="alert">插件不存在或元数据无效</p>}
+    {plugin && <div className="flex gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数']].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
+    {plugin ? tab === 'overview' ? <PluginOverview plugin={plugin} /> : <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
   </div>;
 }

@@ -153,6 +153,23 @@ export interface PluginInstallPreview {
   file_count: number;
 }
 
+export interface PluginRuntimeResult {
+  target: string;
+  status: 'applied' | 'next_activation' | 'error';
+  error?: string;
+  sessions: Array<Record<string, unknown>>;
+}
+
+export interface GlobalPluginConfig {
+  ok: boolean;
+  schema: Record<string, EdictumPluginConfigField>;
+  config: Record<string, unknown>;
+  overrides: Record<string, unknown>;
+  revision: string;
+  saved?: boolean;
+  runtime?: PluginRuntimeResult[];
+}
+
 export interface EdictumSessionConfig {
   provider: 'edictum';
   edictum_type: string;

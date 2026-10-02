@@ -500,3 +500,45 @@ async def test_plugin_zip_preview_install_and_json_limit(tmp_path, monkeypatch):
     response = await _request("/config/plugins/preview", "POST", b"corrupt")
     assert b"400" in response.split(b"\r\n", 1)[0]
     assert not list((tmp_path / ".plugin-install").iterdir())
+
+
+@pytest.mark.asyncio
+async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, monkeypatch):
+    """运行应用失败不撤销已保存配置, 冲突请求不会再次应用"""
+    from satrap.core.config.plugin_service import PluginManagementService
+    from satrap.display.plugins import ChatPluginRegistry
+
+    plugin = tmp_path / "plugins" / "probe"
+    plugin.mkdir(parents=True)
+    (plugin / "meta.yaml").write_text("name: probe\nconfig_schema:\n  note:\n    default: old", encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "builtin", tmp_path / "plugins")
+    service = PluginManagementService(catalog, {}, ChatPluginRegistry(tmp_path / "chat.json"), manager=PluginConfigManager(tmp_path / "config"))
+    monkeypatch.setattr(control_server, "_plugin_management_service", lambda: service)
+    applied = []
+    async def apply_runtime():
+        applied.append(True)
+        return [{"target": "Chat", "status": "applied", "sessions": [{"ok": True}]}, {"target": "Edictum", "status": "error", "error": "测试失败", "sessions": []}]
+    monkeypatch.setattr(control_server, "_apply_plugin_runtime", apply_runtime)
+    first = _json_body(await _request("/config/plugins/probe/config"))
+    body = json.dumps({"config": {"note": "new"}, "expected_revision": first["revision"]}).encode("utf-8")
+    response = await _request("/config/plugins/probe/config", "PUT", body)
+    saved = _json_body(response)
+    assert saved["saved"] is True
+    assert saved["runtime"][1]["status"] == "error"
+    assert service.get_config("probe")["config"]["note"] == "new"
+    assert b"409" in (await _request("/config/plugins/probe/config", "PUT", body)).split(b"\r\n", 1)[0]
+    assert len(applied) == 1
+    retry = _json_body(await _request("/config/plugins/reconcile", "POST", b"{}"))
+    assert retry["runtime"][1]["status"] == "error"
+    assert len(applied) == 2
+
+
+@pytest.mark.parametrize("reason,status", [(ConnectionRefusedError(), "next_activation"), (TimeoutError(), "error")])
+def test_plugin_runtime_distinguishes_stopped_service_and_timeout(monkeypatch, reason, status):
+    def fail_request(request, **kwargs):
+        assert request.get_header("Authorization").startswith("Bearer ")
+        assert request.data == b"{}"
+        raise control_server.urllib.error.URLError(reason)
+    monkeypatch.setattr(control_server.urllib.request, "urlopen", fail_request)
+    result = control_server._plugin_runtime_request("Chat", "http://127.0.0.1:1/api/chat/plugins/reconcile")
+    assert result["status"] == status

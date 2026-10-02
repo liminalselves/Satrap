@@ -285,7 +285,9 @@ class PluginConfigManager:
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
         try:
-            with REFERENCE_SCAN_LOCK:
+            from satrap.core.storage.file_lock import FileLock
+
+            with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
                 with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
                     temporary = Path(file.name)
                     json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)

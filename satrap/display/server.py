@@ -529,6 +529,9 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "GET" and clean == "/api/chat/plugins":
             return 200, {"plugins": svc.list_plugins()}
 
+        if method == "POST" and clean == "/api/chat/plugins/reconcile":
+            return 200, await svc.reconcile_plugins()
+
         if clean.startswith("/api/chat/plugins/") and clean.endswith("/config"):
             rest = clean[len("/api/chat/plugins/"):]
             name = unquote(rest[:rest.index("/")])

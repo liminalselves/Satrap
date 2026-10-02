@@ -978,6 +978,37 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
     asyncio.run(_run())
 
 
+def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    独立管理页写入全局参数后, Chat 协调接口更新实际命令
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: 测试环境替换
+    """
+    from satrap.core.config.plugin_service import PluginManagementService
+
+    config_manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+    cold = PluginManagementService(svc._plugins.catalog, {}, svc._plugins, manager=config_manager)
+
+    async def run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = _must_conversation(svc, cid)
+        assert await conv.session.run("/about") == ""
+        before = cold.get_config("chat_commands")
+        cold.save_config("chat_commands", {"about_text": "来自管理页"}, before["revision"])
+        status, result = await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
+        assert status == 200 and result["applied"]
+        assert await conv.session.run("/about") == "来自管理页"
+        await svc.close()
+
+    asyncio.run(run())
+
+
 def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatch: Any):
     """
     未发送的预加载会话超时后应释放内存并清除私有目录

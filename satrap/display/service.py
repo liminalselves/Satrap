@@ -2343,6 +2343,16 @@ class ChatService:
                 })
         return results
 
+    async def reconcile_plugins(self) -> dict[str, Any]:
+        """
+        读取最新冷配置并协调全部 Chat 插件实例
+
+        返回:
+        - 配置应用状态及逐会话协调结果
+        """
+        self._plugins.refresh()
+        return self._plugin_update_result(await self._reconcile_chat_plugins())
+
     @staticmethod
     def _plugin_update_result(results: list[dict[str, Any]]) -> dict[str, Any]:
         """

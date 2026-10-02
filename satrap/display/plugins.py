@@ -174,6 +174,10 @@ class ChatPluginRegistry:
                 })
         return result
 
+    def refresh(self) -> None:
+        """重新读取由冷配置管理入口保存的 Chat 插件状态"""
+        self._load()
+
     def get_plugin_dir(self, name: str) -> Path | None:
         """
         取插件目录 (官方优先), 供 install_plugin 使用

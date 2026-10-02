@@ -498,6 +498,18 @@ export const controlApi = {
     await controlClient.post('/config/plugins/discard', { token });
   },
 
+  getGlobalPluginConfig: async (name: string): Promise<import('./types').GlobalPluginConfig> => {
+    return (await controlClient.get<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`)).data;
+  },
+
+  saveGlobalPluginConfig: async (name: string, config: Record<string, unknown>, revision: string): Promise<import('./types').GlobalPluginConfig> => {
+    return (await controlClient.put<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { config, expected_revision: revision }, { timeout: 120000 })).data;
+  },
+
+  reconcilePlugins: async (): Promise<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }> => {
+    return (await controlClient.post<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }>('/config/plugins/reconcile', {}, { timeout: 120000 })).data;
+  },
+
   listEdictumPlugins: async (): Promise<EdictumAvailablePlugin[]> => {
     const response = await controlClient.get<{ plugins: EdictumAvailablePlugin[] }>(
       '/config/edictum/plugins',

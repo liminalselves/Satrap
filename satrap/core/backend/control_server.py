@@ -84,6 +84,9 @@ from satrap.edictum.registry import create_default_edictum_type_registry
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_archive import PluginArchiveInstaller, MAX_ARCHIVE_BYTES
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_config import PluginConfigManager
+from satrap.core.config.plugin_service import PluginManagementService
+from satrap.display.plugins import ChatPluginRegistry
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageLayout, StorageMaintenanceService
 from satrap.core.rag import RagService
 
@@ -1872,6 +1875,107 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
     return None
 
 
+def _plugin_management_service() -> PluginManagementService:
+    """
+    创建复用冷配置与引用校验的插件管理服务
+
+    返回:
+    - 共享目录、全局参数与使用配置的领域服务
+    """
+    service = _edictum_config_service()
+    models = _model_config_service().manager
+    return PluginManagementService(service.plugin_catalog, service.list_configs(), ChatPluginRegistry(),
+                                   manager=PluginConfigManager(), models=models,
+                                   rag=RagService(_configured_storage_layout(), models, "local"))
+
+
+def _plugin_runtime_request(target: str, url: str) -> dict[str, Any]:
+    """
+    请求运行服务重新加载插件配置, 保留失败与未运行的区别
+
+    参数:
+    - target: Chat 或 Edictum 服务标识
+    - url: 经过认证的内部协调接口地址
+
+    返回:
+    - 应用状态及逐会话结果; 连接拒绝表示下次激活应用, 超时或业务失败表示 error
+    """
+    request = _authenticated_request(url, "POST")
+    request.data = b"{}"
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            payload = json.loads(response.read(2 * 1024 * 1024))
+        if not isinstance(payload, dict):
+            raise ValueError("运行服务返回了无效结果")
+        sessions = payload.get("sessions", payload.get("edictum_sessions", []))
+        success = bool(payload.get("ok")) and payload.get("applied", True) and all(item.get("ok", False) for item in sessions)
+        return {"target": target, "status": ("applied" if sessions else "next_activation") if success else "error", "sessions": sessions,
+                "error": "" if success else payload.get("error", "部分运行实例应用失败")}
+    except urllib.error.HTTPError as error:
+        return {"target": target, "status": "error", "error": f"运行服务返回 HTTP {error.code}", "sessions": []}
+    except urllib.error.URLError as error:
+        refused = isinstance(error.reason, ConnectionRefusedError)
+        return {"target": target, "status": "next_activation" if refused else "error", "error": "" if refused else str(error.reason), "sessions": []}
+    except (OSError, TypeError, ValueError) as error:
+        return {"target": target, "status": "error", "error": str(error), "sessions": []}
+
+
+async def _apply_plugin_runtime() -> list[dict[str, Any]]:
+    """
+    分别协调 Chat 与 Edictum, 单个服务失败不阻断其他服务
+
+    返回:
+    - 两个服务独立的运行应用结果
+    """
+    host, port = _configured_backend_address()
+    host = _connect_host(host)
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    urls = [("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/reconcile"),
+            ("Edictum", f"http://{host}:{port}/api/edictum/plugins/reconcile")]
+    results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_runtime_request, target, url) for target, url in urls), return_exceptions=True)
+    return [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "sessions": []}
+            for index, result in enumerate(results)]
+
+
+async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    管理全局参数及重试运行应用, 保存与应用结果分别返回
+
+    参数:
+    - ctx: 已认证的路由上下文
+
+    返回:
+    - 全局配置快照或应用结果, 不匹配时返回 None
+    """
+    if ctx.path == "/config/plugins/reconcile" and ctx.method == "POST":
+        await _read_json_body(ctx.reader, ctx.raw_request)
+        return 200, {"ok": True, "runtime": await _apply_plugin_runtime()}
+    prefix = "/config/plugins/"
+    if not ctx.path.startswith(prefix) or not ctx.path.endswith("/config") or ctx.method not in {"GET", "PUT"}:
+        return None
+    name = urllib.parse.unquote(ctx.path[len(prefix):-len("/config")])
+    try:
+        service = _plugin_management_service()
+        if ctx.method == "GET":
+            return 200, await RAG_WORKERS.run(service.get_config, name)
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        values = payload.get("config")
+        revision = payload.get("expected_revision")
+        if not isinstance(values, dict) or not isinstance(revision, str):
+            raise ValueError("缺少 config 对象或 expected_revision")
+        result = await RAG_WORKERS.run(service.save_config, name, values, revision)
+    except ConfigRevisionConflict as error:
+        return 409, {"error": str(error)}
+    except KeyError as error:
+        return 404, {"error": str(error)}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error)}
+    except (OSError, TypeError, ValueError) as error:
+        return 400, {"error": str(error)}
+    return 200, {**result, "runtime": await _apply_plugin_runtime()}
+
+
 async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:
     """
     处理 ZIP 预览、安装及取消, 保持普通 JSON 请求体限制
@@ -1913,13 +2017,8 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     - ControlResponse | None: 路径不属于本区段时返回 None
     """
     if ctx.method == "GET" and ctx.path == "/config/plugins":
-        from satrap.core.config.plugin_service import PluginManagementService
-        from satrap.display.plugins import ChatPluginRegistry
-
         try:
-            service = _edictum_config_service()
-            plugins = PluginManagementService(service.plugin_catalog, service.list_configs(), ChatPluginRegistry())
-            return 200, {"plugins": plugins.list_plugins()}
+            return 200, {"plugins": _plugin_management_service().list_plugins()}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
@@ -2469,6 +2568,7 @@ async def _handle_request(
             _route_session_class_collection_get,
             _route_storage,
             _route_plugin_install,
+            _route_plugin_config,
             _route_edictum_metadata,
             _route_session_instances,
             _route_session_plugin_config,

@@ -20,11 +20,29 @@ try {
   const errors = [];
   let installs = 0;
   let discards = 0;
+  let globalOverrides = { note: 'old' };
+  let globalRevision = 'first';
+  let failGlobalSave = false;
+  let runtimeRetries = 0;
+  const globalSchema = { note: { type: 'string', default: 'default', description: '全局备注' }, count: { type: 'number', default: 1, minimum: 0, integer: true }, model: { type: 'llm', default: '', description: '命名模型' } };
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: { backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' } }));
   await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/config/plugins/builtin_probe/config') {
+      if (route.request().method() === 'PUT') {
+        const body = route.request().postDataJSON();
+        assert.equal(body.expected_revision, globalRevision);
+        if (failGlobalSave) return route.fulfill({ status: 500, json: { error: '保存测试失败' }, headers: cors });
+        globalOverrides = body.config;
+        globalRevision += '-saved';
+      }
+      return route.fulfill({ json: { ok: true, schema: globalSchema, config: { note: 'default', count: 1, ...globalOverrides }, overrides: globalOverrides, revision: globalRevision, saved: route.request().method() === 'PUT', runtime: [{ target: 'Chat', status: 'applied', sessions: [{ conversation_id: 'probe-chat', ok: true }] }, { target: 'Edictum', status: 'error', error: '应用测试失败', sessions: [] }] }, headers: cors });
+    }
+    if (pathname === '/config/plugins/reconcile') { runtimeRetries++; return route.fulfill({ json: { ok: true, runtime: [{ target: 'Chat', status: 'applied', sessions: [] }, { target: 'Edictum', status: 'next_activation', sessions: [] }] }, headers: cors }); }
+    if (pathname === '/config/plugin-model-options') return route.fulfill({ json: { options: { llm: [{ value: 'test_model', label: '测试模型' }] } }, headers: cors });
+    if (pathname === '/config/rag') return route.fulfill({ json: { knowledge_bases: [] }, headers: cors });
     if (pathname === '/config/plugins/preview') {
       assert.equal(route.request().headers()['content-type'], 'application/zip');
       assert.equal(route.request().postData(), 'zip-preview-test');
@@ -77,9 +95,38 @@ try {
   assert.equal(plugins.at(-1).chat_enabled, false);
   await page.getByRole('link', { name: '← 返回插件列表' }).click();
   await page.getByRole('link', { name: /installed_probe/ }).waitFor();
+  await page.goto(origin + '/plugins/builtin_probe');
+  await page.getByRole('button', { name: '全局参数', exact: true }).click();
+  await page.getByLabel('note', { exact: true }).fill('保留草稿');
+  await page.getByLabel('count', { exact: true }).fill('0');
+  await page.getByLabel('model', { exact: true }).selectOption('test_model');
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await page.getByRole('button', { name: '刷新', exact: true }).waitFor({ state: 'visible' });
+  assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), '保留草稿');
+  page.once('dialog', (dialog) => dialog.dismiss());
+  await page.getByRole('link', { name: '插件管理', exact: true }).click();
+  assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), '保留草稿');
+  failGlobalSave = true;
+  await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: '保存测试失败' }).waitFor();
+  assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), '保留草稿');
+  failGlobalSave = false;
+  await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
+  await page.getByText('全局参数已保存', { exact: true }).waitFor();
+  assert.deepEqual(globalOverrides, { note: '保留草稿', count: 0, model: 'test_model' });
+  await page.getByText(/Edictum：应用失败/).waitFor();
+  await page.getByRole('button', { name: '重试运行应用', exact: true }).click();
+  await page.getByText('Edictum：下次激活时应用', { exact: true }).waitFor();
+  assert.equal(runtimeRetries, 1);
+  await page.getByRole('button', { name: '恢复默认值', exact: true }).click();
+  assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), 'default');
+  await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
+  await page.getByText('全局参数已保存', { exact: true }).waitFor();
+  assert.deepEqual(globalOverrides, {});
   assert.deepEqual(errors, []);
   console.log('PASS: 插件目录搜索、来源与平台筛选、详情能力、直接打开和不存在提示');
   console.log('PASS: ZIP 上传预览、取消清理、显式安装、打开详情及刷新列表');
+  console.log('PASS: 全局参数草稿跨刷新、离开确认、失败保留、零值保存、恢复默认及应用重试');
 } finally {
   if (browser) await browser.close();
   await server.close();
