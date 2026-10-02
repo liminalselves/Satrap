@@ -107,13 +107,35 @@ def _resolve_grep_file(path: Path, root: Path) -> Path | None:
         return None
 
 
-def _protection_reason(path: Path, root: Path | None = None) -> str | None:
+class _FileProtectionMixin:
+    """文件工具的实例级额外保护目录, 直接构造时只启用内置保护"""
+
+    protected_dirs: frozenset[str] = frozenset()
+
+    def _protection_reason(self, path: Path, root: Path) -> str | None:
+        """
+        按当前工具配置检查保护目录
+
+        参数:
+        - path: 待访问路径
+        - root: 当前工作区根目录
+
+        返回:
+        - 命中内置或实例保护规则时返回原因, 否则返回 None
+        """
+        return _protection_reason(path, root, self.protected_dirs)
+
+
+def _protection_reason(
+    path: Path, root: Path | None = None, protected_dirs: frozenset[str] = frozenset()
+) -> str | None:
     """
     命中保护路径返回原因 (敏感目录/文件), 沙箱边界由 _in_sandbox 单独判断
 
     参数:
     - path: 路径
     - root: 根目录
+    - protected_dirs: 当前工具的额外保护目录名, 默认为空且不替换内置保护
 
     返回:
     - str | None: 原因 (敏感目录/文件)
@@ -133,7 +155,7 @@ def _protection_reason(path: Path, root: Path | None = None) -> str | None:
         return "路径位于受保护目录 .satrap/ 下"
     rel = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
     parts = [p.lower() for p in rel.parts]
-    for name in _PROTECTED_DIRS:
+    for name in (*_PROTECTED_DIRS, *sorted(protected_dirs)):
         if name in parts:
             return f"路径位于受保护目录 {name}/ 下"
     for name in _PROTECTED_FILES:

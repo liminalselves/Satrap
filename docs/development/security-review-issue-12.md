@@ -3,7 +3,7 @@
 ## 范围与当前结论
 
 - 分支: `review/issue-12`; 初审基线 `1ecb13c`, 2026-09-26 增量复审基线 `31604d6`
-- 当前状态: 2026-10-01, 对 `31604d6` 至当前工作区的 PR 差异复核并修复已确认的问题; 最新修正尚未提交
+- 当前状态: 2026-10-02, 已提交版本 `bafc868` 之后修复额外保护目录串会话和系统临时目录默认授权; 本轮修改尚未提交
 - 使用边界: 默认本人本地使用, 不引入多租户策略或 OS 隔离架构; 重点核查平台消息中的媒体来源, 模型工具执行和可信代码加载
 - 初审及增量复审共记录 19 项, 未发现 P0; 下文历史发现描述的是修复前状态, 不是当前缺陷清单
 - 当前相关回归通过, 全量单元测试未全绿; 平台调用链使用模拟客户端验证, 未完成真实 OneBot / Misskey 上传验收
@@ -56,7 +56,7 @@
 - 保留 `File.get_file(True)` 的 URL 优先, 普通获取的本地文件优先与白名单内缺失文件的下载回退; 同步属性的普通下载失败仍记录日志并返回空字符串, 权限拒绝向外传播; 保留 Misskey 通用 `get_file` 对象接口
 - 白名单内不存在的路径仍可交给独立 OneBot 服务处理, 不强制 Satrap 与 OneBot 共享文件系统
 
-默认授权、显式覆盖、环境变量追加、系统临时目录边界和下载缓存要求只有一个说明来源: [媒体来源白名单](../getting-started/configuration.md#媒体来源白名单)。不要把整个数据根当作默认授权, 也不要忽略系统临时目录自身的授权。
+默认授权、显式覆盖、环境变量追加和下载缓存要求只有一个说明来源: [媒体来源白名单](../getting-started/configuration.md#媒体来源白名单)。回归直接运行真实默认策略, 不再替换授权列表而掩盖祖先目录放行。
 
 ### 会话模块加载
 
@@ -69,29 +69,30 @@
 
 - `sanitized_child_env` 按完整尾部分段、忽略大小写识别密钥类名称, 保留 `TOKENIZERS_PARALLELISM` 等正常名称
 - allowlist 匹配遵循平台规则: Windows 忽略大小写, Unix 区分大小写
-- coding shell 的 allowlist 是每个工具实例的 `frozenset`, 空配置不继承其他会话权限; sandbox 独立接受自身插件配置
+- coding shell 的 allowlist 和文件工具的额外保护目录均按实例保存为 `frozenset`, 空配置不继承其他会话权限; sandbox 独立接受自身插件配置
+- 读取、写入、编辑、批量替换、glob 和 grep 共用实例保护检查, 内置保护始终保留; 同步/异步工厂回归覆盖交错与并发执行
 - 群管理工具绑定会话, 执行时读取当前审批 provider, 支持安装后注入与替换; 同步通道返回协程时关闭协程并拒绝执行
 - 审批前校验目标群范围, 提问显示实际目标, 不以来源群替代显式目标
 
-## 验证记录 (2026-10-01)
+## 验证记录 (2026-10-02)
 
 使用项目 `.venv/Scripts/python.exe`, 命令设 `PYTHONUTF8=1`。Pyright 显式指定同一解释器, 不安装缺失依赖或加入忽略规则。
 
 ### 修复前基线
 
-- 相关回归 182 项通过
-- 全量单元测试: 2243 passed / 6 failed / 8 skipped
-- 五个固定失败: AMR 附件转换、ASR 测试音频转换、数据库恢复两个子进程测试、minihttp 413 原因短语断言
-- 另一失败位于唤醒时序, 不同运行失败用例不同; 不能笼统归为“单独运行全过”
-- 实现类型检查曾有 group_admin 重载重叠错误, 本 PR 已修正返回类型
+- 本轮修改前的 coding 安全、媒体边界和消息组件回归: **98 passed**, 3.62s
+- 已提交版本 `bafc868` 的全量结果: 2294 passed / 5 failed / 8 skipped; 固定失败为 AMR 附件转换、ASR 音频转换、数据库恢复两个子进程测试、minihttp 413 原因短语断言
+- 新增保护目录工厂回归修复前 12 项失败; 改用真实默认媒体策略后 7 项失败, 证实两项问题
+- 非法 UTF-8 URI 三项回归在不修改 parser 的情况下通过: `UnicodeDecodeError` 属于 `ValueError`, 已转换为 `MediaSourcePermissionError`, OneBot 分类为 `media_source_denied`
 
 ### 当前验证
 
-- 相关回归覆盖 12 个测试文件: 媒体边界、消息组件、OneBot、Misskey、会话发现/注册、群管理、环境变量、coding、sandbox、后端启动和配置文档
-- 最终相关回归: **232 passed**, 7.05s; 包含同步下载错误/权限拒绝分流和父包提前导入子模块的单次执行验证
-- 完整 PR 的 17 个 Python 实现文件: Pyright **0 errors / 0 warnings / 0 informations**; 改动 Python 文件语法检查通过, `git diff --check` 无空白错误
-- 最终源码的全量单元测试: **2294 passed / 5 failed / 8 skipped**, 101.27s; 五项失败均与修复前固定失败一致
-- 较早的一次全量运行: 2289 passed / 6 failed / 8 skipped, 109.18s; 多出的唤醒失败在最终运行未出现, 不据此认定时序问题已解决
+- 相关回归涵盖媒体边界、消息组件、OneBot、Misskey、会话发现/注册、群管理、环境变量、coding、sandbox、后端启动和配置文档
+- 最终 16 个相关测试文件: **347 passed**, 14.83s; 包含 coding 契约与最新临时路径用例
+- 完整 PR 的 21 个 Python 实现文件: Pyright **0 errors / 0 warnings / 0 informations**; `git diff --check` 无空白错误
+- 最终实现的全量单元测试: **2313 passed / 5 failed / 8 skipped**, 114.53s; 五项失败与已提交版本基线一致
+- 首次全量运行另外暴露 4 项契约测试夹具失效, 已去除对旧模块级私有入口的无必要替换, 使用真实保护检查
+- 唤醒时序失败在此前全量运行也曾出现, 具体用例不同; 根因未确认
 
 全量失败及较早运行的时序观察:
 
@@ -102,7 +103,7 @@
 | `test_database_recovery::test_process_exit_after_sql_commit_recovers` | 子进程将 `logging.FileHandler` 替换为函数, 后续 `BaseRotatingHandler` 继承失败 | 与基线相同 |
 | `test_database_recovery::test_cross_process_writers_and_stale_cache_publish` | 同一 `TypeError: function() argument 'code' must be code, not str` | 与基线相同 |
 | `test_minihttp::test_request_body_over_limit_returns_413` | 实际 `413 Request Entity Too Large`, 测试要求 `413 Content Too Large` | 与基线相同 |
-| `test_wake_window::test_max_wait_applies_to_necessity_mode` (较早运行) | 预期 await 1 次, 实际 0 次; 单独运行与最终全量运行均通过 | 基线也有唤醒时序失败, 但具体用例不同; 根因未确认 |
+| `test_wake_window::test_deadline_recheck_in_cooldown_reschedules_after_cooldown_not_immediately` (本轮首次全量运行) | 预期 await 1 次, 实际 0 次 | 此前也有唤醒时序失败, 具体用例不同; 根因未确认 |
 
 跳过项包括集成测试、缺少 `av` / `reportlab` 和缺少测试图片。本轮没有改动音频、数据库恢复、minihttp 或唤醒策略实现, 不将这些失败掩盖为全量通过, 也不在本轮顺带修复。
 
@@ -110,8 +111,8 @@
 
 - OneBot / Misskey 测试证明越界来源在平台 API 调用前拒绝, 合法来源参数保留; 模拟成功回执不证明真实文件送达
 - Windows 原生运行验证了路径往返和环境策略; POSIX / UNC parser 分支通过平台模拟覆盖, 未在独立 Linux 系统做整套验收
-- 本轮决策为多边界的局部修复, 不重写模块、不新增依赖; 与已授权十类问题关联的实现、测试和文档允许修改, 无关业务文件不在范围内
-- 默认 `staged-refactor` 范围检查要求最多 5 文件 / 200 行, 本轮累计未提交范围为 25 文件 (含 1 个新测试文件), 超过该门槛, **不能标为通过**; 未通过缩小 diff 视图或忽略未跟踪测试隐藏范围
+- 本轮为两条行为路径的局部修复: coding 保护策略和默认媒体授权; 只修改对应实现、调用点、测试和文档, 不重写模块、不新增依赖
+- 默认 `staged-refactor` 范围门槛为最多 5 文件 / 200 行; 完整未提交补丁为 **15 文件 / 291 行增删**, 超过门槛, **不能标为通过**; 两条路径涉及多个入口及夹具, 不缩小 diff 视图或忽略测试隐藏范围
 - 代码沿用项目开发规范, 补新增函数参数/返回说明, 去掉失真修复记录, 不为存量导入/格式进行全仓清洗
 
 ## 审查覆盖与未验证内容

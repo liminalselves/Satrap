@@ -479,8 +479,9 @@ class TestFileOutboundSplit:
     """File 组件按实现能力分流上传, 混合链保持原序, 未验证回落显式标注"""
 
     @pytest.mark.asyncio
-    async def test_mixed_chain_uploads_in_order(self, tmp_path: Any):
+    async def test_mixed_chain_uploads_in_order(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
         import os
+        monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
 
         target = tmp_path / "probe.bin"
         target.write_bytes(b"x")

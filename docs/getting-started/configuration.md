@@ -76,14 +76,14 @@ Copy-Item config.example.yaml config.yaml
 
 ### 媒体来源白名单
 
-`media_allowed_roots` 为 `null` 或空列表时允许 `.satrap/sandbox`、系统临时目录, 以及实际 `data_root` 下的以下目录及其子目录:
+`media_allowed_roots` 为 `null` 或空列表时允许 `.satrap/sandbox`, 以及实际 `data_root` 下的以下目录及其子目录:
 
 - `platforms/<平台键>/cache`
 - `platforms/<平台键>/sessions/<会话键>/{uploads,artifacts,sandbox,cache}`
 
-不按任意祖先目录名放行, 因此数据根中的数据库、用户、项目、索引和回收站不属于默认媒体目录。如果把 `data_root` 放在系统临时目录下, 系统临时目录的默认授权仍然生效。
+不按任意祖先目录名放行, 因此数据根中的数据库、用户、项目、索引和回收站不属于默认媒体目录。系统临时目录 (`%TEMP%` / `/tmp`) 不默认授权, `data_root` 位于其中时仍只允许上述媒体子目录。需要发送其他临时文件时, 显式授权其所在目录。
 
-非空列表完全替换上述默认授权, 包括系统临时目录。`SATRAP_EXTRA_MEDIA_ROOTS` 始终追加目录, 用当前系统的路径分隔符分隔 (Windows 为 `;`, Unix 为 `:`); 配置列表中的路径不按此分隔符拆分, 允许 Windows 目录名含 `;`。路径在校验时解析符号链接和 `..`。
+非空列表完全替换上述默认授权。`SATRAP_EXTRA_MEDIA_ROOTS` 始终追加目录, 用当前系统的路径分隔符分隔 (Windows 为 `;`, Unix 为 `:`); 配置列表中的路径不按此分隔符拆分, 允许 Windows 目录名含 `;`。路径在校验时解析符号链接和 `..`。
 
 下载和内联媒体的临时文件位于实际 `data_root` 的 `platforms/<local平台键>/cache/temp`。使用显式白名单且需要下载、Base64 转换或文件回调时, 必须将该缓存目录或其父目录列入白名单; 未授权时拒绝落盘, 不额外扩大权限。HTTP(S) 来源可直接交给平台处理。
 

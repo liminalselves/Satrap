@@ -29,6 +29,15 @@ from satrap.core.components import (
 )
 
 
+@pytest.fixture
+def allowed_media_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """组件成功路径只显式授权本用例的文件和缓存, 不依赖整个系统 temp"""
+    from satrap.core.utils import paths
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path / "data")
+    monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
+
+
 def test_core_components_can_serialize():
     components: list[BaseMessageComponent] = [
         Plain("hello"),
@@ -83,6 +92,7 @@ async def test_node_and_nodes_to_dict():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_image_and_record_base64_file_conversion(tmp_path: Path):
     raw = b"satrap"
     encoded = base64.b64encode(raw).decode("utf-8")
@@ -104,6 +114,7 @@ async def test_image_and_record_base64_file_conversion(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_get_file_local_and_async_guard(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
@@ -127,6 +138,7 @@ async def test_file_get_file_local_and_async_guard(tmp_path: Path):
         ("payload.超长危险扩展名", ""),
     ],
 )
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_download_uses_server_generated_safe_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,6 +189,7 @@ async def test_file_download_uses_server_generated_safe_name(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_register_to_file_service(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
@@ -191,6 +204,7 @@ async def test_file_register_to_file_service(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
     path = tmp_path / "video.bin"
     path.write_bytes(b"video")

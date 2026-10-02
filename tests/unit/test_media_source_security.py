@@ -109,7 +109,7 @@ async def test_misskey_keeps_remote_and_converts_inline(tmp_path, monkeypatch):
 ])
 def test_default_layout_media_only(tmp_path, monkeypatch, relative):
     monkeypatch.setattr(paths, "_configured_media_roots", ())
-    monkeypatch.setattr(paths, "get_allowed_media_roots", lambda: [])
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
     monkeypatch.setattr(paths, "_media_storage_root", tmp_path)
     assert paths.ensure_allowed_media_path(str(tmp_path / relative)) == str((tmp_path / relative).resolve())
 
@@ -123,10 +123,38 @@ def test_default_layout_media_only(tmp_path, monkeypatch, relative):
 ])
 def test_default_layout_denies_named_ancestors(tmp_path, monkeypatch, relative):
     monkeypatch.setattr(paths, "_configured_media_roots", ())
-    monkeypatch.setattr(paths, "get_allowed_media_roots", lambda: [])
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
     monkeypatch.setattr(paths, "_media_storage_root", tmp_path)
     with pytest.raises(paths.MediaSourcePermissionError):
         paths.ensure_allowed_media_path(str(tmp_path / relative))
+
+
+def test_default_policy_denies_other_app_temp(tmp_path, monkeypatch):
+    import tempfile
+    other_app_file = Path(tempfile.gettempdir()) / "satrap-policy-probe-other-app" / "private.tmp"
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path / "data")
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
+    assert paths.get_allowed_media_roots() == [(paths.get_data_dir() / "sandbox").resolve()]
+    with pytest.raises(paths.MediaSourcePermissionError):
+        paths.ensure_allowed_media_path(str(other_app_file))
+    sandbox = paths.get_data_dir() / "sandbox" / "picture.png"
+    assert paths.ensure_allowed_media_path(str(sandbox)) == str(sandbox.resolve())
+
+
+@pytest.mark.parametrize("mode", ["configured", "environment"])
+def test_temp_subdirectory_requires_explicit_authorization(tmp_path, monkeypatch, mode):
+    allowed = tmp_path / "chosen-media"
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path / "data")
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
+    if mode == "configured":
+        paths.set_media_allowed_roots([str(allowed)])
+    else:
+        monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(allowed))
+    assert paths.ensure_allowed_media_path(str(allowed / "a.png")) == str((allowed / "a.png").resolve())
+    with pytest.raises(paths.MediaSourcePermissionError):
+        paths.ensure_allowed_media_path(str(tmp_path / "unselected" / "private.tmp"))
 
 
 def test_explicit_roots_preserve_semicolon_and_replace_temp(tmp_path, monkeypatch):
@@ -143,7 +171,7 @@ def test_explicit_roots_preserve_semicolon_and_replace_temp(tmp_path, monkeypatc
 def test_backend_root_controls_generated_temp(tmp_path, monkeypatch):
     monkeypatch.setattr(paths, "_configured_media_roots", ())
     monkeypatch.setattr(paths, "_media_storage_root", None)
-    monkeypatch.setattr(paths, "get_allowed_media_roots", lambda: [])
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
     backend = BackendManager(BackendConfig(data_root=str(tmp_path / "custom-data")))
     expected = backend.storage_layout.platform_cache("local") / "temp"
     assert Path(get_satrap_temp_path()) == expected
@@ -163,6 +191,41 @@ def test_backend_rejects_invalid_media_config(value):
 def test_invalid_file_uri_rejected(source):
     with pytest.raises(paths.MediaSourcePermissionError):
         paths.file_uri_to_path(source)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["file:///tmp/%FF.png", "file:///tmp/%E4.png", "file://%FF/share/a.png"])
+async def test_invalid_utf8_uri_is_media_denial(source):
+    with pytest.raises(paths.MediaSourcePermissionError) as caught:
+        paths.file_uri_to_path(source)
+    assert isinstance(caught.value.__cause__, UnicodeDecodeError)
+    adapter = OneBotAdapter(PlatformConfig(id="test", type="onebot", settings={"host": "127.0.0.1"}))
+    adapter._bot = AsyncMock()
+    adapter._dispatch_action = AsyncMock()
+    receipt = await adapter.send_message("group%456", MessageChain([Image(file=source)]))
+    assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+    adapter._dispatch_action.assert_not_awaited()
+    assert adapter._bot.method_calls == []
+
+
+@pytest.mark.asyncio
+async def test_default_cache_keeps_download_and_inline_media(tmp_path, monkeypatch):
+    from satrap.core.components import message
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path / "data")
+    monkeypatch.delenv("SATRAP_EXTRA_MEDIA_ROOTS", raising=False)
+    cache = Path(get_satrap_temp_path())
+
+    async def download(url, target):
+        Path(target).write_bytes(b"downloaded")
+        return target
+
+    monkeypatch.setattr(message, "download_file", download)
+    downloaded = Path(await File("a.png", url="https://example.com/a.png").get_file())
+    inline = Path(await Image.fromBase64(base64.b64encode(b"inline").decode()).convert_to_file_path())
+    assert downloaded.parent == inline.parent == cache
+    assert downloaded.read_bytes() == b"downloaded"
+    assert inline.read_bytes() == b"inline"
 
 
 @pytest.mark.asyncio

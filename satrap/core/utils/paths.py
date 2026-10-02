@@ -9,7 +9,6 @@ from __future__ import annotations
 from urllib.parse import unquote, urlsplit
 from functools import lru_cache
 from pathlib import Path
-import tempfile
 import os
 
 
@@ -175,12 +174,12 @@ def _resolve_allowed_roots(configured: tuple[str, ...], extra: str) -> tuple[Pat
     - extra: SATRAP_EXTRA_MEDIA_ROOTS, 用 os.pathsep 分隔
 
     返回:
-    - tuple[Path, ...]: 显式目录, 或默认沙箱和系统临时目录, 加环境变量追加项
+    - tuple[Path, ...]: 显式目录, 或默认沙箱, 加环境变量追加项
     """
     if configured:
         roots = [Path(item).expanduser().resolve() for item in configured]
     else:
-        roots = [(get_data_dir() / "sandbox").resolve(), Path(tempfile.gettempdir()).resolve()]
+        roots = [(get_data_dir() / "sandbox").resolve()]
     roots.extend(
         Path(item.strip()).expanduser().resolve()
         for item in extra.split(os.pathsep)
@@ -194,7 +193,7 @@ def get_allowed_media_roots() -> list[Path]:
     获取媒体白名单的前缀目录
 
     返回:
-    - list[Path]: 显式根目录或默认沙箱和系统临时目录, 加环境变量追加项
+    - list[Path]: 显式根目录或默认沙箱, 加环境变量追加项
       默认 StorageLayout 媒体子目录由校验函数按布局结构单独判断
     """
     extra = os.environ.get("SATRAP_EXTRA_MEDIA_ROOTS", "")

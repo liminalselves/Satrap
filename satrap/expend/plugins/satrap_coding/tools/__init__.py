@@ -2,7 +2,7 @@
 编程插件工具构造入口
 
 应用插件配置并构造同步或异步工具, 绑定会话权限引擎与工作区,
-将环境变量放行列表按工具实例注入, 不保存为跨会话共享权限
+将环境变量放行列表和额外保护目录按工具实例注入, 不保存为跨会话共享权限
 """
 
 from __future__ import annotations
@@ -82,6 +82,7 @@ from .paths import (
     _resolve_path,
     _resolve_grep_file,
     _protection_reason,
+    _FileProtectionMixin,
     _session_sandbox_root,
     _in_sandbox,
     _approve_file_write,
@@ -112,7 +113,7 @@ def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
 
 def _apply_config(config: dict[str, Any]) -> None:
     """
-    把合成配置应用到模块级死参 (WORKSPACE_ROOT/DATA_ROOT/SANDBOX_ROOT/超时/保护目录)
+    应用工作区与数据路径的全局兜底配置, 不保存会话权限策略
 
     参数:
     - config: 配置信息
@@ -125,7 +126,7 @@ def _apply_config(config: dict[str, Any]) -> None:
     """
     if not config:
         return
-    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT, _PROTECTED_DIRS
+    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT
     if config.get("workspace_root"):
         WORKSPACE_ROOT = Path(str(config["workspace_root"])).resolve()
         DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
@@ -133,11 +134,6 @@ def _apply_config(config: dict[str, Any]) -> None:
         DATA_ROOT = Path(str(config["data_root"])).resolve()
     if config.get("sandbox_root"):
         DEFAULT_SANDBOX_ROOT = Path(str(config["sandbox_root"])).resolve()
-    if config.get("protected_dirs"):
-        extra = tuple(
-            d.strip() for d in str(config["protected_dirs"]).split(",") if d.strip()
-        )
-        _PROTECTED_DIRS = (".satrap", ".git", "node_modules") + extra
 
 
 def get_tools(
@@ -157,6 +153,11 @@ def get_tools(
     """
     _apply_config(config or {})
     allowed_env = parse_allowed_env_vars(config or {})
+    protected_dirs = frozenset(
+        name.strip().lower()
+        for name in str((config or {}).get("protected_dirs") or "").split(",")
+        if name.strip()
+    )
 
     session_cache_root = safe_getattr(session, "coding_cache_root")
     state_root = (
@@ -195,6 +196,8 @@ def get_tools(
             GrepFilesTool(),
         ]
     for tool in tools:
+        if isinstance(tool, _FileProtectionMixin):
+            tool.protected_dirs = protected_dirs
         bind = safe_getattr_callable(tool, "_bind")
         if bind is not None:
             bind(session)

@@ -16,11 +16,11 @@ from .file_io import write_file, edit_file, replace_file
 from .paths import (
     _tool_root,
     _resolve_path,
-    _protection_reason,
+    _FileProtectionMixin,
     _approve_file_write,
 )
 
-class WriteFileTool(Tool):
+class WriteFileTool(_FileProtectionMixin, Tool):
     """写入/追加工作区内文件 (写操作走审批)"""
 
     tool_name = "write_file"
@@ -60,7 +60,7 @@ class WriteFileTool(Tool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
         # Step.2 请求文件修改审批
@@ -82,7 +82,7 @@ class WriteFileTool(Tool):
         self._session = session
 
 
-class EditFileTool(Tool):
+class EditFileTool(_FileProtectionMixin, Tool):
     """精确替换工作区内文件内容 (写操作走审批)"""
 
     tool_name = "edit_file"
@@ -124,7 +124,7 @@ class EditFileTool(Tool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -154,7 +154,7 @@ class EditFileTool(Tool):
         self._session = session
 
 
-class SearchReplaceTool(Tool):
+class SearchReplaceTool(_FileProtectionMixin, Tool):
     """批量精确替换: 一个文件内多对 old->new (类似 IDE search & replace)"""
 
     tool_name = "search_replace"
@@ -198,7 +198,7 @@ class SearchReplaceTool(Tool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():

@@ -165,3 +165,66 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
     assert [await execute(tool) for tool in [*tools, tools[0]]] == ["FIRST_TOKEN", "", "LAST_API_KEY", "FIRST_TOKEN"]
     if asynchronous:
         assert await asyncio.gather(*(execute(tool) for tool in tools)) == ["FIRST_TOKEN", "", "LAST_API_KEY"]
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("tool_name", [
+    "read_file", "write_file", "edit_file", "search_replace", "glob_files", "grep_files",
+])
+async def test_factory_protected_directories_isolated(tmp_path, monkeypatch, asynchronous, tool_name):
+    """真实工厂的保护配置在交错和并发调用中保持独立, 拒绝时不修改文件"""
+    import asyncio
+    from satrap.edictum import SimpleSession, AsyncSimpleSession
+
+    base = AsyncSimpleSession if asynchronous else SimpleSession
+
+    class FakeSession(base):
+        def __init__(self):
+            self._wf = SimpleNamespace(llm=None, tools_manager=None)
+            self.coding_workspace_root = tmp_path
+            self.coding_sandbox_root = tmp_path
+
+    def state(session, root):
+        return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json",
+                                          log_file=tmp_path / "log.jsonl"), "todos": {}}
+
+    monkeypatch.setattr(coding, "get_plugin_state", state)
+    configurations = [{"protected_dirs": " FIRST_PRIVATE, "},
+                      {"protected_dirs": "second_private"}, {"protected_dirs": ""}, None]
+    tools = [{tool.tool_name: tool for tool in coding.get_tools(FakeSession(), config)}
+             for config in configurations]
+    directories = ["first_private", "second_private", ".satrap", ".git", "node_modules"]
+    for directory in directories:
+        folder = tmp_path / directory
+        folder.mkdir()
+        (folder / "sample.txt").write_text("original-marker", encoding="utf-8")
+
+    async def check(index):
+        tool = tools[index][tool_name]
+        for directory in directories:
+            target = tmp_path / directory / f"case-{index}.txt"
+            target.write_text("original-marker", encoding="utf-8")
+            denied = directory in directories[2:] or (index < 2 and directory == directories[index])
+            relative = f"{directory}/{target.name}"
+            arguments = {
+                "read_file": {"path": relative},
+                "write_file": {"path": relative, "content": "changed-marker"},
+                "edit_file": {"path": relative, "old": "original", "new": "changed"},
+                "search_replace": {"path": relative, "replacements": [{"old": "original", "new": "changed"}]},
+                "glob_files": {"pattern": f"{directory}/*.txt"},
+                "grep_files": {"pattern": "marker", "path": directory},
+            }[tool_name]
+            result = await tool.execute(**arguments) if asynchronous else tool.execute(**arguments)
+            if tool_name in {"glob_files", "grep_files"}:
+                assert ("sample.txt" not in result) == denied, (index, directory, result)
+            elif tool_name == "read_file":
+                assert ("拒绝读取" in result) == denied, (index, directory, result)
+                assert ("original-marker" not in result) == denied
+            else:
+                assert ("拒绝" in result) == denied, (index, directory, result)
+                assert target.read_text(encoding="utf-8") == ("original-marker" if denied else "changed-marker")
+
+    for index in [0, 1, 2, 3, 0]:
+        await check(index)
+    if asynchronous:
+        await asyncio.gather(*(check(index) for index in range(4)))

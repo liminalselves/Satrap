@@ -17,11 +17,11 @@ from .file_io import write_file, edit_file, replace_file
 from .paths import (
     _tool_root,
     _resolve_path,
-    _protection_reason,
+    _FileProtectionMixin,
     _approve_file_write_async,
 )
 
-class AsyncWriteFileTool(AsyncTool):
+class AsyncWriteFileTool(_FileProtectionMixin, AsyncTool):
     """写入/追加工作区内文件 (异步, 写操作走审批)"""
 
     tool_name = "write_file"
@@ -61,7 +61,7 @@ class AsyncWriteFileTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝写入: {reason}"
         # Step.2 请求文件修改审批
@@ -87,7 +87,7 @@ class AsyncWriteFileTool(AsyncTool):
         self._session = session
 
 
-class AsyncEditFileTool(AsyncTool):
+class AsyncEditFileTool(_FileProtectionMixin, AsyncTool):
     """精确替换工作区内文件内容 (异步, 写操作走审批)"""
 
     tool_name = "edit_file"
@@ -131,7 +131,7 @@ class AsyncEditFileTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -167,7 +167,7 @@ class AsyncEditFileTool(AsyncTool):
         self._session = session
 
 
-class AsyncSearchReplaceTool(AsyncTool):
+class AsyncSearchReplaceTool(_FileProtectionMixin, AsyncTool):
     """批量精确替换 (异步): 一个文件内多对 old->new"""
 
     tool_name = "search_replace"
@@ -211,7 +211,7 @@ class AsyncSearchReplaceTool(AsyncTool):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():

@@ -123,6 +123,6 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | data_root | path | .satrap/coding | 插件数据目录 |
 | sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时使用会话私有 sandbox |
 | shell_timeout | number | 30 | shell 命令超时 (秒) |
-| protected_dirs | string | - | 额外保护目录 (逗号分隔) |
+| protected_dirs | string | - | 额外保护目录名 (逗号分隔, 忽略大小写); 按工具实例保存, 空配置仅保留内置保护 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/satrap_coding.json`。
