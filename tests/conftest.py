@@ -33,18 +33,22 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 
 def pytest_configure(config):
     """测试收集前隔离默认存储目录, 子进程继承相同环境"""
-    config._satrap_original_data_root = os.environ.get("SATRAP_DATA_ROOT")
+    config._satrap_original_paths = {key: os.environ.get(key) for key in ("SATRAP_DATA_ROOT", "SATRAP_LOG_ROOT", "SATRAP_LOG_CONFIG")}
     config._satrap_test_data = tempfile.TemporaryDirectory(prefix="satrap-tests-")
     os.environ["SATRAP_DATA_ROOT"] = config._satrap_test_data.name
+    os.environ["SATRAP_LOG_ROOT"] = str(Path(config._satrap_test_data.name) / "logs")
+    os.environ["SATRAP_LOG_CONFIG"] = str(Path(config._satrap_test_data.name) / "logging.json")
 
 
 def pytest_unconfigure(config):
     """恢复环境并清理隔离测试目录"""
-    original = getattr(config, "_satrap_original_data_root", None)
-    if original is None:
-        os.environ.pop("SATRAP_DATA_ROOT", None)
-    else:
-        os.environ["SATRAP_DATA_ROOT"] = original
+    if "satrap.core.log" in sys.modules:
+        sys.modules["satrap.core.log"].logger.close()
+    for key, original in getattr(config, "_satrap_original_paths", {}).items():
+        if original is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = original
     temporary = getattr(config, "_satrap_test_data", None)
     if temporary is not None:
         temporary.cleanup()
