@@ -569,7 +569,7 @@ export function Sessions() {
         description="管理扫描式会话类、Edictum 命名配置和运行时会话"
       />
 
-      <Tabs defaultValue="session-classes">
+      <Tabs defaultValue={searchParams.has('edictum') ? 'edictum' : 'session-classes'}>
         <TabsList>
           <TabsTrigger value="session-classes">会话类</TabsTrigger>
           <TabsTrigger value="edictum">Edictum 会话</TabsTrigger>

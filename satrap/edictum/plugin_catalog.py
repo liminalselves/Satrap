@@ -5,6 +5,8 @@ from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+import yaml
+import json
 
 from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
 from satrap.edictum.plugin import (
@@ -117,7 +119,8 @@ class PluginCatalog:
                     continue
                 try:
                     entry = self._load_entry(plugin_dir)
-                except ValueError:
+                    json.dumps(entry.to_payload(), allow_nan=False)
+                except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError):
                     continue
                 if entry.name not in found:   # 官方目录先扫描, 同名用户插件不覆盖
                     found[entry.name] = entry

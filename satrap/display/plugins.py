@@ -25,6 +25,9 @@ import threading
 from pathlib import Path
 from typing import Any, cast
 import json
+import tempfile
+from satrap.core.storage.file_lock import FileLock
+from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
@@ -84,14 +87,21 @@ class ChatPluginRegistry:
 
     # ---------- 状态持久化 ----------
 
-    def _load(self) -> None:
-        """读 json 启用状态 (不存在则空)"""
+    def _load(self, strict: bool = False) -> None:
+        """
+        读取插件状态, 写入前严格读取以避免覆盖损坏文件
+
+        参数:
+        - strict: 为 True 时读取失败抛出异常, 默认保留原有启动兜底行为
+        """
         with self._lock:
             self._states = {}
             if not self.state_path.is_file():
                 return
             try:
                 raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+                if strict and not isinstance(raw, dict):
+                    raise ValueError("Chat 插件配置必须是对象")
                 if isinstance(raw, dict):
                     for name, st in cast(dict[str, Any], raw).items():
                         if isinstance(st, dict):
@@ -101,6 +111,8 @@ class ChatPluginRegistry:
                                 "capabilities": self._normalize_caps(st_dict.get("capabilities")),
                             }
             except (OSError, ValueError) as e:
+                if strict:
+                    raise
                 logger.warning(f"[聊天插件] 读取启用状态失败, 已重置: {e}")
 
     @staticmethod
@@ -126,13 +138,16 @@ class ChatPluginRegistry:
 
     def _save(self) -> None:
         """写 json 启用状态 (调用方需已持有锁)"""
+        temporary: Path | None = None
         try:
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
-            self.state_path.write_text(
-                json.dumps(self._states, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except OSError as e:
-            logger.error(f"[聊天插件] 写入启用状态失败: {e}")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.state_path.parent, delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(self._states, output, ensure_ascii=False, indent=2, allow_nan=False)
+            temporary.replace(self.state_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     # ---------- 扫描 ----------
 
@@ -170,6 +185,8 @@ class ChatPluginRegistry:
                     "applicability": dict(entry.applicability),
                     "availability": asdict(entry.check_environment(PluginEnvironment("chat"))),
                     "enabled": bool(state.get("enabled", False)),
+                    "configured": name in self._states,
+                    "revision": config_document_revision(self._states.get(name)),
                     "capabilities": capabilities,
                 })
         return result
@@ -177,6 +194,25 @@ class ChatPluginRegistry:
     def refresh(self) -> None:
         """重新读取由冷配置管理入口保存的 Chat 插件状态"""
         self._load()
+
+    def configure(self, name: str, state: dict[str, Any] | None, expected_revision: str) -> None:
+        """
+        原子添加、更新或移除一个 Chat 插件配置
+
+        参数:
+        - name: 已通过目录和能力校验的插件名称
+        - state: 聚合开关和子能力状态, None 表示移除
+        - expected_revision: 该插件编辑开始时的配置版本
+        """
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
+            if config_document_revision(self._states.get(name)) != expected_revision:
+                raise ConfigRevisionConflict("Chat 插件配置已被修改, 请重新读取后合并")
+            if state is None:
+                self._states.pop(name, None)
+            else:
+                self._states[name] = {"enabled": state["enabled"], "capabilities": self._normalize_caps(state.get("capabilities"))}
+            self._save()
 
     def get_plugin_dir(self, name: str) -> Path | None:
         """
@@ -261,7 +297,8 @@ class ChatPluginRegistry:
             entry = self.catalog.get(name)
             if entry is not None:
                 entry.check_environment(PluginEnvironment("chat")).require()
-        with self._lock:
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             st["enabled"] = bool(enabled)
             self._save()
@@ -281,7 +318,8 @@ class ChatPluginRegistry:
         """
         if kind not in CAPABILITY_KINDS:
             return False
-        with self._lock:
+        with self._lock, FileLock(self.state_path.with_name(f".{self.state_path.name}.lock")):
+            self._load(strict=True)
             st = self._states.setdefault(name, {"enabled": False, "capabilities": {}})
             caps = self._normalize_caps(st.get("capabilities"))
             caps[kind][cap] = bool(enabled)

@@ -468,32 +468,7 @@ class EdictumProvider:
             state.config_status = "restart_pending"
         elif not config_drift and state.config_status != "error":
             state.config_status = "applied"
-        plugins: list[dict[str, object]] = [
-            {
-                "name": item.name,
-                "enabled": item.enabled,
-                "status": item.status,
-                "error": item.error,
-                "last_error": item.last_error,
-                "last_operation_status": item.last_operation_status,
-                "revision": item.revision,
-                "capabilities": {
-                    "applied": (
-                        item.applied_spec.capabilities
-                        if item.applied_spec is not None
-                        else {}
-                    ),
-                    "desired": (
-                        item.desired_spec.capabilities
-                        if item.desired_spec is not None
-                        else {}
-                    ),
-                },
-                "drift": item.drift,
-                "restart_required": item.restart_required,
-            }
-            for item in state.plugins
-        ]
+        plugins = [item.to_payload() for item in state.plugins]
         return {
             "plugins": plugins,
             "plugin_summary": {

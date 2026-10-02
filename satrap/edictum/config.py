@@ -20,6 +20,7 @@ from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
 
 from satrap.core.log import logger
+from satrap.core.storage.file_lock import FileLock
 
 
 class EdictumConfigManager:
@@ -139,7 +140,7 @@ class EdictumConfigManager:
 
     def reload(self) -> None:
         """从磁盘重新加载冷配置"""
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
             if not self.storage_path.exists():
                 self._configs = {}
                 self._save_locked()
@@ -195,7 +196,8 @@ class EdictumConfigManager:
         """
         key = self._normalize_name(name)
         normalized = self._normalize_entry(entry)
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             if key in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {key}")
             self._configs[key] = normalized
@@ -208,6 +210,7 @@ class EdictumConfigManager:
         changes: object,
         *,
         new_name: str | None = None,
+        expected_revision: str | None = None,
     ) -> tuple[str, dict[str, Any]]:
         """
         原子更新并按需重命名配置
@@ -216,18 +219,24 @@ class EdictumConfigManager:
         - name: 当前配置名称
         - changes: 待合并字段
         - new_name: 可选新名称
+        - expected_revision: 可选的当前完整命名配置版本, 不匹配时拒绝更新
 
         返回:
         - tuple[str, dict[str, Any]]: 最终名称和配置
         """
+        from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
+
         key = self._normalize_name(name)
         target = self._normalize_name(new_name) if new_name is not None else key
         if not isinstance(changes, dict):
             raise ValueError("Edictum 配置更新必须是对象")
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             current = self._configs.get(key)
             if current is None:
                 raise ValueError(f"Edictum 配置不存在: {key}")
+            if expected_revision is not None and config_document_revision(current) != expected_revision:
+                raise ConfigRevisionConflict("Edictum 配置已被修改, 请重新读取后合并")
             if target != key and target in self._configs:
                 raise ValueError(f"Edictum 配置名称已存在: {target}")
             merged = dict(current)
@@ -263,7 +272,8 @@ class EdictumConfigManager:
         - bool: 是否找到并删除配置
         """
         key = self._normalize_name(name)
-        with self._lock:
+        with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
+            self.reload()
             if key not in self._configs:
                 return False
             del self._configs[key]

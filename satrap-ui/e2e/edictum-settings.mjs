@@ -45,6 +45,7 @@ try {
       '/api/sessions': { sessions: [] },
       '/config/edictum/types': { types: [{ name: 'async_simple', is_async: true, description: '', config_schema: {}, capabilities: { plugins: true, mcp: true, stream: true } }] },
       '/config/edictum/plugins': { plugins: [{ name: 'probe_plugin', description: '', version: '1', config_schema: { note: { type: 'str', default: '' } }, capabilities: { tools: { probe_tool: '测试工具' } } }] },
+      '/config/plugins/probe_plugin/config': { ok: true, schema: { note: { type: 'string', default: '' } }, config: { note: '全局继承' }, overrides: { note: '全局继承' }, revision: 'first' },
       '/config/plugin-model-options': { options: {} },
       '/config/rag': { knowledge_bases: [] },
     };
@@ -56,6 +57,8 @@ try {
   const dialog = page.getByRole('dialog');
   await page.getByTitle('管理插件', { exact: true }).click();
   await dialog.getByRole('button', { name: '添加', exact: true }).click();
+  assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '全局继承');
+  await dialog.getByText('继承全局配置', { exact: true }).waitFor();
   await dialog.getByLabel('note', { exact: true }).fill('保留草稿');
   await dialog.getByText('probe_tool', { exact: true }).locator('..').locator('..').getByRole('checkbox').uncheck();
   const readsBefore = configReads;
@@ -75,6 +78,8 @@ try {
   await page.getByText(/插件配置保存失败/).waitFor();
   assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '保留草稿');
   assert.equal(writes.at(-1).plugins[0].capabilities.tools.probe_tool, false);
+  await dialog.getByRole('button', { name: '恢复继承', exact: true }).click();
+  assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '全局继承');
   await dialog.getByRole('button', { name: '取消', exact: true }).click();
   await dialog.waitFor({ state: 'hidden' });
   await page.getByTitle('管理插件', { exact: true }).click();

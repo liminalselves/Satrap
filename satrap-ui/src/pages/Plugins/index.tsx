@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
 import { controlApi } from '@/api/control';
 import type { ManagedPlugin } from '@/api/types';
@@ -9,10 +9,9 @@ import { Card } from '@/components/ui/Card';
 import { InstallPluginModal } from './InstallPluginModal';
 import { GlobalPluginSettings } from './GlobalPluginSettings';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS as capabilityLabels } from '@/components/common/PluginCapabilities';
+import { PluginUsages } from './PluginUsages';
 
-export const capabilityLabels: Record<string, string> = {
-  tools: '工具', skills: '技能', mcp: 'MCP', handlers: '前处理', commands: '命令',
-};
 const sourceLabels = { builtin: '内置', user: '用户' };
 const sessionLabels: Record<string, string> = { chat: 'Chat', platform: '平台会话', embedded: '嵌入会话' };
 
@@ -34,19 +33,6 @@ function usePluginCatalog() {
   return { plugins, loading, error, refresh };
 }
 
-export function PluginCapabilities({ plugin }: { plugin: Pick<ManagedPlugin, 'capabilities'> }) {
-  return <div className="space-y-4">{Object.entries(capabilityLabels).map(([kind, label]) => {
-    const items = Object.entries(plugin.capabilities[kind] || {});
-    return <section key={kind}>
-      <h3 className="font-medium text-text-primary">{label} · {items.length}</h3>
-      {items.length ? <ul className="mt-2 space-y-2">{items.map(([name, description]) => <li key={name} className="rounded-lg bg-glass p-3">
-        <span className="break-all font-medium">{name}</span>
-        {description && <p className="mt-1 whitespace-pre-wrap text-sm text-text-secondary">{description}</p>}
-      </li>)}</ul> : <p className="mt-1 text-sm text-text-tertiary">未声明</p>}
-    </section>;
-  })}</div>;
-}
-
 export function PluginOverview({ plugin }: { plugin: ManagedPlugin }) {
   return <div className="grid gap-4 lg:grid-cols-2">
     <Card className="space-y-4">
@@ -61,7 +47,7 @@ export function PluginOverview({ plugin }: { plugin: ManagedPlugin }) {
       <p className="whitespace-pre-wrap text-text-secondary">{plugin.description || '暂无说明'}</p>
       <p className="text-sm text-text-tertiary">{plugin.usage_count} 个使用位置。能力声明来自插件元数据，实际加载结果由各运行实例决定。</p>
     </Card>
-    <Card><h2 className="mb-4 text-lg font-semibold">声明的能力</h2><PluginCapabilities plugin={plugin} /></Card>
+    <Card><h2 className="mb-4 text-lg font-semibold">声明的能力</h2><PluginCapabilities capabilities={plugin.capabilities} /></Card>
   </div>;
 }
 
@@ -105,7 +91,8 @@ export function Plugins() {
 }
 
 export function PluginDetail() {
-  const [tab, setTab] = useState('overview');
+  const [search] = useSearchParams();
+  const [tab, setTab] = useState(search.get('tab') === 'config' ? 'config' : search.get('tab') === 'usages' ? 'usages' : 'overview');
   const [dirty, setDirty] = useState(false);
   useDirtyGuard(dirty);
   const { name } = useParams();
@@ -115,7 +102,7 @@ export function PluginDetail() {
     <Link to="/plugins" className="text-sm text-accent">← 返回插件列表</Link>
     <PageHeader title={name || '插件详情'} actions={<Button onClick={refresh} disabled={loading}>刷新</Button>} />
     {error && <p role="alert" className="text-error">{error}</p>}
-    {plugin && <div className="flex gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数']].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
-    {plugin ? tab === 'overview' ? <PluginOverview plugin={plugin} /> : <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
+    {plugin && <div className="flex gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数'], ['usages', '使用位置']].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
+    {plugin ? tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
   </div>;
 }

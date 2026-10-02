@@ -2353,6 +2353,17 @@ class ChatService:
         self._plugins.refresh()
         return self._plugin_update_result(await self._reconcile_chat_plugins())
 
+    def plugin_runtime_snapshot(self) -> dict[str, Any]:
+        """
+        读取正式 Chat 会话的插件实际状态, 不触发安装或模型请求
+
+        返回:
+        - 逐会话运行快照, 预加载临时会话不计入使用位置
+        """
+        return {"ok": True, "sessions": [{"conversation_id": conv.conversation_id, "platform_id": "chat", "config_name": "chat",
+                                          "plugins": [state.to_payload() for state in conv.plugin_states]}
+                                         for conv in self._conversations.values() if conv.persisted]}
+
     @staticmethod
     def _plugin_update_result(results: list[dict[str, Any]]) -> dict[str, Any]:
         """

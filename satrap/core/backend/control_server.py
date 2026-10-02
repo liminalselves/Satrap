@@ -1886,7 +1886,7 @@ def _plugin_management_service() -> PluginManagementService:
     models = _model_config_service().manager
     return PluginManagementService(service.plugin_catalog, service.list_configs(), ChatPluginRegistry(),
                                    manager=PluginConfigManager(), models=models,
-                                   rag=RagService(_configured_storage_layout(), models, "local"))
+                                   rag=RagService(_configured_storage_layout(), models, "local"), edictum=service)
 
 
 def _plugin_runtime_request(target: str, url: str) -> dict[str, Any]:
@@ -1936,6 +1936,82 @@ async def _apply_plugin_runtime() -> list[dict[str, Any]]:
     results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_runtime_request, target, url) for target, url in urls), return_exceptions=True)
     return [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "sessions": []}
             for index, result in enumerate(results)]
+
+
+def _plugin_snapshot_request(target: str, url: str, name: str) -> dict[str, Any]:
+    """
+    读取运行服务的插件状态, 不触发配置应用
+
+    参数:
+    - target: Chat 或 Edictum
+    - url: 内部只读运行列表地址
+    - name: 要查看的插件名称
+
+    返回:
+    - 目标服务状态与关联的实例快照, 服务不可用时保留明确状态
+    """
+    try:
+        with urllib.request.urlopen(_authenticated_request(url), timeout=3) as response:
+            payload = json.loads(response.read(2 * 1024 * 1024))
+        instances: list[dict[str, Any]] = []
+        for session in payload.get("sessions", []):
+            plugins = session.get("plugins", session.get("runtime", {}).get("plugins", []))
+            plugin = next((item for item in plugins if item.get("name") == name), None)
+            if plugin is not None:
+                instances.append({"platform_id": session.get("platform_id", "chat"), "session_id": session.get("session_id", session.get("conversation_id")),
+                                  "location_id": "chat" if target == "Chat" else session.get("session_type_name"), "plugin": plugin})
+        return {"target": target, "status": "available", "instances": instances}
+    except urllib.error.URLError as error:
+        refused = isinstance(error.reason, ConnectionRefusedError)
+        return {"target": target, "status": "stopped" if refused else "error", "error": "" if refused else str(error), "instances": []}
+    except (OSError, TypeError, ValueError, AttributeError) as error:
+        return {"target": target, "status": "error", "error": str(error), "instances": []}
+
+
+async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    管理使用位置并读取运行快照, 草稿保存后独立协调服务
+
+    参数:
+    - ctx: 已认证的路由上下文
+
+    返回:
+    - 使用位置配置或运行实例, 不匹配时返回 None
+    """
+    prefix = "/config/plugins/"
+    action = ctx.path.rsplit("/", 1)[-1]
+    if not ctx.path.startswith(prefix) or action not in {"usages", "runtime"} or ctx.method not in {"GET", "PUT"}:
+        return None
+    name = urllib.parse.unquote(ctx.path[len(prefix):-len(action)-1])
+    try:
+        service = _plugin_management_service()
+        if action == "runtime" and ctx.method == "GET":
+            if service.catalog.get(name) is None:
+                raise KeyError("插件不存在")
+            host, port = _configured_backend_address()
+            host = _connect_host(host)
+            host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+            urls = [("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/runtime"),
+                    ("Edictum", f"http://{host}:{port}/api/sessions")]
+            results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_snapshot_request, target, url, name) for target, url in urls), return_exceptions=True)
+            return 200, {"ok": True, "services": [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "instances": []} for index, result in enumerate(results)]}
+        if action != "usages":
+            return None
+        if ctx.method == "GET":
+            return 200, await RAG_WORKERS.run(service.get_usages, name)
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        if not isinstance(payload.get("state"), dict) or any(not isinstance(payload.get(key), str) for key in ("kind", "location_id", "expected_revision")):
+            raise ValueError("缺少使用位置、配置草稿或版本")
+        result = await RAG_WORKERS.run(service.save_usage, name, payload["kind"], payload["location_id"], payload["state"], payload["expected_revision"])
+    except ConfigRevisionConflict as error:
+        return 409, {"error": str(error)}
+    except KeyError as error:
+        return 404, {"error": str(error)}
+    except WorkerBusyError as error:
+        return 503, {"error": str(error)}
+    except (OSError, TypeError, ValueError) as error:
+        return 400, {"error": str(error)}
+    return 200, {**result, "runtime": await _apply_plugin_runtime()}
 
 
 async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
@@ -2569,6 +2645,7 @@ async def _handle_request(
             _route_storage,
             _route_plugin_install,
             _route_plugin_config,
+            _route_plugin_usages,
             _route_edictum_metadata,
             _route_session_instances,
             _route_session_plugin_config,

@@ -2331,6 +2331,9 @@ class BackendManager:
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
         """
+        manager = self.edictum_config_manager
+        if manager is not None:
+            manager.reload()
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}

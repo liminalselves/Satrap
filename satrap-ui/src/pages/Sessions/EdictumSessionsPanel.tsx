@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Plus, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
 
 import { edictumApi } from '@/api/edictum';
@@ -54,6 +55,9 @@ function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
 }
 
 export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSessionsPanelProps) {
+  const [searchParams] = useSearchParams();
+  const linkedName = searchParams.get('edictum');
+  const openedLink = useRef<string | null>(null);
   const { isRunning, reloadConfig } = useBackendStore();
   const [types, setTypes] = useState<EdictumTypeDefinition[]>([]);
   const [availablePlugins, setAvailablePlugins] = useState<EdictumAvailablePlugin[]>([]);
@@ -132,6 +136,13 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     });
     setModalOpen(true);
   }, [configs]);
+
+  useEffect(() => {
+    if (linkedName && configs[linkedName] && openedLink.current !== linkedName) {
+      openedLink.current = linkedName;
+      setPluginManagerName(linkedName);
+    }
+  }, [linkedName, configs]);
 
   const save = useCallback(async () => {
     const name = form.name.trim();

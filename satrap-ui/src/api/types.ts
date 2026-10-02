@@ -170,6 +170,43 @@ export interface GlobalPluginConfig {
   runtime?: PluginRuntimeResult[];
 }
 
+export interface PluginLocationState {
+  present: boolean;
+  enabled: boolean;
+  capabilities: Record<string, Record<string, boolean>>;
+}
+
+export interface PluginLocation extends PluginLocationState {
+  kind: 'chat' | 'edictum';
+  id: string;
+  label: string;
+  revision: string;
+  parent_enabled: boolean;
+  availability: { allowed: boolean; message?: string; warnings?: string[] };
+}
+
+export interface PluginUsagesResult {
+  ok: boolean;
+  locations: PluginLocation[];
+  saved?: boolean;
+  runtime?: PluginRuntimeResult[];
+}
+
+export interface PluginRuntimeSnapshot {
+  ok: boolean;
+  services: Array<{
+    target: string;
+    status: 'available' | 'stopped' | 'error';
+    error?: string;
+    instances: Array<{
+      platform_id: string;
+      session_id: string;
+      location_id: string;
+      plugin: { name: string; status: string; enabled: boolean; error?: string; drift?: boolean; restart_required?: boolean; capabilities: { applied: Record<string, Record<string, boolean>>; desired: Record<string, Record<string, boolean>>; loaded: Record<string, Record<string, boolean>>; loaded_known?: boolean } };
+    }>;
+  }>;
+}
+
 export interface EdictumSessionConfig {
   provider: 'edictum';
   edictum_type: string;

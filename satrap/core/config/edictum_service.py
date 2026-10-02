@@ -118,13 +118,14 @@ class EdictumConfigService:
         self._validate_plugin_values(cleaned.get("plugins", []))
         return self.manager.create(name, cleaned)
 
-    def update(self, name: str, payload: object) -> tuple[str, dict[str, Any]]:
+    def update(self, name: str, payload: object, *, expected_revision: str | None = None) -> tuple[str, dict[str, Any]]:
         """
         更新并按需重命名 Edictum 冷配置
 
         参数:
         - name: 当前配置名称
         - payload: 待更新字段
+        - expected_revision: 可选的完整配置版本, 用于拒绝并发覆盖
 
         返回:
         - tuple[str, dict[str, Any]]: 最终名称和完整配置
@@ -138,7 +139,7 @@ class EdictumConfigService:
         with REFERENCE_SCAN_LOCK:
             if new_name is not None and new_name != name:
                 self._guard_reference(name)
-            return self.manager.update(name, cleaned, new_name=new_name)
+            return self.manager.update(name, cleaned, new_name=new_name, expected_revision=expected_revision)
 
     def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
         """

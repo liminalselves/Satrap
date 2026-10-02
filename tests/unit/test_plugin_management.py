@@ -40,6 +40,10 @@ def configured_service(tmp_path):
     plugin = tmp_path / "user" / "probe"
     plugin.mkdir(parents=True)
     (plugin / "meta.yaml").write_text("""name: probe
+tools:
+  probe_tool: 测试工具
+skills:
+  probe_skill: 测试技能
 config_schema:
   note:
     type: string
@@ -53,6 +57,10 @@ config_schema:
   model:
     type: llm
     default: ''
+  optional_model:
+    type: llm
+    default: ''
+    nullable: true
 """, encoding="utf-8")
     catalog = PluginCatalog(tmp_path / "builtin", tmp_path / "user")
     chat = ChatPluginRegistry(tmp_path / "chat.json")
@@ -93,3 +101,68 @@ def test_global_model_reference_validation(configured_service):
     with pytest.raises(ValueError, match="模型配置不存在"):
         service.save_config("probe", {"model": "missing"}, before["revision"])
     assert service.get_config("probe") == before
+
+
+def test_global_explicit_null_is_preserved(configured_service):
+    service = configured_service
+    before = service.get_config("probe")
+    saved = service.save_config("probe", {"optional_model": None}, before["revision"])
+    assert saved["overrides"] == {"optional_model": None}
+    assert saved["config"]["optional_model"] is None
+
+
+def test_chat_usage_disable_preserves_capabilities_and_remove_clears_reference(configured_service):
+    service = configured_service
+    initial = service.get_usages("probe")["locations"][0]
+    assert not initial["present"]
+    added = service.save_usage("probe", "chat", "chat", {"present": True, "enabled": True, "capabilities": {"tools": {"probe_tool": False}}}, initial["revision"])["locations"][0]
+    disabled = service.save_usage("probe", "chat", "chat", {"present": True, "enabled": False, "capabilities": added["capabilities"]}, added["revision"])["locations"][0]
+    assert disabled["present"] and not disabled["enabled"]
+    assert disabled["capabilities"]["tools"]["probe_tool"] is False
+    assert service.list_plugins()[0]["usage_count"] == 1
+    removed = service.save_usage("probe", "chat", "chat", {"present": False, "enabled": False, "capabilities": disabled["capabilities"]}, disabled["revision"])["locations"][0]
+    assert not removed["present"]
+    assert service.list_plugins()[0]["usage_count"] == 0
+
+
+def test_chat_usage_rejects_stale_edits_and_unknown_capabilities(configured_service):
+    service = configured_service
+    initial = service.get_usages("probe")["locations"][0]
+    external = ChatPluginRegistry(service.chat.state_path)
+    external.catalog = service.catalog
+    external.set_enabled("probe", True)
+    with pytest.raises(ConfigRevisionConflict):
+        service.save_usage("probe", "chat", "chat", {"present": True, "enabled": False, "capabilities": {}}, initial["revision"])
+    current = service.get_usages("probe")["locations"][0]
+    with pytest.raises(ValueError, match="未声明能力"):
+        service.save_usage("probe", "chat", "chat", {"present": True, "enabled": True, "capabilities": {"tools": {"unknown": True}}}, current["revision"])
+    assert service.get_usages("probe")["locations"][0]["enabled"]
+
+
+def test_named_usage_preserves_overrides_and_other_plugins(configured_service, tmp_path, monkeypatch):
+    from satrap.edictum.registry import create_default_edictum_type_registry
+    from satrap.edictum.config import EdictumConfigManager
+    from satrap.core.config.edictum_service import EdictumConfigService
+
+    service = configured_service
+    registry = create_default_edictum_type_registry()
+    manager = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    manager.plugin_catalog = service.catalog
+    manager.create("assistant", {"edictum_type": "async_simple", "plugins": [{"name": "probe", "config": {"note": "命名覆盖"}}, "other"]})
+    named = EdictumConfigService(manager, registry)
+    named.plugin_catalog = service.catalog
+    monkeypatch.setattr("satrap.core.config.edictum_service.PluginConfigManager", lambda: service.manager)
+    service.edictum = named
+    service.configs = named.list_configs()
+    before = service.get_usages("probe")["locations"][1]
+    result = service.save_usage("probe", "edictum", "assistant", {"present": True, "enabled": False, "capabilities": {"skills": {"probe_skill": False}}}, before["revision"])
+    after = named.get("assistant")
+    target = next(item for item in after["plugins"] if item["name"] == "probe")
+    assert target["config"] == {"note": "命名覆盖"}
+    assert target["capabilities"]["skills"]["probe_skill"] is False
+    assert next(item for item in after["plugins"] if item["name"] == "other")
+    location = result["locations"][1]
+    manager.update("assistant", {"description": "其他页面修改"})
+    with pytest.raises(ConfigRevisionConflict):
+        service.save_usage("probe", "edictum", "assistant", {"present": False, "enabled": False, "capabilities": {}}, location["revision"])
+    assert len(manager.get_config("assistant")["plugins"]) == 2

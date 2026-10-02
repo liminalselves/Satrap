@@ -1004,6 +1004,16 @@ def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypa
         status, result = await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
         assert status == 200 and result["applied"]
         assert await conv.session.run("/about") == "来自管理页"
+        snapshot_status, snapshot = await ChatHTTPServer(svc)._route("GET", "/api/chat/plugins/runtime", b"")
+        assert snapshot_status == 200
+        actual = snapshot["sessions"][0]["plugins"][0]
+        assert actual["capabilities"]["loaded"]["commands"] == {"about": True}
+        assert "config" not in actual
+        external = ChatPluginRegistry(svc._plugins.state_path)
+        external.catalog = svc._plugins.catalog
+        external.set_enabled("chat_commands", False)
+        await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
+        assert not svc.plugin_runtime_snapshot()["sessions"][0]["plugins"][0]["enabled"]
         await svc.close()
 
     asyncio.run(run())

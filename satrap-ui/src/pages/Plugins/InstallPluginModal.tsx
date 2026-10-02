@@ -4,6 +4,7 @@ import { controlApi } from '@/api/control';
 import type { PluginInstallPreview } from '@/api/types';
 import { Modal } from '@/components/ui/Modal';
 import { Button } from '@/components/ui/Button';
+import { PLUGIN_CAPABILITY_LABELS } from '@/components/common/PluginCapabilities';
 
 export function pluginError(error: unknown): string {
   return axios.isAxiosError(error) ? error.response?.data?.error || error.response?.data?.detail || error.message : error instanceof Error ? error.message : '操作失败';
@@ -86,7 +87,7 @@ export function InstallPluginModal({ onClose, onInstalled }: { onClose: () => vo
         <p className="text-sm">Satrap 版本要求：{preview.plugin.compatibility?.satrap || '未声明'}</p>
         <p className="text-sm">适用会话：{preview.plugin.applicability?.session_types?.join('、') || '未限制'}</p>
         <p className="text-sm">适用平台：{Array.isArray(preview.plugin.applicability?.platforms) ? preview.plugin.applicability.platforms.join('、') : '未限制'}</p>
-        <p className="text-sm">能力：{Object.entries(preview.plugin.capabilities).filter(([, items]) => Object.keys(items).length).map(([kind, items]) => `${kind} (${Object.keys(items).length})`).join('、') || '未声明'}</p>
+        <p className="text-sm">能力：{Object.entries(preview.plugin.capabilities).filter(([, items]) => Object.keys(items).length).map(([kind, items]) => `${PLUGIN_CAPABILITY_LABELS[kind] || kind} (${Object.keys(items).length})`).join('、') || '未声明'}</p>
         <p className="text-xs text-text-tertiary">{preview.file_count} 个文件 · 解压后 {(preview.expanded_bytes / 1024).toFixed(1)} KiB</p>
         <p className="text-sm">安装到用户插件目录，安装后可选择使用位置并启用。预览有效期 10 分钟。</p>
       </div>}

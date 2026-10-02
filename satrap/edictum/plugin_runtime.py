@@ -11,7 +11,7 @@ from contextvars import copy_context
 
 from satrap.edictum.plugin_spec import PluginSpec
 from satrap.edictum.plugin_settings import EffectivePluginConfig, PluginInstallConfig
-from satrap.edictum.plugin import CAPABILITY_KINDS
+from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin
 
 
 _CAPABILITY_SINGULAR = {
@@ -98,6 +98,21 @@ class PluginRuntimeState:
     def restart_required(self) -> bool:
         """判断当前漂移是否只能通过重新激活会话恢复"""
         return self.last_operation_status == "restart_required"
+
+    def to_payload(self) -> dict[str, Any]:
+        """
+        返回不包含参数值的运行快照, 区分声明开关与实际加载能力
+
+        返回:
+        - 聚合状态、错误、漂移及能力状态; 非标准句柄不推测其加载能力
+        """
+        loaded = {kind: dict(getattr(self.handle, kind)) for kind in CAPABILITY_KINDS} if isinstance(self.handle, Plugin) else {}
+        return {"name": self.name, "enabled": self.enabled, "status": self.status, "error": self.error,
+                "last_error": self.last_error, "last_operation_status": self.last_operation_status, "revision": self.revision,
+                "capabilities": {"applied": self.applied_spec.capabilities if self.applied_spec else {},
+                                 "desired": self.desired_spec.capabilities if self.desired_spec else {}, "loaded": loaded,
+                                 "loaded_known": isinstance(self.handle, Plugin) or self.handle is None},
+                "drift": self.drift, "restart_required": self.restart_required}
 
     def mark(
         self,

@@ -529,6 +529,8 @@ async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
     assert isinstance(created, AsyncSimpleSession)
     plugin = next(item for item in created.list_plugins() if item.name == "session_commands")
     assert plugin.commands["about"] is False
+    actual = provider.get_runtime_metadata(created)["plugins"][0]
+    assert actual["capabilities"]["loaded"]["commands"]["about"] is False
 
     updated_plugins: dict[str, Any] = {
         "plugins": [
@@ -547,6 +549,7 @@ async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
     assert result["ok"] is True
     assert result["restart_required"] is False
     assert plugin.commands["about"] is True
+    assert provider.get_runtime_metadata(created)["plugins"][0]["capabilities"]["loaded"]["commands"]["about"] is True
 
     reconfigure_payload: dict[str, Any] = {
         "plugins": [

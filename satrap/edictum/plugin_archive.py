@@ -19,6 +19,7 @@ import zipfile
 import yaml
 
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin import load_plugin_meta
 
 MAX_ARCHIVE_BYTES = 20 * 1024 * 1024
 MAX_EXPANDED_BYTES = 100 * 1024 * 1024
@@ -112,7 +113,7 @@ class PluginArchiveInstaller:
         参数:
         - name: 已校验的插件名称
         """
-        if os.path.lexists(self.catalog.user_dir / name) or any(
+        if os.path.lexists(self.catalog.user_dir / name) or os.path.lexists(self.catalog.preset_dir / name) or any(
             entry.name.casefold() == name.casefold() for entry in self.catalog.scan()
         ):
             raise ValueError(f"已存在同名插件: {name}; 本版本不支持覆盖安装")
@@ -167,8 +168,10 @@ class PluginArchiveInstaller:
                             raise ValueError("ZIP 不支持加密文件")
                         if not item.is_dir():
                             files.append((item, parts))
-                    manifests = [parts for _, parts in files if parts[-1] == "meta.yaml"]
-                    if len(manifests) != 1 or len(manifests[0]) not in {1, 2}:
+                    manifests = [parts for _, parts in files if parts == ("meta.yaml",)]
+                    if not manifests:
+                        manifests = [parts for _, parts in files if len(parts) == 2 and parts[-1] == "meta.yaml"]
+                    if len(manifests) != 1:
                         raise ValueError("ZIP 必须包含一个根目录或单层目录下的 meta.yaml")
                     if any(item.file_size > 1024 * 1024 for item, parts in files if parts[-1] == "meta.yaml"):
                         raise ValueError("插件 meta.yaml 不得超过 1 MiB")
@@ -191,6 +194,9 @@ class PluginArchiveInstaller:
                 # Step.3 仅解析声明, 冲突检测通过后提供预览
                 plugin_dir = root.joinpath(*prefix)
                 try:
+                    raw_name = load_plugin_meta(plugin_dir).get("name")
+                    if not isinstance(raw_name, str) or raw_name != raw_name.strip():
+                        raise ValueError("插件 name 必须是无首尾空格的字符串")
                     entry = self.catalog._load_entry(plugin_dir)
                     json.dumps(entry.to_payload(), allow_nan=False)
                 except (yaml.YAMLError, RecursionError, TypeError) as error:

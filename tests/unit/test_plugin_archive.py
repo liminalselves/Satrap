@@ -67,6 +67,8 @@ def test_unsafe_paths_rejected_and_cleaned(installer, path):
     [("a/meta.yaml", "name: probe"), ("outside.txt", "x")],
     [("meta.yaml", "name: ../escape")],
     [("meta.yaml", "name: [broken")],
+    [("meta.yaml", "name: true")],
+    [("meta.yaml", "name: ' padded '")],
     [("meta.yaml", "name: probe"), ("Tools.py", "x"), ("tools.py", "x")],
     [("meta.yaml", "name: probe"), ("A/x", "x"), ("a/y", "x")],
 ])
@@ -149,3 +151,19 @@ def test_atomic_move_refuses_existing_empty_directory(tmp_path):
     assert (source / "keep").is_file()
     assert target.is_dir()
     assert not list(target.iterdir())
+
+
+def test_nested_private_metadata_is_not_a_second_plugin(installer):
+    result = installer.preview(archive_bytes([("package/meta.yaml", "name: probe"), ("package/resources/private/meta.yaml", "resource: example")]))
+    installer.install(result["token"])
+    assert (installer.catalog.user_dir / "probe" / "resources" / "private" / "meta.yaml").is_file()
+
+
+def test_invalid_existing_metadata_does_not_break_other_installations(installer):
+    broken = installer.catalog.preset_dir / "broken"
+    broken.mkdir(parents=True)
+    (broken / "meta.yaml").write_text("name: [invalid", encoding="utf-8")
+    result = installer.preview(archive_bytes([("meta.yaml", "name: probe")]))
+    installer.discard(result["token"])
+    with pytest.raises(ValueError, match="同名插件"):
+        installer.preview(archive_bytes([("meta.yaml", "name: broken")]))

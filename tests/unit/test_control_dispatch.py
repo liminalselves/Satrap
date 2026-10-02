@@ -50,6 +50,7 @@ async def _request(
     path: str,
     method: str = "GET",
     body: bytes = b"",
+    *, authorized: bool = True,
 ) -> bytes:
     """
     直接调用控制服务连接处理器 (默认携带测试令牌)
@@ -58,6 +59,7 @@ async def _request(
     - path: 请求路径
     - method: HTTP 方法
     - body: 请求体
+    - authorized: 是否携带测试管理令牌
 
     返回:
     - bytes: 完整响应
@@ -66,7 +68,7 @@ async def _request(
     header = (
         f"{method} {path} HTTP/1.1\r\n"
         "Host: 127.0.0.1\r\n"
-        f"Authorization: Bearer {control_server._CONTROL_AUTH.token}\r\n"
+        f"Authorization: Bearer {control_server._CONTROL_AUTH.token if authorized else 'invalid'}\r\n"
         f"Content-Length: {len(body)}\r\n"
         "Connection: close\r\n\r\n"
     ).encode()
@@ -483,6 +485,9 @@ async def test_plugin_zip_preview_install_and_json_limit(tmp_path, monkeypatch):
 
     installer = PluginArchiveInstaller(PluginCatalog(tmp_path / "builtin", tmp_path / "plugins"))
     monkeypatch.setattr(control_server, "PLUGIN_INSTALLER", installer)
+    unauthenticated = await _request("/config/plugins/preview", "POST", b"corrupt", authorized=False)
+    assert b"401" in unauthenticated.split(b"\r\n", 1)[0]
+    assert not (tmp_path / ".plugin-install").exists()
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as archive:
         archive.writestr("meta.yaml", "name: uploaded\nversion: '1'")
@@ -531,6 +536,18 @@ async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, mo
     retry = _json_body(await _request("/config/plugins/reconcile", "POST", b"{}"))
     assert retry["runtime"][1]["status"] == "error"
     assert len(applied) == 2
+    usage = _json_body(await _request("/config/plugins/probe/usages"))["locations"][0]
+    response = await _request("/config/plugins/probe/usages", "PUT", json.dumps({"kind": "chat", "location_id": "chat", "state": {"present": True, "enabled": False, "capabilities": {}}, "expected_revision": usage["revision"]}).encode("utf-8"))
+    assert b"200" in response.split(b"\r\n", 1)[0]
+    assert _json_body(response)["locations"][0]["present"]
+    assert _json_body(response)["runtime"][1]["status"] == "error"
+    def snapshot(target, url, name):
+        assert name == "probe"
+        return {"target": target, "status": "stopped", "instances": []}
+    monkeypatch.setattr(control_server, "_plugin_snapshot_request", snapshot)
+    runtime = _json_body(await _request("/config/plugins/probe/runtime"))
+    assert len(runtime["services"]) == 2
+    assert all(item["status"] == "stopped" for item in runtime["services"])
 
 
 @pytest.mark.parametrize("reason,status", [(ConnectionRefusedError(), "next_activation"), (TimeoutError(), "error")])
