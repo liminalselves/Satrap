@@ -10,6 +10,7 @@ import aiosqlite
 from typing import List, Dict, Any, TYPE_CHECKING
 from types import TracebackType
 import json
+import traceback
 import time
 
 from satrap.core.utils.vision import content_text_projection
@@ -22,6 +23,8 @@ from .utils import (
     _load_tool_calls,
 )
 from .base import _ContextCore
+
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, catalog_values
 
 from satrap.core.log import logger
 
@@ -135,10 +138,11 @@ class _AsyncStorage(_ContextCore):
                     except aiosqlite.OperationalError:
                         pass
 
+                await conn.execute(CATALOG_SCHEMA)
                 await conn.commit()
         except Exception as e:
             logger.error(
-                f"[异步上下文管理] 初始化数据库表失败：{e}, ID: {self.conversation_id}"
+                f"[异步上下文管理] 初始化数据库表失败：{e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
 
     async def _sync(self):
@@ -173,7 +177,7 @@ class _AsyncStorage(_ContextCore):
             await self._load_runtime_state()
         except Exception as e:
             logger.error(
-                f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[异步上下文管理] 加载上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             self._messages = []
             self._saved_count = 0
@@ -318,6 +322,7 @@ class _AsyncStorage(_ContextCore):
                         "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
                         data_to_insert,
                     )
+                await conn.execute(CATALOG_WRITE, catalog_values(self, appended=bool(new_messages) and prev_saved >= 0, modified=prev_saved < 0))
                 if self._runtime_state_dirty:
                     await self._write_runtime_state(conn)
                 await conn.commit()
@@ -327,7 +332,7 @@ class _AsyncStorage(_ContextCore):
 
         except Exception as e:
             logger.error(
-                f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[异步上下文管理] 保存上下文失败：{self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             self._saved_count = prev_saved  # 恢复水位, 下次保存重试 (全量重写路径幂等)
             if raise_on_error:

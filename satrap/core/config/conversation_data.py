@@ -17,6 +17,7 @@ import time
 import uuid
 
 from satrap.core.utils.context.utils import _load_message_content, _message_content_json
+from satrap.core.config.conversation_catalog import conversation_records, filter_records
 from satrap.core.storage.file_lock import database_session_lock
 from satrap.core.utils.vision import content_text_projection
 
@@ -93,35 +94,24 @@ class ConversationDataService:
         """
         if not self.database.is_file():
             return {"items": [], "total": 0}
+        items = self.catalog_records()
+        matched = filter_records(items, query)
+        return {"items": matched[max(0, offset):max(0, offset) + min(100, max(1, limit))], "total": len(matched)}
+
+    def catalog_records(self, platform: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        """
+        读取完整分类目录, 不创建平台文件或激活运行时
+
+        参数:
+        - platform: 动态平台类型和实例描述
+
+        返回:
+        - 全部对话分类记录, 缺少数据库时返回空列表
+        """
+        if not self.database.is_file():
+            return []
         with closing(self._connect()) as connection:
-            tables = self._tables(connection)
-            candidates: set[str] = set()
-            roots: set[str] = set()
-            for table, key in (("conversation_meta", "conversation_id"), ("session_configs", "session_id"), ("display_turns", "conversation_id")):
-                if table in tables:
-                    candidates.update(row[0] for row in connection.execute(f"SELECT DISTINCT {key} FROM {table}"))
-            roots.update(candidates)
-            counts = dict(connection.execute("SELECT conversation_id, COUNT(*) FROM chat_history GROUP BY conversation_id")) if "chat_history" in tables else {}
-            if "conversation_data_backups" in tables:
-                for row in connection.execute("SELECT DISTINCT conversation_id FROM conversation_data_backups"):
-                    counts.setdefault(row[0], 0)
-            owners: dict[str, list[str]] = {root: [] for root in roots}
-            for context in counts:
-                owner = next((root for root in sorted(roots, key=len, reverse=True) if context == root or context.startswith(root + "_")), context)
-                candidates.add(owner)
-                owners.setdefault(owner, []).append(context)
-            items = []
-            for conversation in candidates:
-                contexts = sorted(owners.get(conversation, []), key=lambda value: (value != conversation + "_main", value))
-                count = sum(counts.get(context, 0) for context in contexts)
-                turns = connection.execute("SELECT COUNT(*) FROM display_turns WHERE conversation_id=?", (conversation,)).fetchone()[0] if "display_turns" in tables else 0
-                title_row = connection.execute("SELECT user_input FROM display_turns WHERE conversation_id=? ORDER BY turn_index LIMIT 1", (conversation,)).fetchone() if turns else None
-                title = str(title_row[0])[:100] if title_row else conversation
-                if query.casefold() not in f"{conversation} {title} {' '.join(contexts)}".casefold():
-                    continue
-                items.append({"conversation_id": conversation, "title": title, "message_count": count, "history_count": turns, "context_ids": contexts or [conversation]})
-            items.sort(key=lambda item: item["conversation_id"])
-            return {"items": items[max(0, offset):max(0, offset) + min(100, max(1, limit))], "total": len(items)}
+            return conversation_records(connection, platform)
 
     def _context(self, connection: sqlite3.Connection, conversation: str) -> list[dict[str, Any]]:
         """
@@ -270,6 +260,8 @@ class ConversationDataService:
         for item in messages:
             connection.execute("INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)", (conversation, item["role"], None if item.get("content") is None else content_text_projection(item.get("content")), _message_content_json(item.get("content")), item.get("tool_call_id"), json.dumps(item["tool_calls"], ensure_ascii=False) if item.get("tool_calls") else None, item.get("reasoning_content")))
         tables = ConversationDataService._tables(connection)
+        if "context_catalog" in tables:
+            connection.execute("UPDATE context_catalog SET modified_at=? WHERE context_id=?", (time.time(), conversation))
         if "context_runtime_state" in tables:
             connection.execute("DELETE FROM context_runtime_state WHERE conversation_id=?", (conversation,))
         if "state_checkpoints" in tables:

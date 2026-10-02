@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from pathlib import Path
 import pytest
 from typing import Any, cast
@@ -612,3 +613,40 @@ def test_conversation_proxy_requires_explicit_connection_refusal(monkeypatch, re
     else:
         with pytest.raises(control_server.urllib.error.URLError):
             control_server._conversation_data_request("http://127.0.0.1:1/api/conversation-data", {"conversation_id": "conversation"})
+
+
+@pytest.mark.asyncio
+async def test_dynamic_conversation_platform_types_aggregate_same_ids_and_isolate_failures(tmp_path, monkeypatch):
+    from satrap.core.config.conversation_data import ConversationDataService
+    from satrap.core.utils.context import ContextManager
+    from satrap.core.storage import StorageLayout
+
+    layout = StorageLayout(tmp_path / "data")
+    contexts = []
+    for identity, platform_type in (("instance-a", "custom-a"), ("instance-b", "custom-b")):
+        layout.ensure_platform(identity, platform_type=platform_type)
+        context = ContextManager("same-id", db_path=str(layout.platform_db(identity)))
+        context.add_user_message("消息")
+        contexts.append(context)
+    monkeypatch.setattr(control_server, "_configured_storage_layout", lambda: layout)
+    monkeypatch.setattr(control_server, "load_config_document", lambda path: {})
+    try:
+        platforms = _json_body(await _request("/config/conversations/platforms"))
+        assert {row["type"] for row in platforms["items"]} >= {"custom-a", "custom-b"}
+        result = _json_body(await _request("/config/conversations?scope=all"))
+        assert {row["platform_id"] for row in result["items"]} == {"instance-a", "instance-b"}
+        assert result["total"] == 2
+        filtered = _json_body(await _request("/config/conversations?scope=all&platform_type=custom-b&filter.source=unknown"))
+        assert [row["platform_id"] for row in filtered["items"]] == ["instance-b"]
+        read = ConversationDataService.catalog_records
+        def fail_one(self, platform=None):
+            if self.database == layout.platform_db("instance-b"):
+                raise sqlite3.OperationalError("平台数据库不可读")
+            return read(self, platform)
+        monkeypatch.setattr(ConversationDataService, "catalog_records", fail_one)
+        partial = _json_body(await _request("/config/conversations?scope=all"))
+        assert [row["platform_id"] for row in partial["items"]] == ["instance-a"]
+        assert partial["warnings"] == ["instance-b: 读取失败"]
+    finally:
+        for context in contexts:
+            context.close()

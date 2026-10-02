@@ -2532,7 +2532,8 @@ class BackendManager:
         - SessionManager: 已完成 Provider 和会话类注册的管理器
         """
         database = str(self._storage.platform_db(platform_id))
-        self._storage.ensure_platform(platform_id)
+        platform_type = next((str(item.get("type") or "") for item in self.config.platforms if item.get("id") == platform_id), None)
+        self._storage.ensure_platform(platform_id, platform_type=platform_type)
         manager = SessionManager(
             default_session_type=self.config.default_session_type,
             max_size=self.config.max_sessions,

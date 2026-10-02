@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 from typing import List, Dict, Any, TYPE_CHECKING
 import json
+import traceback
 import time
 
 from satrap.core.utils.vision import content_text_projection
@@ -22,6 +23,8 @@ from .utils import (
     _load_tool_calls,
 )
 from .base import _ContextCore
+
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA, CATALOG_WRITE, catalog_values
 
 from satrap.core.log import logger
 
@@ -128,10 +131,11 @@ class _SyncStorage(_ContextCore):
                 except sqlite3.OperationalError:
                     pass
 
+            conn.execute(CATALOG_SCHEMA)
             conn.commit()
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 初始化数据库表失败: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
 
     def _sync(self):
@@ -167,7 +171,7 @@ class _SyncStorage(_ContextCore):
             self._load_runtime_state(conn)
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 加载上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             self._messages: List[Dict[str, Any]] = []
             self._saved_count = 0
@@ -316,6 +320,7 @@ class _SyncStorage(_ContextCore):
                     "INSERT INTO chat_history (conversation_id, role, content, content_json, tool_call_id, tool_calls, reasoning_content) VALUES (?, ?, ?, ?, ?, ?, ?)",
                     data_to_insert,
                 )
+            conn.execute(CATALOG_WRITE, catalog_values(self, appended=bool(new_messages) and prev_saved >= 0, modified=prev_saved < 0))
             if self._runtime_state_dirty:
                 self._write_runtime_state(conn)
             conn.commit()
@@ -325,7 +330,7 @@ class _SyncStorage(_ContextCore):
 
         except Exception as e:
             logger.error(
-                f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}"
+                f"[上下文管理器] 保存上下文失败: {self.conversation_id}: {e}, ID: {self.conversation_id}\n{traceback.format_exc()}"
             )
             conn.rollback()
             self._saved_count = prev_saved  # 恢复水位, 下次保存重试 (全量重写路径幂等)

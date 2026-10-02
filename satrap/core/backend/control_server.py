@@ -47,6 +47,7 @@ from satrap.core.config.group_store import GroupConfigConflict, GroupLegacyConfl
 from satrap.core.framework.SessionManager import SessionConfigStore
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
+from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.conversation_runtime import perform_data_operation
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
@@ -746,7 +747,7 @@ def _session_instance_config_service(platform_id: str) -> SessionInstanceConfigS
     - SessionInstanceConfigService: 共享运行时数据库的冷管理服务
     """
     config_data = load_config_document(CONFIG_PATH)
-    raw_data_root = str(config_data.get("data_root", "")).strip()
+    raw_data_root = str(config_data.get("data_root") or os.getenv("SATRAP_DATA_ROOT") or "").strip()
     data_root = Path(raw_data_root) if raw_data_root else PROJECT_ROOT / ".satrap" / "data"
     if not data_root.is_absolute():
         data_root = PROJECT_ROOT / data_root
@@ -784,7 +785,7 @@ def _configured_storage_layout(
     - StorageLayout: 当前数据布局
     """
     document = config_data if config_data is not None else load_config_document(CONFIG_PATH)
-    raw_data_root = str(document.get("data_root", "")).strip()
+    raw_data_root = str(document.get("data_root") or os.getenv("SATRAP_DATA_ROOT") or "").strip()
     data_root = Path(raw_data_root) if raw_data_root else PROJECT_ROOT / ".satrap" / "data"
     if not data_root.is_absolute():
         data_root = PROJECT_ROOT / data_root
@@ -1920,21 +1921,34 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
     conversation = ""
     try:
         layout = _configured_storage_layout()
+        descriptors = platform_catalog(layout, load_config_document(CONFIG_PATH))
         if ctx.path == prefix + "/platforms" and ctx.method == "GET":
-            platforms = {"local", "chat"}
-            for manifest in layout.platforms_root.glob("*/platform.json"):
-                try:
-                    value = json.loads(manifest.read_text(encoding="utf-8"))
-                    if isinstance(value.get("platform_id"), str):
-                        platforms.add(value["platform_id"])
-                except (OSError, ValueError, TypeError, AttributeError) as error:
-                    logger.warning(f"[对话数据] 读取平台目录失败: {manifest.name}, {error}")
-            return 200, {"platforms": sorted(platforms)}
+            return 200, {"platforms": [item["id"] for item in descriptors], "items": descriptors}
         if ctx.path == prefix and ctx.method == "GET":
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
             platform = query.get("platform_id", ["local"])[0]
-            service = ConversationDataService(layout.platform_db(platform))
-            return 200, await RAG_WORKERS.run(service.list_conversations, query.get("q", [""])[0], int(query.get("offset", ["0"])[0]), int(query.get("limit", ["40"])[0]))
+            all_platforms = query.get("scope", [""])[0] == "all"
+            selected_platforms = descriptors if all_platforms else [next((item for item in descriptors if item["id"] == platform), {"id": platform, "type": "unknown"})]
+            platform_type = query.get("platform_type", [""])[0]
+            if platform_type:
+                selected_platforms = [item for item in selected_platforms if item["type"] == platform_type]
+            items = []
+            warnings = []
+            for descriptor in selected_platforms:
+                try:
+                    service = ConversationDataService(layout.platform_db(descriptor["id"]))
+                    items.extend(await RAG_WORKERS.run(service.catalog_records, descriptor))
+                except Exception as error:
+                    logger.error(f"[对话目录] 平台目录读取失败: {descriptor['id']}, {error}\n{traceback.format_exc()}")
+                    if not all_platforms:
+                        raise
+                    warnings.append(f"{descriptor['id']}: 读取失败")
+            items.sort(key=lambda item: (-(item["last_activity_at"] or 0), item["platform_id"], item["conversation_id"]))
+            filters = {key.removeprefix("filter."): values[0] for key, values in query.items() if key.startswith("filter.")}
+            matched = filter_records(items, query.get("q", [""])[0], filters)
+            offset = max(0, int(query.get("offset", ["0"])[0]))
+            limit = min(100, max(1, int(query.get("limit", ["40"])[0])))
+            return 200, {"items": matched[offset:offset + limit], "total": len(matched), "facets": record_facets(items), "facet_names": {key: label for item in items for key, label in item["facet_names"].items()}, "warnings": warnings}
         if ctx.path != prefix + "/data" or ctx.method != "POST":
             return None
         payload = await _read_json_body(ctx.reader, ctx.raw_request)

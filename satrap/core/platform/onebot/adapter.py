@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 import asyncio
 import hashlib
 import inspect
+import sqlite3
 import os
 import secrets
 import aiohttp
@@ -143,6 +144,24 @@ class OneBotAdapter(PlatformAdapter):
     """OneBot v11 平台适配器, 使用 aiocqhttp 反向 WebSocket"""
 
     adapter_type = "onebot"
+    display_name = "OneBot"
+
+    @classmethod
+    def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
+        """
+        使用本地群目录补充群名, 群身份包含机器人账号
+
+        参数:
+        - connection: 平台数据库只读连接
+        - route: 通用目录解码的完整路由
+
+        返回:
+        - 目标群展示标签, 无群目录或无匹配记录时返回空映射
+        """
+        if not route.get("group_id") or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='group_directory'").fetchone():
+            return {}
+        row = connection.execute("SELECT group_name FROM group_directory WHERE self_id=? AND group_id=?", (route.get("self_id", ""), route["group_id"])).fetchone()
+        return {"target": str(row[0]) or route["group_id"]} if row else {}
 
     def __init__(
         self,

@@ -8,6 +8,8 @@ import sqlite3
 from typing import Any, cast
 import json
 
+from satrap.core.storage.context_catalog import CATALOG_SCHEMA
+
 
 _RESTORABLE_TABLES = frozenset({
     "session_configs",
@@ -27,6 +29,7 @@ _RESTORABLE_TABLES = frozenset({
     "state_snapshots",
     "memories",
     "context_sessions",
+    "context_catalog",
     "user_info",
 })
 """允许从会话归档恢复的数据库表"""
@@ -169,6 +172,14 @@ def snapshot_session_domain(database: str | Path, session_id: str) -> dict[str, 
             ),
             "context_sessions": ("session_id = ?", (session_id,)),
         }
+        if "context_catalog" in tables:
+            selectors["context_catalog"] = ("session_id=? OR (session_id IS NULL AND (context_id=? OR context_id LIKE ? ESCAPE '\\'))", (session_id, session_id, related_pattern))
+            for table, (where, params) in list(selectors.items()):
+                column = {"chat_history": "conversation_id", "conversation_data_backups": "conversation_id", "state_scopes": "scope_id", "state_checkpoints": "scope_id", "state_snapshots": "scope_id", "agent_runs": "scope", "agent_steps": "scope", "agent_step_inputs": "scope"}.get(table)
+                if column:
+                    original = f"{column} = ? OR {column} LIKE ? ESCAPE '\\'"
+                    expanded = f"({original}) AND {column} NOT IN (SELECT context_id FROM context_catalog WHERE session_id IS NOT NULL AND session_id<>?) OR {column} IN (SELECT context_id FROM context_catalog WHERE session_id=?)"
+                    selectors[table] = (where.replace(original, "(" + expanded + ")"), (*params, session_id, session_id))
         for table, (where, params) in selectors.items():
             if table not in tables:
                 continue
@@ -240,6 +251,8 @@ def restore_session_domain(
             from satrap.core.rag import ensure_rag_tables
             # RAG 依赖 storage 包且会加载可选 FAISS, 延迟到知识库恢复时导入
             ensure_rag_tables(connection)
+        if "context_catalog" in records:
+            connection.execute(CATALOG_SCHEMA)
         if "conversation_data_backups" in records:
             connection.execute("CREATE TABLE IF NOT EXISTS conversation_data_backups (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, layer TEXT NOT NULL, payload TEXT NOT NULL, reason TEXT NOT NULL, created_at REAL NOT NULL)")
         tables = _table_names(connection)
@@ -250,6 +263,10 @@ def restore_session_domain(
             if table not in tables:
                 raise ValueError(f"目标数据库缺少归档表: {table}")
             schemas[table] = _table_columns(connection, table)
+        owned_contexts = {str(row.get("context_id")) for row in records.get("context_catalog", []) if row.get("session_id") == session_id}
+        for row in records.get("context_catalog", []):
+            if row.get("session_id") not in {None, session_id} or (row.get("session_id") is None and row.get("context_id") != session_id and not str(row.get("context_id", "")).startswith(session_id + "_")):
+                raise ValueError("上下文目录包含归档外的会话归属")
         turn_ids = {row.get("id") for row in records.get("display_turns", [])}
         run_ids = {row.get("id") for row in records.get("agent_runs", [])}
         step_ids = {(row.get("run_id"), row.get("step_key")) for row in records.get("agent_steps", []) if row.get("kind") == "model"}
@@ -290,7 +307,7 @@ def restore_session_domain(
                 if scope_column:
                     expected = f"session:{session_id}" if table == "memories" else session_id
                     scope = str(row.get(scope_column, ""))
-                    if scope != expected and not scope.startswith(expected + "_"):
+                    if scope != expected and not scope.startswith(expected + "_") and scope not in owned_contexts:
                         raise ValueError(f"归档表 {table} 的会话范围不匹配")
                 if table.startswith("state_") and row.get("namespace") != "conversation":
                     raise ValueError(f"归档表 {table} 的命名空间不匹配")
@@ -406,52 +423,34 @@ def delete_session_domain_rows(database: str | Path, session_id: str) -> None:
                 "DELETE FROM conversation_meta WHERE conversation_id = ?",
                 (session_id,),
             )
-        if "agent_step_inputs" in tables and "agent_runs" in tables:
-            connection.execute(
-                "DELETE FROM agent_step_inputs WHERE run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
-                (session_id, related_pattern))
-        if "agent_steps" in tables and "agent_runs" in tables:
-            connection.execute(
-                "DELETE FROM agent_steps WHERE run_id IN (SELECT id FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\')",
-                (session_id, related_pattern),
-            )
-        if "agent_runs" in tables:
-            connection.execute("DELETE FROM agent_runs WHERE scope = ? OR scope LIKE ? ESCAPE '\\'", (session_id, related_pattern))
-        if "chat_history" in tables:
-            connection.execute(
-                "DELETE FROM chat_history WHERE conversation_id = ? "
-                "OR conversation_id LIKE ? ESCAPE '\\'",
-                (session_id, related_pattern),
-            )
-        if "conversation_data_backups" in tables:
-            connection.execute("DELETE FROM conversation_data_backups WHERE conversation_id=? OR conversation_id LIKE ? ESCAPE '\\'", (session_id, related_pattern))
-        if "context_runtime_state" in tables:
-            connection.execute(
-                "DELETE FROM context_runtime_state WHERE conversation_id = ? "
-                "OR conversation_id LIKE ? ESCAPE '\\'",
-                (session_id, related_pattern),
-            )
-        if "session_configs" in tables:
-            connection.execute(
-                "DELETE FROM session_configs WHERE session_id = ?",
-                (session_id,),
-            )
-        if "session_config_overrides" in tables:
-            connection.execute("DELETE FROM session_config_overrides WHERE session_id = ?", (session_id,))
+        catalog_owners = dict(connection.execute("SELECT context_id, session_id FROM context_catalog")) if "context_catalog" in tables else {}
+        scopes = {session_id} | {identity for identity, owner in catalog_owners.items() if owner == session_id}
+        for table, column in (("chat_history", "conversation_id"), ("context_runtime_state", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("state_scopes", "scope_id"), ("state_checkpoints", "scope_id"), ("state_snapshots", "scope_id"), ("agent_runs", "scope")):
+            if table in tables:
+                suffix = " WHERE namespace='conversation'" if table.startswith("state_") else ""
+                for row in connection.execute(f"SELECT DISTINCT {column} FROM {table}{suffix}"):
+                    identity = str(row[0])
+                    if identity.startswith(session_id + "_") and catalog_owners.get(identity) in {None, session_id}:
+                        scopes.add(identity)
+        scopes.update(identity for identity, owner in catalog_owners.items() if owner is None and identity.startswith(session_id + "_"))
+        placeholders = ",".join("?" for _ in scopes)
+        params = tuple(sorted(scopes))
+        for table in ("agent_step_inputs", "agent_steps"):
+            if table in tables and "agent_runs" in tables:
+                connection.execute(f"DELETE FROM {table} WHERE run_id IN (SELECT id FROM agent_runs WHERE scope IN ({placeholders}))", params)
+        for table, column in (("agent_runs", "scope"), ("chat_history", "conversation_id"), ("context_runtime_state", "conversation_id"), ("conversation_data_backups", "conversation_id"), ("context_catalog", "context_id")):
+            if table in tables:
+                connection.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
+        for table in ("session_configs", "session_config_overrides"):
+            if table in tables:
+                connection.execute(f"DELETE FROM {table} WHERE session_id=?", (session_id,))
         if "rag_knowledge_bases" in tables:
-            connection.execute("DELETE FROM rag_knowledge_bases WHERE session_id = ? AND scope = 'session'", (session_id,))
+            connection.execute("DELETE FROM rag_knowledge_bases WHERE session_id=? AND scope='session'", (session_id,))
         for table in ("state_checkpoints", "state_snapshots", "state_scopes"):
             if table in tables:
-                connection.execute(
-                    f"DELETE FROM {table} WHERE namespace = ? "
-                    "AND (scope_id = ? OR scope_id LIKE ? ESCAPE '\\')",
-                    ("conversation", session_id, related_pattern),
-                )
+                connection.execute(f"DELETE FROM {table} WHERE namespace='conversation' AND scope_id IN ({placeholders})", params)
         if "memories" in tables:
-            connection.execute(
-                "DELETE FROM memories WHERE scope = ? OR scope LIKE ? ESCAPE '\\'",
-                (f"session:{session_id}", f"session:{related_pattern}"),
-            )
+            connection.execute("DELETE FROM memories WHERE scope=? OR scope LIKE ? ESCAPE '\\'", (f"session:{session_id}", f"session:{related_pattern}"))
         if "context_sessions" in tables:
             connection.execute(
                 "DELETE FROM context_sessions WHERE session_id = ?",

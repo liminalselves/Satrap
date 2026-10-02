@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
 import inspect
+import sqlite3
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 import time
 import uuid
@@ -84,6 +85,22 @@ class PlatformAdapter(ABC):
     """
 
     adapter_type: str = ""
+    display_name: str = ""
+    conversation_catalog_fields: dict[str, str] = {}
+
+    @classmethod
+    def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
+        """
+        从已有存储补充对话分类标签, 不创建适配器或访问平台网络
+
+        参数:
+        - connection: 平台数据库只读连接
+        - route: 已解码的路由元数据, 可包含平台扩展字段
+
+        返回:
+        - 分类字段到展示标签的映射, 默认不补充标签
+        """
+        return {}
 
     def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue[Any] | None = None):
         """
