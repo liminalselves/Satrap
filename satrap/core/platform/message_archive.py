@@ -55,6 +55,8 @@ def archive_snapshot(message: PlatformMessage, *, direction: str = "inbound") ->
             media.append(reference)
         elif kind == PlatformComponentType.Face:
             summary["id"] = str(getattr(component, "id", "") or "")[:256]
+        elif kind == PlatformComponentType.Forward:
+            summary["id"] = str(getattr(component, "id", "") or "")[:256]
         components.append(summary)
     return ArchiveMessage(
         message_id=message.message_id, sender_id=message.sender.user_id,

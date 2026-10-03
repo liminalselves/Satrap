@@ -14,7 +14,7 @@ from abc import ABC, abstractmethod
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
-from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
+from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -122,6 +122,7 @@ class PlatformAdapter(ABC):
         config.session_bindings = validate_session_bindings(config.session_bindings)
         self.agent_route_store: AgentRouteStore | None = None
         self.message_archive: PlatformMessageStore | None = None
+        self._archive_tasks: set[asyncio.Task[None]] = set()
         self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
@@ -131,6 +132,7 @@ class PlatformAdapter(ABC):
         capacity = int(config.settings.get("event_queue_capacity", 256))
         if capacity <= 0:
             raise ValueError("event_queue_capacity 必须大于 0")
+        self._archive_capacity = min(capacity, 256)
         self._event_queue = event_queue if event_queue is not None else asyncio.Queue[Any](maxsize=capacity)
         self.dropped_events = 0
         self.expired_events = 0
@@ -285,6 +287,65 @@ class PlatformAdapter(ABC):
         except Exception as exc:
             logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
             return False
+
+    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage) -> bool:
+        """
+        将已确认的实际发送快照交给有界写入任务, 不改变发送回执
+
+        参数:
+        - scope: 提交平台动作时冻结的账号和目标身份
+        - snapshot: 平台确认消息 ID 后生成的实际内容, 不含待发送草稿
+
+        返回:
+        - 已排入写入任务时返回 True, 未配置档案或拒绝采集时返回 False
+        """
+        store = self.message_archive
+        if store is None:
+            return False
+        try:
+            if scope.adapter_id != self.config.id or snapshot.sender_id != scope.self_id:
+                raise ValueError("已确认发送的消息身份与档案范围不一致")
+            if snapshot.direction != "outbound" or not snapshot.verified or not snapshot.message_id:
+                raise ValueError("出站档案需要平台已确认的实际消息")
+            if len(self._archive_tasks) >= self._archive_capacity:
+                raise ValueError("已确认发送的档案写入队列已满")
+            task = asyncio.create_task(self._write_confirmed_message(store, scope, snapshot))
+            self._archive_tasks.add(task)
+            task.add_done_callback(self._archive_tasks.discard)
+            return True
+        except Exception as exc:
+            logger.error(f"[消息档案] 出站采集未入队, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+            return False
+
+    async def _write_confirmed_message(self, store: PlatformMessageStore, scope: MessageScope,
+                                       snapshot: ArchiveMessage) -> None:
+        """
+        在发送任务之外写入确认消息, 保留提交时的存储和身份
+
+        参数:
+        - store: 入队时所属平台的档案存储
+        - scope: 已冻结的真实发送范围
+        - snapshot: 已确认消息快照
+        """
+        try:
+            await asyncio.to_thread(store.record, scope, snapshot)
+        except asyncio.CancelledError:
+            logger.warning(f"[消息档案] 出站写入等待被取消, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
+            raise
+        except Exception as exc:
+            logger.error(f"[消息档案] 出站写入失败, 平台={scope.adapter_id}, 原因={type(exc).__name__}: {exc}")
+
+    async def drain_message_archive(self, timeout: float = 5.0) -> None:
+        """
+        停止时有限等待已确认消息写入, 超时任务仍自行完成或记录失败
+
+        参数:
+        - timeout: 最多等待的秒数
+        """
+        if self._archive_tasks:
+            _, pending = await asyncio.wait(tuple(self._archive_tasks), timeout=timeout)
+            if pending:
+                logger.warning(f"[消息档案] 停止等待超时, 平台={self.config.id}, 待写入={len(pending)}")
 
     async def archive_recall(self, scope: MessageScope, message_id: str) -> None:
         """
@@ -598,6 +659,7 @@ class PlatformAdapter(ABC):
                 pass
         self.started = False
         self._status = PlatformStatus.STOPPED
+        await self.drain_message_archive()
         logger.info(f"[PlatformAdapter] 平台已停止: {self.config.id}")
 
     async def terminate(self) -> None:

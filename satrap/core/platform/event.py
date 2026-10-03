@@ -114,7 +114,7 @@ class MessageChain:
         返回:
         - MessageChain: 从纯文本快速构造消息链
         """
-        return cls([BaseMessageComponent(type=PlatformComponentType.Plain, text=text)])
+        return cls([Plain(text)])
 
     @property
     def components(self) -> list[BaseMessageComponent]:

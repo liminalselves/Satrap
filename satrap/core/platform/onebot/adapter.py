@@ -52,6 +52,7 @@ from satrap.core.type import PlatformMessage, safe_getattr_callable
 from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.platform_messages import MessageScope
+from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage
 
 
@@ -1467,6 +1468,7 @@ class OneBotAdapter(PlatformAdapter):
 
         messages = [await node.to_dict() for node in nodes]
         forward_action = "send_group_forward_msg" if is_group_session(session_id) else "send_private_forward_msg"
+        sent_self_id = self.bot_self_id
         try:
             result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
         except ValueError:
@@ -1480,7 +1482,12 @@ class OneBotAdapter(PlatformAdapter):
         except Exception as error:
             return self._failed_receipt(session_id, "forward", "action_unconfirmed", error, status="unknown")
         self.note_action_outcome(forward_action, True)
-        return self._receipt_from_result(result)
+        receipt = self._receipt_from_result(result)
+        if receipt.status == "success":
+            forward_id = result.get("forward_id") or result.get("res_id") or ""
+            self._archive_sent_segments(session_id, sent_self_id, receipt.message_ids[0],
+                                        [{"type": "forward", "data": {"id": forward_id}}])
+        return receipt
 
     async def _send_file(self, session_id: str, component: File) -> SendReceipt:
         """
@@ -1619,6 +1626,7 @@ class OneBotAdapter(PlatformAdapter):
             logger.warning("[OneBotAdapter] 消息为空, 跳过发送")
             return SendReceipt("failed", reason="empty_message")
 
+        sent_self_id = self.bot_self_id
         try:
             result = await self._dispatch_action(session_id, "send_private_msg", "send_group_msg", message=segments)
         except ValueError:
@@ -1627,7 +1635,36 @@ class OneBotAdapter(PlatformAdapter):
             return self._failed_receipt(session_id, "message", "action_rejected", error)
         except Exception as error:
             return self._failed_receipt(session_id, "message", "action_unconfirmed", error, status="unknown")
-        return self._receipt_from_result(result)
+        receipt = self._receipt_from_result(result)
+        if receipt.status == "success":
+            self._archive_sent_segments(session_id, sent_self_id, receipt.message_ids[0], segments)
+        return receipt
+
+    def _archive_sent_segments(self, session_id: str, self_id: str, message_id: str,
+                               segments: list[dict[str, Any]]) -> None:
+        """
+        只采集原生消息动作确认的实际分段, 上传文件 ID 不经过此入口
+
+        参数:
+        - session_id: 实际提交的目标会话
+        - self_id: 提交动作之前冻结的机器人账号
+        - message_id: 平台成功回包中的消息 ID
+        - segments: 实际提交的原生组件, 合并转发仅保存根引用
+        """
+        if self.message_archive is None:
+            return
+        try:
+            kind = "group" if is_group_session(session_id) else "private"
+            chat_id = extract_group_id(session_id) if kind == "group" else extract_private_user_id(session_id)
+            scope = MessageScope(self.config.id, self_id, kind, chat_id)
+            frame = {"message_type": kind, "self_id": self_id, "user_id": self_id,
+                     "group_id": chat_id, "message_id": message_id, "message": segments,
+                     "sender": {"user_id": self_id}}
+            message = create_platform_message(frame, self_id)
+            snapshot = replace(archive_snapshot(message, direction="outbound"), source="confirmed_send")
+            self.queue_confirmed_message(scope, snapshot)
+        except Exception as exc:
+            logger.error(f"[消息档案] OneBot 发送确认转换失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
     async def _dispatch_action(self, session_id: str, private_action: str, group_action: str, **params: Any) -> Any:
         """

@@ -7,6 +7,7 @@ import random
 from typing import Any, cast
 import os
 import re
+from time import time
 
 from satrap.core.platform.misskey.misskey_utils import (
     add_at_mention_if_needed,
@@ -39,6 +40,7 @@ from satrap.core.platform import (
     register_platform_adapter,
 )
 from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, archive_time
 
 from satrap.core.log import logger
 
@@ -576,13 +578,19 @@ class MisskeyAdapter(PlatformAdapter):
             payload: dict[str, Any] = {"toRoomId": extract_room_id_from_session_id(session_id), "text": text}
             if file_ids:
                 payload["fileId"] = file_ids[0]
-            return await self._client.send_room_message(payload)
+            sent_self_id = self.bot_self_id
+            result = await self._client.send_room_message(payload)
+            self._archive_sent_message(session_id, sent_self_id, result, text, file_ids[:1])
+            return result
 
         if is_valid_chat_session_id(session_id):
             payload = {"toUserId": extract_user_id_from_session_id(session_id), "text": text}
             if file_ids:
                 payload["fileId"] = file_ids[0]
-            return await self._client.send_message(payload)
+            sent_self_id = self.bot_self_id
+            result = await self._client.send_message(payload)
+            self._archive_sent_message(session_id, sent_self_id, result, text, file_ids[:1])
+            return result
 
         user_id = extract_user_id_from_session_id(session_id)
         user_info = self._user_cache.get(user_id)
@@ -594,7 +602,8 @@ class MisskeyAdapter(PlatformAdapter):
             default_visibility=self.default_visibility,
         )
         fields = self._extract_additional_fields(session_id, message)
-        return await self._client.create_note(
+        sent_self_id = self.bot_self_id
+        result = await self._client.create_note(
             text=text,
             visibility=visibility,
             visible_user_ids=visible_user_ids,
@@ -606,6 +615,69 @@ class MisskeyAdapter(PlatformAdapter):
             renote_id=fields.get("renote_id"),
             channel_id=fields.get("channel_id"),
         )
+        self._archive_sent_message(session_id, sent_self_id, result, text, file_ids,
+                                   reply_id=fields.get("reply_id"), renote_id=fields.get("renote_id"))
+        return result
+
+    def _archive_sent_message(self, session_id: str, self_id: str, result: Any, text: str,
+                              file_ids: list[str], *, reply_id: str | None = None,
+                              renote_id: str | None = None) -> None:
+        """
+        依据创建消息回包采集实际发送内容, 不使用上传回包或原始草稿
+
+        参数:
+        - session_id: 实际提交的目标会话
+        - self_id: 提交平台动作之前冻结的机器人账号
+        - result: 原生创建消息或帖子回包
+        - text: 已截断并补充提及的实际正文
+        - file_ids: 此次动作实际附带的文件 ID
+        - reply_id: 此次帖子动作使用的引用 ID
+        - renote_id: 此次帖子动作使用的转发 ID
+        """
+        if self.message_archive is None:
+            return
+        try:
+            if is_valid_room_session_id(session_id):
+                kind, chat_id, target_field = "group", extract_room_id_from_session_id(session_id), "toRoomId"
+            elif is_valid_chat_session_id(session_id):
+                kind, chat_id, target_field = "private", extract_user_id_from_session_id(session_id), "toUserId"
+            else:
+                kind, chat_id, target_field = "discussion", session_id, ""
+                result = result.get("createdNote") if isinstance(result, dict) else None
+            if not isinstance(result, dict):
+                logger.warning(f"[消息档案] Misskey 发送未返回确认消息, 平台={self.config.id}")
+                return
+            message_id = result.get("id")
+            if not isinstance(message_id, str) or not message_id.strip():
+                logger.warning(f"[消息档案] Misskey 发送未返回有效消息 ID, 平台={self.config.id}")
+                return
+            if target_field and result.get(target_field) is not None and result[target_field] != chat_id:
+                raise ValueError("平台确认的接收目标与发送目标不一致")
+            sender_field = "userId" if kind == "discussion" else "fromUserId"
+            if result.get(sender_field) is not None and result[sender_field] != self_id:
+                raise ValueError("平台确认的发送账号与提交账号不一致")
+            message_time = time()
+            time_source = "local"
+            if result.get("createdAt") is not None:
+                try:
+                    parsed_time = archive_time(result["createdAt"])
+                    if parsed_time is not None:
+                        message_time, time_source = parsed_time, "platform"
+                except (TypeError, ValueError, OverflowError) as exc:
+                    logger.warning(f"[消息档案] Misskey 确认时间无效, 使用确认时间, 原因={type(exc).__name__}")
+            components: list[dict[str, object]] = [{"type": "Plain"}] if text else []
+            if reply_id:
+                components.append({"type": "Reply", "message_id": reply_id})
+            if renote_id:
+                components.append({"type": "Forward", "id": renote_id})
+            media = [{"type": "File", "native_id": file_id} for file_id in file_ids]
+            components.extend({"type": "File", "native_id": file_id} for file_id in file_ids)
+            snapshot = ArchiveMessage(message_id, self_id, message_time, text, direction="outbound",
+                                      components=components, media=media, reply_to_message_id=reply_id,
+                                      source="confirmed_send", time_source=time_source)
+            self.queue_confirmed_message(MessageScope(self.config.id, self_id, kind, chat_id), snapshot)
+        except Exception as exc:
+            logger.error(f"[消息档案] Misskey 发送确认转换失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
     async def send_stream(
         self,
