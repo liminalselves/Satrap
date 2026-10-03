@@ -1,7 +1,7 @@
 name: group_chat
 version: 0.1.0
 author: Satrap Team
-description: "当前群的文本/引用/多个 @ 结构化回复, 成员查找和消息档案检索; 不提供群管理操作"
+description: "在当前群查找成员, 查看聊天记录, 回复时引用消息和 @ 多人"
 config_schema:
   message_limit:
     type: number
@@ -9,39 +9,39 @@ config_schema:
     minimum: 1
     maximum: 100
     integer: true
-    description: "单次消息查询上限, 默认请求 20 条, 不改变平台档案保留期"
+    description: "每次最多返回多少条聊天记录; 工具不指定数量时请求 20 条"
   member_limit:
     type: number
     default: 50
     minimum: 1
     maximum: 50
     integer: true
-    description: "单次成员查询上限, 默认请求 10 项"
+    description: "每次最多返回多少位成员; 工具不指定数量时请求 10 位"
   text_budget:
     type: number
     default: 12000
     minimum: 128
     maximum: 100000
     integer: true
-    description: "查询正文字符预算, 超出时明确标记截断"
+    description: "每次查询最多返回多少个正文字符; 超出的内容会省略, 并标明结果不完整"
   member_cache_ttl:
     type: number
     default: 60
     minimum: 0
     maximum: 300
     integer: true
-    description: "成员快照缓存秒数, 0 表示不复用首次查询缓存, 分页快照仍有短期有效期"
+    description: "成员查询结果缓存多久, 单位为秒; 0 表示每次新查询都刷新, 翻页仍沿用短期缓存"
 tools:
-  group_chat_reply: "准备唯一的结构化最终回复"
-  group_chat_find_members: "按昵称与名片返回成员候选"
-  group_chat_get_member: "核验当前群成员资料"
-  group_chat_get_message: "读取当前群消息及发送者"
-  group_chat_recent_messages: "读取最近讨论"
-  group_chat_search_messages: "按条件检索群消息档案"
+  group_chat_reply: "回复群消息, 支持引用和 @ 多人"
+  group_chat_find_members: "按昵称或群名片查找成员"
+  group_chat_get_member: "查看指定成员的昵称和群名片"
+  group_chat_get_message: "查看一条消息的原文和发送者"
+  group_chat_recent_messages: "查看最近的聊天记录"
+  group_chat_search_messages: "按关键词, 成员和时间搜索聊天记录"
 handlers:
-  group_chat.environment: "补充当前群身份, 来源消息与实际可用能力"
+  group_chat.environment: "告诉模型当前群, 发言者, 机器人身份和可用功能"
 skills:
-  group_chat: "群聊发言者识别, 成员选择与结构化回复规范"
+  group_chat: "指导模型查记录, 找人, 引用消息和 @ 对方"
 compatibility:
   satrap: ">=0.1,<0.2"
 applicability:

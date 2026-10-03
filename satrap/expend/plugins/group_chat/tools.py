@@ -36,30 +36,33 @@ def _string(description: str) -> dict[str, object]:
     return {"type": "string", "description": description, "minLength": 1, "maxLength": 256}
 
 
-_MESSAGE_ID = _string("当前群的消息 ID, 不得捏造或使用其他对话的 ID")
-_MEMBER_ID = _string("已确认的当前群成员 ID")
-_LIMIT = {"type": "integer", "minimum": 1, "maximum": 100, "description": "查询条数, 默认 20, 受插件上限约束"}
-_CURSOR = _string("上次查询返回的 next_cursor, 只能用于相同对话及筛选条件")
+_MESSAGE_ID = _string("当前群的一条消息 ID, 从聊天上下文或消息查询结果中取得")
+_MEMBER_ID = _string("当前群的成员 ID, 从成员查询或已确认的群消息中取得")
+_LIMIT = {"type": "integer", "minimum": 1, "maximum": 100, "description": "最多返回多少条消息, 不填默认 20; 实际数量不超过插件配置的上限"}
+_CURSOR = _string("继续查看上一页之后的结果时, 填写上次返回的 next_cursor; 沿用相同查询条件")
 _CURSOR["maxLength"] = 4096
 _COMPONENTS = {
     "type": "array", "minItems": 1, "maxItems": 64,
-    "description": "最终回复组件, 可组合文本, 一个引用与多个提及; prepared 仅表示暂存",
+    "description": "按显示顺序填写回复内容: text 写文字, quote 引用一条消息, mention 真正 @ 一位成员; 最多引用一条消息, 可以 @ 多人",
     "items": {"oneOf": [
-        {"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string", "minLength": 1, "maxLength": 100000}}, "required": ["type", "text"], "additionalProperties": False},
-        {"type": "object", "properties": {"type": {"const": "quote"}, "message_id": _MESSAGE_ID}, "required": ["type", "message_id"], "additionalProperties": False},
-        {"type": "object", "properties": {"type": {"const": "mention"}, "source_message_id": _MESSAGE_ID}, "required": ["type", "source_message_id"], "additionalProperties": False},
-        {"type": "object", "properties": {"type": {"const": "mention"}, "user_id": _MEMBER_ID}, "required": ["type", "user_id"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string", "description": "要发到群里的回复文字", "minLength": 1, "maxLength": 100000}}, "required": ["type", "text"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "quote"}, "message_id": {**_MESSAGE_ID, "description": "要引用的原消息 ID, 例如正在回应的那条发言"}}, "required": ["type", "message_id"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "mention"}, "source_message_id": {**_MESSAGE_ID, "description": "要 @ 的人所发消息的 ID; 工具会 @ 该消息的发送者, 而不是消息里被 @ 的人"}}, "required": ["type", "source_message_id"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "mention"}, "user_id": {**_MEMBER_ID, "description": "要 @ 的成员 ID; 已确认对方身份时填写, 与 source_message_id 二选一"}}, "required": ["type", "user_id"], "additionalProperties": False},
     ]},
 }
+
 DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
-    "group_chat_reply": ("准备本轮唯一的结构化最终回复; 成功结束后由宿主发送, 不代表已送达", {"components": _COMPONENTS}, ["components"]),
-    "group_chat_find_members": ("按当前群昵称或名片查找成员, 重名返回候选, 不自动选择", {"query": _string("昵称或群名片关键词"), "limit": {**_LIMIT, "maximum": 50, "description": "返回条数, 默认 10"}, "cursor": _CURSOR}, ["query"]),
-    "group_chat_get_member": ("核实当前群指定成员的身份资料", {"user_id": _MEMBER_ID}, ["user_id"]),
-    "group_chat_get_message": ("读取当前群消息及发送者, 缺失时核验回源, 尊重本地删除", {"message_id": _MESSAGE_ID}, ["message_id"]),
-    "group_chat_recent_messages": ("补取当前群最近讨论, 返回消息 ID, 发送者及采集覆盖范围", {"limit": _LIMIT, "before_message_id": _MESSAGE_ID, "cursor": _CURSOR}, []),
-    "group_chat_search_messages": ("按关键词, 成员与时间的交集搜索当前群消息档案", {
-        "keyword": _string("普通文本关键词"), "sender_id": _MEMBER_ID,
-        "start_time": _string("起始时间, 含时区的 ISO 8601"), "end_time": _string("结束时间, 含时区的 ISO 8601"),
+    "group_chat_reply": ("给当前群回复一条消息, 可以组合文字, 引用和多个 @; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
+    "group_chat_find_members": ("根据昵称或群名片查找当前群的成员, 返回成员 ID, 昵称和名片. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的昵称或群名片, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
+    "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称和群名片; 需要确认成员 ID 对应谁时使用", {"user_id": _MEMBER_ID}, ["user_id"]),
+    "group_chat_get_message": ("根据消息 ID 查看当前群的一条消息, 返回原文和发送者; 需要确认某句话是谁说的, 或查看引用消息时使用. 本地没有记录时会尝试向平台查询, 已删除的记录不会重新取回", {"message_id": _MESSAGE_ID}, ["message_id"]),
+    "group_chat_recent_messages": ("查看当前群最近保存的聊天记录, 返回消息 ID, 发送者, 时间和正文; 需要了解大家刚才在聊什么, 或补充当前上下文时使用. 结果只涵盖机器人已保存的消息", {"limit": _LIMIT, "before_message_id": {**_MESSAGE_ID, "description": "只查看这条消息之前的记录; 不填则从最新消息开始"}, "cursor": _CURSOR}, []),
+    "group_chat_search_messages": ("搜索当前群保存的聊天记录, 可按关键词, 发送者和时间筛选; 用户提到之前的讨论, 或需要查找某人的发言时使用. 同时填写多个条件时, 返回符合全部条件的消息", {
+        "keyword": _string("要查找的文字, 例如昨天讨论过的项目名; 按普通文本匹配, 不是正则表达式"),
+        "sender_id": {**_MEMBER_ID, "description": "只查这位成员发送的消息, 填写成员 ID; 不填则查询所有人的消息"},
+        "start_time": _string("只查这个时间及之后的消息, 填写带时区的时间, 例如 2026-10-04T09:00:00+08:00"),
+        "end_time": _string("只查这个时间及之前的消息, 填写带时区的时间, 例如 2026-10-04T18:00:00+08:00"),
         "limit": _LIMIT, "cursor": _CURSOR,
     }, []),
 }

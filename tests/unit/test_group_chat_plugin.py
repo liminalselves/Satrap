@@ -169,7 +169,7 @@ def test_plugin_catalog_schema_and_declared_capabilities():
         schema["member_limit"].validate_strict(51)
     catalog = PluginCatalog(preset_dir=PLUGIN.parent, user_dir=PLUGIN / "absent")
     entry = catalog.get("group_chat")
-    assert entry is not None and entry.capabilities["skills"] == {"group_chat": "群聊发言者识别, 成员选择与结构化回复规范"}
+    assert entry is not None and entry.capabilities["skills"] == meta["skills"]
 
 
 @pytest.mark.asyncio
