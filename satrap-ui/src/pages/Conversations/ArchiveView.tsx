@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { formatTime } from '@/utils/format';
+import { GroupSummaries } from './GroupSummaries';
 
 const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error)
   ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
@@ -84,12 +85,23 @@ export function ArchiveView({ platforms }: { platforms: ConversationPlatform[] }
         </button>)}
         <div className="flex justify-between gap-2 pt-2"><Button size="sm" disabled={!offset || loading} onClick={() => setOffset((value) => Math.max(0, value - 40))}>上一页档案</Button><Button size="sm" disabled={offset + 40 >= catalog.total || loading} onClick={() => setOffset((value) => value + 40)}>下一页档案</Button></div>
       </Card>
-      {selected ? <ArchiveDetail key={selectedKey} record={selected} refresh={refresh} onChanged={() => setRefresh((value) => value + 1)} /> : <Card><p className="text-text-secondary">选择一个档案对话查看消息</p></Card>}
+      {selected ? <ArchivePanel key={selectedKey} record={selected} refresh={refresh} onChanged={() => setRefresh((value) => value + 1)} /> : <Card><p className="text-text-secondary">选择一个档案对话查看消息</p></Card>}
     </div>
   </div>;
 }
 
 type PendingAction = { action: 'delete' | 'clear' | 'restore'; revision: number; message_ids?: string[]; backup_id?: string };
+
+function ArchivePanel(props: { record: PlatformArchiveRecord; refresh: number; onChanged: () => void }) {
+  const [view, setView] = useState<'messages' | 'summaries'>('messages');
+  return <div className="min-w-0 space-y-3">
+    <Card><div className="flex flex-wrap gap-2" aria-label="平台对话内容">
+      <Button variant={view === 'messages' ? 'primary' : 'ghost'} onClick={() => setView('messages')}>原始消息</Button>
+      <Button variant={view === 'summaries' ? 'primary' : 'ghost'} onClick={() => setView('summaries')}>群摘要</Button>
+    </div></Card>
+    {view === 'messages' ? <ArchiveDetail {...props} /> : <GroupSummaries record={props.record} refresh={props.refresh} />}
+  </div>;
+}
 
 function ArchiveDetail({ record, refresh, onChanged }: { record: PlatformArchiveRecord; refresh: number; onChanged: () => void }) {
   const [data, setData] = useState<PlatformArchiveSnapshot>();

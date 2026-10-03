@@ -102,6 +102,8 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
     database = layout.platform_db("legacy")
     with sqlite3.connect(database) as connection:
         connection.execute("DROP TABLE platform_message_policy")
+        for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
+            connection.execute(f'DROP TABLE "{table}"')
         connection.execute("PRAGMA user_version=4")
     store = PlatformMessageStore(database, "legacy", retention_days=7)
     assert _item(store, scope, "3")["text"] == "原文"

@@ -126,12 +126,13 @@ class SummaryLimits:
     page_limit: int = 100
     page_budget: int = 12000
     retention_days: int = 30
+    input_budget: int = 1000000
 
     def __post_init__(self) -> None:
         """拒绝非整数与无界资源预算"""
         for value, lower, upper in ((self.message_limit, 1, 2000), (self.text_budget, 1000, 200000),
                                     (self.page_limit, 1, 100), (self.page_budget, 128, 100000),
-                                    (self.retention_days, 1, 3650)):
+                                    (self.retention_days, 1, 3650), (self.input_budget, 1000, 1000000)):
             if type(value) is not int or not lower <= value <= upper:
                 raise ValueError("摘要预算超出允许范围")
 
@@ -182,7 +183,7 @@ class SummaryStore:
 
     def prepare(self, scope: MessageScope, owner: str, *, start_time: str, end_time: str,
                 keyword: str | None = None, include_bot: bool = False,
-                limits: SummaryLimits | None = None) -> dict[str, Any]:
+                limits: SummaryLimits | None = None, allow_new: bool = True) -> dict[str, Any]:
         """
         冻结指定时段的本地记录, 立即返回并登记第一批已读来源
 
@@ -194,6 +195,7 @@ class SummaryStore:
         - keyword: 可选普通文本筛选
         - include_bot: 是否纳入本机器人出站消息, 默认 False
         - limits: 可选选取和输出预算
+        - allow_new: 宿主全局额度允许新建时为 True, 否则仅复用已有快照
 
         返回:
         - 快照, 覆盖与第一页; 空档案返回零条, 不生成摘要
@@ -205,7 +207,8 @@ class SummaryStore:
         if keyword is not None and (not isinstance(keyword, str) or not 1 <= len(keyword) <= 256):
             raise ValueError("摘要关键词必须是 1 到 256 字符")
         bounds = limits or SummaryLimits()
-        fingerprint = hashlib.sha256(_json([scope.key, start, end, keyword, include_bot, bounds.__dict__]).encode()).hexdigest()
+        fingerprint = hashlib.sha256(_json([scope.key, start, end, keyword, include_bot,
+                                           {key: value for key, value in bounds.__dict__.items() if key != "input_budget"}]).encode()).hexdigest()
         if not self.archive.database.exists():
             return {"ok": True, "schema_version": 1, "snapshot_id": None, "items": [], "next_cursor": None,
                     "selection": {"selected_count": 0, "all_local_matches_selected": True, "truncated": False, "reasons": []},
@@ -215,7 +218,10 @@ class SummaryStore:
             cached = connection.execute("SELECT * FROM group_chat_summary_snapshots WHERE scope_key=? AND owner=? AND fingerprint=?",
                                         (scope.key, owner, fingerprint)).fetchone()
             if cached:
+                self._snapshot(connection, scope, owner, cached["snapshot_id"])
                 return self._page(connection, cached, 0, bounds)
+            if not allow_new:
+                raise GroupChatError("quota_exceeded", "宿主活动摘要快照过多, 请稍后再试")
             if (connection.execute("SELECT COUNT(*) FROM group_chat_summary_snapshots").fetchone()[0] >= 20
                     or connection.execute("SELECT COUNT(*) FROM group_chat_summary_snapshots WHERE scope_key=?", (scope.key,)).fetchone()[0] >= 5):
                 raise GroupChatError("quota_exceeded", "活动摘要快照过多, 请稍后再试")
@@ -231,12 +237,13 @@ class SummaryStore:
             rows = connection.execute("SELECT * FROM platform_messages WHERE " + where +
                                       " ORDER BY message_time, message_id LIMIT ?", (*params, bounds.message_limit + 1)).fetchall()
             items, hashes, remaining, reasons = [], {}, bounds.text_budget, []
+            input_remaining = bounds.input_budget
             for row in rows[:bounds.message_limit]:
                 item = self.archive._item(row)
                 if remaining == 0 and item["text"]:
                     reasons.append("text_budget")
                     break
-                hashes[item["message_id"]] = _digest(item)
+                digest = _digest(item)
                 if len(item["text"]) > remaining:
                     item["text"] = item["text"][:remaining]
                     item["truncated"] = True
@@ -244,6 +251,15 @@ class SummaryStore:
                 remaining -= len(item["text"])
                 if item["truncated"]:
                     reasons.append("source_truncated")
+                item["media"] = [{"type": media.get("type", "unknown")} for media in item["media"]]
+                size = len(_json(item).encode("utf-8"))
+                if size > input_remaining:
+                    if not items:
+                        raise GroupChatError("quota_exceeded", "当前模型剩余上下文不足以读取摘要来源, 请缩短讨论范围或清理上下文")
+                    reasons.append("context_budget")
+                    break
+                input_remaining -= size
+                hashes[item["message_id"]] = digest
                 items.append(item)
             if len(rows) > bounds.message_limit:
                 reasons.append("message_limit")
@@ -262,6 +278,21 @@ class SummaryStore:
             snapshot = connection.execute("SELECT * FROM group_chat_summary_snapshots WHERE snapshot_id=?", (snapshot_id,)).fetchone()
             assert snapshot is not None
             return self._page(connection, snapshot, 0, bounds)
+
+    def active_count(self) -> int:
+        """
+        统计平台未过期快照, 供宿主跨实例限制总资源
+
+        返回:
+        - 活动快照数, 冷平台返回零且不创建文件
+        """
+        connection = self.archive._connect()
+        if connection is None:
+            return 0
+        try:
+            return int(connection.execute("SELECT COUNT(*) FROM group_chat_summary_snapshots WHERE expires_at>?", (self.archive._clock(),)).fetchone()[0])
+        finally:
+            connection.close()
 
     def _page(self, connection: sqlite3.Connection, snapshot: sqlite3.Row, offset: int,
               limits: SummaryLimits) -> dict[str, Any]:
@@ -383,6 +414,8 @@ class SummaryStore:
         with self._transaction(scope) as connection:
             self._maintain(connection)
             previous = connection.execute("SELECT * FROM group_chat_summaries WHERE operation_key=? AND scope_key=?", (operation, scope.key)).fetchone()
+            if previous and previous["state"] != "active":
+                raise GroupChatError("source_unavailable", "这份摘要已删除或来源失效, 不重放旧保存结果")
             if previous:
                 return {"ok": True, "status": "saved", "summary": self._summary(previous), "replayed": True}
             snapshot = self._snapshot(connection, scope, owner, snapshot_id)
@@ -433,7 +466,7 @@ class SummaryStore:
         with self._transaction(scope) as connection:
             self._maintain(connection)
             row = connection.execute("SELECT * FROM group_chat_summaries WHERE scope_key=? AND summary_id=?", (scope.key, summary_id)).fetchone()
-            if row is None:
+            if row is None or row["state"] == "deleted":
                 raise GroupChatError("not_found", "摘要不存在或不属于当前群")
             return {"ok": True, "summary": self._summary(row)}
 
@@ -464,7 +497,7 @@ class SummaryStore:
             return {"ok": True, "items": [], "has_more": False, "next_cursor": None}
         with self._transaction(scope) as connection:
             self._maintain(connection)
-            where, args = "scope_key=?", [scope.key]
+            where, args = "scope_key=? AND state<>'deleted'", [scope.key]
             if keyword:
                 where += " AND (instr(title, ?)>0 OR instr(points_json, ?)>0)"
                 args.extend([keyword, keyword])
@@ -477,7 +510,8 @@ class SummaryStore:
             return {"ok": True, "items": [self._summary(row) for row in page], "has_more": more,
                     "next_cursor": _cursor([1, fingerprint, page[-1]["created_at"], page[-1]["summary_id"]]) if more else None}
 
-    def delete(self, scope: MessageScope, summary_id: str, expected_revision: int) -> dict[str, Any]:
+    def delete(self, scope: MessageScope, summary_id: str, expected_revision: int,
+               idempotency_key: str | None = None) -> dict[str, Any]:
         """
         管理接口删除派生摘要, 不修改档案或平台消息
 
@@ -485,18 +519,27 @@ class SummaryStore:
         - scope: 已授权当前群
         - summary_id: 摘要 ID
         - expected_revision: 已读取的修订
+        - idempotency_key: 管理界面一次删除意图的可选幂等键
 
         返回:
         - 删除成功结果, 修订冲突时不覆盖
         """
         if type(expected_revision) is not int or expected_revision < 1:
             raise ValueError("删除摘要需要有效修订")
+        if idempotency_key is not None and (not isinstance(idempotency_key, str) or not 1 <= len(idempotency_key) <= 128):
+            raise ValueError("删除幂等键无效")
         with self._transaction(scope) as connection:
             self._maintain(connection)
-            row = connection.execute("SELECT revision FROM group_chat_summaries WHERE scope_key=? AND summary_id=?", (scope.key, summary_id)).fetchone()
+            row = connection.execute("SELECT * FROM group_chat_summaries WHERE scope_key=? AND summary_id=?", (scope.key, summary_id)).fetchone()
             if row is None:
                 raise GroupChatError("not_found", "摘要不存在")
-            if row[0] != expected_revision:
+            if row["state"] == "deleted":
+                if row["revision"] == expected_revision + 1 and json.loads(row["metadata_json"]).get("delete_key") == idempotency_key:
+                    return {"ok": True, "status": "deleted", "summary_id": summary_id, "replayed": True}
+                raise GroupChatError("not_found", "摘要已被删除")
+            if row["revision"] != expected_revision:
                 raise GroupChatError("revision_conflict", "摘要状态已变化, 请刷新后删除")
-            connection.execute("DELETE FROM group_chat_summaries WHERE scope_key=? AND summary_id=?", (scope.key, summary_id))
+            connection.execute("UPDATE group_chat_summaries SET state='deleted', title='', points_json='[]', metadata_json=?, revision=revision+1 "
+                               "WHERE scope_key=? AND summary_id=?", (_json({"delete_key": idempotency_key}), scope.key, summary_id))
+            connection.execute("DELETE FROM group_chat_summary_refs WHERE summary_id=?", (summary_id,))
             return {"ok": True, "status": "deleted", "summary_id": summary_id}

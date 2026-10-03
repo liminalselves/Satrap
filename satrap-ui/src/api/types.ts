@@ -491,3 +491,23 @@ export interface BackendConfig {
     edictum_config_path?: string;
   session_scan_paths?: string[];
 }
+export interface GroupChatSummary {
+  schema_version: 1;
+  summary_id: string;
+  title: string;
+  revision: number;
+  state: 'active' | 'source_unavailable';
+  created_at: number;
+  expires_at: number;
+  points: { text: string; source_message_ids: string[] }[];
+  resolved_range: { start_time: string; end_time: string };
+  selection: { selected_count: number; all_local_matches_selected: boolean; truncated: boolean; reasons: string[] };
+  archive_coverage: { platform_history_complete: boolean; archived_from: number | null; archived_to: number | null; retention_days: number };
+}
+
+export interface GroupChatSummaryPage {
+  ok: boolean;
+  items: GroupChatSummary[];
+  has_more: boolean;
+  next_cursor: string | null;
+}

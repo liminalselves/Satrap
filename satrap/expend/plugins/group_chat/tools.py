@@ -65,6 +65,31 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
         "end_time": _string("只查这个时间及之前的消息, 填写日期和时间, 例如 2026-10-04T18:00:00"),
         "limit": _LIMIT, "cursor": _CURSOR,
     }, []),
+    "group_chat_prepare_summary": ("读取当前群指定时段的讨论, 供你生成摘要; 结果会注明保存范围和省略情况, 不能把不完整记录说成全部讨论", {
+        "start_time": _string("讨论的开始日期和时间, 例如 2026-10-04T09:00:00; 自动使用后端本地时区"),
+        "end_time": _string("讨论的结束日期和时间, 例如 2026-10-04T18:00:00; 自动使用后端本地时区"),
+        "keyword": _string("只总结包含这段文字的消息; 不填则读取该时段的所有已保存讨论"),
+        "include_bot": {"type": "boolean", "description": "是否包含机器人自己的发言, 默认不包含"},
+    }, ["start_time", "end_time"]),
+    "group_chat_read_summary_sources": ("继续读取本次摘要的消息来源; 沿用准备摘要时返回的 snapshot_id 和上一页 next_cursor, 读完后再保存摘要", {
+        "snapshot_id": _string("本轮 prepare_summary 返回的快照 ID"), "cursor": _CURSOR,
+    }, ["snapshot_id", "cursor"]),
+    "group_chat_save_summary": ("保存你根据本次消息快照写出的摘要; 每一条结论都要列出来源消息 ID. 返回 saved 只表示保存成功, 可再用回复工具发到群里", {
+        "snapshot_id": _string("本轮已经读完全部分页的摘要快照 ID"),
+        "title": {**_string("概括这段讨论的标题"), "maxLength": 120},
+        "points": {"type": "array", "minItems": 1, "maxItems": 20, "description": "逐条填写讨论结论, 区分提议, 决定和分歧, 总正文不超过 12000 字符",
+                   "items": {"type": "object", "properties": {
+                       "text": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "根据已读来源写出的摘要条目"},
+                       "source_message_ids": {"type": "array", "minItems": 1, "maxItems": 10, "items": _MESSAGE_ID,
+                                              "description": "支持本条结论的来源消息 ID, 必须从本次快照中取得"},
+                   }, "required": ["text", "source_message_ids"], "additionalProperties": False}},
+    }, ["snapshot_id", "title", "points"]),
+    "group_chat_get_summary": ("查看当前群一份已保存的摘要及出处; 来源已删除或过期时会注明失效, 不将旧摘要继续当成当前依据", {
+        "summary_id": _string("摘要保存或列表工具返回的摘要 ID"),
+    }, ["summary_id"]),
+    "group_chat_list_summaries": ("查找当前群已保存的摘要, 返回摘要 ID, 时间范围和有效状态", {
+        "keyword": _string("要查找的标题或摘要文字"), "limit": _LIMIT, "cursor": _CURSOR,
+    }, []),
 }
 
 
@@ -73,6 +98,7 @@ class _GroupChatMixin:
 
     tool_name: str | None
     config: Mapping[str, object]
+    session: Session | AsyncSession
     deferred_platform_reply = False
 
     def get_tool_defined(self) -> dict[str, Any]:
@@ -80,7 +106,7 @@ class _GroupChatMixin:
         返回完整组件和可选参数 schema
 
         返回:
-        - 六个首批工具的声明之一
+        - 当前群聊工具的声明之一
         """
         name = str(self.tool_name)
         description, properties, required = DEFINITIONS[name]
@@ -105,7 +131,31 @@ class _GroupChatMixin:
             if any(type(value) is not int for value in values.values()):
                 raise ValueError("群聊查询配置必须是整数")
             from typing import cast
-            limits = GroupChatLimits(**cast(dict[str, int], values))
+            limits = GroupChatLimits(message_limit=cast(int, values["message_limit"]), member_limit=cast(int, values["member_limit"]),
+                                     text_budget=cast(int, values["text_budget"]), member_cache_ttl=cast(int, values["member_cache_ttl"]))
+            enabled = self.config.get("summary_enabled", True)
+            if type(enabled) is not bool:
+                raise ValueError("摘要开关必须是布尔值")
+            from dataclasses import replace
+
+            input_budget = 24000
+            if self.tool_name == "group_chat_prepare_summary":
+                workflow = getattr(self.session, "_wf", None)
+                context = getattr(workflow, "ctx", None)
+                usage = context.get_context_usage(method="experience") if context is not None else None
+                if usage is not None:
+                    assert workflow is not None
+                    definitions = workflow.tools_manager.get_tools_definitions()
+                    import json
+
+                    overhead = len(json.dumps(definitions, ensure_ascii=False).encode("utf-8")) + 8192
+                    available = usage.history_upper_tokens - usage.history_tokens - overhead
+                    input_budget = max(0, min(1000000, available // 2))
+                    # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
+            limits = replace(limits, summary_enabled=enabled, summary_input_budget=input_budget,
+                             summary_message_limit=cast(int, self.config.get("summary_message_limit", 500)),
+                             summary_text_budget=cast(int, self.config.get("summary_text_budget", 60000)),
+                             summary_retention_days=cast(int, self.config.get("summary_retention_days", 30)))
             return await group_chat_service.execute(str(self.tool_name), kwargs, limits=limits)
         except Exception:
             logger.error(f"[group_chat] 工具执行异常, 工具={self.tool_name}: {traceback.format_exc()}")
@@ -148,7 +198,7 @@ class GroupChatTool(_GroupChatMixin, Tool):
         返回:
         - 工具定义完整且属于群来源时为 True
         """
-        return _group_available()
+        return _group_available() and ("summary" not in str(self.tool_name) or self.config.get("summary_enabled", True) is True)
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         """
@@ -195,7 +245,7 @@ class AsyncGroupChatTool(_GroupChatMixin, AsyncTool):
         返回:
         - 工具定义完整且属于群来源时为 True
         """
-        return _group_available()
+        return _group_available() and ("summary" not in str(self.tool_name) or self.config.get("summary_enabled", True) is True)
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """
@@ -212,7 +262,7 @@ class AsyncGroupChatTool(_GroupChatMixin, AsyncTool):
 
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: object = None) -> list[Tool] | list[AsyncTool]:
     """
-    为同步或异步会话构造同一组六个工具
+    为同步或异步会话构造同一组群聊工具
 
     参数:
     - session: 当前主会话
@@ -220,13 +270,14 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     - resources: 插件资源对象, 首批不使用外部资源
 
     返回:
-    - 与会话执行方式一致的六个工具实例
+    - 与会话执行方式一致的群聊工具实例
     """
     result = []
     kind = AsyncGroupChatTool if isinstance(session, AsyncSession) else GroupChatTool
     for name, (description, _, _) in DEFINITIONS.items():
         tool = kind(name, description, {})
         tool.config = dict(config)
+        tool.session = session
         tool.deferred_platform_reply = name == "group_chat_reply"
         tool.recovery_policy = "manual" if name == "group_chat_reply" else "retry"
         result.append(tool)

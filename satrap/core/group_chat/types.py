@@ -72,10 +72,19 @@ class GroupChatLimits:
     member_limit: int = 50
     text_budget: int = 12000
     member_cache_ttl: int = 60
+    summary_enabled: bool = True
+    summary_message_limit: int = 500
+    summary_text_budget: int = 60000
+    summary_retention_days: int = 30
+    summary_input_budget: int = 24000
 
     def __post_init__(self) -> None:
         """拒绝无界条数, 非整数预算和无法失效的成员缓存"""
         for value, lower, upper in ((self.message_limit, 1, 100), (self.member_limit, 1, 50),
-                                    (self.text_budget, 128, 100000), (self.member_cache_ttl, 0, 300)):
+                                    (self.text_budget, 128, 100000), (self.member_cache_ttl, 0, 300),
+                                    (self.summary_message_limit, 1, 2000), (self.summary_text_budget, 1000, 200000),
+                                    (self.summary_retention_days, 1, 3650), (self.summary_input_budget, 0, 1000000)):
             if type(value) is not int or not lower <= value <= upper:
                 raise ValueError("群聊工具查询配置超出允许范围")
+        if type(self.summary_enabled) is not bool:
+            raise ValueError("摘要开关必须是布尔值")

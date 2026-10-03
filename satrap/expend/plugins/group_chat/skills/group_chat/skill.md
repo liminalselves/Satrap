@@ -29,6 +29,18 @@ has_more=true 表示还有下一页, 继续查询时填写返回的 next_cursor 
 用户明确指定了其他时区时, 可以保留该时区, 后端会按指定的时区查询
 已经删除的聊天记录不会通过再次查询自动恢复
 
+## 总结一段讨论
+
+用户要求总结某段时间的讨论时, 先确定开始和结束日期时间, 然后调用 group_chat_prepare_summary
+使用返回的 snapshot_id 和 next_cursor 调用 group_chat_read_summary_sources, 读完全部分页后再写摘要
+每条摘要结论列出 source_message_ids, 区分建议, 已决定事项和仍有分歧的问题
+快照冻结后新消息不会混入; 空结果只表示保存范围内没有匹配, 不代表群里无人讨论
+selection.truncated=true 时明确称为部分记录摘要, platform_history_complete=false 时不声称读取了完整群历史
+只总结读到的文字, 不凭图片/文件组件名称推断附件内容
+使用 group_chat_save_summary 保存 title 和 points; 返回 saved 仅表示摘要已保存
+如需发到群里, 再使用 group_chat_reply 发送摘要文字和来源消息 ID; 不额外调用第二个摘要模型
+查询旧摘要可用 group_chat_list_summaries 和 group_chat_get_summary; 来源不可用的摘要不能继续作为事实依据
+
 ## 引用消息和 @ 对方
 
 需要引用或真正 @ 人时, 使用 group_chat_reply, 在 components 中按顺序填写:

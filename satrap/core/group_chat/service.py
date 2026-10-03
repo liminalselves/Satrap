@@ -23,6 +23,7 @@ import traceback
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
+from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
 from satrap.core.components import At, Plain, Reply, BaseMessageComponent
 from satrap.core.platform.event import MessageChain
@@ -37,6 +38,11 @@ _ARGUMENTS = {
     "group_chat_get_message": frozenset({"message_id"}),
     "group_chat_recent_messages": frozenset({"limit", "before_message_id", "cursor"}),
     "group_chat_search_messages": frozenset({"keyword", "sender_id", "start_time", "end_time", "limit", "cursor"}),
+    "group_chat_prepare_summary": frozenset({"start_time", "end_time", "keyword", "include_bot"}),
+    "group_chat_read_summary_sources": frozenset({"snapshot_id", "cursor"}),
+    "group_chat_save_summary": frozenset({"snapshot_id", "title", "points"}),
+    "group_chat_get_summary": frozenset({"summary_id"}),
+    "group_chat_list_summaries": frozenset({"keyword", "limit", "cursor"}),
 }
 
 
@@ -141,6 +147,7 @@ class GroupChatService:
         """
         self._clock = clock
         self._members: OrderedDict[str, _MemberCache] = OrderedDict()
+        self._summary_lock = asyncio.Lock()
 
     async def _resolve(self) -> _ReadContext:
         """
@@ -217,6 +224,8 @@ class GroupChatService:
             result = await asyncio.to_thread(callback, *args, **kwargs)
         except MessageArchiveError as exc:
             raise GroupChatError(exc.code, str(exc)) from exc
+        except GroupChatError:
+            raise
         except ValueError as exc:
             if argument_errors and not isinstance(exc, json.JSONDecodeError):
                 raise
@@ -264,6 +273,9 @@ class GroupChatService:
                 raise ValueError("群聊工具含有未知参数, 只能操作当前群")
             bounds = limits or GroupChatLimits()
             context = await self._resolve()
+            if operation in {"group_chat_prepare_summary", "group_chat_read_summary_sources", "group_chat_save_summary",
+                             "group_chat_get_summary", "group_chat_list_summaries"}:
+                return await self._summary(context, operation, arguments, bounds)
             if operation == "group_chat_reply":
                 from copy import deepcopy
                 from satrap.core.group_chat.reply import current_reply_turn
@@ -315,6 +327,64 @@ class GroupChatService:
         logger.warning(f"[群聊工具] 执行失败, 操作={operation}, 错误={code}, "
                        f"平台={origin.adapter_id if origin else ''}, 轮次={origin.request_id if origin else ''}")
         return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
+
+    async def _summary(self, context: _ReadContext, operation: str, arguments: Mapping[str, object],
+                       bounds: GroupChatLimits) -> dict[str, Any]:
+        """
+        执行当前群摘要契约, 写入与快照仅允许有效主工作流
+
+        参数:
+        - context: 已核验的当前群身份
+        - operation: 摘要工具名称
+        - arguments: 严格限定的工具参数
+        - bounds: 当前插件和模型预算
+
+        返回:
+        - 明确的保存状态, 快照或查询结果
+        """
+        if not bounds.summary_enabled:
+            raise GroupChatError("unsupported", "当前 Agent 未启用群摘要")
+        store = SummaryStore(self._store(context))
+        if operation == "group_chat_get_summary":
+            return await self._archive(context, store.get, context.scope, _id(arguments.get("summary_id")), argument_errors=True)
+        if operation == "group_chat_list_summaries":
+            return await self._archive(context, store.list, context.scope, **dict(arguments), argument_errors=True)
+        from satrap.core.group_chat.reply import current_reply_turn
+
+        turn = current_reply_turn()
+        if turn is None or turn.origin is not context.origin:
+            raise GroupChatError("stale_call", "当前没有有效的群聊主工作流")
+        turn.require_main_tool(operation)
+        if bounds.summary_input_budget < 1000:
+            raise GroupChatError("quota_exceeded", "当前模型剩余上下文不足, 请缩短讨论范围或清理上下文")
+        limits = SummaryLimits(bounds.summary_message_limit, bounds.summary_text_budget, bounds.message_limit,
+                               bounds.text_budget, bounds.summary_retention_days, bounds.summary_input_budget)
+        if operation == "group_chat_prepare_summary":
+            start, end = _query_time(arguments.get("start_time")), _query_time(arguments.get("end_time"))
+            if start is None or end is None:
+                raise ValueError("群摘要需要指定开始和结束时间")
+            async with self._summary_lock:
+                manager = current_adapter_manager()
+                active = 0
+                for adapter_id in manager.list_adapters() if manager else []:
+                    adapter = manager.get_adapter(adapter_id) if manager else None
+                    if adapter is not None and adapter.message_archive is not None:
+                        active += await asyncio.to_thread(SummaryStore(adapter.message_archive).active_count)
+                await self._revalidate(context)
+                turn.require_main_tool(operation)
+                return await self._archive(context, store.prepare, context.scope, turn.operation_owner, start_time=start,
+                                           end_time=end, keyword=arguments.get("keyword"),
+                                           include_bot=arguments.get("include_bot", False), limits=limits, allow_new=active < 20, argument_errors=True)
+        if operation == "group_chat_read_summary_sources":
+            return await self._archive(context, store.read_sources, context.scope, turn.operation_owner,
+                                       _id(arguments.get("snapshot_id")), arguments.get("cursor"), limits=limits, argument_errors=True)
+        await self._revalidate(context)
+        turn.require_main_tool(operation)
+        result = await self._archive(context, store.save, context.scope, turn.operation_owner,
+                                     _id(arguments.get("snapshot_id")), arguments.get("title"), arguments.get("points"),
+                                     limits=limits, argument_errors=True)
+        logger.info(f"[群摘要] 保存完成, 平台={context.scope.adapter_id}, 摘要={result['summary']['summary_id']}, 轮次={context.origin.request_id}")
+        return result
 
     async def _reply_components(self, context: _ReadContext, components: object, bounds: GroupChatLimits) -> MessageChain:
         """

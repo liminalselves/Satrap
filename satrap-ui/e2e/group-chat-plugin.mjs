@@ -53,6 +53,10 @@ try {
   for (const [name, field] of Object.entries(schema)) {
     const input = page.getByLabel(name, { exact: true });
     await input.waitFor();
+    if (field.type === 'bool') {
+      assert.equal(await input.isChecked(), field.default);
+      continue;
+    }
     assert.equal(await input.inputValue(), String(field.default));
     assert.equal(await input.getAttribute('min'), String(field.minimum));
     assert.equal(await input.getAttribute('max'), String(field.maximum));
@@ -74,7 +78,7 @@ try {
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth));
   assert.deepEqual(errors, []);
-  console.log('PASS: group_chat 实际元数据的能力展示, 四项整数配置, 零值保存, 刷新持久值, 恢复默认及窄屏布局');
+  console.log('PASS: group_chat 实际元数据的能力展示, 查询与摘要配置, 零值保存, 刷新持久值, 恢复默认及窄屏布局');
 } finally {
   if (browser) await browser.close();
   await server.close();

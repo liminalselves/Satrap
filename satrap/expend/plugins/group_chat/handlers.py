@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from typing import Any
+from datetime import datetime
 import json
 
 from satrap.core.group_chat.reply import current_reply_turn
@@ -53,6 +54,7 @@ def build_handlers(session: SimpleSession | AsyncSimpleSession, config: dict[str
         mentions = [safe_getattr_str(item, "qq") for item in messages if item.type == PlatformComponentType.At]
         identity = turn.event.get_extra("bot_identity") if turn else None
         data = {
+            "current_time": datetime.now().astimezone().isoformat(),
             "bot": {"self_id": origin.self_id, "nickname": identity.nickname if isinstance(identity, BotIdentity) else "",
                     "group_card": identity.group_card if isinstance(identity, BotIdentity) else ""},
             "conversation": {"kind": "group", "chat_id": origin.chat_id},

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, TYPE_CHECKING
 import asyncio
+import uuid
 
 from satrap.core.call_context import current_call_origin, current_tool_workflow, bind_call_origin
 from satrap.core.platform.receipt import SendReceipt
@@ -41,6 +42,8 @@ class ReplyTurn:
         self.failed = False
         self.submitted = False
         self.workflow: object | None = None
+        self.workflow_manager: Any = None
+        self.operation_owner = self.origin.request_id + ":" + uuid.uuid4().hex
         self.draft: MessageChain | None = None
         self._verify: Callable[[], Awaitable[MessageChain]] | None = None
         self._enabled: Callable[[], bool] = lambda: False
@@ -66,6 +69,22 @@ class ReplyTurn:
             raise GroupChatError("stale_call", "当前没有有效的群聊回复轮次")
         if current_tool_workflow() is not self.workflow or self.workflow is None:
             raise GroupChatError("wrong_executor", "只有当前主 Agent 可以准备最终回复")
+
+    def require_main_tool(self, name: str) -> None:
+        """
+        核验主工作流的持久工具权限, 不要求回复工具同时启用
+
+        参数:
+        - name: 本次写入或来源快照工具名
+        """
+        if not self.active or self.failed or current_call_origin() is not self.origin:
+            raise GroupChatError("stale_call", "当前群聊轮次已经失效")
+        if self.workflow is None or current_tool_workflow() is not self.workflow:
+            raise GroupChatError("wrong_executor", "只有当前主 Agent 可以提交此操作")
+        manager = self.workflow_manager
+        guard = getattr(manager, "effectiveness_guard", None)
+        if manager is None or not manager.is_tool_enabled(name) or (guard is not None and not guard(name)):
+            raise GroupChatError("stale_call", "本轮群聊工具已停用")
 
     async def prepare(self, validate: Callable[[], Awaitable[MessageChain]]) -> dict[str, object]:
         """
@@ -229,6 +248,9 @@ def buffer_session_reply(session: object) -> Iterator[None]:
     workflow: Any = getattr(session, "_wf", None)
     manager: Any = getattr(workflow, "tools_manager", None)
     tools: Mapping[str, Any] = getattr(manager, "tools", {})
+    if turn is not None and not turn.event.is_private_chat():
+        turn.workflow, turn.workflow_manager = workflow, manager
+        # 持久工具的主执行者身份独立于结构化回复开关
     reply = tools.get("group_chat_reply")
     if (turn is None or turn.origin.conversation_kind not in {"", "group"}
             or turn.event.is_private_chat() or reply is None

@@ -32,6 +32,8 @@ class Script:
         self.observe()
         self.requests.append((copy.deepcopy(messages), copy.deepcopy(kwargs)))
         result = self.replies.pop(0)
+        if callable(result):
+            result = result(messages, kwargs)
         if isinstance(result, BaseException):
             raise result
         return result
@@ -113,7 +115,7 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
     assert instance._wf.content_callback is output
     first, args = script.requests[0]
     assert first[0]["content"].startswith("基础提示词") and "<skill:group_chat>" in first[0]["content"]
-    assert len([tool for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")]) == 6
+    assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"])
     assert '"speaker_id": "123"' in str(first) and '"source_message_id": "77"' in str(first)
     assert '"nickname": "机器人"' in str(first)
     send_mock(adapter).assert_awaited_once()
@@ -209,7 +211,7 @@ async def test_named_backend_agent_first_load_restart_and_plugin_disable(tmp_pat
     send_mock(adapter).assert_awaited_once()
     first, args = script.requests[0]
     assert first[0]["content"].count("<skill:group_chat>") == 1
-    assert len(args["tools"]) == 6
+    assert {tool["function"]["name"] for tool in args["tools"]} == set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"])
     assert any(message["role"] == "tool" and '"message_id": "77"' in message["content"] for message in script.requests[1][0])
     await manager.unload_session_async(event.session_id)
     send_mock(adapter).reset_mock()

@@ -51,6 +51,9 @@ from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
+from satrap.core.config.group_chat_data import summary_management
+import re
+from satrap.core.group_chat.types import GroupChatError
 from satrap.core.config.platform_messages import MessageArchiveError
 from satrap.core.config.conversation_runtime import perform_data_operation
 from satrap.core.config.user_directory import UserDirectoryService, UserDirectoryConflict, missing_profile_revision
@@ -623,6 +626,8 @@ def _is_control_api_path(path: str) -> bool:
         "/chat/history",
         "/storage",
         "/platforms",
+        "/api/platforms/",
+        "/api/group-chat/",
     ))
 
 
@@ -2098,6 +2103,44 @@ async def _route_platform_archive(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": "平台消息档案不可用, 请查看控制服务日志", "code": "archive_unavailable"}
 
 
+async def _route_group_chat_content(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在认证控制入口管理冷热平台的摘要
+
+    参数:
+    - ctx: 已认证 HTTP 请求
+
+    返回:
+    - 列表, 详情或删除结果; 未匹配时返回 None
+    """
+    match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/summaries(?:/([^/]+))?", ctx.path)
+    if match is None or ctx.method not in {"GET", "DELETE"}:
+        return None
+    try:
+        platform_id, summary_id = (urllib.parse.unquote(value or "") for value in match.groups())
+        parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(values) != 1 for values in parsed.values()):
+            raise ValueError("摘要参数不能重复")
+        query = {key: values[0] for key, values in parsed.items()}
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method == "DELETE" else None
+        action = "delete" if ctx.method == "DELETE" else "get" if summary_id else "list"
+        result = await RAG_WORKERS.run(summary_management, _configured_storage_layout(), load_config_document(CONFIG_PATH),
+                                       platform_id, query, action, summary_id, payload)
+        return 200, result
+    except (GroupChatError, MessageArchiveError) as exc:
+        logger.warning(f"[群摘要] 管理操作失败, 错误={exc.code}: {exc}")
+        return {"not_found": 404, "revision_conflict": 409, "unavailable": 503}.get(exc.code, 400), {"error": str(exc), "code": exc.code}
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"[群摘要] 管理参数无效: {exc}")
+        return 400, {"error": str(exc), "code": "invalid_argument"}
+    except WorkerBusyError as exc:
+        logger.warning(f"[群摘要] 管理队列繁忙: {exc}")
+        return 503, {"error": "群摘要管理繁忙, 请稍后重试", "code": "unavailable"}
+    except Exception:
+        logger.error(f"[群摘要] 管理异常: {traceback.format_exc()}")
+        return 503, {"error": "群摘要暂不可用, 请查看控制服务日志", "code": "unavailable"}
+
+
 async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
     """
     对话目录只读查询和冷热统一的数据操作入口
@@ -2960,6 +3003,7 @@ async def _handle_request(
             _route_storage,
             _route_conversation_users,
             _route_platform_archive,
+            _route_group_chat_content,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_config,

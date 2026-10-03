@@ -1,8 +1,33 @@
 name: group_chat
-version: 0.1.0
+version: 0.2.0
 author: Satrap Team
-description: "在当前群查找成员, 查看聊天记录, 回复时引用消息和 @ 多人"
+description: "在当前群查找成员, 查记录, 生成带出处的摘要, 回复时引用消息和 @ 多人"
 config_schema:
+  summary_enabled:
+    type: bool
+    default: true
+    description: "允许按明确时间范围生成和查询群摘要"
+  summary_message_limit:
+    type: number
+    default: 500
+    minimum: 1
+    maximum: 2000
+    integer: true
+    description: "一份摘要最多读取多少条消息, 超出时明确显示部分记录"
+  summary_text_budget:
+    type: number
+    default: 60000
+    minimum: 1000
+    maximum: 200000
+    integer: true
+    description: "一份摘要最多读取多少个正文字符, 同时受模型剩余上下文限制"
+  summary_retention_days:
+    type: number
+    default: 30
+    minimum: 1
+    maximum: 3650
+    integer: true
+    description: "摘要最多保留多少天, 来源提前过期时摘要也失效"
   message_limit:
     type: number
     default: 100
@@ -32,6 +57,11 @@ config_schema:
     integer: true
     description: "成员查询结果缓存多久, 单位为秒; 0 表示每次新查询都刷新, 翻页仍沿用短期缓存"
 tools:
+  group_chat_prepare_summary: "读取指定时段的摘要来源"
+  group_chat_read_summary_sources: "继续读取本次摘要来源"
+  group_chat_save_summary: "保存带原文出处的群摘要"
+  group_chat_get_summary: "查看已保存摘要及来源状态"
+  group_chat_list_summaries: "查找当前群已保存摘要"
   group_chat_reply: "回复群消息, 支持引用和 @ 多人"
   group_chat_find_members: "按昵称或群名片查找成员"
   group_chat_get_member: "查看指定成员的昵称和群名片"
