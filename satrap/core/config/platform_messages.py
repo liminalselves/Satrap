@@ -516,8 +516,7 @@ class PlatformMessageStore:
                           "next_cursor": self._cursor(fingerprint, page[-1]["message_time"], page[-1]["message_id"]) if more else None})
             return empty
 
-    @staticmethod
-    def _erase(connection: sqlite3.Connection, scope_key: str, message_ids: Sequence[str], status: str, token: str) -> None:
+    def _erase(self, connection: sqlite3.Connection, scope_key: str, message_ids: Sequence[str], status: str, token: str) -> None:
         """
         保留最小去重标记并擦除可检索正文和成员资料
 
@@ -533,6 +532,10 @@ class PlatformMessageStore:
             "components_json='[]', reply_to_message_id=NULL, mentions_json='[]', media_json='[]' "
             "WHERE scope_key=? AND message_id=?", ((status, token, scope_key, item) for item in message_ids),
         )
+        from satrap.core.group_chat.summaries import invalidate_summaries
+
+        now = self._clock()
+        invalidate_summaries(connection, now=now, cutoff=now - self.retention_days * 86400, scope_key=scope_key)
 
     def recall(self, scope: MessageScope, message_id: str) -> None:
         """
@@ -825,4 +828,7 @@ class PlatformMessageStore:
                 "DELETE FROM platform_message_backups WHERE expires_at<=? OR created_at<?",
                 (now, now - self.retention_days * 86400),
             )
+            from satrap.core.group_chat.summaries import invalidate_summaries
+
+            invalidate_summaries(connection, now=now, cutoff=now - self.retention_days * 86400)
             return {"expired_count": result.rowcount, "backup_count": backups.rowcount}

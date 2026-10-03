@@ -9,13 +9,14 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 5
+PLATFORM_SCHEMA_VERSION = 6
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
     "group_accounts", "group_legacy_adoption", "group_configs", "group_directory", "group_sync_state", "group_actions",
 })
 _MESSAGE_TABLES = frozenset({"platform_message_chats", "platform_messages", "platform_message_backups"})
+_SUMMARY_TABLES = frozenset({"group_chat_summary_snapshots", "group_chat_summaries", "group_chat_summary_refs"})
 
 
 def _tables(connection: sqlite3.Connection) -> set[str]:
@@ -42,7 +43,8 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     existing = _tables(connection)
     required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
                 | (_MESSAGE_TABLES if version >= 4 else set())
-                | ({"platform_message_policy"} if version >= 5 else set()))
+                | ({"platform_message_policy"} if version >= 5 else set())
+                | (_SUMMARY_TABLES if version >= 6 else set()))
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -158,3 +160,24 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
             "retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650))"
         )
         connection.execute("PRAGMA user_version = 5")
+    if version < 6:
+        connection.execute(
+            "CREATE TABLE group_chat_summary_snapshots (snapshot_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+            "owner TEXT NOT NULL, fingerprint TEXT NOT NULL, payload_json TEXT NOT NULL, read_until INTEGER NOT NULL, "
+            "created_at REAL NOT NULL, expires_at REAL NOT NULL, UNIQUE(scope_key, owner, fingerprint))"
+        )
+        connection.execute("CREATE INDEX idx_group_chat_snapshot_expiry ON group_chat_summary_snapshots(expires_at)")
+        connection.execute(
+            "CREATE TABLE group_chat_summaries (summary_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+            "title TEXT NOT NULL, points_json TEXT NOT NULL, metadata_json TEXT NOT NULL, "
+            "operation_key TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL DEFAULT 1, "
+            "state TEXT NOT NULL DEFAULT 'active', created_at REAL NOT NULL, expires_at REAL NOT NULL)"
+        )
+        connection.execute("CREATE INDEX idx_group_chat_summary_scope ON group_chat_summaries(scope_key, created_at, summary_id)")
+        connection.execute(
+            "CREATE TABLE group_chat_summary_refs (summary_id TEXT NOT NULL, scope_key TEXT NOT NULL, "
+            "message_id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(summary_id, message_id), "
+            "FOREIGN KEY(summary_id) REFERENCES group_chat_summaries(summary_id) ON DELETE CASCADE)"
+        )
+        connection.execute("CREATE INDEX idx_group_chat_summary_source ON group_chat_summary_refs(scope_key, message_id)")
+        connection.execute("PRAGMA user_version = 6")
