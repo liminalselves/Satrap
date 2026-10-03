@@ -1,17 +1,25 @@
-"""OneBot 群管理同步和异步模型工具, 权限以来源身份为准, 写操作默认关闭"""
+"""
+OneBot 群管理同步与异步工具
+
+依据冻结的调用来源校验成员和群范围, 写操作默认关闭,
+按插件配置向当前会话请求高危动作审批后调用平台管理接口
+"""
 from __future__ import annotations
 
 from collections.abc import Coroutine
-from typing import Any, TypeVar, cast, overload
-
 import asyncio
+import inspect
+from typing import Any, Callable, TypeVar, cast, overload
+import json
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.call_context import CallOrigin, require_call_origin
 from satrap.core.framework.Base import Session, AsyncSession
+from satrap.core.call_context import CallOrigin, require_call_origin
+from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.platform import current_adapter_manager
+from satrap.core.type import safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession
+
 from satrap.core.log import logger
 
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
@@ -102,6 +110,66 @@ def _lines(value: Any) -> list[str]:
     return [line.strip() for line in str(value or "").splitlines() if line.strip()]
 
 
+_HIGH_RISK_TOOLS = frozenset({
+    "group_admin_kick",
+    "group_admin_ban",
+    "group_admin_whole_ban",
+    "group_admin_ban_anonymous",
+    "group_admin_set_admin",
+    "group_admin_set_name",
+    "group_admin_leave",
+    "group_admin_handle_friend_request",
+    "group_admin_handle_group_request",
+})
+"""影响成员资格, 管理员权限或不可逆的写动作, 可经 high_risk_approval 配置逐次审批"""
+
+
+def _needs_high_risk_approval(name: str, config: dict[str, Any]) -> bool:
+    """
+    判断动作是否需要逐次审批
+
+    参数:
+    - name: 工具名
+    - config: 当前会话插件配置
+
+    返回:
+    - bool: 高危分组且显式开启审批时为 True
+    """
+    return name in _HIGH_RISK_TOOLS and config.get("high_risk_approval") is True
+
+
+def _approval_question(name: str, origin: CallOrigin, kwargs: dict[str, Any]) -> str:
+    """
+    构造包含实际目标与触发者的审批提问
+
+    参数:
+    - name: 高危工具名
+    - origin: 调用来源
+    - kwargs: 工具参数
+
+    返回:
+    - str: 实际群目标或好友请求, 触发者与有界参数摘要
+    """
+    summary = json.dumps(kwargs, ensure_ascii=False, default=str)
+    if len(summary) > 200:
+        summary = summary[:200] + "..."
+    chat = str(kwargs.get("group_id") or origin.chat_id) if _DEFINITIONS[name][4] else "好友请求"
+    return f"高危群管理动作 {name} 目标 {chat} 由 {origin.actor_id} 触发, 参数 {summary}. 是否允许执行?"
+
+
+def _approval_granted(answer: object) -> bool:
+    """
+    判断审批回答是否明确同意
+
+    参数:
+    - answer: 用户输入通道的回答
+
+    返回:
+    - bool: y, yes, 允许或批准时为 True, 其他回答拒绝
+    """
+    return str(answer).strip().lower() in ("y", "yes", "允许", "批准")
+
+
 def _as_bool(value: Any, name: str) -> bool:
     """严格解析布尔参数, 拒绝真值语义"""
     if isinstance(value, bool):
@@ -115,6 +183,10 @@ def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list
     """
     校验来源身份, 写操作开关, 调用者与群范围, 返回来源适配器
 
+    写操作在 write_tools_enabled 开启的基础上还要求 allowed_callers 非空 (留空即
+    拒绝所有写操作); 只读工具默认不限制调用者, 配置 allowed_read_callers 后仅允许
+    列出的成员
+
     参数:
     - config: 插件配置
     - write: 是否为写操作
@@ -125,8 +197,12 @@ def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list
     origin = require_call_origin()
     if write and config.get("write_tools_enabled") is not True:
         raise PermissionError("管理写操作未在插件配置中开启")
-    callers = _lines(config.get("allowed_callers"))
-    if write and callers and origin.actor_id not in callers:
+    callers = _lines(config.get("allowed_callers" if write else "allowed_read_callers"))
+    if write and not callers:
+        raise PermissionError(
+            "写操作要求在插件配置 allowed_callers 中显式列出允许的调用者 (留空即拒绝所有写操作)"
+        )
+    if callers and origin.actor_id not in callers:
         raise PermissionError("当前调用者不在管理动作允许范围内")
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager is not None else None
@@ -227,6 +303,17 @@ class _GroupAdminMixin:
 
     tool_name: str | None
     config: dict[str, Any]
+    session: Session | AsyncSession
+
+    @property
+    def user_input_provider(self) -> Callable[..., Any] | None:
+        """
+        读取当前会话的审批通道, 支持工具安装后注入或替换
+
+        返回:
+        - Callable[..., Any] | None: 当前可调用通道, 未注入时为 None
+        """
+        return safe_getattr_callable(self.session, "user_input_provider")
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
         if not definition or self.tool_name is None:
@@ -235,21 +322,103 @@ class _GroupAdminMixin:
         definition["function"]["parameters"]["additionalProperties"] = False
         return definition
 
+    def _ask_approval(self, question: str) -> object:
+        """
+        调用当前会话的输入通道, 按签名传递选项
+
+        参数:
+        - question: 审批提问
+
+        返回:
+        - object: 同步回答或待等待的异步回答, 无通道时拒绝
+        """
+        provider = self.user_input_provider
+        if provider is None:
+            raise PermissionError("高危动作已开启逐次审批, 当前会话无审批通道, 已拒绝")
+        try:
+            inspect.signature(cast(Callable[..., object], provider)).bind(question, ["允许", "拒绝"])
+        except (TypeError, ValueError):
+            return provider(f"{question} 可选: 1. 允许  2. 拒绝")
+        return provider(question, ["允许", "拒绝"])
+
+    async def _authorize_high_risk(self, name: str, origin: CallOrigin, kwargs: dict[str, Any]) -> None:
+        """
+        异步请求高危动作审批, 无通道或未批准即拒绝
+
+        参数:
+        - name: 工具名
+        - origin: 已校验的调用来源
+        - kwargs: 已校验群范围的工具参数
+        """
+        if not _needs_high_risk_approval(name, self.config):
+            return
+        if not callable(self.user_input_provider):
+            raise PermissionError("高危动作已开启逐次审批, 当前会话无审批通道, 已拒绝")
+        answer = self._ask_approval(_approval_question(name, origin, kwargs))
+        if inspect.isawaitable(answer):
+            answer = await answer
+        if not _approval_granted(answer):
+            raise PermissionError("高危动作未获人工批准")
+
+    def _authorize_high_risk_sync(self, name: str, origin: CallOrigin, kwargs: dict[str, Any]) -> None:
+        """
+        同步请求高危动作审批, 无法等待异步回答时拒绝
+
+        参数:
+        - name: 工具名
+        - origin: 已校验的调用来源
+        - kwargs: 已校验群范围的工具参数
+        """
+        if not _needs_high_risk_approval(name, self.config):
+            return
+        if not callable(self.user_input_provider):
+            raise PermissionError("高危动作已开启逐次审批, 当前会话无审批通道, 已拒绝")
+        answer = self._ask_approval(_approval_question(name, origin, kwargs))
+        if inspect.isawaitable(answer):
+            if inspect.iscoroutine(answer):
+                answer.close()
+            raise PermissionError("同步会话的审批通道返回了异步结果, 无法等待, 已拒绝")
+        if not _approval_granted(answer):
+            raise PermissionError("高危动作未获人工批准")
+
     async def _run(self, **kwargs: Any) -> dict[str, Any]:
-        """在当前上下文完成身份校验后执行管理动作"""
+        """
+        异步校验来源与审批后执行管理动作
+
+        参数:
+        - kwargs: 定义表中的工具参数
+
+        返回:
+        - dict[str, Any]: 动作完成的状态及可选结果, 权限或平台错误向调用方传播
+        """
         name = str(self.tool_name)
         write = _DEFINITIONS[name][3]
         adapter, origin, allowed = _resolve(self.config, write)
+        if _DEFINITIONS[name][4]:
+            _group_id(origin, allowed, kwargs)
+        await self._authorize_high_risk(name, origin, kwargs)
         result = await _build_call(name, adapter.admin, origin, allowed, kwargs)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
         return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
+        """
+        同步校验来源与审批, 在平台循环执行管理动作
+
+        参数:
+        - kwargs: 定义表中的工具参数
+
+        返回:
+        - dict[str, Any]: 完成, 不支持或错误状态; 超时返回 unconfirmed, 不宣称动作失败
+        """
         try:
             name = str(self.tool_name)
             write = _DEFINITIONS[name][3]
             adapter, origin, allowed = _resolve(self.config, write)
+            if _DEFINITIONS[name][4]:
+                _group_id(origin, allowed, kwargs)
+            self._authorize_high_risk_sync(name, origin, kwargs)
             loop = getattr(adapter, "_loop", None)
             if loop is None or loop.is_closed():
                 raise ValueError("平台事件循环不可用")
@@ -314,13 +483,26 @@ class AsyncGroupAdminTool(_GroupAdminMixin, AsyncTool):
 _AnyGroupAdminTool = TypeVar("_AnyGroupAdminTool", GroupAdminTool, AsyncGroupAdminTool)
 
 
-def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list[_AnyGroupAdminTool]:
-    """按工具基类批量构造定义表中的工具"""
+def _build_tools(
+    kind: type[_AnyGroupAdminTool], config: dict[str, Any], session: Session | AsyncSession
+) -> list[_AnyGroupAdminTool]:
+    """
+    构造管理工具并绑定会话, 审批通道在执行时读取
+
+    参数:
+    - kind: 同步或异步工具类型
+    - config: 当前会话的插件配置
+    - session: 当前会话
+
+    返回:
+    - list: 定义表中的管理工具实例
+    """
     result: list[_AnyGroupAdminTool] = []
     for name, (description, params, _, _, _) in _DEFINITIONS.items():
         tool = kind(name, description, params)
         tool.recovery_policy = "retry" if not _DEFINITIONS[name][3] else "manual"
         tool.config = config
+        tool.session = session
         result.append(tool)
     return result
 
@@ -328,9 +510,19 @@ def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list
 @overload
 def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: Any = None) -> list[AsyncGroupAdminTool]: ...
 @overload
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]: ...
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
-    """平台管理工具不依赖会话状态, 权限与适配器在执行时按来源身份解析"""
+    """
+    按会话形态构造管理工具, 执行时解析来源权限与审批通道
+
+    参数:
+    - session: 绑定的当前会话
+    - config: 当前会话插件配置
+    - resources: 插件资源, 当前不使用
+
+    返回:
+    - list: AsyncSimpleSession 使用异步工具, 其他会话使用同步工具
+    """
     if isinstance(session, AsyncSimpleSession):
-        return _build_tools(AsyncGroupAdminTool, config)
-    return _build_tools(GroupAdminTool, config)
+        return _build_tools(AsyncGroupAdminTool, config, session)
+    return _build_tools(GroupAdminTool, config, session)

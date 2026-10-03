@@ -33,6 +33,7 @@ session_classes:
 
 # --- Session 类扫描目录 ---
 # 管理面板和 CLI 可以扫描这些目录下的 .py 文件, 发现继承 Session/AsyncSession 的类
+# 注意: 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入
 session_scan_paths:
   - .satrap/session
 
@@ -40,6 +41,12 @@ session_scan_paths:
 # 目录浏览和项目绑定只能使用这些根目录及其子目录
 workspace_roots:
   - .
+
+# --- 消息组件媒体来源白名单 ---
+# 图片/语音/视频/文件组件只允许读取这些根目录及其子目录内的本地文件
+# 留空使用默认白名单; 非空列表替换默认目录, 环境变量追加项仍生效
+# 默认目录与下载缓存要求见 docs/getting-started/configuration.md 的媒体来源白名单
+media_allowed_roots: null
 
 # --- 平台适配器配置 ---
 platforms:

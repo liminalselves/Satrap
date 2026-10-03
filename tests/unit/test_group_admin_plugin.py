@@ -116,10 +116,104 @@ class TestPermissionGate:
         with bind_call_origin(_origin(actor="123")):
             result = await tool.execute(user_id="321")
         assert result["status"] == "error" and "调用者" in result["error"]
-        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_groups": "789"}) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "789"}) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await tool.execute(user_id="321")
         assert result["status"] == "error" and "目标群" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_write_requires_explicit_callers_when_enabled(self):
+        _setup_adapter()
+        with bind_call_origin(_origin()):
+            tool = next(t for t in _async_tools({"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+            result = await tool.execute(user_id="321")
+        assert result["status"] == "error" and "allowed_callers" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_high_risk_approval_requires_provider(self):
+        """high_risk_approval 开启时无审批通道的高危动作直接拒绝"""
+        _setup_adapter()
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        with bind_call_origin(_origin()):
+            tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+            result = await tool.execute(user_id="321")
+        assert result["status"] == "error" and "审批通道" in result["error"]
+        # 未开启审批时同一动作不受影响
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        with bind_call_origin(_origin()):
+            tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123"}) if t.tool_name == "group_admin_kick")
+            result = await tool.execute(user_id="321")
+        assert result == {"status": "ok"}
+
+    @pytest.mark.asyncio
+    async def test_high_risk_approval_grants_on_user_yes(self):
+        """审批通道明确同意后高危动作放行, 拒绝回答则拒绝执行"""
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        answers: list[str] = []
+
+        async def provider(question: str, options: list[str]) -> str:
+            answers.append(question)
+            return "y"
+
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+        tool.session.user_input_provider = provider
+        with bind_call_origin(_origin()):
+            approved = await tool.execute(user_id="321")
+            tool.session.user_input_provider = lambda question, options: "n"
+            denied = await tool.execute(user_id="322")
+        assert approved == {"status": "ok"}
+        assert denied["status"] == "error" and "未获人工批准" in denied["error"]
+        assert "group_admin_kick" in answers[0]
+        adapter._bot.set_group_kick.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_approval_uses_explicit_target_and_rejects_scope_before_prompt(self):
+        adapter = _setup_adapter()
+        adapter._bot.set_group_kick.return_value = {}
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "789", "high_risk_approval": True}
+        tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_kick")
+        provider = AsyncMock(return_value="允许")
+        tool.session.user_input_provider = provider
+        with bind_call_origin(_origin()):
+            denied = await tool.execute(user_id="321")
+            assert denied["status"] == "error" and "目标群" in denied["error"]
+            provider.assert_not_awaited()
+            result = await tool.execute(user_id="321", group_id="789")
+        assert result == {"status": "ok"}
+        assert "目标 789" in provider.call_args.args[0]
+        adapter._bot.set_group_kick.assert_awaited_once_with(group_id=789, user_id=321, reject_add_request=False)
+
+    def test_sync_approval_closes_unawaited_coroutine(self):
+        import inspect
+        config = {"write_tools_enabled": True, "allowed_callers": "123", "high_risk_approval": True}
+        from types import SimpleNamespace
+        from satrap.expend.plugins.group_admin.tools import GroupAdminTool
+        session = SimpleNamespace(user_input_provider=None)
+        tool = next(t for t in get_tools(cast(Session, session), config) if t.tool_name == "group_admin_kick")
+        assert isinstance(tool, GroupAdminTool)
+        async def answer():
+            return "允许"
+        coroutine = answer()
+        session.user_input_provider = lambda question, options: coroutine
+        with pytest.raises(PermissionError, match="异步结果"):
+            tool._authorize_high_risk_sync("group_admin_kick", _origin(), {"user_id": "321"})
+        assert inspect.getcoroutinestate(coroutine) == inspect.CORO_CLOSED
+
+    @pytest.mark.asyncio
+    async def test_read_callers_allowlist_gates_read_tools(self):
+        adapter = _setup_adapter()
+        adapter._bot.get_group_info.return_value = {"group_id": 456, "group_name": "测试群"}
+        tool = next(t for t in _async_tools({"allowed_read_callers": "999"}) if t.tool_name == "group_admin_get_group_info")
+        with bind_call_origin(_origin(actor="123")):
+            result = await tool.execute()
+        assert result["status"] == "error" and "调用者" in result["error"]
+        tool = next(t for t in _async_tools({"allowed_read_callers": "123"}) if t.tool_name == "group_admin_get_group_info")
+        with bind_call_origin(_origin(actor="123")):
+            result = await tool.execute()
+        assert result["status"] == "ok"
 
     @pytest.mark.asyncio
     async def test_private_context_requires_explicit_group(self):
@@ -135,7 +229,7 @@ class TestExecution:
     async def test_ban_executes_with_current_group_and_parsed_params(self):
         adapter = _setup_adapter()
         adapter._bot.set_group_ban.return_value = {}
-        config = {"write_tools_enabled": True}
+        config = {"write_tools_enabled": True, "allowed_callers": "123"}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_ban")
         with bind_call_origin(_origin()):
             result = await tool.execute(user_id="321", duration=600)
@@ -166,7 +260,7 @@ class TestExecution:
             return await original_run(target, operation)
 
         monkeypatch.setattr(adapter._outbound, "run", spy_run)
-        tool = next(t for t in _async_tools({"write_tools_enabled": True}) if t.tool_name == "group_admin_send_forward")
+        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123"}) if t.tool_name == "group_admin_send_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(nodes=[{"content": "第一段"}, {"content": "第二段", "name": "助手"}])
         assert result["status"] == "ok"
@@ -181,7 +275,7 @@ class TestExecution:
         with bind_call_origin(_origin()):
             result = await denied.execute(nodes=[{"content": "x"}])
         assert result["status"] == "error" and "写操作" in result["error"]
-        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_groups": "789"}) if t.tool_name == "group_admin_send_forward")
+        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "789"}) if t.tool_name == "group_admin_send_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(nodes=[{"content": "x"}])
         assert result["status"] == "error" and "目标群" in result["error"]
@@ -243,7 +337,7 @@ class TestExecution:
         adapter = _setup_adapter()
         adapter._loop = asyncio.get_running_loop()
         adapter._bot.set_group_kick.return_value = {}
-        config = {"write_tools_enabled": True}
+        config = {"write_tools_enabled": True, "allowed_callers": "123"}
         tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
 
         def run() -> dict[str, object]:
@@ -257,7 +351,7 @@ class TestExecution:
     @pytest.mark.asyncio
     async def test_sync_tool_without_loop_reports_error(self):
         _setup_adapter()
-        config = {"write_tools_enabled": True}
+        config = {"write_tools_enabled": True, "allowed_callers": "123"}
         tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await asyncio.to_thread(tool.execute, user_id="321")
@@ -271,7 +365,7 @@ class TestExecution:
         await adapter.request_flags.register(
             "group", "f1", self_id=adapter.bot_self_id, group_id="456", sub_type="add", user_id="1",
         )
-        config = {"write_tools_enabled": True}
+        config = {"write_tools_enabled": True, "allowed_callers": "123"}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             missing = await tool.execute(flag="f1", sub_type="add", approve=True)
@@ -313,7 +407,7 @@ class TestLoggingAndTimeout:
         import logging
         adapter = _setup_adapter()
         adapter._bot.set_group_kick.return_value = {}
-        tool = next(t for t in _async_tools({"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "123"}) if t.tool_name == "group_admin_kick")
         with caplog.at_level(logging.DEBUG), bind_call_origin(_origin()):
             assert (await tool.execute(user_id="321"))["status"] == "ok"
             adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
@@ -348,7 +442,7 @@ class TestLoggingAndTimeout:
             return future
 
         monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", fast_timeout)
-        tool = next(t for t in get_tools(cast(Session, object()), {"write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
+        tool = next(t for t in get_tools(cast(Session, object()), {"write_tools_enabled": True, "allowed_callers": "123"}) if t.tool_name == "group_admin_kick")
 
         def run() -> Any:
             with bind_call_origin(_origin()):

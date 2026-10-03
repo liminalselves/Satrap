@@ -170,7 +170,8 @@ async def test_send_message_routes_note_chat_room():
 
 
 @pytest.mark.asyncio
-async def test_send_message_uploads_file_components(tmp_path: Path):
+async def test_send_message_uploads_file_components(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
     adapter = make_adapter()
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")

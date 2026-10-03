@@ -13,25 +13,32 @@ config_schema:
   data_root:
     type: path
     default: ""
-    description: "插件数据目录 (权限/目标/日志, 留空用 workspace_root/.satrap/coding)"
+    description: "权限/目标/日志目录 (宿主 coding_cache_root 优先; 留空按会话数据库目录推导, 无数据库时按 session_id 隔离)"
   sandbox_root:
     type: path
     default: ""
-    description: "沙箱根目录 (留空用 data_root/sandbox, 与 base_take 全局共享)"
+    description: "文件免审批目录 (宿主 coding_sandbox_root 优先; 留空用项目根/.satrap/sandbox, 与 base_take 默认目录一致; 计划模式仍拒绝写入)"
   shell_timeout:
     type: number
     default: 120
-    description: "shell 命令默认超时秒数"
+    minimum: 1
+    maximum: 3600
+    integer: true
+    description: "shell 命令默认超时秒数 (1-3600 整数, 单次调用可覆盖)"
   protected_dirs:
     type: string
     default: ""
     description: "额外保护目录 (逗号分隔, 追加到内置 .satrap/.git/node_modules)"
+  allowed_env_vars:
+    type: string
+    default: ""
+    description: "shell 子进程显式放行的环境变量名 (逗号分隔); 其余密钥类变量 (如 *_API_KEY, *_TOKEN) 默认剥离"
 
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
 # 注: search/fetch_page/memory 已移交 base_take 插件
 tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
-  shell: 在本机执行 shell 命令 (PowerShell/cmd), 写/高危命令需批准
+  shell: 在本机执行 shell 命令 (PowerShell/cmd), 每次执行需明确批准, 计划模式禁用
   subagent: 在独立上下文中运行子代理处理任务, 用于并行调研/独立子任务
   read_file: 读取工作区内文件内容, 支持分页
   write_file: 写入或追加内容到工作区内文件 (需批准)

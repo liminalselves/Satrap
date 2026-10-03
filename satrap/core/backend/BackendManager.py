@@ -54,6 +54,7 @@ from satrap.core.platform import (
     registry as global_registry,
     set_current_adapter_manager,
 )
+from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_root
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
@@ -94,6 +95,8 @@ class BackendConfig:
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
     workspace_roots: List[str] = field(default_factory=lambda: ["."])
     # Chat 项目允许浏览和绑定的工作区根目录
+    media_allowed_roots: List[str] | None = None
+    # 默认目录和显式覆盖语义见 docs/getting-started/configuration.md 的媒体来源白名单
 
     api_host: str = "127.0.0.1"
     # HTTP API 配置
@@ -140,6 +143,12 @@ class BackendConfig:
             raise ValueError(
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
+        media_roots = data.get("media_allowed_roots")
+        if media_roots is not None and (
+            not isinstance(media_roots, list)
+            or any(not isinstance(root, str) for root in media_roots)
+        ):
+            raise ValueError("media_allowed_roots 必须是字符串列表或 null")
         return cls(
             model_config_path=data.get("model_config_path"),
             data_root=data.get("data_root"),
@@ -156,6 +165,7 @@ class BackendConfig:
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
             workspace_roots=list(data.get("workspace_roots", ["."])),
+            media_allowed_roots=list(media_roots) if media_roots else None,
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
@@ -200,6 +210,9 @@ class BackendManager:
         self._session_mgr: SessionManager | None = None
         self._user_mgr: UserManager | None = None
         self._storage = StorageLayout(self.config.data_root) if self.config.data_root else default_storage_layout
+        # 媒体白名单在组件转换层全局生效, 默认白名单按实际数据根推导
+        set_media_allowed_roots(self.config.media_allowed_roots)
+        set_media_storage_root(str(self._storage.root))
         self._platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
         self._rate_limiter: RateLimiter | None = None
         self._scheduler: PipelineScheduler | None = None
