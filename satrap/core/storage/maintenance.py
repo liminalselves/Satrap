@@ -98,6 +98,9 @@ class StorageMaintenanceService:
                     days = store.saved_retention_days() or 30
                 store = PlatformMessageStore(database, platform_id, retention_days=days)
                 results.append({"platform_id": platform_id, "ok": True, **store.purge()})
+                from satrap.core.group_chat.assets import AssetStore
+
+                AssetStore(store).purge()
             except Exception as exc:
                 logger.error(f"[消息档案] 自动维护失败, 平台={platform_id}, 原因={type(exc).__name__}: {exc}")
                 results.append({"platform_id": platform_id, "ok": False, "error": "archive_unavailable"})

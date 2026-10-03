@@ -1,5 +1,6 @@
 """OneBot 消息段与 Satrap 消息组件转换工具"""
 from __future__ import annotations
+import re
 
 from typing import Any, cast
 import json
@@ -166,7 +167,9 @@ def onebot_segments_to_components(segments: list[dict[str, Any]], depth: int = 0
             components.append(Face(id=data.get("id", "")))
             text_parts.append(f"[表情:{data.get('id', '')}]")
         elif seg_type == "image":
-            components.append(Image(file=str(data.get("file", "")), url=str(data.get("url", ""))))
+            native = str(data.get("file", ""))
+            native = native if re.fullmatch(r"[A-Za-z0-9_.-]{1,256}", native) else ""
+            components.append(Image(file=str(data.get("file", "")), url=str(data.get("url", "")), native_media_id=native))
             text_parts.append("[图片]")
         elif seg_type == "record":
             components.append(Record(file=str(data.get("file", "")), url=str(data.get("url", ""))))

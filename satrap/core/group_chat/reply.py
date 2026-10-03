@@ -50,6 +50,19 @@ class ReplyTurn:
         self._lock = asyncio.Lock()
         self._output: list[str] = []
         self._output_size = 0
+        self._media_leases: list[Any] = []
+
+    def replace_media_leases(self, message: MessageChain) -> None:
+        """
+        接管完整草稿的媒体引用, 再释放之前的草稿
+
+        参数:
+        - message: 全部组件已通过验证的新草稿
+        """
+        for lease in self._media_leases:
+            lease.release()
+        self._media_leases = [getattr(component, "asset_lease") for component in message.components
+                              if getattr(component, "asset_lease", None) is not None]
 
     @property
     def event(self) -> MessageEvent:
@@ -101,6 +114,7 @@ class ReplyTurn:
             if self.draft is not None or self.submitted:
                 raise GroupChatError("already_prepared", "本轮已经有最终回复草稿")
             draft = await validate()
+            self.replace_media_leases(draft)
             self.require_owner()
             self.draft, self._verify = draft, validate
             return {"ok": True, "status": "prepared", "sent": False, "request_id": self.origin.request_id}
@@ -127,6 +141,9 @@ class ReplyTurn:
         self.draft = None
         self._verify = None
         self._output.clear()
+        for lease in self._media_leases:
+            lease.release()
+        self._media_leases.clear()
 
     async def commit(self, response: str) -> bool:
         """
@@ -156,6 +173,7 @@ class ReplyTurn:
                     raise GroupChatError("stale_call", "来源核验期间平台实例已替换")
                 if self._verify is not None:
                     message = await self._verify()
+                    self.replace_media_leases(message)
                 else:
                     if not response:
                         return True

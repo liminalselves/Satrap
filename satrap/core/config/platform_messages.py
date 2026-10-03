@@ -536,6 +536,9 @@ class PlatformMessageStore:
 
         now = self._clock()
         invalidate_summaries(connection, now=now, cutoff=now - self.retention_days * 86400, scope_key=scope_key)
+        from satrap.core.group_chat.assets import invalidate_assets
+
+        invalidate_assets(connection, now)
 
     def recall(self, scope: MessageScope, message_id: str) -> None:
         """
@@ -831,4 +834,7 @@ class PlatformMessageStore:
             from satrap.core.group_chat.summaries import invalidate_summaries
 
             invalidate_summaries(connection, now=now, cutoff=now - self.retention_days * 86400)
+            from satrap.core.group_chat.assets import invalidate_assets
+
+            invalidate_assets(connection, now)
             return {"expired_count": result.rowcount, "backup_count": backups.rowcount}

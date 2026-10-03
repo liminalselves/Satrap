@@ -439,6 +439,27 @@ class PlatformAdapter(ABC):
                                           "reason": "local_archive" if self.message_archive is not None else "archive_not_configured"}
         return capabilities
 
+    def group_chat_media_limits(self) -> dict[str, int]:
+        """返回适配器较小的媒体上限, 宿主和插件上限仍同时有效"""
+        return {"max_images": 4, "max_stickers": 4, "max_bytes": 20 * 1024 * 1024}
+
+    def group_chat_media_formats(self) -> tuple[str, ...]:
+        """返回适配器实际可发送的图片 MIME 交集"""
+        return ()
+
+    async def group_chat_refresh_image(self, scope: MessageScope, reference: dict[str, Any]) -> str | None:
+        """
+        从可信档案引用刷新图片地址, 缺少实现时明确返回不可刷新
+
+        参数:
+        - scope: 已核验的群身份
+        - reference: 该群档案中的原生媒体引用
+
+        返回:
+        - 新地址或 None, 不接受模型提供的路径
+        """
+        return None
+
     async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
         """
         读取指定可信群身份的成员快照, 默认不支持

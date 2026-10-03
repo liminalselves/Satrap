@@ -25,7 +25,8 @@ from satrap.core.config.platform_messages import MessageArchiveError, MessageSco
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
 from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
-from satrap.core.components import At, Plain, Reply, BaseMessageComponent
+from satrap.core.components import At, Plain, Reply, Image, BaseMessageComponent
+from satrap.core.group_chat.assets import AssetStore, AssetLease, MAX_REPLY_BYTES
 from satrap.core.platform.event import MessageChain
 from satrap.core.log import logger
 
@@ -388,12 +389,34 @@ class GroupChatService:
 
     async def _reply_components(self, context: _ReadContext, components: object, bounds: GroupChatLimits) -> MessageChain:
         """
+        整体验证草稿, 失败时释放全部媒体租约
+
+        参数:
+        - context: 可信群来源
+        - components: 模型组件
+        - bounds: 插件上限
+
+        返回:
+        - 可提交的完整组件链
+        """
+        leases: list[AssetLease] = []
+        try:
+            return await self._reply_components_inner(context, components, bounds, leases)
+        except BaseException:
+            for lease in leases:
+                lease.release()
+            raise
+
+    async def _reply_components_inner(self, context: _ReadContext, components: object, bounds: GroupChatLimits,
+                                      leases: list[AssetLease]) -> MessageChain:
+        """
         整体验证首批组件, 提及消息发送者而非正文中的被提及者
 
         参数:
         - context: 当前群的可信身份和适配器
         - components: 模型提供的文本, 引用与提及组件列表
         - bounds: 当前插件读取预算
+        - leases: 本次校验取得的文件引用, 由外层失败边界和轮次宿主管理
 
         返回:
         - 引用位于首位的完整消息链, 任一目标失败时不返回部分草稿
@@ -404,6 +427,8 @@ class GroupChatService:
         output: list[BaseMessageComponent] = []
         quote: Reply | None = None
         text_size = 0
+        image_count = 0
+        media_bytes = 0
         for raw in components:
             if not isinstance(raw, dict):
                 raise ValueError("每个组件必须是对象")
@@ -444,8 +469,34 @@ class GroupChatService:
                 else:
                     raise ValueError("mention 的 source_message_id 与 user_id 必须二选一")
                 output.append(At(qq=user_id))
+            elif kind == "image":
+                if set(raw) != {"type", "asset_id"}:
+                    raise ValueError("image 只接受 asset_id, 不接受路径或 URL")
+                if not bounds.media_reply_enabled:
+                    raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
+                self._capability(context, "image")
+                image_count += 1
+                maximum = min(bounds.max_reply_images, context.adapter.group_chat_media_limits()["max_images"])
+                if image_count > maximum:
+                    raise GroupChatError("quota_exceeded", f"当前回复最多支持 {maximum} 张图片")
+                from satrap.core.group_chat.reply import current_reply_turn
+
+                turn = current_reply_turn()
+                if turn is None:
+                    raise GroupChatError("stale_call", "当前图片回复轮次已失效")
+                lease, metadata = AssetStore(self._store(context)).acquire(context.scope, _id(raw["asset_id"]), turn.operation_owner)
+                leases.append(lease)
+                await self._revalidate(context)
+                media_bytes += metadata["size_bytes"]
+                if media_bytes > min(MAX_REPLY_BYTES, context.adapter.group_chat_media_limits()["max_bytes"]):
+                    raise GroupChatError("quota_exceeded", "回复图片总大小不能超过 20 MiB")
+                if metadata["mime_type"] not in context.adapter.group_chat_media_formats():
+                    raise GroupChatError("unsupported", "当前平台不支持该图片格式")
+                component = Image.fromFileSystem(str(lease.path))
+                component.asset_lease = lease
+                output.append(component)
             else:
-                raise ValueError("首批仅支持 text, quote 和 mention 组件")
+                raise ValueError("不支持该回复组件类型")
         if not output:
             raise ValueError("回复不能只有引用")
         await self._revalidate(context)

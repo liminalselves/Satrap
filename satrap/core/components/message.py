@@ -344,6 +344,9 @@ class Face(BaseMessageComponent):
 class _FileLikeComponent(BaseMessageComponent):
     """带文件来源的消息组件基类"""
 
+    native_media_id: str = Field(default="", exclude=True)
+    asset_lease: Any = Field(default=None, exclude=True)
+
     file: str | None = ""
     url: str | None = ""
     path: str | None = ""

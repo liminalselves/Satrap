@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 6
+PLATFORM_SCHEMA_VERSION = 7
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -45,6 +45,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
                 | (_MESSAGE_TABLES if version >= 4 else set())
                 | ({"platform_message_policy"} if version >= 5 else set())
                 | (_SUMMARY_TABLES if version >= 6 else set()))
+    required |= {"group_chat_assets"} if version >= 7 else set()
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -181,3 +182,12 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         )
         connection.execute("CREATE INDEX idx_group_chat_summary_source ON group_chat_summary_refs(scope_key, message_id)")
         connection.execute("PRAGMA user_version = 6")
+    if version < 7:
+        connection.execute(
+            "CREATE TABLE group_chat_assets (asset_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+            "owner TEXT NOT NULL, source_message_id TEXT, source_digest TEXT, media_index INTEGER, "
+            "blob_key TEXT NOT NULL, mime_type TEXT NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL, "
+            "size_bytes INTEGER NOT NULL, expires_at REAL NOT NULL, state TEXT NOT NULL DEFAULT 'active')"
+        )
+        connection.execute("CREATE INDEX idx_group_chat_asset_source ON group_chat_assets(scope_key, source_message_id)")
+        connection.execute("PRAGMA user_version = 7")

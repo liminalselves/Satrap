@@ -43,6 +43,9 @@ def archive_snapshot(message: PlatformMessage, *, direction: str = "inbound") ->
         elif kind in {PlatformComponentType.Image, PlatformComponentType.Record, PlatformComponentType.Video,
                       PlatformComponentType.File}:
             reference: dict[str, object] = {"type": kind.value}
+            native_id = getattr(component, "native_media_id", "")
+            if isinstance(native_id, str) and 0 < len(native_id) <= 256 and not any(ord(c) < 32 for c in native_id):
+                reference["native_id"] = native_id
             raw_url = getattr(component, "url", "") or getattr(component, "file", "") or ""
             if isinstance(raw_url, str) and len(raw_url) <= 4096:
                 try:

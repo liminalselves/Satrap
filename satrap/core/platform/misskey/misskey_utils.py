@@ -378,7 +378,7 @@ def create_file_component(file_info: dict[str, Any]) -> tuple[Any, str]:
     file_name = file_info.get("name") or "未知文件"
     file_type = file_info.get("type") or ""
     if file_type.startswith("image/"):
-        return Image(file=file_url or file_name, url=file_url), f"图片[{file_name}]"
+        return Image(file=file_url or file_name, url=file_url, native_media_id=str(file_info.get("id") or "")), f"图片[{file_name}]"
     if file_type.startswith("audio/"):
         return Record(file=file_url or file_name, url=file_url), f"音频[{file_name}]"
     if file_type.startswith("video/"):

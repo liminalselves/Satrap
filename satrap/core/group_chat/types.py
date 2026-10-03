@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope
 
 
-CAPABILITIES = ("member_list", "member_info", "message_lookup", "archive_search", "text", "quote", "mention")
+CAPABILITIES = ("member_list", "member_info", "message_lookup", "archive_search", "text", "quote", "mention", "image", "sticker")
 
 
 class GroupChatError(RuntimeError):
@@ -77,14 +77,18 @@ class GroupChatLimits:
     summary_text_budget: int = 60000
     summary_retention_days: int = 30
     summary_input_budget: int = 24000
+    media_reply_enabled: bool = True
+    max_reply_images: int = 4
+    max_reply_stickers: int = 4
 
     def __post_init__(self) -> None:
         """拒绝无界条数, 非整数预算和无法失效的成员缓存"""
         for value, lower, upper in ((self.message_limit, 1, 100), (self.member_limit, 1, 50),
                                     (self.text_budget, 128, 100000), (self.member_cache_ttl, 0, 300),
                                     (self.summary_message_limit, 1, 2000), (self.summary_text_budget, 1000, 200000),
-                                    (self.summary_retention_days, 1, 3650), (self.summary_input_budget, 0, 1000000)):
+                                    (self.summary_retention_days, 1, 3650), (self.summary_input_budget, 0, 1000000),
+                                    (self.max_reply_images, 0, 8), (self.max_reply_stickers, 0, 8)):
             if type(value) is not int or not lower <= value <= upper:
                 raise ValueError("群聊工具查询配置超出允许范围")
-        if type(self.summary_enabled) is not bool:
+        if type(self.summary_enabled) is not bool or type(self.media_reply_enabled) is not bool:
             raise ValueError("摘要开关必须是布尔值")

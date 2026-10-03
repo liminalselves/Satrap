@@ -773,6 +773,10 @@ class OneBotAdapter(PlatformAdapter):
             raise GroupChatError("stale_call", "来源群已停用或机器人已离开")
         return scope
 
+    def group_chat_media_formats(self) -> tuple[str, ...]:
+        """OneBot 图片段支持的宿主已验证格式"""
+        return ("image/png", "image/jpeg", "image/webp", "image/gif")
+
     def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
         """
         声明 OneBot 已实现的群聊能力, 按连接与被动学习结果更新状态
@@ -792,7 +796,7 @@ class OneBotAdapter(PlatformAdapter):
             else:
                 state, reason = "supported", "adapter_implemented"
             capabilities[name] = {"state": state, "reason": reason}
-        for name in ("text", "quote", "mention"):
+        for name in ("text", "quote", "mention", "image", "sticker"):
             disconnected = states.get("get_group_list") == "unavailable"
             capabilities[name] = {"state": "unavailable" if disconnected else "supported",
                                   "reason": "platform_disconnected" if disconnected else "adapter_implemented"}
@@ -1250,12 +1254,20 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - SendReceipt: 全部已尝试块的回执, 满载或等待超时为明确失败
         """
+        from satrap.core.group_chat.assets import fork_message_leases
+
+        leases = fork_message_leases(message)
+        def release_leases() -> None:
+            """发送子任务实际结束后释放文件引用"""
+            for lease in leases:
+                lease.release()
         try:
             return await self._outbound.run(
                 session_id,
                 lambda: self._send_message(
                     session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking,
                 ),
+                on_settle=release_leases,
             )
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
