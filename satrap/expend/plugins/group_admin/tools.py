@@ -16,82 +16,84 @@ from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
 
+_ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
+
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
     # 工具名: (描述, 参数, 必填参数, 是否写操作, 是否需要群上下文)
-    "group_admin_list_groups": ("列出机器人所在群, 返回群号和群名", {}, [], False, False),
-    "group_admin_get_group_info": ("查看群信息, 不含群号时默认当前群", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_list_groups": ("查看机器人加入了哪些群, 返回群号和群名", {}, [], False, False),
+    "group_admin_get_group_info": ("查看群名, 群号和成员人数等基本信息; 不填 group_id 时查看当前群", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
     }, [], False, True),
-    "group_admin_list_members": ("列出群成员, 不含群号时默认当前群", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_list_members": ("查看群成员列表, 包括成员 QQ 号, 昵称, 群名片和角色; 需要确认群里有哪些人时使用", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
     }, [], False, True),
-    "group_admin_get_member": ("查看群成员信息", {
-        "user_id": ("string", "目标成员 QQ"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_get_member": ("查看某位群成员的资料, 包括昵称, 群名片和群主/管理员/普通成员身份; 需要确认操作对象时使用", {
+        "user_id": ("string", "要查看的成员 QQ 号, 填写数字字符串; 可从群成员查询结果中取得"), "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], False, True),
-    "group_admin_get_honors": ("查看群荣誉信息", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "honor_type": ("string", "talkative/performer/legend/strong_newbie/emotion 之一, 默认 all"),
+    "group_admin_get_honors": ("查看群里的龙王, 群聊之火等荣誉及对应成员; 不指定荣誉类型时查询全部类型", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
+        "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
     }, [], False, True),
-    "group_admin_get_message": ("回源读取一条群消息的原文与发送者", {
-        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    "group_admin_get_message": ("向平台查询一条群消息, 返回原文和发送者; 需要查看引用消息或确认某条原话时使用", {
+        "message_id": ("string", "要查看的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["message_id"], False, True),
-    "group_admin_get_forward": ("回源读取合并转发内容, 不展开嵌套转发; 必须提供包含该转发的来源消息", {
-        "forward_id": ("string", "合并转发消息 ID"),
-        "source_message_id": ("string", "包含该转发的群消息 ID, 必须是当前群内的消息 (用于核验来源归属)"),
-        "group_id": ("string", "所在群号, 可选, 默认当前群"),
+    "group_admin_get_forward": ("查看群里一条合并转发消息的内容; 同时提供转发 ID 和群里包含它的消息 ID. 转发中的其他合并转发不会自动展开", {
+        "forward_id": ("string", "合并转发内容的 ID, 从包含转发的群消息中取得"),
+        "source_message_id": ("string", "群里包含这条合并转发的消息 ID, 用来确认转发属于目标群"),
+        "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["forward_id", "source_message_id"], False, True),
-    "group_admin_send_forward": ("向群发送合并转发消息, 经统一发送通道按序投递", {
-        "nodes": ("array", "节点列表, 每项为 {content: 1 到 2000 字符文本, name: 可选昵称}, 共 1 到 30 项"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_send_forward": ("把多段文字作为一条合并转发消息发到群里; 需要把长内容分段展示时使用. 发送是否成功以实际返回结果为准, 结果未知时不要重复发送", {
+        "nodes": ("array", "按显示顺序填写 1 到 30 段内容, 每项为 {content: 文字, name: 可选显示名称}; 每段文字 1 到 2000 字符"),
+        "group_id": ("string", "接收消息的群号, 不填则发送到当前群"),
     }, ["nodes"], True, True),
-    "group_admin_recall_message": ("撤回当前群的一条消息", {
-        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    "group_admin_recall_message": ("撤回群里的一条指定消息, 需要填写该消息的 ID; 能否撤回取决于机器人权限和平台限制" + _ACTION_RESULT_DESCRIPTION, {
+        "message_id": ("string", "要撤回的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["message_id"], True, True),
-    "group_admin_kick": ("将成员移出群聊", {
-        "user_id": ("string", "目标成员 QQ"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "reject_add_request": ("boolean", "是否拒绝其后续加群请求, 默认 false"),
+    "group_admin_kick": ("将指定成员移出群聊; 操作前确认对方的 QQ 号. 默认允许对方重新申请入群" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要移出群聊的成员 QQ 号, 从已确认的成员资料中取得"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
+        "reject_add_request": ("boolean", "是否拒绝对方之后的加群申请; true 拒绝, false 允许重新申请, 不填默认 false"),
     }, ["user_id"], True, True),
-    "group_admin_ban": ("禁言群成员, 时长 0 秒表示解除禁言", {
-        "user_id": ("string", "目标成员 QQ"), "duration": ("number", "禁言秒数, 0 到 2592000, 默认 1800"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_ban": ("禁言指定群成员, 或解除该成员的禁言; duration 填 0 表示解除禁言" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要禁言或解除禁言的成员 QQ 号, 从已确认的成员资料中取得"), "duration": ("number", "禁言时长, 单位为秒; 600 表示十分钟, 0 表示解除禁言. 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_whole_ban": ("开启或解除全员禁言", {
-        "enable": ("boolean", "true 开启, false 解除"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_whole_ban": ("开启或关闭整个群的全员禁言, 与对单个成员禁言不同" + _ACTION_RESULT_DESCRIPTION, {
+        "enable": ("boolean", "true 开启全员禁言, false 关闭全员禁言"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True, True),
-    "group_admin_ban_anonymous": ("禁言匿名成员", {
-        "flag": ("string", "匿名消息上报的 anonymous flag"), "duration": ("number", "禁言秒数, 默认 1800"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_ban_anonymous": ("禁言群里某条匿名消息的发送者; 需要消息中提供的匿名身份标识, 不能用昵称代替" + _ACTION_RESULT_DESCRIPTION, {
+        "flag": ("string", "匿名消息里的 anonymous flag, 必须使用平台提供的原值"), "duration": ("number", "禁言时长, 单位为秒; 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "group_id": ("string", "匿名消息所在的群号, 不填则使用当前群"),
     }, ["flag"], True, True),
-    "group_admin_set_admin": ("设置或取消群管理员", {
-        "user_id": ("string", "目标成员 QQ"), "enable": ("boolean", "true 设置, false 取消"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_admin": ("将指定成员设为群管理员, 或取消其管理员身份; 需要机器人具有群主权限" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要设置或取消管理员身份的成员 QQ 号"), "enable": ("boolean", "true 设为管理员, false 取消管理员身份"),
+        "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["user_id", "enable"], True, True),
-    "group_admin_set_anonymous": ("开启或关闭群匿名聊天", {
-        "enable": ("boolean", "true 开启, false 关闭"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_anonymous": ("开启或关闭群内的匿名聊天; 是否支持取决于平台" + _ACTION_RESULT_DESCRIPTION, {
+        "enable": ("boolean", "true 允许匿名聊天, false 关闭匿名聊天"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True, True),
-    "group_admin_set_card": ("设置群成员名片, 空字符串表示删除", {
-        "user_id": ("string", "目标成员 QQ"), "card": ("string", "新名片, 不超过 60 字符"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_card": ("修改指定成员在群内显示的群名片; card 填空字符串表示清空群名片" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要修改群名片的成员 QQ 号"), "card": ("string", "新的群名片, 不超过 60 字符; 填写空字符串可清空"),
+        "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_set_name": ("修改群名", {
-        "name": ("string", "新群名, 1 到 60 字符"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群名片请使用 group_admin_set_card" + _ACTION_RESULT_DESCRIPTION, {
+        "name": ("string", "新的群名称, 1 到 60 字符, 不能只填空格"), "group_id": ("string", "要改名的群号, 不填则使用当前群"),
     }, ["name"], True, True),
-    "group_admin_set_title": ("设置群成员专属头衔, 空字符串表示删除", {
-        "user_id": ("string", "目标成员 QQ"), "title": ("string", "头衔文本, 不超过 18 字符"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_title": ("设置指定群成员的专属头衔; title 填空字符串表示清除头衔, 需要机器人具有相应权限" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要设置头衔的成员 QQ 号"), "title": ("string", "新的专属头衔, 不超过 18 字符; 填写空字符串可清除"),
+        "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_leave": ("退出群聊, 群主可选择解散", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "dismiss": ("boolean", "true 解散群, 默认 false 退群"),
+    "group_admin_leave": ("让机器人退出指定群; 机器人是群主时可选择解散整个群, 解散会影响所有成员" + _ACTION_RESULT_DESCRIPTION, {
+        "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
+        "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True, True),
-    "group_admin_handle_friend_request": ("批准或拒绝好友添加请求, 不自动审批", {
-        "flag": ("string", "好友请求事件上报的标识"), "approve": ("boolean", "true 同意, false 拒绝"),
-        "remark": ("string", "同意后的好友备注, 可选"),
+    "group_admin_handle_friend_request": ("同意或拒绝机器人收到的一条好友申请; 必须使用这条申请提供的 flag, 操作是否成功以实际返回结果为准", {
+        "flag": ("string", "好友申请事件提供的请求标识, 使用原值, 不能填写 QQ 号代替"), "approve": ("boolean", "true 同意添加好友, false 拒绝申请"),
+        "remark": ("string", "同意申请后给对方设置的好友备注, 可不填"),
     }, ["flag", "approve"], True, False),
-    "group_admin_handle_group_request": ("批准或拒绝加群请求或邀请, 不自动审批", {
-        "flag": ("string", "请求事件上报的标识"), "sub_type": ("string", "add 或 invite, 必须与事件一致"),
-        "approve": ("boolean", "true 同意, false 拒绝"), "reason": ("string", "拒绝理由, 可选"),
-        "group_id": ("string", "请求所属群号, 可选, 默认当前群"),
+    "group_admin_handle_group_request": ("同意或拒绝一条加群申请, 或一条邀请机器人入群的请求; 必须使用原请求的标识和类型" + _ACTION_RESULT_DESCRIPTION, {
+        "flag": ("string", "加群申请或入群邀请事件提供的请求标识, 必须使用原值"), "sub_type": ("string", "原请求的类型: add 表示加群申请, invite 表示入群邀请; 按事件提供的类型填写"),
+        "approve": ("boolean", "true 同意该申请或邀请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
+        "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
     }, ["flag", "sub_type", "approve"], True, True),
 }
 
