@@ -75,7 +75,7 @@ export function GroupActions() {
         </div>
         <p className="break-all text-text-secondary">ID: {item.action_id}</p>
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(item.params, null, 2)}</pre>
-        {item.result?.reason && <p>结果: {item.result.reason}</p>}
+        {(item.result?.message || item.result?.reason) && <p>结果: {item.result.message || item.result.reason}</p>}
         {item.state === 'pending' && !historical && isRunning && <div className="mt-2 flex gap-2">
           <Button size="sm" onClick={() => decide(item.action_id, true)} disabled={!!busy}>批准</Button>
           <Button size="sm" variant="subtle" onClick={() => decide(item.action_id, false)} disabled={!!busy}>拒绝</Button>

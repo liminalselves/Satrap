@@ -8,6 +8,7 @@ import asyncio
 import sqlite3
 
 import pytest
+from aiocqhttp.exceptions import ActionFailed
 
 from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.config.group_actions import GroupActionStore
@@ -15,6 +16,7 @@ from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_store import GroupConfigConflict
 from satrap.core.call_context import CallOrigin, bind_call_origin
+from satrap.core.log import logger
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, set_current_adapter_manager
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.onebot.admin import AdminActionUnconfirmed
@@ -54,6 +56,25 @@ def test_pending_decision_is_atomic_and_cannot_replay(tmp_path: Path) -> None:
     assert settled["state"] == "succeeded"
     with pytest.raises(GroupConfigConflict):
         store.settle("10000", "456", "action-0001", "succeeded", "platform_confirmed")
+
+
+@pytest.mark.parametrize("details", [
+    {"retcode": True}, {"retcode": "100"}, {"retcode": 2 ** 32},
+    {"message": "bad\nresponse"}, {"message": "x" * 513}, {"message": ""},
+    {"data": {"token": "secret"}}, {"reason": "override"}, {},
+])
+def test_invalid_result_diagnostics_do_not_settle_action(tmp_path: Path, details: dict[str, object]) -> None:
+    store = GroupActionStore(tmp_path / "platform.db")
+    store.submit("action-diagnostic", "100", "456", "set_group_card",
+                 {"user_id": "100", "card": ""}, "panel", 1, approval_required=False)
+    with pytest.raises(ValueError):
+        store.settle("100", "456", "action-diagnostic", "failed", "AdminActionRejected", details)
+    pending = store.get("100", "456", "action-diagnostic")
+    assert pending is not None and pending["state"] == "executing" and pending["result"] is None
+    saved = store.settle("100", "456", "action-diagnostic", "failed", "AdminActionRejected", {
+        "retcode": 100, "message": "平台拒绝执行该动作 (retcode=100)",
+    })
+    assert GroupActionStore(tmp_path / "platform.db").get("100", "456", "action-diagnostic") == saved
 
 
 def test_expiration_and_policy_change_persist_after_conflict(tmp_path: Path) -> None:
@@ -398,6 +419,78 @@ def test_group_request_flag_never_enters_persistent_parameters(tmp_path: Path) -
     record = recovered.get("10000", "456", "action-0003")
     assert record is not None and record["state"] == "expired"
     assert record["result"]["reason"] == "request_flag_lost_on_restart"
+
+
+@pytest.mark.asyncio
+async def test_approved_card_rejection_persists_safe_diagnostics_without_replay(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = {"group_management_version": 1}
+    backend = BackendManager(BackendConfig(
+        data_root=str(tmp_path), platforms=[{"id": "bot", "type": "onebot", "settings": settings}],
+    ))
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
+    adapter.bot_self_id = "100"
+    client = AsyncMock()
+    adapter._bot = client
+    backend._adapter_mgr = PlatformAdapterManager()
+    backend._adapter_mgr._adapters["bot"] = adapter
+    directory = GroupDirectoryStore(backend.platform_db_path("bot"))
+    directory.adopt_legacy("100", settings)
+    directory.confirm_membership("100", "456", True)
+    directory.patch_group("100", "456", "approval", {
+        "set_group_card": {"mode": "value", "value": "approval_required"},
+    }, expected_revision=0)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("100")
+    warnings: list[str] = []
+    errors: list[str] = []
+    monkeypatch.setattr(logger, "warning", warnings.append)
+    monkeypatch.setattr(logger, "error", errors.append)
+    params: dict[str, object] = {"user_id": "100", "card": ""}
+    pending = await backend.submit_group_action(
+        "bot", "100", "456", "clear-card-rejected", "set_group_card", params, actor_kind="panel",
+    )
+    assert pending["state"] == "pending"
+    client.set_group_card.assert_not_awaited()
+    client.set_group_card.side_effect = ActionFailed({
+        "retcode": 100, "message": "secret-response", "data": {"token": "secret-token"},
+    })
+    rejected = await backend.decide_group_action("bot", "100", "456", "clear-card-rejected", approve=True)
+    assert rejected["state"] == "failed"
+    assert rejected["result"] == {
+        "reason": "AdminActionRejected", "retcode": 100, "message": "平台拒绝执行该动作 (retcode=100)",
+    }
+    client.set_group_card.assert_awaited_once_with(group_id=456, user_id=100, card="")
+    assert any("clear-card-rejected" in line and "retcode=100" in line for line in warnings)
+    assert "secret" not in str(rejected) + str(warnings) + str(errors)
+    replay = await backend.submit_group_action(
+        "bot", "100", "456", "clear-card-rejected", "set_group_card", params, actor_kind="panel",
+    )
+    assert replay == rejected
+    with pytest.raises(GroupConfigConflict):
+        await backend.decide_group_action("bot", "100", "456", "clear-card-rejected", approve=True)
+    client.set_group_card.assert_awaited_once()
+    assert GroupActionStore(backend.platform_db_path("bot")).get("100", "456", "clear-card-rejected") == rejected
+
+    original = adapter.admin.set_group_card
+    monkeypatch.setattr(adapter.admin, "set_group_card", AsyncMock(side_effect=RuntimeError("unexpected-failure")))
+    await backend.submit_group_action(
+        "bot", "100", "456", "card-unexpected", "set_group_card", params, actor_kind="panel",
+    )
+    unknown = await backend.decide_group_action("bot", "100", "456", "card-unexpected", approve=True)
+    assert unknown["state"] == "unknown"
+    assert any("card-unexpected" in line and "Traceback" in line and "unexpected-failure" in line for line in errors)
+
+    monkeypatch.setattr(adapter.admin, "set_group_card", original)
+    client.set_group_card.side_effect = None
+    client.set_group_card.return_value = {}
+    await backend.submit_group_action(
+        "bot", "100", "456", "card-next-action", "set_group_card", params, actor_kind="panel",
+    )
+    success = await backend.decide_group_action("bot", "100", "456", "card-next-action", approve=True)
+    assert success["state"] == "succeeded"
+    assert client.set_group_card.await_count == 2
 
 
 @pytest.mark.asyncio

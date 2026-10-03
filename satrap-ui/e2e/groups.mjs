@@ -213,6 +213,17 @@ try {
       actionReads += 1;
       const filter = url.searchParams.get('state') || 'pending';
       if (filter === 'pending' && holdPendingActions) await new Promise((resolve) => { releasePendingActions = resolve; });
+      if (filter === 'failed') return reply({ items: [
+        { action_id: 'action-card-failed', self_id: '100', group_id: '456', action_type: 'set_group_card',
+          params: { user_id: '100', card: '' }, actor_kind: 'model', state: 'failed',
+          created_at: 1_790_000_000, expires_at: 1_790_000_600, decision_at: 1_790_000_010,
+          executed_at: 1_790_000_011,
+          result: { reason: 'AdminActionRejected', retcode: 100, message: '平台拒绝执行该动作 (retcode=100)' } },
+        { action_id: 'action-legacy-failed', self_id: '100', group_id: '456', action_type: 'set_group_card',
+          params: { user_id: '100', card: '' }, actor_kind: 'model', state: 'failed',
+          created_at: 1_790_000_000, expires_at: 1_790_000_600, decision_at: 1_790_000_010,
+          executed_at: 1_790_000_011, result: { reason: 'AdminActionRejected' } },
+      ], total: 2, page: 1, page_size: 25 });
       return reply({
       items: [{ action_id: filter === 'succeeded' ? 'action-succeeded' : 'action-123456',
         self_id: '100', group_id: '456', action_type: 'kick_group_member',
@@ -550,6 +561,10 @@ try {
   await page.screenshot({ animations: 'disabled', fullPage: true, path: path.join(artifacts, 'narrow-actions.png') });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1), true);
   await page.setViewportSize({ width: 1280, height: 900 });
+  await page.locator('select').first().selectOption('failed');
+  await page.getByText('结果: 平台拒绝执行该动作 (retcode=100)', { exact: true }).waitFor();
+  await page.getByText('结果: AdminActionRejected', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 0);
   await page.locator('select').first().selectOption('all');
   await page.getByText('action-123456').waitFor();
   holdPendingActions = true;

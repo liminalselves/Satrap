@@ -235,17 +235,42 @@ class GroupActionStore(GroupConfigStore):
 
     def settle(self, self_id: str, group_id: str, action_id: str, state: str, reason: str,
                details: Mapping[str, object] | None = None) -> dict[str, Any]:
-        """只允许执行中的动作进入成功、失败或未知终态"""
+        """
+        只允许执行中的动作进入终态, 持久保存有限的结果诊断字段
+
+        参数:
+        - self_id: 动作所属机器人账号
+        - group_id: 动作所属群
+        - action_id: 已占用的动作 ID
+        - state: succeeded, failed 或 unknown 终态
+        - reason: 稳定原因码
+        - details: 可选的已确认消息 ID, 整数错误码和宿主生成的说明, 不接收平台原始响应
+
+        返回:
+        - 结算后的动作记录, 非执行状态或无效字段抛出明确错误
+        """
         _identity(self_id, group_id)
         if state not in {"succeeded", "failed", "unknown"}:
             raise ValueError("动作终态无效")
         result: dict[str, object] = {"reason": reason}
         if details is not None:
-            if (set(details) != {"message_ids"} or not isinstance(details["message_ids"], list)
-                    or len(details["message_ids"]) > 64
-                    or any(not isinstance(item, str) or len(item) > 128 for item in details["message_ids"])):
+            if not details or set(details) - {"message_ids", "retcode", "message"}:
                 raise ValueError("动作结果字段无效")
-            result["message_ids"] = details["message_ids"]
+            if "message_ids" in details:
+                ids = details["message_ids"]
+                if (not isinstance(ids, list) or len(ids) > 64
+                        or any(not isinstance(item, str) or len(item) > 128 for item in ids)):
+                    raise ValueError("动作结果字段无效")
+            if "retcode" in details:
+                code = details["retcode"]
+                if type(code) is not int or not -(2 ** 31) <= code < 2 ** 31:
+                    raise ValueError("动作结果错误码无效")
+            if "message" in details:
+                message = details["message"]
+                if (not isinstance(message, str) or not 1 <= len(message) <= 512
+                        or any(ord(char) < 32 for char in message)):
+                    raise ValueError("动作结果说明无效")
+            result.update(details)
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute(

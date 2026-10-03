@@ -12,6 +12,7 @@ from pathlib import Path
 import secrets
 import signal
 import time
+import traceback
 from typing import (
     Any,
     Awaitable,
@@ -1473,13 +1474,27 @@ class BackendManager:
         self, adapter_id: str, self_id: str, group_id: str, action_id: str,
         record: dict[str, Any],
     ) -> dict[str, Any]:
-        """占用后再次核验策略与成员关系, 按 OneBot 结果保守结算"""
+        """
+        占用后再次核验策略与成员关系, 按平台结果保守结算并记录失败
+
+        参数:
+        - adapter_id: 目标适配器 ID
+        - self_id: 已绑定的机器人账号
+        - group_id: 目标群
+        - action_id: 已占用的动作 ID
+        - record: 执行中的动作记录
+
+        返回:
+        - 已持久化的成功, 失败或未知结果; 持久化失败抛出明确错误
+        """
         from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
         from satrap.core.platform.onebot.request_registry import flag_digest
 
         store = await self._group_action_store(adapter_id)
         action = str(record["action_type"])
         started = False
+        details: dict[str, object] | None = None
+        unexpected = False
         try:
             adapter, _, _, version = await self._group_action_context(adapter_id, self_id, group_id, action)
             if version != record["policy_revision"]:
@@ -1535,20 +1550,30 @@ class BackendManager:
             state, reason = "failed", str(error)
         except (AdminActionRejected, UnsupportedAdminAction, PermissionError, ValueError) as error:
             state, reason = "failed", type(error).__name__
+            if isinstance(error, AdminActionRejected) and error.retcode is not None:
+                details = {"retcode": error.retcode, "message": f"平台拒绝执行该动作 (retcode={error.retcode})"}
         except (AdminActionUnconfirmed, asyncio.TimeoutError) as error:
             state, reason = "unknown", type(error).__name__
         except Exception as error:
             state, reason = ("unknown" if started else "failed"), type(error).__name__
+            unexpected = True
+            logger.error(f"[BackendManager] 群动作执行异常 adapter={adapter_id} action_id={action_id} "
+                         f"action={action} state={state}: {traceback.format_exc()}")
         except BaseException:
+            logger.warning(f"[BackendManager] 群动作执行中断 adapter={adapter_id} action_id={action_id}, 结果未知")
             await asyncio.to_thread(store.settle, self_id, group_id, action_id, "unknown", "interrupted")
             raise
         finally:
             self._group_action_flags.pop(action_id, None)
             self._group_action_authorizers.pop(action_id, None)
+        if state != "succeeded" and not unexpected:
+            logger.warning(f"[BackendManager] 群动作未成功 adapter={adapter_id} action_id={action_id} "
+                           f"action={action} state={state} reason={reason} retcode={details.get('retcode') if details else None}")
         try:
-            return await asyncio.to_thread(store.settle, self_id, group_id, action_id, state, reason)
+            return await asyncio.to_thread(store.settle, self_id, group_id, action_id, state, reason, details)
         except Exception as error:
-            logger.error(f"[BackendManager] 群动作结果落库失败 action_id={action_id} state={state}: {type(error).__name__}")
+            logger.error(f"[BackendManager] 群动作结果落库失败 action_id={action_id} state={state}: "
+                         f"{type(error).__name__}\n{traceback.format_exc()}")
             raise RuntimeError("群动作已发出但结果持久化失败, 平台结果未知") from error
 
     def get_platform_runtime(self, platform_id: str) -> tuple[SessionManager, UserManager] | None:

@@ -255,7 +255,7 @@ export interface GroupAction {
   params: Record<string, unknown>; actor_kind: 'panel' | 'model';
   state: 'pending' | 'expired' | 'rejected' | 'executing' | 'succeeded' | 'failed' | 'unknown';
   created_at: number; expires_at: number | null; decision_at: number | null; executed_at: number | null;
-  result: { reason?: string } | null;
+  result: { reason?: string; message?: string; retcode?: number } | null;
 }
 
 export interface GroupMember {

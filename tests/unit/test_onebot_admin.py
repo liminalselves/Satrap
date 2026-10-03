@@ -149,11 +149,30 @@ class TestOneBotAdminCalls:
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.kick_group_member("456", "123")
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
-        with pytest.raises(AdminActionRejected, match="retcode=1200"):
+        with pytest.raises(AdminActionRejected, match="retcode=1200") as caught:
             await adapter.admin.kick_group_member("456", "123")
+        assert caught.value.retcode == 1200
         adapter._bot.set_group_kick.side_effect = RuntimeError("network")
         with pytest.raises(AdminActionUnconfirmed):
             await adapter.admin.kick_group_member("456", "123")
+
+    @pytest.mark.asyncio
+    async def test_clear_card_preserves_empty_protocol_parameter(self):
+        adapter = _adapter()
+        await adapter.admin.set_group_card("456", "123", "")
+        adapter._bot.set_group_card.assert_awaited_once_with(group_id=456, user_id=123, card="")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retcode", [True, "100", 2 ** 32, None])
+    async def test_malformed_rejection_code_never_exposes_response(self, retcode: object):
+        adapter = _adapter()
+        adapter._bot.set_group_card.side_effect = ActionFailed({
+            "retcode": retcode, "message": "secret-response", "data": {"token": "secret-token"},
+        })
+        with pytest.raises(AdminActionRejected) as caught:
+            await adapter.admin.set_group_card("456", "123", "")
+        assert caught.value.retcode is None
+        assert "secret" not in str(caught.value)
 
     @pytest.mark.asyncio
     async def test_missing_client_is_unconfirmed(self):

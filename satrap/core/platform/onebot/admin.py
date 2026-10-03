@@ -33,6 +33,17 @@ class UnsupportedAdminAction(PlatformAdminError):
 class AdminActionRejected(PlatformAdminError):
     """平台明确拒绝执行, 不自动重试"""
 
+    def __init__(self, message: str, *, retcode: int | None = None) -> None:
+        """
+        保留平台错误码, 不携带平台响应正文
+
+        参数:
+        - message: 宿主生成的错误说明
+        - retcode: 平台返回的整数错误码, 缺少或格式无效时为 None
+        """
+        super().__init__(message)
+        self.retcode = retcode if type(retcode) is int and -(2 ** 31) <= retcode < 2 ** 31 else None
+
 
 class AdminActionUnconfirmed(PlatformAdminError):
     """动作结果未知 (超时或传输异常), 不假定成功也不自动重试"""
@@ -306,9 +317,10 @@ class OneBotAdmin:
                     logger.debug(f"[OneBotAdmin] 当前实现不支持动作 {action}")
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
                 raw_result = getattr(error, "result", None)
-                retcode = cast(dict[str, Any], raw_result).get("retcode") if isinstance(raw_result, dict) else None
+                raw_retcode = raw_result.get("retcode") if isinstance(raw_result, dict) else None
+                retcode = raw_retcode if type(raw_retcode) is int and -(2 ** 31) <= raw_retcode < 2 ** 31 else None
                 logger.warning(f"[OneBotAdmin] {action} 被平台拒绝 retcode={retcode}")
-                raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
+                raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})", retcode=retcode) from error
             logger.warning(f"[OneBotAdmin] {action} 结果未知: {type(error).__name__}")
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
         self._adapter.note_action_outcome(action, True)
