@@ -125,7 +125,7 @@ export function Platforms() {
     const times = toTimeRows(platform.settings?.wake_time_rules);
     setEditingPlatform(platform);
     setFormData(initial);
-    setRawSettings(JSON.stringify(platform.settings, null, 2));
+    setRawSettings(JSON.stringify(Object.fromEntries(Object.entries(platform.settings).filter(([key]) => key !== 'message_archive_retention_days')), null, 2));
     setGroupDraftRows(groups);
     setTimeDraftRows(times);
     setOpenSnapshot(JSON.stringify({ form: initial, groups, times }));
@@ -234,11 +234,15 @@ export function Platforms() {
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
           throw new Error('Settings 必须是 JSON 对象');
         }
-        settings = parsed as Record<string, unknown>;
+        if ('message_archive_retention_days' in parsed) throw new Error('档案保留天数请使用专用输入框，并从 Settings JSON 中移除该项');
+        settings = { ...parsed as Record<string, unknown>, message_archive_retention_days: formData.settings.message_archive_retention_days };
       }
       if (!editingPlatform && (formData.type === 'onebot' || formData.type === 'aiocqhttp')) {
         settings = { context_scope: 'group_member', ...settings };
       }
+      const normalizedSettings = normalizePlatformSettings(formData.type, settings);
+      const archiveError = validatePlatformPolicy('message_archive_retention_days' in normalizedSettings ? { message_archive_retention_days: normalizedSettings.message_archive_retention_days } : {});
+      if (archiveError) throw new Error(archiveError);
       const platform: PlatformConfig = {
         enable: formData.enable,
         id: formData.id.trim(),
@@ -247,7 +251,7 @@ export function Platforms() {
         session_type: formData.session_type || undefined,
         ...(Object.keys(formData.session_bindings).length ? { session_bindings: formData.session_bindings }
           : editingPlatform?.session_bindings ? { session_bindings: {} } : {}),
-        settings: normalizePlatformSettings(formData.type, settings),
+        settings: normalizedSettings,
       };
       const result = editingPlatform
         ? await controlApi.updatePlatform(editingPlatform.id, platform, draftRevision)
@@ -369,6 +373,7 @@ export function Platforms() {
           declarationError={!Object.keys(routeKinds).length ? routeDeclaration?.error || '未取得适配器的对话类型声明, 已保存的路由保留' : undefined}
           onChange={(next) => handleFieldChange('session_bindings', next)} />,
       },
+      { key: 'settings.message_archive_retention_days', label: `平台消息档案保留天数${formRangeSuffix('message_archive_retention_days')}`, type: 'number', ...formNumericLimits('message_archive_retention_days'), placeholder: '默认 30 天; 包括消息正文与删除备份, 独立于 Agent 和插件' },
     ];
 
     if (formData.type === 'onebot' || formData.type === 'aiocqhttp') {
@@ -437,7 +442,7 @@ export function Platforms() {
 
     return [
       ...baseFields,
-      { key: 'settings_json', label: 'Settings JSON', type: 'textarea', rows: 12 },
+      { key: 'settings_json', label: '其它 Settings JSON', type: 'textarea', rows: 12, placeholder: '其它适配器设置; 档案保留天数使用上方专用输入框' },
     ];
   }, [adapters, adapterTypes, asrConfigs, draftError, edictumConfigs, editingPlatform, formData.session_bindings, formData.session_provider, formData.session_type, formData.type, groupConversion, groupDraftRows, handleFieldChange, inheritedName, platforms, previewSettings, routeDeclaration, routeKinds, routeOptions, sessionClasses, timeConversion, timeDraftRows]);
 
@@ -483,6 +488,7 @@ export function Platforms() {
     'settings.wake_talk_value': formData.settings.wake_talk_value ?? '',
     'settings.input_text_limit': formData.settings.input_text_limit ?? '',
     'settings.input_media_limit': formData.settings.input_media_limit ?? '',
+    'settings.message_archive_retention_days': formData.settings.message_archive_retention_days ?? '',
     'settings.media_insecure_tls': formData.settings.media_insecure_tls ?? false,
     'settings.media_plaintext_http': formData.settings.media_plaintext_http ?? false,
     'settings.wake_words': Array.isArray(formData.settings.wake_words) ? formData.settings.wake_words.join('\n') : formData.settings.wake_words ?? '',

@@ -122,6 +122,7 @@ def test_cold_maintenance_does_not_create_storage(tmp_path: Path) -> None:
 async def test_backend_maintenance_failure_recovers_and_uses_applied_policy(tmp_path: Path, monkeypatch, caplog) -> None:
     backend = cast(Any, BackendManager.__new__(BackendManager))
     backend._storage = StorageLayout(tmp_path)
+    backend._platform_apply_lock = asyncio.Lock()
     backend._running = True
     backend.config = SimpleNamespace(platforms=[{"id": "disabled", "enable": False, "settings": {"message_archive_retention_days": 5}},
                                                {"id": "active", "settings": {"message_archive_retention_days": 1}}])

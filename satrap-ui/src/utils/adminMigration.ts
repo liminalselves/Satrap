@@ -23,6 +23,7 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
 
 // 平台表单里的数值策略字段: 顺序与表单一致, 归一化与取值范围由策略字段契约提供
 export const PLATFORM_NUMERIC_KEYS = [
+  'message_archive_retention_days',
   'message_text_limit',
   'input_text_limit',
   'input_media_limit',
@@ -45,6 +46,10 @@ export function normalizePlatformSettings(
   type: string,
   settings: Record<string, unknown>,
 ): Record<string, unknown> {
+  settings = { ...settings };
+  const archiveDays = typeof settings.message_archive_retention_days === 'string' ? settings.message_archive_retention_days.trim() : settings.message_archive_retention_days;
+  if (archiveDays === '' || archiveDays === undefined || archiveDays === null) delete settings.message_archive_retention_days;
+  else settings.message_archive_retention_days = typeof archiveDays === 'string' || typeof archiveDays === 'number' ? Number(archiveDays) : archiveDays;
   if (type === 'onebot' || type === 'aiocqhttp') {
     const selfId = String(settings.self_id ?? '').trim();
     const normalized: Record<string, unknown> = {
@@ -78,7 +83,7 @@ export function normalizePlatformSettings(
       // 留空表示未设置 (删除键); 0 是有效取值, 必须按数字保存而不是当作空值丢弃
       const text = typeof value === 'string' ? value.trim() : value;
       if (text === '' || text === undefined || text === null) delete normalized[key];
-      else normalized[key] = Number(text);
+      else normalized[key] = typeof text === 'string' || typeof text === 'number' ? Number(text) : text;
     }
     for (const key of ['wake_group_overrides', 'wake_time_rules']) {
       const value = settings[key];

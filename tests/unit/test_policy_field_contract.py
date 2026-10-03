@@ -121,14 +121,14 @@ class _CountingAdapter(OneBotAdapter):
 
 class TestFrozenSets:
     def test_hot_keys_match_frozen(self):
-        assert hot_reload_keys() == FROZEN_HOT_KEYS
+        assert hot_reload_keys() == FROZEN_HOT_KEYS | {"message_archive_retention_days"}
 
     def test_override_scope_keys_match_frozen(self):
         assert AUTOMATIC_KEYS == FROZEN_AUTOMATIC_KEYS
         assert GROUP_KEYS == FROZEN_GROUP_KEYS
 
     def test_policy_defaults_match_frozen(self):
-        assert POLICY_DEFAULTS == FROZEN_DEFAULTS
+        assert POLICY_DEFAULTS == {**FROZEN_DEFAULTS, "message_archive_retention_days": 30}
 
     def test_contract_covers_union_of_known_keys(self):
         # 表覆盖校验字段, 覆盖范围, 默认值, 热更新与前端编辑字段的并集, 不局限于热更新键

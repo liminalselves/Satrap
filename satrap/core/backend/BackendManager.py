@@ -1696,11 +1696,12 @@ class BackendManager:
         service = StorageMaintenanceService(self._storage)
         while self._running:
             try:
-                configurations = {str(item.get("id", "")): item for item in self.config.platforms}
-                configurations.update(self._platform_active_configs)
-                policies = {platform_id: item.get("settings", {}).get("message_archive_retention_days", 30)
-                            for platform_id, item in configurations.items() if platform_id}
-                result = await asyncio.to_thread(service.expire_platform_messages, policies)
+                async with self._platform_apply_lock:
+                    configurations = {str(item.get("id", "")): item for item in self.config.platforms}
+                    configurations.update(self._platform_active_configs)
+                    policies = {platform_id: item.get("settings", {}).get("message_archive_retention_days", 30)
+                                for platform_id, item in configurations.items() if platform_id}
+                    result = await asyncio.to_thread(service.expire_platform_messages, policies)
                 for item in result["items"]:
                     if item.get("ok") and (item.get("expired_count") or item.get("backup_count")):
                         logger.info(f"[消息档案] 自动维护完成, 平台={item['platform_id']}, "
@@ -2088,18 +2089,36 @@ class BackendManager:
                                 results.append(result)
                                 continue
                     runtime_usable = not self._running or not adapter.config.enable or (adapter.started and adapter._run_task is not None and not adapter._run_task.done())
-                    if runtime_usable and previous == proposed and (not changed or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
+                    if runtime_usable and previous == proposed and (not changed or changed <= {"message_archive_retention_days"}
+                                                                  or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
                         previous_runtime_config = adapter.config
+                        previous_archive = adapter.message_archive
+                        archive_changed = "message_archive_retention_days" in changed and previous_archive is not None
+                        failure_reason = "agent_route_apply_failed"
                         adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})))
                         try:
                             await asyncio.to_thread(adapter.apply_agent_routes)
-                        except Exception as error:
+                            if archive_changed and previous_archive is not None:
+                                failure_reason = "archive_policy_apply_failed"
+                                updated_archive = PlatformMessageStore(previous_archive.database, platform_id,
+                                    retention_days=adapter.config.settings.get("message_archive_retention_days", 30))
+                                await asyncio.to_thread(updated_archive.persist_retention_policy)
+                                adapter.message_archive = updated_archive
+                        except BaseException as error:
                             adapter.config = previous_runtime_config
-                            logger.warning(f"[BackendManager] Agent 路由应用失败, 保留旧配置: {platform_id}, {error}")
-                            result.update(status="failed", reason="agent_route_apply_failed", error=type(error).__name__, old_runtime_preserved=True)
+                            adapter.message_archive = previous_archive
+                            if archive_changed and previous_archive is not None:
+                                try:
+                                    await asyncio.to_thread(previous_archive.persist_retention_policy)
+                                except Exception as restore_error:
+                                    logger.error(f"[消息档案] 保留策略回滚失败, 平台={platform_id}: {restore_error}")
+                            logger.warning(f"[BackendManager] 路由或档案策略应用失败, 保留旧配置: {platform_id}, {error}")
+                            if not isinstance(error, Exception):
+                                raise
+                            result.update(status="failed", reason=failure_reason, error=type(error).__name__, old_runtime_preserved=True)
                             results.append(result)
                             continue
-                        if self._scheduler is not None and old_settings != new_settings:
+                        if self._scheduler is not None and old_settings != new_settings and changed - {"message_archive_retention_days"}:
                             self._scheduler.wake_window.clear_adapter(platform_id)
                             self._scheduler.wake_timers.clear_adapter(platform_id)
                             await self._scheduler.clear_manual_wakes(platform_id)
@@ -2217,6 +2236,8 @@ class BackendManager:
                     store.expire_account, old.bot_self_id,
                     "platform_deleted" if candidate is None else "account_changed",
                 )
+            if replacement is not None and replacement.message_archive is not None:
+                await asyncio.to_thread(replacement.message_archive.persist_retention_policy)
         except BaseException as error:
             logger.warning(f"[BackendManager] 平台 {platform_id} 替换失败, 回滚旧实例: {type(error).__name__}: {error}")
             try:
@@ -2226,6 +2247,11 @@ class BackendManager:
                 if old is not None and old_config is not None:
                     old.config = old_config
                     manager._adapters[platform_id] = old
+                    if old.message_archive is not None:
+                        try:
+                            await asyncio.to_thread(old.message_archive.persist_retention_policy)
+                        except Exception as archive_error:
+                            logger.error(f"[消息档案] 替换回滚时策略恢复失败, 平台={platform_id}: {archive_error}")
                     if old_started:
                         await old.start()
                         await old.wait_ready()

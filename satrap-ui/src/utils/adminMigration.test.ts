@@ -10,6 +10,14 @@ import {
 } from './adminMigration';
 
 describe('管理前端迁移逻辑', () => {
+  it.each(['onebot', 'misskey', 'future-adapter'])('档案保留期对 %s 使用统一归一化与校验', (type) => {
+    expect(normalizePlatformSettings(type, { message_archive_retention_days: ' 7 ' }).message_archive_retention_days).toBe(7);
+    expect(normalizePlatformSettings(type, { message_archive_retention_days: '' })).not.toHaveProperty('message_archive_retention_days');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: true }))).toContain('档案保留天数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '0' }))).toContain('档案保留天数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '1.5' }))).toContain('必须为整数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '3651' }))).toContain('档案保留天数');
+  });
   it('从 Session 类名生成默认配置名', () => {
     expect(classNameToConfigName('CustomChatSession')).toBe('custom_chat');
     expect(classNameToConfigName('Echo')).toBe('echo');

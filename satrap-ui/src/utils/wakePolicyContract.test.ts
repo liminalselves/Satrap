@@ -45,7 +45,7 @@ function validOf(context: PolicyCaseContext, value: Record<string, unknown>): bo
 
 describe('策略字段契约加载', () => {
   it('字段数量与关键取值与生成的契约一致', () => {
-    expect(POLICY_FIELDS.length).toBe(34);
+    expect(POLICY_FIELDS.length).toBe(35);
     const maxWait = policyField('wake_max_wait');
     expect(maxWait?.max_exclusive).toBe(120);
     expect(maxWait?.max).toBeUndefined();

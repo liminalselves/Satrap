@@ -57,6 +57,10 @@ class PolicyField(PolicyFieldRequired, total=False):
 
 
 POLICY_FIELD_CONTRACT: dict[str, PolicyField] = {
+    "message_archive_retention_days": {
+        "kind": "int", "scope": "platform", "hot_reload": True, "display_in_preview": False,
+        "min": 1, "max": 3650, "integer": True, "default": 30,
+    },
     "message_text_limit": {
         "kind": "int", "scope": "platform", "hot_reload": True, "display_in_preview": False,
         "min": 64, "max": 32000, "integer": True, "default": 2000,

@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import asyncio
 import json
 from pathlib import Path
+from time import time
 
 import pytest
 
@@ -16,6 +17,7 @@ from satrap.core.config.loader import ConfigLoader
 from satrap.core.platform import EventDispatcher, PlatformAdapter, PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.event import PlatformMetadata
 from satrap.core.config.document import config_document_revision, load_config_document, validate_platforms
+from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
 
 
 def _require_adapter(manager: PlatformAdapterManager, adapter_id: str) -> PlatformAdapter:
@@ -117,6 +119,82 @@ async def test_input_budget_and_talk_value_are_hot_applied(tmp_path: Path):
     assert decision is not None and decision.triggered is False and "wake_talk_value=0" in decision.reason
     assert len(scheduler.wake_window.peek(fresh)) == 1
     await scheduler.wake_timers.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("adapter_type", ["onebot", "probe-runtime"])
+async def test_archive_retention_applies_without_reconnect_or_late_policy_overwrite(tmp_path: Path, adapter_type: str) -> None:
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    if adapter_type != "onebot":
+        platform["type"] = adapter_type
+        adapter = cast(Any, _LifecycleAdapter(PlatformConfig(id="bot", type=adapter_type, settings=deepcopy(platform["settings"]))))
+        _require_manager(backend)._adapters["bot"] = adapter
+        backend._platform_active_configs["bot"] = deepcopy(platform)
+    database = backend.storage_layout.platform_db("bot")
+    scope = MessageScope("bot", "self", "group", "group")
+    old_time = time() - 8 * 86400
+    old_store = PlatformMessageStore(database, "bot", clock=lambda: old_time)
+    old_store.record(scope, ArchiveMessage("old", "member", old_time, "原文"))
+    adapter.message_archive = old_store
+    platform["settings"]["message_archive_retention_days"] = 7
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "applied" and _require_manager(backend).get_adapter("bot") is adapter
+    assert adapter.message_archive is not old_store and adapter.message_archive is not None
+    assert adapter.message_archive.retention_days == 7 and adapter.message_archive.saved_retention_days() == 7
+    message = adapter.message_archive.get(scope, "old")
+    assert message is not None and message["status"] == "expired"
+    old_store.record(scope, ArchiveMessage("late", "member", time(), "延迟入档"))
+    assert adapter.message_archive.saved_retention_days() == 7
+
+
+@pytest.mark.asyncio
+async def test_archive_retention_persistence_failure_keeps_applied_store(tmp_path: Path, monkeypatch) -> None:
+    backend, adapter, path, platform = setup_runtime(tmp_path)
+    old_store = PlatformMessageStore(backend.storage_layout.platform_db("bot"), "bot")
+    scope = MessageScope("bot", "self", "group", "group")
+    old_store.record(scope, ArchiveMessage("old", "member", time(), "保留原文"))
+    adapter.message_archive = old_store
+    persist = PlatformMessageStore.persist_retention_policy
+
+    def fail_new_policy(store: PlatformMessageStore) -> None:
+        if store.retention_days == 7:
+            raise OSError("无法保存策略")
+        persist(store)
+
+    monkeypatch.setattr(PlatformMessageStore, "persist_retention_policy", fail_new_policy)
+    platform["settings"]["message_archive_retention_days"] = 7
+    path.write_text(json.dumps({"platforms": [platform]}), encoding="utf-8")
+    result = (await backend.reload_platform_policies())[0]
+    assert result["status"] == "failed" and result["reason"] == "archive_policy_apply_failed"
+    assert adapter.message_archive is old_store and old_store.saved_retention_days() == 30
+    assert "message_archive_retention_days" not in adapter.config.settings
+
+
+@pytest.mark.asyncio
+async def test_archive_policy_failure_during_replacement_still_restarts_old_receiver(tmp_path: Path, monkeypatch, caplog) -> None:
+    life = _lifecycle_backend(tmp_path, _bound_platform(), {"bot-session": True})
+    old_store = PlatformMessageStore(life.backend.storage_layout.platform_db("bot"), "bot")
+    scope = MessageScope("bot", "self", "group", "group")
+    old_store.record(scope, ArchiveMessage("known", "member", time(), "原消息"))
+    life.old.message_archive = old_store
+    await life.old.start()
+
+    def fail_policy(_store: PlatformMessageStore) -> None:
+        raise OSError("档案存储临时故障")
+
+    monkeypatch.setattr(PlatformMessageStore, "persist_retention_policy", fail_policy)
+    life.platform["settings"]["event_queue_capacity"] = 17
+    _write(life.path, life.platform)
+    try:
+        result = (await life.backend.reload_platform_policies())[0]
+        assert result["status"] == "failed" and result["old_runtime_preserved"] is True
+        assert life.manager.get_adapter("bot") is life.old and life.old.started
+        assert life.old._run_task is not None and not life.old._run_task.done()
+        assert "替换回滚时策略恢复失败" in caplog.text
+    finally:
+        await life.dispatcher.detach_adapter("bot")
+        await life.old.terminate()
 
 
 @pytest.mark.asyncio
@@ -492,8 +570,8 @@ def _lifecycle_backend(
     backend, _, path, _ = setup_runtime(tmp_path)
     manager = _require_manager(backend)
     manager.registry.register("probe-runtime", _LifecycleAdapter)
-    # 就地热替换分支只对 onebot 家族开放, 故同时登记该别名, 供热重载用断言使用
     manager.registry.register("aiocqhttp", _LifecycleAdapter)
+    # 登记 OneBot 别名以验证专有策略热更新, 档案保留期对全部适配器支持热更新
     registry = _BindingRegistry(definitions, {"session_class"} if providers is None else providers)
     backend._platform_runtimes["bot"] = cast(Any, (SimpleNamespace(provider_registry=registry, plugin_environment=None), None))
     backend._platform_active_configs = {"bot": deepcopy(platform)}
@@ -939,5 +1017,3 @@ async def test_route_store_failure_preserves_hot_platform_settings(tmp_path: Pat
     assert result["status"] == "failed" and result["reason"] == "agent_route_apply_failed"
     assert result["old_runtime_preserved"] is True
     assert adapter.config.settings == original
-
-
