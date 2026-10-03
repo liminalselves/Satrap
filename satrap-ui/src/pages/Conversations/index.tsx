@@ -11,6 +11,7 @@ import { Badge } from '@/components/ui/Badge';
 import { useDirtyGuard, confirmDiscard } from '@/hooks/useDirtyGuard';
 import { formatTime } from '@/utils/format';
 import { UserView } from './UserView';
+import { ArchiveView } from './ArchiveView';
 
 const errorText = (error: unknown) => axios.isAxiosError<{ error?: string; detail?: string }>(error)
   ? error.response?.data?.error || error.response?.data?.detail || error.message
@@ -27,6 +28,7 @@ function RecordTags({ record }: { record: ConversationRecord }) {
 export function Conversations() {
   const [search, setSearch] = useSearchParams();
   const userView = search.get('view') === 'users';
+  const archiveView = search.get('view') === 'archive';
   const platform = search.get('platform') || '';
   const platformType = search.get('type') || '';
   const selected = search.get('conversation') || '';
@@ -58,13 +60,13 @@ export function Conversations() {
     setSearch(next); setOffset(0);
   };
   useEffect(() => {
-    if (!selected || !recordPlatform) return;
+    if (archiveView || !selected || !recordPlatform) return;
     let disposed = false;
     controlApi.listConversationRecords(recordPlatform, selected, 0, { filters: { kind: 'all' } }).then((data) => {
       if (!disposed) setRecordMeta({ platform: recordPlatform, selected, record: data.items.find((item) => item.conversation_id === selected || item.context_ids.includes(selected)) || { conversation_id: selected, title: selected, context_ids: [selected], message_count: 0, history_count: 0 } });
     }).catch((error) => { if (!disposed) setError(errorText(error)); });
     return () => { disposed = true; };
-  }, [selected, recordPlatform, refresh]);
+  }, [selected, recordPlatform, refresh, archiveView]);
   useEffect(() => {
     let disposed = false;
     controlApi.listConversationPlatforms().then((data) => {
@@ -76,18 +78,25 @@ export function Conversations() {
   }, [setSearch]);
   useEffect(() => {
     let disposed = false;
-    if (userView) { setLoading(false); return; }
+    if (userView || archiveView) { setLoading(false); setError(''); return; }
     setLoading(true); setError('');
     controlApi.listConversationRecords(platform, submitted, offset, { type: platformType, filters: JSON.parse(filtersKey) }).then((data) => { if (!disposed) setResult({ ...data, items: data.items.map((item) => ({ ...item, platform_id: item.platform_id || platform })) }); })
       .catch((error) => { if (!disposed) setError(errorText(error)); }).finally(() => { if (!disposed) setLoading(false); });
     return () => { disposed = true; };
-  }, [platform, platformType, submitted, offset, filtersKey, refresh, userView]);
+  }, [platform, platformType, submitted, offset, filtersKey, refresh, userView, archiveView]);
   const record = recordMeta?.platform === recordPlatform && recordMeta.selected === selected ? recordMeta.record : result.items.find((item) => item.conversation_id === selected && item.platform_id === recordPlatform);
   const names = { ...facetNames, ...result.facet_names };
   const types = [...new Map(platforms.map((item) => [item.type, item.type_label])).entries()];
+  const viewControls = <div className="flex flex-wrap gap-2" aria-label="记录查看方式">{[{ value: '', label: '按对话' }, { value: 'users', label: '按用户' }, { value: 'archive', label: '平台消息档案' }].map((item) => <Button key={item.label} variant={(search.get('view') || '') === item.value ? 'primary' : 'ghost'} onClick={() => { const next = new URLSearchParams(search); item.value ? next.set('view', item.value) : next.delete('view'); next.delete('user'); next.delete('user_platform'); next.delete('conversation'); next.delete('record_platform'); setSearch(next); setOffset(0); }}>{item.label}</Button>)}</div>;
+  if (archiveView) return <div className="space-y-5">
+    <PageHeader title="对话记录" description="查看和维护平台实际采集的消息" />
+    {viewControls}
+    {error && <p role="alert" className="text-error">{error}</p>}
+    <ArchiveView platforms={platforms} />
+  </div>;
   return <div className="space-y-5">
     <PageHeader title="对话记录" description="按平台与归属查看和维护上下文、历史对话" actions={<Link className="text-sm text-accent" to="/conversations/instances">管理对话实例</Link>} />
-    <div className="flex gap-2" aria-label="记录查看方式">{[{ value: '', label: '按对话' }, { value: 'users', label: '按用户' }].map((item) => <Button key={item.label} variant={(item.value === 'users') === userView ? 'primary' : 'ghost'} onClick={() => { const next = new URLSearchParams(search); item.value ? next.set('view', item.value) : next.delete('view'); next.delete('user'); next.delete('user_platform'); next.delete('conversation'); next.delete('record_platform'); setSearch(next); setOffset(0); }}>{item.label}</Button>)}</div>
+    {viewControls}
     <Card className="space-y-3">
       <form className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); setSubmitted(query); setOffset(0); }}>
         <label className="min-w-0 text-sm">平台类型<select aria-label="平台类型" className="glass-input mt-1 w-full" value={platformType} onChange={(event) => chooseFilter('type', event.target.value)}><option value="">全部类型</option>{types.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>

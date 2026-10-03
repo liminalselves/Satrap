@@ -345,6 +345,74 @@ export interface ConversationPlatform {
   supports_history: boolean;
 }
 
+export interface PlatformArchiveRecord {
+  adapter_id: string;
+  platform_id: string;
+  platform_type: string;
+  type_label: string;
+  self_id: string;
+  conversation_kind: string;
+  conversation_kind_label: string;
+  chat_id: string;
+  label: string;
+  revision: number;
+  message_count: number;
+  last_message_at: number | null;
+}
+
+export interface PlatformArchiveCatalog {
+  items: PlatformArchiveRecord[];
+  total: number;
+  conversation_kinds: Array<{ value: string; label: string }>;
+  self_ids: string[];
+  warnings: Array<{ platform_id: string; error: string }>;
+}
+
+export type PlatformArchiveIdentity = Pick<PlatformArchiveRecord, 'platform_id' | 'self_id' | 'conversation_kind' | 'chat_id'>;
+
+export interface PlatformArchiveMessage {
+  message_id: string;
+  sender_id: string;
+  nickname: string;
+  card: string;
+  message_time: number;
+  received_at: number;
+  time_source: 'platform' | 'local';
+  direction: 'inbound' | 'outbound';
+  text: string;
+  components: Array<Record<string, unknown>>;
+  reply_to_message_id: string | null;
+  mentions: string[];
+  media: Array<Record<string, unknown>>;
+  status: 'active' | 'deleted' | 'recalled' | 'expired';
+  source: string;
+  verified: boolean;
+  truncated: boolean;
+}
+
+export interface PlatformArchiveSnapshot {
+  ok: boolean;
+  items: PlatformArchiveMessage[];
+  revision: number;
+  scope: Pick<PlatformArchiveRecord, 'adapter_id' | 'self_id' | 'conversation_kind' | 'chat_id' | 'label'>;
+  retention_days: number;
+  backups: Array<{ backup_id: string; action: 'delete' | 'clear'; created_at: number; expires_at: number }>;
+  coverage: { archived_from: number | null; archived_to: number | null; complete: boolean; retention_days: number };
+  has_more: boolean;
+  next_cursor: string | null;
+  truncated: boolean;
+}
+
+export interface PlatformArchiveMutation {
+  ok: boolean;
+  revision: number;
+  backup_id?: string;
+  expires_at?: number;
+  deleted_count?: number;
+  restored_count?: number;
+  skipped_count?: number;
+}
+
 export interface ConversationCatalog {
   items: ConversationRecord[];
   total: number;

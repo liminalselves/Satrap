@@ -17,6 +17,7 @@
     "test:e2e:edictum": "node e2e/edictum-settings.mjs",
     "test:e2e:plugins": "node e2e/plugins.mjs",
     "test:e2e:conversations": "node e2e/conversations.mjs",
+    "test:e2e:platform-archives": "node e2e/platform-archives.mjs",
     "test:e2e:conversation-users": "node e2e/conversation-users.mjs",
     "test:e2e:logging": "node e2e/log-retention.mjs",
     "test:e2e": "node e2e/chat-reconnect.mjs",
