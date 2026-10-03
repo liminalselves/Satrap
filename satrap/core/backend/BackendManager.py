@@ -2089,14 +2089,31 @@ class BackendManager:
                                 results.append(result)
                                 continue
                     runtime_usable = not self._running or not adapter.config.enable or (adapter.started and adapter._run_task is not None and not adapter._run_task.done())
-                    if runtime_usable and previous == proposed and (not changed or changed <= {"message_archive_retention_days"}
-                                                                  or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
+                    binding_keys = {"session_provider", "session_type", "session_bindings"}
+                    previous_binding = {key: previous.get(key) for key in binding_keys}
+                    proposed_binding = {key: proposed.get(key) for key in binding_keys}
+                    binding_changed = previous_binding != proposed_binding
+                    routing_configured = bool(previous_binding.get("session_bindings") or proposed_binding.get("session_bindings"))
+                    same_runtime = previous == proposed or routing_configured and bool(candidate.get("enable", True)) and (
+                        {key: value for key, value in previous.items() if key not in binding_keys}
+                        == {key: value for key, value in proposed.items() if key not in binding_keys}
+                    )
+                    if runtime_usable and same_runtime and (not changed or changed <= {"message_archive_retention_days"}
+                                                           or (candidate["type"] in {"onebot", "aiocqhttp"} and changed <= hot_keys)):
                         previous_runtime_config = adapter.config
                         previous_archive = adapter.message_archive
                         archive_changed = "message_archive_retention_days" in changed and previous_archive is not None
                         failure_reason = "agent_route_apply_failed"
-                        adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})))
                         try:
+                            provider = str(candidate.get("session_provider", SESSION_CLASS_PROVIDER)) if binding_changed else adapter.config.session_provider
+                            session_type = self._resolve_platform_session_type(candidate["type"], str(candidate.get("session_type", "")), provider) if binding_changed else adapter.config.session_type
+                            if binding_changed and candidate.get("enable", True):
+                                session_manager, _ = self._ensure_platform_runtime(platform_id)
+                                self._require_platform_binding(session_manager, session_type, provider, "平台绑定的")
+                                self._require_agent_bindings(session_manager, candidate["type"], candidate.get("session_bindings"))
+                            adapter.config = replace(adapter.config, settings=deepcopy(candidate.get("settings", {})),
+                                session_provider=provider, session_type=session_type,
+                                session_bindings=validate_session_bindings(candidate.get("session_bindings")))
                             await asyncio.to_thread(adapter.apply_agent_routes)
                             if archive_changed and previous_archive is not None:
                                 failure_reason = "archive_policy_apply_failed"
@@ -2118,15 +2135,17 @@ class BackendManager:
                             result.update(status="failed", reason=failure_reason, error=type(error).__name__, old_runtime_preserved=True)
                             results.append(result)
                             continue
-                        if self._scheduler is not None and old_settings != new_settings and changed - {"message_archive_retention_days"}:
+                        if self._scheduler is not None and (binding_changed or changed - {"message_archive_retention_days"}):
                             self._scheduler.wake_window.clear_adapter(platform_id)
                             self._scheduler.wake_timers.clear_adapter(platform_id)
                             await self._scheduler.clear_manual_wakes(platform_id)
                         self._platform_active_configs[platform_id] = deepcopy(candidate)
                         result["active_revision"] = saved_revision
                         result["status"] = "applied"
+                        if binding_changed:
+                            logger.info(f"[Agent 路由] 平台绑定已在线应用, 平台={platform_id}")
                     else:
-                        result["reason"] = "连接, 执行容量或会话绑定变更需要重建实例"
+                        result["reason"] = "连接, 执行容量或未启动实例变更需要重建实例"
                 else:
                     result["reason"] = "新增, 删除或未启动的平台需要协调生命周期"
                 if result["status"] == "pending_restart" and self._running and self._dispatcher is not None:

@@ -18,6 +18,10 @@ from satrap.core.platform import EventDispatcher, PlatformAdapter, PlatformAdapt
 from satrap.core.platform.event import PlatformMetadata
 from satrap.core.config.document import config_document_revision, load_config_document, validate_platforms
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
+from satrap.core.config.agent_routing import AgentRouteStore
+from satrap.core.components import Plain
+from satrap.core.platform.event import MessageChain, MessageEvent
+from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
 
 
 def _require_adapter(manager: PlatformAdapterManager, adapter_id: str) -> PlatformAdapter:
@@ -1017,3 +1021,145 @@ async def test_route_store_failure_preserves_hot_platform_settings(tmp_path: Pat
     assert result["status"] == "failed" and result["reason"] == "agent_route_apply_failed"
     assert result["old_runtime_preserved"] is True
     assert adapter.config.settings == original
+
+
+def _hot_route_event(adapter: PlatformAdapter, private: bool) -> MessageEvent:
+    """
+    创建持有真实路由代次的事件, 不提交到平台或模型
+
+    参数:
+    - adapter: 当前运行中的适配器
+    - private: 是否为私聊事件
+
+    返回:
+    - 已冻结账号, 对话身份和 Agent 绑定的事件
+    """
+    message = PlatformMessage()
+    message.type = PlatformMessageType.FRIEND_MESSAGE if private else PlatformMessageType.GROUP_MESSAGE
+    message.self_id = "999000000"
+    message.session_id = "member" if private else "test-group"
+    message.group_id = "" if private else "test-group"
+    message.message_id = "route-probe"
+    message.sender = MessageMember(user_id="member", nickname="验收成员")
+    message.message = [Plain("路由验收")]
+    return MessageEvent("路由验收", message, adapter.meta(), message.session_id, adapter,
+                        adapter.get_session_provider(), adapter.get_session_type())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["session_class", "edictum"])
+async def test_typed_binding_hot_apply_preserves_receiver_and_unaffected_group(tmp_path: Path, provider: str) -> None:
+    """
+    验证类型绑定在线应用, 保留接收任务和未变更群路由, 废止旧私聊输出
+
+    参数:
+    - tmp_path: 隔离配置和路由存储
+    - provider: 同步类与 Edictum 均使用通用更新入口
+    """
+    platform = dict(_bound_platform(), session_provider=provider, session_bindings={
+        kind: {"mode": "value", "provider": provider, "config_name": "bot-session"} for kind in ("private", "group")
+    })
+    life = _lifecycle_backend(tmp_path, platform, {"bot-session": True, "private-agent": True}, {provider})
+    life.old.config.session_bindings = deepcopy(platform["session_bindings"])
+    life.old.agent_route_store = AgentRouteStore(life.backend.storage_layout.platform_db("bot"))
+    await life.old.start()
+    original_run = life.old._run_task
+    private, group = _hot_route_event(life.old, True), _hot_route_event(life.old, False)
+    scheduler = _RecordingScheduler()
+    life.backend._scheduler = cast(Any, scheduler)
+    life.old.send_message = AsyncMock()
+    try:
+        platform["session_bindings"]["private"]["config_name"] = "private-agent"
+        _write(life.path, platform)
+        result = (await life.backend.reload_platform_policies())[0]
+        assert result["status"] == "applied" and result["saved_revision"] == result["active_revision"]
+        assert life.manager.get_adapter("bot") is life.old and life.old._run_task is original_run
+        assert original_run is not None and not original_run.done()
+        assert not private.agent_route_is_current() and group.agent_route_is_current()
+        fresh = _hot_route_event(life.old, True)
+        assert fresh.session_type == "private-agent" and fresh.agent_route_generation > private.agent_route_generation
+        await private.send(MessageChain.from_text("旧轮次"))
+        life.old.send_message.assert_not_awaited()
+        assert scheduler.cleared == ["bot", "bot", "bot"]
+    finally:
+        await life.old.terminate()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["disabled", "unknown_kind", "storage"])
+async def test_binding_hot_apply_failure_keeps_actual_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    """
+    绑定校验与路由写入失败保持实际配置, 不停止接收或报告新版本已应用
+
+    参数:
+    - tmp_path: 隔离配置目录
+    - monkeypatch: 注入路由存储失败
+    - failure: 失效 Agent, 未声明类型或路由持久化故障
+    """
+    life = _lifecycle_backend(tmp_path, _bound_platform(), {"bot-session": True, "private-agent": failure != "disabled"})
+    await life.old.start()
+    original_config = life.old.config
+    original_snapshot = deepcopy(life.backend._platform_active_configs["bot"])
+    life.platform["session_bindings"] = {"topic" if failure == "unknown_kind" else "private": {
+        "mode": "value", "provider": "session_class", "config_name": "private-agent"
+    }}
+    _write(life.path, life.platform)
+    if failure == "storage":
+        def fail_store() -> int:
+            """模拟路由数据库暂不可写"""
+            raise OSError("路由数据库不可写")
+        monkeypatch.setattr(life.old, "apply_agent_routes", fail_store)
+    try:
+        result = (await life.backend.reload_platform_policies())[0]
+        assert result["status"] == "failed" and result["old_runtime_preserved"] is True
+        assert result["active_revision"] != result["saved_revision"]
+        assert life.manager.get_adapter("bot") is life.old and life.old.config is original_config
+        assert life.backend._platform_active_configs["bot"] == original_snapshot and life.old.started
+    finally:
+        await life.old.terminate()
+
+
+@pytest.mark.asyncio
+async def test_route_hot_apply_with_real_onebot_websocket(tmp_path: Path, unused_tcp_port: int) -> None:
+    """
+    保持真实 SDK 的反向 WebSocket 连接时更改绑定, 验证不进入停止监听器路径
+
+    参数:
+    - tmp_path: 隔离配置和路由存储
+    - unused_tcp_port: 测试专用监听端口, 不连接 QQ 或 SnowLuma
+    """
+    import inspect
+    import websockets
+
+    platform = dict(_bound_platform(), type="onebot", settings={"host": "127.0.0.1", "port": unused_tcp_port, "self_id": "999000000"})
+    life = _lifecycle_backend(tmp_path, platform, {"bot-session": True, "private-agent": True})
+    adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", session_type="bot-session", settings=deepcopy(platform["settings"])))
+    adapter.agent_route_store = AgentRouteStore(life.backend.storage_layout.platform_db("bot"))
+    life.manager.registry.register("onebot", OneBotAdapter)
+    life.manager._adapters["bot"] = adapter
+    await adapter.start()
+    await adapter.wait_ready(timeout=3)
+    header_key = "additional_headers" if "additional_headers" in inspect.signature(websockets.connect).parameters else "extra_headers"
+    headers: dict[str, Any] = {header_key: {"X-Client-Role": "universal", "X-Self-ID": "999000000"}}
+    connection = await websockets.connect(f"ws://127.0.0.1:{unused_tcp_port}/ws", close_timeout=1,
+        **headers)
+    run_task, client = adapter._run_task, adapter.get_client()
+    reloading: asyncio.Task[list[dict[str, Any]]] | None = None
+    try:
+        platform["session_bindings"] = {"private": {"mode": "value", "provider": "session_class", "config_name": "private-agent"}}
+        _write(life.path, platform)
+        reloading = asyncio.create_task(life.backend.reload_platform_policies())
+        done, pending = await asyncio.wait({reloading}, timeout=2)
+        assert done and not pending, "只改路由不应等待已连接的 OneBot 停止"
+        result = (await reloading)[0]
+        assert result["status"] == "applied" and adapter.config.session_bindings == platform["session_bindings"]
+        assert life.manager.get_adapter("bot") is adapter and adapter.get_client() is client
+        assert adapter._run_task is run_task and run_task is not None and not run_task.done()
+        assert connection.close_code is None
+    finally:
+        await connection.close()
+        # 先结束模拟连接, 避免 SDK 停机等待仍打开的 WebSocket
+        if reloading is not None and not reloading.done():
+            reloading.cancel()
+            await asyncio.gather(reloading, return_exceptions=True)
+        await adapter.terminate()
