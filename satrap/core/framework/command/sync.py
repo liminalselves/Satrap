@@ -12,7 +12,7 @@ from typing import (
     List,
 )
 
-from .base import _CommandRegistry
+from .base import DEFAULT_COMMAND_PARAM_SPLIT, DEFAULT_COMMAND_PREFIX, _CommandRegistry
 
 from satrap.core.log import logger
 
@@ -23,14 +23,14 @@ class CommandHandler(_CommandRegistry):
     def __init__(
         self,
         output_callback: Optional[Callable[[str], None]] = None,
-        cmd_prefix: str = "/",
-        param_split: str = " ",
+        cmd_prefix: str = DEFAULT_COMMAND_PREFIX,
+        param_split: str = DEFAULT_COMMAND_PARAM_SPLIT,
     ):
         """
         参数:
         - output_callback: 输出命令执行结果的回调函数
-        - cmd_prefix: 命令前缀, 默认为 "/"
-        - param_split: 参数分割符, 默认为 " "
+        - cmd_prefix: 命令前缀, 默认为 DEFAULT_COMMAND_PREFIX
+        - param_split: 参数分割符, 默认为 DEFAULT_COMMAND_PARAM_SPLIT
         """
         self.output_callback = output_callback
         self.commands: Dict[str, Any] = {}  # 命令名 -> 处理函数

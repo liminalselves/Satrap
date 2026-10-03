@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from datetime import datetime
 
 from satrap.core.platform.event import MessageChain
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
+from satrap.core.log import logger
 
 
 class FileIDExtractor:
@@ -309,7 +311,20 @@ def create_base_message(
         message.type = PlatformMessageType.OTHER_MESSAGE
         message.session_id = f"note%{sender_id or 'unknown'}"
     message.self_id = bot_self_id
-    message.message_id = str(raw_data.get("id", ""))
+    raw_id = raw_data.get("id")
+    message.message_id = raw_id if isinstance(raw_id, str) else ""
+    created_at = raw_data.get("createdAt")
+    if created_at is not None:
+        try:
+            if not isinstance(created_at, str):
+                raise ValueError("消息时间不是字符串")
+            parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if parsed.tzinfo is None or parsed.utcoffset() is None:
+                raise ValueError("消息时间缺少时区")
+            message.timestamp = int(parsed.timestamp())
+            message.timestamp_source = "platform"
+        except (ValueError, OverflowError) as exc:
+            logger.warning(f"[Misskey] 消息时间无效, 使用接收时间, 原因={type(exc).__name__}")
     message.sender = MessageMember(user_id=sender_id, nickname=sender_info["nickname"])
     message.message = []
     message.message_str = ""

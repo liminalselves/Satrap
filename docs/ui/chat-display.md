@@ -17,7 +17,7 @@
 | `recorder.py` | `DisplayRecorder` 旁路记录器; 模块级 `list_conversations()` / `get_conversation_meta()` / `query_conversations()` (历史分页查询) 与项目管理函数 |
 | `service.py` | `ChatService` 会话编排: 管理 (AsyncSimpleSession, DisplayRecorder) 对, 落库 + WS 广播, retry / fork / cancel / 上传 / 插件 / 记忆 / 预加载 / 历史管理与回收站 / 回复版本切换 / ask_user 回填 / RAG / 会话级插件配置 |
 | `server.py` | `ChatHTTPServer` 零依赖 asyncio HTTP + WebSocket 服务 (端口 19872) |
-| `plugins.py` | `ChatPluginRegistry` 插件扫描 + `.satrap/chat_plugins.json` 启用状态 |
+| `plugins.py` | `ChatPluginRegistry` 插件扫描 + `.satrap/config/chat_plugins.json` 启用状态 |
 
 ## 启动
 
@@ -139,7 +139,7 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 
 ## 插件管理
 
-插件清单扫描官方目录 `satrap/expend/plugins` + 用户目录 `.satrap/plugins` (官方优先, 同名冲突官方覆盖); 清单来自 meta.yaml 的能力声明, **默认不安装**。启用状态独立记录于 `.satrap/chat_plugins.json` (不碰 `session_class_config.json`):
+插件清单扫描官方目录 `satrap/expend/plugins` + 用户目录 `.satrap/plugins` (官方优先, 同名冲突官方覆盖); 清单来自 meta.yaml 的能力声明, **默认不安装**。启用状态独立记录于 `.satrap/config/chat_plugins.json` (不碰 `session_class_config.json`):
 
 ```json
 {
@@ -156,7 +156,7 @@ Chat 使用保留平台实例 `chat` 的唯一 `platform.db`, 展示层和上下
 
 ## 模型与记忆
 
-- 模型配置与平台后端共用同一份 `.satrap/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
+- 模型配置与平台后端共用同一份 `.satrap/config/model_config.json` (ModelConfigManager), 新建会话时指定 `model` 名即可。
 - 记忆管理走 `chat/platform.db` 中的公共 `MemoryStore` 表, 默认 scope 为 `session:<conversation_id>`, 见 [运行数据布局](../core/data-layout.md)。
 - **记忆隔离**: 每个会话只读写 `session:<conversation_id>` 作用域。项目绑定不会自动共享记忆; 未来增加共享领域时需要单独的数据模型和授权。
 

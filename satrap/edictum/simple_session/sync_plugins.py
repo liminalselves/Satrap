@@ -6,6 +6,7 @@ from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
 from satrap.edictum.plugin_settings import (
     EffectivePluginConfig,
+    PluginInstallConfig,
     resolve_session_plugin_config,
 )
 from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
@@ -68,6 +69,9 @@ def install_plugin(
     mcp_states: dict[str, bool] = {}
     mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
     resources = None
+    installed_plugin: Plugin | None = None
+    name = ""
+    previous_tools = [(tool, tool.is_enabled()) for tool in self._wf.tools_manager.tools.values()]
     try:
         name = str(meta.get("name") or "").strip()
         if not name:
@@ -110,7 +114,7 @@ def install_plugin(
             if key in mgr.skills or key in skill_states:
                 raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
             mgr._register_skill(s)
-            skill_states[key] = True
+            skill_states[key] = config.initial_skills.get(key, True) if isinstance(config, PluginInstallConfig) else True
 
         for h in collect_handlers(
             plugin_dir, name, self, SessionHandler, plugin_config, resources
@@ -191,6 +195,12 @@ def install_plugin(
         )
         with self._registry_lock:
             self._plugins[name] = plugin
+            installed_plugin = plugin
+        for key, enabled in skill_states.items():
+            if not enabled:
+                mgr.deactivate(key, self._wf)
+            elif not mgr.activate(key, self._wf):
+                raise RuntimeError(f"插件 {name} 的技能 {key} 激活失败")
         logger.info(f"[edictum] 插件 {name} 已安装")
         return plugin
     except Exception:
@@ -202,7 +212,11 @@ def install_plugin(
         mgr = self._skills_manager
         if mgr is not None:
             for key in skill_states:
+                mgr.deactivate(key, self._wf)
                 mgr.unregister_skill(key)
+        if installed_plugin is not None:
+            with self._registry_lock:
+                self._plugins.pop(name, None)
         for hname in handler_states:
             with self._registry_lock:
                 handler = self._take_handler_locked(hname)
@@ -219,6 +233,8 @@ def install_plugin(
                     close()
                 except Exception:
                     pass
+        for tool, was_enabled in previous_tools:
+            tool.enable() if was_enabled else tool.disable()   # 安装回滚后保留已有工具的启用状态
         raise
 
 

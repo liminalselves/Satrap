@@ -1,8 +1,10 @@
 import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
+import { useBackendStatusSync } from './hooks/useBackendStatusSync';
 
 function App() {
+  useBackendStatusSync();
   useEffect(() => {
     const syncBackgroundVisibility = () => {
       document.documentElement.classList.toggle('background-animation-paused', document.hidden);

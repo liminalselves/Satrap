@@ -1,6 +1,12 @@
+"""
+异步会话框架
+
+协调共享和工作流上下文, 登记精确归属并聚合会话检查点
+"""
 from __future__ import annotations
 import asyncio
 import inspect, uuid
+from functools import wraps
 from pathlib import Path
 from typing import Optional, Callable, Any, Awaitable
 from typing import TYPE_CHECKING
@@ -9,6 +15,7 @@ from satrap.core.framework.command import AsyncCommandHandler
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.core.state.mutation import state_mutation_context
 from satrap.core.utils.context import AsyncContextManager, _messages_domain
+from satrap.core.storage.context_catalog import bind_context
 from satrap.core.utils.paths import get_db_path
 from satrap.core.state import StateStore
 from satrap.core.type import LLMConfig, StateCheckpoint
@@ -38,6 +45,8 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
                 await self._ensure_initialized()
                 return await run(self, *args, **kw)
 
+            # 包装必须透传原签名: 参数适配按 run 签名决定是否传入 img_urls, *args 会让媒体输入被静默丢弃
+            wraps(run)(_wrapped_run)
             cls.run = _wrapped_run
 
     plugin_override_store: "SessionOverrideStore | None" = None
@@ -100,6 +109,7 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
 
         self.session_ctx = _new_async_context(session_id, db_path=db_path)
         self.session_id = session_id
+        bind_context(self.session_ctx, session_id, "shared")
         self.wf_list: list[str] = []
         self.content_callback = content_callback
         self._initialized = False
@@ -127,6 +137,7 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
             if self._initialized:
                 return
             await self.session_ctx.initialize()
+            bind_context(self.session_ctx, self.session_id, "shared")
             await self._async_init()  # 钩子: 子类可在此创建工作流等
             self._initialized = True
 
@@ -216,7 +227,12 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
         """
         if wf_id in self._workflow_contexts:
             logger.warning(f"[会话] 工作流 {wf_id} 已注册, 将被覆盖")
+        if not getattr(ctx, "persistent", True):
+            logger.warning(f"[会话] 纯内存工作流不加入持久化检查点: {wf_id}")
+            return
         self._workflow_contexts[wf_id] = ctx
+        workflow_name = wf_id.removeprefix(self.session_id + "_")
+        bind_context(ctx, self.session_id, "main" if workflow_name == "main" else "workflow", workflow_name)
         if self._context_config is not None:
             apply_context_policy(ctx, self._context_config)
         if self._state_store is not None:

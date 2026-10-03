@@ -12,6 +12,7 @@ import pytest
 from satrap.core.config.asr_references import list_asr_config_references
 from satrap.core.config.model_service import ModelConfigService
 from satrap.core.config.session_overrides import SessionOverrideStore
+from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.config.asr_references import AsrReferenceScanError
 from satrap.core.framework.BackGroundManager import (
     ConfigInUseError,
@@ -322,14 +323,14 @@ class TestScanCompleteness:
         database.parent.mkdir(parents=True, exist_ok=True)
         SessionOverrideStore(database)
         connection = sqlite3.connect(str(database))
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
-        connection.execute("PRAGMA user_version = 3")
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION
+        connection.execute(f"PRAGMA user_version = {PLATFORM_SCHEMA_VERSION + 1}")
         connection.commit()
         connection.close()
         # 更高版本不回退, 也不因再次初始化被改写
         SessionOverrideStore(database)
         connection = sqlite3.connect(str(database))
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == PLATFORM_SCHEMA_VERSION + 1
         connection.close()
 
 

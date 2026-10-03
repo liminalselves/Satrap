@@ -102,6 +102,27 @@ STATIC_DIR = Path(__file__).parent.parent.parent.parent / "satrap-ui" / "dist"
 2. 启动后端: `python -m satrap.main run`
 3. 访问: `http://127.0.0.1:19870`
 
+## 状态与平台检查
+
+管理页共用全局状态订阅和轮询. 控制服务的最新运行状态优先, 不可用时使用可达后端的 health;
+两者都不可达时显示状态未知. 启停按钮等待实际状态确认, 处理中不会重复发起操作
+
+会话类和 Edictum 配置均使用单一启用开关. 后端运行时会自动重载配置并显示应用结果;
+后端停止时提示配置已保存, 启动后生效. 保存成功但应用失败时可以重试应用, 不会重复切换配置
+
+平台卡片的测试连接向当前适配器或平台发起只读请求, 显示通信结果和耗时, 无需填写群号.
+OneBot 通过当前反向 WebSocket 调用 `get_version_info`; Misskey 使用当前客户端和令牌调用 `/api/i`.
+检查需要后端及对应适配器已启动, 最长等待 8 秒. 检查期间连接或平台实例变化时结果失效.
+成功表示本次 API 请求正常响应; Misskey 的 HTTP API 探测不代表 streaming 通道也正常
+
+浏览器回归使用受控 HTTP/WebSocket, 不连接真实 QQ 或 Misskey:
+
+```bash
+npm run test:e2e:status
+```
+
+截图保存在 `test-results/backend-platform-status/`, 覆盖会话开关, 平台通信结果和手机宽度
+
 ## 浏览器支持
 
 - Chrome 90+

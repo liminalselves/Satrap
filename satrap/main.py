@@ -343,6 +343,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main():
     """运行 Satrap 命令行入口"""
+    from satrap.core.log import logger
+
+    logger.set_service("cli")
     argv = sys.argv[1:]
     # --json 可放在任意位置: 预剥离后再交给 argparse, 避免逐个子解析器重复声明
     json_requested = "--json" in argv

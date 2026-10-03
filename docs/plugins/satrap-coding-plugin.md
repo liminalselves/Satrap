@@ -125,4 +125,4 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | shell_timeout | number | 30 | shell 命令超时 (秒) |
 | protected_dirs | string | - | 额外保护目录 (逗号分隔) |
 
-安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/satrap_coding.json`。
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/satrap_coding.json`。

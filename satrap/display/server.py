@@ -5,7 +5,7 @@
 
 与平台后端 (BackendManager) 完全隔离:
 - 不初始化平台适配器 / 事件分发 / Pipeline / SessionManager / UserManager
-- 仅经 ModelConfigManager 读 .satrap/model_config.json (与平台后端同一份配置)
+- 仅经 ModelConfigManager 读 .satrap/config/model_config.json (与平台后端同一份配置)
 - 独立端口 (默认 19872), 独立进程: python -m satrap.display.server
 
 API (前缀 /api/chat/):
@@ -46,9 +46,11 @@ import base64
 import signal
 from typing import Any, cast
 import json
+import traceback
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import OverrideConflictError
+from satrap.core.config.conversation_data import ConversationDataConflict
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
 from satrap.edictum.plugin_settings import model_options
@@ -188,6 +190,31 @@ class ChatHTTPServer(MiniHTTPServer):
                 "conversations": persisted,
                 "preloaded": len(svc._conversations) - persisted,
             }
+
+        if method == "POST" and clean == "/api/chat/conversation-data":
+            conversation = ""
+            try:
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict):
+                    raise ValueError("请求体必须是对象")
+                conversation = payload.get("conversation_id", "")
+                result = await svc.manage_conversation_data(payload)
+                if not result.get("ok"):
+                    logger.warning(f"[对话数据] Chat/{conversation} 操作被拒绝: {result.get('error')}")
+                    return 409, result
+                return 200, result
+            except ConversationDataConflict as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 编辑冲突: {error}")
+                return 409, {"error": str(error)}
+            except KeyError as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 数据不存在: {error}")
+                return 404, {"error": str(error)}
+            except (ValueError, TypeError) as error:
+                logger.warning(f"[对话数据] Chat/{conversation} 请求无效: {error}")
+                return 400, {"error": str(error)}
+            except Exception as error:
+                logger.error(f"[对话数据] Chat/{conversation} 操作失败: {error}\n{traceback.format_exc()}")
+                return 500, {"error": "对话数据操作失败, 请查看 Chat 日志"}
 
         if method == "GET" and clean == "/api/chat/models":
             return 200, {"models": svc.list_models()}
@@ -529,6 +556,12 @@ class ChatHTTPServer(MiniHTTPServer):
         if method == "GET" and clean == "/api/chat/plugins":
             return 200, {"plugins": svc.list_plugins()}
 
+        if method == "POST" and clean == "/api/chat/plugins/reconcile":
+            return 200, await svc.reconcile_plugins()
+
+        if method == "GET" and clean == "/api/chat/plugins/runtime":
+            return 200, svc.plugin_runtime_snapshot()
+
         if clean.startswith("/api/chat/plugins/") and clean.endswith("/config"):
             rest = clean[len("/api/chat/plugins/"):]
             name = unquote(rest[:rest.index("/")])
@@ -637,6 +670,7 @@ async def _run(host: str, port: int) -> None:
 
 def main() -> None:
     """执行 `main` 操作"""
+    logger.set_service("chat")
     parser = argparse.ArgumentParser(description="Satrap 聊天展示层服务")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)

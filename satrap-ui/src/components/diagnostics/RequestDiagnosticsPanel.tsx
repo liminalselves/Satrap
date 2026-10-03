@@ -31,13 +31,26 @@ const REASON_LABELS: Record<string, string> = {
   no_response: '没有收到回执',
   llm_timeout: '模型调用超时',
   completed: '模型调用完成',
+  image_download_failed: '图片下载失败',
+  image_url_refreshed: '图片地址已刷新',
+  image_unavailable: '图片无法获取',
+  image_media_budget_dropped: '图片超出本事件媒体预算',
+  image_format_unknown: '无法识别图片格式',
+  video_download_failed: '视频下载失败',
+  video_media_budget_dropped: '视频超出本事件媒体预算',
+  video_unsupported_by_implementation: '当前实现不支持视频回源',
+  media_unavailable: '媒体无法获取',
+  command_candidate: '平台命令入口已冻结正文',
+  operator_required: '受保护命令缺少操作员授权',
+  binding_disabled: '会话定义已禁用, 消息未进入会话',
+  binding_invalid: '会话绑定不可用, 消息未进入会话',
   not_found: '未找到该请求记录',
   scheduler_unavailable: '调度器未运行, 近期诊断不可用',
   nil: '无',
 };
 
 const ATTACHMENT_KIND_LABELS: Record<string, string> = {
-  record: '语音', file: '文件', quote: '引用', forward: '转发', attachment: '附件',
+  record: '语音', file: '文件', image: '图片', video: '视频', quote: '引用', forward: '转发', attachment: '附件',
 };
 
 const STATUS_VARIANTS: Record<string, 'success' | 'warning' | 'error' | 'info' | 'default'> = {

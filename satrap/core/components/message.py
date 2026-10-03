@@ -347,6 +347,8 @@ class _FileLikeComponent(BaseMessageComponent):
     file: str | None = ""
     url: str | None = ""
     path: str | None = ""
+    resolved_path: str = Field(default="", exclude=True)
+    """仅由 pipeline 媒体解析器写入的已验证可读本地路径, 不参与序列化"""
 
     @classmethod
     def fromFileSystem(cls, path: str, **kwargs: Any):
@@ -462,6 +464,27 @@ class _FileLikeComponent(BaseMessageComponent):
         return f"{callback_host}/api/file/{token}"
 
 
+MEDIA_SOURCE_FIELDS: tuple[str, ...] = ("resolved_path", "url", "file")
+"""媒体来源取值优先级, 入站收集与出站发送共用同一顺序以避免两处漂移"""
+
+
+def preferred_media_source(component: BaseMessageComponent) -> str:
+    """
+    按统一优先级取媒体组件的可用来源
+
+    参数:
+    - component: 媒体组件, 依次读取 MEDIA_SOURCE_FIELDS 中的字段
+
+    返回:
+    - str: 首个非空来源; 字段缺失或均为空时返回空串
+    """
+    for field in MEDIA_SOURCE_FIELDS:
+        value = getattr(component, field, None)
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 class Record(_FileLikeComponent):
     """语音消息组件"""
 
@@ -543,6 +566,22 @@ class AtAll(At):
         - kwargs: 额外关键字参数
         """
         super().__init__(**kwargs)
+
+
+def is_self_mention(component: BaseMessageComponent, self_id: str) -> bool:
+    """
+    判断组件是否为仅指向机器人自身的提及
+
+    参数:
+    - component: 待判定组件
+    - self_id: 机器人自身的平台 ID, 为空时恒为 False
+
+    返回:
+    - bool: 组件是 self 的 At 时为 True; AtAll 与空 self_id 一律为 False
+    """
+    if not self_id or not isinstance(component, At) or isinstance(component, AtAll):
+        return False
+    return str(component.qq) != "all" and str(component.qq) == self_id
 
 
 class RPS(BaseMessageComponent):

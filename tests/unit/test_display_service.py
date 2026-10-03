@@ -58,6 +58,40 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
     await task
 
 
+@pytest.mark.asyncio
+async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp_path, monkeypatch):
+    service = _make_service(tmp_path, monkeypatch)
+    try:
+        cid = await service.create_conversation()
+        await service.send(cid, "原始输入")
+        await _wait_conversation_task(service, cid)
+        conversation = _must_conversation(service, cid)
+        context_id = conversation.session.ctx.conversation_id
+        server = ChatHTTPServer(service)
+        request = {"conversation_id": context_id, "layer": "context"}
+        status, current = await server._route("POST", "/api/chat/conversation-data", json.dumps(request).encode("utf-8"))
+        assert status == 200
+        assert current["source"] == "memory"
+        edited_index = next(item["index"] for item in current["items"] if item["role"] == "user")
+        status, saved = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "edit", "index": edited_index, "content": "模型上下文输入", "expected_revision": current["revision"]}).encode("utf-8"))
+        assert status == 200 and saved["saved"]
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+        assert conversation.recorder.list_turns()[0]["user_input"] == "原始输入"
+        history_request = {"conversation_id": cid, "layer": "history"}
+        _, history = await server._route("POST", "/api/chat/conversation-data", json.dumps(history_request).encode("utf-8"))
+        status, _ = await server._route("POST", "/api/chat/conversation-data", json.dumps({**history_request, "action": "edit", "index": 0, "user_input": "只修改展示", "answer": "展示答案", "expected_revision": history["revision"]}).encode("utf-8"))
+        assert status == 200
+        assert conversation.recorder.list_turns()[0]["answer"] == "展示答案"
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+        await service.send(cid, "后续输入")
+        status, refused = await server._route("POST", "/api/chat/conversation-data", json.dumps({**request, "action": "clear", "expected_revision": saved["revision"]}).encode("utf-8"))
+        assert status == 409 and "进行" in refused["error"]
+        await _wait_conversation_task(service, cid)
+        assert conversation.session.ctx.get_context()[edited_index]["content"] == "模型上下文输入"
+    finally:
+        await service.close()
+
+
 # ---------- ChatPluginRegistry 测试 ----------
 
 
@@ -976,6 +1010,47 @@ def test_chat_plugin_config_hot_reinstalls_active_session(
         await svc.close()
 
     asyncio.run(_run())
+
+
+def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    独立管理页写入全局参数后, Chat 协调接口更新实际命令
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: 测试环境替换
+    """
+    from satrap.core.config.plugin_service import PluginManagementService
+
+    config_manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: config_manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+    cold = PluginManagementService(svc._plugins.catalog, {}, svc._plugins, manager=config_manager)
+
+    async def run() -> None:
+        cid = await svc.create_conversation(model="default")
+        conv = _must_conversation(svc, cid)
+        assert await conv.session.run("/about") == ""
+        before = cold.get_config("chat_commands")
+        cold.save_config("chat_commands", {"about_text": "来自管理页"}, before["revision"])
+        status, result = await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
+        assert status == 200 and result["applied"]
+        assert await conv.session.run("/about") == "来自管理页"
+        snapshot_status, snapshot = await ChatHTTPServer(svc)._route("GET", "/api/chat/plugins/runtime", b"")
+        assert snapshot_status == 200
+        actual = snapshot["sessions"][0]["plugins"][0]
+        assert actual["capabilities"]["loaded"]["commands"] == {"about": True}
+        assert "config" not in actual
+        external = ChatPluginRegistry(svc._plugins.state_path)
+        external.catalog = svc._plugins.catalog
+        external.set_enabled("chat_commands", False)
+        await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
+        assert not svc.plugin_runtime_snapshot()["sessions"][0]["plugins"][0]["enabled"]
+        await svc.close()
+
+    asyncio.run(run())
 
 
 def test_service_preload_timeout_purges_empty_runtime(tmp_path: Path, monkeypatch: Any):

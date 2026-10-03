@@ -72,6 +72,8 @@ edictum 是建立在核心框架 `Session` 之上的高可扩展单 workflow Age
 
 ## 深入阅读
 
+- [命名会话设置](settings.md): 系统提示词, 默认思考强度, 生成参数覆盖和插件技能激活
+
 - [SimpleSession 用法](simple-session.md): 快速上手, 处理器示例, 工具 / 命令 / skill / MCP 接入, 流式与 checkpoint
 - [插件系统](plugin-system.md): 目录插件结构, meta.yaml 能力声明, 能力收集约定, 双层启停与错误处理
 - [会话 Provider](session-providers.md): SessionProvider 契约, 命名会话定义与 Edictum 冷配置

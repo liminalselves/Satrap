@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import asyncio
 import inspect
+import sqlite3
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Type, TypeVar
 import time
 import uuid
@@ -12,7 +13,9 @@ from abc import ABC, abstractmethod
 
 from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.platform_policy import validate_event_limits
-from satrap.core.type import Group, PlatformError, PlatformStatus, safe_getattr, safe_getattr_str
+from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
+from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, PlatformMessageStore
+from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessage, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
 
@@ -25,6 +28,8 @@ if TYPE_CHECKING:
         PlatformMetadata,
     )
     from satrap.core.pipeline.scheduler import PipelineScheduler
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -42,6 +47,7 @@ class PlatformConfig:
     - type: 适配器类型 (如 misskey / aiocqhttp / telegram)
     - session_provider: 入站消息使用的会话 Provider 名称
     - session_type: 入站消息使用的命名会话配置
+    - session_bindings: 按适配器声明的对话类型覆盖完整 Agent 绑定
     - enable: 是否启用
     - settings: 适配器专属配置
     """
@@ -52,6 +58,7 @@ class PlatformConfig:
     settings: Dict[str, Any] = field(default_factory=dict[str, Any])
     session_provider: str = SESSION_CLASS_PROVIDER
     session_type: str = ""
+    session_bindings: Dict[str, Dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -84,6 +91,23 @@ class PlatformAdapter(ABC):
     """
 
     adapter_type: str = ""
+    display_name: str = ""
+    conversation_catalog_fields: dict[str, str] = {}
+    conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
+
+    @classmethod
+    def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
+        """
+        从已有存储补充对话分类标签, 不创建适配器或访问平台网络
+
+        参数:
+        - connection: 平台数据库只读连接
+        - route: 已解码的路由元数据, 可包含平台扩展字段
+
+        返回:
+        - 分类字段到展示标签的映射, 默认不补充标签
+        """
+        return {}
 
     def __init__(self, config: PlatformConfig, event_handler: EventHandler | None = None, event_queue: asyncio.Queue[Any] | None = None):
         """
@@ -95,6 +119,11 @@ class PlatformAdapter(ABC):
         - event_queue: 事件队列
         """
         self.config = config
+        config.session_bindings = validate_session_bindings(config.session_bindings)
+        self.agent_route_store: AgentRouteStore | None = None
+        self.message_archive: PlatformMessageStore | None = None
+        self._archive_tasks: set[asyncio.Task[None]] = set()
+        self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
 
@@ -103,6 +132,7 @@ class PlatformAdapter(ABC):
         capacity = int(config.settings.get("event_queue_capacity", 256))
         if capacity <= 0:
             raise ValueError("event_queue_capacity 必须大于 0")
+        self._archive_capacity = min(capacity, 256)
         self._event_queue = event_queue if event_queue is not None else asyncio.Queue[Any](maxsize=capacity)
         self.dropped_events = 0
         self.expired_events = 0
@@ -130,6 +160,343 @@ class PlatformAdapter(ABC):
         - str: 显式绑定的会话类名称, 未绑定时兼容回退到适配器类型
         """
         return (self.config.session_type or "").strip() or self.adapter_type
+
+    def conversation_kind(self, message: PlatformMessage) -> str:
+        """
+        将统一消息语义映射为对话类型, 适配器可覆盖扩展
+
+        参数:
+        - message: 已归一的平台消息
+
+        返回:
+        - private, group 或未识别的 other
+        """
+        value = getattr(message, "type", "")
+        value = getattr(value, "value", value)
+        return {"FriendMessage": "private", "GroupMessage": "group"}.get(str(value), "other")
+
+    def agent_route_state(self, message: PlatformMessage) -> tuple[dict[str, str], str, str, str, str, int]:
+        """
+        读取最终绑定和当前对话的持久隔离代次
+
+        参数:
+        - message: 已归一的平台消息, 身份来自入站边界
+
+        返回:
+        - 绑定, 来源, 范围, 对话类型, 对话 ID 与代次
+        """
+        from satrap.core.config.group_session import session_values
+
+        kind = self.conversation_kind(message)
+        if self.config.session_bindings and kind not in self.conversation_kinds:
+            logger.warning(f"[Agent 路由] 未声明的对话类型: {self.config.id}/{kind}")
+            raise ValueError("适配器尚未声明此事件的对话类型")
+        sender = getattr(message, "sender", None)
+        actor_id = str(getattr(sender, "user_id", "") or "")
+        group_id = str(getattr(message, "group_id", "") or "")
+        chat_id = actor_id if kind == "private" else group_id or str(getattr(message, "session_id", "") or "")
+        self_id = str(getattr(message, "self_id", "") or "")
+        binding, source = resolve_agent_binding({
+            "session_provider": self.get_session_provider(), "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+        }, kind)
+        scope = str(self.config.settings.get("context_scope", "legacy_user")) if kind == "group" else "legacy_user"
+        group_generation = 0
+        group_scope_override = False
+        group_route = getattr(self, "group_route", None)
+        if kind == "group" and group_id and callable(group_route):
+            route_result = group_route(group_id)
+            if (not isinstance(route_result, tuple) or len(route_result) != 2
+                    or not isinstance(route_result[0], dict) or type(route_result[1]) is not int):
+                logger.error(f"[Agent 路由] 群路由快照无效: {self.config.id}/{group_id}")
+                raise ValueError("群路由快照无效")
+            explicit, group_generation = route_result
+            values = session_values(explicit)
+            selected = values.get("binding")
+            if isinstance(selected, dict):
+                binding = {"provider": str(selected["provider"]), "config_name": str(selected["config_name"])}
+                source = "group"
+            if "scope" in values:
+                scope = "group" if values["scope"] == "group_shared" else "group_member"
+                group_scope_override = True
+        signature: tuple[object, ...] = (self.config.type, binding["provider"], binding["config_name"], scope,
+                                         group_generation, source, group_scope_override)
+        enabled = bool(self.config.session_bindings)
+        if enabled and (not self_id or not chat_id):
+            logger.warning(f"[Agent 路由] 缺少对话身份: {self.config.id}/{kind}")
+            raise ValueError("隔离 Agent 路由需要机器人账号与完整对话身份")
+        if self.agent_route_store is not None:
+            revision = self.agent_route_store.revision(self_id, kind, chat_id, signature, enabled=enabled)
+        else:
+            key = (self_id, kind, chat_id)
+            previous = self._agent_route_memory.get(key)
+            revision = 0
+            if enabled or previous is not None:
+                revision = previous[1] if previous and previous[0] == signature else (previous[1] + 1 if previous else 1)
+                self._agent_route_memory[key] = (signature, revision)
+        if revision:
+            if kind == "private":
+                scope = "private"
+            elif scope == "legacy_user":
+                scope = "group_member" if kind == "group" else "conversation"
+        return binding, source, scope, kind, chat_id, revision
+
+    def message_archive_scope(self, message: PlatformMessage) -> MessageScope:
+        """
+        从适配器归一的真实消息取得档案身份, 不依赖 Agent 绑定
+
+        参数:
+        - message: 当前已准入的真实平台消息
+
+        返回:
+        - 包含平台实例, 账号, 对话类型和对话 ID 的档案身份
+        """
+        kind = self.conversation_kind(message)
+        if kind not in self.conversation_kinds:
+            raise ValueError("消息档案需要适配器声明的对话类型")
+        chat_id = message.sender.user_id if kind == "private" else message.group_id or message.session_id
+        if kind == "private" and message.sender.user_id == message.self_id:
+            raise ValueError("自身私聊回显缺少已核验的接收方身份")
+        return MessageScope(self.config.id, message.self_id, kind, chat_id)
+
+    async def archive_message(self, message: PlatformMessage, *, direction: str = "inbound",
+                              scope: MessageScope | None = None) -> bool:
+        """
+        在唤醒模型之前采集准入消息, 存储失败只记录日志
+
+        参数:
+        - message: 已由适配器核验的真实平台消息
+        - direction: inbound 入站或 outbound 已确认出站
+        - scope: 适配器为自身私聊回显等情况核验的实际对话身份
+
+        返回:
+        - 新消息成功入档时返回 True, 未装配存储或失败时返回 False
+        """
+        store = self.message_archive
+        if store is None:
+            return False
+        try:
+            from satrap.core.platform.message_archive import archive_snapshot
+
+            identity = scope or self.message_archive_scope(message)
+            if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
+                raise ValueError("消息档案身份与原始消息不一致")
+            snapshot = archive_snapshot(message, direction=direction)
+            label = message.group.group_name or "" if message.group else ""
+            return await asyncio.to_thread(store.record, identity, snapshot, label=label)
+        except Exception as exc:
+            logger.error(f"[消息档案] 采集失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+            return False
+
+    def queue_confirmed_message(self, scope: MessageScope, snapshot: ArchiveMessage) -> bool:
+        """
+        将已确认的实际发送快照交给有界写入任务, 不改变发送回执
+
+        参数:
+        - scope: 提交平台动作时冻结的账号和目标身份
+        - snapshot: 平台确认消息 ID 后生成的实际内容, 不含待发送草稿
+
+        返回:
+        - 已排入写入任务时返回 True, 未配置档案或拒绝采集时返回 False
+        """
+        store = self.message_archive
+        if store is None:
+            return False
+        try:
+            if scope.adapter_id != self.config.id or snapshot.sender_id != scope.self_id:
+                raise ValueError("已确认发送的消息身份与档案范围不一致")
+            if snapshot.direction != "outbound" or not snapshot.verified or not snapshot.message_id:
+                raise ValueError("出站档案需要平台已确认的实际消息")
+            if len(self._archive_tasks) >= self._archive_capacity:
+                raise ValueError("已确认发送的档案写入队列已满")
+            task = asyncio.create_task(self._write_confirmed_message(store, scope, snapshot))
+            self._archive_tasks.add(task)
+            task.add_done_callback(self._archive_tasks.discard)
+            return True
+        except Exception as exc:
+            logger.error(f"[消息档案] 出站采集未入队, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+            return False
+
+    async def _write_confirmed_message(self, store: PlatformMessageStore, scope: MessageScope,
+                                       snapshot: ArchiveMessage) -> None:
+        """
+        在发送任务之外写入确认消息, 保留提交时的存储和身份
+
+        参数:
+        - store: 入队时所属平台的档案存储
+        - scope: 已冻结的真实发送范围
+        - snapshot: 已确认消息快照
+        """
+        try:
+            await asyncio.to_thread(store.record, scope, snapshot)
+        except asyncio.CancelledError:
+            logger.warning(f"[消息档案] 出站写入等待被取消, 平台={scope.adapter_id}, 消息={snapshot.message_id}")
+            raise
+        except Exception as exc:
+            logger.error(f"[消息档案] 出站写入失败, 平台={scope.adapter_id}, 原因={type(exc).__name__}: {exc}")
+
+    async def drain_message_archive(self, timeout: float = 5.0) -> None:
+        """
+        停止时有限等待已确认消息写入, 超时任务仍自行完成或记录失败
+
+        参数:
+        - timeout: 最多等待的秒数
+        """
+        if self._archive_tasks:
+            _, pending = await asyncio.wait(tuple(self._archive_tasks), timeout=timeout)
+            if pending:
+                logger.warning(f"[消息档案] 停止等待超时, 平台={self.config.id}, 待写入={len(pending)}")
+
+    async def archive_recall(self, scope: MessageScope, message_id: str) -> None:
+        """
+        标记已核验的撤回事件, 存储失败不打断平台事件接收
+
+        参数:
+        - scope: 适配器确认的撤回所属对话
+        - message_id: 被撤回的平台消息 ID
+        """
+        if self.message_archive is None:
+            return
+        try:
+            await asyncio.to_thread(self.message_archive.recall, scope, message_id)
+        except Exception as exc:
+            logger.error(f"[消息档案] 撤回标记失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+
+    async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        为当前轮次核验群聊身份及路由代次, 不接受模型提供目标群
+
+        参数:
+        - origin: 宿主冻结的入站来源
+
+        返回:
+        - 当前仍可访问的群档案身份, 失效或非群来源抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        if (not self.config.enable or origin.adapter_id != self.config.id or not origin.self_id
+                or origin.self_id != self.client_self_id):
+            raise GroupChatError("stale_call", "来源平台或机器人账号已经失效")
+        kind = origin.conversation_kind or {"GroupMessage": "group", "FriendMessage": "private"}.get(origin.chat_type, "")
+        if kind != "group" or kind not in self.conversation_kinds:
+            raise GroupChatError("wrong_conversation", "群聊工具只能在适配器声明的群聊中使用")
+        try:
+            scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
+        except ValueError as exc:
+            raise GroupChatError("wrong_conversation", "来源缺少有效群身份") from exc
+        if scope.chat_id != origin.chat_id:
+            raise GroupChatError("wrong_conversation", "归一对话身份与冻结来源群不一致")
+        if origin.conversation_kind:
+            if self.config.session_bindings and origin.agent_route_generation == 0:
+                raise GroupChatError("stale_call", "来源轮次早于分类型 Agent 路由启用")
+            if self.agent_route_store is not None:
+                try:
+                    revision = await asyncio.to_thread(self.agent_route_store.current_revision, scope.self_id, kind, scope.chat_id)
+                except Exception as exc:
+                    raise GroupChatError("unavailable", "来源 Agent 路由暂时无法核验", retryable=True) from exc
+            else:
+                state = self._agent_route_memory.get((scope.self_id, kind, scope.chat_id))
+                revision = state[1] if state else 0
+            if revision != origin.agent_route_generation:
+                raise GroupChatError("stale_call", "来源 Agent 路由已经切换")
+            group_route = getattr(self, "group_route", None)
+            if callable(group_route):
+                try:
+                    route = group_route(scope.chat_id)
+                except Exception as exc:
+                    logger.error(f"[群聊来源] 群路由核验失败, 平台={self.config.id}, 原因={type(exc).__name__}")
+                    raise GroupChatError("unavailable", "来源群会话路由暂时无法核验", retryable=True) from exc
+                if not isinstance(route, tuple) or len(route) != 2 or type(route[1]) is not int:
+                    raise GroupChatError("unavailable", "来源群会话路由无法核验")
+                if route[1] != origin.group_route_generation:
+                    raise GroupChatError("stale_call", "来源群会话路由已经切换")
+        if not self.config.enable or self.client_self_id != origin.self_id:
+            raise GroupChatError("stale_call", "核验期间来源平台或账号已变化")
+        return scope
+
+    def group_chat_connection_token(self) -> tuple[object, int]:
+        """
+        标识当前客户端和连接代次, 防止同一账号重连复用旧成员快照
+
+        返回:
+        - 客户端对象身份与适配器声明的连接代次
+        """
+        generation = getattr(self, "connection_generation", None)
+        value = generation() if callable(generation) else 0
+        return self.get_client(), value if type(value) is int else 0
+
+    def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
+        """
+        声明当前实例可供群聊工具使用的能力, 不执行平台探测
+
+        返回:
+        - 能力名称到 supported, unsupported, unavailable 及原因的映射
+        """
+        from satrap.core.group_chat.types import CAPABILITIES
+
+        capabilities = {name: {"state": "unsupported", "reason": "adapter_not_implemented"} for name in CAPABILITIES}
+        capabilities["archive_search"] = {"state": "supported" if self.message_archive is not None else "unavailable",
+                                          "reason": "local_archive" if self.message_archive is not None else "archive_not_configured"}
+        return capabilities
+
+    async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
+        """
+        读取指定可信群身份的成员快照, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+
+        返回:
+        - 已核验成员快照, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现成员列表读取")
+
+    async def group_chat_member(self, scope: MessageScope, user_id: str) -> VerifiedMember:
+        """
+        核验当前群中的一个成员, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+        - user_id: 待核验的成员 ID
+
+        返回:
+        - 当前群成员资料, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现成员详情读取")
+
+    async def group_chat_message(self, scope: MessageScope, message_id: str) -> VerifiedMessage:
+        """
+        回源读取并核验一条当前群消息, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+        - message_id: 待读取的消息 ID
+
+        返回:
+        - 已核验的消息及所属对话, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现单条消息回源")
+
+    def apply_agent_routes(self) -> int:
+        """
+        根据当前平台配置协调已有对话路由代次
+
+        返回:
+        - 受影响的已持久对话数, 未装配持久存储时为 0
+        """
+        if self.agent_route_store is None:
+            return 0
+        return self.agent_route_store.apply_platform({
+            "id": self.config.id, "type": self.config.type, "settings": self.config.settings,
+            "session_provider": self.get_session_provider(), "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+        })
 
     def get_session_provider(self) -> str:
         """
@@ -292,6 +659,7 @@ class PlatformAdapter(ABC):
                 pass
         self.started = False
         self._status = PlatformStatus.STOPPED
+        await self.drain_message_archive()
         logger.info(f"[PlatformAdapter] 平台已停止: {self.config.id}")
 
     async def terminate(self) -> None:
@@ -337,6 +705,10 @@ class PlatformAdapter(ABC):
         - object: 平台客户端对象, 默认返回 None
         """
         return None
+
+    async def check_connection(self) -> None:
+        """发起只读平台请求并校验响应, 不支持时抛出 NotImplementedError"""
+        raise NotImplementedError
 
     # ---------- Webhook 管理 ----------
 
@@ -386,6 +758,9 @@ class PlatformAdapter(ABC):
             "config_type": self.config.type,
             "session_provider": self.get_session_provider(),
             "session_type": self.get_session_type(),
+            "session_bindings": self.config.session_bindings,
+            "conversation_kinds": self.conversation_kinds,
+            "group_chat_capabilities": self.group_chat_capabilities(),
         }
 
     # ---------- 消息发送 ----------
@@ -1011,4 +1386,3 @@ __all__ = [
     "registry",
     "register_platform_adapter",
 ]
-

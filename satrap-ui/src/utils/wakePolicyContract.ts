@@ -95,6 +95,7 @@ export const POLICY_FIELD_BY_KEY: ReadonlyMap<string, PolicyField> = new Map(
 
 // 校验提示里的字段名: 只用于拼接文案, 与表单 label 无关
 export const POLICY_FIELD_LABELS: Record<string, string> = {
+  message_archive_retention_days: '平台消息档案保留天数',
   message_text_limit: '每条消息文本上限',
   input_text_limit: '单条消息输入文本预算',
   input_media_limit: '单条消息输入媒体上限',
@@ -108,6 +109,7 @@ export const POLICY_FIELD_LABELS: Record<string, string> = {
   media_insecure_tls: '跳过 TLS 校验',
   media_plaintext_http: '允许明文 HTTP',
   media_trusted_hosts: '媒体主机列表',
+  command_operators: '命令操作员名单',
   notice_types: '通知订阅类型',
   wake_mode: '自动参与模式',
   wake_message_threshold: '自动参与消息阈值',

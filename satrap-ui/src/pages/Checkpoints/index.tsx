@@ -1,4 +1,6 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
+import axios from 'axios';
+import { Link, useSearchParams } from 'react-router-dom';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -6,6 +8,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toast';
 import { checkpointApi } from '@/api/checkpoint';
+import { controlApi } from '@/api/control';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { formatTime } from '@/utils/format';
 import { PageHeader, DataTable, FormModal, Column, FormField, StatCard, StatCardGrid } from '@/components/common';
@@ -13,9 +16,10 @@ import { Search, GitBranch, RotateCcw, RefreshCw, Plus, GitCommitHorizontal } fr
 import type { Checkpoint } from '@/api/types';
 
 export function Checkpoints() {
+  const [search] = useSearchParams();
   const { health } = useBackendStore();
-  const [platformId, setPlatformId] = useState('local');
-  const [conversationId, setConversationId] = useState('');
+  const [platformId, setPlatformId] = useState(search.get('platform') || 'local');
+  const [conversationId, setConversationId] = useState(search.get('conversation') || '');
   const [loading, setLoading] = useState(false);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [branches, setBranches] = useState<Checkpoint[]>([]);
@@ -28,7 +32,6 @@ export function Checkpoints() {
   const [newCheckpointName, setNewCheckpointName] = useState('');
   const [newCheckpointDescription, setNewCheckpointDescription] = useState('');
   const [newBranchName, setNewBranchName] = useState('');
-  const [revertMode, setRevertMode] = useState<'rollback' | 'retry'>('rollback');
   const [lineage, setLineage] = useState<Checkpoint[]>([]);
   const [lineageLoading, setLineageLoading] = useState(false);
 
@@ -54,9 +57,11 @@ export function Checkpoints() {
     }
   }, [conversationId, platformId]);
 
+  useEffect(() => { if (search.get('conversation') === conversationId && conversationId && (search.get('platform') || 'local') === platformId) void fetchData(); }, [conversationId, fetchData, platformId, search]);
+
   const platformIds = useMemo(
-    () => Array.from(new Set(['local', 'chat', ...Object.keys(health?.adapters || {})])),
-    [health?.adapters],
+    () => Array.from(new Set(['local', 'chat', platformId, ...Object.keys(health?.adapters || {})])),
+    [health?.adapters, platformId],
   );
 
   const handleCreate = useCallback(async () => {
@@ -96,23 +101,19 @@ export function Checkpoints() {
 
   const handleRevert = useCallback(async () => {
     if (!selectedCheckpoint) return;
-    if (revertMode === 'rollback' && !window.confirm('回滚会丢弃该检查点之后的状态, 确定继续吗?')) {
+    if (!window.confirm('确定从此检查点恢复消息上下文吗？当前上下文会先备份，展示历史不会改变。')) {
       return;
     }
     try {
-      if (revertMode === 'rollback') {
-        await checkpointApi.rollback(platformId, conversationId, selectedCheckpoint);
-        toast('success', '已回滚');
-      } else {
-        await checkpointApi.retry(platformId, conversationId, selectedCheckpoint);
-        toast('success', '已重试');
-      }
+      const current = await controlApi.conversationData(platformId, conversationId, 'context');
+      await controlApi.conversationData(platformId, conversationId, 'context', { action: 'checkpoint', checkpoint_id: selectedCheckpoint, expected_revision: current.revision });
+      toast('success', '消息上下文已恢复，恢复前的数据已备份');
       setShowRevertModal(false);
       fetchData();
     } catch (e) {
-      toast('error', '操作失败: ' + (e instanceof Error ? e.message : '未知错误'));
+      toast('error', '操作失败: ' + (axios.isAxiosError<{ error?: string }>(e) ? e.response?.data?.error || e.message : e instanceof Error ? e.message : '未知错误'));
     }
-  }, [conversationId, fetchData, platformId, revertMode, selectedCheckpoint]);
+  }, [conversationId, fetchData, platformId, selectedCheckpoint]);
 
   const handleTraceLineage = useCallback(async (checkpointId: string) => {
     setShowLineageModal(true);
@@ -226,17 +227,8 @@ export function Checkpoints() {
     },
   ], [checkpoints]);
 
-  // 回滚表单字段
+  // 消息上下文恢复表单字段
   const revertFields: FormField[] = useMemo(() => [
-    {
-      key: 'mode',
-      label: '操作方式',
-      type: 'select',
-      options: [
-        { value: 'rollback', label: '回滚到检查点' },
-        { value: 'retry', label: '从检查点重试' },
-      ],
-    },
     {
       key: 'checkpoint',
       label: '选择检查点',
@@ -254,8 +246,9 @@ export function Checkpoints() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="检查点管理"
-        description="管理对话的检查点、分支和变更记录"
+        title="版本与恢复"
+        description="查看已保存的检查点、分支和变更记录"
+        actions={<Link className="text-sm text-accent" to={`/conversations?${new URLSearchParams({ platform: platformId, conversation: conversationId })}`}>返回对话记录</Link>}
       />
 
       {/* 搜索栏 */}
@@ -303,13 +296,12 @@ export function Checkpoints() {
               variant="default"
               onClick={() => {
                 setSelectedCheckpoint('');
-                setRevertMode('rollback');
                 setShowRevertModal(true);
               }}
               disabled={checkpoints.length === 0}
             >
               <RotateCcw className="h-4 w-4 mr-2" />
-              回滚 / 重试
+              恢复消息上下文
             </Button>
             <Button
               variant="default"
@@ -423,12 +415,11 @@ export function Checkpoints() {
       <FormModal
         open={showRevertModal}
         onClose={() => setShowRevertModal(false)}
-        title="回滚 / 重试"
+        title="从检查点恢复消息上下文"
         fields={revertFields}
-        values={{ checkpoint: selectedCheckpoint, mode: revertMode }}
+        values={{ checkpoint: selectedCheckpoint }}
         onChange={(key, value) => {
           if (key === 'checkpoint') setSelectedCheckpoint(value as string);
-          if (key === 'mode') setRevertMode(value as 'rollback' | 'retry');
         }}
         onSubmit={handleRevert}
         submitText="执行"

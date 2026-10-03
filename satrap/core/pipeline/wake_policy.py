@@ -4,8 +4,8 @@ from dataclasses import dataclass
 import sys
 
 from satrap.core.config.platform_policy import normalize_wake_words, policy_default_int, policy_default
+from satrap.core.components import Plain, is_self_mention
 from satrap.core.platform.event import MessageEvent
-from satrap.core.components import At, AtAll, Plain
 
 
 @dataclass(frozen=True)
@@ -125,11 +125,7 @@ def evaluate_wake(event: MessageEvent) -> WakeDecision:
         return WakeDecision(True, "upstream", "上游明确唤醒")
     self_id = event.call_origin.self_id
     components = event.get_messages()
-    if self_id and any(
-        isinstance(component, At) and not isinstance(component, AtAll)
-        and str(component.qq) != "all" and str(component.qq) == self_id
-        for component in components
-    ):
+    if any(is_self_mention(component, self_id) for component in components):
         return WakeDecision(True, "mention", "直接提及机器人", self_id)
     text_parts = [component.text for component in components if isinstance(component, Plain)]
     for key, rule, reason in [("wake_words", "wake_word", "命中唤醒词"), ("wake_aliases", "alias", "命中机器人别名")]:

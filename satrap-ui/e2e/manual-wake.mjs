@@ -115,7 +115,7 @@ try {
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', (socket) => {
     socket.send(JSON.stringify({ type: 'status', data: { running: true, adapters: {} } }));
   });
-  await page.goto(`${origin}/sessions`);
+  await page.goto(`${origin}/conversations/instances`);
   await page.getByRole('button', { name: '手动唤醒群聊', exact: true }).click();
   const dialog = page.getByRole('dialog');
   await dialog.getByLabel('平台实例', { exact: true }).selectOption('onebot-test');
@@ -184,7 +184,7 @@ try {
   await dialog.getByLabel('会话成员 ID', { exact: false }).fill('30000');
   responseMode = 'no_pending';
   await dialog.getByRole('button', { name: '提交唤醒' }).click();
-  await page.getByText('此群与成员范围内没有待处理正文', { exact: true }).waitFor();
+  await page.getByText('此群与成员范围内没有待处理消息', { exact: true }).waitFor();
   assert.equal(await dialog.isVisible(), true);
   // ── 批次8: unknown 与存储降级不得显示成已送达/确定失败 ──
   await page.keyboard.press('Escape');

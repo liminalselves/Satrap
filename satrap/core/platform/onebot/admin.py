@@ -12,6 +12,7 @@ import asyncio
 import base64
 import binascii
 import json
+import re
 import unicodedata
 
 from satrap.core.components import BaseMessageComponent, Node, Plain
@@ -32,6 +33,17 @@ class UnsupportedAdminAction(PlatformAdminError):
 class AdminActionRejected(PlatformAdminError):
     """平台明确拒绝执行, 不自动重试"""
 
+    def __init__(self, message: str, *, retcode: int | None = None) -> None:
+        """
+        保留平台错误码, 不携带平台响应正文
+
+        参数:
+        - message: 宿主生成的错误说明
+        - retcode: 平台返回的整数错误码, 缺少或格式无效时为 None
+        """
+        super().__init__(message)
+        self.retcode = retcode if type(retcode) is int and -(2 ** 31) <= retcode < 2 ** 31 else None
+
 
 class AdminActionUnconfirmed(PlatformAdminError):
     """动作结果未知 (超时或传输异常), 不假定成功也不自动重试"""
@@ -42,6 +54,10 @@ PTT_TEXT_TIMEOUT = 25
 """fetch_ptt_text 等待秒数, 覆盖 SnowLuma/NapCat 内部 20 秒转写等待"""
 RECORD_OUT_FORMATS = frozenset({"mp3", "amr", "wma", "m4a", "spx", "ogg", "wav", "flac"})
 """get_record out_format 允许值, 与 NapCat/SnowLuma 一致"""
+GROUP_DIRECTORY_LIMIT = 10000
+"""一次群目录同步允许确认的最多条目数"""
+GROUP_DIRECTORY_BYTES = 4 * 1024 * 1024
+"""一次群目录响应允许确认的最大 UTF-8 JSON 字节数"""
 """单个管理动作含等待的最长秒数"""
 
 WRITE_ACTIONS = frozenset({
@@ -64,6 +80,7 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "get_group_member_info": ("read", "获取群成员信息"),
     "get_group_honor_info": ("read", "获取群荣誉信息"),
     "get_record": ("read", "获取语音并由实现服务端转码 (get_record out_format)"),
+    "get_image": ("read", "获取图片信息并刷新已过期的上报地址 (get_image)"),
     "fetch_ptt_text": ("read", "QQ 原生语音转文字 (fetch_ptt_text)"),
     "recall_message": ("write", "撤回消息 (delete_msg)"),
     "kick_group_member": ("write", "移出群成员"),
@@ -92,6 +109,7 @@ _CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
     "get_group_member_info": ("get_group_member_info",),
     "get_group_honor_info": ("get_group_honor_info",),
     "get_record": ("get_record",),
+    "get_image": ("get_image",),
     "fetch_ptt_text": ("fetch_ptt_text",),
     "recall_message": ("delete_msg",),
     "kick_group_member": ("set_group_kick",),
@@ -275,11 +293,22 @@ class OneBotAdmin:
             raise UnsupportedAdminAction(f"当前实现不支持动作 {action}")
         call = cast(Callable[..., Awaitable[Any]], method)
         try:
-            result = await asyncio.wait_for(call(**params), timeout)
+            async def guarded_call() -> Any:
+                """在平台写调用的同一协程中完成最后一次权限复核"""
+                from satrap.core.config.group_action_origin import current_group_action_preflight
+
+                preflight = current_group_action_preflight()
+                if preflight is not None:
+                    preflight()
+                return await call(**params)
+
+            result = await asyncio.wait_for(guarded_call(), timeout)
         except asyncio.TimeoutError as error:
             logger.warning(f"[OneBotAdmin] {action} 超时 ({timeout}s), 结果未知")
             raise AdminActionUnconfirmed(f"动作 {action} 超时, 结果未知") from error
         except PlatformAdminError:
+            raise
+        except PermissionError:
             raise
         except Exception as error:
             if self._action_failures and isinstance(error, self._action_failures):
@@ -288,9 +317,10 @@ class OneBotAdmin:
                     logger.debug(f"[OneBotAdmin] 当前实现不支持动作 {action}")
                     raise UnsupportedAdminAction(f"当前实现不支持动作 {action}") from error
                 raw_result = getattr(error, "result", None)
-                retcode = cast(dict[str, Any], raw_result).get("retcode") if isinstance(raw_result, dict) else None
+                raw_retcode = raw_result.get("retcode") if isinstance(raw_result, dict) else None
+                retcode = raw_retcode if type(raw_retcode) is int and -(2 ** 31) <= raw_retcode < 2 ** 31 else None
                 logger.warning(f"[OneBotAdmin] {action} 被平台拒绝 retcode={retcode}")
-                raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})") from error
+                raise AdminActionRejected(f"动作 {action} 被平台拒绝 (retcode={retcode})", retcode=retcode) from error
             logger.warning(f"[OneBotAdmin] {action} 结果未知: {type(error).__name__}")
             raise AdminActionUnconfirmed(f"动作 {action} 结果未知: {type(error).__name__}") from error
         self._adapter.note_action_outcome(action, True)
@@ -313,8 +343,10 @@ class OneBotAdmin:
         参数:
         - group_id: 已归一化群 ID
         """
-        if not self._adapter.allows_group(group_id):
-            raise AdminActionRejected("目标群不在当前实例允许范围内")
+        if not self._adapter.allows_management_target(group_id):
+            if self._adapter._group_access_store is None:
+                raise AdminActionRejected("目标群不在当前实例允许范围内")
+            raise AdminActionRejected("目标群成员关系未确认或已离开")
 
     async def get_group_list(self) -> list[dict[str, Any]]:
         """
@@ -333,6 +365,53 @@ class OneBotAdmin:
             data = cast(dict[str, Any], item)
             groups.append({key: data.get(key) for key in ("group_id", "group_name", "member_count", "max_member_count")})
         return groups
+
+    async def fetch_group_directory(self) -> dict[str, Any]:
+        """
+        获取带完整性证据的群目录, 截断或坏条目不能用于退群判定
+
+        返回:
+        - items 为可信群条目; complete 仅在全部条目合法且未超限时为 True
+        """
+        result = await self._call("get_group_list")
+        if not isinstance(result, list):
+            raise AdminActionUnconfirmed("群目录响应格式不符")
+        size = len(json.dumps(result, ensure_ascii=False, default=str).encode("utf-8"))
+        over_limit = len(result) > GROUP_DIRECTORY_LIMIT or size > GROUP_DIRECTORY_BYTES
+        items: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        invalid = False
+        for raw in result[:GROUP_DIRECTORY_LIMIT]:
+            if not isinstance(raw, dict):
+                invalid = True
+                continue
+            data = cast(dict[str, Any], raw)
+            group_id = str(data.get("group_id") or "")
+            if not re.fullmatch(r"[1-9][0-9]*", group_id) or group_id in seen:
+                invalid = True
+                continue
+            name = data.get("group_name")
+            if name is not None and (not isinstance(name, str) or len(name) > 200):
+                invalid = True
+                continue
+            counts: dict[str, int | None] = {}
+            for key in ("member_count", "max_member_count"):
+                count = data.get(key)
+                if count is None:
+                    counts[key] = None
+                elif isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+                    counts[key] = count
+                else:
+                    invalid = True
+                    counts[key] = None
+            seen.add(group_id)
+            items.append({"group_id": group_id, "group_name": name, **counts})
+        truncated = over_limit or invalid
+        reason = "limit_exceeded" if over_limit else "invalid_entries" if invalid else None
+        return {
+            "items": items, "complete": not truncated, "truncated": truncated,
+            "reason": reason, "raw_count": len(result),
+        }
 
     async def get_group_info(self, group_id: Any) -> dict[str, Any]:
         """
@@ -399,6 +478,35 @@ class OneBotAdmin:
             "group_id", "user_id", "nickname", "card", "role", "join_time",
             "last_sent_time", "title", "level", "sex", "shut_up_timestamp",
         )}
+
+    async def get_image(self, file: str) -> dict[str, Any]:
+        """
+        回源读取实现缓存的图片信息, 用于刷新已过期的上报地址
+
+        参数:
+        - file: 上报 image 段的 file 或 url 字段
+
+        返回:
+        - dict[str, Any]: file, url 与 file_name; url 是重新解析后的可下载地址;
+          实现不支持该动作时抛 UnsupportedAdminAction, 图片不在实现缓存时抛 AdminActionRejected
+        """
+        source = str(file).strip()
+        if not source:
+            raise ValueError("图片标识不能为空")
+        if len(source) > 512 or any(unicodedata.category(ch) == "Cc" for ch in source):
+            # 合法值是实现自定义的文件 ID 或 URL, 不做路径语义假设, 只挡控制字符与异常长度
+            raise ValueError("图片标识超长或含控制字符")
+        result = await self._call("get_image", timeout=ADMIN_TIMEOUT, file=source)
+        payload = cast(dict[str, Any], result) if isinstance(result, dict) else {}
+        url = str(payload.get("url") or "")
+        if not url:
+            # 实现返回空地址说明图片已不在其缓存中, 无法恢复
+            raise AdminActionRejected("实现未返回可下载的图片地址")
+        return {
+            "file": str(payload.get("file") or source),
+            "url": url,
+            "file_name": str(payload.get("file_name") or ""),
+        }
 
     async def get_record(self, file: str, out_format: str, max_bytes: int) -> bytes:
         """
@@ -879,7 +987,6 @@ class OneBotAdmin:
         不自动重试, 同一 flag 不可重放
         """
         gid = normalize_group_id(group_id)
-        self._check_group(gid)
         if sub_type not in {"add", "invite"}:
             raise ValueError("sub_type 必须为 add 或 invite")
         if not isinstance(approve, bool):
@@ -891,10 +998,19 @@ class OneBotAdmin:
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
         try:
-            await registry.occupy("group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type))
+            occupied = await registry.occupy(
+                "group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type),
+            )
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
-        await self._execute_request_decision(
-            "group", normalized, self_id,
-            "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
-        )
+        if occupied.group_id != gid or occupied.sub_type != sub_type or occupied.state != "executing":
+            raise AdminActionRejected("群请求占用凭据与当前动作不符")
+        from satrap.core.config.group_action_origin import bind_group_request_occupancy
+
+        with bind_group_request_occupancy(
+            self._adapter.config.id, self_id, gid, cast(str, sub_type), flag_digest("group", self_id, normalized),
+        ):
+            await self._execute_request_decision(
+                "group", normalized, self_id,
+                "set_group_add_request", {"flag": normalized, "sub_type": sub_type, "approve": approve, "reason": text},
+            )

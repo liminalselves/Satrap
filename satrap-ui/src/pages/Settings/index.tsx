@@ -7,9 +7,11 @@ import { toast } from '@/components/ui/Toast';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { controlApi } from '@/api/control';
 import { PageHeader, AlertCard } from '@/components/common';
-import { Save, RotateCcw, Power, Play, RefreshCw, FileText, AlertCircle } from 'lucide-react';
+import { Save, RefreshCw, FileText, AlertCircle } from 'lucide-react';
+import { BackendControls, backendStateLabel } from '@/components/common/BackendControls';
 import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
+import { LogRetentionPanel } from './LogRetentionPanel';
 
 interface ConfigData {
   api?: {
@@ -27,7 +29,8 @@ interface ConfigData {
 }
 
 export function Settings() {
-  const { health, isRunning, reloadConfig, shutdown, refreshAll } = useBackendStore();
+  const backend = useBackendStore();
+  const { health, isRunning, controlBackend } = backend;
   const [config, setConfig] = useState<ConfigData>({});
   const [rawConfig, setRawConfig] = useState('');
   const [loading, setLoading] = useState(false);
@@ -35,6 +38,7 @@ export function Settings() {
   const [configPath, setConfigPath] = useState('');
   const [configExists, setConfigExists] = useState(false);
   const [controlAvailable, setControlAvailable] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('general');
 
   // 从控制服务加载配置
   const loadConfig = useCallback(async () => {
@@ -70,12 +74,11 @@ export function Settings() {
         setRawConfig(yaml.dump(data, { indent: 2 }));
         setConfigExists(true);
         if (isRunning) {
-          const restarted = await controlApi.restart();
+          const restarted = await controlBackend('restart');
           toast(
             restarted.ok ? 'success' : 'warning',
-            restarted.ok ? '配置已保存, 后端正在重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
+            restarted.ok ? '配置已保存, 后端已重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
           );
-          await refreshAll();
         } else {
           toast('success', '配置已保存');
         }
@@ -87,7 +90,7 @@ export function Settings() {
     } finally {
       setSaving(false);
     }
-  }, [isRunning, refreshAll]);
+  }, [isRunning, controlBackend]);
 
   // 保存配置
   const handleSave = useCallback(async () => {
@@ -137,39 +140,6 @@ export function Settings() {
     }
   }, []);
 
-  // 重载配置
-  const handleReload = useCallback(async () => {
-    const ok = await reloadConfig();
-    toast(ok ? 'success' : 'error', ok ? '配置已重载' : '重载失败');
-  }, [reloadConfig]);
-
-  // 停止后端
-  const handleShutdown = useCallback(async () => {
-    if (!confirm('确定要停止后端吗？')) return;
-    const ok = await shutdown();
-    toast(ok ? 'success' : 'error', ok ? '后端已停止' : '停止失败');
-  }, [shutdown]);
-
-  // 启动后端
-  const handleStart = useCallback(async () => {
-    try {
-      const result = await controlApi.start();
-      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端启动中') : (result.error || '启动失败'));
-    } catch {
-      toast('error', '控制服务未运行');
-    }
-  }, []);
-
-  const handleRestart = useCallback(async () => {
-    try {
-      const result = await controlApi.restart();
-      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端重启中') : (result.error || '重启失败'));
-      await refreshAll();
-    } catch {
-      toast('error', '控制服务未运行');
-    }
-  }, [refreshAll]);
-
   // 更新配置字段
   const updateConfig = useCallback((key: string, value: unknown) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
@@ -214,37 +184,15 @@ export function Settings() {
         <h3 className="text-lg font-semibold text-text-primary mb-4">后端控制</h3>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-3 h-3 rounded-full ${health?.running ? 'bg-success' : 'bg-error'}`} />
+            <div className={`w-3 h-3 rounded-full ${backend.runState === 'unknown' || backend.operation ? 'bg-warning' : isRunning ? 'bg-success' : 'bg-text-tertiary'}`} />
             <span className="text-text-primary">
-              {health?.running ? '后端运行中' : '后端未运行'}
+              {backendStateLabel(backend)}
             </span>
             {backendUrl && (
               <span className="text-text-secondary text-sm">{backendUrl}</span>
             )}
           </div>
-          <div className="flex gap-2">
-            {isRunning ? (
-              <>
-                <Button variant="default" onClick={handleReload}>
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  重载配置
-                </Button>
-                <Button variant="primary" onClick={handleRestart}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  重启后端
-                </Button>
-                <Button variant="danger" onClick={handleShutdown}>
-                  <Power className="h-4 w-4 mr-2" />
-                  停止后端
-                </Button>
-              </>
-            ) : (
-              <Button variant="primary" onClick={handleStart} disabled={!controlAvailable}>
-                <Play className="h-4 w-4 mr-2" />
-                启动后端
-              </Button>
-            )}
-          </div>
+          <BackendControls />
         </div>
       </Card>
 
@@ -277,13 +225,18 @@ export function Settings() {
           </div>
         )}
 
-        <Tabs defaultValue="general">
+        <Tabs defaultValue="general" onValueChange={setSettingsTab}>
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
+            <TabsTrigger value="logging">日志保留</TabsTrigger>
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
+
+          <div hidden={settingsTab !== 'logging'}>
+            <LogRetentionPanel active={settingsTab === 'logging'} />
+          </div>
 
           <TabsContent value="general">
             <div className="grid grid-cols-2 gap-6">

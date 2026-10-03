@@ -3,8 +3,8 @@
 Satrap 的配置分为三层:
 
 - **项目配置**: `config.yaml` / `config.json`, 用于后端, 平台和路径
-- **模型配置**: `.satrap/model_config.json`, 由 `satrap model` 管理
-- **Session 类配置**: `.satrap/session_class_config.json`, 由 `satrap session` 管理
+- **模型配置**: `.satrap/config/model_config.json`, 由 `satrap model` 管理
+- **Session 类配置**: `.satrap/config/session_class_config.json`, 由 `satrap session` 管理
 
 ## 配置文件位置
 
@@ -21,6 +21,36 @@ Satrap 的配置分为三层:
 9. `satrap/config.json`
 
 找不到配置时会创建 `.satrap/config.yaml`。
+
+JSON 配置统一保存在 `.satrap/config/`:
+
+```text
+.satrap/
+├── config.yaml
+├── config/
+│   ├── model_config.json
+│   ├── session_class_config.json
+│   ├── edictum_session_config.json
+│   ├── chat_plugins.json
+│   ├── logging.json
+│   └── plugins/                    # 各插件的全局 JSON 配置
+├── background-services/
+│   ├── stdout.log
+│   └── stderr.log
+├── credentials/
+│   └── api-token                   # 本地管理接口共享凭据
+├── runtime/                       # PID, 后端及发行启动器的实例锁
+├── logs/                          # 按日期和进程划分的应用日志
+└── data/                          # 对话, 用户及运行状态
+```
+
+首次使用默认路径时会将旧版根目录下对应 JSON 和 `plugin_config/` 自动迁移到新位置, 内容保持不变。新位置已有配置时优先使用新配置, 不覆盖任一份文件; 迁移失败时记录错误并继续使用旧配置, 避免生成空配置。升级前应先停止旧版本进程, 避免它们继续写入旧位置。
+
+`SATRAP_CONFIG_ROOT` 可统一指定 JSON 配置目录, 设置后不迁移项目旧配置。单独指定的 `SATRAP_MODEL_CONFIG_PATH`、`SATRAP_SESSION_CLASS_CONFIG_PATH`、`SATRAP_EDICTUM_CONFIG_PATH`、`SATRAP_LOG_CONFIG` 或管理器显式路径继续优先。`config.yaml`、运行账本、对话备份和编码插件状态保留各自位置。
+
+`scripts/start-background-services.ps1 -Detach` 的启动输出写入 `background-services/stdout.log` 和 `stderr.log`, 与应用日志分开保存。
+
+`api-token` 保存到 `.satrap/credentials/`, PID 和后端实例锁保存到 `.satrap/runtime/`; 发行启动器的实例记录, 停止标记与锁也使用 `runtime/`。旧版默认文件首次使用时自动迁移, 令牌内容不变; 仍被持有的旧实例锁会继续使用旧路径, 避免绕过单实例保护。升级前应停止旧版本服务。`SATRAP_CREDENTIALS_ROOT` 和 `SATRAP_RUNTIME_ROOT` 可分别覆盖这两个目录。配置写入锁与数据写入锁仍随对应配置或数据库保存。
 
 ## 生成配置
 
@@ -72,6 +102,10 @@ Copy-Item config.example.yaml config.yaml
 | `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录 |
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
 | `platforms` | `[]` | 平台适配器实例配置 |
+
+平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
+
+平台实例的 `session_type` 与 `session_provider` 在保存阶段不做存在性校验, 可以先保存一个暂时不可用的绑定。可用性只在平台启用时强制: `enable: false` 的平台允许绑定缺失或失效, 重载成功且实例保持惰性; `enable: true` 时只有定义或 Provider 不存在才拒绝应用 (保留原实例与原生效版本, 不回退到 `default_session_type`), 而绑定的会话定义被禁用时平台照常连接与启动, 该绑定的消息在进入唤醒与窗口之前被丢弃, 重新启用定义后无需重建平台即恢复。详见[平台接入](../platform/platforms.md)的配置保存与生效一节与[会话 Provider 与 Edictum 冷配置](../edictum/session-providers.md)的 `enabled` 完整效果。
 
 ## 模型配置
 
@@ -154,6 +188,8 @@ satrap session enable assistant
 
 ## 环境变量
 
+文件日志的保留策略在「设置 → 日志保留」独立管理, 默认自动保留 30 个自然日。配置位于 `.satrap/config/logging.json`, 修改无需重启后端, 详见 [日志保留](logging.md)。`SATRAP_LOG_ROOT` 和 `SATRAP_LOG_CONFIG` 分别覆盖日志目录与策略文件路径。
+
 `ConfigLoader.merge_env()` 支持这些覆盖项:
 
 | 环境变量 | 覆盖字段 |
@@ -167,9 +203,9 @@ satrap session enable assistant
 
 平台配置中的敏感字段可以写成 `${ENV_NAME}` 形式, 由相关配置编辑流程解析。
 
-管理 HTTP/WS 服务始终启用共享令牌鉴权。回环监听时首次启动会生成 `.satrap/api-token`, CLI 和开发脚本会自动读取该文件。浏览器管理界面由回环客户端和白名单 Origin 引导建立 HttpOnly 会话, Cookie 使用服务端保存且可撤销的随机会话 ID, 不包含 API token, 默认 8 小时过期。该引导流程信任本机进程与白名单前端; 如需关闭无 Bearer token 的回环引导, 设置 `SATRAP_LOOPBACK_BOOTSTRAP=0`。绑定 `0.0.0.0`、局域网地址或其他非回环地址时必须显式设置至少 32 个字符的 `SATRAP_API_TOKEN`, 否则服务拒绝启动。
+管理 HTTP/WS 服务始终启用共享令牌鉴权。回环监听时首次启动会生成 `.satrap/credentials/api-token`, CLI 和开发脚本会自动读取该文件。浏览器管理界面由回环客户端和白名单 Origin 引导建立 HttpOnly 会话, Cookie 使用服务端保存且可撤销的随机会话 ID, 不包含 API token, 默认 8 小时过期。该引导流程信任本机进程与白名单前端; 如需关闭无 Bearer token 的回环引导, 设置 `SATRAP_LOOPBACK_BOOTSTRAP=0`。绑定 `0.0.0.0`、局域网地址或其他非回环地址时必须显式设置至少 32 个字符的 `SATRAP_API_TOKEN`, 否则服务拒绝启动。
 
-跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/api-token` 提交到版本库或写入前端构建变量。
+跨域浏览器访问使用精确 Origin 白名单。默认仅允许 Satrap 的本地服务端口和 Vite 开发端口, 额外来源通过逗号分隔的 `SATRAP_ALLOWED_ORIGINS` 配置, 例如 `https://admin.example.com`。不要把 `.satrap/credentials/api-token` 提交到版本库或写入前端构建变量。
 
 内置 HTTP 服务默认限制 256 个并发连接和 64 个 WebSocket 连接。WebSocket 每 30 秒发送 ping, 连续 5 分钟未收到客户端帧时主动关闭; 客户端单帧上限为 64 KiB。前端静态产物可在鉴权前访问以支持登录引导, 因此构建目录仅应包含公开文件; 服务会拒绝隐藏文件和 source map。
 

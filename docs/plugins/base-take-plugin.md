@@ -42,7 +42,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | memory_scope | string | 空 | 独立调用的作用域覆盖; 平台运行时固定按会话注入 |
 | memory_mode | select | full | 记忆模式: disabled (不注入/不可写) / base (只读) / full (可增删改); 仅约束模型工具与注入, web 管理接口 (前端面板) 恒定可写 |
 
-安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/plugin_config/base_take.json`。
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/base_take.json`。
 
 ## 沙箱协调
 

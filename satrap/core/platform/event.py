@@ -114,7 +114,7 @@ class MessageChain:
         返回:
         - MessageChain: 从纯文本快速构造消息链
         """
-        return cls([BaseMessageComponent(type=PlatformComponentType.Plain, text=text)])
+        return cls([Plain(text)])
 
     @property
     def components(self) -> list[BaseMessageComponent]:
@@ -347,9 +347,68 @@ class MessageEvent:
         self.platform_meta = platform_meta
         self.adapter = adapter
         self.queued_at = monotonic()
-        self.policy_settings = resolve_wake_settings(adapter.config.settings, self.get_group_id()) if isinstance(adapter, PlatformAdapter) else {}
+        resolve_group_policy = getattr(adapter, "resolve_policy_settings", None)
+        resolved_policy = (
+            resolve_group_policy(self.get_group_id())
+            if callable(resolve_group_policy)
+            else resolve_wake_settings(adapter.config.settings, self.get_group_id())
+            if isinstance(adapter, PlatformAdapter) else {}
+        )
+        if not isinstance(resolved_policy, dict):
+            raise RuntimeError("群策略快照无效")
+        self.policy_settings: dict[str, Any] = resolved_policy
         self.session_provider = session_provider
         self.session_type = session_type
+        self.group_route_generation = 0
+        self.group_config_revision: int | None = None
+        self.group_session_overrides: dict[str, object] = {}
+        self.agent_route_generation = 0
+        self.agent_binding_source = "platform"
+        self.agent_context_scope = "legacy_user"
+        self.conversation_kind = ""
+        self.conversation_id = ""
+        group_route = getattr(adapter, "group_route", None)
+        if self.get_group_id() and callable(group_route):
+            from satrap.core.config.group_session import session_values
+
+            route_revision = getattr(adapter, "group_route_revision", None)
+            route_result = route_revision(self.get_group_id()) if callable(route_revision) else group_route(self.get_group_id())
+            if isinstance(route_result, tuple) and len(route_result) == 3:
+                route_settings, generation, revision = route_result
+                if isinstance(revision, int):
+                    self.group_config_revision = revision
+                route_result = (route_settings, generation)
+            if not isinstance(route_result, tuple) or len(route_result) != 2:
+                raise RuntimeError("群会话路由快照无效")
+            route_settings, generation = route_result
+            if not isinstance(route_settings, dict) or not isinstance(generation, int):
+                raise RuntimeError("群会话路由快照无效")
+            route_values = session_values(route_settings)
+            binding = route_values.get("binding")
+            if isinstance(binding, dict):
+                self.session_provider = str(binding["provider"])
+                self.session_type = str(binding["config_name"])
+            scope = route_values.get("scope")
+            if scope in {"group_member", "group_shared"}:
+                self.policy_settings["context_scope"] = "group" if scope == "group_shared" else "group_member"
+            self.group_session_overrides = {
+                key: value for key, value in route_values.items()
+                if key in {"model", "prompt", "plugins"}
+            }
+            self.group_route_generation = generation
+
+        if isinstance(adapter, PlatformAdapter):
+            binding, source, scope, kind, chat_id, route_generation = adapter.agent_route_state(platform_message)
+            self.agent_route_generation = route_generation
+            self.agent_binding_source = source
+            self.agent_context_scope = scope
+            self.conversation_kind = kind
+            self.conversation_id = chat_id
+            if route_generation:
+                self.session_provider = binding["provider"]
+                self.session_type = binding["config_name"]
+                if kind == "group":
+                    self.policy_settings["context_scope"] = scope
 
         mt = platform_message.type.value if isinstance(platform_message.type, PlatformMessageType) else str(platform_message.type)
         self.session = MessageSession(
@@ -361,6 +420,8 @@ class MessageEvent:
             adapter_id=platform_meta.id, self_id=self.get_self_id(), chat_type=mt,
             chat_id=self.get_group_id() or self.get_sender_id(), actor_id=self.get_sender_id(),
             source_message_id=safe_getattr_str(platform_message, "message_id"), request_id=uuid.uuid4().hex,
+            conversation_kind=self.conversation_kind, conversation_id=self.conversation_id,
+            agent_route_generation=self.agent_route_generation, group_route_generation=self.group_route_generation,
         )
 
         self.role = "member"
@@ -386,6 +447,20 @@ class MessageEvent:
         - CallOrigin: 不随消息预处理和会话路由变化的身份
         """
         return self._call_origin
+
+    def agent_route_is_current(self) -> bool:
+        """
+        检查冻结的 Agent 绑定代次仍然有效
+
+        返回:
+        - 代次相同且绑定未变化时为 True, 旧排队事件不能进入新 Agent
+        """
+        if not isinstance(self.adapter, PlatformAdapter):
+            return True
+        binding, _, _, _, _, revision = self.adapter.agent_route_state(self.platform_message)
+        return revision == self.agent_route_generation and (
+            not revision or (binding["provider"], binding["config_name"]) == (self.session_provider, self.session_type)
+        )
 
     @property
     def unified_msg_origin(self) -> str:
@@ -808,28 +883,41 @@ class MessageEvent:
             conversation=conversation,
         )
 
-    async def send(self, message: MessageChain, *, purpose: str = "business") -> None:
+    async def send(self, message: MessageChain, *, purpose: str = "business", explicit_reply: bool = False) -> None:
         """
         发送消息到当前会话
 
         参数:
         - message: 要发送的消息链
         - purpose: business 业务输出或 error_feedback 错误反馈, 支持发送尝试记录的平台据此归并请求结论
+        - explicit_reply: 宿主已完整核验的结构化回复, True 时不自动追加引用或提及
 
         需要发送证据的请求 (已受理的手动唤醒) 由调度器在事件上设置 require_send_tracking,
         记录不可用时直接拒绝发送而不是发出一条无法确认的业务输出
         """
         if isinstance(self.adapter, PlatformAdapter):
+            submitted = False
             try:
+                if not self.adapter.config.enable or not self.agent_route_is_current():
+                    raise PermissionError("Agent 路由已变化, 旧轮次禁止发送")
+                group_route = getattr(self.adapter, "group_route", None)
+                if self.get_group_id() and callable(group_route):
+                    route_result = group_route(self.get_group_id())
+                    if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
+                        raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
+                submitted = True
                 result = await self.adapter.send_message(
-                    self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
+                    self.session_id, message if explicit_reply else self.decorate_reply(message), request_id=self._call_origin.request_id,
                     purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
                 )
                 self._record_send_result(result, purpose=purpose)
             except Exception as e:
+                import traceback
+                if explicit_reply:
+                    self._record_send_result(SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error"), purpose=purpose)
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
-                    f"错误={e}",
+                    f"错误={e}, 堆栈={traceback.format_exc()}",
                 )
 
     async def send_streaming(
@@ -846,6 +934,13 @@ class MessageEvent:
         """
         if isinstance(self.adapter, PlatformAdapter):
             try:
+                if not self.adapter.config.enable or not self.agent_route_is_current():
+                    raise PermissionError("Agent 路由已变化, 旧轮次禁止发送")
+                group_route = getattr(self.adapter, "group_route", None)
+                if self.get_group_id() and callable(group_route):
+                    route_result = group_route(self.get_group_id())
+                    if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
+                        raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
                 result = await self.adapter.send_stream(
                     self.session_id, self._decorate_stream(generator), use_fallback=use_fallback
                 )
@@ -903,6 +998,8 @@ class MessageEvent:
         """
         decorated = False
         async for chain in generator:
+            if not self.adapter.config.enable or not self.agent_route_is_current():
+                raise PermissionError("Agent 路由已变化, 停止旧轮次的流式发送")
             if not chain.components:
                 continue
             if decorated:

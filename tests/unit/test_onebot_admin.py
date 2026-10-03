@@ -149,11 +149,30 @@ class TestOneBotAdminCalls:
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.kick_group_member("456", "123")
         adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
-        with pytest.raises(AdminActionRejected, match="retcode=1200"):
+        with pytest.raises(AdminActionRejected, match="retcode=1200") as caught:
             await adapter.admin.kick_group_member("456", "123")
+        assert caught.value.retcode == 1200
         adapter._bot.set_group_kick.side_effect = RuntimeError("network")
         with pytest.raises(AdminActionUnconfirmed):
             await adapter.admin.kick_group_member("456", "123")
+
+    @pytest.mark.asyncio
+    async def test_clear_card_preserves_empty_protocol_parameter(self):
+        adapter = _adapter()
+        await adapter.admin.set_group_card("456", "123", "")
+        adapter._bot.set_group_card.assert_awaited_once_with(group_id=456, user_id=123, card="")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("retcode", [True, "100", 2 ** 32, None])
+    async def test_malformed_rejection_code_never_exposes_response(self, retcode: object):
+        adapter = _adapter()
+        adapter._bot.set_group_card.side_effect = ActionFailed({
+            "retcode": retcode, "message": "secret-response", "data": {"token": "secret-token"},
+        })
+        with pytest.raises(AdminActionRejected) as caught:
+            await adapter.admin.set_group_card("456", "123", "")
+        assert caught.value.retcode is None
+        assert "secret" not in str(caught.value)
 
     @pytest.mark.asyncio
     async def test_missing_client_is_unconfirmed(self):
@@ -194,6 +213,29 @@ class TestVoiceActions:
         adapter._bot.get_record.side_effect = ActionFailed({"retcode": 1404})
         with pytest.raises(UnsupportedAdminAction):
             await adapter.admin.get_record("f", "wav", max_bytes=10)
+
+    @pytest.mark.asyncio
+    async def test_get_image_normalizes_refreshed_url(self):
+        adapter = _adapter()
+        adapter._bot.get_image.return_value = {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+        info = await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.assert_awaited_once_with(file="9f2c.image")
+        assert info == {"file": "fresh.png", "url": "https://cdn/fresh.png", "file_name": "fresh.png"}
+
+    @pytest.mark.asyncio
+    async def test_get_image_rejects_empty_source_and_missing_url(self):
+        adapter = _adapter()
+        with pytest.raises(ValueError, match="图片标识"):
+            await adapter.admin.get_image("   ")
+        with pytest.raises(ValueError, match="控制字符"):
+            await adapter.admin.get_image("a\nb")
+        # 实现返回空地址表示图片已不在缓存, 不可当作成功
+        adapter._bot.get_image.return_value = {"file": "9f2c.image", "url": ""}
+        with pytest.raises(AdminActionRejected, match="图片地址"):
+            await adapter.admin.get_image("9f2c.image")
+        adapter._bot.get_image.side_effect = ActionFailed({"retcode": 10002})
+        with pytest.raises(UnsupportedAdminAction):
+            await adapter.admin.get_image("9f2c.image")
 
     @pytest.mark.asyncio
     async def test_fetch_ptt_text_returns_text_or_empty(self):

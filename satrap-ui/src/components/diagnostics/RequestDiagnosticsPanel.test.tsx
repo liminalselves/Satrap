@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
-import { REJECTION_STAGE_FILTER, RequestDiagnosticsPanel } from './RequestDiagnosticsPanel';
+import { REJECTION_STAGE_FILTER, RequestDiagnosticsPanel, attachmentLabel, reasonLabel } from './RequestDiagnosticsPanel';
 
 // 静态渲染只验证控件契约 (勾选/禁用/入口), 取数与筛选的实际行为由 Playwright 覆盖
 function rejectionCheckbox(markup: string): string {
@@ -34,5 +34,12 @@ describe('RequestDiagnosticsPanel', () => {
 
   it('拒绝预设的阶段取值与后端拒绝阶段一致', () => {
     expect(REJECTION_STAGE_FILTER).toBe('wake_decision,rate_limit');
+  });
+
+  it('图片与视频媒体诊断码有中文标签', () => {
+    expect(attachmentLabel('image:failed:image_url_refreshed')).toBe('图片 失败 (图片地址已刷新)');
+    expect(attachmentLabel('video:failed:video_unsupported_by_implementation')).toBe('视频 失败 (当前实现不支持视频回源)');
+    expect(reasonLabel('image_unavailable')).toBe('图片无法获取');
+    expect(reasonLabel('image_media_budget_dropped')).toBe('图片超出本事件媒体预算');
   });
 });

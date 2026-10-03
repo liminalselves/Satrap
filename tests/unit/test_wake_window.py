@@ -9,6 +9,7 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.pipeline.wake_window import WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageEvent
+from satrap.core.framework.providers import BindingState, BindingStatus
 
 
 async def event(adapter: OneBotAdapter, message_id: str, actor: str = "30", group: str = "20", text: str = "正文") -> MessageEvent:
@@ -16,6 +17,20 @@ async def event(adapter: OneBotAdapter, message_id: str, actor: str = "30", grou
     await adapter._handle_group_message({"self_id": 10, "group_id": group, "user_id": actor,
         "message_id": message_id, "message_type": "group", "message": [{"type": "text", "data": {"text": text}}]})
     return adapter._event_queue.get_nowait()
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 @pytest.mark.asyncio
@@ -57,6 +72,7 @@ async def test_frequency_scheduler_batches_and_cooldown_keeps_new_text():
         "wake_mode": "frequency", "wake_message_threshold": 2, "wake_cooldown": 60, "wake_words": ["唤醒"],
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(await event(adapter, "1", text="第一句"))
@@ -103,10 +119,11 @@ async def test_queued_event_cannot_restore_disabled_automatic_policy():
     queued = await event(adapter, "1")
     adapter.config.settings = {"wake_mode": "explicit"}
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(queued)
     manager.handle_call_async.assert_not_awaited()
-    assert not scheduler.wake_window._pending
+    assert [item.text for item in scheduler.wake_window.peek(queued)] == ["正文"]
 
 
 @pytest.mark.asyncio
@@ -115,6 +132,7 @@ async def test_max_wait_enqueues_once_without_counting_or_repeating():
         "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.02,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     original = await event(adapter, "1", text="待处理正文")
@@ -141,6 +159,7 @@ async def test_max_wait_applies_to_necessity_mode():
         "wake_mode": "necessity", "wake_score_threshold": 0.99, "wake_max_wait": 0.02,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     original = await event(adapter, "1", text="随便聊聊")
@@ -159,6 +178,7 @@ async def test_max_wait_cancelled_on_close_and_queued_ticket_revoked():
         "wake_mode": "frequency", "wake_max_wait": 0.02,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(await event(adapter, "1"))
     timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
@@ -180,6 +200,7 @@ async def test_deadline_recheck_in_cooldown_reschedules_after_cooldown_not_immed
         "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.02, "wake_cooldown": 5,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     first = await event(adapter, "1", text="第一批")
@@ -214,6 +235,7 @@ async def test_deadline_recheck_not_rescheduled_when_policy_changed():
         "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.02,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(await event(adapter, "1", text="正文"))
     timed = await asyncio.wait_for(adapter._event_queue.get(), 1)
@@ -229,7 +251,9 @@ async def test_timer_enqueue_failure_is_logged_not_lost(caplog: pytest.LogCaptur
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={
         "wake_mode": "frequency", "wake_message_threshold": 3, "wake_max_wait": 0.01,
     }))
-    scheduler = PipelineScheduler(AsyncMock())
+    anonymous_manager = AsyncMock()
+    anonymous_manager.provider_registry = _RunnableRegistry()
+    scheduler = PipelineScheduler(anonymous_manager)
     original = await event(adapter, "1", text="正文")
 
     def broken_commit(_event: object) -> bool:
@@ -461,6 +485,7 @@ async def test_zero_talk_value_max_wait_does_not_wake_real_pipeline():
         "wake_mode": "frequency", "wake_cooldown": 0, "wake_talk_value": 0, "wake_max_wait": 0.02,
     }))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     await scheduler.execute(await event(adapter, "1", text="等很久了"))
@@ -488,6 +513,7 @@ async def test_zero_talk_value_keeps_mention_and_manual_wake():
     }
     adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings=settings))
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     # 显式 @ 事件不经 decide 自动路径, 直接进入模型

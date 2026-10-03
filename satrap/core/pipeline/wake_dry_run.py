@@ -11,7 +11,7 @@ import re
 from satrap.core.config.platform_policy import POLICY_DEFAULTS, normalize_group_whitelist, policy_default, validate_wake_policy
 from satrap.core.config.wake_overrides import SOURCE_PLATFORM, resolve_wake_policy_sources, resolve_wake_settings
 from satrap.core.pipeline.wake_policy import NEVER_TRIGGER_THRESHOLD, WakeDecision, evaluate_wake, resolve_message_threshold
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageEvent
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -234,7 +234,7 @@ async def dry_run_wake(payload: object) -> dict[str, Any]:
     # 自动路径: 隔离窗口按样例时间推进, submit 步骤经 decide+claim 真实标记提交以覆盖冷却
     window = WakeWindow()
     now = _BASE_NOW
-    snapshot: tuple[PendingText, ...] = ()
+    snapshot: tuple[PendingMessage, ...] = ()
     last_event: MessageEvent | None = None
     step_results: list[dict[str, object]] = []
     for index, step in enumerate(steps):

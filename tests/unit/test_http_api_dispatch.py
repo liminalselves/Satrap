@@ -319,3 +319,45 @@ async def test_ui_config_and_health(tmp_path: Path):
     status, data = await _route(server, "GET", "/api/health")
     assert status == 503
     assert data["healthy"] is False
+
+
+@pytest.mark.asyncio
+async def test_conversation_data_route_isolated_edit_conflict_and_failure_recovery(tmp_path: Path, monkeypatch):
+    from satrap.core.backend import http_api
+    from satrap.core.utils.context import ContextManager
+    import json
+
+    server = _make_server(tmp_path)
+    database = server.backend.platform_db_path("local")
+    context = ContextManager("route-main", db_path=database)
+    try:
+        context.add_user_message("原始输入")
+    finally:
+        context.close()
+    payload = {"platform_id": "local", "conversation_id": "route-main", "layer": "context"}
+    async def request(extra=None):
+        return await _route(server, "POST", "/api/conversation-data", json.dumps({**payload, **(extra or {})}, ensure_ascii=False).encode("utf-8"))
+
+    status, before = await request()
+    assert status == 200
+    status, edited = await request({"action": "edit", "index": 0, "content": "修改输入", "expected_revision": before["revision"]})
+    assert status == 200 and edited["items"][0]["content"] == "修改输入"
+    status, _ = await request({"action": "clear", "expected_revision": before["revision"]})
+    assert status == 409
+    status, _ = await request({"conversation_id": "missing"})
+    assert status == 404
+    status, _ = await request({"conversation_id": None})
+    assert status == 400
+
+    logs = []
+    monkeypatch.setattr(http_api.logger, "error", logs.append)
+    original = http_api.manage_platform_data
+    async def broken(*args, **kwargs):
+        raise RuntimeError("测试运行实例失败")
+    monkeypatch.setattr(http_api, "manage_platform_data", broken)
+    status, _ = await request()
+    assert status == 500
+    assert "local/route-main" in logs[0] and "Traceback" in logs[0]
+    monkeypatch.setattr(http_api, "manage_platform_data", original)
+    status, recovered = await request()
+    assert status == 200 and recovered["revision"] == edited["revision"]

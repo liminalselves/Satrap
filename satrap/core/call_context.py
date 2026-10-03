@@ -20,6 +20,10 @@ class CallOrigin:
     request_id: str
     actor_kind: str = "platform_user"
     route_user_id: str = ""
+    conversation_kind: str = ""
+    conversation_id: str = ""
+    agent_route_generation: int = 0
+    group_route_generation: int = 0
 
 
 @dataclass
@@ -31,6 +35,35 @@ class _CallScope:
 
 
 _CURRENT_CALL: ContextVar[_CallScope | None] = ContextVar("satrap_current_call", default=None)
+_TOOL_WORKFLOW: ContextVar[object | None] = ContextVar("satrap_tool_workflow", default=None)
+
+
+def current_tool_workflow() -> object | None:
+    """
+    读取正在执行工具的工作流, 区分共享工具的主 Agent 和子 Agent
+
+    返回:
+    - 工作流对象, 非模型工具调用时为 None
+    """
+    return _TOOL_WORKFLOW.get()
+
+
+@contextmanager
+def bind_tool_workflow(workflow: object) -> Iterator[None]:
+    """
+    在工具调用边界绑定执行者, 嵌套子 Agent 结束后恢复主工作流
+
+    参数:
+    - workflow: 实际调用工具的工作流
+
+    返回:
+    - 工具执行上下文
+    """
+    token = _TOOL_WORKFLOW.set(workflow)
+    try:
+        yield
+    finally:
+        _TOOL_WORKFLOW.reset(token)
 
 
 def current_call_origin() -> CallOrigin | None:

@@ -9,7 +9,7 @@
         description: "沙箱根目录"
 
 配置存储:
-- 全局默认: .satrap/plugin_config/<plugin_name>.json (所有会话共享)
+- 全局默认: .satrap/config/plugins/<plugin_name>.json (所有会话共享)
 - 会话覆盖: platform.db 按会话和配置域保存显式字段, 安装时读取
 
 合成顺序: schema.default < 全局 JSON < Edictum 命名配置 < 会话覆盖
@@ -24,10 +24,12 @@ import tempfile
 import math
 import re
 
+from satrap.core.config_paths import get_config_path
+
 from satrap.core.log import logger
 
-CONFIG_DIR = Path(".satrap") / "plugin_config"
-"""插件全局配置目录 (相对工作目录)"""
+CONFIG_DIR = get_config_path("plugins", legacy_name="plugin_config")
+"""插件全局配置目录, 与其它 JSON 配置共用项目 .satrap/config"""
 
 _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm", "embed", "rerank", "asr", "knowledge_base", "knowledge_bases")
 """支持的配置字段类型"""
@@ -187,7 +189,7 @@ class PluginConfigManager:
     """
     插件配置管理器: 全局 json 读写 + 两级合成
 
-    全局配置存 .satrap/plugin_config/<name>.json; 会话覆盖由调用方传入
+    全局配置存 .satrap/config/plugins/<name>.json; 会话覆盖由调用方传入
     """
 
     def __init__(self, config_dir: str | Path | None = None) -> None:
@@ -285,7 +287,9 @@ class PluginConfigManager:
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
         try:
-            with REFERENCE_SCAN_LOCK:
+            from satrap.core.storage.file_lock import FileLock
+
+            with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
                 with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
                     temporary = Path(file.name)
                     json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)

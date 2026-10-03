@@ -1,95 +1,99 @@
 """OneBot 群管理同步和异步模型工具, 权限以来源身份为准, 写操作默认关闭"""
 from __future__ import annotations
 
-from collections.abc import Coroutine
+from collections.abc import Awaitable, Coroutine
 from typing import Any, TypeVar, cast, overload
 
 import asyncio
+import weakref
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.call_context import CallOrigin, require_call_origin
+from satrap.core.call_context import CallOrigin, bind_call_origin, require_call_origin
+from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
 
+_ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
+
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
     # 工具名: (描述, 参数, 必填参数, 是否写操作, 是否需要群上下文)
-    "group_admin_list_groups": ("列出机器人所在群, 返回群号和群名", {}, [], False, False),
-    "group_admin_get_group_info": ("查看群信息, 不含群号时默认当前群", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_list_groups": ("查看机器人加入了哪些群, 返回群号和群名", {}, [], False, False),
+    "group_admin_get_group_info": ("查看群名, 群号和成员人数等基本信息; 不填 group_id 时查看当前群", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
     }, [], False, True),
-    "group_admin_list_members": ("列出群成员, 不含群号时默认当前群", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_list_members": ("查看群成员列表, 包括成员 QQ 号, 昵称, 群名片和角色; 需要确认群里有哪些人时使用", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
     }, [], False, True),
-    "group_admin_get_member": ("查看群成员信息", {
-        "user_id": ("string", "目标成员 QQ"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_get_member": ("查看某位群成员的资料, 包括昵称, 群名片和群主/管理员/普通成员身份; 需要确认操作对象时使用", {
+        "user_id": ("string", "要查看的成员 QQ 号, 填写数字字符串; 可从群成员查询结果中取得"), "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], False, True),
-    "group_admin_get_honors": ("查看群荣誉信息", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "honor_type": ("string", "talkative/performer/legend/strong_newbie/emotion 之一, 默认 all"),
+    "group_admin_get_honors": ("查看群里的龙王, 群聊之火等荣誉及对应成员; 不指定荣誉类型时查询全部类型", {
+        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
+        "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
     }, [], False, True),
-    "group_admin_get_message": ("回源读取一条群消息的原文与发送者", {
-        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    "group_admin_get_message": ("向平台查询一条群消息, 返回原文和发送者; 需要查看引用消息或确认某条原话时使用", {
+        "message_id": ("string", "要查看的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["message_id"], False, True),
-    "group_admin_get_forward": ("回源读取合并转发内容, 不展开嵌套转发; 必须提供包含该转发的来源消息", {
-        "forward_id": ("string", "合并转发消息 ID"),
-        "source_message_id": ("string", "包含该转发的群消息 ID, 必须是当前群内的消息 (用于核验来源归属)"),
-        "group_id": ("string", "所在群号, 可选, 默认当前群"),
+    "group_admin_get_forward": ("查看群里一条合并转发消息的内容; 同时提供转发 ID 和群里包含它的消息 ID. 转发中的其他合并转发不会自动展开", {
+        "forward_id": ("string", "合并转发内容的 ID, 从包含转发的群消息中取得"),
+        "source_message_id": ("string", "群里包含这条合并转发的消息 ID, 用来确认转发属于目标群"),
+        "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["forward_id", "source_message_id"], False, True),
-    "group_admin_send_forward": ("向群发送合并转发消息, 经统一发送通道按序投递", {
-        "nodes": ("array", "节点列表, 每项为 {content: 1 到 2000 字符文本, name: 可选昵称}, 共 1 到 30 项"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_send_forward": ("把多段文字作为一条合并转发消息发到群里; 需要把长内容分段展示时使用. 发送是否成功以实际返回结果为准, 结果未知时不要重复发送", {
+        "nodes": ("array", "按显示顺序填写 1 到 30 段内容, 每项为 {content: 文字, name: 可选显示名称}; 每段文字 1 到 2000 字符"),
+        "group_id": ("string", "接收消息的群号, 不填则发送到当前群"),
     }, ["nodes"], True, True),
-    "group_admin_recall_message": ("撤回当前群的一条消息", {
-        "message_id": ("string", "平台消息 ID"), "group_id": ("string", "消息所在群号, 可选, 默认当前群"),
+    "group_admin_recall_message": ("撤回群里的一条指定消息, 需要填写该消息的 ID; 能否撤回取决于机器人权限和平台限制" + _ACTION_RESULT_DESCRIPTION, {
+        "message_id": ("string", "要撤回的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["message_id"], True, True),
-    "group_admin_kick": ("将成员移出群聊", {
-        "user_id": ("string", "目标成员 QQ"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "reject_add_request": ("boolean", "是否拒绝其后续加群请求, 默认 false"),
+    "group_admin_kick": ("将指定成员移出群聊; 操作前确认对方的 QQ 号. 默认允许对方重新申请入群" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要移出群聊的成员 QQ 号, 从已确认的成员资料中取得"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
+        "reject_add_request": ("boolean", "是否拒绝对方之后的加群申请; true 拒绝, false 允许重新申请, 不填默认 false"),
     }, ["user_id"], True, True),
-    "group_admin_ban": ("禁言群成员, 时长 0 秒表示解除禁言", {
-        "user_id": ("string", "目标成员 QQ"), "duration": ("number", "禁言秒数, 0 到 2592000, 默认 1800"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_ban": ("禁言指定群成员, 或解除该成员的禁言; duration 填 0 表示解除禁言" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要禁言或解除禁言的成员 QQ 号, 从已确认的成员资料中取得"), "duration": ("number", "禁言时长, 单位为秒; 600 表示十分钟, 0 表示解除禁言. 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_whole_ban": ("开启或解除全员禁言", {
-        "enable": ("boolean", "true 开启, false 解除"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_whole_ban": ("开启或关闭整个群的全员禁言, 与对单个成员禁言不同" + _ACTION_RESULT_DESCRIPTION, {
+        "enable": ("boolean", "true 开启全员禁言, false 关闭全员禁言"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True, True),
-    "group_admin_ban_anonymous": ("禁言匿名成员", {
-        "flag": ("string", "匿名消息上报的 anonymous flag"), "duration": ("number", "禁言秒数, 默认 1800"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_ban_anonymous": ("禁言群里某条匿名消息的发送者; 需要消息中提供的匿名身份标识, 不能用昵称代替" + _ACTION_RESULT_DESCRIPTION, {
+        "flag": ("string", "匿名消息里的 anonymous flag, 必须使用平台提供的原值"), "duration": ("number", "禁言时长, 单位为秒; 不填默认 1800, 最长 2592000 秒 (30 天)"),
+        "group_id": ("string", "匿名消息所在的群号, 不填则使用当前群"),
     }, ["flag"], True, True),
-    "group_admin_set_admin": ("设置或取消群管理员", {
-        "user_id": ("string", "目标成员 QQ"), "enable": ("boolean", "true 设置, false 取消"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_admin": ("将指定成员设为群管理员, 或取消其管理员身份; 需要机器人具有群主权限" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要设置或取消管理员身份的成员 QQ 号"), "enable": ("boolean", "true 设为管理员, false 取消管理员身份"),
+        "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["user_id", "enable"], True, True),
-    "group_admin_set_anonymous": ("开启或关闭群匿名聊天", {
-        "enable": ("boolean", "true 开启, false 关闭"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_anonymous": ("开启或关闭群内的匿名聊天; 是否支持取决于平台" + _ACTION_RESULT_DESCRIPTION, {
+        "enable": ("boolean", "true 允许匿名聊天, false 关闭匿名聊天"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True, True),
-    "group_admin_set_card": ("设置群成员名片, 空字符串表示删除", {
-        "user_id": ("string", "目标成员 QQ"), "card": ("string", "新名片, 不超过 60 字符"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_card": ("修改指定成员在群内显示的群名片; card 填空字符串表示清空群名片" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要修改群名片的成员 QQ 号"), "card": ("string", "新的群名片, 不超过 60 字符; 填写空字符串可清空"),
+        "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_set_name": ("修改群名", {
-        "name": ("string", "新群名, 1 到 60 字符"), "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群名片请使用 group_admin_set_card" + _ACTION_RESULT_DESCRIPTION, {
+        "name": ("string", "新的群名称, 1 到 60 字符, 不能只填空格"), "group_id": ("string", "要改名的群号, 不填则使用当前群"),
     }, ["name"], True, True),
-    "group_admin_set_title": ("设置群成员专属头衔, 空字符串表示删除", {
-        "user_id": ("string", "目标成员 QQ"), "title": ("string", "头衔文本, 不超过 18 字符"),
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
+    "group_admin_set_title": ("设置指定群成员的专属头衔; title 填空字符串表示清除头衔, 需要机器人具有相应权限" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要设置头衔的成员 QQ 号"), "title": ("string", "新的专属头衔, 不超过 18 字符; 填写空字符串可清除"),
+        "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_leave": ("退出群聊, 群主可选择解散", {
-        "group_id": ("string", "目标群号, 可选, 默认当前群"),
-        "dismiss": ("boolean", "true 解散群, 默认 false 退群"),
+    "group_admin_leave": ("让机器人退出指定群; 机器人是群主时可选择解散整个群, 解散会影响所有成员" + _ACTION_RESULT_DESCRIPTION, {
+        "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
+        "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True, True),
-    "group_admin_handle_friend_request": ("批准或拒绝好友添加请求, 不自动审批", {
-        "flag": ("string", "好友请求事件上报的标识"), "approve": ("boolean", "true 同意, false 拒绝"),
-        "remark": ("string", "同意后的好友备注, 可选"),
+    "group_admin_handle_friend_request": ("同意或拒绝机器人收到的一条好友申请; 必须使用这条申请提供的 flag, 操作是否成功以实际返回结果为准", {
+        "flag": ("string", "好友申请事件提供的请求标识, 使用原值, 不能填写 QQ 号代替"), "approve": ("boolean", "true 同意添加好友, false 拒绝申请"),
+        "remark": ("string", "同意申请后给对方设置的好友备注, 可不填"),
     }, ["flag", "approve"], True, False),
-    "group_admin_handle_group_request": ("批准或拒绝加群请求或邀请, 不自动审批", {
-        "flag": ("string", "请求事件上报的标识"), "sub_type": ("string", "add 或 invite, 必须与事件一致"),
-        "approve": ("boolean", "true 同意, false 拒绝"), "reason": ("string", "拒绝理由, 可选"),
-        "group_id": ("string", "请求所属群号, 可选, 默认当前群"),
+    "group_admin_handle_group_request": ("同意或拒绝一条加群申请, 或一条邀请机器人入群的请求; 必须使用原请求的标识和类型" + _ACTION_RESULT_DESCRIPTION, {
+        "flag": ("string", "加群申请或入群邀请事件提供的请求标识, 必须使用原值"), "sub_type": ("string", "原请求的类型: add 表示加群申请, invite 表示入群邀请; 按事件提供的类型填写"),
+        "approve": ("boolean", "true 同意该申请或邀请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
+        "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
     }, ["flag", "sub_type", "approve"], True, True),
 }
 
@@ -158,7 +162,43 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
     return group_id
 
 
-def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) -> Coroutine[Any, Any, Any]:
+def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
+    """固定可信来源并在审批时从仍有效的工具读取当前权限"""
+    tool_ref = weakref.ref(tool)
+    session_ref = getattr(tool, "_group_admin_session_ref", None)
+    if hasattr(tool, "_group_admin_session_ref") and session_ref is None:
+        raise PermissionError("模型管理工具无法复核来源会话")
+    identity = {"adapter_id": origin.adapter_id, "self_id": origin.self_id,
+                "chat_type": origin.chat_type, "chat_id": origin.chat_id,
+                "actor_id": origin.actor_id, "session_id": str(getattr(tool, "_group_admin_session_id", "")),
+                "tool_name": str(tool.tool_name)}
+
+    def verify(target_group: str) -> None:
+        """重验工具存活、插件启用状态及当前调用者和目标群限制"""
+        live_tool = tool_ref()
+        if live_tool is None or not live_tool.is_enabled():
+            raise PermissionError("模型管理工具已停用或来源已失效")
+        if session_ref is not None:
+            session = session_ref()
+            workflow = getattr(session, "_wf", None) if session is not None else None
+            tools_manager = getattr(workflow, "tools_manager", None)
+            plugins = session.list_plugins() if session is not None else []
+            plugin = next((item for item in plugins if item.name == "group_admin"), None)
+            if (tools_manager is None or tools_manager.tools.get(live_tool.tool_name) is not live_tool
+                    or not tools_manager.is_tool_enabled(live_tool.tool_name)
+                    or plugin is None or not plugin.enabled or not plugin.tools.get(live_tool.tool_name, False)):
+                raise PermissionError("模型管理工具已从来源会话移除或停用")
+        with bind_call_origin(origin):
+            current_adapter, _, current_groups = _resolve(live_tool.config, True)
+        if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
+            raise PermissionError("模型管理工具的机器人账号或平台已变化")
+        _group_id(origin, current_groups, {"group_id": target_group})
+
+    return ModelActionAuthorization(identity, verify, session_ref)
+
+
+def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
+                kwargs: dict[str, Any], source_tool: Any) -> Coroutine[Any, Any, Any]:
     """
     按工具名组装管理动作协程, 群目标默认取当前群
 
@@ -173,7 +213,43 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     - Coroutine: 待执行的管理动作
     """
     needs_group = _DEFINITIONS[name][4]
-    gid = _group_id(origin, allowed, kwargs) if needs_group else ""
+    if name == "group_admin_handle_group_request" and not str(kwargs.get("group_id") or "").strip():
+        flag = str(kwargs.get("flag") or "")
+        adapter = admin._adapter
+        entry = adapter.request_flags.ledger.lookup(adapter.config.id, adapter.bot_self_id, "group", flag)
+        if entry is None:
+            raise ValueError("群请求目标无法从原请求账本确认, 请显式指定 group_id")
+        target = str(entry["group_id"])
+        gid = _group_id(origin, allowed, {"group_id": target})
+    else:
+        gid = _group_id(origin, allowed, kwargs) if needs_group else ""
+    action_names = {
+        "group_admin_recall_message": "recall_message", "group_admin_kick": "kick_group_member",
+        "group_admin_ban": "ban_group_member", "group_admin_whole_ban": "set_group_whole_ban",
+        "group_admin_ban_anonymous": "ban_anonymous", "group_admin_set_admin": "set_group_admin",
+        "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_card": "set_group_card",
+        "group_admin_set_name": "set_group_name", "group_admin_set_title": "set_group_special_title",
+        "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
+    }
+    handler = getattr(admin._adapter, "group_action_handler", None)
+    if name in action_names and callable(handler):
+        action = action_names[name]
+        from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
+
+        params: dict[str, object] = {
+            key: value for key, value in kwargs.items() if key in ACTION_FIELDS[action]
+        }
+        for key in ("enable", "approve", "dismiss", "reject_add_request"):
+            if key in params:
+                params[key] = _as_bool(params[key], key)
+
+        async def submit() -> dict[str, Any]:
+            """把已授权的模型群管理请求交给统一审批与执行服务"""
+            source = _authorization_source(source_tool, admin, origin)
+            with bind_model_action_authorization(source):
+                return await cast(Awaitable[dict[str, Any]], handler(gid, action, params))
+
+        return submit()
     if name == "group_admin_list_groups":
         return admin.get_group_list()
     if name == "group_admin_get_group_info":
@@ -227,6 +303,8 @@ class _GroupAdminMixin:
 
     tool_name: str | None
     config: dict[str, Any]
+    _group_admin_session_ref: weakref.ReferenceType[Session | AsyncSession] | None
+    _group_admin_session_id: str
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
         if not definition or self.tool_name is None:
@@ -240,7 +318,7 @@ class _GroupAdminMixin:
         name = str(self.tool_name)
         write = _DEFINITIONS[name][3]
         adapter, origin, allowed = _resolve(self.config, write)
-        result = await _build_call(name, adapter.admin, origin, allowed, kwargs)
+        result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
         return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
@@ -253,7 +331,7 @@ class _GroupAdminMixin:
             loop = getattr(adapter, "_loop", None)
             if loop is None or loop.is_closed():
                 raise ValueError("平台事件循环不可用")
-            coro = _build_call(name, adapter.admin, origin, allowed, kwargs)
+            coro = _build_call(name, adapter.admin, origin, allowed, kwargs, self)
             future = asyncio.run_coroutine_threadsafe(coro, loop)
             try:
                 result = future.result(timeout=15)
@@ -328,9 +406,18 @@ def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list
 @overload
 def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: Any = None) -> list[AsyncGroupAdminTool]: ...
 @overload
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+def get_tools(session: Session, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+@overload
+def get_tools(session: AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]: ...
 def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
-    """平台管理工具不依赖会话状态, 权限与适配器在执行时按来源身份解析"""
-    if isinstance(session, AsyncSimpleSession):
-        return _build_tools(AsyncGroupAdminTool, config)
-    return _build_tools(GroupAdminTool, config)
+    """创建平台管理工具并保留审批时可复核的来源会话引用"""
+    tools = (_build_tools(AsyncGroupAdminTool, config) if isinstance(session, AsyncSimpleSession)
+             else _build_tools(GroupAdminTool, config))
+    try:
+        session_ref = weakref.ref(session)
+    except TypeError:
+        session_ref = None
+    for tool in tools:
+        tool._group_admin_session_ref = session_ref
+        tool._group_admin_session_id = str(getattr(session, "session_id", ""))
+    return tools

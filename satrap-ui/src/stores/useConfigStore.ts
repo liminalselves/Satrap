@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { modelApi } from '@/api/model';
 import { sessionApi } from '@/api/session';
+import { edictumApi } from '@/api/edictum';
+import type { EdictumSessionConfig } from '@/api/types';
 import type { LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig, ModelConfig, ModelType, SessionClassConfig } from '@/api/types';
 
 
@@ -13,15 +15,20 @@ interface ConfigState {
 
   // 会话类配置
   sessionClasses: Record<string, SessionClassConfig>;
+  edictumConfigs: Record<string, EdictumSessionConfig>;
 
   // 操作
   fetchModels: (type: ModelType) => Promise<void>;
   fetchAllModels: () => Promise<void>;
   fetchSessionClasses: () => Promise<void>;
+  fetchEdictumConfigs: () => Promise<void>;
   createModel: (type: ModelType, name: string, config: Partial<ModelConfig>) => Promise<boolean>;
   updateModel: (type: ModelType, name: string, config: Partial<ModelConfig>) => Promise<boolean>;
   deleteModel: (type: ModelType, name: string) => Promise<boolean>;
 }
+
+let sessionClassRequest = 0;
+let edictumRequest = 0;
 
 export const useConfigStore = create<ConfigState>((set, get) => ({
   llmConfigs: {},
@@ -29,6 +36,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   rerankConfigs: {},
   asrConfigs: {},
   sessionClasses: {},
+  edictumConfigs: {},
 
   fetchModels: async (type: ModelType) => {
     const data = await modelApi.list(type);
@@ -48,8 +56,15 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   fetchSessionClasses: async () => {
+    const request = ++sessionClassRequest;
     const data = await sessionApi.list();
-    set({ sessionClasses: data });
+    if (request === sessionClassRequest) set({ sessionClasses: data });
+  },
+
+  fetchEdictumConfigs: async () => {
+    const request = ++edictumRequest;
+    const edictumConfigs = await edictumApi.list();
+    if (request === edictumRequest) set({ edictumConfigs });
   },
 
   createModel: async (type, name, config) => {

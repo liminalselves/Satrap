@@ -262,4 +262,10 @@ def list_asr_config_references(
                 if internal not in platform_ids:
                     platform_ids.append(internal)
             references.extend(_session_override_references(layout, platform_ids, plugin_fields, config_name))
+            from satrap.core.config.group_references import list_group_references
+
+            references.extend(list_group_references(
+                "asr", config_name, layout=layout, platform_ids=platform_ids,
+                plugins_dir=plugins_dir,
+            ))
         return references

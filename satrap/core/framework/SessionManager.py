@@ -16,7 +16,7 @@ from pathlib import Path
 import secrets
 import sqlite3
 import string
-from typing import Any, Awaitable, Dict, List, Optional, Type, cast, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, cast, TYPE_CHECKING
 import json
 import time
 
@@ -43,6 +43,7 @@ from satrap.core.storage import (
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.call_context import bind_call_origin
+from satrap.core.group_chat.reply import buffer_session_reply, abort_reply_turn
 
 from satrap.core.log import logger
 
@@ -78,6 +79,8 @@ class SessionEntry:
     """会话创建时间戳"""
     last_used: float
     """会话最近使用时间戳"""
+    instance_generation: str = field(default_factory=lambda: secrets.token_urlsafe(16))
+    """会话对象的生命周期标识"""
     sync_operation_lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     """串行化同步会话运行和运行时配置更新"""
     async_operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -548,6 +551,8 @@ class SessionPool:
 
             if session_id in self._sessions:
                 entry = self._sessions[session_id]
+                if entry.session is not session:
+                    entry.instance_generation = secrets.token_urlsafe(16)
                 entry.session = session
                 entry.session_type = session_type
                 entry.last_used = now
@@ -593,6 +598,7 @@ class SessionPool:
             if current.active_calls > 0 or current.retiring:
                 return False
             current.session = replacement.session
+            current.instance_generation = replacement.instance_generation
             current.session_type = replacement.session_type
             current.created_at = replacement.created_at
             current.last_used = replacement.last_used
@@ -763,6 +769,8 @@ class SessionManager:
         self._class_cfg_mgr: SessionClassConfigManager | None = None
         self._user_mgr: UserManager | None = None
         self._model_cfg_mgr: ModelConfigManager | None = None
+        self.group_apply_reporter: Callable[[UserCall, str, str, str | None], None] | None = None
+        self.group_apply_observer: Callable[[UserCall, str, str], None] | None = None
         self.provider_registry = SessionProviderRegistry()
         self.session_class_provider = SessionClassProvider(
             self.registry,
@@ -1113,6 +1121,7 @@ class SessionManager:
             refreshed = self.store.get(session_id) or config
             candidate = self._create_entry(refreshed, add_to_pool=False)
             if candidate is None:
+                await self._persist_session_contexts(old_session)
                 mark_failed("候选会话创建失败")
                 return {
                     "ok": False,
@@ -1127,6 +1136,7 @@ class SessionManager:
                     await self._prepare_session_async(candidate.session)
             except Exception as error:
                 await self._release_session_memory_async(candidate.session)
+                await self._persist_session_contexts(old_session)
                 mark_failed(str(error))
                 return {
                     "ok": False,
@@ -1139,6 +1149,9 @@ class SessionManager:
 
             if not self.pool.replace(session_id, entry, candidate):
                 await self._release_session_memory_async(candidate.session)
+                current = self.pool.get(session_id)
+                if current is not None:
+                    await self._persist_session_contexts(current.session)
                 return {
                     "ok": False,
                     "action": "restart",
@@ -1148,6 +1161,7 @@ class SessionManager:
                     "error": "会话运行时已变化",
                 }
             await self._release_session_memory_async(old_session)
+            await self._persist_session_contexts(candidate.session)
             logger.info(f"[SessionManager] 会话已热重启: {session_id}")
             return {
                 "ok": True,
@@ -1162,6 +1176,22 @@ class SessionManager:
                 return await restart_locked()
             with entry.sync_operation_lock:
                 return await restart_locked()
+
+    @staticmethod
+    async def _persist_session_contexts(session: Session | AsyncSession) -> None:
+        """
+        在热重启操作锁内恢复最终实例的上下文数据库
+
+        参数:
+        - session: 成功时的新实例或失败时保留的旧实例
+        """
+        if safe_getattr(session, "session_ctx") is None:
+            return
+        for context in session._all_contexts().values():
+            context._mark_dirty()   # 候选初始化与插件清理可能改写同一数据库, 最终实例的上下文为准
+            synced = context._sync()
+            if inspect.isawaitable(synced):
+                await synced
 
     async def unload_session_async(self, session_id: str) -> dict[str, Any]:
         """
@@ -1327,6 +1357,7 @@ class SessionManager:
 
             entry = await self._acquire_or_create_entry_async(session_cfg)
             if entry is None:
+                abort_reply_turn()
                 logger.error(f"[SessionManager] handle_call_async 失败：会话创建失败，session_id={session_id}")
                 return ""
 
@@ -1334,7 +1365,16 @@ class SessionManager:
                 async with entry.async_operation_lock:
                     if self.pool.list_entries().get(session_id) is not entry:
                         return ""
-                    await self._prepare_session_async(entry.session)
+                    self._observe_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""))
+                    try:
+                        group_plugins = self._group_plugin_target(session_cfg, user_call)
+                        setattr(entry.session, "_satrap_group_plugins", group_plugins)
+                        await self._prepare_session_async(entry.session)
+                        await self._apply_group_session_overrides(session_cfg, entry.session, user_call, group_plugins)
+                    except Exception as error:
+                        self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), str(error))
+                        raise
+                    self._report_group_apply(user_call, session_id, getattr(entry, "instance_generation", ""), None)
 
                     if isinstance(entry.session, AsyncSession):
                         response = await self._invoke_async_session(entry.session, user_call)
@@ -1395,10 +1435,134 @@ class SessionManager:
             return "" if response is None else str(response)   # 正常返回
 
         except WorkerBusyError:
+            abort_reply_turn()
+            logger.warning(f"[SessionManager] 同步会话处理繁忙, session_id={user_call.session_id}")
             return "同步会话处理繁忙, 请稍后重试"
         except Exception as e:
-            logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] handle_call_async 发生异常: {e}, 堆栈={traceback.format_exc()}")
             return ""
+
+    def _observe_group_apply(self, user_call: UserCall, session_id: str, instance_generation: str) -> None:
+        """把群调用与当前实例的可信关联交给平台运行时"""
+        observer = getattr(self, "group_apply_observer", None)
+        if observer is None or user_call.group_config_revision is None:
+            return
+        try:
+            observer(user_call, session_id, instance_generation)
+        except Exception as error:
+            logger.error(f"[SessionManager] 群会话实例关联上报失败: {error}")
+
+    def _report_group_apply(
+        self, user_call: UserCall, session_id: str, instance_generation: str, error: str | None,
+    ) -> None:
+        """将群会话安全轮次的应用结果交给平台运行时"""
+        reporter = getattr(self, "group_apply_reporter", None)
+        if reporter is None or user_call.group_config_revision is None:
+            return
+        try:
+            reporter(user_call, session_id, instance_generation, error)
+        except Exception as report_error:
+            logger.error(f"[SessionManager] 群配置应用状态上报失败: {report_error}")
+
+    async def retry_group_session_apply_async(
+        self, session_id: str, user_call: UserCall, instance_generation: str,
+        is_current: Callable[[], bool],
+    ) -> bool:
+        """在现有实例的会话锁内重试覆盖应用, 不发起模型对话"""
+        entry = self.pool.list_entries().get(session_id)
+        session_cfg = self.store.get(session_id)
+        if entry is None or session_cfg is None or entry.instance_generation != instance_generation:
+            return False
+        async with entry.async_operation_lock:
+            if (self.pool.list_entries().get(session_id) is not entry
+                    or entry.instance_generation != instance_generation or not is_current()):
+                return False
+            try:
+                plugins = self._group_plugin_target(session_cfg, user_call)
+                setattr(entry.session, "_satrap_group_plugins", plugins)
+                await self._prepare_session_async(entry.session)
+                await self._apply_group_session_overrides(session_cfg, entry.session, user_call, plugins)
+            except Exception as error:
+                self._report_group_apply(user_call, session_id, instance_generation, str(error))
+                return False
+            if not is_current():
+                return False
+            self._report_group_apply(user_call, session_id, instance_generation, None)
+            return True
+
+    def _group_plugin_target(self, session_cfg: SessionConfig, user_call: UserCall) -> list[object] | None:
+        """合并群插件设置, 保留会话实例插件配置的最高优先级"""
+        overrides = user_call.group_session_overrides or {}
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return None
+        instance = session_cfg.session_config or {}
+        if "plugins" in instance:
+            plugins = instance["plugins"]
+            return plugins if isinstance(plugins, list) else None
+        if "plugins" not in overrides:
+            return None
+        from satrap.core.config.group_session import resolve_group_session
+
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        explicit = {"plugins": {"mode": "value", "value": overrides["plugins"]}}
+        effective, _ = resolve_group_session(
+            {}, explicit, {"plugins": resolved[1].metadata.get("plugins", [])},
+        )
+        plugins = effective["plugins"]
+        return plugins if isinstance(plugins, list) else None
+
+    async def _apply_group_session_overrides(
+        self, session_cfg: SessionConfig, session: Session | AsyncSession,
+        user_call: UserCall, group_plugins: list[object] | None,
+    ) -> None:
+        """在本轮会话锁内应用群配置, 不覆盖持久化的实例显式设置"""
+        if getattr(session_cfg, "provider_name", SESSION_CLASS_PROVIDER) != EDICTUM_PROVIDER:
+            return
+        overrides = user_call.group_session_overrides or {}
+        resolved = self.provider_registry.resolve_definition(
+            session_cfg.session_type_name or "", EDICTUM_PROVIDER,
+        )
+        if resolved is None:
+            raise ValueError("群会话命名配置不可用")
+        provider, definition = resolved
+        instance = session_cfg.session_config or {}
+        base_model = instance.get("model_name") or definition.params.get("model_name") or "default"
+        model_name = str(base_model if "model_name" in instance else overrides.get("model", base_model))
+        applied_model = getattr(session, "_satrap_group_model_name", str(base_model))
+        if model_name != applied_model:
+            model_cfg = self._model_cfg_mgr.get_llm_config(name=model_name) if self._model_cfg_mgr else None
+            if model_cfg is None or not model_cfg.api_key:
+                raise ValueError("群模型配置不存在或缺少必要凭据")
+            llm = build_llm_from_config(model_cfg, async_=isinstance(session, AsyncSession))
+            self._apply_model_reload(session_cfg.session_id or "", session, llm, model_cfg)
+        base_prompt = instance.get("system_prompt", definition.params.get("system_prompt"))
+        prompt = base_prompt if "system_prompt" in instance else overrides.get("prompt", base_prompt)
+        if prompt is None and hasattr(session, "_satrap_group_prompt"):
+            prompt = ""
+        if isinstance(prompt, str) and prompt != getattr(session, "_satrap_group_prompt", base_prompt):
+            setattr(session, "_init_system_prompt", prompt)
+            contexts = session._all_contexts()
+            for context in contexts.values():
+                compose_prompt = safe_getattr_callable(session, "compose_system_prompt")
+                effective_prompt = compose_prompt(prompt, context) if compose_prompt is not None else prompt
+                result = context.reset_system_prompt(effective_prompt)
+                if inspect.isawaitable(result):
+                    await result
+            setattr(session, "_satrap_group_prompt", prompt)
+        if group_plugins is not None:
+            reconcile = getattr(provider, "reconcile_session_plugins_async", None)
+            if callable(reconcile):
+                outcome = reconcile(session, desired_plugins=group_plugins)
+                if inspect.isawaitable(outcome):
+                    outcome = await outcome
+                if not isinstance(outcome, dict) or not outcome.get("ok", False):
+                    raise RuntimeError("群插件配置应用失败")
 
     def reload_model_configs(self) -> None:
         """同步重载活跃同步会话的 LLM 实例"""
@@ -2243,6 +2407,7 @@ class SessionManager:
         - new_llm: 新模型实例
         - llm_cfg: 新模型配置
         """
+        setattr(session, "_satrap_group_model_name", None)   # 外部模型替换前失效群覆盖缓存, 失败后下一轮仍会重试
         # 同步与异步模型类型由会话类型决定, reload_llm 恒被调用
         if isinstance(session, AsyncSession):
             session.reload_llm(cast(AsyncLLM, new_llm))
@@ -2256,6 +2421,9 @@ class SessionManager:
                 reset_llm(new_llm)
             elif workflow is not None and hasattr(workflow, "llm"):
                 workflow.llm = new_llm
+        applied_name = getattr(llm_cfg, "name", None)
+        setattr(session, "_satrap_group_model_name", applied_name if isinstance(applied_name, str) else None)
+        # 所有模型引用更新成功后记录实际应用名称, 未命名配置保留待重试状态
         logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")
 
     def _persist_config(self, config: SessionConfig) -> None:
@@ -2355,10 +2523,12 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 同步会话执行失败：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 同步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod
@@ -2376,10 +2546,12 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 异步会话执行失败：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 异步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod

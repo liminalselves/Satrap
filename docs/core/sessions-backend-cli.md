@@ -211,12 +211,12 @@ python -m satrap.main run
 
 - 仪表盘
 - 模型配置
-- Session 管理
+- Agent 配置
 - 平台状态
 - 日志监控
 - 系统设置
-- 检查点管理
-- 用户管理
+- 插件管理
+- 对话记录 (包含按用户查看, 对话实例及版本与恢复)
 
 ## 聊天插件管理
 
@@ -232,7 +232,7 @@ satrap plugin config rag --show                      # 查看插件全局配置
 satrap plugin config rag --set top_k=5               # 修改配置 (按键类型严格校验)
 ```
 
-能力生效 = 插件启用 AND 能力独立启用。Chat 服务在线时写操作走 HTTP (活动会话即时同步); 离线时直写 `.satrap/chat_plugins.json` 与 `.satrap/plugin_config/`, 下次启动生效。
+能力生效 = 插件启用 AND 能力独立启用。Chat 服务在线时写操作走 HTTP (活动会话即时同步); 离线时直写 `.satrap/config/chat_plugins.json` 与 `.satrap/config/plugins/`, 下次启动生效。
 
 ## Edictum 配置管理
 

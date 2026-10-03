@@ -11,6 +11,21 @@ from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.server_auth import ServerAuth
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def runtime():
@@ -18,6 +33,7 @@ def runtime():
     backend = BackendManager()
     backend._running = True
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     backend._scheduler = PipelineScheduler(manager)
     backend._adapter_mgr = PlatformAdapterManager()
@@ -74,6 +90,34 @@ async def test_manual_pending_window_and_stop_guard():
     event.call_llm = False
     await _scheduler(backend).execute(event)
     assert manager.handle_call_async.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_identity", [False, True])
+async def test_manual_explicit_window_rebuilds_images_and_original_nickname(with_identity: bool, monkeypatch: pytest.MonkeyPatch):
+    backend, adapter, manager = runtime()
+    adapter._bot = AsyncMock()
+    if with_identity:
+        adapter._bot.get_login_info.return_value = {"user_id": 10, "nickname": "机器人乙"}
+        adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
+    download = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + bytes(32))
+    monkeypatch.setattr("satrap.core.pipeline.media_resolve._download", download)
+    await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 1,
+        "message_type": "group", "sender": {"user_id": 30, "nickname": "小明"},
+        "message": [{"type": "image", "data": {"file": "original.image", "url": "https://cdn/original.png"}}]})
+    await _scheduler(backend).execute(adapter._event_queue.get_nowait())
+    download.assert_not_awaited()
+    payload = {"adapter_id": "bot", "group_id": "20", "user_id": "30", "request_id": "picture-window"}
+    assert (await backend.wake_platform(payload, operator="management"))["status"] == "accepted"
+    manual = adapter._event_queue.get_nowait()
+    await _scheduler(backend).execute(manual)
+    manager.handle_call_async.assert_awaited_once()
+    call = manager.handle_call_async.await_args.args[0]
+    prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群名片 本群助手]\n" if with_identity else ""
+    assert call.message == prefix + "[用户 小明 (ID 30), 消息 1] [图片 1]"
+    assert len(call.img_urls) == 1 and call.origin.actor_kind == "management"
+    download.assert_awaited_once()
+    assert (await backend.wake_platform({**payload, "request_id": "empty-picture-window"}, operator="management"))["status"] == "no_pending"
 
 
 @pytest.mark.asyncio

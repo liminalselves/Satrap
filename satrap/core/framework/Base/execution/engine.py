@@ -17,6 +17,7 @@ from satrap.core.utils.context import PreparedModelContext
 from satrap.core.type import LLMCallResponse, TokenUsage
 from satrap.core.utils.media import user_media_content, freeze_tool_result
 from .errors import ModelCallError
+from satrap.core.call_context import bind_tool_workflow
 from .store import RunStore, RunConflictError, RunNeedsAttention, fingerprint
 from .flow import ModelStep, ToolStep, agent_flow
 
@@ -349,7 +350,8 @@ async def run_async(wf: AsyncModelWorkflowFramework, **kwargs: Unpack[ExecutionO
                 value = await wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                            tools=action.tools, img_urls=action.images)
             elif isinstance(action, InvokeTool):
-                tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
+                with bind_tool_workflow(wf):
+                    tool_message, tool_result = await wf.tools_manager.execute_tool_call(action.call)
                 value = (tool_message, await asyncio.to_thread(freeze_tool_result, tool_result, wf.llm))
             elif isinstance(action, Commit):
                 value = await wf.ctx._commit_turn_messages(action.messages)
@@ -419,7 +421,8 @@ def run_sync(wf: ModelWorkflowFramework, **kwargs: Unpack[ExecutionOptions]) -> 
                 value = wf.ctx.prepare_model_context(llm=wf.llm, pending_messages=action.step.messages,
                                                      tools=action.tools, img_urls=action.images)
             elif isinstance(action, InvokeTool):
-                tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)
+                with bind_tool_workflow(wf):
+                    tool_message, tool_result = wf.tools_manager.execute_tool_call(action.call)
                 value = (tool_message, freeze_tool_result(tool_result, wf.llm))
             elif isinstance(action, Commit):
                 value = wf.ctx._commit_turn_messages(action.messages)

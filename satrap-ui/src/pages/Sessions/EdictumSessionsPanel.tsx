@@ -1,11 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Play, Plus, Power, PowerOff, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { Plus, Puzzle, RefreshCw, Settings, Trash2 } from 'lucide-react';
 
 import { edictumApi } from '@/api/edictum';
 import { sessionApi } from '@/api/session';
 import { controlApi } from '@/api/control';
 import type { ConfigReloadResult } from '@/api/backend';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import type {
   EdictumAvailablePlugin,
   EdictumSessionConfig,
@@ -19,6 +21,9 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { toast } from '@/components/ui/Toast';
 import { EdictumPluginManager } from './EdictumPluginManager';
+import { SessionEnabledToggle } from '@/components/common/SessionEnabledToggle';
+import { readEdictumParams, writeEdictumParams } from '@/utils/edictumParams';
+import { getThinkingOptions } from '@/utils/constants';
 
 interface EdictumConfigItem {
   name: string;
@@ -28,14 +33,6 @@ interface EdictumConfigItem {
 interface EdictumSessionsPanelProps {
   llmNames: string[];
   onRuntimeCreated?: () => void | Promise<void>;
-}
-
-function parseJsonObject(value: string, label: string): Record<string, unknown> {
-  const parsed = JSON.parse(value) as unknown;
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new Error(`${label}必须是 JSON 对象`);
-  }
-  return parsed as Record<string, unknown>;
 }
 
 function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
@@ -58,10 +55,13 @@ function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
 }
 
 export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSessionsPanelProps) {
+  const [searchParams] = useSearchParams();
+  const linkedName = searchParams.get('edictum');
+  const openedLink = useRef<string | null>(null);
   const { isRunning, reloadConfig } = useBackendStore();
   const [types, setTypes] = useState<EdictumTypeDefinition[]>([]);
   const [availablePlugins, setAvailablePlugins] = useState<EdictumAvailablePlugin[]>([]);
-  const [configs, setConfigs] = useState<Record<string, EdictumSessionConfig>>({});
+  const { edictumConfigs: configs, fetchEdictumConfigs, llmConfigs } = useConfigStore();
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -80,29 +80,28 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     enabled: true,
     description: '',
     model_name: '',
-    params: '{}',
+    ...readEdictumParams({}, true),
     plugins: '[]',
   });
 
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const [availableTypes, plugins, storedConfigs, platformResult] = await Promise.all([
+      const [availableTypes, plugins, platformResult] = await Promise.all([
         edictumApi.listTypes(),
         edictumApi.listPlugins(),
-        edictumApi.list(),
         controlApi.listPlatforms(),
+        fetchEdictumConfigs(),
       ]);
       setTypes(availableTypes);
       setAvailablePlugins(plugins);
-      setConfigs(storedConfigs);
       setPlatforms(platformResult.platforms || []);
     } catch (error) {
       toast('error', '读取 Edictum 配置失败: ' + (error instanceof Error ? error.message : '未知错误'));
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [fetchEdictumConfigs]);
 
   useEffect(() => {
     void refresh();
@@ -116,7 +115,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       enabled: true,
       description: '',
       model_name: llmNames[0] || '',
-      params: '{}',
+      ...readEdictumParams({}, true),
       plugins: '[]',
     });
     setModalOpen(true);
@@ -132,11 +131,18 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       enabled: config.enabled,
       description: config.description || '',
       model_name: config.model_name || '',
-      params: JSON.stringify(config.params || {}, null, 2),
+      ...readEdictumParams(config.params || {}, ['simple', 'async_simple'].includes(config.edictum_type)),
       plugins: JSON.stringify(config.plugins || [], null, 2),
     });
     setModalOpen(true);
   }, [configs]);
+
+  useEffect(() => {
+    if (linkedName && configs[linkedName] && openedLink.current !== linkedName) {
+      openedLink.current = linkedName;
+      setPluginManagerName(linkedName);
+    }
+  }, [linkedName, configs]);
 
   const save = useCallback(async () => {
     const name = form.name.trim();
@@ -147,13 +153,17 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     }
     setSaving(true);
     try {
+      if (['simple', 'async_simple'].includes(typeName) && form.thinking
+        && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)) {
+        throw new Error('绑定模型不支持当前思考强度, 请重新选择');
+      }
       const payload = {
         name,
         edictum_type: typeName,
         enabled: form.enabled,
         description: form.description,
         model_name: form.model_name,
-        params: parseJsonObject(form.params, '参数'),
+        params: writeEdictumParams(form, ['simple', 'async_simple'].includes(typeName)),
         plugins: parsePlugins(form.plugins),
       };
       if (isRunning && editingName) {
@@ -182,22 +192,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     } finally {
       setSaving(false);
     }
-  }, [editingName, form, isRunning, refresh]);
-
-  const setEnabled = useCallback(async (name: string, enabled: boolean) => {
-    try {
-      if (enabled) await edictumApi.enable(name);
-      else await edictumApi.disable(name);
-      const reloaded = !isRunning || await reloadConfig();
-      toast(
-        reloaded ? 'success' : 'warning',
-        reloaded ? `${name} 已${enabled ? '启用' : '禁用'}` : `${name} 已更新, 但后端热加载失败`,
-      );
-      await refresh();
-    } catch (error) {
-      toast('error', '状态更新失败: ' + (error instanceof Error ? error.message : '未知错误'));
-    }
-  }, [isRunning, refresh, reloadConfig]);
+  }, [editingName, form, isRunning, refresh, llmConfigs]);
 
   const remove = useCallback(async (name: string) => {
     if (!confirm(`确定要删除 Edictum 配置 "${name}" 吗?`)) return;
@@ -362,9 +357,8 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       key: 'enabled',
       title: '状态',
       render: (item) => (
-        <Badge variant={item.config.enabled ? 'success' : 'default'}>
-          {item.config.enabled ? '启用' : '禁用'}
-        </Badge>
+        <SessionEnabledToggle provider="edictum" name={item.name} enabled={item.config.enabled}
+          onChanged={async () => { await refresh(); await onRuntimeCreated?.(); }} />
       ),
     },
     {
@@ -372,12 +366,10 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       title: '操作',
       render: (item) => (
         <ActionButtons actions={[
-          item.config.enabled
-            ? { key: 'disable', icon: <PowerOff className="h-4 w-4" />, onClick: () => setEnabled(item.name, false), title: '禁用' }
-            : { key: 'enable', icon: <Power className="h-4 w-4" />, onClick: () => setEnabled(item.name, true), title: '启用' },
           {
             key: 'create-runtime',
-            icon: <Play className={`h-4 w-4 ${creatingName === item.name ? 'animate-pulse' : ''}`} />,
+            label: '创建会话',
+            icon: <Plus className={`h-4 w-4 ${creatingName === item.name ? 'animate-pulse' : ''}`} />,
             onClick: () => createRuntime(item.name),
             title: isRunning ? '创建并激活会话' : '冷创建持久化会话',
             disabled: !item.config.enabled || creatingName !== null,
@@ -393,7 +385,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         ]} />
       ),
     },
-  ], [createRuntime, creatingName, isRunning, openEdit, remove, setEnabled, typeMap]);
+  ], [createRuntime, creatingName, isRunning, openEdit, remove, refresh, onRuntimeCreated, typeMap]);
 
   const fields = useMemo<FormField[]>(() => [
     { key: 'name', label: '配置名称', required: true, placeholder: '如: platform-assistant' },
@@ -415,8 +407,19 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       options: [{ value: '', label: '暂不绑定' }, ...llmNames.map((name) => ({ value: name, label: name }))],
     },
     { key: 'description', label: '描述', placeholder: '说明该命名会话的用途' },
-    { key: 'params', label: '会话参数 (JSON 对象)', type: 'textarea', rows: 10 },
-  ], [llmNames, types]);
+    ...(['simple', 'async_simple'].includes(form.edictum_type) ? [
+      { key: 'system_prompt_enabled', label: '配置系统提示词', type: 'checkbox' as const, placeholder: '启用后使用下方提示词, 空文本会清空已有提示词' },
+      { key: 'system_prompt', label: '系统提示词', type: 'textarea' as const, rows: 6, disabled: !form.system_prompt_enabled, placeholder: '填写 bot 的角色、行为要求和回复风格' },
+      { key: 'thinking', label: '默认思考强度', type: 'select' as const,
+        options: [{ value: '', label: '默认 (关闭)' }, ...getThinkingOptions(llmConfigs[form.model_name]),
+          ...(form.thinking && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)
+            ? [{ value: form.thinking, label: `${form.thinking} (当前模型不支持, 请重新选择)` }] : [])] },
+      { key: 'temperature', label: '温度', type: 'number' as const, min: 0, max: 2, step: 0.01, placeholder: '留空继承绑定模型配置' },
+      { key: 'top_p', label: 'top_p', type: 'number' as const, min: 0, max: 1, step: 0.01, placeholder: '留空继承绑定模型配置' },
+      { key: 'max_tokens', label: '最大输出 token 数', type: 'number' as const, min: 1, step: 1, placeholder: '留空继承绑定模型配置' },
+    ] : []),
+    { key: 'params', label: '其他会话参数 (JSON 对象)', type: 'textarea', rows: 6 },
+  ], [llmNames, types, form.edictum_type, form.system_prompt_enabled, form.thinking, form.model_name, llmConfigs]);
 
   return (
     <div className="space-y-4">
@@ -511,7 +514,16 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         title={editingName ? `编辑 Edictum 配置: ${editingName}` : '新建 Edictum 配置'}
         fields={fields}
         values={form}
-        onChange={(key, value) => setForm((current) => ({ ...current, [key]: value }))}
+        onChange={(key, value) => {
+          if (key === 'edictum_type') {
+            try {
+              const params = writeEdictumParams(form, ['simple', 'async_simple'].includes(form.edictum_type));
+              setForm((current) => ({ ...current, edictum_type: String(value), ...readEdictumParams(params, ['simple', 'async_simple'].includes(String(value))) }));
+            } catch (error) {
+              toast('error', error instanceof Error ? error.message : '会话参数无效');
+            }
+          } else setForm((current) => ({ ...current, [key]: value }));
+        }}
         onSubmit={save}
         submitText={editingName ? '保存' : '创建'}
         loading={saving}
@@ -546,7 +558,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         open={pluginManagerName !== null}
         configName={pluginManagerName}
         availablePlugins={availablePlugins}
-        configuredPlugins={pluginManagerName ? configs[pluginManagerName]?.plugins || [] : []}
+        configuredPlugins={pluginManagerName ? configs[pluginManagerName]?.plugins : undefined}
         saving={pluginSaving}
         onClose={() => setPluginManagerName(null)}
         onSave={savePlugins}

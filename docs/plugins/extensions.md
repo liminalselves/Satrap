@@ -265,7 +265,7 @@ memories = store.list_all()
 插件经 meta.yaml 的 `config_schema` 声明可配置项, 按四级合并:
 
 ```text
-schema 默认 < 全局配置 (.satrap/plugin_config/<name>.json, PluginConfigManager 管理)
+schema 默认 < 全局配置 (.satrap/config/plugins/<name>.json, PluginConfigManager 管理)
            < Edictum 命名配置 (session_class_config) < 当前会话覆盖
 ```
 

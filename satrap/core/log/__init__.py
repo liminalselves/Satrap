@@ -1,11 +1,17 @@
-"""Satrap 统一日志配置与输出接口"""
-import colorlog
-from datetime import datetime
-import logging
-from os.path import dirname, abspath
-import time
-import os
+"""
+Satrap 统一日志配置与输出接口
 
+控制台日志同步到实时流, 文件日志按日期和进程隔离,
+文件故障由独立诊断通道记录, 不中断调用日志的业务
+"""
+import traceback
+import colorlog
+import logging
+from pathlib import Path
+import atexit
+
+from satrap.core.log.managed import ManagedDailyHandler, cleanup_logs, log_root, report_failure
+from satrap.core.log.policy import LogMaintenance, LoggingPolicyStore
 from satrap.core.log.stream import StandardLogStream, StandardStreamCapture, standard_log_stream
 
 
@@ -14,6 +20,8 @@ class StandardLogHandler(logging.Handler):
 
     def __init__(self, stream: StandardLogStream) -> None:
         """
+        初始化标准流处理器
+
         参数:
         - stream: 标准日志实时流
         """
@@ -31,118 +39,122 @@ class StandardLogHandler(logging.Handler):
             content = self.format(record)
             for line in content.splitlines() or (content,):
                 self._stream.publish(line, record.levelname)
-        except Exception:
-            self.handleError(record)
+        except Exception as error:
+            report_failure(f"实时日志发布失败: {error}\n{traceback.format_exc()}")
 
-class Logger():
+
+class Logger:
+    """统一业务日志接口, 独立管理输出句柄"""
+
     def __init__(
         self,
         logger_name: str,
         std_level: int = logging.INFO,
         file_level: int = logging.DEBUG,
-        std_out: bool=True,
-        file_out: bool=True,
-        output_dir: str | None=None,
-        file_name: str | None=None,
-        max_log_days: int | None=None,
-        max_file_lines: int | None=None,
+        std_out: bool = True,
+        file_out: bool = True,
+        output_dir: str | None = None,
+        file_name: str | None = None,
+        max_log_days: int | None = None,
+        max_file_lines: int | None = None,
     ) -> None:
         """
-        日志类
+        初始化控制台和文件输出
 
         参数:
-        - logger_name: 日志名称, 用于区分不同模块
-        - std_level: 控制台输出日志级别, 默认为 INFO
-        - file_level: 文件输出日志级别, 默认为 DEBUG
-        - std_out: 是否输出到控制台, 默认为 True
-        - file_out: 是否输出到文件, 默认为 True
-        - output_dir: 输出目录, 为 None 时使用默认日志目录
-        - file_name: 日志文件名, 默认为 None 时使用日期记录
-        - max_log_days: 自动删除 max_log_days 天前的日志文件, 为 None 时不清理
-        - max_file_lines: 日志文件只保留最后 max_file_lines 行, 为 None 时不截断
+        - logger_name: 日志名称
+        - std_level: 控制台级别, 默认 INFO
+        - file_level: 文件级别, 默认 DEBUG
+        - std_out: 默认是否输出到控制台
+        - file_out: 默认是否输出到文件
+        - output_dir: 兼容自定义输出根目录, 默认稳定的项目数据目录
+        - file_name: 兼容显式文件路径, 默认按日期和进程创建文件
+        - max_log_days: 兼容启动时手动指定的保留期限, 默认使用独立策略
+        - max_file_lines: 已弃用, 完整日志由日期保留策略管理, 不截断活动文件
         """
-        self.std_out = std_out
-        self.file_out = file_out
-        self.max_log_days = max_log_days
-        self.max_file_lines = max_file_lines
-        # 默认输出选项
-
+        self.std_out, self.file_out = std_out, file_out
+        self.max_log_days, self.max_file_lines = max_log_days, max_file_lines
+        self._closed = False
+        self.maintenance: LogMaintenance | None = None
+        self.stdout_logger = logging.Logger(f"{logger_name}_std", std_level)
+        self.file_logger = logging.Logger(f"{logger_name}_file", file_level)
+        self.stdout_logger.parent = logging.getLogger()
+        self.file_logger.parent = logging.getLogger()
+        # 保留根日志处理器和测试捕获的传播, 实例文件句柄仍独立
         datefmt = "%Y-%m-%d %H:%M:%S"
-        # 日期格式化, 年-月-日 时: 分: 秒
-
-        std_logfmt = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(log_color)s%(message)s"
-        # 构建标准格式
-
-        self.stdout_logger = logging.getLogger('{}_std'.format(logger_name))
-        self.stdout_logger.setLevel(std_level)
-        # 创建 logger 实例
-
-        log_colors_config = {
-            'DEBUG': 'cyan',
-            'INFO': 'green',
-            'WARNING': 'yellow',
-            'ERROR': 'red',
-            'CRITICAL': 'bold_red',
-        }   # 日志颜色配置
-
-        formatter = colorlog.ColoredFormatter(
-            fmt=std_logfmt,
+        plain_format = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
+        handler = logging.StreamHandler()
+        handler.setLevel(std_level)
+        handler.setFormatter(colorlog.ColoredFormatter(
+            fmt="[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(log_color)s%(message)s",
             datefmt=datefmt,
-            log_colors=log_colors_config,
-        )   # 彩色日志格式标准化
-
-        sh = logging.StreamHandler()
-        sh.setLevel(std_level)
-        sh.setFormatter(formatter)
-        self.stdout_logger.addHandler(sh)
-        # 绑定 formatter, 按彩色格式输出
-
-        if not isinstance(sh.stream, StandardStreamCapture):
+            log_colors={"DEBUG": "cyan", "INFO": "green", "WARNING": "yellow", "ERROR": "red", "CRITICAL": "bold_red"},
+        ))
+        self.stdout_logger.addHandler(handler)
+        if not isinstance(handler.stream, StandardStreamCapture):
             stream_handler = StandardLogHandler(standard_log_stream)
             stream_handler.setLevel(std_level)
-            stream_handler.setFormatter(logging.Formatter(
-                fmt="[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s",
-                datefmt=datefmt,
-            ))
+            stream_handler.setFormatter(logging.Formatter(plain_format, datefmt))
             self.stdout_logger.addHandler(stream_handler)
-            # 原始标准流尚未安装捕获代理时直接同步日志记录
+        self.file_handler: ManagedDailyHandler | None = None
+        self.base_dir = ""
+        try:
+            explicit_path = Path(file_name).resolve() if file_name else None
+            root = explicit_path.parent if explicit_path else (Path(output_dir) / "logs" if output_dir else log_root())
+            self.base_dir = str(root.resolve())
+            self.file_handler = ManagedDailyHandler(root, file_path=explicit_path)
+            self.file_handler.setLevel(file_level)
+            self.file_handler.setFormatter(logging.Formatter(plain_format, datefmt))
+            self.file_logger.addHandler(self.file_handler)
+            if max_log_days is not None:
+                self._cleanup_old_logs()
+            if file_name is None and max_log_days is None:
+                self.maintenance = LogMaintenance(self.file_handler, LoggingPolicyStore(root=root))
+                self.maintenance.start()
+        except Exception as error:
+            report_failure(f"日志文件或维护配置初始化失败: {error}\n{traceback.format_exc()}")
+            if self.file_handler is None:
+                self.file_logger.addHandler(logging.NullHandler())
+        if max_file_lines is not None:
+            report_failure("max_file_lines 已弃用, 保留完整日志并使用按日期清理")
+        atexit.register(self.close)
 
-        file_logfmt = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
-        # 去掉颜色字段
+    @property
+    def log_file(self) -> str | None:
+        """
+        获取当前文件路径
 
-        self.file_logger = logging.getLogger('{}_file'.format(logger_name))
-        self.file_logger.setLevel(file_level)
-        # 创建文件专用 logger, 设置日志级别为 file_level
+        返回:
+        - 已打开文件的绝对路径, 尚未写入时返回 None
+        """
+        path = self.file_handler.current_file if self.file_handler else None
+        return str(path) if path else None
 
-        if output_dir is not None:   # 指定项目根目录
-            self.base_dir = os.path.join(output_dir, 'logs')   # 指定目录
-        else:
-            self.base_dir = os.path.join(dirname(dirname(abspath(__file__))), 'logs')   # 获取上级目录的绝对路径
+    def set_service(self, service: str) -> None:
+        """
+        设置当前进程的日志服务标签
 
-        if not os.path.exists(self.base_dir):   # 检查目录是否存在, 不存在则创建
-            os.makedirs(self.base_dir, exist_ok=True)
+        参数:
+        - service: 可扩展的服务名称
+        """
+        if self.file_handler is not None:
+            self.file_handler.set_service(service)
 
-        if file_name is not None:   # 确定日志文件名
-            self.log_file = file_name
-        else:   # 未指定文件名, 则使用日期记录
-            self.log_file = os.path.join(self.base_dir, f"{logger_name}-{time.strftime('%Y%m%d')}.log")
-
-        fh = logging.FileHandler(filename=self.log_file, mode='a', encoding='utf-8')
-        fh.setLevel(file_level)
-        # 创建文件处理器
-
-        save_formatter =  logging.Formatter(
-            fmt=file_logfmt,
-            datefmt=datefmt,
-            )
-        fh.setFormatter(save_formatter)
-        self.file_logger.addHandler(fh)
-        # 绑定格式器并添加到 logger
-
-        if self.max_log_days is not None and self.max_log_days > 0:
-            self._cleanup_old_logs()
-        if self.max_file_lines is not None and self.max_file_lines > 0:
-            self._truncate_log_file()
+    def close(self) -> None:
+        """幂等关闭当前实例的全部日志句柄"""
+        if self._closed:
+            return
+        self._closed = True
+        if self.maintenance is not None:
+            self.maintenance.close()
+        for output in (self.file_logger, self.stdout_logger):
+            for handler in tuple(output.handlers):
+                output.removeHandler(handler)
+                try:
+                    handler.close()
+                except Exception as error:
+                    report_failure(f"日志处理器关闭失败: {error}\n{traceback.format_exc()}")
+        atexit.unregister(self.close)
 
     def info(self, message: str, std_out: bool | None=None, save_to_file: bool | None=None) -> None:
         """
@@ -235,64 +247,13 @@ class Logger():
             self.file_logger.critical(message)
 
     def _cleanup_old_logs(self) -> None:
-        """删除超过 max_log_days 天未修改的日志文件"""
-        max_days = self.max_log_days
-        if max_days is None:
+        """兼容显式保留期限, 清理失败不会中断初始化"""
+        if self.max_log_days is None:
             return
-        now = datetime.now().timestamp()
-        cutoff = now - max_days * 86400
-
-        if not os.path.exists(self.base_dir):
-            return
-
-        for filename in os.listdir(self.base_dir):
-            if not filename.endswith('.log'):
-                continue
-            filepath = os.path.join(self.base_dir, filename)
-            try:
-                if os.path.getmtime(filepath) < cutoff:
-                    os.remove(filepath)
-            except OSError:
-                pass
-
-    def _truncate_log_file(self) -> None:
-        """将当前日志文件截断, 只保留最后 max_file_lines 行"""
-        log_path = self.log_file
-        max_lines = self.max_file_lines
-        if log_path is None or max_lines is None:
-            return
-
-        if not os.path.exists(log_path):
-            return
-
         try:
-            with open(log_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-        except OSError:
-            return
+            cleanup_logs(Path(self.base_dir), self.max_log_days)
+        except Exception as error:
+            report_failure(f"启动清理失败: {error}\n{traceback.format_exc()}")
 
-        if len(lines) <= max_lines:
-            return
 
-        try:
-            with open(log_path, 'w', encoding='utf-8') as f:
-                f.writelines(lines[-max_lines:])
-        except OSError:
-            pass
-
-logger = Logger(logger_name="SATRAP", output_dir=".satrap", file_level=logging.WARNING, std_level=logging.DEBUG)
-
-if __name__ == "__main__":
-    logger = Logger(
-        logger_name="TEST",
-        std_level=logging.DEBUG,
-        file_level=logging.DEBUG,
-        output_dir=None,
-        file_name=None,
-    )
-
-    logger.info("This is an info message.", std_out=True, save_to_file=True)
-    logger.debug("This is a debug message.", std_out=True, save_to_file=True)
-    logger.warning("This is a warning message.", std_out=True, save_to_file=True)
-    logger.error("This is an error message.", std_out=True, save_to_file=True)
-    logger.critical("This is a critical message.", std_out=True, save_to_file=True)
+logger = Logger(logger_name="SATRAP", file_level=logging.WARNING, std_level=logging.DEBUG)

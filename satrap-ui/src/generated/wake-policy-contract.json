@@ -18,6 +18,15 @@
     {
       "display_in_preview": false,
       "hot_reload": true,
+      "key": "command_operators",
+      "kind": "list",
+      "max_items": 32,
+      "max_length": 64,
+      "scope": "platform"
+    },
+    {
+      "display_in_preview": false,
+      "hot_reload": true,
       "key": "context_scope",
       "kind": "scope",
       "scope": "platform"
@@ -94,6 +103,17 @@
       "kind": "list",
       "max_items": 32,
       "max_length": 253,
+      "scope": "platform"
+    },
+    {
+      "default": 30,
+      "display_in_preview": false,
+      "hot_reload": true,
+      "integer": true,
+      "key": "message_archive_retention_days",
+      "kind": "int",
+      "max": 3650,
+      "min": 1,
       "scope": "platform"
     },
     {
@@ -299,5 +319,5 @@
       "scope": "group"
     }
   ],
-  "version": 1
+  "version": 2
 }

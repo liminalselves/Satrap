@@ -19,6 +19,21 @@ from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import At, AtAll, Face, File, Image, Json, Plain, Reply, Unknown
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig, registry
 from satrap.core.type import PlatformMessage, PlatformMessageType
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 class FakeOneBotClient:
@@ -168,6 +183,36 @@ def test_onebot_segments_to_components():
     assert "@全体成员" in text
     assert "[图片]" in text
 
+    image = cast(Image, components[4])
+    assert image.file == "a.png"
+    assert image.url == "https://cdn/a.png"
+
+
+def test_onebot_inbound_media_keeps_file_and_url_separately():
+    components, _ = onebot_segments_to_components(
+        [
+            {"type": "image", "data": {"file": "9f2c.image", "url": "https://cdn/a.png?rkey=x"}},
+            {"type": "record", "data": {"file": "9f2c.silk", "url": "https://cdn/v.silk"}},
+            {"type": "video", "data": {"file": "9f2c.mp4", "url": "https://cdn/v.mp4"}},
+        ]
+    )
+
+    image, record, video = (cast(Any, item) for item in components)
+    # 原始上报标识是后续 get_image 刷新的唯一入口, 不能被 url 覆盖
+    assert (image.file, image.url) == ("9f2c.image", "https://cdn/a.png?rkey=x")
+    assert (record.file, record.url) == ("9f2c.silk", "https://cdn/v.silk")
+    assert (video.file, video.url) == ("9f2c.mp4", "https://cdn/v.mp4")
+
+
+def test_onebot_inbound_media_without_url_does_not_fall_back_to_file():
+    components, _ = onebot_segments_to_components(
+        [{"type": "image", "data": {"file": "9f2c.image"}}]
+    )
+
+    image = cast(Image, components[0])
+    assert image.file == "9f2c.image"
+    assert image.url == ""
+
 
 @pytest.mark.asyncio
 async def test_message_chain_to_onebot_segments():
@@ -186,6 +231,23 @@ async def test_message_chain_to_onebot_segments():
     assert segments[2] == {"type": "image", "data": {"file": "https://cdn/a.png"}}
     assert segments[3] == {"type": "reply", "data": {"id": "msg-1"}}
     assert segments[4] == {"type": "json", "data": {"data": '{"ok": true}'}}
+
+
+@pytest.mark.asyncio
+async def test_onebot_outbound_prefers_sendable_source_over_canonical_id():
+    # 入站保留 file 为 canonical id 后, 出站不能把这个不可发送的 id 当成来源
+    segments = await message_chain_to_onebot_segments(
+        [Image(file="9f2c.image", url="https://cdn/a.png?rkey=x")]
+    )
+
+    assert segments[0] == {"type": "image", "data": {"file": "https://cdn/a.png?rkey=x"}}
+
+
+@pytest.mark.asyncio
+async def test_onebot_outbound_falls_back_to_file_when_no_url():
+    segments = await message_chain_to_onebot_segments([Image(file="9f2c.image")])
+
+    assert segments[0] == {"type": "image", "data": {"file": "9f2c.image"}}
 
 
 def test_create_platform_message_private_and_group():
@@ -282,6 +344,7 @@ async def test_raw_group_wake_reaches_session(segments, expected):
 
     adapter = make_adapter({"wake_words": ["小助手"]})
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     await adapter._handle_group_message({
         "self_id": 10000, "user_id": 123, "group_id": 456,
@@ -300,6 +363,7 @@ async def test_unwoken_chatter_preserves_execution_budget():
 
     adapter = make_adapter()
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager, RateLimiter(rate=0.01, burst=1))
     for message_id, text in enumerate(["普通聊天", "普通聊天", None], start=789):
@@ -355,6 +419,7 @@ async def test_queued_group_cannot_bypass_tightened_scope():
     event.is_wake = True
     adapter.config.settings["group_whitelist"] = ["789"]
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(manager)
     processor = AsyncMock(return_value=True)
     scheduler.add_preprocessor(processor)

@@ -1,17 +1,20 @@
 import { PluginConfigFields, type ModelOptions, type ConfigOption } from '@/components/common/PluginConfigFields';
 import { ragApi } from '@/api/rag';
 import { controlApi } from '@/api/control';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Puzzle, Trash2 } from 'lucide-react';
 
 import type {
   EdictumAvailablePlugin,
   EdictumPluginConfig,
   EdictumSessionConfig,
+  GlobalPluginConfig,
 } from '@/api/types';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
+import { Link } from 'react-router-dom';
+import { PluginCapabilities } from '@/components/common/PluginCapabilities';
 
 interface ManagedPluginState {
   present: boolean;
@@ -20,19 +23,11 @@ interface ManagedPluginState {
   capabilities: Record<string, Record<string, boolean>>;
 }
 
-const CAPABILITY_LABELS: Record<string, string> = {
-  tools: '工具',
-  skills: '技能',
-  mcp: 'MCP',
-  handlers: '处理器',
-  commands: '命令',
-};
-
 interface EdictumPluginManagerProps {
   open: boolean;
   configName: string | null;
   availablePlugins: EdictumAvailablePlugin[];
-  configuredPlugins: EdictumSessionConfig['plugins'];
+  configuredPlugins: EdictumSessionConfig['plugins'] | undefined;
   saving: boolean;
   onClose: () => void;
   onSave: (plugins: EdictumSessionConfig['plugins']) => void | Promise<void>;
@@ -69,9 +64,22 @@ export function EdictumPluginManager({
   onSave,
 }: EdictumPluginManagerProps) {
   const [states, setStates] = useState<Record<string, ManagedPluginState>>({});
+  const draftConfigName = useRef<string | null>(null);
   const [modelOptions, setModelOptions] = useState<ModelOptions>({});
   const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
   const [modelError, setModelError] = useState('');
+  const [globalConfigs, setGlobalConfigs] = useState<Record<string, GlobalPluginConfig>>({});
+  const [globalErrors, setGlobalErrors] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setGlobalConfigs({}); setGlobalErrors({});
+    availablePlugins.filter((plugin) => Object.keys(plugin.config_schema).length).forEach((plugin) => {
+      controlApi.getGlobalPluginConfig(plugin.name).then((result) => { if (!cancelled) setGlobalConfigs((previous) => ({ ...previous, [plugin.name]: result })); })
+        .catch((error) => { if (!cancelled) setGlobalErrors((previous) => ({ ...previous, [plugin.name]: error.response?.data?.error || error.message })); });
+    });
+    return () => { cancelled = true; };
+  }, [open, availablePlugins]);
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -85,8 +93,14 @@ export function EdictumPluginManager({
 
 
   useEffect(() => {
-    if (open) setStates(normalizeConfiguredPlugins(configuredPlugins));
-  }, [configuredPlugins, open]);
+    if (!open) {
+      draftConfigName.current = null;
+      return;
+    }
+    if (!configName || configuredPlugins === undefined || draftConfigName.current === configName) return;
+    setStates(normalizeConfiguredPlugins(configuredPlugins));
+    draftConfigName.current = configName; // 同一次编辑期间的后台刷新不能覆盖草稿
+  }, [configName, configuredPlugins, open]);
 
   const pluginMap = useMemo(
     () => Object.fromEntries(availablePlugins.map((plugin) => [plugin.name, plugin])),
@@ -206,6 +220,7 @@ export function EdictumPluginManager({
                   <p className="mt-1 text-sm text-text-secondary">
                     {plugin.description || '暂无描述'}
                   </p>
+                  <Link className="text-xs text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
                 </div>
                 {!present ? (
                   <Button size="sm" variant="subtle" onClick={() => addPlugin(plugin.name)}>
@@ -232,64 +247,24 @@ export function EdictumPluginManager({
               {present && schemaEntries.length > 0 && (
                 <div className="mt-4 grid gap-3 border-t border-glass-border pt-4 md:grid-cols-2">
                   {modelError && <p role="alert" className="text-sm text-error">{modelError}</p>}
-                  <PluginConfigFields schema={plugin.config_schema} values={state.config} modelOptions={modelOptions} knowledgeBases={knowledgeBases}
-                    onChange={(key, value) => setConfigValue(plugin.name, key, value)} />
+                  {globalErrors[plugin.name] && <p role="alert" className="text-sm text-error">读取继承参数失败: {globalErrors[plugin.name]}</p>}
+                  <PluginConfigFields schema={plugin.config_schema} values={state.config} inherited={globalConfigs[plugin.name]?.config} namedMode
+                    sources={Object.fromEntries(Object.keys(globalConfigs[plugin.name]?.overrides || {}).map((key) => [key, 'global']))}
+                    modelOptions={modelOptions} knowledgeBases={knowledgeBases} disabled={saving || !globalConfigs[plugin.name]}
+                    onChange={(key, value) => setConfigValue(plugin.name, key, value)} onReset={(key) => {
+                      setStates((current) => {
+                        const config = { ...current[plugin.name].config };
+                        delete config[key];
+                        return { ...current, [plugin.name]: { ...current[plugin.name], config } };
+                      });
+                    }} />
                 </div>
               )}
 
               {present && capabilityCount > 0 && (
                 <div className="mt-4 space-y-4 border-t border-glass-border pt-4">
-                  {Object.entries(plugin.capabilities).map(([kind, capabilities]) => {
-                    const capabilityEntries = Object.entries(capabilities);
-                    if (capabilityEntries.length === 0) return null;
-                    return (
-                      <div key={kind}>
-                        <div className="mb-2 flex items-center gap-2">
-                          <span className="text-sm font-medium text-text-primary">
-                            {CAPABILITY_LABELS[kind] || kind}
-                          </span>
-                          <Badge variant="default">{capabilityEntries.length}</Badge>
-                        </div>
-                        <div className="grid gap-2 md:grid-cols-2">
-                          {capabilityEntries.map(([capability, description]) => {
-                            const independentlyEnabled = state.capabilities[kind]?.[capability] !== false;
-                            const effective = state.enabled && independentlyEnabled;
-                            return (
-                              <label
-                                key={capability}
-                                className="glass-card flex items-start justify-between gap-3 rounded-lg px-3 py-2"
-                              >
-                                <span className="min-w-0">
-                                  <span className={effective ? 'text-sm text-text-primary' : 'text-sm text-text-tertiary'}>
-                                    {capability}
-                                  </span>
-                                  {description && (
-                                    <span className="mt-0.5 block text-xs text-text-tertiary">
-                                      {description}
-                                    </span>
-                                  )}
-                                  {!state.enabled && independentlyEnabled && (
-                                    <span className="mt-0.5 block text-xs text-text-tertiary">插件停用中</span>
-                                  )}
-                                </span>
-                                <input
-                                  type="checkbox"
-                                  checked={independentlyEnabled}
-                                  onChange={(event) => setCapabilityEnabled(
-                                    plugin.name,
-                                    kind,
-                                    capability,
-                                    event.target.checked,
-                                  )}
-                                  className="mt-0.5 h-4 w-4 shrink-0 accent-accent"
-                                />
-                              </label>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <PluginCapabilities capabilities={plugin.capabilities} values={state.capabilities} active={state.enabled} disabled={saving}
+                    onChange={(kind, capability, enabled) => setCapabilityEnabled(plugin.name, kind, capability, enabled)} />
                 </div>
               )}
             </div>

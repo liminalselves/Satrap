@@ -7,6 +7,8 @@
 ### getting-started/ 入门
 
 - [快速开始](getting-started/quick-start.md): 安装, 文本与图片调用, 流式输出, 一个最小工具
+- [日志保留](getting-started/logging.md): 每日轮转, 自动清理, 活动文件保护与独立策略
+- [发行包](getting-started/release.md): Windows 便携包使用, 升级, 构建与自动发布
 - [配置说明](getting-started/configuration.md): `config.yaml`, 模型配置, Session 类配置和环境变量
 - [常见问题](getting-started/faq.md): 常见报错, 配置排查, 图片与上下文问题
 
@@ -41,10 +43,12 @@
 ### platform/ 平台接入
 
 - [平台接入](platform/platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
+- [OneBot 群管理](platform/groups.md): 群目录、逐群响应与会话覆盖、审批、事件、迁移和 HTTP API
 
 ### ui/ 展示层与前端
 
 - [聊天展示层](ui/chat-display.md): 面向前端聊天页的独立实时服务 (录制 / 会话编排 / WebSocket / HTTP API)
+- [Agent 配置与对话记录](ui/conversation-management.md): 配置与实例入口, 分别维护模型上下文和 Chat 展示历史, 修改备份与恢复
 - [UI 设计系统](ui/ui-design-system.md): 前端设计规范与组件约定
 
 ### development/ 开发规范

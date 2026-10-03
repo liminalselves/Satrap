@@ -10,6 +10,14 @@ import {
 } from './adminMigration';
 
 describe('管理前端迁移逻辑', () => {
+  it.each(['onebot', 'misskey', 'future-adapter'])('档案保留期对 %s 使用统一归一化与校验', (type) => {
+    expect(normalizePlatformSettings(type, { message_archive_retention_days: ' 7 ' }).message_archive_retention_days).toBe(7);
+    expect(normalizePlatformSettings(type, { message_archive_retention_days: '' })).not.toHaveProperty('message_archive_retention_days');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: true }))).toContain('档案保留天数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '0' }))).toContain('档案保留天数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '1.5' }))).toContain('必须为整数');
+    expect(validatePlatformPolicy(normalizePlatformSettings(type, { message_archive_retention_days: '3651' }))).toContain('档案保留天数');
+  });
   it('从 Session 类名生成默认配置名', () => {
     expect(classNameToConfigName('CustomChatSession')).toBe('custom_chat');
     expect(classNameToConfigName('Echo')).toBe('echo');
@@ -35,6 +43,10 @@ describe('管理前端迁移逻辑', () => {
     expect(normalizePlatformSettings('onebot', { media_plaintext_http: false })).toMatchObject({ media_plaintext_http: false });
     expect(normalizePlatformSettings('onebot', { media_trusted_hosts: 'a.local\n', asr_model: 'speech', attachment_extract: false })).toMatchObject({ media_trusted_hosts: ['a.local'], asr_model: 'speech', attachment_extract: false });
     expect('asr_model' in normalizePlatformSettings('onebot', { asr_model: '  ' })).toBe(false);
+    expect(normalizePlatformSettings('onebot', { command_operators: ' 10001 \n\n 10002 ' })).toMatchObject({ command_operators: ['10001', '10002'] });
+    expect('command_operators' in normalizePlatformSettings('onebot', { command_operators: '   ' })).toBe(false);
+    expect(normalizePlatformSettings('misskey', { command_operators: '10001\n10002' })).toMatchObject({ command_operators: ['10001', '10002'] });
+    expect('command_operators' in normalizePlatformSettings('misskey', { command_operators: '' })).toBe(false);
     expect('voice_transcribe' in normalizePlatformSettings('onebot', { voice_transcribe: 'asr' })).toBe(false);
     expect(normalizePlatformSettings('onebot', { voice_transcribe: 'platform' })).toMatchObject({ voice_transcribe: 'platform' });
     expect(normalizePlatformSettings('misskey', {})).toMatchObject({
