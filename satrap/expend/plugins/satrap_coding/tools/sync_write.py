@@ -57,18 +57,21 @@ class WriteFileTool(_FileProtectionMixin, Tool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = self._protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝写入: {reason}"
         # Step.2 请求文件修改审批
         allowed, message = _approve_file_write(
-            session, self.engine, abs_path, "写入文件"
+            session, self.engine, abs_path, "写入文件", self.sandbox_root
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
         # Step.3 执行已批准的文件修改
         return write_file(abs_path, content, append)
 
@@ -121,10 +124,11 @@ class EditFileTool(_FileProtectionMixin, Tool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = self._protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -137,10 +141,12 @@ class EditFileTool(_FileProtectionMixin, Tool):
             return f"错误: 未找到匹配文本: {old[:80]}"
         # Step.2 请求文件修改审批
         allowed, message = _approve_file_write(
-            session, self.engine, abs_path, "编辑文件"
+            session, self.engine, abs_path, "编辑文件", self.sandbox_root
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
         # Step.3 执行已批准的文件修改
         return edit_file(abs_path, content, old, new, replace_all)
 
@@ -195,10 +201,11 @@ class SearchReplaceTool(_FileProtectionMixin, Tool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = self._protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -212,10 +219,12 @@ class SearchReplaceTool(_FileProtectionMixin, Tool):
             return pairs
         # Step.2 请求文件修改审批
         allowed, message = _approve_file_write(
-            session, self.engine, abs_path, "批量替换"
+            session, self.engine, abs_path, "批量替换", self.sandbox_root
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
         # Step.3 执行已批准的文件修改
         return replace_file(abs_path, content, pairs)
 

@@ -147,7 +147,7 @@ async def test_factory_environment_isolated_across_sessions(tmp_path, monkeypatc
             self.coding_workspace_root = tmp_path
             self.user_input_provider = lambda *args: "y"
 
-    def state(session, root):
+    def state(session, *, config=None):
         return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json", log_file=tmp_path / "log.jsonl"), "todos": {}}
 
     monkeypatch.setattr(coding, "get_plugin_state", state)
@@ -184,7 +184,7 @@ async def test_factory_protected_directories_isolated(tmp_path, monkeypatch, asy
             self.coding_workspace_root = tmp_path
             self.coding_sandbox_root = tmp_path
 
-    def state(session, root):
+    def state(session, *, config=None):
         return {"engine": PermissionEngine(rules_file=tmp_path / "rules.json",
                                           log_file=tmp_path / "log.jsonl"), "todos": {}}
 

@@ -2,7 +2,7 @@
 编程插件工具构造入口
 
 应用插件配置并构造同步或异步工具, 绑定会话权限引擎与工作区,
-将环境变量放行列表和额外保护目录按工具实例注入, 不保存为跨会话共享权限
+路径, 默认超时, 环境放行列表和保护目录按实例注入, 不保存为跨会话共享权限
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from satrap.core.framework.Base import (
 )
 from satrap.core.utils.paths import get_project_root
 from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTool
-from satrap.core.type import safe_getattr, safe_getattr_callable
+from satrap.core.type import safe_getattr_callable
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
@@ -49,7 +49,6 @@ from .async_read import (
 )
 from .constants import (
     WORKSPACE_ROOT,
-    DATA_ROOT,
     _APPROVAL_PROMPT,
     _PROTECTED_DIRS,
     _PROTECTED_FILES,
@@ -111,31 +110,6 @@ def parse_allowed_env_vars(config: dict[str, Any]) -> frozenset[str]:
     )
 
 
-def _apply_config(config: dict[str, Any]) -> None:
-    """
-    应用工作区与数据路径的全局兜底配置, 不保存会话权限策略
-
-    参数:
-    - config: 配置信息
-
-    注: 这些死参是模块级常量, 作为**全局兜底**被路径辅助函数 (_resolve_path 等) 引用;
-    在 get_tools 工厂调用时更新为配置值 (全局单例语义);
-    项目会话的独立工作区不经此处 -- 由会话鸭子属性 coding_workspace_root 按会话覆盖
-    (_workspace_root/_tool_root 优先读会话属性, 回落此处全局值);
-    空配置不动任何模块变量 (保持代码默认/测试 monkeypatch)
-    """
-    if not config:
-        return
-    global WORKSPACE_ROOT, DATA_ROOT, DEFAULT_SANDBOX_ROOT
-    if config.get("workspace_root"):
-        WORKSPACE_ROOT = Path(str(config["workspace_root"])).resolve()
-        DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
-    if config.get("data_root"):
-        DATA_ROOT = Path(str(config["data_root"])).resolve()
-    if config.get("sandbox_root"):
-        DEFAULT_SANDBOX_ROOT = Path(str(config["sandbox_root"])).resolve()
-
-
 def get_tools(
     session: SimpleSession | AsyncSimpleSession, config: dict[str, Any] | None = None
 ) -> list[Any]:
@@ -151,26 +125,29 @@ def get_tools(
     返回:
     - list[Any]: 按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)
     """
-    _apply_config(config or {})
-    allowed_env = parse_allowed_env_vars(config or {})
+    cfg = config or {}
+    workspace_root = Path(str(cfg.get("workspace_root") or WORKSPACE_ROOT)).resolve()
+    sandbox_root = Path(str(cfg.get("sandbox_root") or DEFAULT_SANDBOX_ROOT)).resolve()
+    shell_timeout, error = _parse_integer_argument(
+        cfg.get("shell_timeout", 120), "shell_timeout", minimum=1, maximum=3600
+    )
+    if error is not None or shell_timeout is None:
+        raise ValueError(error or "shell_timeout 无效")
+    allowed_env = parse_allowed_env_vars(cfg)
     protected_dirs = frozenset(
         name.strip().lower()
-        for name in str((config or {}).get("protected_dirs") or "").split(",")
+        for name in str(cfg.get("protected_dirs") or "").split(",")
         if name.strip()
     )
 
-    session_cache_root = safe_getattr(session, "coding_cache_root")
-    state_root = (
-        Path(str(session_cache_root)) / "satrap_coding" if session_cache_root else None
-    )
-    state = get_plugin_state(session, state_root)
+    state = get_plugin_state(session, config=cfg)
     engine = cast(PermissionEngine, state["engine"])
     todos = cast(dict[str, Any], state["todos"])
 
     if isinstance(session, AsyncSimpleSession):
         tools: list[Any] = [
             AsyncAskUserTool(),
-            AsyncShellTool(engine, allowed_env),
+            AsyncShellTool(engine, allowed_env, shell_timeout),
             AsyncSubAgentTool(session.llm, session.tools_manager),
             AsyncReadFileTool(),
             AsyncWriteFileTool(engine),
@@ -184,7 +161,7 @@ def get_tools(
     else:
         tools = [
             AskUserTool(),
-            ShellTool(engine, allowed_env),
+            ShellTool(engine, allowed_env, shell_timeout),
             SubAgentTool(session.llm, session.tools_manager),
             ReadFileTool(),
             WriteFileTool(engine),
@@ -196,6 +173,8 @@ def get_tools(
             GrepFilesTool(),
         ]
     for tool in tools:
+        tool.workspace_root = workspace_root
+        tool.sandbox_root = sandbox_root
         if isinstance(tool, _FileProtectionMixin):
             tool.protected_dirs = protected_dirs
         bind = safe_getattr_callable(tool, "_bind")

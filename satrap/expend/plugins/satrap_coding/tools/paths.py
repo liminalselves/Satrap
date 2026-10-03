@@ -1,7 +1,7 @@
 """
 编程工具的工作区路径解析与访问保护
 
-优先使用会话工作区, 保留包级配置兜底, 在读写前检查保护目录和沙箱边界
+宿主路径属性优先于工具实例配置, 在读写前检查保护目录和沙箱边界
 """
 
 from __future__ import annotations
@@ -25,40 +25,36 @@ from .constants import (
 from .approval import _approve_async, _approve_sync
 
 
-def _workspace_root(session: Any) -> Path:
+def _workspace_root(session: Any, configured_root: Path | None = None) -> Path:
     """
-    按会话解析工作区根: 会话鸭子属性 coding_workspace_root 优先, 否则全局 WORKSPACE_ROOT
+    解析工作区, 宿主属性优先于工具配置和固定默认值
 
     参数:
-    - session: 会话
-
-    项目功能: 项目会话由 ChatService 在建会话/改绑时赋值 session.coding_workspace_root;
-    无项目会话该属性不存在, 回落全局 -- 行为与引入项目前一致
+    - session: 当前会话, 宿主可以在项目改绑时更新路径属性
+    - configured_root: 工具实例保存的插件配置
 
     返回:
-    - Path: 按会话解析工作区根: 会话鸭子属性 coding_workspace_root 优先, 否则全局 WORKSPACE_ROOT
+    - Path: 当前调用使用的绝对工作区根
     """
     from . import WORKSPACE_ROOT
 
-    if session is None:
-        return WORKSPACE_ROOT
     return Path(
-        safe_getattr(session, "coding_workspace_root") or WORKSPACE_ROOT
+        safe_getattr(session, "coding_workspace_root") or configured_root or WORKSPACE_ROOT
     ).resolve()
 
 
 def _tool_root(tool: Any) -> Path:
     """
-    取工具所属会话的工作区根 (未绑会话时回落全局)
+    取当前宿主工作区, 未注入时使用工具实例配置
 
     参数:
     - tool: 工具
 
     返回:
-    - Path: 取工具所属会话的工作区根 (未绑会话时回落全局)
+    - Path: 当前调用使用的绝对工作区根, 无会话或实例路径时使用固定默认值
     """
     session = getattr(tool, "_session", None)
-    root = _workspace_root(session)
+    root = _workspace_root(session, getattr(tool, "workspace_root", None))
     sandbox = getattr(session, "coding_sandbox_root", None)
     if sandbox and root == Path(sandbox).resolve():
         root.mkdir(parents=True, exist_ok=True)
@@ -111,6 +107,7 @@ class _FileProtectionMixin:
     """文件工具的实例级额外保护目录, 直接构造时只启用内置保护"""
 
     protected_dirs: frozenset[str] = frozenset()
+    sandbox_root: Path | None = None
 
     def _protection_reason(self, path: Path, root: Path) -> str | None:
         """
@@ -123,11 +120,14 @@ class _FileProtectionMixin:
         返回:
         - 命中内置或实例保护规则时返回原因, 否则返回 None
         """
-        return _protection_reason(path, root, self.protected_dirs)
+        host_sandbox = safe_getattr(getattr(self, "_session", None), "coding_sandbox_root")
+        sandbox_root = Path(str(host_sandbox)).resolve() if host_sandbox else None
+        return _protection_reason(path, root, self.protected_dirs, sandbox_root=sandbox_root)
 
 
 def _protection_reason(
-    path: Path, root: Path | None = None, protected_dirs: frozenset[str] = frozenset()
+    path: Path, root: Path | None = None, protected_dirs: frozenset[str] = frozenset(),
+    *, sandbox_root: Path | None = None,
 ) -> str | None:
     """
     命中保护路径返回原因 (敏感目录/文件), 沙箱边界由 _in_sandbox 单独判断
@@ -136,6 +136,7 @@ def _protection_reason(
     - path: 路径
     - root: 根目录
     - protected_dirs: 当前工具的额外保护目录名, 默认为空且不替换内置保护
+    - sandbox_root: 宿主沙箱, 仅当它同时是当前工作区时允许访问系统数据根内的普通文件
 
     返回:
     - str | None: 原因 (敏感目录/文件)
@@ -149,8 +150,12 @@ def _protection_reason(
 
     root = root or WORKSPACE_ROOT
     resolved = path.resolve()
-    if resolved == _SYSTEM_PROTECTED_ROOT or resolved.is_relative_to(
-        _SYSTEM_PROTECTED_ROOT
+    in_host_workspace = (
+        sandbox_root is not None and root == sandbox_root
+        and (resolved == root or resolved.is_relative_to(root))
+    )
+    if not in_host_workspace and (
+        resolved == _SYSTEM_PROTECTED_ROOT or resolved.is_relative_to(_SYSTEM_PROTECTED_ROOT)
     ):
         return "路径位于受保护目录 .satrap/ 下"
     rel = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
@@ -164,35 +169,43 @@ def _protection_reason(
     return None
 
 
-def _session_sandbox_root(session: SimpleSession | AsyncSimpleSession) -> Path:
+def _session_sandbox_root(
+    session: SimpleSession | AsyncSimpleSession, configured_root: Path | None = None
+) -> Path:
     """
     获取会话沙箱根 (会话属性优先, 否则默认)
 
     参数:
     - session: 会话
+    - configured_root: 工具实例的沙箱配置
 
     返回:
-    - Path: 会话沙箱根 (会话属性优先, 否则默认)
+    - Path: 宿主属性, 工具配置, 固定默认值按顺序选取的沙箱根
     """
     from . import DEFAULT_SANDBOX_ROOT
 
     return Path(
-        safe_getattr(session, "coding_sandbox_root") or DEFAULT_SANDBOX_ROOT
+        safe_getattr(session, "coding_sandbox_root") or configured_root or DEFAULT_SANDBOX_ROOT
     ).resolve()
 
 
-def _in_sandbox(path: Path, session: SimpleSession | AsyncSimpleSession) -> bool:
+def _in_sandbox(
+    path: Path,
+    session: SimpleSession | AsyncSimpleSession,
+    configured_root: Path | None = None,
+) -> bool:
     """
     目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)
 
     参数:
     - path: 路径
     - session: 会话
+    - configured_root: 工具实例的沙箱配置
 
     返回:
     - bool: 目标路径是否位于会话沙箱根内 (沙箱 = 免审批区)
     """
-    root = _session_sandbox_root(session)
+    root = _session_sandbox_root(session, configured_root)
     return path == root or path.is_relative_to(root)
 
 
@@ -201,20 +214,22 @@ def _approve_file_write(
     engine: PermissionEngine,
     path: Path,
     action: str,
+    sandbox_root: Path | None = None,
 ) -> tuple[bool, str]:
     """
-    文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批
+    同步文件写审批: 计划模式先拒绝, 其余仅沙箱内免审批
 
     参数:
     - session: 会话
     - engine: 执行引擎
     - path: 路径
     - action: 操作类型
+    - sandbox_root: 工具实例的沙箱配置
 
     返回:
     - tuple[bool, str]: 文件写审批: 目标在沙箱内免审批 (沙箱=免审批区), 其余按策略审批
     """
-    if _in_sandbox(path, session):
+    if not engine.plan_mode and _in_sandbox(path, session, sandbox_root):
         return True, ""
     return _approve_sync(
         session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}"
@@ -226,6 +241,7 @@ async def _approve_file_write_async(
     engine: PermissionEngine,
     path: Path,
     action: str,
+    sandbox_root: Path | None = None,
 ) -> tuple[bool, str]:
     """
     异步文件写审批: 沙箱内免审批, 其余按策略审批
@@ -235,11 +251,12 @@ async def _approve_file_write_async(
     - engine: 执行引擎
     - path: 路径
     - action: 操作类型
+    - sandbox_root: 工具实例的沙箱配置
 
     返回:
     - tuple[bool, str]: 异步文件写审批: 沙箱内免审批, 其余按策略审批
     """
-    if _in_sandbox(path, session):
+    if not engine.plan_mode and _in_sandbox(path, session, sandbox_root):
         return True, ""
     return await _approve_async(
         session, engine, "file_write", RiskLevel.WRITE, f"{action} {path}"

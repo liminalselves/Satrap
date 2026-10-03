@@ -3,7 +3,7 @@
 ## 范围与当前结论
 
 - 分支: `review/issue-12`; 初审基线 `1ecb13c`, 2026-09-26 增量复审基线 `31604d6`
-- 当前状态: 2026-10-02, 已提交版本 `bafc868` 之后修复额外保护目录串会话和系统临时目录默认授权; 本轮修改尚未提交
+- 当前状态: 2026-10-03, 已提交版本 `2d314cc`; 本轮修复 coding 配置失效与串会话, 并处理文件审批、宿主沙箱保护冲突和安装回滚遗漏; 本轮修改尚未提交
 - 使用边界: 默认本人本地使用, 不引入多租户策略或 OS 隔离架构; 重点核查平台消息中的媒体来源, 模型工具执行和可信代码加载
 - 初审及增量复审共记录 19 项, 未发现 P0; 下文历史发现描述的是修复前状态, 不是当前缺陷清单
 - 当前相关回归通过, 全量单元测试未全绿; 平台调用链使用模拟客户端验证, 未完成真实 OneBot / Misskey 上传验收
@@ -74,25 +74,48 @@
 - 群管理工具绑定会话, 执行时读取当前审批 provider, 支持安装后注入与替换; 同步通道返回协程时关闭协程并拒绝执行
 - 审批前校验目标群范围, 提问显示实际目标, 不以来源群替代显式目标
 
-## 验证记录 (2026-10-02)
+### Coding 全配置与安装生命周期
+
+本轮根因是配置保存位置与执行入口脱节: `_apply_config` 改全局路径, 状态消费者另推数据根, Shell 默认值不读取配置。新增无宿主路径回归在修复前失败; 不能再以全部注入 `coding_*` 属性的测试证明配置隔离。
+
+| 声明项 | 实际消费与本轮结论 |
+| --- | --- |
+| `workspace_root` | 工具实例基线, 文件路径与 Shell cwd 使用; 宿主动态路径优先, 不写可变全局 |
+| `sandbox_root` | 文件写审批使用实例沙箱; 宿主属性优先, 计划模式与保护规则不能被免审批绕过 |
+| `data_root` | 三类工厂传同份配置给 state; 权限、目标与日志实际落盘, 已绑定数据根不得原地更换 |
+| `shell_timeout` | 同步/异步实例默认值, 显式调用覆盖; 默认 120, 1-3600 整数, 模型定义仅 command 必填 |
+| `protected_dirs` | 六类文件工具的实例级不可变集合, 空配置仅保留内置保护 |
+| `allowed_env_vars` | Shell 实例级不可变集合, 子进程过滤入口消费; base_take 沙箱独立接受自身配置 |
+
+配置选择顺序与默认目录只有一个面向使用者的说明来源: [Coding 插件](../plugins/satrap-coding-plugin.md#插件配置)。本轮没有移动旧文件, 不添加失效常量的兼容占位。
+
+同步/异步实际安装回归验证目标命令与注入处理器一致, `/plan` 使用工具持有的同一引擎, 工厂顺序不分裂状态, 卸载换目录重装清除内存状态但保留文件。新增失败安装用例确认旧注册状态会残留, 已把现有 cleanup 接入回滚; 已安装插件的重复安装报错不会调用该清理。
+
+另外确认文件写入审批期间进入计划模式或改绑工作区时仍会继续写入, 已为 write_file、edit_file、search_replace 的两版入口补执行前复核。沙箱内计划模式旁路和 Shell 模型参数必填矛盾均有专属回归, 不只是静态推断。
+
+最终宿主路径核查确认默认 `.satrap/data` 内的会话沙箱被系统根保护误拦截。两项回归在修复前失败; 现在仅宿主显式沙箱与当前工作区一致时允许其普通文件, 六类文件工具共用该检查, 内置敏感文件/目录、其他会话、普通插件配置的系统根仍拒绝。
+
+## 验证记录 (2026-10-02 至 2026-10-03)
 
 使用项目 `.venv/Scripts/python.exe`, 命令设 `PYTHONUTF8=1`。Pyright 显式指定同一解释器, 不安装缺失依赖或加入忽略规则。
 
 ### 修复前基线
 
-- 本轮修改前的 coding 安全、媒体边界和消息组件回归: **98 passed**, 3.62s
-- 已提交版本 `bafc868` 的全量结果: 2294 passed / 5 failed / 8 skipped; 固定失败为 AMR 附件转换、ASR 音频转换、数据库恢复两个子进程测试、minihttp 413 原因短语断言
-- 新增保护目录工厂回归修复前 12 项失败; 改用真实默认媒体策略后 7 项失败, 证实两项问题
-- 非法 UTF-8 URI 三项回归在不修改 parser 的情况下通过: `UnicodeDecodeError` 属于 `ValueError`, 已转换为 `MediaSourcePermissionError`, OneBot 分类为 `media_source_denied`
+- `2d314cc` 修改前的 coding 安全、插件与契约测试: **72 passed**, 4.40s
+- 该已提交版本此前的全量记录: 2313 passed / 5 failed / 8 skipped, 固定失败见下表; 本轮没有为建立基线修改工作区或执行 git 写操作
+- 无落盘复现使用真实同步/异步工厂: 安装 B 后 A 工作区变为 B, A 的沙箱判断扩大, 配置超时 7 实际运行 120, data_root 未进入状态构造
+- 最初新增 15 项配置回归失败; 安装回滚新增 2 项、模型 Shell 参数定义新增 2 项均在各自修复前失败
+- 上轮保护目录与系统 temp 问题已在 `2d314cc` 修复; 非法 UTF-8 URI 无需追加捕获, `UnicodeDecodeError` 已由 `ValueError` 捕获并转换为专属媒体拒绝
 
 ### 当前验证
 
 - 相关回归涵盖媒体边界、消息组件、OneBot、Misskey、会话发现/注册、群管理、环境变量、coding、sandbox、后端启动和配置文档
-- 最终 16 个相关测试文件: **347 passed**, 14.83s; 包含 coding 契约与最新临时路径用例
-- 完整 PR 的 21 个 Python 实现文件: Pyright **0 errors / 0 warnings / 0 informations**; `git diff --check` 无空白错误
-- 最终实现的全量单元测试: **2313 passed / 5 failed / 8 skipped**, 114.53s; 五项失败与已提交版本基线一致
-- 首次全量运行另外暴露 4 项契约测试夹具失效, 已去除对旧模块级私有入口的无必要替换, 使用真实保护检查
-- 唤醒时序失败在此前全量运行也曾出现, 具体用例不同; 根因未确认
+- 最终 24 个相关测试文件: **490 passed / 1 skipped**, 16.92s; 新配置与生命周期文件包含 **46 项**参数化用例
+- 完整 PR 的 27 个 Python 实现文件及新回归文件: Pyright **0 errors / 0 warnings / 0 informations**; `git diff --check` 无空白错误
+- 首次全量: **2349 passed / 7 failed / 8 skipped**, 110.93s; 两项本次失败来自 recorder / 项目测试对已移除 DATA_ROOT 的无效替换, 已去除, 对应两文件 **39 passed**
+- 再次全量: **2350 passed / 6 failed / 8 skipped**, 101.40s; 五项固定失败和一项唤醒时序失败, 未发现 coding / 安装实现失败
+- 宿主沙箱修复前全量: **2355 passed / 7 failed / 8 skipped**, 122.60s; 五项固定失败与两个唤醒时序失败
+- 最终实现全量: **2356 passed / 8 failed / 8 skipped**, 99.32s; 五项固定失败、检查点回滚断言失败与两个唤醒时序失败, 不把早先更少的失败数作为最终结果
 
 全量失败及较早运行的时序观察:
 
@@ -103,7 +126,9 @@
 | `test_database_recovery::test_process_exit_after_sql_commit_recovers` | 子进程将 `logging.FileHandler` 替换为函数, 后续 `BaseRotatingHandler` 继承失败 | 与基线相同 |
 | `test_database_recovery::test_cross_process_writers_and_stale_cache_publish` | 同一 `TypeError: function() argument 'code' must be code, not str` | 与基线相同 |
 | `test_minihttp::test_request_body_over_limit_returns_413` | 实际 `413 Request Entity Too Large`, 测试要求 `413 Content Too Large` | 与基线相同 |
-| `test_wake_window::test_deadline_recheck_in_cooldown_reschedules_after_cooldown_not_immediately` (本轮首次全量运行) | 预期 await 1 次, 实际 0 次 | 此前也有唤醒时序失败, 具体用例不同; 根因未确认 |
+| `test_session_checkpoint::test_auto_checkpoint_rollback_restores_stable_state` | 最终全量回滚后多出 assistant 回复; 失败库中水位 1/2 的 created_at 均为 `1790993882.2631562`, ID 排序把水位 2 放前 | 本轮首次观察, 不称基线已知; 用例不经过插件/工具, `StateStore` 按时间和 ID 排序代码无 PR 差异; 单独重跑 1 passed, 未修存储排序 |
+| `test_wake_window::test_max_wait_applies_to_necessity_mode` | 最终全量预期 await 1 次, 实际 0 次 | 本轮其他全量曾在 max_wait_enqueues 用例失败; 根因未确认 |
+| `test_wake_window::test_deadline_recheck_in_cooldown_reschedules_after_cooldown_not_immediately` | 最终全量同样预期 await 1 次, 实际 0 次 | 上轮全量曾出现同一失败; 没有声称已修复 |
 
 跳过项包括集成测试、缺少 `av` / `reportlab` 和缺少测试图片。本轮没有改动音频、数据库恢复、minihttp 或唤醒策略实现, 不将这些失败掩盖为全量通过, 也不在本轮顺带修复。
 
@@ -111,15 +136,27 @@
 
 - OneBot / Misskey 测试证明越界来源在平台 API 调用前拒绝, 合法来源参数保留; 模拟成功回执不证明真实文件送达
 - Windows 原生运行验证了路径往返和环境策略; POSIX / UNC parser 分支通过平台模拟覆盖, 未在独立 Linux 系统做整套验收
-- 本轮为两条行为路径的局部修复: coding 保护策略和默认媒体授权; 只修改对应实现、调用点、测试和文档, 不重写模块、不新增依赖
-- 默认 `staged-refactor` 范围门槛为最多 5 文件 / 200 行; 完整未提交补丁为 **15 文件 / 291 行增删**, 超过门槛, **不能标为通过**; 两条路径涉及多个入口及夹具, 不缩小 diff 视图或忽略测试隐藏范围
-- 代码沿用项目开发规范, 补新增函数参数/返回说明, 去掉失真修复记录, 不为存量导入/格式进行全仓清洗
+- 结构决策为 `Local Fix`, 执行按 `Staged Refactor` 分段: 实例配置、共享状态消费者、文件审批、失败安装回滚; 不改加载协议、持久文件格式或框架职责
+- 通用门槛为最多 5 文件 / 200 行; 本轮真实范围超出该门槛, 不标为通过或忽略未跟踪测试隐藏范围。按用户“全面修复”授权重新校准为最多 **22 文件 / 1000 行**, 只含 coding、同步/异步安装入口、对应测试和三份文档; 自定义门槛通过, 不是通用小补丁门槛通过。禁止依赖、媒体策略、音频、数据库恢复、HTTP 和唤醒实现变更
+- 修复前 72 项基线和失败回归为门禁; 未承诺自动回滚或 git restore, 如出现实现回归则停在证据核查并用定向编辑收窄。本轮没有删除用户数据或执行 git 写操作
+- 没有新增依赖、兼容层、迁移或模块重写; 删除的 _apply_config / DATA_ROOT 已核对源码、测试和文档引用, 相邻测试只去除失效替换, 不降低行为断言
 
 ## 审查覆盖与未验证内容
 
 初审风险面全读: 后端服务与鉴权, 当时的平台适配器/存储模块, 消息组件, sandbox/outbound/媒体路径, 会话类加载, 插件加载及主要工具执行层。UI 鉴权入口精读, 其余 UI 与 CLI 采用定向读取和危险模式扫描, 不称为全仓逐行审查。
 
-`1ecb13c` 至 `31604d6` 的增量复审精读请求管线、群管理/OneBot 管理与请求账本、ASR、持久化原语和来源身份; 修改模块结合 diff 与关键区段核对。当前复核范围为完整 PR 差异及其调用方和回归测试, 不重复开展无边界全仓审查。
+`1ecb13c` 至 `31604d6` 的增量复审精读请求管线、群管理/OneBot 管理与请求账本、ASR、持久化原语和来源身份。本轮采用完整 PR 差异复核 (`diff-regression-scan`, correctness / compatibility / maintainability), 基线 `31604d6`, HEAD `2d314cc` 加当前补丁。库存从原 PR 39 文件扩展到 50 文件, 共 27 Python 实现、14 测试、9 schema / 文档。所有库存文件的改动区段已审阅, 不等于 50 文件整篇或全仓逐行审阅。
+
+| 覆盖状态 | 文件或边界 | 本轮证据 |
+| --- | --- | --- |
+| reviewed | `core/utils/{paths,proc_env,sandbox}.py`, `core/components/message.py`, OneBot `adapter.py/onebot_utils.py`, Misskey `misskey_utils.py`, BackendManager 与 config/loader | 全部 PR diff 与相关媒体解析、发送、实际存储根、子进程入口; 真实默认策略和模拟平台回归 |
+| reviewed | SessionClassManager、session_discovery | 完整加载 diff 与可信来源/模块命名/父包/失败注册路径; 发现和类注册测试 |
+| reviewed | base_take 的 meta/tools, group_admin 的 meta/tools | 配置声明、工厂、审批通道与目标群检查, Shell/sandbox 环境入口; 来源身份和平台调用方定向检查 |
+| reviewed | satrap_coding 的 meta、state、commands、handlers、tools 改动文件, sync/async_plugins | 六项配置全链, 同一状态消费、文件免审批和计划模式、模型工具定义、卸载与失败回滚 |
+| reviewed | 14 个变更测试文件; config.example.yaml、docs/README、configuration、platforms、coding 文档和本报告 | 全部改动区段, 失效夹具与无宿主配置用例, 本轮 24 文件定向和全量执行证据 |
+| partial | 未改调用方 `plugin.py/plugin_config.py/plugin_settings.py/plugin_runtime.py`, ChatService、SessionManager、TCBuilder、读工具 wrappers、core permission/goal、Misskey adapter、OneBot admin | 按上述行为链读取相关区段, 不审其无关分支或宣称全模块验收 |
+| unread | 库存内无未读改动区段; 库存外代码不作为覆盖结论 | 无全仓完整性保证 |
+| excluded | 本轮库存没有二进制、生成物、vendor 或迁移; UI/e2e、开发脚本、依赖 CVE、真实平台上传及无关失败根因排除 | 这些没有被测试通过数或静态检查替代 |
 
 历史正面证据包括 HTTP 鉴权与精确 CORS、配置脱敏、安全 YAML/SQL 参数化、出站 URL/DNS/重定向检查、请求账本归属与状态检查、冻结调用来源及持久化原子替换。这些是已检查区段的证据, 不构成对未来代码或未覆盖路径的保证。
 
@@ -127,7 +164,7 @@
 
 1. 未实测媒体外发攻击链、伪造 OneBot 事件或真实平台上传, 未核 aiocqhttp token 校验源码
 2. 未比对依赖 CVE 数据库, 未审全部开发/启动脚本和 UI e2e 脚本
-3. 未逐分支验收唤醒业务状态机; 较早全量运行的唤醒失败原因未确认
+3. 未逐分支验收唤醒业务状态机, 本轮仍有时序失败; 检查点同时间戳排序缺陷有失败数据库证据, 不在本轮修改范围
 4. 文件回调路由未实现, 注册映射的 TTL 和容量限制不代表文件服务可用
 5. 代码 sandbox / shell 仍依赖用户审批, 没有 OS 隔离; 媒体授权与实际读取之间也不是原子的文件系统隔离
 

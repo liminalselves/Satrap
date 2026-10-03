@@ -11,7 +11,7 @@ from typing import Any
 
 from satrap.expend.plugins.satrap_coding.core.permission import PermissionEngine
 from satrap.core.utils.TCBuilder import AsyncTool
-from .sync_interaction import ShellTool
+from .sync_interaction import ShellTool, _shell_definition
 from satrap.edictum import AsyncSimpleSession
 from .contracts import require_bound_session
 from .constants import _SUBAGENT_PROMPT
@@ -77,29 +77,44 @@ class AsyncShellTool(AsyncTool):
     description = ShellTool.description
     params_dict = {
         "command": ("string", "要执行的命令"),
-        "cwd": ("string", "工作目录, 默认项目根"),
+        "cwd": ("string", "工作目录, 默认当前会话工作区"),
         "timeout": ("number", "超时秒数, 范围 1-3600, 默认 120"),
         "shell": ("string", "shell 类型: powershell / cmd, 默认 powershell"),
     }
 
-    def __init__(self, engine: PermissionEngine, allowed_env: frozenset[str] = frozenset()) -> None:
+    def __init__(
+        self, engine: PermissionEngine, allowed_env: frozenset[str] = frozenset(),
+        default_timeout: int = 120,
+    ) -> None:
         """
         初始化 AsyncShellTool
 
         参数:
         - engine: 执行引擎
         - allowed_env: 本会话 shell 子进程显式放行的环境变量名
+        - default_timeout: 省略执行参数时使用的超时秒数
         """
         super().__init__()
         self.engine = engine
         self.allowed_env = allowed_env
+        self.default_timeout = default_timeout
+        self.params_dict = {**self.params_dict, "timeout": ("number", f"超时秒数, 范围 1-3600, 默认 {default_timeout}")}
         self._session: AsyncSimpleSession | None = None
+
+    def get_tool_defined(self) -> dict[str, Any]:
+        """
+        返回当前实例的 Shell 模型调用定义
+
+        返回:
+        - dict[str, Any]: 仅命令必填的工具定义
+        """
+        return _shell_definition(super().get_tool_defined(), self.default_timeout)
 
     async def execute(
         self,
         command: str,
         cwd: str = "",
-        timeout: int | float | str = 120,
+        timeout: int | float | str | None = None,
         shell: str = "powershell",
     ) -> str:
         """
@@ -108,7 +123,7 @@ class AsyncShellTool(AsyncTool):
         参数:
         - command: 待审批的 Shell 命令
         - cwd: 工作目录, 默认空字符串表示工作区根目录
-        - timeout: 超时秒数, 默认 120, 范围 1-3600
+        - timeout: 超时秒数, None 表示使用实例配置, 范围 1-3600
         - shell: Shell 类型, 默认 powershell
 
         返回:
@@ -119,7 +134,7 @@ class AsyncShellTool(AsyncTool):
         from . import _run_shell
 
         timeout_value, error = _parse_integer_argument(
-            timeout,
+            self.default_timeout if timeout is None else timeout,
             "timeout",
             minimum=1,
             maximum=3600,
