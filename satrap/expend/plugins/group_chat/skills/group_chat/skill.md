@@ -53,6 +53,20 @@ selection.truncated=true 时明确称为部分记录摘要, platform_history_com
 一条回复可以 @ 多人, 但不能 @ 全体; 文字里直接写 @昵称不会形成真正的 @
 消息 ID 和成员 ID 都要从当前群的上下文或工具结果中取得, 不编造
 
+## 发送图片和表情
+
+用户希望转发某条消息中的图片时, 先用 group_chat_get_message_assets 取得该消息的媒体目录
+只使用 available=true 的 asset_id; 失效, 删除, 超限或不支持的图片应如实说明, 不猜测其内容
+图片放入 group_chat_reply 的 image 组件, 例如 {"type":"image","asset_id":"工具返回的 ID"}
+工具产出的图片也必须先由可信工具登记, 不能把任意 URL, Base64 或服务器路径填入回复
+
+需要表情时, 用 group_chat_list_stickers 按名称或标签查询当前群已启用的目录
+选择合适的 sticker_id, 放入 sticker 组件, 例如 {"type":"sticker","sticker_id":"目录返回的 ID"}
+没有可用表情时可以直接用文字回复, 不编造平台原生表情编号
+默认最多 4 张图片和 4 个表情, 平台限制更小时以工具结果为准; 房间等平台可能把图片显示为附件
+所有文字, 引用, @, 图片和表情放进同一次回复调用; 失败时整个草稿尚未准备, 可根据原因改为纯文本后重新准备
+prepared 之后不要分开发送图片, 表情或重复正文; 来源撤回或集合停用后, 旧草稿会在提交时被拒绝
+
 ## 完成回复
 
 group_chat_reply 返回 prepared 时, 表示回复内容已准备好, 等本轮成功结束后发送

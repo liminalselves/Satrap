@@ -43,17 +43,21 @@ _CURSOR = _string("继续查看上一页之后的结果时, 填写上次返回�
 _CURSOR["maxLength"] = 4096
 _COMPONENTS = {
     "type": "array", "minItems": 1, "maxItems": 64,
-    "description": "按显示顺序填写回复内容: text 写文字, quote 引用一条消息, mention 真正 @ 一位成员; 最多引用一条消息, 可以 @ 多人",
+    "description": "按顺序填写: text 写文字, quote 引用消息, mention @ 成员, image 发送查询得到的图片, sticker 发送表情目录中的表情; 最多引用一条消息",
     "items": {"oneOf": [
         {"type": "object", "properties": {"type": {"const": "text"}, "text": {"type": "string", "description": "要发到群里的回复文字", "minLength": 1, "maxLength": 100000}}, "required": ["type", "text"], "additionalProperties": False},
         {"type": "object", "properties": {"type": {"const": "quote"}, "message_id": {**_MESSAGE_ID, "description": "要引用的原消息 ID, 例如正在回应的那条发言"}}, "required": ["type", "message_id"], "additionalProperties": False},
         {"type": "object", "properties": {"type": {"const": "mention"}, "source_message_id": {**_MESSAGE_ID, "description": "要 @ 的人所发消息的 ID; 工具会 @ 该消息的发送者, 而不是消息里被 @ 的人"}}, "required": ["type", "source_message_id"], "additionalProperties": False},
         {"type": "object", "properties": {"type": {"const": "mention"}, "user_id": {**_MEMBER_ID, "description": "要 @ 的成员 ID; 已确认对方身份时填写, 与 source_message_id 二选一"}}, "required": ["type", "user_id"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "image"}, "asset_id": _string("消息取图工具或可信产物工具返回的 asset_id; 不能填写 URL 或文件路径")}, "required": ["type", "asset_id"], "additionalProperties": False},
+        {"type": "object", "properties": {"type": {"const": "sticker"}, "sticker_id": _string("表情查询结果的 sticker_id, 不要猜测平台编号")}, "required": ["type", "sticker_id"], "additionalProperties": False},
     ]},
 }
 
 DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
-    "group_chat_reply": ("给当前群回复一条消息, 可以组合文字, 引用和多个 @; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
+    "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
+    "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
+    "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
     "group_chat_find_members": ("根据昵称或群名片查找当前群的成员, 返回成员 ID, 昵称和名片. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的昵称或群名片, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
     "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称和群名片; 需要确认成员 ID 对应谁时使用", {"user_id": _MEMBER_ID}, ["user_id"]),
     "group_chat_get_message": ("根据消息 ID 查看当前群的一条消息, 返回原文和发送者; 需要确认某句话是谁说的, 或查看引用消息时使用. 本地没有记录时会尝试向平台查询, 已删除的记录不会重新取回", {"message_id": _MESSAGE_ID}, ["message_id"]),
@@ -110,6 +114,20 @@ class _GroupChatMixin:
         """
         name = str(self.tool_name)
         description, properties, required = DEFINITIONS[name]
+        properties = copy.deepcopy(properties)
+        if name == "group_chat_reply":
+            origin = current_call_origin()
+            manager = current_adapter_manager()
+            adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+            if adapter is not None:
+                capabilities = adapter.group_chat_capabilities()
+                media = self.config.get("media_reply_enabled", True) is True
+                schema: Any = properties["components"]
+                schema["items"]["oneOf"] = [variant for variant in schema["items"]["oneOf"]
+                    if capabilities.get(variant["properties"]["type"]["const"], {}).get("state") == "supported"
+                    or variant["properties"]["type"]["const"] == "sticker" and media and capabilities.get("image", {}).get("state") == "supported"]
+                if not media:
+                    schema["items"]["oneOf"] = [variant for variant in schema["items"]["oneOf"] if variant["properties"]["type"]["const"] not in {"image", "sticker"}]
         return {"type": "function", "function": {"name": name, "description": description,
                 "parameters": {"type": "object", "properties": copy.deepcopy(properties),
                                "required": list(required), "additionalProperties": False}}}
@@ -153,6 +171,9 @@ class _GroupChatMixin:
                     input_budget = max(0, min(1000000, available // 2))
                     # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
             limits = replace(limits, summary_enabled=enabled, summary_input_budget=input_budget,
+                             media_reply_enabled=cast(bool, self.config.get("media_reply_enabled", True)),
+                             max_reply_images=cast(int, self.config.get("max_reply_images", 4)),
+                             max_reply_stickers=cast(int, self.config.get("max_reply_stickers", 4)),
                              summary_message_limit=cast(int, self.config.get("summary_message_limit", 500)),
                              summary_text_budget=cast(int, self.config.get("summary_text_budget", 60000)),
                              summary_retention_days=cast(int, self.config.get("summary_retention_days", 30)))
@@ -188,6 +209,42 @@ def _group_available() -> bool:
     return origin is not None and (origin.conversation_kind == "group" or not origin.conversation_kind and origin.chat_type == "GroupMessage")
 
 
+def _available(tool: _GroupChatMixin) -> bool:
+    """
+    按本輪来源, 插件开关和适配器能力过滤定义
+
+    参数:
+    - tool: 当前工具实例
+
+    返回:
+    - 当前 Agent 可调用时为 True
+    """
+    if not _group_available():
+        return False
+    name = str(tool.tool_name)
+    if "summary" in name and tool.config.get("summary_enabled", True) is not True:
+        return False
+    if name == "group_chat_reply":
+        origin = current_call_origin()
+        manager = current_adapter_manager()
+        adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+        if adapter is not None:
+            capabilities = adapter.group_chat_capabilities()
+            kinds = {"text", "quote", "mention"}
+            if tool.config.get("media_reply_enabled", True) is True:
+                kinds.update({"image", "sticker"})
+            return any(capabilities.get(kind, {}).get("state") == "supported" for kind in kinds)
+    if name in {"group_chat_get_message_assets", "group_chat_list_stickers"}:
+        if tool.config.get("media_reply_enabled", True) is not True:
+            return False
+        origin = current_call_origin()
+        manager = current_adapter_manager()
+        adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+        capabilities = adapter.group_chat_capabilities() if adapter else {}
+        return capabilities.get("image", {}).get("state") == "supported" or name == "group_chat_list_stickers" and capabilities.get("sticker", {}).get("state") == "supported"
+    return True
+
+
 class GroupChatTool(_GroupChatMixin, Tool):
     """同步会话工具, 在平台循环上执行当前群宿主"""
 
@@ -198,7 +255,7 @@ class GroupChatTool(_GroupChatMixin, Tool):
         返回:
         - 工具定义完整且属于群来源时为 True
         """
-        return _group_available() and ("summary" not in str(self.tool_name) or self.config.get("summary_enabled", True) is True)
+        return _available(self)
 
     def execute(self, **kwargs: Any) -> dict[str, Any]:
         """
@@ -245,7 +302,7 @@ class AsyncGroupChatTool(_GroupChatMixin, AsyncTool):
         返回:
         - 工具定义完整且属于群来源时为 True
         """
-        return _group_available() and ("summary" not in str(self.tool_name) or self.config.get("summary_enabled", True) is True)
+        return _available(self)
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
         """

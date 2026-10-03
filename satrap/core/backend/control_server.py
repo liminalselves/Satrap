@@ -22,6 +22,7 @@ import traceback
 import argparse
 import asyncio
 import binascii
+import re
 from pathlib import Path
 import secrets
 import atexit
@@ -51,8 +52,9 @@ from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
-from satrap.core.config.group_chat_data import summary_management
-import re
+from satrap.core.config.group_chat_data import summary_management, parse_sticker_upload, native_sticker_catalog, sticker_settings_management
+from satrap.core.group_chat.stickers import StickerStore
+from satrap.core.group_chat.assets import MAX_IMAGE_BYTES
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.config.platform_messages import MessageArchiveError
 from satrap.core.config.conversation_runtime import perform_data_operation
@@ -2141,6 +2143,82 @@ async def _route_group_chat_content(ctx: _RouteContext) -> ControlResponse | Non
         return 503, {"error": "群摘要暂不可用, 请查看控制服务日志", "code": "unavailable"}
 
 
+async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在已认证控制入口管理表情, 上传与逐群授权
+
+    参数:
+    - ctx: 已认证路由上下文
+
+    返回:
+    - 管理结果或明确错误, 未匹配时返回 None
+    """
+    global_match = re.fullmatch(r"/api/group-chat/(stickers|native-stickers)(?:/([^/]+)(?:/(preview))?)?", ctx.path)
+    scope_match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/sticker-settings", ctx.path)
+    if global_match is None and scope_match is None:
+        return None
+    try:
+        parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(values) != 1 for values in parsed.values()):
+            raise ValueError("表情参数不能重复")
+        query = {key: values[0] for key, values in parsed.items()}
+        document = load_config_document(CONFIG_PATH)
+        layout = _configured_storage_layout(document)
+        store = StickerStore(layout)
+        if scope_match:
+            if ctx.method not in {"GET", "PUT"}:
+                return 405, {"error": "该入口仅支持查看和保存设置"}
+            payload = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method == "PUT" else None
+            result = await RAG_WORKERS.run(sticker_settings_management, layout, document,
+                                           urllib.parse.unquote(scope_match[1]), query, payload)
+        else:
+            assert global_match is not None
+            kind, identity, preview = global_match.groups()
+            identity = urllib.parse.unquote(identity or "")
+            if kind == "native-stickers" and ctx.method == "GET" and not identity and set(query) == {"platform_id"}:
+                result = await RAG_WORKERS.run(native_sticker_catalog, layout, document, query["platform_id"])
+            elif kind == "stickers" and ctx.method == "GET" and identity and preview and not query:
+                result = await RAG_WORKERS.run(store.preview, identity)
+            elif kind == "stickers" and ctx.method == "GET" and not identity and not set(query) - {"keyword", "limit", "cursor"}:
+                result = await RAG_WORKERS.run(store.list, keyword=query.get("keyword", ""), limit=int(query.get("limit", "20")), cursor=query.get("cursor"))
+            elif kind == "stickers" and ctx.method == "POST" and identity == "upload" and not query:
+                body = await read_request_body(ctx.reader, ctx.raw_request, max_bytes=MAX_IMAGE_BYTES + 65536,
+                                               timeout=DEFAULT_BODY_TIMEOUT, required=True)
+                metadata, image = parse_sticker_upload(_request_headers(ctx.raw_request).get("content-type", ""), body)
+                result = await RAG_WORKERS.run(store.create, metadata, image)
+            elif kind == "stickers" and ctx.method == "POST" and identity == "native" and not query:
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                if set(payload) != {"platform_id", "native_key", "name", "tags", "collection", "idempotency_key"}:
+                    raise ValueError("原生表情字段不符")
+                catalog = await RAG_WORKERS.run(native_sticker_catalog, layout, document, payload["platform_id"])
+                if payload["native_key"] not in {item["key"] for item in catalog["items"]}:
+                    raise ValueError("原生表情不在适配器确认目录中")
+                metadata = {key: payload[key] for key in ("name", "tags", "collection", "idempotency_key")}
+                result = await RAG_WORKERS.run(store.create, metadata, adapter_type=catalog["adapter_type"], native_key=payload["native_key"])
+            elif kind == "stickers" and ctx.method in {"PATCH", "DELETE"} and identity and not preview and not query:
+                payload = await _read_json_body(ctx.reader, ctx.raw_request)
+                result = await RAG_WORKERS.run(store.mutate, identity, payload, delete=ctx.method == "DELETE")
+                await RAG_WORKERS.run(store.purge)
+            else:
+                raise ValueError("表情管理路径, 方法或参数不符")
+        return 200, result
+    except GroupChatError as exc:
+        logger.warning(f"[群表情] 管理拒绝, 原因={exc.code}: {exc}")
+        return {"not_found": 404, "revision_conflict": 409, "quota_exceeded": 413}.get(exc.code, 400), {"error": str(exc), "code": exc.code}
+    except (ValueError, TypeError, UnicodeError) as exc:
+        logger.warning(f"[群表情] 管理参数错误: {exc}")
+        return 400, {"error": str(exc), "code": "invalid_argument"}
+    except HTTPRequestError as exc:
+        logger.warning(f"[群表情] 上传请求拒绝, 状态={exc.status}: {exc.message}")
+        return exc.status, {"error": exc.message, "code": "invalid_request"}
+    except WorkerBusyError:
+        logger.warning("[群表情] 管理队列繁忙")
+        return 503, {"error": "表情管理繁忙, 请稍后重试", "code": "unavailable"}
+    except Exception:
+        logger.error(f"[群表情] 管理异常: {traceback.format_exc()}")
+        return 503, {"error": "表情管理暂不可用, 请查看控制服务日志", "code": "unavailable"}
+
+
 async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
     """
     对话目录只读查询和冷热统一的数据操作入口
@@ -3004,6 +3082,7 @@ async def _handle_request(
             _route_conversation_users,
             _route_platform_archive,
             _route_group_chat_content,
+            _route_group_chat_media,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_config,

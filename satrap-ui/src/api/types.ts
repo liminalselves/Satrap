@@ -511,3 +511,31 @@ export interface GroupChatSummaryPage {
   has_more: boolean;
   next_cursor: string | null;
 }
+export interface GroupChatSticker {
+  sticker_id: string;
+  name: string;
+  tags: string[];
+  collection: string;
+  kind: 'image' | 'native';
+  content_revision: number;
+  enabled: boolean;
+  adapter_type: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface GroupChatStickerPage {
+  ok: boolean;
+  items: GroupChatSticker[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface GroupChatStickerSettings {
+  ok: boolean;
+  collections: string[];
+  available_collections: string[];
+  revision: number;
+}

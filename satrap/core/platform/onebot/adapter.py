@@ -51,7 +51,7 @@ from satrap.core.type import PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin
-from satrap.core.config.platform_messages import MessageScope
+from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage
 
@@ -777,6 +777,68 @@ class OneBotAdapter(PlatformAdapter):
         """OneBot 图片段支持的宿主已验证格式"""
         return ("image/png", "image/jpeg", "image/webp", "image/gif")
 
+    async def group_chat_refresh_image(self, scope: MessageScope, reference: dict[str, Any]) -> str | None:
+        """
+        根据当前群档案的原生图片标识刷新地址
+
+        参数:
+        - scope: 已核验群身份
+        - reference: 已核验档案引用
+
+        返回:
+        - 实现返回的可下载地址, 不使用实现返回的本地路径
+        """
+        if scope.adapter_id != self.config.id or scope.self_id != self.client_self_id:
+            raise GroupChatError("stale_call", "图片来源账号已失效")
+        source = reference.get("native_id") or reference.get("url")
+        if not isinstance(source, str) or not source:
+            return None
+        return (await self.admin.get_image(source)).get("url")
+
+    @classmethod
+    def group_chat_native_sticker_catalog(cls, archive: PlatformMessageStore | None) -> list[dict[str, str]]:
+        """
+        只提供已采集消息里实际出现的表情, 不猜测平台完整目录
+
+        参数:
+        - archive: 可信平台档案, 可为尚未采集的空存储
+
+        返回:
+        - 有限的已观测原生表情目录
+        """
+        if archive is None:
+            return []
+        connection = archive._connect()
+        if connection is None:
+            return []
+        try:
+            rows = connection.execute(
+                "SELECT DISTINCT json_extract(j.value,'$.id') FROM platform_messages m,json_each(m.components_json) j "
+                "WHERE m.status='active' AND m.verified=1 AND json_extract(j.value,'$.type')='Face' AND m.message_time>=? LIMIT 200",
+                (archive._clock() - archive.retention_days * 86400,),
+            ).fetchall()
+            return [{"key": "face:" + str(row[0]), "name": "平台表情 " + str(row[0])} for row in rows
+                    if str(row[0]).isascii() and str(row[0]).isdigit() and len(str(row[0])) <= 5]
+        finally:
+            connection.close()
+
+    def group_chat_native_sticker_component(self, key: str) -> BaseMessageComponent:
+        """
+        将已经由本适配器目录确认的表情映射为 OneBot face 段
+
+        参数:
+        - key: 表情库保存的目录键
+
+        返回:
+        - 原生表情组件, 禁止任意模型编号
+        """
+        from satrap.core.components import Face
+
+        value = key.removeprefix("face:")
+        if not key.startswith("face:") or not value.isascii() or not value.isdigit() or len(value) > 5:
+            raise GroupChatError("asset_unavailable", "原生表情目录键无效")
+        return Face(id=value)
+
     def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
         """
         声明 OneBot 已实现的群聊能力, 按连接与被动学习结果更新状态
@@ -1262,13 +1324,15 @@ class OneBotAdapter(PlatformAdapter):
             for lease in leases:
                 lease.release()
         try:
-            return await self._outbound.run(
-                session_id,
-                lambda: self._send_message(
+            async def operation() -> SendReceipt:
+                """在队列取得执行权后发送同一条逻辑回复"""
+                return await self._send_message(
                     session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking,
-                ),
-                on_settle=release_leases,
-            )
+                )
+
+            if leases:
+                return await self._outbound.run(session_id, operation, on_settle=release_leases)
+            return await self._outbound.run(session_id, operation)
         except (RuntimeError, asyncio.TimeoutError):
             return SendReceipt("failed", reason="send_queue_unavailable")
 

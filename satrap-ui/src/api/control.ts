@@ -252,6 +252,23 @@ export function parseEdictumConfigs(data: unknown): Record<string, EdictumSessio
 }
 
 export const controlApi = {
+  listStickers: async (options: { keyword?: string; cursor?: string; limit?: number } = {}): Promise<import('./types').GroupChatStickerPage> => (await controlClient.get('/api/group-chat/stickers', { params: options })).data,
+  uploadSticker: async (file: File, metadata: { name: string; tags: string[]; collection: string; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('name', metadata.name);
+    form.append('tags', JSON.stringify(metadata.tags));
+    form.append('collection', metadata.collection);
+    form.append('idempotency_key', metadata.idempotency_key);
+    return (await controlClient.post('/api/group-chat/stickers/upload', form, { headers: { 'Content-Type': undefined }, timeout: 60000 })).data;
+  },
+  nativeStickerCatalog: async (platformId: string): Promise<{ adapter_type: string; items: Array<{ key: string; name: string }> }> => (await controlClient.get('/api/group-chat/native-stickers', { params: { platform_id: platformId } })).data,
+  addNativeSticker: async (payload: { platform_id: string; native_key: string; name: string; tags: string[]; collection: string; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => (await controlClient.post('/api/group-chat/stickers/native', payload)).data,
+  stickerPreview: async (id: string): Promise<{ preview: string | null; name?: string }> => (await controlClient.get(`/api/group-chat/stickers/${encodeURIComponent(id)}/preview`)).data,
+  updateSticker: async (id: string, payload: { name: string; tags: string[]; collection: string; enabled: boolean; expected_revision: number; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => (await controlClient.patch(`/api/group-chat/stickers/${encodeURIComponent(id)}`, payload)).data,
+  deleteSticker: async (id: string, revision: number, key: string): Promise<{ ok: boolean; deleted: boolean }> => (await controlClient.delete(`/api/group-chat/stickers/${encodeURIComponent(id)}`, { data: { expected_revision: revision, idempotency_key: key } })).data,
+  groupStickerSettings: async (record: PlatformArchiveIdentity): Promise<import('./types').GroupChatStickerSettings> => (await controlClient.get(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/sticker-settings`, { params: { self_id: record.self_id, chat_id: record.chat_id, conversation_kind: record.conversation_kind } })).data,
+  saveGroupStickerSettings: async (record: PlatformArchiveIdentity, collections: string[], revision: number, key: string): Promise<import('./types').GroupChatStickerSettings> => (await controlClient.put(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/sticker-settings`, { collections, expected_revision: revision, idempotency_key: key }, { params: { self_id: record.self_id, chat_id: record.chat_id, conversation_kind: record.conversation_kind } })).data,
   listConversationUsers: async (platformId: string, query = '', offset = 0, type = ''): Promise<ConversationUserCatalog> => (await controlClient.get<ConversationUserCatalog>('/config/conversations/users', { params: { platform_id: platformId || undefined, platform_type: type || undefined, q: query, offset, limit: 40 } })).data,
   getConversationUser: async (platformId: string, userId: string): Promise<{ user: ConversationUser | null }> => (await controlClient.get<{ user: ConversationUser | null }>('/config/conversations/users', { params: { platform_id: platformId, user_id: userId } })).data,
   mutateConversationUser: async (platformId: string, userId: string, data: Record<string, unknown>): Promise<{ ok: boolean; user: ConversationUser | null }> => {

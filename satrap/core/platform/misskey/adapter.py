@@ -58,6 +58,25 @@ class MisskeyAdapter(PlatformAdapter):
     adapter_type = "misskey"
     conversation_kinds = {"private": "私聊", "group": "房间群聊", "discussion": "帖子讨论"}
 
+    def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
+        """按房间消息的实际发送能力声明, 引用与原生表情保持不支持"""
+        capabilities = super().group_chat_capabilities()
+        connected = self._client is not None and self._running and self.enable_room
+        for name in ("text", "image"):
+            enabled = name == "text" or self.enable_file_upload
+            capabilities[name] = {"state": "supported" if connected and enabled else "unavailable" if enabled else "unsupported",
+                                  "reason": "room_message" if connected and enabled else "upload_disabled" if not enabled else "platform_disconnected"}
+        return capabilities
+
+    def group_chat_media_limits(self) -> dict[str, int]:
+        """房间原生消息只支持一个 fileId, 图片和图片表情共用此限制"""
+        return {"max_images": 1, "max_stickers": 1, "max_attachments": 1, "max_bytes": 10 * 1024 * 1024,
+                "max_text": self.max_message_length}
+
+    def group_chat_media_formats(self) -> tuple[str, ...]:
+        """Misskey Drive 可上传的宿主已验证格式"""
+        return ("image/png", "image/jpeg", "image/webp", "image/gif")
+
     def conversation_kind(self, message: PlatformMessage) -> str:
         """
         按 Misskey 原始对话载体区分私聊, 房间和帖子
@@ -115,6 +134,7 @@ class MisskeyAdapter(PlatformAdapter):
 
         self._client: MisskeyAPI | None = None
         self._running = False
+        self._media_send_tasks: set[asyncio.Task[Any]] = set()
         self.bot_self_id = ""
         self._bot_username = ""
         self._user_cache: dict[str, dict[str, Any]] = {}
@@ -529,7 +549,20 @@ class MisskeyAdapter(PlatformAdapter):
             components = components[:MAX_FILE_UPLOAD_COUNT]
         concurrency = max(1, min(int(self.upload_concurrency), 10))
         sem = asyncio.Semaphore(concurrency)
-        results = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components))
+        try:
+            results = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components))
+        except Exception as exc:
+            if not any(getattr(comp, "asset_lease", None) is not None for comp in components):
+                raise
+            from satrap.core.group_chat.types import GroupChatError
+            import traceback
+
+            logger.error(f"[MisskeyAdapter] 必需图片上传异常: {traceback.format_exc()}")
+            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败") from exc
+        if any(getattr(comp, "asset_lease", None) is not None and not result for comp, result in zip(components, results)):
+            from satrap.core.group_chat.types import GroupChatError
+
+            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败")
         return [file_id for file_id in results if file_id]
 
     async def send_text(self, session_id: str, text: str) -> Any:
@@ -546,6 +579,80 @@ class MisskeyAdapter(PlatformAdapter):
         return await self.send_message(session_id, MessageChain.from_text(text))
 
     async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
+        """
+        持有受控图片至发送任务实际结束, 调用方取消不会提前释放文件
+
+        参数:
+        - session_id: 目标会话
+        - message: 完整消息链
+        - request_id: 逻辑请求标识
+        - purpose: 发送用途
+        - require_tracking: 是否要求持久发送跟踪
+
+        返回:
+        - 原生结果或结构化媒体的明确发送回执
+        """
+        from satrap.core.group_chat.assets import fork_message_leases
+        from satrap.core.platform.receipt import SendReceipt
+        from satrap.core.group_chat.types import GroupChatError
+
+        leases = fork_message_leases(message)
+        if not leases:
+            return await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
+        if len(self._media_send_tasks) >= 64:
+            for lease in leases:
+                lease.release()
+            logger.warning("[MisskeyAdapter] 结构化媒体发送队列已满")
+            return SendReceipt("failed", reason="send_queue_unavailable")
+        async def send() -> SendReceipt:
+            """实际提交媒体, 缺少平台消息 ID 时不冒充成功"""
+            try:
+                result = await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
+                if isinstance(result, dict) and isinstance(result.get("id"), str) and result["id"]:
+                    if is_valid_room_session_id(session_id) and (result.get("toRoomId") is not None and result["toRoomId"] != extract_room_id_from_session_id(session_id)
+                            or result.get("fromUserId") is not None and result["fromUserId"] != self.bot_self_id):
+                        logger.warning("[MisskeyAdapter] 结构化媒体确认身份不符")
+                        return SendReceipt("unknown", reason="unverified_confirmation")
+                    return SendReceipt("success", (result["id"],))
+                return SendReceipt("unknown", reason="missing_confirmation")
+            except asyncio.CancelledError:
+                raise
+            except GroupChatError as exc:
+                logger.warning(f"[MisskeyAdapter] 结构化媒体发送拒绝, 原因={exc.code}")
+                return SendReceipt("failed", reason=exc.code)
+            except Exception:
+                import traceback
+
+                logger.error(f"[MisskeyAdapter] 结构化媒体发送失败: {traceback.format_exc()}")
+                return SendReceipt("unknown", reason="media_send_error")
+            finally:
+                for lease in leases:
+                    lease.release()
+        task = asyncio.create_task(send())
+        self._media_send_tasks.add(task)
+        def settle(finished: asyncio.Task[SendReceipt]) -> None:
+            """
+            无论任务是否进入协程正文都释放引用, 并取走终态异常
+
+            参数:
+            - finished: 实际发送任务
+            """
+            for lease in leases:
+                lease.release()
+            self._media_send_tasks.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+        task.add_done_callback(settle)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
+    async def _send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
     ) -> Any:
@@ -567,9 +674,22 @@ class MisskeyAdapter(PlatformAdapter):
             return None
 
         text, has_at_user = serialize_message_chain(message)
+        if any(getattr(comp, "asset_lease", None) is not None for comp in message) and (not self.enable_file_upload or len(text) > self.max_message_length):
+            from satrap.core.group_chat.types import GroupChatError
+
+            raise GroupChatError("media_upload_failed", "图片上传已停用或正文超过平台上限")
         if len(text) > self.max_message_length:
             text = text[: self.max_message_length] + "..."
         file_ids = await self._collect_file_ids(message)
+        if any(getattr(comp, "asset_lease", None) is not None for comp in message):
+            from satrap.core.call_context import current_call_origin
+
+            origin = current_call_origin()
+            if origin is None:
+                raise PermissionError("图片发送轮次已经结束")
+            await self.group_chat_scope(origin)
+        if is_valid_room_session_id(session_id) and any(getattr(comp, "asset_lease", None) is not None for comp in message) and len(file_ids) > 1:
+            raise ValueError("Misskey 房间单条消息最多附带一张图片")
         if not text.strip() and not file_ids:
             logger.warning("[MisskeyAdapter] 消息为空且无文件, 跳过发送")
             return None
@@ -732,6 +852,13 @@ class MisskeyAdapter(PlatformAdapter):
     async def terminate(self) -> None:
         """终止 Misskey 适配器并释放资源"""
         self._running = False
+        tasks = tuple(self._media_send_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=5)
+            if pending:
+                logger.warning(f"[MisskeyAdapter] 停止时仍有 {len(pending)} 个媒体任务收尾, 文件继续持有")
         await super().terminate()
         if self._client:
             await self._client.close()

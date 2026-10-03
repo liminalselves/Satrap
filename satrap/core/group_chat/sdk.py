@@ -32,6 +32,7 @@ async def register_group_chat_asset(payload: bytes | Path, mime_type: str | None
             raise GroupChatError("wrong_executor", "仅允许当前群主工具登记图片产物")
         turn.require_main_tool(origin_ref)
         context = await group_chat_service._resolve()
+        group_chat_service._capability(context, "image")
         if isinstance(payload, Path):
             if payload.is_symlink() or not payload.is_file() or payload.stat().st_size > MAX_IMAGE_BYTES:
                 raise GroupChatError("invalid_media", "工具图片文件无效或超限")

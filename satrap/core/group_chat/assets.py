@@ -6,12 +6,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 import hashlib
+import json
 import sqlite3
 import threading
 import uuid
 import warnings
+import os
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from PIL import Image as PillowImage
 
@@ -25,6 +32,112 @@ MAX_REPLY_BYTES = 20 * 1024 * 1024
 FORMATS = {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp", "GIF": "image/gif"}
 _LOCK = threading.RLock()
 _LEASES: dict[Path, int] = {}
+_PINS: dict[Path, tuple[BinaryIO, int]] = {}
+
+
+def _pin_path(path: Path) -> Path:
+    """
+    使用固定 64 个锁槽保护跨进程文件生命周期, 避免每图残留锁文件
+
+    参数:
+    - path: 宿主受控图片文件
+
+    返回:
+    - 所属缓存或表情目录旁的锁槽路径
+    """
+    slot = int(hashlib.sha256(path.name.encode()).hexdigest()[:8], 16) % 64
+    return path.parent.parent / "leases" / f"media-{slot:02d}.lock"
+
+
+def _open_pin(path: Path) -> BinaryIO:
+    """
+    取得可跨线程释放且进程退出自动释放的操作系统锁
+
+    参数:
+    - path: 有界锁槽文件
+
+    返回:
+    - 已加锁文件句柄, 被其它进程占用时抛出 OSError
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent.is_symlink() or path.is_symlink():
+        raise OSError("媒体锁目录不可为符号链接")
+    stream = path.open("a+b")
+    try:
+        stream.seek(0, 2)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return stream
+    except BaseException:
+        stream.close()
+        raise
+
+
+def remove_unleased_file(path: Path) -> bool:
+    """
+    清理进程必须取得同一锁槽, 后端在途媒体不会被控制进程删除
+
+    参数:
+    - path: 已确定没有活动目录引用的受控文件
+
+    返回:
+    - 文件已删除时为 True, 有租约时延后清理
+    """
+    with _LOCK:
+        pin = _pin_path(path)
+        if path in _LEASES or pin in _PINS:
+            return False
+        try:
+            stream = _open_pin(pin)
+        except OSError:
+            return False
+        try:
+            if path.is_file() and not path.is_symlink():
+                path.unlink()
+                return True
+            return False
+        finally:
+            stream.close()
+
+
+def _source_digest(source: dict[str, Any]) -> str:
+    """
+    同时绑定消息内容和实际媒体引用
+
+    参数:
+    - source: 已核验原消息
+
+    返回:
+    - 防止替换原媒体的内容摘要
+    """
+    return hashlib.sha256((_digest(source) + json.dumps(source["media"], sort_keys=True, ensure_ascii=False)).encode("utf-8")).hexdigest()
+
+
+def read_blob(path: Path, blob_key: str, size_bytes: int) -> bytes:
+    """
+    有界读取已登记图片, 文件被外部修改时拒绝而不是无界加载
+
+    参数:
+    - path: 受控文件路径
+    - blob_key: 登记时的内容哈希
+    - size_bytes: 登记时的实际字节数
+
+    返回:
+    - 未被修改的原图片字节
+    """
+    if not 0 < size_bytes <= MAX_IMAGE_BYTES or not path.is_file() or path.is_symlink() or path.stat().st_size != size_bytes:
+        raise GroupChatError("asset_unavailable", "缓存图片丢失或大小发生变化")
+    with path.open("rb") as stream:
+        payload = stream.read(MAX_IMAGE_BYTES + 1)
+    if len(payload) != size_bytes or hashlib.sha256(payload).hexdigest() != blob_key:
+        raise GroupChatError("asset_unavailable", "缓存图片内容损坏或被修改")
+    return payload
 
 
 def inspect_image(payload: bytes, mime_type: str | None = None) -> dict[str, Any]:
@@ -90,6 +203,13 @@ class AssetLease:
                 _LEASES[self.path] = remaining
             else:
                 _LEASES.pop(self.path, None)
+                pin = _pin_path(self.path)
+                stream, references = _PINS[pin]
+                if references == 1:
+                    _PINS.pop(pin)
+                    stream.close()
+                else:
+                    _PINS[pin] = (stream, references - 1)
 
 
 def lease_file(path: Path) -> AssetLease:
@@ -105,6 +225,16 @@ def lease_file(path: Path) -> AssetLease:
     with _LOCK:
         if not path.is_file() or path.is_symlink():
             raise GroupChatError("asset_unavailable", "图片文件已不可用")
+        if path not in _LEASES:
+            pin = _pin_path(path)
+            if pin in _PINS:
+                stream, references = _PINS[pin]
+                _PINS[pin] = (stream, references + 1)
+            else:
+                try:
+                    _PINS[pin] = (_open_pin(pin), 1)
+                except OSError as exc:
+                    raise GroupChatError("asset_unavailable", "图片正在由其它进程清理或发送, 请稍后重试", retryable=True) from exc
         _LEASES[path] = _LEASES.get(path, 0) + 1
         return AssetLease(path)
 
@@ -197,7 +327,7 @@ class AssetStore:
             raise GroupChatError("asset_unavailable", "图片来源已删除, 撤回或无法核验")
         if not source_message_id and not owner:
             raise GroupChatError("wrong_executor", "工具产物必须绑定有效主工作流")
-        digest = _digest(source) if source else None
+        digest = _source_digest(source) if source else None
         blob_key = hashlib.sha256(payload).hexdigest()
         asset_id = "ga_" + uuid.uuid4().hex
         expires = self.archive._clock() + 86400
@@ -205,10 +335,14 @@ class AssetStore:
             expires = min(expires, source["message_time"] + self.archive.retention_days * 86400)
         with _LOCK, self._transaction() as connection:
             self._purge(connection)
+            if connection.execute("SELECT COUNT(*) FROM group_chat_assets").fetchone()[0] >= 4096:
+                raise GroupChatError("quota_exceeded", "平台图片资产登记已达到 4096 条上限")
             self.root.mkdir(parents=True, exist_ok=True)
             if self.root.is_symlink() or self.root.resolve() != self.root.absolute():
                 raise GroupChatError("asset_unavailable", "图片缓存路径不是受管理目录")
             path = self.root / blob_key
+            if path.exists():
+                read_blob(path, blob_key, len(payload))
             if not path.exists():
                 platform_size = sum(p.stat().st_size for p in self.root.iterdir() if p.is_file())
                 platforms_root = self.archive.database.parent.parent
@@ -217,9 +351,9 @@ class AssetStore:
                     raise GroupChatError("quota_exceeded", "群图片缓存已达到容量上限")
                 path.write_bytes(payload)
             if source_message_id:
-                current = connection.execute("SELECT status,verified FROM platform_messages WHERE scope_key=? AND message_id=?",
+                current = connection.execute("SELECT * FROM platform_messages WHERE scope_key=? AND message_id=?",
                                              (scope.key, source_message_id)).fetchone()
-                if not current or current[0] != "active" or current[1] != 1:
+                if not current or current["status"] != "active" or current["verified"] != 1 or _source_digest(self.archive._item(current)) != digest:
                     raise GroupChatError("asset_unavailable", "图片登记前来源已失效")
             connection.execute("INSERT INTO group_chat_assets(asset_id,scope_key,owner,source_message_id,source_digest,media_index,"
                                "blob_key,mime_type,width,height,size_bytes,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -249,13 +383,41 @@ class AssetStore:
                 raise GroupChatError("asset_unavailable", "图片不属于当前群和轮次, 或已经失效")
             if row["source_message_id"]:
                 source = self.archive.get(scope, row["source_message_id"])
-                if not source or source["status"] != "active" or _digest(source) != row["source_digest"]:
+                if not source or source["status"] != "active" or _source_digest(source) != row["source_digest"]:
                     raise GroupChatError("asset_unavailable", "原消息已经失效或发生变化")
             path = self.root / row["blob_key"]
-            payload = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
-            if hashlib.sha256(payload).hexdigest() != row["blob_key"]:
-                raise GroupChatError("asset_unavailable", "缓存图片损坏或丢失")
+            read_blob(path, row["blob_key"], row["size_bytes"])
             return lease_file(path), dict(row)
+
+    def find(self, scope: MessageScope, message_id: str, index: int) -> dict[str, Any] | None:
+        """
+        复用已核验的同群同消息图片登记, 不复用过期或损坏文件
+
+        参数:
+        - scope: 当前群
+        - message_id: 原消息
+        - index: 媒体目录位置
+
+        返回:
+        - 有效资产或 None
+        """
+        self.archive._check_scope(scope)
+        with _LOCK, self._transaction() as connection:
+            row = connection.execute("SELECT * FROM group_chat_assets WHERE scope_key=? AND source_message_id=? AND media_index=? "
+                                     "AND state='active' ORDER BY expires_at DESC LIMIT 1", (scope.key, message_id, index)).fetchone()
+            if row is None:
+                return None
+            source = self.archive.get(scope, message_id)
+            path = self.root / row["blob_key"]
+            if not source or _source_digest(source) != row["source_digest"]:
+                return None
+            try:
+                read_blob(path, row["blob_key"], row["size_bytes"])
+            except (GroupChatError, OSError):
+                return None
+            return {"schema_version": 1, "asset_id": row["asset_id"], "kind": "image", "origin": "message",
+                    "source_message_id": message_id, "available": True,
+                    **{key: row[key] for key in ("mime_type", "width", "height", "size_bytes", "expires_at")}}
 
     def _purge(self, connection: sqlite3.Connection) -> None:
         """
@@ -269,7 +431,7 @@ class AssetStore:
         if self.root.is_dir() and not self.root.is_symlink():
             for path in self.root.iterdir():
                 if path.name not in keep and path.is_file() and not path.is_symlink() and path not in _LEASES:
-                    path.unlink()
+                    remove_unleased_file(path)
 
     def purge(self) -> None:
         """定期回收失效登记和缓存, 不删除在途文件"""

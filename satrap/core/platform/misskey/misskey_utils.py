@@ -66,7 +66,8 @@ def serialize_message_chain(chain: list[Any] | MessageChain) -> tuple[str, bool]
                 text_parts.append(f"@{name}")
             continue
         if component_type == PlatformComponentType.Image or isinstance(component, Image):
-            text_parts.append("[图片]")
+            if getattr(component, "asset_lease", None) is None:
+                text_parts.append("[图片]")
             continue
         if component_type == PlatformComponentType.Record or isinstance(component, Record):
             text_parts.append("[音频]")

@@ -20,6 +20,7 @@ from satrap.core.type import Group, PlatformError, PlatformStatus, PlatformMessa
 from satrap.core.log import logger
 
 if TYPE_CHECKING:
+    from satrap.core.components import BaseMessageComponent
     from collections.abc import AsyncGenerator
     from satrap.core.platform.event import (
         MessageChain,
@@ -441,11 +442,42 @@ class PlatformAdapter(ABC):
 
     def group_chat_media_limits(self) -> dict[str, int]:
         """返回适配器较小的媒体上限, 宿主和插件上限仍同时有效"""
-        return {"max_images": 4, "max_stickers": 4, "max_bytes": 20 * 1024 * 1024}
+        return {"max_images": 4, "max_stickers": 4, "max_attachments": 8, "max_bytes": 20 * 1024 * 1024}
 
     def group_chat_media_formats(self) -> tuple[str, ...]:
         """返回适配器实际可发送的图片 MIME 交集"""
         return ()
+
+    def group_chat_native_stickers(self) -> list[dict[str, str]]:
+        """提供已确认的原生表情目录, 缺少目录时返回空列表"""
+        return self.group_chat_native_sticker_catalog(self.message_archive)
+
+    @classmethod
+    def group_chat_native_sticker_catalog(cls, archive: PlatformMessageStore | None) -> list[dict[str, str]]:
+        """
+        离线读取适配器提供的原生表情目录
+
+        参数:
+        - archive: 可信的平台消息档案
+
+        返回:
+        - 已确认目录, 默认不支持
+        """
+        return []
+
+    def group_chat_native_sticker_component(self, key: str) -> BaseMessageComponent:
+        """
+        将受控目录键转换为原生组件
+
+        参数:
+        - key: 表情库中由适配器确认的目录键
+
+        返回:
+        - 原生消息组件, 未实现时明确拒绝
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前平台没有原生表情发送实现")
 
     async def group_chat_refresh_image(self, scope: MessageScope, reference: dict[str, Any]) -> str | None:
         """

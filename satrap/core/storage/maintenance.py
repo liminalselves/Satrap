@@ -97,13 +97,25 @@ class StorageMaintenanceService:
                 if days is None:
                     days = store.saved_retention_days() or 30
                 store = PlatformMessageStore(database, platform_id, retention_days=days)
-                results.append({"platform_id": platform_id, "ok": True, **store.purge()})
+                counts = store.purge()
                 from satrap.core.group_chat.assets import AssetStore
 
                 AssetStore(store).purge()
-            except Exception as exc:
-                logger.error(f"[消息档案] 自动维护失败, 平台={platform_id}, 原因={type(exc).__name__}: {exc}")
+                results.append({"platform_id": platform_id, "ok": True, **counts})
+            except Exception:
+                import traceback
+
+                logger.error(f"[消息档案] 自动维护失败, 平台={platform_id}: {traceback.format_exc()}")
                 results.append({"platform_id": platform_id, "ok": False, "error": "archive_unavailable"})
+        from satrap.core.group_chat.stickers import StickerStore
+
+        try:
+            if (self.layout.root / "group-chat" / "catalog.db").is_file():
+                StickerStore(self.layout).purge()
+        except Exception:
+            import traceback
+
+            logger.error(f"[群表情] 自动维护失败: {traceback.format_exc()}")
         return {"items": results}
 
     @staticmethod

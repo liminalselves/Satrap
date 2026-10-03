@@ -11,6 +11,7 @@ import { GlobalPluginSettings } from './GlobalPluginSettings';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS as capabilityLabels } from '@/components/common/PluginCapabilities';
 import { PluginUsages } from './PluginUsages';
+import { StickerLibrary } from './StickerLibrary';
 
 const sourceLabels = { builtin: '内置', user: '用户' };
 const sessionLabels: Record<string, string> = { chat: 'Chat', platform: '平台会话', embedded: '嵌入会话' };
@@ -92,7 +93,7 @@ export function Plugins() {
 
 export function PluginDetail() {
   const [search] = useSearchParams();
-  const [tab, setTab] = useState(search.get('tab') === 'config' ? 'config' : search.get('tab') === 'usages' ? 'usages' : 'overview');
+  const [tab, setTab] = useState(search.get('tab') === 'stickers' ? 'stickers' : search.get('tab') === 'config' ? 'config' : search.get('tab') === 'usages' ? 'usages' : 'overview');
   const [dirty, setDirty] = useState(false);
   useDirtyGuard(dirty);
   const { name } = useParams();
@@ -102,7 +103,7 @@ export function PluginDetail() {
     <Link to="/plugins" className="text-sm text-accent">← 返回插件列表</Link>
     <PageHeader title={name || '插件详情'} actions={<Button onClick={refresh} disabled={loading}>刷新</Button>} />
     {error && <p role="alert" className="text-error">{error}</p>}
-    {plugin && <div className="flex gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数'], ['usages', '使用位置']].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
-    {plugin ? tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
+    {plugin && <div className="flex flex-wrap gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数'], ['usages', '使用位置'], ...(plugin.name === 'group_chat' ? [['stickers', '表情库']] : [])].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
+    {plugin ? tab === 'stickers' && plugin.name === 'group_chat' ? <StickerLibrary onDirty={setDirty} /> : tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
   </div>;
 }

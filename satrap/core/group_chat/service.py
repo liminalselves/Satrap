@@ -26,7 +26,8 @@ from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, Member
 from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
 from satrap.core.components import At, Plain, Reply, Image, BaseMessageComponent
-from satrap.core.group_chat.assets import AssetStore, AssetLease, MAX_REPLY_BYTES
+from satrap.core.group_chat.assets import AssetStore, AssetLease, MAX_REPLY_BYTES, MAX_IMAGE_BYTES
+from satrap.core.group_chat.stickers import library_for
 from satrap.core.platform.event import MessageChain
 from satrap.core.log import logger
 
@@ -44,6 +45,8 @@ _ARGUMENTS = {
     "group_chat_save_summary": frozenset({"snapshot_id", "title", "points"}),
     "group_chat_get_summary": frozenset({"summary_id"}),
     "group_chat_list_summaries": frozenset({"keyword", "limit", "cursor"}),
+    "group_chat_get_message_assets": frozenset({"message_id"}),
+    "group_chat_list_stickers": frozenset({"keyword", "limit", "cursor"}),
 }
 
 
@@ -274,6 +277,19 @@ class GroupChatService:
                 raise ValueError("群聊工具含有未知参数, 只能操作当前群")
             bounds = limits or GroupChatLimits()
             context = await self._resolve()
+            if operation in {"group_chat_get_message_assets", "group_chat_list_stickers"}:
+                if not bounds.media_reply_enabled:
+                    raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
+                if operation == "group_chat_get_message_assets":
+                    self._capability(context, "image")
+                    return await self._message_assets(context, _id(arguments.get("message_id")), bounds)
+                capabilities = context.adapter.group_chat_capabilities()
+                native = capabilities.get("sticker", {}).get("state") == "supported"
+                if not native:
+                    self._capability(context, "image")
+                return await self._archive(context, library_for(self._store(context)).list, scope=context.scope,
+                                           adapter_type=context.adapter.config.type, formats=context.adapter.group_chat_media_formats(), native=native,
+                                           **dict(arguments), argument_errors=True)
             if operation in {"group_chat_prepare_summary", "group_chat_read_summary_sources", "group_chat_save_summary",
                              "group_chat_get_summary", "group_chat_list_summaries"}:
                 return await self._summary(context, operation, arguments, bounds)
@@ -328,6 +344,105 @@ class GroupChatService:
         logger.warning(f"[群聊工具] 执行失败, 操作={operation}, 错误={code}, "
                        f"平台={origin.adapter_id if origin else ''}, 轮次={origin.request_id if origin else ''}")
         return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
+
+    async def _message_assets(self, context: _ReadContext, message_id: str, bounds: GroupChatLimits) -> dict[str, Any]:
+        """
+        按需读取已核验消息的图片, 下载失败不返回可发送 ID
+
+        参数:
+        - context: 当前可信群身份
+        - message_id: 当前群原消息
+        - bounds: 当前插件上限
+
+        返回:
+        - 按原媒体顺序的目录, 逐项说明可用状态与失败原因
+        """
+        from pathlib import Path
+        from satrap.core.group_chat.reply import current_reply_turn
+        from satrap.core.pipeline.attachments import _download
+
+        item = (await self._message(context, message_id, bounds))["item"]
+        if not item["verified"]:
+            raise GroupChatError("unverified_target", "图片来源消息未核验")
+        turn = current_reply_turn()
+        settings = turn.event.policy_settings if turn else context.adapter.config.settings
+        hosts = settings.get("media_trusted_hosts", []) or []
+        if not isinstance(hosts, list) or not all(isinstance(host, str) for host in hosts):
+            raise GroupChatError("invalid_configuration", "图片下载可信主机配置无效")
+        trusted = tuple(hosts)
+        assets = AssetStore(self._store(context))
+        deadline = time.monotonic() + 20
+        used = 0
+        result = []
+        event_media = [component for component in turn.event.get_messages() if isinstance(component, Image)] if turn and message_id == context.origin.source_message_id else []
+        image_index = 0
+        for index, reference in enumerate(item["media"]):
+            entry: dict[str, Any] = {"index": index, "type": reference.get("type"), "available": False}
+            result.append(entry)
+            if reference.get("type") != "Image":
+                entry["reason"] = "unsupported_media"
+                continue
+            local = event_media[image_index] if image_index < len(event_media) else None
+            image_index += 1
+            if image_index > 8 or used >= MAX_REPLY_BYTES or time.monotonic() >= deadline:
+                entry["reason"] = "quota_exceeded"
+                continue
+            try:
+                cached = assets.find(context.scope, message_id, index)
+                if cached is not None:
+                    used += cached["size_bytes"]
+                    if used > MAX_REPLY_BYTES:
+                        raise GroupChatError("quota_exceeded", "本次图片读取总大小超过 20 MiB")
+                    if cached["mime_type"] not in context.adapter.group_chat_media_formats():
+                        raise GroupChatError("unsupported", "当前平台不支持该图片格式")
+                    entry.update(cached)
+                    continue
+                data: bytes | None = None
+                if local is not None and local.resolved_path:
+                    path = Path(local.resolved_path)
+                    if path.is_file() and not path.is_symlink() and path.stat().st_size <= MAX_IMAGE_BYTES:
+                        with path.open("rb") as stream:
+                            data = stream.read(MAX_IMAGE_BYTES + 1)
+                async def fetch() -> bytes:
+                    """先用已核验地址, 过期时仅经适配器刷新后再次下载"""
+                    address = reference.get("url")
+                    if isinstance(address, str) and address:
+                        try:
+                            return await _download(address, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
+                                                   settings.get("media_plaintext_http", False) is True)
+                        except Exception as exc:
+                            logger.warning(f"[群图片] 原地址读取失败, 平台={context.scope.adapter_id}, 原因={type(exc).__name__}")
+                    fresh = await context.adapter.group_chat_refresh_image(context.scope, reference)
+                    if not fresh:
+                        raise GroupChatError("asset_unavailable", "图片地址已失效且平台无法刷新")
+                    await self._revalidate(context)
+                    return await _download(fresh, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
+                                           settings.get("media_plaintext_http", False) is True)
+                if data is None:
+                    data = await asyncio.wait_for(fetch(), max(0.01, deadline - time.monotonic()))
+                used += len(data)
+                if used > MAX_REPLY_BYTES:
+                    raise GroupChatError("quota_exceeded", "本次图片读取总大小超过 20 MiB")
+                await self._revalidate(context)
+                registered = await self._archive(context, assets.register, context.scope, data, source_message_id=message_id, media_index=index)
+                if registered["mime_type"] not in context.adapter.group_chat_media_formats():
+                    raise GroupChatError("unsupported", "当前平台不支持该图片格式")
+                entry.update(registered)
+            except GroupChatError as exc:
+                if exc.code == "stale_call":
+                    raise
+                logger.warning(f"[群图片] 读取拒绝, 平台={context.scope.adapter_id}, 原因={exc.code}")
+                entry["reason"] = exc.code
+            except (asyncio.TimeoutError, OSError) as exc:
+                logger.warning(f"[群图片] 读取失败, 平台={context.scope.adapter_id}, 原因={type(exc).__name__}")
+                entry["reason"] = "asset_unavailable"
+            except Exception:
+                logger.error(f"[群图片] 读取异常, 平台={context.scope.adapter_id}: {traceback.format_exc()}")
+                entry["reason"] = "asset_unavailable"
+        await self._revalidate(context)
+        if (await self._archive(context, self._store(context).get, context.scope, message_id) or {}).get("status") != "active":
+            raise GroupChatError("asset_unavailable", "返回前图片来源已失效")
+        return {"ok": True, "message_id": message_id, "items": result}
 
     async def _summary(self, context: _ReadContext, operation: str, arguments: Mapping[str, object],
                        bounds: GroupChatLimits) -> dict[str, Any]:
@@ -428,6 +543,8 @@ class GroupChatService:
         quote: Reply | None = None
         text_size = 0
         image_count = 0
+        sticker_count = 0
+        file_count = 0
         media_bytes = 0
         for raw in components:
             if not isinstance(raw, dict):
@@ -439,6 +556,8 @@ class GroupChatService:
                 text_size += len(raw["text"])
                 if text_size > 100000:
                     raise ValueError("回复正文超过 100000 字符")
+                if text_size > context.adapter.group_chat_media_limits().get("max_text", 100000):
+                    raise GroupChatError("quota_exceeded", "回复正文超过当前平台单条消息上限, 请缩短正文")
                 self._capability(context, "text")
                 output.append(Plain(raw["text"]))
             elif kind == "quote":
@@ -476,6 +595,7 @@ class GroupChatService:
                     raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
                 self._capability(context, "image")
                 image_count += 1
+                file_count += 1
                 maximum = min(bounds.max_reply_images, context.adapter.group_chat_media_limits()["max_images"])
                 if image_count > maximum:
                     raise GroupChatError("quota_exceeded", f"当前回复最多支持 {maximum} 张图片")
@@ -495,8 +615,34 @@ class GroupChatService:
                 component = Image.fromFileSystem(str(lease.path))
                 component.asset_lease = lease
                 output.append(component)
+            elif kind == "sticker":
+                if set(raw) != {"type", "sticker_id"}:
+                    raise ValueError("sticker 只接受表情目录中的 sticker_id")
+                if not bounds.media_reply_enabled:
+                    raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
+                sticker_count += 1
+                maximum = min(bounds.max_reply_stickers, context.adapter.group_chat_media_limits()["max_stickers"])
+                if sticker_count > maximum:
+                    raise GroupChatError("quota_exceeded", f"当前回复最多支持 {maximum} 个表情")
+                native = context.adapter.group_chat_capabilities().get("sticker", {}).get("state") == "supported"
+                row, lease = library_for(self._store(context)).acquire(context.scope, _id(raw["sticker_id"]),
+                                                                     context.adapter.config.type, context.adapter.group_chat_media_formats(), native)
+                if lease is not None:
+                    leases.append(lease)
+                    self._capability(context, "image")
+                    file_count += 1
+                    media_bytes += row["size_bytes"]
+                    component = Image.fromFileSystem(str(lease.path))
+                    component.asset_lease = lease
+                    output.append(component)
+                else:
+                    self._capability(context, "sticker")
+                    output.append(context.adapter.group_chat_native_sticker_component(row["native_key"]))
             else:
                 raise ValueError("不支持该回复组件类型")
+            media_limits = context.adapter.group_chat_media_limits()
+            if file_count > media_limits.get("max_attachments", media_limits["max_images"]) or media_bytes > min(MAX_REPLY_BYTES, media_limits["max_bytes"]):
+                raise GroupChatError("quota_exceeded", "图片与图片表情的合计超过当前平台发送限制")
         if not output:
             raise ValueError("回复不能只有引用")
         await self._revalidate(context)
