@@ -186,16 +186,18 @@ class PlatformMessageStore:
             connection.close()
             raise
 
-    def _save_retention(self, connection: sqlite3.Connection) -> None:
+    def _save_retention(self, connection: sqlite3.Connection, *, replace_existing: bool = False) -> None:
         """
         保留最后生效的档案保留期, 平台移除后仍可按原策略清理
 
         参数:
         - connection: 当前档案写事务连接
+        - replace_existing: 配置应用或维护时更新策略, 延迟采集仅填充缺失策略
         """
         connection.execute(
-            "INSERT INTO platform_message_policy(adapter_id, retention_days) VALUES(?, ?) "
-            "ON CONFLICT(adapter_id) DO UPDATE SET retention_days=excluded.retention_days",
+            "INSERT INTO platform_message_policy(adapter_id, retention_days) VALUES(?, ?) " +
+            ("ON CONFLICT(adapter_id) DO UPDATE SET retention_days=excluded.retention_days" if replace_existing
+             else "ON CONFLICT(adapter_id) DO NOTHING"),
             (self.adapter_id, self.retention_days),
         )
 
@@ -214,6 +216,15 @@ class PlatformMessageStore:
                 "SELECT retention_days FROM platform_message_policy WHERE adapter_id=?", (self.adapter_id,),
             ).fetchone()
             return int(row[0]) if row else None
+
+    def persist_retention_policy(self) -> None:
+        """保存已应用的保留期, 冷平台不创建数据库或立即擦除原文"""
+        connection = self._connect()
+        if connection is None:
+            return
+        with closing(connection), connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._save_retention(connection, replace_existing=True)
 
     def _chat(self, connection: sqlite3.Connection, scope: MessageScope, label: str = "") -> sqlite3.Row:
         """
@@ -358,14 +369,24 @@ class PlatformMessageStore:
         if status == "active" and row["message_time"] < self._clock() - self.retention_days * 86400:
             status = "expired"
         active = status == "active"
+        components, mentions, media = [], [], []
+        if active:
+            try:
+                components, mentions, media = (json.loads(row[key]) for key in ("components_json", "mentions_json", "media_json"))
+            except (ValueError, TypeError) as exc:
+                raise MessageArchiveError("archive_unavailable", "消息档案组件数据损坏") from exc
+            if (not isinstance(components, list) or not all(isinstance(item, dict) for item in components)
+                    or not isinstance(media, list) or not all(isinstance(item, dict) for item in media)
+                    or not isinstance(mentions, list) or not all(isinstance(item, str) and item.strip() for item in mentions)):
+                raise MessageArchiveError("archive_unavailable", "消息档案组件结构损坏")
         return {"message_id": row["message_id"], "sender_id": row["sender_id"] if active else "",
                 "nickname": row["nickname"] if active else "", "card": row["card"] if active else "",
                 "message_time": row["message_time"], "time_source": row["time_source"],
                 "received_at": row["received_at"], "direction": row["direction"],
-                "text": row["text"] if active else "", "components": json.loads(row["components_json"]) if active else [],
+                "text": row["text"] if active else "", "components": components,
                 "reply_to_message_id": row["reply_to_message_id"] if active else None,
-                "mentions": json.loads(row["mentions_json"]) if active else [],
-                "media": json.loads(row["media_json"]) if active else [], "status": status,
+                "mentions": mentions,
+                "media": media, "status": status,
                 "source": row["source"], "verified": bool(row["verified"]), "truncated": bool(row["truncated"])}
 
     @staticmethod
@@ -695,6 +716,92 @@ class PlatformMessageStore:
             chat = connection.execute("SELECT delete_before FROM platform_message_chats WHERE scope_key=?", (scope.key,)).fetchone()
             return chat is None or chat[0] is None or message_time is None or message_time > chat[0]
 
+    def catalog(self, *, conversation_kind: str = "", self_id: str = "", keyword: str = "",
+                offset: int = 0, limit: int = 40) -> dict[str, Any]:
+        """
+        分页列出真实档案对话, 保留已清空对话以便恢复
+
+        参数:
+        - conversation_kind: 已保存的对话类型, 空字符串表示全部
+        - self_id: 机器人账号筛选, 空字符串表示全部
+        - keyword: 名称或对话 ID 的普通子串, 不作为 SQL 通配符
+        - offset: 非负分页偏移
+        - limit: 每页 1 到 100 条
+
+        返回:
+        - 对话列表, 总数, 已保存类型与账号筛选项
+        """
+        if type(offset) is not int or not 0 <= offset <= 1_000_000 or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("档案目录分页参数无效")
+        for value in (conversation_kind, self_id, keyword):
+            if not isinstance(value, str) or len(value) > 256:
+                raise ValueError("档案目录筛选参数无效")
+        connection = self._connect()
+        empty = {"items": [], "total": 0, "conversation_kinds": [], "self_ids": []}
+        if connection is None:
+            return empty
+        conditions = ["c.adapter_id=?"]
+        parameters: list[object] = [self.adapter_id]
+        for field, value in (("conversation_kind", conversation_kind), ("self_id", self_id)):
+            if value:
+                conditions.append(f"c.{field}=?")
+                parameters.append(value)
+        if keyword:
+            conditions.append("instr(c.label || ' ' || c.chat_id || ' ' || c.self_id, ?) > 0")
+            parameters.append(keyword)
+        where = " AND ".join(conditions)
+        with closing(connection):
+            connection.execute("BEGIN")
+            total = connection.execute(f"SELECT COUNT(*) FROM platform_message_chats c WHERE {where}", parameters).fetchone()[0]
+            rows = connection.execute(
+                "SELECT c.*, (SELECT COUNT(*) FROM platform_messages m WHERE m.scope_key=c.scope_key "
+                "AND m.status='active' AND m.message_time>=?) AS message_count, "
+                "(SELECT MAX(m.message_time) FROM platform_messages m WHERE m.scope_key=c.scope_key "
+                "AND m.status='active' AND m.message_time>=?) AS last_message_at "
+                f"FROM platform_message_chats c WHERE {where} ORDER BY c.self_id, c.conversation_kind, c.chat_id LIMIT ? OFFSET ?",
+                (self._clock() - self.retention_days * 86400, self._clock() - self.retention_days * 86400,
+                 *parameters, limit, offset),
+            ).fetchall()
+            kinds = [row[0] for row in connection.execute(
+                "SELECT DISTINCT conversation_kind FROM platform_message_chats WHERE adapter_id=? ORDER BY conversation_kind",
+                (self.adapter_id,),
+            )]
+            accounts = [row[0] for row in connection.execute(
+                "SELECT DISTINCT self_id FROM platform_message_chats WHERE adapter_id=? ORDER BY self_id", (self.adapter_id,),
+            )]
+            return {"items": [{key: row[key] for key in ("adapter_id", "self_id", "conversation_kind", "chat_id", "label",
+                                                          "revision", "message_count", "last_message_at")} for row in rows],
+                    "total": total, "conversation_kinds": kinds, "self_ids": accounts}
+
+    def management_state(self, scope: MessageScope) -> dict[str, Any] | None:
+        """
+        读取档案身份与有效删除备份摘要, 不向目录暴露备份中的原文
+
+        参数:
+        - scope: 已授权管理的档案范围
+
+        返回:
+        - 对话元信息和恢复入口, 尚未采集时返回 None
+        """
+        self._check_scope(scope)
+        connection = self._connect()
+        if connection is None:
+            return None
+        with closing(connection):
+            connection.execute("BEGIN")
+            chat = connection.execute("SELECT * FROM platform_message_chats WHERE scope_key=?", (scope.key,)).fetchone()
+            if chat is None:
+                return None
+            now = self._clock()
+            backups = connection.execute(
+                "SELECT backup_id, action, created_at, expires_at FROM platform_message_backups "
+                "WHERE scope_key=? AND expires_at>? AND created_at>=? ORDER BY created_at DESC, backup_id DESC LIMIT 100",
+                (scope.key, now, now - self.retention_days * 86400),
+            ).fetchall()
+            return {"scope": {key: chat[key] for key in ("adapter_id", "self_id", "conversation_kind", "chat_id", "label")},
+                    "revision": chat["revision"], "retention_days": self.retention_days,
+                    "backups": [dict(row) for row in backups]}
+
     def purge(self) -> dict[str, int]:
         """
         擦除过期正文与恢复备份, 保留阻止重放的最小消息标记
@@ -707,7 +814,7 @@ class PlatformMessageStore:
             return {"expired_count": 0, "backup_count": 0}
         with closing(connection), connection:
             connection.execute("BEGIN IMMEDIATE")
-            self._save_retention(connection)
+            self._save_retention(connection, replace_existing=True)
             now = self._clock()
             result = connection.execute(
                 "UPDATE platform_messages SET status='expired', delete_token='retention', sender_id='', nickname='', card='', "

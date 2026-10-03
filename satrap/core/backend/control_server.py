@@ -50,6 +50,8 @@ from satrap.core.framework.providers.base import SESSION_CLASS_PROVIDER
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.core.config.conversation_catalog import platform_catalog, filter_records, record_facets
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
+from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
+from satrap.core.config.platform_messages import MessageArchiveError
 from satrap.core.config.conversation_runtime import perform_data_operation
 from satrap.core.config.user_directory import UserDirectoryService, UserDirectoryConflict, missing_profile_revision
 from satrap.core.config.edictum_references import list_edictum_config_references, rename_edictum_config_references
@@ -2058,6 +2060,44 @@ async def _route_conversation_users(ctx: _RouteContext) -> ControlResponse | Non
         return 500, {"error": "用户资料操作失败, 请查看控制服务日志"}
 
 
+async def _route_platform_archive(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在认证后的请求边界读取或管理平台消息档案, 存储失败不终止控制进程
+
+    参数:
+    - ctx: 已认证的控制请求
+
+    返回:
+    - 档案目录/管理结果或明确错误, 路径不匹配时返回 None
+    """
+    prefix = "/config/conversations/archive"
+    if (ctx.path, ctx.method) not in {(prefix, "GET"), (prefix + "/data", "POST")}:
+        return None
+    try:
+        layout = _configured_storage_layout()
+        document = load_config_document(CONFIG_PATH)
+        if ctx.method == "GET":
+            query = {key: values[0] for key, values in urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query).items()}
+            return 200, await RAG_WORKERS.run(platform_archive_catalog, layout, document, query)
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        return 200, await RAG_WORKERS.run(platform_archive_operation, layout, document, payload)
+    except MessageArchiveError as exc:
+        log_failure = logger.error if exc.code == "archive_unavailable" else logger.warning
+        log_failure(f"[消息档案] 管理请求失败, 代码={exc.code}: {exc}")
+        status = {"archive_unavailable": 503, "revision_conflict": 409, "backup_superseded": 409,
+                  "not_found": 404, "backup_not_found": 404}.get(exc.code, 400)
+        return status, {"error": str(exc), "code": exc.code}
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"[消息档案] 管理参数无效: {exc}")
+        return 400, {"error": str(exc), "code": "invalid_argument"}
+    except WorkerBusyError as exc:
+        logger.warning(f"[消息档案] 管理工作队列已满: {exc}")
+        return 503, {"error": "档案管理繁忙, 请稍后重试", "code": "unavailable"}
+    except Exception as exc:
+        logger.error(f"[消息档案] 管理操作失败: {type(exc).__name__}: {exc}")
+        return 503, {"error": "平台消息档案不可用, 请查看控制服务日志", "code": "archive_unavailable"}
+
+
 async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None:
     """
     对话目录只读查询和冷热统一的数据操作入口
@@ -2919,6 +2959,7 @@ async def _handle_request(
             _route_session_class_collection_get,
             _route_storage,
             _route_conversation_users,
+            _route_platform_archive,
             _route_conversation_data,
             _route_plugin_install,
             _route_plugin_config,
