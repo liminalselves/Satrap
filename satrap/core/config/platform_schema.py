@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 4
+PLATFORM_SCHEMA_VERSION = 5
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -41,7 +41,8 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     version = int(connection.execute("PRAGMA user_version").fetchone()[0])
     existing = _tables(connection)
     required = (({_OVERRIDE_TABLE} if version >= 1 else set()) | (_GROUP_TABLES if version >= 2 else set())
-                | (_MESSAGE_TABLES if version >= 4 else set()))
+                | (_MESSAGE_TABLES if version >= 4 else set())
+                | ({"platform_message_policy"} if version >= 5 else set()))
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -151,3 +152,9 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         )
         connection.execute("CREATE INDEX idx_platform_message_backups_expiry ON platform_message_backups(expires_at)")
         connection.execute("PRAGMA user_version = 4")
+    if version < 5:
+        connection.execute(
+            "CREATE TABLE platform_message_policy (adapter_id TEXT PRIMARY KEY, "
+            "retention_days INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650))"
+        )
+        connection.execute("PRAGMA user_version = 5")

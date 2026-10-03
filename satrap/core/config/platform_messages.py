@@ -15,7 +15,7 @@ import sqlite3
 import time
 import uuid
 
-from satrap.core.config.platform_schema import ensure_platform_tables
+from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION, ensure_platform_tables
 
 
 class MessageArchiveError(RuntimeError):
@@ -175,11 +175,45 @@ class PlatformMessageStore:
                 if version < 4:
                     connection.close()
                     return None
-                ensure_platform_tables(connection)
+                if version >= PLATFORM_SCHEMA_VERSION:
+                    ensure_platform_tables(connection)
+                else:
+                    with connection:
+                        connection.execute("BEGIN IMMEDIATE")
+                        ensure_platform_tables(connection)
             return connection
         except Exception:
             connection.close()
             raise
+
+    def _save_retention(self, connection: sqlite3.Connection) -> None:
+        """
+        保留最后生效的档案保留期, 平台移除后仍可按原策略清理
+
+        参数:
+        - connection: 当前档案写事务连接
+        """
+        connection.execute(
+            "INSERT INTO platform_message_policy(adapter_id, retention_days) VALUES(?, ?) "
+            "ON CONFLICT(adapter_id) DO UPDATE SET retention_days=excluded.retention_days",
+            (self.adapter_id, self.retention_days),
+        )
+
+    def saved_retention_days(self) -> int | None:
+        """
+        读取最后生效的保留策略, 没有消息档案时不创建数据库
+
+        返回:
+        - 已保存的保留天数, 未保存策略时返回 None
+        """
+        connection = self._connect()
+        if connection is None:
+            return None
+        with closing(connection):
+            row = connection.execute(
+                "SELECT retention_days FROM platform_message_policy WHERE adapter_id=?", (self.adapter_id,),
+            ).fetchone()
+            return int(row[0]) if row else None
 
     def _chat(self, connection: sqlite3.Connection, scope: MessageScope, label: str = "") -> sqlite3.Row:
         """
@@ -193,6 +227,7 @@ class PlatformMessageStore:
         返回:
         - 当前对话状态行
         """
+        self._save_retention(connection)
         connection.execute(
             "INSERT INTO platform_message_chats(scope_key, adapter_id, self_id, conversation_kind, chat_id, label) "
             "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(scope_key) DO UPDATE SET "
@@ -672,6 +707,7 @@ class PlatformMessageStore:
             return {"expired_count": 0, "backup_count": 0}
         with closing(connection), connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._save_retention(connection)
             now = self._clock()
             result = connection.execute(
                 "UPDATE platform_messages SET status='expired', delete_token='retention', sender_id='', nickname='', card='', "

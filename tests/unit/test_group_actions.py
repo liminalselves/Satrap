@@ -113,7 +113,7 @@ def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> N
                  "panel", 1, approval_required=True)
     with sqlite3.connect(database) as connection:
         connection.execute("ALTER TABLE group_actions DROP COLUMN model_origin_json")
-        for table in ("platform_message_backups", "platform_messages", "platform_message_chats"):
+        for table in ("platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
             connection.execute(f"DROP TABLE {table}")
         connection.execute("PRAGMA user_version = 2")
     migrated = GroupActionStore(database)

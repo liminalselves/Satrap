@@ -234,6 +234,7 @@ class BackendManager:
 
         self._http_server: BackendHTTPServer | None = None
         self._dispatch_task: asyncio.Task[Any] | None = None
+        self._message_archive_maintenance_task: asyncio.Task[None] | None = None
         self._dispatch_state = "stopped"
         self._dispatch_last_error: str | None = None
         self._dispatch_restart_count = 0
@@ -1681,11 +1682,34 @@ class BackendManager:
             self._init_pipeline()
             await self._init_platforms()
             await self._init_http_api()
+            self._message_archive_maintenance_task = asyncio.create_task(self._maintain_message_archives())
             logger.info("[BackendManager] 所有组件初始化完成")
         except Exception as e:
             logger.error(f"[BackendManager] 启动失败: {e}")
             await self.stop()
             raise
+
+    async def _maintain_message_archives(self) -> None:
+        """启动后及每小时维护平台档案, 未启动或已移除平台也保留原策略"""
+        from satrap.core.storage.maintenance import StorageMaintenanceService
+
+        service = StorageMaintenanceService(self._storage)
+        while self._running:
+            try:
+                configurations = {str(item.get("id", "")): item for item in self.config.platforms}
+                configurations.update(self._platform_active_configs)
+                policies = {platform_id: item.get("settings", {}).get("message_archive_retention_days", 30)
+                            for platform_id, item in configurations.items() if platform_id}
+                result = await asyncio.to_thread(service.expire_platform_messages, policies)
+                for item in result["items"]:
+                    if item.get("ok") and (item.get("expired_count") or item.get("backup_count")):
+                        logger.info(f"[消息档案] 自动维护完成, 平台={item['platform_id']}, "
+                                    f"过期正文={item['expired_count']}, 过期备份={item['backup_count']}")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(f"[消息档案] 自动维护轮次失败, 原因={type(exc).__name__}: {exc}")
+            await asyncio.sleep(3600)
 
     async def wake_platform(self, payload: dict[str, Any], *, operator: str) -> dict[str, Any]:
         """
@@ -2378,6 +2402,15 @@ class BackendManager:
         """优雅关闭: 逆序停止"""
         self._running = False
         self._dispatch_state = "stopping"
+        if self._message_archive_maintenance_task is not None:
+            self._message_archive_maintenance_task.cancel()
+            try:
+                await self._message_archive_maintenance_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error(f"[消息档案] 停止维护任务失败: {type(exc).__name__}: {exc}")
+            self._message_archive_maintenance_task = None
 
         if self._http_server:
             await self._http_server.stop()
