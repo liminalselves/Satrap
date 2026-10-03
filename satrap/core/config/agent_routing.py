@@ -141,6 +141,32 @@ class AgentRouteStore:
             logger.error(f"[Agent 路由] 代次保存失败: {kind}/{chat_id}, {error}\n{traceback.format_exc()}")
             raise
 
+    def current_revision(self, self_id: str, kind: str, chat_id: str) -> int:
+        """
+        只读核对工具来源冻结的路由代次, 不创建数据库或推进代次
+
+        参数:
+        - self_id: 已确认的机器人账号
+        - kind: 适配器归一的对话类型
+        - chat_id: 实际对话 ID
+
+        返回:
+        - 已保存代次, 尚未启用隔离路由时为 0
+        """
+        if not self.path.is_file():
+            return 0
+        try:
+            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)) as connection:
+                if not connection.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_route_versions'").fetchone():
+                    return 0
+                row = connection.execute(
+                    "SELECT revision FROM agent_route_versions WHERE self_id=? AND kind=? AND chat_id=?", (self_id, kind, chat_id),
+                ).fetchone()
+                return int(row[0]) if row else 0
+        except Exception as exc:
+            logger.error(f"[Agent 路由] 工具来源代次核验失败: {kind}/{chat_id}, 原因={type(exc).__name__}: {exc}")
+            raise
+
     def apply_platform(self, platform: Mapping[str, object]) -> int:
         """
         平台配置生效时立即推进受影响对话, 无消息期间的切换也不复用旧代次

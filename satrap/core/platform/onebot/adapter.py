@@ -50,6 +50,9 @@ from satrap.core.platform import EventHandler, PlatformAdapter, PlatformConfig, 
 from satrap.core.type import PlatformMessage, safe_getattr_callable
 
 from satrap.core.log import logger
+from satrap.core.call_context import CallOrigin
+from satrap.core.config.platform_messages import MessageScope
+from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage
 
 
 class _MissingCQHttp:
@@ -751,6 +754,92 @@ class OneBotAdapter(PlatformAdapter):
             return False
         groups = normalize_group_whitelist(settings.get("group_whitelist", []))
         return self.config.enable and bool(settings.get("enable_group", True)) and (not groups or group_id in groups)
+
+    async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        核验当前群聊仍在启用范围且未确认离开
+
+        参数:
+        - origin: 宿主固定的轮次来源
+
+        返回:
+        - 当前可信群身份, 群停用或账号切换时拒绝
+        """
+        scope = await super().group_chat_scope(origin)
+        snapshot = self._group_access_snapshot
+        if (not self.allows_group(scope.chat_id)
+                or (snapshot is not None and snapshot.membership.get(scope.chat_id) == "left")):
+            raise GroupChatError("stale_call", "来源群已停用或机器人已离开")
+        return scope
+
+    def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
+        """
+        声明 OneBot 已实现的群聊能力, 按连接与被动学习结果更新状态
+
+        返回:
+        - 通用能力状态及原因, 未学习的只读动作允许调用并核验实际支持情况
+        """
+        capabilities = super().group_chat_capabilities()
+        states = self.admin_capabilities()
+        for name, action in {"member_list": "get_group_member_list", "member_info": "get_group_member_info",
+                             "message_lookup": "get_msg"}.items():
+            learned = self._capability_states.get(action)
+            if learned is not None and learned[0] == self.connection_generation() and learned[1] == "unsupported":
+                state, reason = "unsupported", "platform_action_not_supported"
+            elif states.get("get_message" if action == "get_msg" else action) == "unavailable":
+                state, reason = "unavailable", "platform_disconnected"
+            else:
+                state, reason = "supported", "adapter_implemented"
+            capabilities[name] = {"state": state, "reason": reason}
+        for name in ("text", "quote", "mention"):
+            disconnected = states.get("get_group_list") == "unavailable"
+            capabilities[name] = {"state": "unavailable" if disconnected else "supported",
+                                  "reason": "platform_disconnected" if disconnected else "adapter_implemented"}
+        return capabilities
+
+    async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
+        """
+        读取当前群成员及完整性状态
+
+        参数:
+        - scope: 宿主核验的当前群身份
+
+        返回:
+        - 已核验的成员快照
+        """
+        from satrap.core.platform.onebot.group_chat import OneBotGroupChatReader
+
+        return await OneBotGroupChatReader(self).members(scope)
+
+    async def group_chat_member(self, scope: MessageScope, user_id: str) -> VerifiedMember:
+        """
+        核验当前群内的一个成员
+
+        参数:
+        - scope: 宿主核验的当前群身份
+        - user_id: 待核验的成员 ID
+
+        返回:
+        - 带当前群归属的成员资料
+        """
+        from satrap.core.platform.onebot.group_chat import OneBotGroupChatReader
+
+        return await OneBotGroupChatReader(self).member(scope, user_id)
+
+    async def group_chat_message(self, scope: MessageScope, message_id: str) -> VerifiedMessage:
+        """
+        回源读取并核验当前群的一条消息
+
+        参数:
+        - scope: 宿主核验的当前群身份
+        - message_id: 待读取的消息 ID
+
+        返回:
+        - 已核验的原始消息快照
+        """
+        from satrap.core.platform.onebot.group_chat import OneBotGroupChatReader
+
+        return await OneBotGroupChatReader(self).message(scope, message_id)
 
     async def fetch_group_message(self, message_id: str, group_id: str, user_id: str) -> dict[str, Any]:
         """

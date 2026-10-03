@@ -420,6 +420,8 @@ class MessageEvent:
             adapter_id=platform_meta.id, self_id=self.get_self_id(), chat_type=mt,
             chat_id=self.get_group_id() or self.get_sender_id(), actor_id=self.get_sender_id(),
             source_message_id=safe_getattr_str(platform_message, "message_id"), request_id=uuid.uuid4().hex,
+            conversation_kind=self.conversation_kind, conversation_id=self.conversation_id,
+            agent_route_generation=self.agent_route_generation, group_route_generation=self.group_route_generation,
         )
 
         self.role = "member"

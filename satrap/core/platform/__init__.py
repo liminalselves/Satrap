@@ -28,6 +28,8 @@ if TYPE_CHECKING:
         PlatformMetadata,
     )
     from satrap.core.pipeline.scheduler import PipelineScheduler
+    from satrap.core.call_context import CallOrigin
+    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -298,6 +300,127 @@ class PlatformAdapter(ABC):
             await asyncio.to_thread(self.message_archive.recall, scope, message_id)
         except Exception as exc:
             logger.error(f"[消息档案] 撤回标记失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
+
+    async def group_chat_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        为当前轮次核验群聊身份及路由代次, 不接受模型提供目标群
+
+        参数:
+        - origin: 宿主冻结的入站来源
+
+        返回:
+        - 当前仍可访问的群档案身份, 失效或非群来源抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        if (not self.config.enable or origin.adapter_id != self.config.id or not origin.self_id
+                or origin.self_id != self.client_self_id):
+            raise GroupChatError("stale_call", "来源平台或机器人账号已经失效")
+        kind = origin.conversation_kind or {"GroupMessage": "group", "FriendMessage": "private"}.get(origin.chat_type, "")
+        if kind != "group" or kind not in self.conversation_kinds:
+            raise GroupChatError("wrong_conversation", "群聊工具只能在适配器声明的群聊中使用")
+        try:
+            scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
+        except ValueError as exc:
+            raise GroupChatError("wrong_conversation", "来源缺少有效群身份") from exc
+        if scope.chat_id != origin.chat_id:
+            raise GroupChatError("wrong_conversation", "归一对话身份与冻结来源群不一致")
+        if origin.conversation_kind:
+            if self.config.session_bindings and origin.agent_route_generation == 0:
+                raise GroupChatError("stale_call", "来源轮次早于分类型 Agent 路由启用")
+            if self.agent_route_store is not None:
+                try:
+                    revision = await asyncio.to_thread(self.agent_route_store.current_revision, scope.self_id, kind, scope.chat_id)
+                except Exception as exc:
+                    raise GroupChatError("unavailable", "来源 Agent 路由暂时无法核验", retryable=True) from exc
+            else:
+                state = self._agent_route_memory.get((scope.self_id, kind, scope.chat_id))
+                revision = state[1] if state else 0
+            if revision != origin.agent_route_generation:
+                raise GroupChatError("stale_call", "来源 Agent 路由已经切换")
+            group_route = getattr(self, "group_route", None)
+            if callable(group_route):
+                try:
+                    route = group_route(scope.chat_id)
+                except Exception as exc:
+                    logger.error(f"[群聊来源] 群路由核验失败, 平台={self.config.id}, 原因={type(exc).__name__}")
+                    raise GroupChatError("unavailable", "来源群会话路由暂时无法核验", retryable=True) from exc
+                if not isinstance(route, tuple) or len(route) != 2 or type(route[1]) is not int:
+                    raise GroupChatError("unavailable", "来源群会话路由无法核验")
+                if route[1] != origin.group_route_generation:
+                    raise GroupChatError("stale_call", "来源群会话路由已经切换")
+        if not self.config.enable or self.client_self_id != origin.self_id:
+            raise GroupChatError("stale_call", "核验期间来源平台或账号已变化")
+        return scope
+
+    def group_chat_connection_token(self) -> tuple[object, int]:
+        """
+        标识当前客户端和连接代次, 防止同一账号重连复用旧成员快照
+
+        返回:
+        - 客户端对象身份与适配器声明的连接代次
+        """
+        generation = getattr(self, "connection_generation", None)
+        value = generation() if callable(generation) else 0
+        return self.get_client(), value if type(value) is int else 0
+
+    def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
+        """
+        声明当前实例可供群聊工具使用的能力, 不执行平台探测
+
+        返回:
+        - 能力名称到 supported, unsupported, unavailable 及原因的映射
+        """
+        from satrap.core.group_chat.types import CAPABILITIES
+
+        capabilities = {name: {"state": "unsupported", "reason": "adapter_not_implemented"} for name in CAPABILITIES}
+        capabilities["archive_search"] = {"state": "supported" if self.message_archive is not None else "unavailable",
+                                          "reason": "local_archive" if self.message_archive is not None else "archive_not_configured"}
+        return capabilities
+
+    async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
+        """
+        读取指定可信群身份的成员快照, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+
+        返回:
+        - 已核验成员快照, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现成员列表读取")
+
+    async def group_chat_member(self, scope: MessageScope, user_id: str) -> VerifiedMember:
+        """
+        核验当前群中的一个成员, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+        - user_id: 待核验的成员 ID
+
+        返回:
+        - 当前群成员资料, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现成员详情读取")
+
+    async def group_chat_message(self, scope: MessageScope, message_id: str) -> VerifiedMessage:
+        """
+        回源读取并核验一条当前群消息, 默认不支持
+
+        参数:
+        - scope: 已由宿主核验的当前群身份
+        - message_id: 待读取的消息 ID
+
+        返回:
+        - 已核验的消息及所属对话, 未实现时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        raise GroupChatError("unsupported", "当前适配器未实现单条消息回源")
 
     def apply_agent_routes(self) -> int:
         """
@@ -575,6 +698,7 @@ class PlatformAdapter(ABC):
             "session_type": self.get_session_type(),
             "session_bindings": self.config.session_bindings,
             "conversation_kinds": self.conversation_kinds,
+            "group_chat_capabilities": self.group_chat_capabilities(),
         }
 
     # ---------- 消息发送 ----------

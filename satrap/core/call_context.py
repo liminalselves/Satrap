@@ -20,6 +20,10 @@ class CallOrigin:
     request_id: str
     actor_kind: str = "platform_user"
     route_user_id: str = ""
+    conversation_kind: str = ""
+    conversation_id: str = ""
+    agent_route_generation: int = 0
+    group_route_generation: int = 0
 
 
 @dataclass
