@@ -883,18 +883,20 @@ class MessageEvent:
             conversation=conversation,
         )
 
-    async def send(self, message: MessageChain, *, purpose: str = "business") -> None:
+    async def send(self, message: MessageChain, *, purpose: str = "business", explicit_reply: bool = False) -> None:
         """
         发送消息到当前会话
 
         参数:
         - message: 要发送的消息链
         - purpose: business 业务输出或 error_feedback 错误反馈, 支持发送尝试记录的平台据此归并请求结论
+        - explicit_reply: 宿主已完整核验的结构化回复, True 时不自动追加引用或提及
 
         需要发送证据的请求 (已受理的手动唤醒) 由调度器在事件上设置 require_send_tracking,
         记录不可用时直接拒绝发送而不是发出一条无法确认的业务输出
         """
         if isinstance(self.adapter, PlatformAdapter):
+            submitted = False
             try:
                 if not self.adapter.config.enable or not self.agent_route_is_current():
                     raise PermissionError("Agent 路由已变化, 旧轮次禁止发送")
@@ -903,15 +905,19 @@ class MessageEvent:
                     route_result = group_route(self.get_group_id())
                     if not isinstance(route_result, tuple) or route_result[1] != self.group_route_generation:
                         raise PermissionError("群会话路由已变化, 旧轮次禁止发送")
+                submitted = True
                 result = await self.adapter.send_message(
-                    self.session_id, self.decorate_reply(message), request_id=self._call_origin.request_id,
+                    self.session_id, message if explicit_reply else self.decorate_reply(message), request_id=self._call_origin.request_id,
                     purpose=purpose, require_tracking=bool(self.get_extra("require_send_tracking")),
                 )
                 self._record_send_result(result, purpose=purpose)
             except Exception as e:
+                import traceback
+                if explicit_reply:
+                    self._record_send_result(SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error"), purpose=purpose)
                 logger.error(
                     f"[MessageEvent.send] 发送消息失败: session_id={self.session_id}, "
-                    f"错误={e}",
+                    f"错误={e}, 堆栈={traceback.format_exc()}",
                 )
 
     async def send_streaming(

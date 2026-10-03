@@ -1,4 +1,9 @@
-"""当前群的只读工具宿主, 固定来源身份并在每次等待后重新核验"""
+"""
+当前群的消息读取与结构化回复宿主
+
+固定可信轮次来源, 在等待后核验平台, 账号和路由;
+验证全部回复组件后暂存草稿, 提交前再次核验引用与成员
+"""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -12,16 +17,20 @@ import json
 import math
 import time
 import uuid
+import traceback
 
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
+from satrap.core.components import At, Plain, Reply, BaseMessageComponent
+from satrap.core.platform.event import MessageChain
 from satrap.core.log import logger
 
 
 T = TypeVar("T")
 _ARGUMENTS = {
+    "group_chat_reply": frozenset({"components"}),
     "group_chat_find_members": frozenset({"query", "limit", "cursor"}),
     "group_chat_get_member": frozenset({"user_id"}),
     "group_chat_get_message": frozenset({"message_id"}),
@@ -213,10 +222,10 @@ class GroupChatService:
     async def execute(self, operation: str, arguments: Mapping[str, object], *,
                       limits: GroupChatLimits | None = None) -> dict[str, Any]:
         """
-        执行五个当前群只读工具, 在工具边界捕获并记录失败
+        执行当前群查询或准备回复, 在工具边界捕获并记录失败
 
         参数:
-        - operation: 注册的 group_chat 只读工具名称
+        - operation: 注册的 group_chat 工具名称
         - arguments: 模型参数, 不允许平台, 账号或目标群字段
         - limits: 宿主查询上限, 缺省使用首批默认值
 
@@ -231,6 +240,31 @@ class GroupChatService:
                 raise ValueError("群聊工具含有未知参数, 只能操作当前群")
             bounds = limits or GroupChatLimits()
             context = await self._resolve()
+            if operation == "group_chat_reply":
+                from copy import deepcopy
+                from satrap.core.group_chat.reply import current_reply_turn
+
+                turn = current_reply_turn()
+                if turn is None or turn.origin is not context.origin:
+                    raise GroupChatError("stale_call", "当前没有可提交的群聊回复轮次")
+                raw_components = arguments.get("components")
+                if not isinstance(raw_components, list) or not 1 <= len(raw_components) <= 64:
+                    raise ValueError("components 必须包含 1 到 64 个组件")
+                components = deepcopy(raw_components)
+                connection = context.adapter.group_chat_connection_token()
+
+                async def validate_reply() -> MessageChain:
+                    """
+                    提交前再次核验全部目标, 防止准备后的撤回或本地删除
+
+                    返回:
+                    - 来源仍有效的完整组件链, 任一目标失效时抛出明确错误
+                    """
+                    if not _same_connection(connection, context.adapter.group_chat_connection_token()):
+                        raise GroupChatError("stale_call", "准备回复后平台连接已经变化")
+                    return await self._reply_components(context, components, bounds)
+
+                return await turn.prepare(validate_reply)
             if operation == "group_chat_find_members":
                 return await self._find(context, arguments, bounds)
             if operation == "group_chat_get_member":
@@ -248,11 +282,78 @@ class GroupChatService:
             code, message, retryable = "invalid_argument", str(exc), False
         except Exception as exc:
             code, message, retryable = "unavailable", "群聊查询暂不可用", True
-            logger.error(f"[群聊工具] 未预期读取失败, 操作={operation}, 原因={type(exc).__name__}")
+            logger.error(f"[群聊工具] 未预期执行失败, 操作={operation}: {traceback.format_exc()}")
         origin = context.origin if context else current_call_origin()
-        logger.warning(f"[群聊工具] 读取失败, 操作={operation}, 错误={code}, "
+        logger.warning(f"[群聊工具] 执行失败, 操作={operation}, 错误={code}, "
                        f"平台={origin.adapter_id if origin else ''}, 轮次={origin.request_id if origin else ''}")
         return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
+
+    async def _reply_components(self, context: _ReadContext, components: object, bounds: GroupChatLimits) -> MessageChain:
+        """
+        整体验证首批组件, 提及消息发送者而非正文中的被提及者
+
+        参数:
+        - context: 当前群的可信身份和适配器
+        - components: 模型提供的文本, 引用与提及组件列表
+        - bounds: 当前插件读取预算
+
+        返回:
+        - 引用位于首位的完整消息链, 任一目标失败时不返回部分草稿
+        """
+        if not isinstance(components, list) or not 1 <= len(components) <= 64:
+            raise ValueError("components 必须包含 1 到 64 个组件")
+        connection = context.adapter.group_chat_connection_token()
+        output: list[BaseMessageComponent] = []
+        quote: Reply | None = None
+        text_size = 0
+        for raw in components:
+            if not isinstance(raw, dict):
+                raise ValueError("每个组件必须是对象")
+            kind = raw.get("type")
+            if kind == "text":
+                if set(raw) != {"type", "text"} or not isinstance(raw["text"], str) or not raw["text"]:
+                    raise ValueError("text 组件必须包含非空 text 字符串")
+                text_size += len(raw["text"])
+                if text_size > 100000:
+                    raise ValueError("回复正文超过 100000 字符")
+                self._capability(context, "text")
+                output.append(Plain(raw["text"]))
+            elif kind == "quote":
+                if set(raw) != {"type", "message_id"} or quote is not None:
+                    raise ValueError("quote 只接受 message_id, 且每条回复至多一个引用")
+                self._capability(context, "quote")
+                item = (await self._message(context, _id(raw["message_id"]), bounds))["item"]
+                if item.get("verified") is not True:
+                    raise GroupChatError("unverified_target", "引用消息未通过当前群归属核验")
+                quote = Reply(id=item["message_id"])
+            elif kind == "mention":
+                self._capability(context, "mention")
+                if set(raw) == {"type", "source_message_id"}:
+                    item = (await self._message(context, _id(raw["source_message_id"]), bounds))["item"]
+                    if item.get("verified") is not True:
+                        raise GroupChatError("unverified_target", "提及来源消息未通过当前群核验")
+                    user_id = _id(item.get("sender_id"))
+                elif set(raw) == {"type", "user_id"}:
+                    user_id = _id(raw["user_id"])
+                    if context.adapter.group_chat_capabilities().get("member_info", {}).get("state") == "supported":
+                        await self._member(context, user_id)
+                    else:
+                        store = self._store(context)
+                        result = await self._archive(context, store.query, context.scope, sender_id=user_id, limit=100,
+                                                     text_budget=128)
+                        if not any(item.get("verified") is True and item.get("sender_id") == user_id for item in result["items"]):
+                            raise GroupChatError("unverified_target", "成员 ID 缺少当前群资料或已核验消息依据")
+                else:
+                    raise ValueError("mention 的 source_message_id 与 user_id 必须二选一")
+                output.append(At(qq=user_id))
+            else:
+                raise ValueError("首批仅支持 text, quote 和 mention 组件")
+        if not output:
+            raise ValueError("回复不能只有引用")
+        await self._revalidate(context)
+        if not _same_connection(connection, context.adapter.group_chat_connection_token()):
+            raise GroupChatError("stale_call", "回复核验期间平台连接已经变化")
+        return MessageChain(([quote] if quote else []) + output)
 
     @staticmethod
     def _member_item(member: MemberRecord) -> dict[str, object]:

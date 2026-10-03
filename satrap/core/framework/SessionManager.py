@@ -43,6 +43,7 @@ from satrap.core.storage import (
 )
 from satrap.core.type import SessionConfig, UserCall, LLMConfig, CommandAction, safe_getattr, safe_getattr_callable
 from satrap.core.call_context import bind_call_origin
+from satrap.core.group_chat.reply import buffer_session_reply, abort_reply_turn
 
 from satrap.core.log import logger
 
@@ -1356,6 +1357,7 @@ class SessionManager:
 
             entry = await self._acquire_or_create_entry_async(session_cfg)
             if entry is None:
+                abort_reply_turn()
                 logger.error(f"[SessionManager] handle_call_async 失败：会话创建失败，session_id={session_id}")
                 return ""
 
@@ -1433,9 +1435,13 @@ class SessionManager:
             return "" if response is None else str(response)   # 正常返回
 
         except WorkerBusyError:
+            abort_reply_turn()
+            logger.warning(f"[SessionManager] 同步会话处理繁忙, session_id={user_call.session_id}")
             return "同步会话处理繁忙, 请稍后重试"
         except Exception as e:
-            logger.error(f"[SessionManager] handle_call_async 发生异常：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] handle_call_async 发生异常: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     def _observe_group_apply(self, user_call: UserCall, session_id: str, instance_generation: str) -> None:
@@ -2517,10 +2523,12 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 同步会话执行失败：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 同步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod
@@ -2538,10 +2546,12 @@ class SessionManager:
         try:
             run_method = session.run
             args = SessionManager._build_run_args(run_method, user_call)
-            with bind_call_origin(user_call.origin):
+            with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            logger.error(f"[SessionManager] 异步会话执行失败：{e}")
+            import traceback
+            abort_reply_turn()
+            logger.error(f"[SessionManager] 异步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
 
     @staticmethod

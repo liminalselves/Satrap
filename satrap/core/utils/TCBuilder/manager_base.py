@@ -1,3 +1,9 @@
+"""
+工具注册与逐轮定义过滤
+
+统一管理工具开关, 插件有效状态和当前请求来源限制,
+在定义展示和实际执行边界使用一致的可用性判断
+"""
 from typing import Dict, Any, Callable, cast
 from satrap.core.log import logger
 from .utils import _create_tool_error, _safe_json_dumps
@@ -19,7 +25,8 @@ class _ToolsRegistry(Generic[_ToolT]):
         return [
             tool.get_tool_defined()
             for tool in self.tools.values()
-            if tool.assert_tool() and tool.is_enabled()
+            if tool.assert_tool() and tool.is_enabled() and tool.is_available_for_call()
+            and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
         ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:
@@ -197,5 +204,9 @@ class _ToolsRegistry(Generic[_ToolT]):
                     "disabled",
                 ),
             )
+
+        if not tool.is_available_for_call():
+            logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
+            return None, {}, _create_tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")
 
         return tool, arguments, None

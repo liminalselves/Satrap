@@ -53,6 +53,7 @@ from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicke
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError, SendAttemptRecord
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
+from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -653,6 +654,7 @@ class PipelineScheduler:
                     if isinstance(event.adapter, OneBotAdapter):
                         identity = await event.adapter.resolve_self_identity(event.get_self_id(), event.get_group_id())
                         selection = replace(selection, self_identity=identity)
+                        event.set_extra("bot_identity", identity)
                     window_batch = batch if window_synthetic else tuple(item for item in batch if item.request_id != event.call_origin.request_id)
                     selection = select_window_media(event, selection, window_batch, quote_status, forward_status, attachments, window_synthetic)
                     media_results = await resolve_media(event, selection)
@@ -690,34 +692,42 @@ class PipelineScheduler:
                     # 已受理请求要求发送证据: 记录不可用时工具与回复不得冒充可恢复
                     event.set_extra("require_send_tracking", True)
                     await self._update_manual_request(event, manual_ticket, "executing", "")
-                try:
-                    response = await asyncio.wait_for(
-                        session_manager.handle_call_async(user_call),
-                        timeout=self.llm_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
-                    self._record_diagnostic(
-                        event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
-                        turn_id=self._request_turn_ids(event),
-                    )
-                    if self.error_feedback:
-                        await self._send_feedback(event, "请求超时, 请稍后重试")
-                    manual_detail = "llm_timeout"
-                    return
-                if command_text is None:
-                    self._record_diagnostic(
-                        event, "model", "ok", reason_code="completed",
-                        reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
-                        turn_id=self._request_turn_ids(event),
-                    )
-                # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
+                with bind_reply_turn(event) as reply_turn:
+                    try:
+                        response = await asyncio.wait_for(
+                            session_manager.handle_call_async(user_call),
+                            timeout=self.llm_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                        self._record_diagnostic(
+                            event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
+                            turn_id=self._request_turn_ids(event),
+                        )
+                        if self.error_feedback:
+                            await self._send_feedback(event, "请求超时, 请稍后重试")
+                        manual_detail = "llm_timeout"
+                        return
+                    if reply_turn.failed:
+                        if command_text is None:
+                            self._record_diagnostic(event, "model", "failed", reason_code="session_execution_failed",
+                                                    reason="会话执行失败, 已撤销本轮回复草稿", turn_id=self._request_turn_ids(event))
+                        manual_detail = "session_execution_failed"
+                        return
+                    if command_text is None:
+                        self._record_diagnostic(
+                            event, "model", "ok", reason_code="completed",
+                            reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
+                            turn_id=self._request_turn_ids(event),
+                        )
+                    # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
 
-                if response and not event.has_send_operation():
-                    await event.send(MessageChain.from_text(response))
-                # ---------- 后处理: 兜底发送回复 ----------
-                # 如果 Session 内部已通过 content_callback 发送过消息
-                # event.has_send_operation() 返回 True, 避免重复发送
+                    handled = await reply_turn.commit(response)
+                    if not handled and response and not event.has_send_operation():
+                        await event.send(MessageChain.from_text(response))
+                    # ---------- 后处理: 兜底发送回复 ----------
+                    # 如果 Session 内部已通过 content_callback 发送过消息
+                    # event.has_send_operation() 返回 True, 避免重复发送
 
         except asyncio.CancelledError:
             # 取消与超时都可能在发送已经发生之后到达, 记原因后交给 finally 归并真实副作用
