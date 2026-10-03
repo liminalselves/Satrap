@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, TypeVar
 import asyncio
 import base64
@@ -68,6 +69,29 @@ def _limit(value: object, maximum: int) -> int:
     if type(value) is not int or not 1 <= value <= maximum:
         raise ValueError(f"查询条数必须是 1 到 {maximum} 的整数")
     return value
+
+
+def _query_time(value: object) -> str | None:
+    """
+    为未指定时区的模型查询时间补上后端本地时区
+
+    参数:
+    - value: 日期时间字符串, 可带时区; None 表示不限制该时间边界
+
+    返回:
+    - 带时区的 ISO 8601 字符串或 None, 已指定时区时保留其偏移; 非法时间抛出 ValueError
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value or len(value) > 64:
+        raise ValueError("查询时间必须是日期时间字符串, 例如 2026-10-04T09:00:00")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            parsed = parsed.astimezone()
+        return parsed.isoformat()
+    except (ValueError, OverflowError, OSError) as exc:
+        raise ValueError("查询时间无效, 请填写日期和时间, 例如 2026-10-04T09:00:00") from exc
 
 
 def _same_connection(left: tuple[object, int], right: tuple[object, int]) -> bool:
@@ -275,6 +299,10 @@ class GroupChatService:
             params = dict(arguments)
             params["limit"] = _limit(params.get("limit", min(20, bounds.message_limit)), bounds.message_limit)
             params["text_budget"] = bounds.text_budget
+            if operation == "group_chat_search_messages":
+                for key in ("start_time", "end_time"):
+                    if key in params:
+                        params[key] = _query_time(params[key])
             return await self._archive(context, store.query, context.scope, argument_errors=True, **params)
         except GroupChatError as exc:
             code, message, retryable = exc.code, str(exc), exc.retryable

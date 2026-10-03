@@ -22,7 +22,7 @@ group_chat 提供当前群的结构化回复, 成员查找与消息检索, 不�
 | `group_chat_get_member` | 核验当前群成员 ID |
 | `group_chat_get_message` | 读取消息, 发送者与引用关系, 缺失时核验回源 |
 | `group_chat_recent_messages` | 补取最近讨论, 返回消息 ID 和采集范围 |
-| `group_chat_search_messages` | 按关键词, 发送者和含时区的时间范围查询 |
+| `group_chat_search_messages` | 按关键词, 发送者和时间范围查询, 未填时区时自动使用后端本地时区 |
 
 所有工具仅操作当前群, 不接受模型指定平台实例, 机器人账号或其它群
 消息与成员 ID 使用字符串; 消息中的发言者, 被 @者和被引用消息的发送者分别处理

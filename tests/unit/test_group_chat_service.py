@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 from unittest.mock import AsyncMock
 import asyncio
@@ -97,6 +98,61 @@ async def test_local_queries_preserve_sender_ids_and_never_use_model_history(tmp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("offset_hours", [8, -5, 5.5])
+async def test_search_automatically_uses_backend_timezone_and_preserves_cursor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offset_hours: float,
+) -> None:
+    backend_zone = timezone(timedelta(hours=offset_hours))
+
+    class LocalDateTime(datetime):
+        """模拟不同时区的后端, 不修改进程或操作系统时区"""
+
+        def astimezone(self, tz: tzinfo | None = None) -> datetime:
+            if self.tzinfo is None and tz is None:
+                return self.replace(tzinfo=backend_zone)
+            return super().astimezone(tz)
+
+    monkeypatch.setattr("satrap.core.group_chat.service.datetime", LocalDateTime)
+    service, adapter, origin = _setup(tmp_path)
+    store = adapter.message_archive
+    assert store is not None
+    for name, when in (("older", NOW - 30), ("a", NOW - 25), ("b", NOW - 20), ("c", NOW - 15), ("newer", NOW - 10)):
+        store.record(SCOPE, ArchiveMessage(name, "123", when, "讨论"))
+    start = datetime.fromtimestamp(NOW - 25, backend_zone)
+    end = datetime.fromtimestamp(NOW - 15, backend_zone)
+    plain = {"start_time": start.replace(tzinfo=None).isoformat(), "end_time": end.replace(tzinfo=None).isoformat()}
+    explicit = {"start_time": start.astimezone(timezone.utc).isoformat(), "end_time": end.isoformat()}
+    with bind_call_origin(origin):
+        first = await service.execute("group_chat_search_messages", {**plain, "limit": 1})
+        second = await service.execute("group_chat_search_messages", {**explicit, "cursor": first["next_cursor"]})
+        all_messages = await service.execute("group_chat_search_messages", {})
+        null_bounds = await service.execute("group_chat_search_messages", {"start_time": None, "end_time": None})
+    assert first["ok"] and second["ok"]
+    assert [item["message_id"] for item in first["items"]] == ["c"]
+    assert [item["message_id"] for item in second["items"]] == ["a", "b"]
+    assert len(all_messages["items"]) == 5
+    assert null_bounds["items"] == all_messages["items"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_bounds", [
+    {"start_time": "bad"}, {"end_time": "2026-99-04T18:00:00"},
+    {"start_time": 123}, {"end_time": ""}, {"start_time": "x" * 65},
+    {"start_time": "2027-01-16T00:00:00", "end_time": "2027-01-15T00:00:00"},
+])
+async def test_invalid_search_times_are_rejected_without_breaking_next_query(tmp_path: Path, bad_bounds: dict) -> None:
+    service, adapter, origin = _setup(tmp_path)
+    store = adapter.message_archive
+    assert store is not None
+    store.record(SCOPE, ArchiveMessage("a", "123", NOW - 20, "讨论"))
+    with bind_call_origin(origin):
+        invalid = await service.execute("group_chat_search_messages", bad_bounds)
+        next_query = await service.execute("group_chat_search_messages", {})
+    assert invalid["ok"] is False and invalid["error"]["code"] == "invalid_argument"
+    assert next_query["ok"] and [item["message_id"] for item in next_query["items"]] == ["a"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("change", [{"chat_type": "FriendMessage"}, {"self_id": "20000"}, {"adapter_id": "missing"},
                                    {"conversation_kind": "group", "conversation_id": "other"}])
 async def test_private_foreign_or_inconsistent_origins_cannot_read_archive(tmp_path: Path, change: dict) -> None:
@@ -123,7 +179,7 @@ async def test_missing_and_ended_call_scope_returns_stale_call(tmp_path: Path) -
     ("group_chat_get_member", {"user_id": True}),
     ("group_chat_recent_messages", {"limit": True}),
     ("group_chat_recent_messages", {"limit": 101}),
-    ("group_chat_search_messages", {"start_time": "2027-01-15T08:00:00"}),
+    ("group_chat_search_messages", {"start_time": "2027-99-15T08:00:00"}),
     ("group_chat_find_members", {"query": ""}),
 ])
 async def test_bad_or_cross_group_arguments_are_explicit_errors(tmp_path: Path, operation: str, args: dict) -> None:
