@@ -1,0 +1,49 @@
+name: group_chat
+version: 0.1.0
+author: Satrap Team
+description: "当前群的文本/引用/多个 @ 结构化回复, 成员查找和消息档案检索; 不提供群管理操作"
+config_schema:
+  message_limit:
+    type: number
+    default: 100
+    minimum: 1
+    maximum: 100
+    integer: true
+    description: "单次消息查询上限, 默认请求 20 条, 不改变平台档案保留期"
+  member_limit:
+    type: number
+    default: 50
+    minimum: 1
+    maximum: 50
+    integer: true
+    description: "单次成员查询上限, 默认请求 10 项"
+  text_budget:
+    type: number
+    default: 12000
+    minimum: 128
+    maximum: 100000
+    integer: true
+    description: "查询正文字符预算, 超出时明确标记截断"
+  member_cache_ttl:
+    type: number
+    default: 60
+    minimum: 0
+    maximum: 300
+    integer: true
+    description: "成员快照缓存秒数, 0 表示不复用首次查询缓存, 分页快照仍有短期有效期"
+tools:
+  group_chat_reply: "准备唯一的结构化最终回复"
+  group_chat_find_members: "按昵称与名片返回成员候选"
+  group_chat_get_member: "核验当前群成员资料"
+  group_chat_get_message: "读取当前群消息及发送者"
+  group_chat_recent_messages: "读取最近讨论"
+  group_chat_search_messages: "按条件检索群消息档案"
+handlers:
+  group_chat.environment: "补充当前群身份, 来源消息与实际可用能力"
+skills:
+  group_chat: "群聊发言者识别, 成员选择与结构化回复规范"
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [platform]
+  platforms: "*"
