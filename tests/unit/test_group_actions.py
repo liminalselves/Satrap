@@ -134,7 +134,8 @@ def test_v2_action_database_migrates_without_losing_records(tmp_path: Path) -> N
                  "panel", 1, approval_required=True)
     with sqlite3.connect(database) as connection:
         connection.execute("ALTER TABLE group_actions DROP COLUMN model_origin_json")
-        for table in ("platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
+        for table in ("group_chat_assets", "group_chat_summary_refs", "group_chat_summaries", "group_chat_summary_snapshots",
+                      "platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
             connection.execute(f"DROP TABLE {table}")
         connection.execute("PRAGMA user_version = 2")
     migrated = GroupActionStore(database)
@@ -318,7 +319,7 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
     config_manager.create("assistant", {
         "edictum_type": "async_simple", "model_name": "base",
         "plugins": [{"name": "group_admin", "enabled": True, "config": {
-            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999",
+            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999", "request_managers": "123",
         }}],
     })
     provider = EdictumProvider(config_manager, registry, default_checkpoint_db=str(backend.platform_db_path("bot")))
@@ -399,6 +400,22 @@ async def test_model_invite_uses_occupied_flag_for_unjoined_group(tmp_path: Path
         assert [call.kwargs["flag"] for call in calls] == ["panel-invite", "model-invite", "race-invite"]
         entry = adapter.request_flags.ledger.lookup("bot", "100", "group", "race-invite")
         assert entry is not None and entry["state"] == "completed"
+        await adapter.request_flags.register(
+            "group", "revoked-invite", self_id="100", group_id="999", sub_type="invite", user_id="123",
+        )
+        adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+            "bot", "100", gid, "revoked-invite-action", action, params, actor_kind="model",
+        )
+        with bind_call_origin(origin):
+            pending = await tool.execute(group_id="999", flag="revoked-invite", sub_type="invite", approve=True)
+        assert pending["data"]["state"] == "pending"
+        config_manager.update("assistant", {"plugins": [{"name": "group_admin", "enabled": True, "config": {
+            "write_tools_enabled": True, "allowed_callers": "123", "allowed_groups": "999", "request_managers": "",
+        }}]})
+        assert tool.config["request_managers"] == "123"
+        revoked = await backend.decide_group_action("bot", "100", "999", "revoked-invite-action", approve=True)
+        assert revoked["state"] == "failed" and revoked["result"]["reason"] == "model_permission_revoked"
+        assert adapter._bot.set_group_add_request.await_count == 3
     finally:
         await provider.release_session_async(session)
         set_current_adapter_manager(None)

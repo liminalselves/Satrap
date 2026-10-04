@@ -6,6 +6,7 @@ from typing import Any, TypeVar, cast, overload
 
 import asyncio
 import weakref
+import traceback
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
@@ -86,15 +87,24 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
         "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True, True),
-    "group_admin_handle_friend_request": ("同意或拒绝机器人收到的一条好友申请; 必须使用这条申请提供的 flag, 操作是否成功以实际返回结果为准", {
-        "flag": ("string", "好友申请事件提供的请求标识, 使用原值, 不能填写 QQ 号代替"), "approve": ("boolean", "true 同意添加好友, false 拒绝申请"),
+    "group_admin_list_friend_requests": ("在管理者私聊中查看机器人尚可处理的好友申请; 返回申请 ID, 申请人, 验证信息和有效期限, 不会自动同意申请", {
+        "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100; has_more 为 true 时只展示了部分申请"),
+        "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同查询条件"),
+    }, [], False, False),
+    "group_admin_list_group_requests": ("查看当前群尚可处理的加群申请或邀请, 返回申请 ID, 申请人, 验证信息和有效期限; 管理者私聊查询时需指定群号", {
+        "group_id": ("string", "申请所属群号, 群聊中不填则查询当前群"),
+        "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100"),
+        "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同群号"),
+    }, [], False, True),
+    "group_admin_handle_friend_request": ("在管理者私聊中同意或拒绝一条好友申请; 先查询待处理申请, 再使用返回的 request_id, 已过期或处理过的申请不能重试", {
+        "request_id": ("string", "好友申请查询返回的申请 ID, 不能用 QQ 号或自己猜测的标识代替"), "approve": ("boolean", "true 同意添加好友, false 拒绝申请"),
         "remark": ("string", "同意申请后给对方设置的好友备注, 可不填"),
-    }, ["flag", "approve"], True, False),
-    "group_admin_handle_group_request": ("同意或拒绝一条加群申请, 或一条邀请机器人入群的请求; 必须使用原请求的标识和类型" + _ACTION_RESULT_DESCRIPTION, {
-        "flag": ("string", "加群申请或入群邀请事件提供的请求标识, 必须使用原值"), "sub_type": ("string", "原请求的类型: add 表示加群申请, invite 表示入群邀请; 按事件提供的类型填写"),
+    }, ["request_id", "approve"], True, False),
+    "group_admin_handle_group_request": ("同意或拒绝查询结果中的加群申请或入群邀请; 类型和目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
+        "request_id": ("string", "加群申请查询返回的申请 ID"),
         "approve": ("boolean", "true 同意该申请或邀请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
         "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
-    }, ["flag", "sub_type", "approve"], True, True),
+    }, ["request_id", "approve"], True, True),
 }
 
 
@@ -162,6 +172,28 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
     return group_id
 
 
+def _request_access(tool: Any, origin: CallOrigin, adapter: Any, kind: str) -> None:
+    """
+    对申请查询和处理单独授权, 好友申请不出现在群聊结果中
+
+    参数:
+    - tool: 当前管理工具及配置
+    - origin: 宿主提供的真实发言者
+    - adapter: 当前来源平台实例
+    - kind: 申请类别
+    """
+    current_adapter, _, _ = _resolve(tool.config, _DEFINITIONS[str(tool.tool_name)][3])
+    if current_adapter is not adapter or not tool.is_enabled():
+        raise PermissionError("申请工具已停用或平台实例已变化")
+    managers = _lines(tool.config.get("request_managers"))
+    if not managers or origin.actor_id not in managers:
+        raise PermissionError("当前调用者未配置为申请管理者")
+    if not origin.self_id or adapter.bot_self_id != origin.self_id:
+        raise PermissionError("申请来源机器人账号已变化或未确认")
+    if kind == "friend" and origin.chat_type != "FriendMessage" and origin.conversation_kind != "private":
+        raise PermissionError("好友申请只能在申请管理者私聊中查询和处理")
+
+
 def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
     """固定可信来源并在审批时从仍有效的工具读取当前权限"""
     tool_ref = weakref.ref(tool)
@@ -190,6 +222,8 @@ def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> 
                 raise PermissionError("模型管理工具已从来源会话移除或停用")
         with bind_call_origin(origin):
             current_adapter, _, current_groups = _resolve(live_tool.config, True)
+            if live_tool.tool_name == "group_admin_handle_group_request":
+                _request_access(live_tool, origin, current_adapter, "group")
         if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
             raise PermissionError("模型管理工具的机器人账号或平台已变化")
         _group_id(origin, current_groups, {"group_id": target_group})
@@ -208,10 +242,53 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     - origin: 调用来源
     - allowed: 允许的群列表
     - kwargs: 工具参数
+    - source_tool: 当前来源工具, 用于等待后和审批时复核权限
 
     返回:
     - Coroutine: 待执行的管理动作
     """
+    if name in {"group_admin_list_friend_requests", "group_admin_list_group_requests"} or (
+            name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"} and "request_id" in kwargs):
+        async def request_call() -> Any:
+            """
+            先解析申请身份, 等待后重验权限并沿用原有审批执行路径
+
+            返回:
+            - 有界申请列表或管理动作结果
+            """
+            if set(kwargs) - set(_DEFINITIONS[name][1]):
+                raise ValueError("申请工具含有未知参数")
+            kind = "friend" if "friend" in name else "group"
+            adapter = admin._adapter
+            _request_access(source_tool, origin, adapter, kind)
+            if name.startswith("group_admin_list_"):
+                gid = _group_id(origin, allowed, kwargs) if kind == "group" else ""
+                if gid and not adapter.allows_group(gid):
+                    raise PermissionError("申请目标群不在平台可管理范围内")
+                result = await adapter.request_flags.list_requests(kind, self_id=origin.self_id, group_id=gid,
+                                                                  limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"))
+                _request_access(source_tool, origin, adapter, kind)
+                if gid:
+                    _, _, current_groups = _resolve(source_tool.config, False)
+                    _group_id(origin, current_groups, {"group_id": gid})
+                    if not adapter.allows_group(gid):
+                        raise PermissionError("申请目标群不在平台可管理范围内")
+                return result
+            row = await adapter.request_flags.resolve_request(kind, kwargs["request_id"], self_id=origin.self_id)
+            _request_access(source_tool, origin, adapter, kind)
+            values = {key: value for key, value in kwargs.items() if key != "request_id"}
+            values["flag"] = row["flag"]
+            if kind == "group":
+                if kwargs.get("group_id") and str(kwargs["group_id"]) != row["group_id"]:
+                    raise PermissionError("目标群与原申请不符")
+                if origin.chat_type == "GroupMessage" and origin.chat_id != row["group_id"]:
+                    raise PermissionError("群申请不属于当前群")
+                values.update(group_id=row["group_id"], sub_type=row["sub_type"])
+            _, _, current_groups = _resolve(source_tool.config, True)
+            return await _build_call(name, admin, origin, current_groups, values, source_tool)
+        return request_call()
+    if name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"}:
+        _request_access(source_tool, origin, admin._adapter, "friend" if "friend" in name else "group")
     needs_group = _DEFINITIONS[name][4]
     if name == "group_admin_handle_group_request" and not str(kwargs.get("group_id") or "").strip():
         flag = str(kwargs.get("flag") or "")
@@ -306,6 +383,24 @@ class _GroupAdminMixin:
     _group_admin_session_ref: weakref.ReferenceType[Session | AsyncSession] | None
     _group_admin_session_id: str
 
+    def is_available_for_call(self) -> bool:
+        """
+        仅向指定申请管理者展示申请工具, 好友工具限私聊
+
+        返回:
+        - 当前请求可用时为 True
+        """
+        name = str(self.tool_name)
+        if name not in {"group_admin_list_friend_requests", "group_admin_list_group_requests",
+                        "group_admin_handle_friend_request", "group_admin_handle_group_request"}:
+            return True
+        try:
+            adapter, origin, _ = _resolve(self.config, _DEFINITIONS[name][3])
+            _request_access(self, origin, adapter, "friend" if "friend" in name else "group")
+            return True
+        except (PermissionError, ValueError, PlatformAdminError):
+            return False
+
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
         if not definition or self.tool_name is None:
             return definition
@@ -351,9 +446,12 @@ class _GroupAdminMixin:
         except PlatformAdminError as error:
             logger.warning(f"[group_admin] 动作失败 tool={self.tool_name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
-        except Exception as error:
-            logger.warning(f"[group_admin] 动作异常 tool={self.tool_name}: {type(error).__name__}: {error}")
+        except (ValueError, LookupError) as error:
+            logger.warning(f"[group_admin] 动作参数或申请已失效 tool={self.tool_name}: {error}")
             return {"status": "error", "error": str(error)}
+        except Exception:
+            logger.error(f"[group_admin] 动作异常 tool={self.tool_name}: {traceback.format_exc()}")
+            return {"status": "error", "error": "管理操作暂不可用, 请查看后端日志"}
 
 
 class GroupAdminTool(_GroupAdminMixin, Tool):
@@ -384,9 +482,12 @@ class AsyncGroupAdminTool(_GroupAdminMixin, AsyncTool):
         except PlatformAdminError as error:
             logger.warning(f"[group_admin] 动作失败 tool={name}: {type(error).__name__}: {error}")
             return {"status": "error", "error": str(error)}
-        except Exception as error:
-            logger.warning(f"[group_admin] 动作异常 tool={name}: {type(error).__name__}: {error}")
+        except (ValueError, LookupError) as error:
+            logger.warning(f"[group_admin] 动作参数或申请已失效 tool={name}: {error}")
             return {"status": "error", "error": str(error)}
+        except Exception:
+            logger.error(f"[group_admin] 动作异常 tool={name}: {traceback.format_exc()}")
+            return {"status": "error", "error": "管理操作暂不可用, 请查看后端日志"}
 
 
 _AnyGroupAdminTool = TypeVar("_AnyGroupAdminTool", GroupAdminTool, AsyncGroupAdminTool)

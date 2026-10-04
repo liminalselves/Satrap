@@ -77,7 +77,7 @@ def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
 class TestToolConstruction:
     def test_sync_session_gets_sync_tools(self):
         tools = get_tools(cast(Session, object()), {})
-        assert len(tools) == len(_DEFINITIONS) == 21
+        assert len(tools) == len(_DEFINITIONS) == 23
         assert not any(isinstance(t, type) for t in tools)
         ban = next(t for t in tools if t.tool_name == "group_admin_ban")
         assert ban.recovery_policy == "manual"
@@ -89,7 +89,7 @@ class TestToolConstruction:
 
     def test_async_session_gets_async_tools(self):
         tools = _async_tools({})
-        assert len(tools) == 21
+        assert len(tools) == 23
         assert all(asyncio.iscoroutinefunction(t.execute) for t in tools)
 
 
@@ -271,7 +271,7 @@ class TestExecution:
         await adapter.request_flags.register(
             "group", "f1", self_id=adapter.bot_self_id, group_id="456", sub_type="add", user_id="1",
         )
-        config = {"write_tools_enabled": True}
+        config = {"write_tools_enabled": True, "request_managers": "123"}
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             bad = await tool.execute(flag="f1", sub_type="other", approve=True, group_id="456")
@@ -291,11 +291,12 @@ class TestExecution:
             "friend", "friend-flag", self_id="10000", user_id="321",
         )
         adapter._bot.set_friend_add_request.return_value = {}
-        tools = _async_tools({"write_tools_enabled": True})
+        tools = _async_tools({"write_tools_enabled": True, "request_managers": "123"})
         group = next(tool for tool in tools if tool.tool_name == "group_admin_set_name")
         friend = next(tool for tool in tools if tool.tool_name == "group_admin_handle_friend_request")
         with bind_call_origin(_origin()):
             pending = await group.execute(name="新群名")
+        with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             accepted = await friend.execute(flag="friend-flag", approve=True)
         assert pending["status"] == "ok" and pending["data"]["state"] == "pending"
         assert accepted == {"status": "ok"}

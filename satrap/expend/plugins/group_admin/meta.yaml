@@ -1,5 +1,5 @@
 name: group_admin
-version: 0.1.0
+version: 0.2.0
 author: Satrap Team
 description: "查询 OneBot 群和成员资料, 管理禁言, 名片, 群名及入群请求; 修改和发送操作默认关闭, 需用户开启"
 
@@ -16,6 +16,10 @@ config_schema:
     type: textarea
     default: ""
     description: "这些工具可以在哪些群使用, 填写群号, 每行一个; 留空不额外限制群, 仍遵守平台设置的可管理范围"
+  request_managers:
+    type: textarea
+    default: ""
+    description: "允许查询和处理好友/加群申请的管理者 QQ 号, 每行一个; 留空禁用申请工具. 好友申请仅在管理者私聊中可用, 处理还需开启管理写操作"
 
 tools:
   group_admin_list_groups: "列出机器人所在群"
@@ -39,6 +43,8 @@ tools:
   group_admin_leave: "退出或解散群"
   group_admin_handle_friend_request: "批准或拒绝好友添加请求"
   group_admin_handle_group_request: "批准或拒绝加群请求或邀请"
+  group_admin_list_friend_requests: "查询机器人待处理的好友申请"
+  group_admin_list_group_requests: "查询指定群待处理的加群申请和邀请"
 
 compatibility:
   satrap: ">=0.1,<0.2"

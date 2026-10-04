@@ -116,6 +116,16 @@ class StorageMaintenanceService:
             import traceback
 
             logger.error(f"[群表情] 自动维护失败: {traceback.format_exc()}")
+        from satrap.core.platform.request_inbox import RequestInbox
+
+        try:
+            path = self.layout.root / "requests" / "inbox.db"
+            if path.is_file():
+                RequestInbox(path, 600).purge(time.time())
+        except Exception:
+            import traceback
+
+            logger.error(f"[申请收件箱] 自动维护失败: {traceback.format_exc()}")
         return {"items": results}
 
     @staticmethod

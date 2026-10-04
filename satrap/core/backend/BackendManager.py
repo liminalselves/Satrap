@@ -1385,6 +1385,11 @@ class BackendManager:
                 or groups and target_group not in groups):
             raise PermissionError("模型动作来源写权限已撤销")
         payload = [route, session_id, tool_name, True, callers, groups, target_group]
+        if tool_name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"}:
+            managers = sorted(set(_lines(config.get("request_managers"))))
+            if not managers or identity["actor_id"] not in managers:
+                raise PermissionError("模型动作来源申请管理权限已撤销")
+            payload.append(managers)
         return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
 
     async def submit_group_action(
@@ -1419,6 +1424,7 @@ class BackendManager:
         adapter, store, mode, version = await self._group_action_context(
             adapter_id, self_id, group_id, action_type,
         )
+        request_deadline = None
         if action_type == "handle_group_request":
             if secret_flag is None:
                 raise ValueError("群请求缺少 flag")
@@ -1427,11 +1433,12 @@ class BackendManager:
                     or entry["sub_type"] != normalized["sub_type"]
                     or time.time() - entry["received_at"] >= adapter.request_flags.ledger.ttl):
                 raise PermissionError("群请求 flag 未登记、已过期或归属不符")
+            request_deadline = entry["received_at"] + adapter.request_flags.ledger.ttl
         if authorization is not None and self._model_source_permission_fingerprint(authorization, group_id) != source_fingerprint:
             raise PermissionError("模型动作来源授权已变化")
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
-            actor_kind, version, approval_required=mode == "approval_required", model_origin=model_origin,
+            actor_kind, version, approval_required=mode == "approval_required", model_origin=model_origin, deadline=request_deadline,
         )
         if not created:
             return record

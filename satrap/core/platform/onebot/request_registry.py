@@ -14,13 +14,14 @@ from pathlib import Path
 from typing import Any, TypedDict, cast
 from time import time
 import asyncio
-import hashlib
 import json
 import threading
+import traceback
 
 from satrap.core.log import logger
 from satrap.core.storage.persist import atomic_write_json
 from satrap.core.storage.file_lock import FileLock
+from satrap.core.platform.request_inbox import RequestInbox, flag_digest
 from satrap.core.storage.durability import (
     DurabilityManifest,
     Manifest,
@@ -102,21 +103,7 @@ class RequestFlagEntry:
     user_id: str
     received_at: float
     state: str = "available"
-
-
-def flag_digest(kind: str, self_id: str, flag: str) -> str:
-    """
-    计算 flag 摘要
-
-    参数:
-    - kind: group 或 friend, 构成摘要域的一部分
-    - self_id: 已绑定机器人账号, 同一 flag 在不同账号下摘要不同
-    - flag: request 事件上报的原始标识
-
-    返回:
-    - str: 32 位十六进制摘要; 账本与审计日志只保存摘要, 不保存原始标识
-    """
-    return hashlib.sha256(f"{kind}\x00{self_id}\x00{flag}".encode("utf-8")).hexdigest()[:32]
+    self_id: str = ""
 
 
 def _entry_key(adapter_id: str, self_id: str, kind: str, digest: str) -> str:
@@ -222,6 +209,16 @@ class RequestApprovalLedger:
     def ttl(self) -> float:
         """可审批秒数"""
         return self._ttl
+
+    @property
+    def inbox_path(self) -> Path | None:
+        """
+        返回宿主私有收件箱的位置
+
+        返回:
+        - 持久账本同级的 requests/inbox.db, 内存账本为 None
+        """
+        return self._path.parent / "requests" / "inbox.db" if self._path is not None else None
 
     def _transaction(self) -> AbstractContextManager[Any]:
         """内存账本无需跨进程锁, 持久账本的锁覆盖读取, 判定, 占用与写回全过程"""
@@ -648,6 +645,27 @@ class RequestApprovalLedger:
             entry = self._entries.get(key)
             return cast(LedgerEntry, dict(entry)) if entry is not None else None
 
+    def available_entries(self, adapter_id: str, self_id: str, kind: str, now: float) -> dict[str, LedgerEntry]:
+        """
+        从当前持久账本读取仍可执行的申请身份
+
+        参数:
+        - adapter_id: 来源平台实例
+        - self_id: 当前已绑定账号
+        - kind: friend 或 group
+        - now: 当前时间
+
+        返回:
+        - 按摘要索引的有限身份, 降级时拒绝查询
+        """
+        with self._mutex, self._transaction():
+            self._reload_locked()
+            if self.degraded:
+                raise LookupError("审批账本不可用, 拒绝查询申请")
+            return {entry["digest"]: cast(LedgerEntry, dict(entry)) for entry in self._entries.values()
+                    if entry["adapter_id"] == adapter_id and entry["self_id"] == self_id and entry["kind"] == kind
+                    and entry["state"] == "available" and now < entry["received_at"] + self.ttl}
+
     def pending_counts(self) -> dict[str, Any]:
         """账本状态与占用计数, 供健康检查与测试观察"""
         with self._mutex:
@@ -685,11 +703,14 @@ class RequestFlagRegistry:
         self.limit, self.ttl = limit, ttl
         self.ledger = ledger if ledger is not None else RequestApprovalLedger(ttl=ttl)
         self._tables: dict[str, OrderedDict[str, RequestFlagEntry]] = {"group": OrderedDict(), "friend": OrderedDict()}
+        self.inbox = RequestInbox(self.ledger.inbox_path, self.ledger.ttl)
 
     def set_ledger(self, ledger: RequestApprovalLedger) -> None:
         """装配持久账本 (后端在适配器创建后注入), 清空仅进程内的近期缓存"""
         self.ledger = ledger
         self._tables = {"group": OrderedDict(), "friend": OrderedDict()}
+        self.inbox.close()
+        self.inbox = RequestInbox(ledger.inbox_path, ledger.ttl)
 
     def _cached(self, kind: str, flag: str, now: float) -> RequestFlagEntry | None:
         """读取未过期的近期缓存, 只用于跳过重复入站的磁盘访问"""
@@ -708,7 +729,7 @@ class RequestFlagRegistry:
 
     async def register(
         self, kind: str, flag: str, *,
-        self_id: str, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None,
+        self_id: str, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None, comment: str = "",
     ) -> bool:
         """
         登记入站 request 事件; 重复入站不改写身份, 过期时间或消费状态
@@ -721,25 +742,112 @@ class RequestFlagRegistry:
         - sub_type: 群请求的 add/invite
         - user_id: 请求来源用户
         - now: 墙钟时间, 默认读取当前时间
+        - comment: 平台申请验证信息, 保存在私有收件箱
 
         返回:
         - bool: 账本新增登记为 True; 重复, 冲突, 容量或降级时为 False
         """
         moment = time() if now is None else now
         cached = self._cached(kind, flag, moment)
-        if cached is not None and cached.group_id == group_id and cached.sub_type == sub_type and cached.user_id == user_id:
+        if (cached is not None and cached.self_id == self_id and cached.group_id == group_id
+                and cached.sub_type == sub_type and cached.user_id == user_id):
             # 同进程内已登记且归属一致: 无需落盘, 状态保持不变
             return False
         result = await self.ledger.register(
             self.adapter_id, self_id, kind, flag,
             group_id=group_id, sub_type=sub_type, user_id=user_id, now=moment,
         )
+        if result in {"registered", "duplicate"}:
+            entry = await asyncio.to_thread(self.ledger.lookup, self.adapter_id, self_id, kind, flag)
+            if entry is not None and entry["state"] == "available" and moment < entry["received_at"] + self.ledger.ttl:
+                await asyncio.to_thread(self.inbox.register, self.adapter_id, self_id, kind, flag,
+                                        group_id=entry["group_id"], sub_type=entry["sub_type"], user_id=entry["user_id"],
+                                        comment=comment, received_at=entry["received_at"], now=moment)
         if result == "registered":
-            self._remember(kind, flag, RequestFlagEntry(group_id=group_id, sub_type=sub_type, user_id=user_id, received_at=moment))
+            self._remember(kind, flag, RequestFlagEntry(group_id=group_id, sub_type=sub_type, user_id=user_id,
+                                                       received_at=moment, self_id=self_id))
             return True
         if result in {"capacity", "degraded"}:
             logger.warning(f"[RequestFlagRegistry] 登记未生效 result={result} adapter={self.adapter_id} kind={kind}")
         return False
+
+    async def list_requests(self, kind: str, *, self_id: str, group_id: str = "", limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
+        """
+        返回当前账号可执行的申请, 原始 flag 不进入结果
+
+        参数:
+        - kind: friend 或 group
+        - self_id: 当前已绑定账号
+        - group_id: 群申请限定目标, 好友申请留空
+        - limit: 最多返回 1 到 100 条
+        - cursor: 上次返回的下一页位置, 必须属于当前查询范围
+
+        返回:
+        - 不透明 ID, 申请人, 验证信息和期限, 没有下一页时 has_more 为 False
+        """
+        if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100:
+            raise ValueError("申请类别或查询条数无效")
+        def read() -> dict[str, Any]:
+            """
+            从账本复核后返回有限公开字段
+
+            返回:
+            - 当前查询页及完整数量, 缺失原值数量和下一页位置
+            """
+            now = time()
+            rows = self.inbox.rows(self.adapter_id, self_id, kind, now)
+            available = self.ledger.available_entries(self.adapter_id, self_id, kind, now)
+            self.inbox.discard([row["request_id"] for row in rows if row["digest"] not in available])
+            keys = ("request_id", "kind", "user_id", "group_id", "sub_type", "comment", "received_at", "expires_at")
+            items = [{key: row[key] for key in keys} for row in rows if row["digest"] in available
+                     and (not group_id or row["group_id"] == group_id)]
+            for item in items:
+                item["remaining_seconds"] = max(0, int(item["expires_at"] - now))
+            present = {row["digest"] for row in rows}
+            missing = sum(1 for digest, entry in available.items() if digest not in present
+                          and (not group_id or entry["group_id"] == group_id))
+            total = len(items)
+            if missing:
+                logger.warning(f"[RequestInbox] 部分申请缺少原值, 不可处理 adapter={self.adapter_id} kind={kind} count={missing}")
+            if cursor is not None:
+                offset = next((index + 1 for index, item in enumerate(items) if item["request_id"] == cursor), None)
+                if offset is None:
+                    raise ValueError("申请翻页位置已失效或不属于当前范围, 请重新查询")
+                items = items[offset:]
+            more = len(items) > limit
+            return {"items": items[:limit], "has_more": more, "total": total, "unavailable_count": missing,
+                    "next_cursor": items[limit - 1]["request_id"] if more else None}
+        return await asyncio.to_thread(read)
+
+    async def resolve_request(self, kind: str, request_id: str, *, self_id: str) -> dict[str, Any]:
+        """
+        在宿主中把当前账号申请 ID 换成平台原值, 再次核验执行资格
+
+        参数:
+        - kind: 期望申请类别
+        - request_id: 受权限控制的查询返回值
+        - self_id: 当前已绑定账号
+
+        返回:
+        - 宿主内部参数, 失效或未知时抛 LookupError
+        """
+        if not isinstance(request_id, str) or len(request_id) != 35 or not request_id.startswith("rq_"):
+            raise ValueError("申请 ID 无效, 请从申请查询结果中选择")
+        def resolve() -> dict[str, Any]:
+            """
+            用同一次时间读取收件箱和权威账本
+
+            返回:
+            - 通过账本复核的宿主内部申请参数
+            """
+            now = time()
+            row = self.inbox.resolve(self.adapter_id, self_id, kind, request_id, now)
+            available = self.ledger.available_entries(self.adapter_id, self_id, kind, now)
+            if row["digest"] not in available:
+                self.inbox.discard([request_id])
+                raise LookupError("申请已处理或结果未知, 不能重复执行")
+            return row
+        return await asyncio.to_thread(resolve)
 
     async def occupy(
         self, kind: str, flag: str, *, self_id: str, group_id: str = "", sub_type: str = "", now: float | None = None,
@@ -767,7 +875,7 @@ class RequestFlagRegistry:
         )
         self._remember(kind, flag, RequestFlagEntry(
             group_id=entry["group_id"], sub_type=entry["sub_type"], user_id=entry["user_id"],
-            received_at=entry["received_at"], state="executing",
+            received_at=entry["received_at"], state="executing", self_id=self_id,
         ))
         return self._tables[kind][flag]
 
@@ -785,8 +893,13 @@ class RequestFlagRegistry:
             raise ValueError("终态必须为 completed 或 unknown")
         settled = await self.ledger.settle(self.adapter_id, self_id, kind, flag, state)
         entry = self._tables[kind].get(flag)
-        if entry is not None and settled:
+        if entry is not None and entry.self_id == self_id and settled:
             entry.state = state
+        if settled:
+            try:
+                await asyncio.to_thread(self.inbox.forget, self.adapter_id, self_id, kind, flag)
+            except Exception:
+                logger.error(f"[RequestInbox] 终态原值清理失败 adapter={self.adapter_id} kind={kind}: {traceback.format_exc()}")
         if not settled:
             logger.warning(
                 f"[RequestFlagRegistry] 终态未落盘, 该标识保持不可重放 adapter={self.adapter_id} kind={kind} state={state}",

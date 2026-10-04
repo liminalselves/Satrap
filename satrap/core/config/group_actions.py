@@ -9,6 +9,7 @@ import hashlib
 import json
 import sqlite3
 import time
+import math
 
 from satrap.core.config.group_store import GroupConfigConflict, GroupConfigStore, _identity
 
@@ -70,9 +71,26 @@ class GroupActionStore(GroupConfigStore):
     def submit(
         self, action_id: str, self_id: str, group_id: str, action_type: str,
         params: Mapping[str, object], actor_kind: str, policy_revision: int,
-        *, approval_required: bool, model_origin: Mapping[str, str] | None = None,
+        *, approval_required: bool, model_origin: Mapping[str, str] | None = None, deadline: float | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        """同 ID 同指纹返回既有记录, 新动作原子登记为 pending 或 executing"""
+        """
+        同 ID 同指纹返回既有记录, 申请审批期限不晚于原申请期限
+
+        参数:
+        - action_id: 幂等动作 ID
+        - self_id: 机器人账号
+        - group_id: 固定目标群
+        - action_type: 动作类别
+        - params: 已归一化且不含原始 flag 的参数
+        - actor_kind: panel 或 model
+        - policy_revision: 当前审批策略修订
+        - approval_required: 是否等待人工审批
+        - model_origin: 可选的可信模型来源
+        - deadline: 可选的原申请有效期限, 不延长默认审批窗口
+
+        返回:
+        - 动作记录和是否首次创建, 已到期时拒绝登记
+        """
         _identity(self_id, group_id)
         if not isinstance(action_id, str) or not 8 <= len(action_id) <= 128 or not action_id.isascii() or not all(
             char.isalnum() or char in "-_" for char in action_id
@@ -94,6 +112,11 @@ class GroupActionStore(GroupConfigStore):
             encoded_origin = json.dumps(dict(model_origin), ensure_ascii=False, sort_keys=True)
         fingerprint = action_fingerprint(self_id, group_id, action_type, params, actor_kind, model_origin)
         now = time.time()
+        if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline)):
+            raise ValueError("原申请期限必须为有限时间")
+        if deadline is not None and deadline <= now:
+            raise PermissionError("原申请已过期, 无法提交审批")
+        expires_at = min(now + ACTION_TTL, deadline) if deadline is not None else now + ACTION_TTL
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -115,7 +138,7 @@ class GroupActionStore(GroupConfigStore):
                 "fingerprint, actor_kind, policy_revision, state, created_at, expires_at, model_origin_json) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (action_id, self_id, group_id, action_type, encoded, fingerprint, actor_kind,
-                 policy_revision, state, now, now + ACTION_TTL if approval_required else None, encoded_origin),
+                 policy_revision, state, now, expires_at if approval_required else None, encoded_origin),
             )
             row = connection.execute("SELECT * FROM group_actions WHERE action_id=?", (action_id,)).fetchone()
             if row is None:

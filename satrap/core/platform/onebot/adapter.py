@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 import asyncio
 import hashlib
 import inspect
+import traceback
 import sqlite3
 import os
 import secrets
@@ -1163,12 +1164,14 @@ class OneBotAdapter(PlatformAdapter):
                     return
                 await self.request_flags.register(
                     "group", flag, self_id=incoming_self, group_id=group_id, sub_type=sub_type, user_id=user_id,
+                    comment=str(event.get("comment") or "")[:2000],
                 )
             elif request_type == "friend":
-                await self.request_flags.register("friend", flag, self_id=incoming_self, user_id=user_id)
-        except Exception as error:
+                await self.request_flags.register("friend", flag, self_id=incoming_self, user_id=user_id,
+                                                  comment=str(event.get("comment") or "")[:2000])
+        except Exception:
             # 登记失败的 flag 无法被审批, 保守行为是拒绝执行而不是放行
-            logger.error(f"[OneBotAdapter] request flag 登记失败: {type(error).__name__}: {error}")
+            logger.error(f"[OneBotAdapter] request 登记失败: {traceback.format_exc()}")
 
     async def _emit_notice(self, raw: dict[str, Any]) -> None:
         """
