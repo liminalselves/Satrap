@@ -2,7 +2,7 @@
 
 日期: 2026-10-05
 
-代码, 自动化检查和真实平台现场验收分别记录. 本轮没有向真实 QQ 群发送消息或修改群数据
+代码, 自动化检查和真实平台现场验收分别记录. 真实 QQ 验收由用户在测试群发送消息, 本地核查工具调用, 来源和持久化结果
 
 ## 检查结果
 
@@ -16,7 +16,8 @@
 | 本轮生产 Python 模块 pyright | 0 errors, 0 warnings |
 | 新增记忆/提醒浏览器冒烟 | 通过, 已查看 390px 窄屏截图 |
 | 既有浏览器回归 | 档案, Agent 路由, 对话编辑, 群聊插件, 好友, 摘要, 媒体共 7 个脚本通过 |
-| 真实 QQ 现场验收 | 未执行; 当前本地后台与控制服务未运行 |
+| 真实 QQ 现场验收 | 进行中; 成员偏好保存/注入/重启/更正/忘记, 群约定审批, 短提醒发送及模型取消已核验; 重启提醒发现缺陷并修复, 现场复测待执行 |
+| 现场重启误暂停修复 | 提醒相关 7 个文件 47 passed, 最终参数化启动/真实停用反例 2 passed; 生产模块 pyright 无错误, 前端 234 passed / lint / tsc / 构建通过 |
 
 20 个跳过项中, 16 项为需要显式启用的集成测试, 1 项缺少可选 reportlab, 3 项需要当前 Windows 会话没有的符号链接权限
 默认全量测试没有调用外部模型, embedding 或 RAG 服务, 不据此声称这些外部服务已通过验收
@@ -56,14 +57,52 @@ npm.cmd run build
 npm.cmd run test:e2e:group-chat-memory-reminders
 ```
 
-## 待执行的真实 QQ 场景
+## 真实 QQ 现场证据
+
+测试群 1125293646, 平台 onebot-platform, 机器人账号 3588795965, 实际 Agent 为 onebot-edictum. 已核对保存配置和群运行时配置中的 group_write_enabled=true, reminders_enabled=true, get_memory=true; OneBot connection-test 返回 ok=true
+
+开始验收前, OneBot 平台数据库的 memories 和 group_chat_reminders 均为空. 第一项成员偏好保存已核验:
+
+- 上下文记录存在实际 add_memory 调用, tool_call_id=call_00_GQSvHUcTlhfNCrz4kgsI1620, 对应工具结果为 saved
+- 记忆 mm_e3e3578ca8a24dc8b3d8f9202a2382fa 已写入平台数据库, kind=member_preference, owner_user_id=2410323775, purpose_key=preferred_name, revision=1, origin=model
+- 范围为 onebot-platform / 3588795965 / group / 1125293646, 内容为本群称呼本人为“验收小麦”
+- 来源消息 748720587 属于同一范围, sender_id=2410323775, direction=inbound, status=active, verified=1, truncated=0; memory_refs 和 create 审计对应一致
+- 用户确认收到 QQ 回复
+- 新对话 zDmBSH_main 中, C2 首次提问前仅有 system 消息, 没有旧聊天记录或 add_memory 结果; user 消息 1526 实际包含上述记忆的自动注入块, revision=1, 来源可用
+- C2 回复消息 1527 为“验收小麦 👋”, 本轮没有工具调用; 新对话自动注入已核验
+- 后端从 PID 39412 / runtime_id=SEWJFfRvkvqNPiihFMON4AH4HiJFDj67 重启为 PID 40628 / runtime_id=P1F0KHz5fJnqEVmaDJGUNui6s69v0jGu, OneBot 通信能力恢复正常
+- 重启后的新对话 jSDdTR_main 首次提问前仅有 system 消息; user 消息 1604 重新注入相同记忆 ID, revision=1 和来源, assistant 消息 1605 回复“在本群里我称呼你为 **验收小麦** ～”, 本轮没有工具调用; 重启后持久化读取通过
+- C3 实际先调用 get_memory 读取 revision=1, 再调用 update_memory 携带 expected_revision=1 和本轮来源 970468989; 同一记忆更新为“验收小竹”, revision=2, 所有者不变, 更新来源为同成员已核验入站消息
+- 更新后的新对话 r0PeSV_main 中, 消息 1620 注入 revision=2 及更新来源, 消息 1621 未调用工具即回复“验收小竹，我会在本群这样称呼你。”; 修改及新对话生效通过
+- C4 实际查询 revision=2 后调用 delete_memory, 携带 expected_revision=2 和本轮请求消息 73234945, 返回 deleted / revision=3; 数据库中该记忆及其 memory_refs 均为 0 条, 保留最小 delete 审计
+- 删除后的新对话 loOd58_main 中, 消息 1634 和 1636 均没有注入该记忆; 用户补充允许查询后实际调用 list_memories(user_id=2410323775), 返回 items=[], has_more=false; 删除和停止注入通过, 其他成员的记忆未被清理
+- C5 实际 add_memory 返回 pending / proposal_id=mp_6c00bab259ef43d592980e041f675ee8; 提案处于 pending, decision_at=null, base_revision=0, 同范围 group_rule / acceptance_test_token 的有效记忆数量为 0; 来源 1997719517 为当前成员已核验入站消息, 待审批未生效通过
+- C5 人工批准后提案为 approved, 新增群约定 mm_e6d1c7c06f5748408f53404fc7c4a684 / revision=1, 最小审计 actor_id=authenticated_operator, 来源仍为 1997719517
+- 批准后的新对话 sShzwV_main 首次提问前仅有 system 消息; user 消息 1652 自动注入有效群约定, assistant 消息 1653 无工具调用即回答“C5-青竹-1005”; 人工审批及下一轮生效通过
+- D1 实际调用 group_chat_create_reminder(after_seconds=30, mention_user_ids=[2410323775]), 返回 created / scheduled, 提醒 rem_dc1e871a3a644b348bd830fb857fc04e; created_at=01:19:38.860919+08:00, due_at=01:20:08.860919+08:00, 相差恰好 30 秒
+- D1 最终 state=sent, retry_count=0, 仅有一次 attempt 和一个确认消息 ID -962296133; 同范围提醒正文的确认出站档案仅 1 条, 包含原生 At(user_id=2410323775), source=confirmed_send, verified=1; 用户确认收到到期消息
+- D1 attempt 开始于 01:20:13.330449+08:00, 比到期晚约 4.47 秒, 落在默认 5 秒扫描周期内; settled_at=01:20:20.580729+08:00, 本次发送阶段约 7.25 秒, 完成比到期晚约 11.72 秒; 已送达不代表严格准点, 后续场景继续观察发送时延
+- D2 实际 group_chat_get_reminder 读取 revision=1 / scheduled 后, group_chat_cancel_reminder(expected_revision=1) 返回 cancelled / revision=2; 提醒 rem_0d5bbf7fce5445f7ab37c986108ead07 的发送尝试和对应出站档案均为 0 条; 原定到期 01:26:06.670411+08:00, 核查时尚未到期, 过期后无发送仍待复查
+- D2 到期后再次核查, state=cancelled, 发送尝试和对应出站档案仍为 0 条, 取消后未发送通过
+
+## 现场发现的重启误暂停
+
+人工创建的 D3 提醒 rem_866623970b97444299e1b6994f9f6f31 写入成功, creator_kind=operator, 提及成员 2410323775, 未依赖来源消息. 后端重启为 PID 25416 / runtime_id=z4y92C_8ctRGxcsDCW3PdsgT6bnVoab0 后, 该任务被误判为 paused / group_disabled, 没有发送尝试或出站记录. 平台实例 ID 和当前有效提醒配置未变化, 群和通信随后均正常
+
+根因是群接入快照尚未加载时, OneBot 的 group_route 返回代次 -1, 群可见性临时为 false. 提醒宿主没有区分“快照未就绪”和“群已停用”, 导致启动扫描永久暂停任务. 另外, 客户端对象存在也不代表实际通信在线
+
+修复使用通用路由代次和能力状态, 不在提醒宿主写死平台类型: 路由尚未就绪时返回 waiting / group_state_pending, 文本发送能力临时 unavailable 时按平台离线等待. 真正停用仍暂停, 不自动恢复已有 paused 任务, 不改变发送证据和未知结果不重发规则
+
+参数化回归使用真实 OneBot 接入快照加载和原生队列代码, 替身客户端提供回执: 启动窗口不暂停未来任务, 快照和连接恢复后无需人工恢复即可单次发送; 真正不在允许群范围的任务仍暂停且不发送. 自动化通过后仍需真实 QQ 重启复测. 原现场误暂停任务已超出 10 分钟补发宽限, 保留为现场证据, 不用自动恢复修正历史状态
+
+## 剩余真实 QQ 场景
 
 沿用已授权测试群 1125293646, 启动包含本轮本地提交的最新后端和控制服务后进行:
 
-1. 在该群的实际 Agent 启用 memory 工具/注入与 group_write_enabled, 明确要求保存自己的称呼偏好, 核对前端的成员和来源
-2. 在下一轮读取该偏好, 重启后端再核验, 然后明确更正和忘记, 验证下一轮生效
-3. 提交一条群约定, 验证 pending 时没有改变有效值, 前端批准后下一轮可读取
-4. 启用 group_chat 创建提醒能力与 reminders_enabled, 建立短提醒, 核对只发送一次及实际消息 ID
+1. 已完成成员偏好保存及数据库来源核验; 前端成员和来源展示仍待用户确认
+2. 已完成新对话自动注入, 重启后读取, 更正及忘记后的新对话生效核验
+3. 已完成群约定 pending 未生效, 人工批准后新对话读取核验; 验收结束时清理测试群约定
+4. 已完成短提醒的模型创建, 原生 @, 单次发送和实际消息 ID 核验; 前端人工创建及任务查询仍待验收
 5. 核验到期前取消, 等待过程中重启, 暂时离线恢复, 停用后暂停且再启用不自动恢复
 6. unknown/partial 和崩溃提交窗口继续使用隔离替身验证, 不在真实群故意制造重复消息
 
