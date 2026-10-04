@@ -160,6 +160,8 @@ def parse_config_schema(meta: dict[str, Any]) -> dict[str, ConfigField]:
         if isinstance(spec, dict):
             spec_dict = cast(dict[str, Any], spec)
             ftype = str(spec_dict.get("type") or "string")
+            if ftype == "boolean":
+                ftype = "bool"   # 兼容 JSON Schema 的类型名, 对外仍使用统一的 bool
             if ftype not in _FIELD_TYPES:
                 logger.warning(f"[插件配置] {name} 类型 {ftype} 非法, 按 string 处理")
                 ftype = "string"

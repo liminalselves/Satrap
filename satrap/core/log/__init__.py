@@ -78,9 +78,9 @@ class Logger:
         self.maintenance: LogMaintenance | None = None
         self.stdout_logger = logging.Logger(f"{logger_name}_std", std_level)
         self.file_logger = logging.Logger(f"{logger_name}_file", file_level)
-        self.stdout_logger.parent = logging.getLogger()
-        self.file_logger.parent = logging.getLogger()
-        # 保留根日志处理器和测试捕获的传播, 实例文件句柄仍独立
+        self.stdout_logger.propagate = False
+        self.file_logger.propagate = False
+        # 两个输出分别由本实例管理, 不再经第三方根处理器重复写入控制台和实时流
         datefmt = "%Y-%m-%d %H:%M:%S"
         plain_format = "[%(asctime)s.%(msecs)03d] [%(levelname)s]: %(message)s"
         handler = logging.StreamHandler()
