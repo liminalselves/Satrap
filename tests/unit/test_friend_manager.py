@@ -297,6 +297,9 @@ def test_v7_schema_migration_preserves_history_and_checks_missing_friend_tables(
         conn.execute("INSERT INTO session_config_overrides(session_id, namespace, config_json, updated_at) VALUES('s','prompt','{}',1)")
         conn.execute("DROP TABLE friend_actions")
         conn.execute("DROP TABLE friend_policies")
+        for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories",
+                      "group_chat_reminder_attempts", "group_chat_reminders", "reminder_operations"):
+            conn.execute(f"DROP TABLE {table}")
         conn.execute("PRAGMA user_version=7")
         ensure_platform_tables(conn)
         assert conn.execute("SELECT config_json FROM session_config_overrides WHERE session_id='s'").fetchone()[0] == '{}'

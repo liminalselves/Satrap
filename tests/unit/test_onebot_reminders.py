@@ -19,12 +19,12 @@ from .test_reminder_store import setup_store
 def setup(tmp_path):
     store, now = setup_store(tmp_path)
     scope = MessageScope("onebot", "10000", "group", "456")
-    adapter = OneBotAdapter(PlatformConfig(id="onebot", type="onebot", settings={"message_text_limit": 10}))
+    adapter = OneBotAdapter(PlatformConfig(id="onebot", type="onebot", settings={"message_text_limit": 64}))
     adapter._bot = AsyncMock()
     adapter.bot_self_id = adapter.client_self_id = scope.self_id
     adapter._archive_sent_segments = Mock()
     adapter._bot.send_group_msg.side_effect = [{"message_id": 101}, {"message_id": 102}, {"message_id": 103}]
-    reminder = store.create(scope, actor="123", text="a" * 25, mentions=["123"], source_message_id="m1",
+    reminder = store.create(scope, actor="123", text="a" * 150, mentions=["123"], source_message_id="m1",
                             operation_id="create", time_spec={"after_seconds": 10})["reminder"]
     now[0] += 10
 
@@ -41,7 +41,7 @@ async def test_native_split_ids_recorded_and_ordinary_recorder_is_untouched(tmp_
     ordinary_recorder = Mock()
     adapter._send_attempt_recorder = ordinary_recorder
     recorder = ReminderRecorder(store, reminder, frozen.attempt_id)
-    result = await adapter.group_chat_send_scheduled(frozen, MessageChain([At(qq="123"), Plain("a" * 25)]), recorder)
+    result = await adapter.group_chat_send_scheduled(frozen, MessageChain([At(qq="123"), Plain("a" * 150)]), recorder)
     assert result.status == "success" and result.message_ids == ("101", "102", "103")
     assert adapter._bot.send_group_msg.await_count == 3
     assert adapter._archive_sent_segments.call_count == 3

@@ -104,6 +104,8 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
         connection.execute("DROP TABLE platform_message_policy")
         connection.execute("DROP TABLE friend_actions")
         connection.execute("DROP TABLE friend_policies")
+        for table in ("memory_refs", "memory_proposals", "memory_operations", "memory_audit", "memories", "reminder_operations"):
+            connection.execute(f"DROP TABLE {table}")
         for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
             connection.execute(f'DROP TABLE "{table}"')
         connection.execute("PRAGMA user_version=4")
@@ -158,6 +160,7 @@ async def test_backend_stop_cancels_owned_maintenance_task() -> None:
     backend._platform_apply_lock = asyncio.Lock()
     backend._dispatch_task = None
     backend._scheduler = None
+    backend._reminder_scheduler = None
     backend._adapter_mgr = None
     backend._platform_runtimes = {}
     entered, closed = asyncio.Event(), asyncio.Event()
