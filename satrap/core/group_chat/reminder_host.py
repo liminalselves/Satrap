@@ -230,7 +230,9 @@ class ReminderHost:
                         return False
                 latest = await asyncio.to_thread(self.policy, reminder)
                 return (latest.state == "ready" and latest.revision == policy.revision and self.adapter(scope) is adapter
-                        and adapter.group_chat_connection_token() == connection and adapter.group_chat_self_id() == scope.self_id)
+                        and adapter.group_chat_connection_token() == connection and adapter.group_chat_self_id() == scope.self_id
+                        and self.backend._running and not scheduler._stopping and not scheduler._clock_unstable
+                        and reminder["due_timestamp"] <= time.time() <= reminder["due_timestamp"] + grace)
             except asyncio.CancelledError:
                 raise
             except Exception:

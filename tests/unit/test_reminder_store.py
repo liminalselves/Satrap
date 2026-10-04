@@ -153,3 +153,21 @@ def test_attempt_and_terminal_receipt_commit_together(tmp_path):
         attempt = connection.execute("SELECT * FROM group_chat_reminder_attempts").fetchone()
         assert attempt["status"] == "partial" and json.loads(attempt["plan_json"])[1]["state"] == "skipped"
     assert store.recover() == 0
+
+
+def test_success_requires_confirmed_ids_for_every_planned_segment(tmp_path):
+    store, now = setup_store(tmp_path)
+    reminder = create(store)
+    now[0] += 10
+    recorder = ReminderRecorder(store, reminder, "attempt-1")
+    assert recorder.plan(target(reminder), [{"index": 0}, {"index": 1}])
+    assert not recorder.complete(SendReceipt("success", ("invented",)))
+    assert recorder.submitted(0)
+    assert not recorder.result(0, SendReceipt("success"))
+    assert recorder.result(0, SendReceipt("success", ("id-1",)))
+    assert not recorder.complete(SendReceipt("success", ("id-1",)))
+    assert recorder.submitted(1)
+    assert recorder.result(1, SendReceipt("success", ("id-2",)))
+    assert not recorder.complete(SendReceipt("success", ("wrong-id",)))
+    assert recorder.complete(SendReceipt("success", ("id-1", "id-2")))
+    assert store.get(SCOPE, reminder["reminder_id"])["reminder"]["state"] == "sent"

@@ -1,5 +1,6 @@
 """真实同步与异步 Agent 管线中的独立记忆, 来源与子工作流约束"""
 from pathlib import Path
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -64,3 +65,28 @@ async def test_group_write_switch_and_main_workflow_are_checked(tmp_path):
         spoof = await service.group_operation("create", {**values, "owner_user_id": "other"}, access=lambda: {"memory_mode": "full", "group_write_enabled": True})
         assert spoof["code"] == "invalid_argument"
     assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
+
+
+@pytest.mark.parametrize('change', ['route', 'account', 'disabled'])
+def test_context_injection_rechecks_identity_after_database_reads(tmp_path, monkeypatch, change):
+    adapter, event, _ = setup(tmp_path)
+    origin = replace(event.call_origin, conversation_kind='group', conversation_id=SCOPE.chat_id)
+    repository = ScopedMemories(adapter.message_archive, SCOPE)
+    repository.mutate('create', {'kind': 'group_rule', 'key': 'rule', 'content': '旧范围记忆正文'}, actor='operator', operator=True, operation_id='create')
+    original = ScopedMemories.list
+
+    def changed_after_read(self, **values):
+        result = original(self, **values)
+        if values.get('kind') == 'member_preference':
+            if change == 'route':
+                adapter._agent_route_memory[(SCOPE.self_id, 'group', SCOPE.chat_id)] = ((), 1)
+            elif change == 'account':
+                adapter.bot_self_id = adapter.client_self_id = 'different-account'
+            else:
+                adapter.config.enable = False
+        return result
+
+    monkeypatch.setattr(ScopedMemories, 'list', changed_after_read)
+    service = MemoryService(MemoryStore(db_path=adapter.message_archive.database, scope='unused'))
+    with bind_call_origin(origin):
+        assert service.group_context_sync(access=lambda: {'memory_mode': 'base'}) == ''

@@ -89,7 +89,7 @@ def annotate_reminder_sources(records: list[dict[str, Any]], archive: PlatformMe
         if source:
             try:
                 message = archive.get(scope, source)
-                if message is not None and message.get("state", "active") == "active":
+                if message is not None and message.get("status") == "active":
                     record["source_status"] = "available"
             except MessageArchiveError as exc:
                 logger.warning(f"[提醒管理] 来源暂不可用, 任务={record['reminder_id']}, 原因={exc.code}")

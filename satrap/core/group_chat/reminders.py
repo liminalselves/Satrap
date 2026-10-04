@@ -442,6 +442,8 @@ class ReminderRecorder:
             else:
                 if segment["state"] != "submitted":
                     return False
+                if receipt.status == "success" and not receipt.message_ids:
+                    return False
                 segment["state"] = "sent" if receipt.status == "success" else receipt.status
                 segment["receipt"] = {"status": receipt.status, "message_ids": list(receipt.message_ids), "reason": receipt.reason, "failed_index": receipt.failed_index}
             connection.execute("UPDATE group_chat_reminder_attempts SET plan_json=?, status='sending' WHERE attempt_id=?",
@@ -492,6 +494,10 @@ class ReminderRecorder:
             if attempt is None:
                 return False
             plan = json.loads(attempt["plan_json"])
+            if receipt.status == "success":
+                confirmed = tuple(identity for segment in plan for identity in segment.get("receipt", {}).get("message_ids", []))
+                if any(segment["state"] != "sent" for segment in plan) or not confirmed or confirmed != receipt.message_ids:
+                    return False
             for segment in plan:
                 if segment["state"] == "planned":
                     segment["state"] = "skipped"

@@ -105,11 +105,16 @@ async def execute_reminder_tool(
                 raise ReminderError("unsupported", "当前平台没有可用的后台提醒发送能力")
             if config.get("reminders_enabled") is not True:
                 raise ReminderError("write_disabled", "请先在群聊插件配置中开启提醒")
-            source_message = await asyncio.to_thread(context.store.get, context.scope, context.origin.source_message_id)
-            if (source_message is None or source_message.get("state", "active") != "active"
-                    or source_message.get("direction") != "inbound" or source_message.get("sender_id") != actor
-                    or source_message.get("verified") is not True):
-                raise ReminderError("invalid_source", "创建提醒需要当前成员本轮的真实来源消息")
+            def check_source() -> None:
+                """核验本轮来源仍可读取, 写事务内再次检查以避开等待期间的删除"""
+                assert context.store is not None
+                source_message = context.store.get(context.scope, context.origin.source_message_id)
+                if (source_message is None or source_message.get("status") != "active"
+                        or source_message.get("direction") != "inbound" or source_message.get("sender_id") != actor
+                        or source_message.get("verified") is not True):
+                    raise ReminderError("invalid_source", "创建提醒需要当前成员本轮的真实来源消息")
+
+            await asyncio.to_thread(check_source)
             mentions = arguments.get("mention_user_ids", [])
             if (not isinstance(mentions, list) or len(mentions) > 10
                     or any(not isinstance(item, str) or not item or item == "all" for item in mentions) or len(set(mentions)) != len(mentions)):
@@ -133,6 +138,7 @@ async def execute_reminder_tool(
             def create_check() -> None:
                 """取得写事务后再检查来源和当前后台发送授权"""
                 check()
+                check_source()
                 latest = host.policy(metadata)
                 if latest.state != "ready" or latest.revision != policy.revision:
                     raise ReminderError("stale_call", "创建提醒前配置或权限已经变化")

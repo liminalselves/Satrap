@@ -34,6 +34,10 @@ async def test_authenticated_cold_reminder_read_and_cancel_do_not_change_archive
     assert conflict.startswith(b"HTTP/1.1 409")
     cancelled = _json_body(await _request(f"{target}/cancel?{query}", "POST", json.dumps({"expected_revision": 1}).encode()))
     assert cancelled["status"] == "cancelled" and archive.get(scope, "source")["text"] == "请提醒我"
+    archive.delete(scope, expected_revision=0, message_ids=["source"])
+    detail = _json_body(await _request(f"{target}?{query}"))
+    assert detail["reminder"]["source_status"] == "unavailable"
+    assert detail["reminder"]["text"] == "检查结果" and detail["reminder"]["state"] == "cancelled"
 
 
 def test_new_same_named_platform_has_a_new_incarnation_and_updates_preserve_it():

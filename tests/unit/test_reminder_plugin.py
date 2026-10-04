@@ -76,3 +76,27 @@ def test_create_schema_enforces_exclusive_time_and_recovery_is_manual():
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(values, schema)
     assert tool.recovery_policy == "manual"
+
+
+@pytest.mark.asyncio
+async def test_source_deleted_during_member_lookup_never_creates_reminder(tmp_path):
+    adapter, event, _ = setup(tmp_path)
+    manager = current_adapter_manager()
+    manager.reminder_host = SimpleNamespace(
+        backend=SimpleNamespace(get_platform_runtime=lambda platform: None),
+        policy=lambda record: ReminderPolicy("ready", revision="same-policy", config={"reminders_enabled": True}),
+    )
+
+    def remove_source(**params):
+        adapter.message_archive.delete(SCOPE, expected_revision=0, message_ids=[event.call_origin.source_message_id])
+        return {"group_id": int(SCOPE.chat_id), "user_id": params["user_id"], "nickname": "成员"}
+
+    adapter._bot.get_group_member_info.side_effect = remove_source
+    workflow = object()
+    instance = SimpleNamespace(_wf=workflow, session_id="source-session")
+    with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
+        result = await execute_reminder_tool("group_chat_create_reminder", {"text": "提醒", "after_seconds": 30},
+                                             session=instance, config={"reminders_enabled": True}, authorize=lambda group: None)
+    assert result["error"]["code"] == "invalid_source"
+    assert ReminderStore(adapter.message_archive.database).list(SCOPE)["items"] == []
+    adapter._bot.send_group_msg.assert_not_awaited()
