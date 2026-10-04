@@ -21,7 +21,8 @@ from satrap.core.call_context import current_call_origin
 from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
-from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session
+from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session, model_tool_authorization
+from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
 
 
@@ -60,6 +61,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_list_groups": ("在获授权的管理者私聊中查看机器人加入的群, 返回群号, 群名及人数; 结果不完整时不能当成全部群", {}, []),
     "group_chat_get_group_info": ("查看当前群的群名, 群号及人数, 不读取其它群", {}, []),
     "group_chat_list_members": ("分页查看当前群成员的 ID, 昵称, 群昵称及角色; has_more=true 时可用 next_cursor 继续读取", {"limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, []),
+    "group_chat_set_group_nickname": ("只修改机器人自己在当前群的群昵称, 不能修改其他成员或账号全局昵称; 空字符串清空群昵称. pending 表示待审批, succeeded 才是已执行, 失败或结果未知时不要重复执行", {"nickname": {"type": "string", "maxLength": 60, "description": "机器人自己的新群昵称, 空字符串表示清空"}}, ["nickname"]),
     "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
     "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
@@ -127,6 +129,10 @@ class _GroupChatMixin:
         allowed = config_ids(self.config.get("allowed_groups"))
         if not _group_available() or group_id != origin.chat_id or allowed and group_id not in allowed:
             raise GroupChatError("forbidden", "工具只能操作获授权的当前群")
+        if self.tool_name == "group_chat_set_group_nickname":
+            callers = config_ids(self.config.get("nickname_allowed_callers"))
+            if self.config.get("self_nickname_enabled") is not True or callers and origin.actor_id not in callers:
+                raise GroupChatError("forbidden", "机器人自身群昵称修改未获授权")
 
     def get_tool_defined(self) -> dict[str, Any]:
         """
@@ -212,6 +218,31 @@ class _GroupChatMixin:
                 self._authorize(group_id)
                 if tuple(config_ids(self.config.get("allowed_groups"))) != limits.allowed_groups:
                     raise GroupChatError("stale_call", "查询期间插件允许群范围已经变化")
+            if self.tool_name == "group_chat_set_group_nickname":
+                origin = current_call_origin()
+                if origin is None:
+                    raise PermissionError("工具缺少当前来源")
+                adapter_manager = current_adapter_manager()
+                adapter = adapter_manager.get_adapter(origin.adapter_id) if adapter_manager else None
+                def permission(live: Any, target_group: str) -> None:
+                    """
+                    固定账号和平台实例后复核机器人自身修改权限
+
+                    参数:
+                    - live: 当前仍有效的工具
+                    - target_group: 固定目标群
+                    """
+                    manager = current_adapter_manager()
+                    if (manager is None or manager.get_adapter(origin.adapter_id) is not adapter or adapter is None
+                            or adapter.group_chat_self_id() != origin.self_id):
+                        raise PermissionError("机器人账号或平台实例已变化")
+                    try:
+                        live._authorize(target_group)
+                    except GroupChatError as exc:
+                        raise PermissionError(str(exc)) from exc
+                source = model_tool_authorization(self, origin, "group_chat", permission)
+                with bind_model_action_authorization(source):
+                    return await group_chat_service.execute(str(self.tool_name), kwargs, limits=limits, authorize=authorize)
             return await group_chat_service.execute(str(self.tool_name), kwargs, limits=limits, authorize=authorize)
         except GroupChatError as exc:
             return _failure(exc.code, str(exc))
@@ -286,6 +317,11 @@ def _available(tool: _GroupChatMixin) -> bool:
     capability = {"group_chat_get_group_info": "group_info", "group_chat_list_members": "member_list"}.get(name)
     if capability is not None:
         return capabilities.get(capability, {}).get("state") == "supported"
+    if name == "group_chat_set_group_nickname":
+        callers = config_ids(tool.config.get("nickname_allowed_callers"))
+        return (tool.config.get("self_nickname_enabled") is True and origin is not None
+                and (not callers or origin.actor_id in callers)
+                and capabilities.get("self_nickname", {}).get("state") == "supported")
     if "summary" in name and tool.config.get("summary_enabled", True) is not True:
         return False
     if name == "group_chat_reply":
@@ -393,6 +429,6 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool.session = session
         bind_tool_session(tool, session)
         tool.deferred_platform_reply = name == "group_chat_reply"
-        tool.recovery_policy = "manual" if name in {"group_chat_reply"} else "retry"
+        tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname"} else "retry"
         result.append(tool)
     return result

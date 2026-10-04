@@ -59,11 +59,11 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
     "group_admin_set_anonymous": ("开启或关闭群内的匿名聊天; 是否支持取决于平台" + _ACTION_RESULT_DESCRIPTION, {
         "enable": ("boolean", "true 允许匿名聊天, false 关闭匿名聊天"), "group_id": ("string", "要执行操作的群号, 不填则使用当前群"),
     }, ["enable"], True, True),
-    "group_admin_set_card": ("修改指定成员在群内显示的群名片; card 填空字符串表示清空群名片" + _ACTION_RESULT_DESCRIPTION, {
-        "user_id": ("string", "要修改群名片的成员 QQ 号"), "card": ("string", "新的群名片, 不超过 60 字符; 填写空字符串可清空"),
+    "group_admin_set_group_nickname": ("修改指定成员在群内显示的群昵称; nickname 填空字符串表示清空群昵称" + _ACTION_RESULT_DESCRIPTION, {
+        "user_id": ("string", "要修改群昵称的成员 ID"), "nickname": ("string", "新的群昵称, 不超过 60 字符; 填写空字符串可清空"),
         "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
-    }, ["user_id"], True, True),
-    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群昵称请使用 group_admin_set_card" + _ACTION_RESULT_DESCRIPTION, {
+    }, ["user_id", "nickname"], True, True),
+    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群昵称请使用 group_admin_set_group_nickname" + _ACTION_RESULT_DESCRIPTION, {
         "name": ("string", "新的群名称, 1 到 60 字符, 不能只填空格"), "group_id": ("string", "要改名的群号, 不填则使用当前群"),
     }, ["name"], True, True),
     "group_admin_set_title": ("设置指定群成员的专属头衔; title 填空字符串表示清除头衔, 需要机器人具有相应权限" + _ACTION_RESULT_DESCRIPTION, {
@@ -218,6 +218,11 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     返回:
     - Coroutine: 待执行的管理动作
     """
+    if name == "group_admin_set_group_nickname":
+        if set(kwargs) - set(_DEFINITIONS[name][1]) or "nickname" not in kwargs:
+            raise ValueError("群昵称修改必须使用 nickname, 不接受旧参数或未知参数")
+        if not isinstance(kwargs["nickname"], str) or len(kwargs["nickname"]) > 60:
+            raise ValueError("nickname 必须是最多 60 字符的文本")
     if name in {"group_admin_list_friend_requests", "group_admin_list_group_requests"} or (
             name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"} and "request_id" in kwargs):
         async def request_call() -> Any:
@@ -275,13 +280,15 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         "group_admin_recall_message": "recall_message", "group_admin_kick": "kick_group_member",
         "group_admin_ban": "ban_group_member", "group_admin_whole_ban": "set_group_whole_ban",
         "group_admin_ban_anonymous": "ban_anonymous", "group_admin_set_admin": "set_group_admin",
-        "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_card": "set_group_card",
+        "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_group_nickname": "set_group_card",
         "group_admin_set_name": "set_group_name", "group_admin_set_title": "set_group_special_title",
         "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
     }
     handler = getattr(admin._adapter, "group_action_handler", None)
     if name in action_names and callable(handler):
         action = action_names[name]
+        if name == "group_admin_set_group_nickname":
+            kwargs = {**kwargs, "card": kwargs["nickname"]}
         from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
 
         params: dict[str, object] = {
@@ -323,8 +330,8 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         return admin.set_group_admin(gid, kwargs.get("user_id", ""), _as_bool(kwargs.get("enable"), "enable"))
     if name == "group_admin_set_anonymous":
         return admin.set_group_anonymous(gid, _as_bool(kwargs.get("enable"), "enable"))
-    if name == "group_admin_set_card":
-        return admin.set_group_card(gid, kwargs.get("user_id", ""), str(kwargs.get("card", "")))
+    if name == "group_admin_set_group_nickname":
+        return admin.set_group_card(gid, kwargs.get("user_id", ""), kwargs.get("nickname"))
     if name == "group_admin_set_name":
         return admin.set_group_name(gid, kwargs.get("name", ""))
     if name == "group_admin_set_title":

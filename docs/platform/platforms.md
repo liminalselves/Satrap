@@ -73,14 +73,17 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 
 内置 `group_admin` 插件把动作暴露为模型工具 (仅 `session_type: platform` 会话)。执行时按入站 `CallOrigin` 解析来源实例与调用者身份, 私聊上下文必须显式指定 `group_id`, 群聊默认当前群。权限门槛: 写操作要求插件配置 `write_tools_enabled: true` (默认关闭); `allowed_callers` 逐行列出允许触发写操作的 QQ, 留空不限制; `allowed_groups` 逐行收窄可用群, 平台实例群白名单始终生效。工具不缓存适配器引用, 实例重载后按来源 ID 重新解析。读工具 `recovery_policy` 为 `retry` (可安全重试), 写工具为 `manual` (结果未知时不自动重试, 避免重复踢人/审批)。
 
+群资料, 成员和消息查询统一由独立的 `group_chat` 插件提供, 详见 [群聊插件](../plugins/group-chat-plugin.md)
+两个插件的写开关和调用者范围独立, 通过宿主共用审批服务; 自身群昵称修改不需要安装管理插件
+
 能力矩阵 (全部为 OneBot v11 标准动作):
 
 | OneBot 动作 | 工具名 | 读写 | 主要参数 | 响应收窄 |
 | --- | --- | --- | --- | --- |
-| get_group_list | group_admin_list_groups | 读 | 无 | 至多 512 条, 群号/群名/人数 |
-| get_group_info | group_admin_get_group_info | 读 | group_id 可选 | 群号/群名/人数/创建时间/等级 |
-| get_group_member_list | group_admin_list_members | 读 | group_id 可选 | 至多 2048 条, QQ/昵称/名片/角色/入群时间等 |
-| get_group_member_info | group_admin_get_member | 读 | user_id, group_id 可选 | QQ/昵称/名片/角色/禁言时间等 |
+| get_group_list | group_chat_list_groups | 读 | 无, 仅已配置管理者的私聊 | 至多 512 条且受预算限制, 群号/群名/人数, 仅允许群范围 |
+| get_group_info | group_chat_get_group_info | 读 | 无, 固定当前群 | 群号/群名/人数 |
+| get_group_member_list | group_chat_list_members | 读 | limit ≤50, cursor, 固定当前群 | 分页返回成员 ID/账号昵称/群昵称/角色 |
+| get_group_member_info | group_chat_get_member | 读 | user_id, 固定当前群 | 成员 ID/账号昵称/群昵称/角色 |
 | get_group_honor_info | group_admin_get_honors | 读 | group_id 可选, honor_type | 实现返回的荣誉数据 |
 | delete_msg | group_admin_recall_message | 写 | group_id (默认当前群, 受实例白名单与插件 allowed_groups 限制), message_id | 无返回 |
 | set_group_kick | group_admin_kick | 写 | user_id, reject_add_request, group_id 可选 | 无返回 |
@@ -89,13 +92,14 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_group_anonymous_ban | group_admin_ban_anonymous | 写 | flag, duration, group_id 可选 | 无返回 |
 | set_group_admin | group_admin_set_admin | 写 | user_id, enable, group_id 可选 | 无返回 |
 | set_group_anonymous | group_admin_set_anonymous | 写 | enable, group_id 可选 | 无返回 |
-| set_group_card | group_admin_set_card | 写 | user_id, card ≤60 字符, group_id 可选 | 无返回 |
+| set_group_card | group_admin_set_group_nickname | 写 | user_id, nickname ≤60 字符, group_id 可选 | 宿主审批/执行状态 |
+| set_group_card | group_chat_set_group_nickname | 写 | nickname ≤60 字符, 固定当前群及机器人自身 | 独立默认关闭, 宿主审批/执行状态 |
 | set_group_name | group_admin_set_name | 写 | name 1-60 字符, group_id 可选 | 无返回 |
 | set_group_special_title | group_admin_set_title | 写 | user_id, title ≤18 字符, group_id 可选 | 无返回 |
 | set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
 | set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
 | set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
-| get_msg | group_admin_get_message | 读 | message_id, group_id 可选 | 消息 ID/时间/发送者/原文, 回源后核验属于目标群 |
+| get_msg | group_chat_get_message | 读 | message_id, 固定当前群 | 消息 ID/时间/发送者/原文, 优先档案, 回源核验当前群并遵守本地删除标记 |
 | get_forward_msg | group_admin_get_forward | 读 | forward_id, source_message_id (必填, 含该转发的群消息 ID), group_id 可选 | 至多 20 个节点 (昵称/账号/时间/≤1000 字符文本摘要) |
 
 `group_admin_get_forward` 必须提供来源消息 ID: 读取前经 `get_msg` 回源该消息, 要求它属于目标群、账号与请求消息 ID 一致, 且其顶层组件确实包含请求的转发 ID (不搜索正文, 不从嵌套节点推断); 回源等待后复查群范围、账号与连接代次, 通过后才调用 `get_forward_msg`, 回包若明确携带矛盾群号或账号则拒绝。缺少来源消息 ID 按参数错误返回, 不做不安全放行。

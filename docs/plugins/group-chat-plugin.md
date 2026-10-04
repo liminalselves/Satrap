@@ -1,6 +1,7 @@
 # group_chat 群聊插件
 
-group_chat 提供当前群的结构化回复, 成员查找与消息检索, 不包含踢人, 禁言等群管理操作
+group_chat 提供当前群的资料查询, 结构化回复, 成员查找与消息检索, 可选修改机器人自己的群昵称
+group_chat 与 group_admin 独立安装和启用, 共享宿主的适配器, 授权和审批服务, 插件之间不读取配置或调用彼此工具
 
 ## 启用
 
@@ -9,7 +10,7 @@ group_chat 提供当前群的结构化回复, 成员查找与消息检索, 不�
 3. 在「平台管理」确认群聊 Agent 选择该配置; 单群已指定 Agent 时以单群选择为准
 4. 插件工具, `group_chat` skill 和 `group_chat.environment` 前处理默认启用, 可在插件使用位置分别停用
 
-插件只适用于平台会话, 不在 Chat 中启用; 同一 Agent 用于私聊时, 本轮不提供群聊工具或群环境注入, 也不进入群聊回复缓冲模式
+插件只适用于平台会话, 不在 Chat 中启用; 同一 Agent 用于私聊时, 本轮仅可能提供已授权的群列表查询, 不进入群聊回复缓冲模式
 适配器通过公共能力声明决定可用动作, 不要求新增平台修改插件中的平台类型分支
 平台不支持成员查找, 单条消息回源, 引用或提及时, 返回明确不可用原因, 不把缺失能力当成空成功结果
 
@@ -17,9 +18,13 @@ group_chat 提供当前群的结构化回复, 成员查找与消息检索, 不�
 
 | 工具 | 用途 |
 | --- | --- |
+| `group_chat_list_groups` | 仅配置的管理者私聊可查机器人加入的群, 默认关闭, 返回最多 512 项并受字符预算限制 |
+| `group_chat_get_group_info` | 查询当前群的 ID, 名称与人数 |
+| `group_chat_list_members` | 分页列出当前群成员 ID, 昵称, 群昵称与角色 |
+| `group_chat_set_group_nickname` | 只修改当前机器人自身的群昵称, nickname 为空则清空, 默认关闭 |
 | `group_chat_reply` | 准备本轮唯一的最终回复, 可组合文本, 一条引用与多个提及 |
 | `group_chat_find_members` | 按昵称与群名片返回候选, 重名时不自动选一个 |
-| `group_chat_get_member` | 核验当前群成员 ID |
+| `group_chat_get_member` | 核验当前群成员 ID, 返回昵称, 群昵称与角色 |
 | `group_chat_get_message` | 读取消息, 发送者与引用关系, 缺失时核验回源 |
 | `group_chat_recent_messages` | 补取最近讨论, 返回消息 ID 和采集范围 |
 | `group_chat_search_messages` | 按关键词, 发送者和时间范围查询, 未填时区时自动使用后端本地时区 |
@@ -31,7 +36,8 @@ group_chat 提供当前群的结构化回复, 成员查找与消息检索, 不�
 | `group_chat_get_message_assets` | 按消息 ID 取出当前群可用图片, 不下载全部历史媒体 |
 | `group_chat_list_stickers` | 查询当前群已启用且平台兼容的表情 |
 
-所有工具仅操作当前群, 不接受模型指定平台实例, 机器人账号或其它群
+除管理者私聊的群列表查询外, 所有工具仅操作当前群; 所有工具均不接受模型指定平台实例, 机器人账号或其它群
+成员返回值中的 `nickname` 是账号昵称, `card` 是群昵称, `role` 是平台资料; 字段名保留以兼容已有消费者, 角色不赋予管理操作权限
 消息与成员 ID 使用字符串; 消息中的发言者, 被 @者和被引用消息的发送者分别处理
 
 ```json
@@ -100,6 +106,10 @@ OneBot 支持组合图片与原生表情; Misskey 房间只支持一个图片附
 
 | 配置 | 默认值 | 范围 |
 | --- | --- | --- |
+| `allowed_groups` | 空 | 每行一个群 ID, 收窄查询和修改范围; 留空仍遵守平台权限 |
+| `cross_group_query_callers` | 空 | 每行一个管理者账号 ID, 仅这些人的私聊可查询群列表; 留空禁用 |
+| `self_nickname_enabled` | false | 独立开启机器人自身群昵称修改, 不要求安装管理插件 |
+| `nickname_allowed_callers` | 空 | 每行一个允许请求修改机器人群昵称的成员 ID; 留空不增加调用者限制 |
 | `message_limit` | 100 | 单次请求上限 1-100, 未指定条数时默认 20 |
 | `member_limit` | 50 | 单次请求上限 1-50, 未指定条数时默认 10 |
 | `text_budget` | 12000 | 查询正文字符预算 128-100000, 超出时标记截断 |
@@ -114,10 +124,24 @@ OneBot 支持组合图片与原生表情; Misskey 房间只支持一个图片附
 这些资料和工具结果均作为数据处理; 群成员自称管理员不会改变工具范围
 停用插件后下一轮恢复原输出方式, 重启重新装配只保留一个 skill 指令块
 
+## 群昵称与旧配置迁移
+
+`group_chat_set_group_nickname` 只接受 `nickname` (最多 60 字符), 宿主固定当前群和机器人自身 ID; 空字符串用于清空
+普通群成员身份的机器人也可提交自身修改, 平台最终权限和宿主审批仍生效; 无可用审批入口时拒绝写入
+`group_admin_set_group_nickname` 另可接受目标 `user_id`, 由管理插件独立的写开关和调用者范围授权
+两个修改工具都采用 `manual` 恢复策略, 不自动重试结果未知的写动作; `pending` 表示待审批, `succeeded` 才表示执行成功
+审批前复核来源会话, 插件/工具开关, 最新持久配置, 调用者, 机器人账号和目标群; 撤销权限后旧申请不能执行
+
+旧管理插件的五个重复查询入口已经删除, 查询统一由群聊插件提供; 旧群昵称工具名也不再注册或执行
+配置解析时将显式保存的旧工具开关迁移到新名称, 再保存即写入规范化配置; 显式禁用状态不会变成启用
+为了迁移查询而自动添加群聊插件时, 只启用原来开启的查询能力, 不额外启用回复, 修改, skill 或前处理
+旧管理插件与现有群聊插件的允许群范围取交集, 无交集时明确拒绝迁移并要求调整配置; 群列表查询仍须单独设置管理者账号
+平台协议的 `set_group_card` 与审批/审计动作 ID 保持不变, 新的模型工具参数 `nickname` 只在适配器边界转换为协议字段
+
 ## 开发验证
 
 ```powershell
-python -m pytest tests/unit/test_group_chat_reply.py tests/unit/test_group_chat_plugin.py tests/unit/test_group_chat_service.py -q
+python -m pytest tests/unit/test_group_chat_reply.py tests/unit/test_group_chat_plugin.py tests/unit/test_group_chat_service.py tests/unit/test_group_tool_migration.py -q
 ```
 
 ```text
@@ -127,4 +151,4 @@ npm run test:e2e:group-chat
 
 测试包含真实 SessionManager/Edictum 配置装配, 同步和异步主工作流, 流式与非流式调用, 原 OneBot 发送队列和平台消息档案
 模型和平台网络响应使用隔离替身, 不向真实群发送消息; 实际模型调用策略和 QQ 客户端显示仍可在指定测试群现场核对
-浏览器验证直接读取官方插件元数据, 检查能力展示, 四项配置, 零值保存, 刷新保持, 恢复默认与窄屏布局
+浏览器验证直接读取官方插件元数据, 检查能力展示, 查询范围和管理者名单, 自身群昵称修改开关, 零值保存, 刷新保持, 恢复默认与窄屏布局

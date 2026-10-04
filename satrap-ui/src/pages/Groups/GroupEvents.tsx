@@ -10,7 +10,7 @@ import { useGroupContext } from './GroupLayout';
 const labels: Record<string, string> = {
   group_increase: '成员入群', group_decrease: '成员退群', group_recall: '消息撤回',
   group_ban: '群禁言', group_upload: '群文件上传', group_admin: '管理员变更',
-  group_card: '群名片变更', group_request: '加群请求或邀请',
+  group_card: '群昵称变更', group_request: '加群请求或邀请',
 };
 
 function errorText(error: unknown): string {

@@ -9,7 +9,7 @@ import { groupActionLabels } from './groupActionLabels';
 
 const fields: Record<string, string> = {
   message_id: '消息 ID', user_id: '成员 QQ', reject_add_request: '拒绝再次加群',
-  duration: '秒数', enable: '开启', flag: '请求 flag', card: '群名片', name: '群名',
+  duration: '秒数', enable: '开启', flag: '请求 flag', card: '群昵称', name: '群名',
   title: '头衔', dismiss: '解散群', sub_type: '请求类型', approve: '同意', reason: '理由',
 };
 

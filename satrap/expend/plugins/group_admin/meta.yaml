@@ -1,13 +1,13 @@
 name: group_admin
-version: 0.2.0
+version: 0.3.0
 author: Satrap Team
-description: "查询 OneBot 群和成员资料, 管理禁言, 名片, 群名及入群请求; 修改和发送操作默认关闭, 需用户开启"
+description: "管理 OneBot 群的禁言, 群昵称, 群名和入群请求, 查询荣誉与合并转发; 修改和发送操作默认关闭"
 
 config_schema:
   write_tools_enabled:
     type: bool
     default: false
-    description: "允许模型执行踢人, 禁言, 修改名片等管理操作及发送合并转发; 默认关闭, 需要审批的群管理动作仍须批准"
+    description: "允许模型执行踢人, 禁言, 修改群昵称等管理操作及发送合并转发; 默认关闭, 需要审批的群管理动作仍须批准"
   allowed_callers:
     type: textarea
     default: ""
@@ -32,7 +32,7 @@ tools:
   group_admin_ban_anonymous: "禁言匿名成员"
   group_admin_set_admin: "设置或取消群管理员"
   group_admin_set_anonymous: "开启或关闭群匿名"
-  group_admin_set_card: "修改或清空成员的群名片"
+  group_admin_set_group_nickname: "修改或清空目标成员的群昵称"
   group_admin_set_name: "修改群名"
   group_admin_set_title: "设置或清除成员的专属头衔"
   group_admin_leave: "退出或解散群"

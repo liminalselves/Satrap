@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from satrap.core.config.platform_messages import ArchiveMessage, MessageScope
 
 
-CAPABILITIES = ("group_list", "group_info", "member_list", "member_info", "message_lookup", "archive_search", "text", "quote", "mention", "image", "sticker")
+CAPABILITIES = ("group_list", "group_info", "member_list", "member_info", "self_nickname", "message_lookup", "archive_search", "text", "quote", "mention", "image", "sticker")
 
 
 class GroupChatError(RuntimeError):

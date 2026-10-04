@@ -37,8 +37,9 @@ def restore_manager():
 def test_old_tools_only_exist_in_config_migration_and_plugins_do_not_import_each_other():
     assert not set(_DEFINITIONS) & {
         "group_admin_list_groups", "group_admin_get_group_info", "group_admin_list_members",
-        "group_admin_get_member", "group_admin_get_message",
+        "group_admin_get_member", "group_admin_get_message", "group_admin_set_card",
     }
+    assert "group_admin_set_group_nickname" in _DEFINITIONS
     for plugin, other in (("group_chat", "group_admin"), ("group_admin", "group_chat")):
         for path in (ROOT / "satrap/expend/plugins" / plugin).rglob("*.py"):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -52,11 +53,12 @@ def test_old_tools_only_exist_in_config_migration_and_plugins_do_not_import_each
 def test_old_query_and_nickname_states_migrate_without_enabling_extra_capabilities(tmp_path, enabled):
     catalog = PluginCatalog(user_dir=tmp_path)
     source = [{"name": "group_admin", "enabled": enabled, "config": {"allowed_groups": "456"},
-               "capabilities": {"tools": {"group_admin_get_group_info": True,
+               "capabilities": {"tools": {"group_admin_set_card": False, "group_admin_get_group_info": True,
                                            "group_admin_get_member": False, "group_admin_list_groups": True}}}]
     original = deepcopy(source)
     specs = {spec.name: spec for spec in parse_plugin_specs(source, catalog)}
     assert source == original
+    assert specs["group_admin"].capabilities["tools"]["group_admin_set_group_nickname"] is False
     chat = specs["group_chat"]
     assert chat.capabilities["tools"]["group_chat_get_group_info"] is enabled
     assert chat.capabilities["tools"]["group_chat_get_member"] is False
@@ -65,6 +67,20 @@ def test_old_query_and_nickname_states_migrate_without_enabling_extra_capabiliti
     assert chat.config["allowed_groups"] == "456"
     canonical = [spec.to_config() for spec in specs.values()]
     assert [spec.to_config() for spec in parse_plugin_specs(canonical, catalog)] == canonical
+
+
+def test_migration_preserves_explicit_new_switch_and_rejects_permission_conflict(tmp_path):
+    catalog = PluginCatalog(user_dir=tmp_path)
+    source = [{"name": "group_admin", "config": {"allowed_groups": "456"}, "capabilities": {"tools": {
+        "group_admin_set_card": True, "group_admin_set_group_nickname": False, "group_admin_get_member": False}}},
+              {"name": "group_chat", "config": {"allowed_groups": "456\n789"}}]
+    specs = {spec.name: spec for spec in parse_plugin_specs(source, catalog)}
+    assert not specs["group_admin"].capabilities["tools"]["group_admin_set_group_nickname"]
+    assert not specs["group_chat"].capabilities["tools"]["group_chat_get_member"]
+    assert specs["group_chat"].config["allowed_groups"] == "456"
+    source[1]["config"]["allowed_groups"] = "789"
+    with pytest.raises(ValueError, match="无交集"):
+        parse_plugin_specs(source, catalog)
 
 
 @pytest.mark.asyncio
@@ -117,6 +133,125 @@ async def test_group_list_is_private_authorized_scoped_and_revalidates_permissio
         monkeypatch.setattr(adapter, "group_chat_groups", revoke)
         denied = await query.execute()
         assert not denied["ok"] and denied["error"]["code"] == "stale_call"
+
+
+async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str):
+    from satrap.core.backend.BackendManager import BackendManager, BackendConfig
+    from satrap.core.config.group_directory import GroupDirectoryStore
+    from satrap.core.platform import PlatformAdapterManager
+    from satrap.core.framework.SessionManager import SessionManager
+    from satrap.core.framework.providers import EdictumProvider
+    from satrap.core.type import SessionConfig
+    from satrap.edictum.config import EdictumConfigManager
+    from satrap.edictum.registry import create_default_edictum_type_registry
+
+    _, adapter, origin = _setup(tmp_path)
+    adapter._loop = asyncio.get_running_loop()
+    settings = {"group_management_version": 1}
+    adapter.config.settings = settings
+    backend = BackendManager(BackendConfig(data_root=str(tmp_path), platforms=[{
+        "id": "ob", "type": "onebot", "session_provider": "edictum", "session_type": "assistant", "settings": settings,
+    }]))
+    backend._adapter_mgr = cast(PlatformAdapterManager, current_adapter_manager())
+    directory = GroupDirectoryStore(backend.platform_db_path("ob"))
+    directory.adopt_legacy("10000", settings)
+    directory.patch_account("10000", expected_revision=1, mode="all", approval_defaults={"set_group_card": "approval_required"})
+    directory.confirm_membership("10000", "456", True)
+    adapter.set_group_access_store(directory)
+    await adapter.refresh_group_access("10000")
+    registry = create_default_edictum_type_registry()
+    configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
+    config = ({"self_nickname_enabled": True, "nickname_allowed_callers": "123"} if plugin_name == "group_chat"
+              else {"write_tools_enabled": True, "allowed_callers": "123"})
+    configs.create("assistant", {"edictum_type": "async_simple" if asynchronous else "simple", "model_name": "base",
+                                 "plugins": [{"name": plugin_name, "enabled": True, "config": config}]})
+    provider = EdictumProvider(configs, registry, default_checkpoint_db=str(backend.platform_db_path("ob")))
+    manager = SessionManager(db_path=backend.platform_db_path("ob"), platform_id="ob")
+    manager.register_provider(provider)
+    cfg = SessionConfig(session_id="nickname-agent", session_type_name="assistant", provider_name="edictum")
+    manager.store.upsert(cfg)
+    session = provider.create_session(cfg, llm=cast(Any, object()))
+    session.plugin_environment = PluginEnvironment("platform", "onebot")
+    manager.pool.put("nickname-agent", session, "assistant")
+    backend._platform_runtimes["ob"] = cast(Any, (manager, None))
+    await provider.prepare_session_async(session)
+    ids = iter(f"nickname-action-{i}" for i in range(30))
+    adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action(
+        "ob", "10000", gid, next(ids), action, params, actor_kind="model")
+    return backend, adapter, origin, session, provider, configs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("plugin_name", ["group_chat", "group_admin"])
+@pytest.mark.parametrize("nickname", ["验收群昵称", ""])
+async def test_each_plugin_independently_submits_nickname_for_approval_and_executes(tmp_path, asynchronous, plugin_name, nickname):
+    backend, adapter, origin, session, provider, _ = await runtime(tmp_path, asynchronous, plugin_name)
+    try:
+        assert [plugin.name for plugin in session.list_plugins()] == [plugin_name]
+        tool = session._wf.tools_manager.tools[f"{plugin_name}_set_group_nickname"]
+        assert tool.recovery_policy == "manual"
+        arguments = {"nickname": nickname}
+        if plugin_name == "group_admin":
+            arguments["user_id"] = "321"
+        with bind_call_origin(origin):
+            result = await tool.execute(**arguments) if asynchronous else await asyncio.to_thread(tool.execute, **arguments)
+        assert result["data"]["state"] == "pending"
+        adapter._bot.set_group_card.assert_not_awaited()
+        action = result["data"]["action_id"]
+        record = await backend.decide_group_action("ob", "10000", "456", action, approve=True)
+        assert record["state"] == "succeeded"
+        adapter._bot.set_group_card.assert_awaited_once_with(group_id=456, user_id=10000 if plugin_name == "group_chat" else 321, card=nickname)
+    finally:
+        await provider.release_session_async(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["off", "actor", "private", "handler", "unsupported", "bad_nickname"])
+async def test_self_nickname_denied_paths_never_write(tmp_path, reason):
+    _, adapter, origin, session, provider, _ = await runtime(tmp_path, True, "group_chat")
+    try:
+        tool = session._wf.tools_manager.tools["group_chat_set_group_nickname"]
+        if reason == "off":
+            tool.config.pop("self_nickname_enabled")
+        elif reason == "actor":
+            origin = replace(origin, actor_id="999")
+        elif reason == "private":
+            origin = replace(origin, chat_type="FriendMessage", chat_id="123")
+        elif reason == "handler":
+            adapter.group_action_handler = None
+        elif reason == "unsupported":
+            adapter._capability_states["set_group_card"] = (adapter.connection_generation(), "unsupported")
+        with bind_call_origin(origin):
+            if reason in {"off", "actor", "private", "unsupported"}:
+                assert not tool.is_available_for_call()
+            result = await tool.execute(nickname="x" * 61 if reason == "bad_nickname" else "试用")
+        assert not result["ok"]
+        adapter._bot.set_group_card.assert_not_awaited()
+    finally:
+        await provider.release_session_async(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure, state", [(ActionFailed({"retcode": 100}), "failed"),
+                                         (TimeoutError(), "unknown"), (RuntimeError("transport"), "unknown")])
+async def test_self_nickname_platform_failure_is_not_success_or_retried(tmp_path, failure, state):
+    from satrap.core.config.group_store import GroupConfigConflict
+
+    backend, adapter, origin, session, provider, _ = await runtime(tmp_path, True, "group_chat")
+    try:
+        tool = session._wf.tools_manager.tools["group_chat_set_group_nickname"]
+        with bind_call_origin(origin):
+            pending = await tool.execute(nickname="试用")
+        adapter._bot.set_group_card.side_effect = failure
+        action_id = pending["data"]["action_id"]
+        result = await backend.decide_group_action("ob", "10000", "456", action_id, approve=True)
+        assert result["state"] == state and result["executed_at"] is not None
+        with pytest.raises(GroupConfigConflict):
+            await backend.decide_group_action("ob", "10000", "456", action_id, approve=True)
+        adapter._bot.set_group_card.assert_awaited_once()
+    finally:
+        await provider.release_session_async(session)
 
 
 @pytest.mark.asyncio
@@ -242,3 +377,36 @@ async def test_new_queries_support_another_platform_and_private_route_revocation
     with bind_call_origin(replace(private, self_id="robot:二")):
         wrong_account = await service.execute("group_chat_list_groups", {}, limits=GroupChatLimits(cross_group_query_callers=("user:甲",)))
         assert not wrong_account["ok"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ["live_config", "saved_config", "plugin", "actor", "account"])
+async def test_self_nickname_rejects_forged_target_and_rechecks_revocation(tmp_path, revocation):
+    backend, adapter, origin, session, provider, configs = await runtime(tmp_path, True, "group_chat")
+    try:
+        tool = session._wf.tools_manager.tools["group_chat_set_group_nickname"]
+        with bind_call_origin(origin):
+            assert not (await tool.execute(nickname="伪造", user_id="321"))["ok"]
+            assert not (await tool.execute(nickname="伪造", group_id="999"))["ok"]
+            pending = await tool.execute(nickname="")
+        assert pending["data"]["state"] == "pending"
+        if revocation == "live_config":
+            tool.config["self_nickname_enabled"] = False
+        elif revocation == "saved_config":
+            configs.update("assistant", {"plugins": [{"name": "group_chat", "enabled": True,
+                                                       "config": {"self_nickname_enabled": False}}]})
+        elif revocation == "plugin":
+            await session.disable_plugin("group_chat")
+        elif revocation == "actor":
+            tool.config["nickname_allowed_callers"] = "999"
+        else:
+            adapter.bot_self_id = "other"
+        if revocation == "account":
+            with pytest.raises(ValueError, match="机器人账号已变化"):
+                await backend.decide_group_action("ob", "10000", "456", pending["data"]["action_id"], approve=True)
+        else:
+            result = await backend.decide_group_action("ob", "10000", "456", pending["data"]["action_id"], approve=True)
+            assert result["state"] == "failed"
+        adapter._bot.set_group_card.assert_not_awaited()
+    finally:
+        await provider.release_session_async(session)

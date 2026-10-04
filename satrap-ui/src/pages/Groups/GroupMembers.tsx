@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { useGroupContext } from './GroupLayout';
 
 const memberActions = [
-  ['set_group_card', '修改名片'], ['ban_group_member', '禁言或解除'],
+  ['set_group_card', '修改群昵称'], ['ban_group_member', '禁言或解除'],
   ['set_group_admin', '设置或取消管理员'], ['kick_group_member', '移出成员'],
 ] as const;
 
@@ -98,7 +98,7 @@ export function GroupMembers() {
       </div>
       <p className="text-sm text-text-secondary">按需从平台读取, 只对本次取得的成员搜索与分页。角色和能力以平台实际返回为准</p>
       {!available && <p className="text-sm text-warning">此群当前无法读取成员, 历史目录仍可查看</p>}
-      <input className="glass-input w-full max-w-md" value={query} placeholder="搜索昵称、名片或 QQ"
+      <input className="glass-input w-full max-w-md" value={query} placeholder="搜索账号昵称、群昵称或 QQ"
         disabled={!available} onChange={(event) => setQuery(event.target.value)} />
       {truncated && <p role="status" className="text-sm text-warning">平台成员列表超过 2048 条或达到安全上限, 本页仅展示已取得的集合</p>}
       {loading && <p role="status">读取成员中…</p>}
@@ -138,7 +138,7 @@ export function GroupMembers() {
           <option value="true">设置管理员</option><option value="false">取消管理员</option>
         </select>
       </label>}
-      {selected.action === 'set_group_card' && <label className="block text-sm">新名片, 留空表示清除
+      {selected.action === 'set_group_card' && <label className="block text-sm">新群昵称, 留空表示清除
         <input className="glass-input mt-1 w-full max-w-xs" value={card} maxLength={60} disabled={!!submitted} onChange={(event) => setCard(event.target.value)} />
       </label>}
       {selected.action === 'kick_group_member' && <label className="flex items-center gap-2 text-sm">

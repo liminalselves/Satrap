@@ -506,6 +506,18 @@ class PlatformAdapter(ABC):
         """
         raise NotImplementedError("适配器未实现群资料查询")
 
+    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> dict[str, Any]:
+        """
+        经宿主审批修改当前账号自身群昵称, 默认不支持
+
+        参数:
+        - scope: 当前群身份
+        - nickname: 新群昵称, 空字符串表示清空
+
+        返回:
+        - 宿主审批或执行结果
+        """
+        raise NotImplementedError("适配器未实现自身群昵称修改")
 
     def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
         """

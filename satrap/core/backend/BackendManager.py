@@ -1373,16 +1373,19 @@ class BackendManager:
             instance = session_cfg.session_config or {}
             plugins = instance.get("plugins", definition.metadata.get("plugins", []))
         specs = resolve_runtime_specs(session, parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog)
-        spec = next((item for item in specs if item.name == "group_admin"), None)
         tool_name = identity["tool_name"]
+        self_nickname = tool_name == "group_chat_set_group_nickname"
+        plugin_name = "group_chat" if self_nickname else "group_admin"
+        spec = next((item for item in specs if item.name == plugin_name), None)
         if (spec is None or not spec.enabled or not spec.capabilities.get("tools", {}).get(tool_name, False)):
             raise PermissionError("模型动作来源管理插件或工具已停用")
         config = spec.config
-        callers = sorted(set(_lines(config.get("allowed_callers"))))
+        callers = sorted(set(_lines(config.get("nickname_allowed_callers" if self_nickname else "allowed_callers"))))
         groups = sorted(set(_lines(config.get("allowed_groups"))))
-        if (config.get("write_tools_enabled") is not True
+        if (config.get("self_nickname_enabled" if self_nickname else "write_tools_enabled") is not True
                 or callers and identity["actor_id"] not in callers
-                or groups and target_group not in groups):
+                or groups and target_group not in groups
+                or self_nickname and target_group != identity["chat_id"]):
             raise PermissionError("模型动作来源写权限已撤销")
         payload = [route, session_id, tool_name, True, callers, groups, target_group]
         if tool_name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"}:

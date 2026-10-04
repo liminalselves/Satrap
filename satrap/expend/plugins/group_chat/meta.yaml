@@ -1,7 +1,7 @@
 name: group_chat
-version: 0.3.0
+version: 0.4.0
 author: Satrap Team
-description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复"
+description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复, 可选修改机器人自己的群昵称"
 config_schema:
   allowed_groups:
     type: textarea
@@ -11,6 +11,14 @@ config_schema:
     type: textarea
     default: ""
     description: "允许在私聊查询机器人所在群列表的管理者账号 ID, 每行一个; 留空禁用跨群查询"
+  self_nickname_enabled:
+    type: bool
+    default: false
+    description: "允许修改机器人自己在当前群的群昵称, 默认关闭; 仍遵守宿主审批策略"
+  nickname_allowed_callers:
+    type: textarea
+    default: ""
+    description: "允许请求修改机器人自身群昵称的成员 ID, 每行一个; 留空不额外限制调用者"
   media_reply_enabled:
     type: bool
     default: true
@@ -86,6 +94,7 @@ tools:
   group_chat_list_groups: "在管理者私聊查看机器人所在群"
   group_chat_get_group_info: "查看当前群的群名与人数"
   group_chat_list_members: "分页查看当前群成员与角色"
+  group_chat_set_group_nickname: "修改或清空机器人自己的群昵称"
   group_chat_get_message_assets: "取出当前群消息中的可用图片"
   group_chat_list_stickers: "查找当前群已启用的表情"
   group_chat_prepare_summary: "读取指定时段的摘要来源"

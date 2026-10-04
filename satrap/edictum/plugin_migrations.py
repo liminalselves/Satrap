@@ -35,6 +35,12 @@ def migrate_group_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
     tools = admin["capabilities"].get("tools")
     if not isinstance(tools, dict):
         return result
+    old_nickname = "group_admin_set_card"
+    if old_nickname in tools:
+        state = tools.pop(old_nickname)
+        if type(state) is not bool:
+            raise ValueError("旧群昵称工具状态必须为布尔值")
+        tools.setdefault("group_admin_set_group_nickname", state)
     moved = {}
     for old, new in QUERY_MOVES.items():
         if old in tools:

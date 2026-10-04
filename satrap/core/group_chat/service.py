@@ -37,6 +37,7 @@ _ARGUMENTS = {
     "group_chat_list_groups": frozenset(),
     "group_chat_get_group_info": frozenset(),
     "group_chat_list_members": frozenset({"limit", "cursor"}),
+    "group_chat_set_group_nickname": frozenset({"nickname"}),
     "group_chat_reply": frozenset({"components"}),
     "group_chat_find_members": frozenset({"query", "limit", "cursor"}),
     "group_chat_get_member": frozenset({"user_id"}),
@@ -296,6 +297,16 @@ class GroupChatService:
                 return await self._groups(context, bounds)
             if bounds.allowed_groups and context.scope.chat_id not in bounds.allowed_groups:
                 raise GroupChatError("forbidden", "当前群不在插件允许范围内")
+            if operation == "group_chat_set_group_nickname":
+                self._capability(context, "self_nickname")
+                if authorize is None:
+                    raise GroupChatError("forbidden", "机器人自身修改必须由当前工具授权")
+                nickname = arguments.get("nickname")
+                if not isinstance(nickname, str) or len(nickname) > 60:
+                    raise ValueError("群昵称必须是最多 60 字符的文本, 空字符串表示清空")
+                await self._revalidate(context)
+                result = await context.adapter.group_chat_set_nickname(context.scope, nickname)
+                return {"ok": True, "data": result}
             if operation == "group_chat_get_group_info":
                 self._capability(context, "group_info")
                 connection = context.adapter.group_chat_connection_token()

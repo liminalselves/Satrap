@@ -851,7 +851,7 @@ class OneBotAdapter(PlatformAdapter):
         states = self.admin_capabilities()
         for name, action in {"member_list": "get_group_member_list", "member_info": "get_group_member_info",
                              "group_list": "get_group_list", "group_info": "get_group_info",
-                             "message_lookup": "get_msg"}.items():
+                             "self_nickname": "set_group_card", "message_lookup": "get_msg"}.items():
             learned = self._capability_states.get(action)
             if learned is not None and learned[0] == self.connection_generation() and learned[1] == "unsupported":
                 state, reason = "unsupported", "platform_action_not_supported"
@@ -927,6 +927,26 @@ class OneBotAdapter(PlatformAdapter):
         """
         return self.allows_group(group_id)
 
+    async def group_chat_set_nickname(self, scope: MessageScope, nickname: str) -> dict[str, Any]:
+        """
+        固定机器人自身为目标, 交给宿主审批服务
+
+        参数:
+        - scope: 当前群身份
+        - nickname: 新群昵称
+
+        返回:
+        - 审批或执行结果, 宿主未装配时拒绝执行
+        """
+        from satrap.core.config.group_action_origin import current_model_action_authorization
+        source = current_model_action_authorization()
+        if (scope.adapter_id != self.config.id or scope.self_id != self.bot_self_id
+                or scope.conversation_kind != "group" or not self.allows_group(scope.chat_id) or source is None):
+            raise GroupChatError("stale_call", "机器人自身修改的来源已失效")
+        source.verify(scope.chat_id)
+        if not callable(self.group_action_handler):
+            raise GroupChatError("unavailable", "群昵称审批服务尚未装配")
+        return await self.group_action_handler(scope.chat_id, "set_group_card", {"user_id": scope.self_id, "card": nickname})
 
     async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
         """

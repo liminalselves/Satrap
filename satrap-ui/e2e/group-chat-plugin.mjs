@@ -58,19 +58,29 @@ try {
       continue;
     }
     assert.equal(await input.inputValue(), String(field.default));
+    if (field.type === 'textarea') continue;
     assert.equal(await input.getAttribute('min'), String(field.minimum));
     assert.equal(await input.getAttribute('max'), String(field.maximum));
     assert.equal(await input.getAttribute('step'), '1');
   }
   await page.getByLabel('member_cache_ttl', { exact: true }).fill('0');
   await page.getByLabel('message_limit', { exact: true }).fill('25');
+  await page.getByLabel('cross_group_query_callers', { exact: true }).fill('123\n789');
+  await page.getByLabel('allowed_groups', { exact: true }).fill('456');
+  await page.getByLabel('self_nickname_enabled', { exact: true }).check();
+  await page.getByLabel('nickname_allowed_callers', { exact: true }).fill('123');
   await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
   await page.getByText('全局参数已保存', { exact: true }).waitFor();
-  assert.deepEqual(writes, [{ member_cache_ttl: 0, message_limit: 25 }]);
+  assert.deepEqual(writes, [{ member_cache_ttl: 0, message_limit: 25, cross_group_query_callers: '123\n789',
+    allowed_groups: '456', self_nickname_enabled: true, nickname_allowed_callers: '123' }]);
   await page.reload();
   await page.getByRole('button', { name: '全局参数', exact: true }).click();
   await page.getByLabel('message_limit', { exact: true }).waitFor();
   assert.equal(await page.getByLabel('message_limit', { exact: true }).inputValue(), '25');
+  assert.equal(await page.getByLabel('cross_group_query_callers', { exact: true }).inputValue(), '123\n789');
+  assert.equal(await page.getByLabel('allowed_groups', { exact: true }).inputValue(), '456');
+  assert.equal(await page.getByLabel('nickname_allowed_callers', { exact: true }).inputValue(), '123');
+  assert.equal(await page.getByLabel('self_nickname_enabled', { exact: true }).isChecked(), true);
   await page.getByRole('button', { name: '恢复默认值', exact: true }).click();
   await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
   await page.getByText('全局参数已保存', { exact: true }).waitFor();
