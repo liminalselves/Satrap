@@ -498,7 +498,7 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 ### 5.1 存储
 
 优先扩展现有每平台 `platform.db`, 使用统一 `ensure_platform_tables` 版本迁移, 不另开零散 JSON
-当前平台 schema 是 v9; 实施时为每批统一分配下一版本, 不让新服务各自写 user_version
+当前平台 schema 是 v10; 提醒使用统一迁移新增任务, 发送尝试与最小操作索引表, 新服务不独立写 user_version
 
 拟新增表:
 

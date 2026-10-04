@@ -31,6 +31,8 @@ if TYPE_CHECKING:
     from satrap.core.pipeline.scheduler import PipelineScheduler
     from satrap.core.call_context import CallOrigin
     from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
+    from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder
+    from satrap.core.platform.receipt import SendReceipt
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -95,6 +97,7 @@ class PlatformAdapter(ABC):
     display_name: str = ""
     conversation_catalog_fields: dict[str, str] = {}
     conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
+    supports_scheduled_group_send: bool = False
 
     @classmethod
     def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
@@ -435,6 +438,22 @@ class PlatformAdapter(ABC):
         - 当前账号 ID
         """
         return self.client_self_id
+
+    async def group_chat_send_scheduled(self, target: ScheduledTarget, chain: MessageChain, recorder: ScheduledRecorder) -> SendReceipt:
+        """
+        发送宿主授权的后台群消息, 默认适配器未声明此能力
+
+        参数:
+        - target: 到期时重新核验的完整目标
+        - chain: 固定文字和已核验提及组件
+        - recorder: 任务独享的严格发送证据记录器
+
+        返回:
+        - 未实现时明确返回 scheduled_send_unsupported, 不尝试普通事件回复
+        """
+        from satrap.core.platform.receipt import SendReceipt
+
+        return SendReceipt("failed", reason="scheduled_send_unsupported")
 
     async def group_chat_private_scope(self, origin: CallOrigin) -> MessageScope:
         """

@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 9
+PLATFORM_SCHEMA_VERSION = 10
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -48,6 +48,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
     required |= {"group_chat_assets"} if version >= 7 else set()
     required |= {"friend_actions", "friend_policies"} if version >= 8 else set()
     required |= {"memories", "memory_refs", "memory_proposals", "memory_operations", "memory_audit"} if version >= 9 else set()
+    required |= {"group_chat_reminders", "group_chat_reminder_attempts", "reminder_operations"} if version >= 10 else set()
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -229,3 +230,16 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE TABLE memory_audit (event_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, memory_id TEXT NOT NULL, "
                            "actor_id TEXT NOT NULL, operation TEXT NOT NULL, created_at REAL NOT NULL)")
         connection.execute("PRAGMA user_version = 9")
+    if version < 10:
+        connection.execute("CREATE TABLE group_chat_reminders (reminder_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, scope_json TEXT NOT NULL, "
+                           "creator_id TEXT NOT NULL, creator_kind TEXT NOT NULL, source_message_id TEXT NOT NULL, text TEXT NOT NULL, "
+                           "mentions_json TEXT NOT NULL, due_at REAL NOT NULL, created_at REAL NOT NULL, revision INTEGER NOT NULL DEFAULT 1, "
+                           "state TEXT NOT NULL DEFAULT 'scheduled', retry_at REAL, retry_count INTEGER NOT NULL DEFAULT 0, "
+                           "paused_at REAL, source_agent_json TEXT NOT NULL DEFAULT '{}', reason TEXT NOT NULL DEFAULT '', delivery_json TEXT, settled_at REAL)")
+        connection.execute("CREATE INDEX idx_reminder_due ON group_chat_reminders(state, due_at, retry_at)")
+        connection.execute("CREATE INDEX idx_reminder_scope ON group_chat_reminders(scope_key, creator_id, created_at)")
+        connection.execute("CREATE TABLE group_chat_reminder_attempts (attempt_id TEXT PRIMARY KEY, reminder_id TEXT NOT NULL, "
+                           "created_at REAL NOT NULL, status TEXT NOT NULL, plan_json TEXT NOT NULL, result_json TEXT)")
+        connection.execute("CREATE TABLE reminder_operations (scope_key TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+                           "reminder_id TEXT NOT NULL, PRIMARY KEY(scope_key, operation_id))")
+        connection.execute("PRAGMA user_version = 10")

@@ -72,6 +72,8 @@ from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storag
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
 from satrap.core.log import logger
+from satrap.core.group_chat.reminder_host import ReminderHost
+from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 
 
 @dataclass
@@ -237,6 +239,8 @@ class BackendManager:
         self._http_server: BackendHTTPServer | None = None
         self._dispatch_task: asyncio.Task[Any] | None = None
         self._message_archive_maintenance_task: asyncio.Task[None] | None = None
+        self.reminder_host = ReminderHost(self)
+        self._reminder_scheduler: ReminderScheduler | None = None
         self._dispatch_state = "stopped"
         self._dispatch_last_error: str | None = None
         self._dispatch_restart_count = 0
@@ -1800,6 +1804,8 @@ class BackendManager:
             self._init_pipeline()
             await self._init_platforms()
             await self._init_http_api()
+            self._reminder_scheduler = ReminderScheduler(self.reminder_host.stores, self.reminder_host.resolve)
+            self._reminder_scheduler.start()
             self._message_archive_maintenance_task = asyncio.create_task(self._maintain_message_archives())
             logger.info("[BackendManager] 所有组件初始化完成")
         except Exception as e:
@@ -2566,6 +2572,12 @@ class BackendManager:
         """优雅关闭: 逆序停止"""
         self._running = False
         self._dispatch_state = "stopping"
+        if self._reminder_scheduler is not None:
+            try:
+                await self._reminder_scheduler.stop()
+            except Exception:
+                logger.error("[提醒调度] 停止维护失败" + "\n" + traceback.format_exc())
+            self._reminder_scheduler = None
         if self._message_archive_maintenance_task is not None:
             self._message_archive_maintenance_task.cancel()
             try:

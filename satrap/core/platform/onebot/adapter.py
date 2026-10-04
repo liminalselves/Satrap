@@ -44,6 +44,7 @@ from satrap.core.platform.onebot.self_identity import OneBotSelfIdentity
 from satrap.core.platform.identity import BotIdentity
 from satrap.core.platform.notices import build_onebot_notice, notice_attachment
 from satrap.core.platform.receipt import SendAttemptRecorder, SendReceipt, combine_receipts
+from satrap.core.platform.scheduled import ScheduledTarget, ScheduledRecorder, execute_scheduled_segments
 from satrap.core.platform.connection import ConnectionProbeError
 from satrap.core.components import At, BaseMessageComponent, File, Node, Plain, Reply
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
@@ -150,6 +151,7 @@ class OneBotAdapter(PlatformAdapter):
 
     adapter_type = "onebot"
     display_name = "OneBot"
+    supports_scheduled_group_send = True
 
     @classmethod
     def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
@@ -1834,13 +1836,73 @@ class OneBotAdapter(PlatformAdapter):
                 break
         return combine_receipts(receipts)
 
-    async def _send_chunk(self, session_id: str, message: MessageChain, *, management: bool = False) -> SendReceipt:
+    async def group_chat_send_scheduled(self, target: ScheduledTarget, chain: MessageChain, recorder: ScheduledRecorder) -> SendReceipt:
+        """
+        在现有出站队列中发送固定提醒, 不替换普通回复的共享记录器
+
+        参数:
+        - target: 同一平台实例, 账号, 群和连接代次的冻结目标
+        - chain: 仅含文字和成员提及的固定消息
+        - recorder: 本次提醒独享的发送记录器
+
+        返回:
+        - 实际回执, 必要证据未落盘时停止网络发送
+        """
+        scope = target.scope
+        if (scope.adapter_id != self.config.id or scope.conversation_kind != "group"
+                or not chain.components or any(not isinstance(item, (Plain, At)) for item in chain.components)
+                or any(isinstance(item, At) and str(item.qq) == "all" for item in chain.components)):
+            return SendReceipt("failed", reason="invalid_scheduled_target")
+        session_id = group_session_id(scope.chat_id)
+
+        async def operation() -> SendReceipt:
+            """
+            在取得队列锁后按实际文字限制构建并发送分段
+
+            返回:
+            - 实际发送汇总
+            """
+            limit = int(self.config.settings.get("message_text_limit", policy_default("message_text_limit")))
+            steps = _plan_send_steps(split_forward_turns(chain.components), limit)
+            plan = _plan_send_segments(split_forward_turns(chain.components), limit)
+            senders: list[Callable[[], Awaitable[SendReceipt]]] = []
+            for _, payload in steps:
+                async def send_chunk(components: list[BaseMessageComponent] = payload) -> SendReceipt:
+                    """
+                    转换后紧邻原生网络请求复核冻结目标
+
+                    参数:
+                    - components: 当前实际分段组件
+
+                    返回:
+                    - 当前段的原生平台回执
+                    """
+                    return await self._send_chunk(session_id, MessageChain(components), scheduled_target=target)
+
+                senders.append(send_chunk)
+            return await execute_scheduled_segments(target, recorder, plan, senders)
+
+        try:
+            return await self._outbound.run(session_id, operation)
+        except (RuntimeError, asyncio.TimeoutError):
+            logger.warning(f"[提醒发送] OneBot 发送队列不可用, 任务={target.reminder_id}")
+            return SendReceipt("failed", reason="send_queue_unavailable")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.error(f"[提醒发送] OneBot 后台发送失败, 任务={target.reminder_id}" + "\n" + traceback.format_exc())
+            return SendReceipt("unknown", reason="scheduled_send_exception")
+
+    async def _send_chunk(self, session_id: str, message: MessageChain, *, management: bool = False,
+                          scheduled_target: ScheduledTarget | None = None) -> SendReceipt:
         """
         按 OneBot 会话 ID 发送完整消息链
 
         参数:
         - session_id: 会话 ID
         - message: 消息内容
+        - management: 是否采用已授权的管理目标范围
+        - scheduled_target: 提醒冻结目标, 转换后再次复核连接和策略
 
         返回:
         - SendReceipt: 平台确认或失败状态, 无回包不视为成功
@@ -1859,6 +1921,12 @@ class OneBotAdapter(PlatformAdapter):
         if not segments:
             logger.warning("[OneBotAdapter] 消息为空, 跳过发送")
             return SendReceipt("failed", reason="empty_message")
+
+        if scheduled_target is not None:
+            if (not await scheduled_target.guard() or scheduled_target.scope.self_id != self.bot_self_id
+                    or scheduled_target.connection_token != self.group_chat_connection_token()
+                    or not self.config.enable or not self.allows_group(scheduled_target.scope.chat_id)):
+                return SendReceipt("failed", reason="scheduled_target_changed")
 
         sent_self_id = self.bot_self_id
         try:
