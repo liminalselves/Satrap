@@ -32,6 +32,7 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.platform_messages import PlatformMessageStore
+from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.config.group_directory import GroupDirectoryStore
 from satrap.core.config.group_actions import GroupActionStore
@@ -2329,6 +2330,7 @@ class BackendManager:
                 id=platform_id, type=platform_type, session_provider=provider, session_type=session_type,
                 enable=bool(candidate.get("enable", True)), settings=deepcopy(candidate.get("settings", {})),
                 session_bindings=validate_session_bindings(candidate.get("session_bindings")),
+                instance_id=platform_instance_id(candidate),
             ), event_handler=old.event_handler if old else self.platform_events)
             if replacement is None:
                 raise ValueError("平台类型不可用")
@@ -3039,6 +3041,7 @@ class BackendManager:
             id=pid, type=ptype, session_provider=session_provider, session_type=session_type,
             enable=bool(pcfg.get("enable", True)), settings=settings,
             session_bindings=validate_session_bindings(pcfg.get("session_bindings")),
+            instance_id=platform_instance_id(pcfg),
         )
         adapter = self._adapter_mgr.add_adapter(platform_config, event_handler=self.platform_events)
         if adapter is None:
@@ -3077,6 +3080,7 @@ class BackendManager:
             pass
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
+        self._adapter_mgr.reminder_host = self.reminder_host
         if self.platform_events.closed:
             self.platform_events = PlatformEventHub()
         self._group_events = GroupEventBuffer()

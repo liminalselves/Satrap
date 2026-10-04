@@ -62,6 +62,7 @@ class PlatformConfig:
     session_provider: str = SESSION_CLASS_PROVIDER
     session_type: str = ""
     session_bindings: Dict[str, Dict[str, str]] = field(default_factory=dict)
+    instance_id: str = ""
 
 
 @dataclass
@@ -1241,6 +1242,7 @@ class PlatformAdapterManager:
         """
         self.registry = registry or PlatformAdapterRegistry()
         self._adapters: Dict[str, PlatformAdapter] = {}
+        self.reminder_host: Any = None
 
     def add_adapter(self, config: PlatformConfig, event_handler: EventHandler | None = None) -> Optional[PlatformAdapter]:
         """

@@ -58,6 +58,8 @@ from satrap.core.memory.scoped import MemoryError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.group_chat.assets import MAX_IMAGE_BYTES
 from satrap.core.group_chat.types import GroupChatError
+from satrap.core.group_chat.reminder_management import reminder_management
+from satrap.core.group_chat.reminders import ReminderError
 from satrap.core.config.platform_messages import MessageArchiveError
 from satrap.core.config.conversation_runtime import perform_data_operation
 from satrap.core.config.user_directory import UserDirectoryService, UserDirectoryConflict, missing_profile_revision
@@ -2184,6 +2186,42 @@ async def _route_memories(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": "长期记忆暂不可用, 请查看控制服务日志", "code": "unavailable"}
 
 
+async def _route_reminders(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在认证控制入口查看和取消冷热平台的提醒
+
+    参数:
+    - ctx: 已认证请求
+
+    返回:
+    - 提醒数据或实际取消结果, 不匹配时为 None
+    """
+    match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/reminders(?:/([^/]+))?(?:/(cancel))?", ctx.path)
+    if match is None:
+        return None
+    try:
+        platform, identity, cancel = [urllib.parse.unquote(value or "") for value in match.groups()]
+        action = "cancel" if identity and cancel and ctx.method == "POST" else ("get" if identity else "list") if ctx.method == "GET" and not cancel else ""
+        if not action:
+            return 405, {"error": "该入口不支持此操作"}
+        parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(values) != 1 for values in parsed.values()):
+            raise ValueError("提醒参数不能重复")
+        query = {key: values[0] for key, values in parsed.items()}
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if action == "cancel" else None
+        result = await RAG_WORKERS.run(reminder_management, _configured_storage_layout(), load_config_document(CONFIG_PATH), platform, query, action, identity, payload)
+        return 200, result
+    except ReminderError as exc:
+        logger.warning(f"[提醒管理] 操作拒绝, 错误={exc.code}: {exc}")
+        return {"not_found": 404, "revision_conflict": 409, "unavailable": 503}.get(exc.code, 400), {"error": str(exc), "code": exc.code}
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"[提醒管理] 参数无效: {exc}")
+        return 400, {"error": str(exc), "code": "invalid_argument"}
+    except Exception:
+        logger.error("[提醒管理] 操作异常" + "\n" + traceback.format_exc())
+        return 503, {"error": "提醒数据暂不可用", "code": "unavailable"}
+
+
 async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
     """
     在已认证控制入口管理表情, 上传与逐群授权
@@ -3124,6 +3162,7 @@ async def _handle_request(
             _route_platform_archive,
             _route_group_chat_content,
             _route_memories,
+            _route_reminders,
             _route_group_chat_media,
             _route_conversation_data,
             _route_plugin_install,

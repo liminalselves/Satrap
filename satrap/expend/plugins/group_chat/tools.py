@@ -13,6 +13,7 @@ import copy
 import traceback
 
 from satrap.core.group_chat.service import group_chat_service
+from satrap.core.group_chat.reminder_service import execute_reminder_tool, REMINDER_ARGUMENTS
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
@@ -101,6 +102,24 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_list_summaries": ("查找当前群已保存的摘要, 返回摘要 ID, 时间范围和有效状态", {
         "keyword": _string("要查找的标题或摘要文字"), "limit": _LIMIT, "cursor": _CURSOR,
     }, []),
+    "group_chat_create_reminder": ("在当前群创建一次性提醒, 可填具体日期时间或等待秒数; 返回 created 表示已安排, 到期是否送达要查看任务记录. 只在用户明确要求提醒时创建", {
+        "text": {"type": "string", "minLength": 1, "maxLength": 2000, "description": "到期直接发送的提醒正文, 到时不会再调用模型生成内容"},
+        "due_at": {**_string("提醒的日期和时间, 例如 2026-10-05T09:00:00; 自动使用后端本地时区, 与 after_seconds 二选一"), "maxLength": 64},
+        "after_seconds": {"type": "integer", "minimum": 10, "maximum": 31536000, "description": "从后端接受请求起等待多少秒, 例如半小时填 1800; 与 due_at 二选一"},
+        "mention_user_ids": {"type": "array", "maxItems": 10, "uniqueItems": True, "items": _MEMBER_ID,
+                             "description": "到期需要 @ 的已确认成员 ID, 不填则只发文字, 不能 @ 全体"},
+    }, ["text"]),
+    "group_chat_list_reminders": ("查看你在当前群创建的提醒, 返回执行时间, 状态和提醒 ID; 不会显示其他成员的提醒正文", {
+        "state": _string("只看这个状态: scheduled 待执行, paused 已暂停, sent 已发送, unknown 无法确认是否送达; 不填则查看全部本人任务"),
+        "limit": {**_LIMIT, "maximum": 50}, "cursor": _CURSOR,
+    }, []),
+    "group_chat_get_reminder": ("查看你的一条提醒的时间, 状态, revision 和实际发送结果; created 不代表已发送, unknown 时不要自动重新创建以免重复", {
+        "reminder_id": _string("创建或列表结果返回的提醒 ID"),
+    }, ["reminder_id"]),
+    "group_chat_cancel_reminder": ("取消你创建且还没开始发送的提醒; 先查询取得最新 revision. 已经开始发送时可能无法撤回, 工具会明确返回当前状态", {
+        "reminder_id": _string("要取消的本人提醒 ID"),
+        "expected_revision": {"type": "integer", "minimum": 1, "description": "最近一次查询这条提醒返回的 revision, 不要猜测"},
+    }, ["reminder_id", "expected_revision"]),
 }
 
 
@@ -133,6 +152,19 @@ class _GroupChatMixin:
             callers = config_ids(self.config.get("nickname_allowed_callers"))
             if self.config.get("self_nickname_enabled") is not True or callers and origin.actor_id not in callers:
                 raise GroupChatError("forbidden", "机器人自身群昵称修改未获授权")
+        if self.tool_name in REMINDER_ARGUMENTS:
+            workflow = getattr(self.session, "_wf", None)
+            manager = getattr(workflow, "tools_manager", None)
+            getter = getattr(self.session, "list_plugins", None)
+            plugins = getter() if callable(getter) else []
+            if not isinstance(plugins, list):
+                raise GroupChatError("stale_call", "来源 Agent 插件状态无效")
+            plugin = next((item for item in plugins if item.name == "group_chat"), None)
+            if (manager is None or manager.tools.get(self.tool_name) is not self or not manager.is_tool_enabled(self.tool_name)
+                    or plugin is None or not plugin.enabled or not plugin.tools.get(self.tool_name, False)):
+                raise GroupChatError("stale_call", "提醒工具已从来源 Agent 移除或停用")
+            if self.tool_name == "group_chat_create_reminder" and self.config.get("reminders_enabled") is not True:
+                raise GroupChatError("write_disabled", "请先在群聊插件配置中开启提醒")
 
     def get_tool_defined(self) -> dict[str, Any]:
         """
@@ -157,9 +189,11 @@ class _GroupChatMixin:
                     or variant["properties"]["type"]["const"] == "sticker" and media and capabilities.get("image", {}).get("state") == "supported"]
                 if not media:
                     schema["items"]["oneOf"] = [variant for variant in schema["items"]["oneOf"] if variant["properties"]["type"]["const"] not in {"image", "sticker"}]
-        return {"type": "function", "function": {"name": name, "description": description,
-                "parameters": {"type": "object", "properties": copy.deepcopy(properties),
-                               "required": list(required), "additionalProperties": False}}}
+        parameters: dict[str, Any] = {"type": "object", "properties": copy.deepcopy(properties), "required": list(required), "additionalProperties": False}
+        if name == "group_chat_create_reminder":
+            parameters["oneOf"] = [{"required": ["due_at"], "not": {"required": ["after_seconds"]}},
+                                   {"required": ["after_seconds"], "not": {"required": ["due_at"]}}]
+        return {"type": "function", "function": {"name": name, "description": description, "parameters": parameters}}
 
     async def _run(self, kwargs: Mapping[str, object]) -> dict[str, Any]:
         """
@@ -172,6 +206,8 @@ class _GroupChatMixin:
         - 宿主成功结果或明确配置失败结果
         """
         try:
+            if self.tool_name in REMINDER_ARGUMENTS:
+                return await execute_reminder_tool(str(self.tool_name), kwargs, session=self.session, config=self.config, authorize=self._authorize)
             values = {key: self.config.get(key, default) for key, default in (
                 ("message_limit", 100), ("member_limit", 50), ("text_budget", 12000), ("member_cache_ttl", 60),
             )}
@@ -324,6 +360,8 @@ def _available(tool: _GroupChatMixin) -> bool:
                 and capabilities.get("self_nickname", {}).get("state") == "supported")
     if "summary" in name and tool.config.get("summary_enabled", True) is not True:
         return False
+    if name == "group_chat_create_reminder":
+        return tool.config.get("reminders_enabled") is True and adapter is not None and adapter.supports_scheduled_group_send
     if name == "group_chat_reply":
         if adapter is not None:
             kinds = {"text", "quote", "mention"}
@@ -429,6 +467,6 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool.session = session
         bind_tool_session(tool, session)
         tool.deferred_platform_reply = name == "group_chat_reply"
-        tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname"} else "retry"
+        tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname", "group_chat_create_reminder"} else "retry"
         result.append(tool)
     return result

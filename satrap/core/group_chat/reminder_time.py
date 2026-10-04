@@ -7,6 +7,21 @@ import math
 import time
 
 
+class ReminderTimeError(ValueError):
+    """可区分夏令时歧义与不存在的本地时间"""
+
+    def __init__(self, code: str, message: str) -> None:
+        """
+        保存时间解析原因
+
+        参数:
+        - code: 稳定错误码
+        - message: 供用户选择时间的说明
+        """
+        super().__init__(message)
+        self.code = code
+
+
 def resolve_reminder_time(values: dict[str, Any], accepted_at: float) -> float:
     """
     在接受请求时冻结一次性提醒的 UTC 截止时间
@@ -42,10 +57,10 @@ def resolve_reminder_time(values: dict[str, Any], accepted_at: float) -> float:
             except (OverflowError, OSError, ValueError):
                 continue
         if not candidates:
-            raise ValueError("该本地时间不存在, 请重新选择时间")
+            raise ReminderTimeError("invalid_local_time", "该本地时间不存在, 请重新选择时间")
         if len(candidates) != 1:
             choices = ", ".join(datetime.fromtimestamp(item).astimezone().isoformat() for item in sorted(candidates))
-            raise ValueError(f"该本地时间有夏令时歧义, 请明确选择其中一个带偏移的时间: {choices}")
+            raise ReminderTimeError("ambiguous_local_time", f"该本地时间有夏令时歧义, 请明确选择其中一个带偏移的时间: {choices}")
         timestamp = candidates.pop()
     if not math.isfinite(timestamp) or not accepted_at + 10 <= timestamp <= accepted_at + 31536000:
         raise ValueError("执行时间需要在至少 10 秒后, 且不超过一年")

@@ -3,6 +3,31 @@ version: 0.4.0
 author: Satrap Team
 description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复, 可选修改机器人自己的群昵称"
 config_schema:
+  reminders_enabled:
+    type: bool
+    default: false
+    description: "允许创建一次性群提醒并在到期后发送, 停用后任务暂停, 再启用需要明确恢复"
+  reminder_catchup_seconds:
+    type: number
+    default: 600
+    minimum: 0
+    maximum: 3600
+    integer: true
+    description: "到期离线时最多等待多少秒, 超过后记为错过; 已提交但结果未知的消息不会自动重发"
+  active_reminders_per_member:
+    type: number
+    default: 20
+    minimum: 1
+    maximum: 100
+    integer: true
+    description: "每位成员最多保留多少个活动提醒, 暂停的任务也占用额度"
+  active_reminders_per_group:
+    type: number
+    default: 200
+    minimum: 1
+    maximum: 1000
+    integer: true
+    description: "每个群最多保留多少个活动提醒"
   allowed_groups:
     type: textarea
     default: ""
@@ -91,6 +116,10 @@ config_schema:
     integer: true
     description: "成员查询结果缓存多久, 单位为秒; 0 表示每次新查询都刷新, 翻页仍沿用短期缓存"
 tools:
+  group_chat_create_reminder: 创建当前群的一次性提醒
+  group_chat_list_reminders: 查看本人创建的提醒
+  group_chat_get_reminder: 查看本人提醒的执行状态
+  group_chat_cancel_reminder: 取消尚未开始发送的本人提醒
   group_chat_list_groups: "在管理者私聊查看机器人所在群"
   group_chat_get_group_info: "查看当前群的群名与人数"
   group_chat_list_members: "分页查看当前群成员与角色"

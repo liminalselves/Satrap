@@ -14,10 +14,12 @@ import traceback
 
 from satrap.core.components import At, Plain
 from satrap.core.config.agent_routing import resolve_agent_binding
+from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_session import resolve_group_session
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.config.session_overrides import SessionOverrideStore
-from satrap.core.group_chat.reminders import ReminderStore
+from satrap.core.config.model_tool_authorization import config_ids
+from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderDelivery
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.platform import PlatformAdapter
@@ -105,6 +107,13 @@ class ReminderHost:
         adapter = self.adapter(scope)
         if adapter is None:
             return ReminderPolicy("paused", "platform_removed")
+        source = reminder.get("source_agent", {})
+        configured = next((item for item in self.backend.config.platforms if item.get("id") == scope.adapter_id), None)
+        if configured is None:
+            return ReminderPolicy("paused", "platform_removed")
+        if (source.get("instance_id") and source["instance_id"] != adapter.config.instance_id
+                or adapter.config.instance_id and platform_instance_id(configured) != adapter.config.instance_id):
+            return ReminderPolicy("paused", "instance_changed")
         if not adapter.config.enable:
             return ReminderPolicy("paused", "platform_disabled")
         if not adapter.supports_scheduled_group_send:
@@ -135,7 +144,6 @@ class ReminderHost:
         definition = resolved[1]
         effective, _ = resolve_group_session(platform, explicit, {"plugins": definition.metadata.get("plugins", [])})
         plugins = effective.get("plugins", [])
-        source = reminder.get("source_agent", {})
         session_id = source.get("session_id", "")
         current_generation = (adapter.agent_route_store.current_revision(scope.self_id, "group", scope.chat_id)
                               if adapter.agent_route_store else adapter._agent_route_memory.get((scope.self_id, "group", scope.chat_id), ((), 0))[1])
@@ -161,6 +169,9 @@ class ReminderHost:
             config.update(validate_config_values(entry.config_schema, overrides, session_override=True))
         if config.get("reminders_enabled") is not True:
             return ReminderPolicy("paused", "reminders_disabled", config=config)
+        allowed = config_ids(config.get("allowed_groups"))
+        if allowed and scope.chat_id not in allowed:
+            return ReminderPolicy("paused", "group_not_allowed", config=config)
         revision = hashlib.sha256(json.dumps([scope.key, binding, group_generation, current_generation, config,
                                                spec.capabilities], ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         account = adapter.group_chat_self_id()
@@ -238,3 +249,86 @@ class ReminderHost:
         target = ScheduledTarget(scope, connection, policy.revision, reminder["reminder_id"], "attempt_" + uuid.uuid4().hex, guard)
         chain = MessageChain([*[At(qq=identity) for identity in reminder["mention_user_ids"]], Plain(reminder["text"])])
         return ReminderDelivery("ready", grace=grace, target=target, chain=chain, send=adapter.group_chat_send_scheduled)
+
+    async def create(self, scope: MessageScope, values: dict[str, Any]) -> dict[str, Any]:
+        """
+        人工创建一次性任务, 使用当前实际平台能力和插件配置
+
+        参数:
+        - scope: 已认证管理入口选择的群范围
+        - values: 固定正文, 时间选择, 提及成员与幂等键
+
+        返回:
+        - created 和实际冻结的任务, 没有当前后台授权时拒绝
+        """
+        if set(values) - {"text", "due_at", "after_seconds", "mention_user_ids", "idempotency_key"}:
+            raise ReminderError("invalid_argument", "提醒创建包含未知字段")
+        selected_adapter = self.adapter(scope)
+        metadata = {"scope": {"adapter_id": scope.adapter_id, "self_id": scope.self_id, "conversation_kind": scope.conversation_kind, "chat_id": scope.chat_id},
+                    "source_agent": {"instance_id": selected_adapter.config.instance_id if selected_adapter else ""},
+                    "creator_kind": "operator", "creator_user_id": "authenticated_operator", "mention_user_ids": values.get("mention_user_ids", [])}
+        policy = await asyncio.to_thread(self.policy, metadata)
+        if policy.state != "ready":
+            raise ReminderError("permission_changed", "当前配置不允许创建提醒: " + policy.reason)
+        adapter = self.adapter(scope)
+        if adapter is None or adapter.message_archive is None:
+            raise ReminderError("unavailable", "当前平台没有可用提醒存储")
+        connection = adapter.group_chat_connection_token()
+        mentions = values.get("mention_user_ids", [])
+        text = values.get("text")
+        if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
+            raise ReminderError("invalid_argument", "提醒正文需要 1 至 2000 字")
+        if (not isinstance(mentions, list) or len(mentions) > 10 or any(not isinstance(item, str) or not item or item == "all" for item in mentions)
+                or len(set(mentions)) != len(mentions)):
+            raise ReminderError("invalid_argument", "提及目标需要最多 10 个不重复的成员 ID, 不能 @ 全体")
+        for identity in mentions:
+            member = await adapter.group_chat_member(scope, identity)
+            if member.scope != scope or member.member.user_id != identity:
+                raise ReminderError("invalid_member", "提及成员不属于当前群")
+
+        def verify() -> None:
+            """在创建事务持有写锁后再次验证当前平台和授权"""
+            latest = self.policy(metadata)
+            if (self.adapter(scope) is not adapter or adapter.group_chat_connection_token() != connection
+                    or latest.state != "ready" or latest.revision != policy.revision):
+                raise ReminderError("permission_changed", "创建前平台或配置已经变化")
+
+        config = policy.config or {}
+        repository = await asyncio.to_thread(ReminderStore, adapter.message_archive.database)
+        return await asyncio.to_thread(repository.create, scope, actor="authenticated_operator", creator_kind="operator", text=text,
+                                       mentions=mentions, source_message_id="", operation_id=values.get("idempotency_key", ""),
+                                       time_spec={key: values[key] for key in ("due_at", "after_seconds") if key in values},
+                                       member_limit=config.get("active_reminders_per_member", 20), group_limit=config.get("active_reminders_per_group", 200),
+                                       source_agent=metadata["source_agent"], authorize=verify)
+
+    async def resume(self, scope: MessageScope, identity: str, expected_revision: int) -> dict[str, Any]:
+        """
+        人工明确恢复暂停任务, 当前授权与成员必须重新核验
+
+        参数:
+        - scope: 当前管理范围
+        - identity: 提醒 ID
+        - expected_revision: 最近查看的任务修订
+
+        返回:
+        - scheduled 或 missed, 不改变原截止时间
+        """
+        adapter = self.adapter(scope)
+        if adapter is None or adapter.message_archive is None:
+            raise ReminderError("unavailable", "平台实例不可用, 无法恢复提醒")
+        repository = await asyncio.to_thread(ReminderStore, adapter.message_archive.database)
+        reminder = (await asyncio.to_thread(repository.get, scope, identity))["reminder"]
+        decision = await self.resolve(reminder, True)
+        if decision.state != "ready" or decision.target is None:
+            raise ReminderError("permission_changed", "当前条件不允许恢复提醒: " + decision.reason)
+        revision = decision.target.policy_revision
+        connection = decision.target.connection_token
+
+        def verify() -> None:
+            """恢复落盘前重新核验当前策略和连接"""
+            latest = self.policy(reminder)
+            if (self.adapter(scope) is not adapter or adapter.group_chat_connection_token() != connection
+                    or latest.state != "ready" or latest.revision != revision):
+                raise ReminderError("permission_changed", "恢复前平台或配置已经变化")
+
+        return await asyncio.to_thread(repository.change, scope, identity, "resume", expected_revision, grace=decision.grace, authorize=verify)

@@ -114,7 +114,7 @@ class ReminderStore:
     def create(self, scope: MessageScope, *, actor: str, text: str, mentions: list[str], source_message_id: str,
                operation_id: str, due_at: float | None = None, time_spec: dict[str, Any] | None = None,
                creator_kind: str = "model", member_limit: int = 20, group_limit: int = 200,
-               source_agent: dict[str, Any] | None = None) -> dict[str, Any]:
+               source_agent: dict[str, Any] | None = None, authorize: Callable[[], None] | None = None) -> dict[str, Any]:
         """
         有限配额下幂等创建一次性任务
 
@@ -131,12 +131,15 @@ class ReminderStore:
         - member_limit: 每成员活动配额
         - group_limit: 每群活动配额
         - source_agent: 可信来源会话 ID, 命名配置和路由代次, 不含会话对象或上下文
+        - authorize: 取得写事务后再次检查权限, None 仅供可信存储内部调用
 
         返回:
         - created 与任务详情, 重复提交返回同一任务
         """
         if scope.conversation_kind != "group" or not actor or creator_kind not in {"model", "operator"}:
             raise ReminderError("invalid_argument", "提醒范围或创建者无效")
+        if creator_kind == "model" and (not isinstance(source_message_id, str) or not source_message_id):
+            raise ReminderError("invalid_source", "模型创建提醒需要真实来源消息 ID")
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 2000:
             raise ReminderError("invalid_argument", "提醒正文需要 1 至 2000 字")
         if (not isinstance(mentions, list) or len(mentions) > 10
@@ -150,8 +153,8 @@ class ReminderStore:
         if type(member_limit) is not int or not 1 <= member_limit <= 100 or type(group_limit) is not int or not 1 <= group_limit <= 1000:
             raise ReminderError("invalid_argument", "提醒配额无效")
         source_agent = dict(source_agent or {})
-        if (set(source_agent) - {"session_id", "config_name", "route_generation"}
-                or any(not isinstance(source_agent.get(key, ""), str) or len(source_agent.get(key, "")) > 1024 for key in ("session_id", "config_name"))
+        if (set(source_agent) - {"session_id", "config_name", "route_generation", "instance_id"}
+                or any(not isinstance(source_agent.get(key, ""), str) or len(source_agent.get(key, "")) > 1024 for key in ("session_id", "config_name", "instance_id"))
                 or type(source_agent.get("route_generation", 0)) is not int):
             raise ReminderError("invalid_argument", "提醒来源 Agent 标识无效")
         fingerprint = hashlib.sha256(json.dumps([actor, creator_kind, text, time_spec if time_spec is not None else due_at,
@@ -159,6 +162,8 @@ class ReminderStore:
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
             previous = connection.execute("SELECT * FROM reminder_operations WHERE scope_key=? AND operation_id=?", (scope.key, operation_id)).fetchone()
+            if authorize is not None:
+                authorize()
             if previous:
                 if previous["fingerprint"] != fingerprint:
                     raise ReminderError("idempotency_conflict", "同一提醒操作不能提交不同内容")
@@ -168,7 +173,7 @@ class ReminderStore:
                 try:
                     due_at = resolve_reminder_time(time_spec, now)
                 except (ValueError, OverflowError, OSError) as exc:
-                    raise ReminderError("invalid_time", str(exc)) from exc
+                    raise ReminderError(getattr(exc, "code", "invalid_time"), str(exc)) from exc
             if isinstance(due_at, bool) or not isinstance(due_at, (int, float)) or not math.isfinite(due_at) or not now + 10 <= due_at <= now + 31536000:
                 raise ReminderError("invalid_time", "执行时间需要在至少 10 秒后, 且不超过一年")
             states = "('scheduled','waiting_delivery','paused','sending')"
@@ -234,7 +239,8 @@ class ReminderStore:
             return {"ok": True, "items": [self._record(row) for row in rows[offset:offset + limit]], "has_more": more,
                     "next_cursor": base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None}
 
-    def change(self, scope: MessageScope, identity: str, action: str, expected_revision: int, *, actor: str = "", grace: int = 600) -> dict[str, Any]:
+    def change(self, scope: MessageScope, identity: str, action: str, expected_revision: int, *, actor: str = "", grace: int = 600,
+               authorize: Callable[[], None] | None = None) -> dict[str, Any]:
         """
         取消或明确恢复任务, 与发送占用在同一事务中竞争
 
@@ -245,6 +251,7 @@ class ReminderStore:
         - expected_revision: 最近读到的任务修订
         - actor: 模型只能处理本人任务
         - grace: 过期补发宽限
+        - authorize: 取得写事务后立即复核权限
 
         返回:
         - 实际新状态, 已开始发送时明确返回 too_late_to_cancel
@@ -253,6 +260,8 @@ class ReminderStore:
             raise ReminderError("invalid_argument", "任务动作或修订无效")
         with closing(self._connect()) as connection, connection:
             connection.execute("BEGIN IMMEDIATE")
+            if authorize is not None:
+                authorize()
             row = self._lookup(connection, scope, identity, actor)
             if action == "cancel" and row["state"] == "cancelled":
                 return {"ok": True, "status": "cancelled", "reminder": self._record(row)}

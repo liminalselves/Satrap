@@ -320,6 +320,7 @@ class BackendHTTPServer(MiniHTTPServer):
             self._route_ui_health_reload,
             self._route_platform_connection,
             self._route_friends,
+            self._route_reminders,
             self._route_groups,
             self._route_edictum_runtime_plugins,
             self._route_storage,
@@ -356,6 +357,64 @@ class BackendHTTPServer(MiniHTTPServer):
             return None
         result = await self.backend.check_platform_connection(unquote(parts[3]))
         return 200, dataclasses.asdict(result)
+
+    async def _route_reminders(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已认证后台的人工提醒操作, 创建和恢复重新核验当前平台
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径和完整群身份查询参数
+        - body: 创建或动作参数
+
+        返回:
+        - 实际任务结果, 不匹配时为 None
+        """
+        import re
+        from satrap.core.group_chat.reminder_management import reminder_management, reminder_scope
+        from satrap.core.group_chat.reminders import ReminderError
+        from satrap.core.group_chat.types import GroupChatError
+
+        parsed = urlsplit(path)
+        match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/reminders(?:/([^/]+))?(?:/(cancel|resume))?", parsed.path)
+        if match is None:
+            return None
+        try:
+            platform, identity, action = [unquote(item or "") for item in match.groups()]
+            raw_query = parse_qs(parsed.query, keep_blank_values=True)
+            if any(len(values) != 1 for values in raw_query.values()):
+                raise ReminderError("invalid_argument", "提醒参数不能重复")
+            query = {key: values[0] for key, values in raw_query.items()}
+            scope = reminder_scope(platform, query)
+            if method == "GET" and not action:
+                result = await asyncio.to_thread(reminder_management, self.backend.storage_layout, dataclasses.asdict(self.backend.config),
+                                                 platform, query, "get" if identity else "list", identity)
+                return 200, result
+            if method == "POST":
+                payload = _parse_json_object(body)
+                if not identity:
+                    return 200, await self.backend.reminder_host.create(scope, payload)
+                if set(payload) != {"expected_revision"}:
+                    raise ReminderError("invalid_argument", "提醒动作需要最近查看的 expected_revision")
+                if action == "resume":
+                    return 200, await self.backend.reminder_host.resume(scope, identity, payload["expected_revision"])
+                if action == "cancel":
+                    result = await asyncio.to_thread(reminder_management, self.backend.storage_layout, dataclasses.asdict(self.backend.config),
+                                                     platform, query, "cancel", identity, payload)
+                    return 200, result
+            return 405, {"error": "该提醒入口不支持此操作", "reason": "invalid_operation"}
+        except (ReminderError, GroupChatError) as exc:
+            logger.warning(f"[提醒接口] 操作拒绝, 错误={exc.code}: {exc}")
+            return {"not_found": 404, "revision_conflict": 409, "idempotency_conflict": 409, "permission_changed": 409,
+                    "unavailable": 503}.get(exc.code, 400), {"error": str(exc), "reason": exc.code}
+        except (ValueError, TypeError) as exc:
+            logger.warning(f"[提醒接口] 参数无效: {exc}")
+            return 400, {"error": str(exc), "reason": "invalid_argument"}
+        except Exception:
+            import traceback
+
+            logger.error("[提醒接口] 请求失败" + "\n" + traceback.format_exc())
+            return 503, {"error": "提醒服务暂不可用", "reason": "unavailable"}
 
     async def _route_friends(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """
