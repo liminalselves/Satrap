@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 import asyncio
 import logging
 import sqlite3
-from aiocqhttp.exceptions import ActionFailed
+from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable
 
 import pytest
 
@@ -464,6 +464,19 @@ async def test_misskey_room_can_query_archive_and_reports_unsupported_member_rea
         missing = await service.execute("group_chat_get_message", {"message_id": "missing"})
     assert history["items"][0]["message_id"] == "id"
     assert members["error"]["code"] == missing["error"]["code"] == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_client_api_unavailable_is_retryable_and_reconnection_allows_member_lookup(tmp_path: Path) -> None:
+    service, adapter, origin = _setup(tmp_path)
+    adapter._bot.get_group_member_info.side_effect = ApiNotAvailable()
+    with bind_call_origin(origin):
+        failed = await service.execute('group_chat_get_member', {'user_id': '123'})
+        assert failed['error']['code'] == 'unavailable' and failed['error']['retryable'] is True
+        adapter._bot.get_group_member_info.side_effect = None
+        adapter._bot.get_group_member_info.return_value = {'group_id': 456, 'user_id': 123, 'nickname': '成员', 'card': ''}
+        restored = await service.execute('group_chat_get_member', {'user_id': '123'})
+    assert restored['ok'] and restored['item']['user_id'] == '123'
 
 
 @pytest.mark.asyncio

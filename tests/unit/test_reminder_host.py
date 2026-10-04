@@ -17,8 +17,11 @@ from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
+from satrap.core.group_chat.types import GroupChatError
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.platform.receipt import SendReceipt
+from satrap.core.platform.scheduled import execute_scheduled_segments
 from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
@@ -182,6 +185,50 @@ async def test_onebot_restart_waits_for_snapshot_then_honors_actual_group_policy
         assert current['state'] == 'sent' and current['delivery']['message_ids'] == ['9876']
         await scheduler.tick()
         adapter._bot.send_group_msg.assert_awaited_once()
+    finally:
+        await scheduler.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('retryable', [True, False])
+async def test_temporary_member_lookup_failure_waits_and_revalidates_before_delivery(tmp_path, monkeypatch, retryable):
+    backend, adapter, _, _, scope, reminder = setup(tmp_path)
+    now = [reminder['due_timestamp'] + 1]
+    monkeypatch.setattr('satrap.core.group_chat.reminder_host.time', SimpleNamespace(time=lambda: now[0]))
+    store = ReminderStore(adapter.message_archive.database, clock=lambda: now[0])
+    original = adapter.group_chat_member
+    adapter.group_chat_member = AsyncMock(side_effect=GroupChatError('unavailable', '成员查询不可用', retryable=retryable))
+    sender = AsyncMock(return_value=SendReceipt('success', ('confirmed-message',)))
+
+    async def send(target, chain, recorder):
+        return await execute_scheduled_segments(target, recorder, [{'index': 0}], [sender])
+
+    adapter.group_chat_send_scheduled = send
+    scheduler = ReminderScheduler(lambda: [store], backend.reminder_host.resolve, clock=lambda: now[0], monotonic=lambda: now[0])
+    backend._reminder_scheduler = scheduler
+    try:
+        await scheduler.tick()
+        await asyncio.gather(*list(scheduler._workers.values()))
+        await asyncio.sleep(0)
+        current = store.get(scope, reminder['reminder_id'])['reminder']
+        assert current['state'] == ('waiting_delivery' if retryable else 'paused')
+        assert current['reason'] == ('member_unavailable' if retryable else 'member_unverified')
+        sender.assert_not_awaited()
+        with store._connect() as connection:
+            assert connection.execute('SELECT COUNT(*) FROM group_chat_reminder_attempts').fetchone()[0] == 0
+        adapter.group_chat_member = original
+        now[0] += 30
+        await scheduler.tick()
+        await asyncio.gather(*list(scheduler._workers.values()))
+        await asyncio.sleep(0)
+        current = store.get(scope, reminder['reminder_id'])['reminder']
+        if retryable:
+            assert current['state'] == 'sent' and current['delivery']['message_ids'] == ['confirmed-message']
+            await scheduler.tick()
+            sender.assert_awaited_once()
+        else:
+            assert current['state'] == 'paused'
+            sender.assert_not_awaited()
     finally:
         await scheduler.stop()
 

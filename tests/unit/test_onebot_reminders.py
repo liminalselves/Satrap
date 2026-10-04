@@ -3,6 +3,7 @@ from contextlib import closing
 from unittest.mock import AsyncMock, Mock
 import asyncio
 import json
+from aiocqhttp.exceptions import ApiNotAvailable
 
 import pytest
 
@@ -66,6 +67,19 @@ async def test_queue_wait_revalidates_account_before_claim(tmp_path):
     assert result.status == "failed" and result.reason == "scheduled_target_changed"
     adapter._bot.send_group_msg.assert_not_awaited()
     assert store.get(frozen.scope, reminder["reminder_id"])["reminder"]["state"] == "scheduled"
+
+
+@pytest.mark.asyncio
+async def test_api_unavailable_after_submission_is_unknown_and_cannot_send_again(tmp_path):
+    adapter, store, reminder, frozen = setup(tmp_path)
+    adapter._bot.send_group_msg.side_effect = ApiNotAvailable()
+    chain = MessageChain([Plain('提醒')])
+    result = await adapter.group_chat_send_scheduled(frozen, chain, ReminderRecorder(store, reminder, frozen.attempt_id))
+    assert result.status == 'unknown' and not result.message_ids
+    assert store.get(frozen.scope, reminder['reminder_id'])['reminder']['state'] == 'unknown'
+    await adapter.group_chat_send_scheduled(frozen, chain, ReminderRecorder(store, reminder, frozen.attempt_id))
+    adapter._bot.send_group_msg.assert_awaited_once()
+    adapter._archive_sent_segments.assert_not_called()
 
 
 @pytest.mark.asyncio

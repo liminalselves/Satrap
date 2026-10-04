@@ -64,9 +64,9 @@ class _MissingCQHttp:
 
 _action_failures: tuple[type[Exception], ...] = ()
 try:
-    from aiocqhttp.exceptions import ApiNotAvailable, ActionFailed
+    from aiocqhttp.exceptions import ActionFailed
     from aiocqhttp import CQHttp
-    _action_failures = (ApiNotAvailable, ActionFailed)
+    _action_failures = (ActionFailed,)   # 仅平台明确拒绝属于失败, 客户端通信不可用按未确认处理
 except ImportError:   # pragma: no cover - 在安装依赖后走真实分支
     CQHttp = _MissingCQHttp
 

@@ -10,7 +10,7 @@ import json
 import threading
 import time
 
-from aiocqhttp.exceptions import ActionFailed
+from aiocqhttp.exceptions import ActionFailed, ApiNotAvailable
 import pytest
 
 from satrap.core.platform.onebot.admin import (
@@ -112,6 +112,15 @@ class TestOneBotAdminValidation:
 
 
 class TestOneBotAdminCalls:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize('action', ['get_group_member_info', 'set_group_card'])
+    async def test_disconnected_client_is_unconfirmed_instead_of_platform_rejection(self, action):
+        adapter = _adapter()
+        getattr(adapter._bot, action).side_effect = ApiNotAvailable()
+        with pytest.raises(AdminActionUnconfirmed, match='ApiNotAvailable'):
+            await adapter.admin._call(action, group_id=456, user_id=123)
+        assert action not in adapter._capability_states
+
     @pytest.mark.asyncio
     async def test_group_list_narrows_fields_and_skips_foreign(self):
         adapter = _adapter()
