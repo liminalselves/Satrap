@@ -2,7 +2,7 @@
 长期记忆存储: SQLite 结构化记忆, 模型自驱增删改
 
 设计 (对齐 proj_astro 模式, 无 embedding 依赖):
-- 记忆 = title + content + tags + importance 的结构化文本, 全部注入 system prompt
+- 记忆 = title + content + tags + importance 的结构化文本, 作为数据注入模型输入
 - 模式三档: disabled (不注入/不可用) / base (只读) / full (可增删改)
 - 注入: 全量注入 + importance 降序 + max_entries 截断, 控制 token 成本
 - 作用域: 每个实例必须绑定一个具体会话, 不支持跨会话可见集合
@@ -20,24 +20,10 @@ import json
 import uuid
 
 from satrap.core.utils.paths import get_db_path
+from satrap.core.config.platform_schema import ensure_platform_tables
 
 DEFAULT_MEMORY_DB = Path(get_db_path())
 """local 平台的默认记忆数据库路径"""
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS memories (
-    id TEXT PRIMARY KEY,
-    scope TEXT NOT NULL,
-    title TEXT NOT NULL,
-    content TEXT NOT NULL,
-    tags TEXT NOT NULL DEFAULT '[]',
-    importance INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
-"""
-
 
 class MemoryStore:
     """SQLite 长期记忆存储 (线程安全, 每次操作独立连接)"""
@@ -65,7 +51,7 @@ class MemoryStore:
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
-            conn.executescript(_SCHEMA)
+            ensure_platform_tables(conn)
 
     def _connect(self) -> sqlite3.Connection:
         """
@@ -76,6 +62,7 @@ class MemoryStore:
         """
         conn = sqlite3.connect(str(self.db_path), timeout=10)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
     def _scope_filter(self) -> tuple[str, tuple[str]]:
@@ -338,7 +325,7 @@ class MemoryStore:
 
     def to_context_block(self) -> str:
         """
-        生成可注入 system prompt 的记忆块 (disabled 模式返回空串)
+        生成可注入模型输入的记忆数据块 (disabled 模式返回空串)
 
         返回:
         - str: 当前会话的记忆上下文块

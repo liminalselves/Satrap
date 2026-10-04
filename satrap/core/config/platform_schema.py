@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 8
+PLATFORM_SCHEMA_VERSION = 9
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -47,6 +47,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
                 | (_SUMMARY_TABLES if version >= 6 else set()))
     required |= {"group_chat_assets"} if version >= 7 else set()
     required |= {"friend_actions", "friend_policies"} if version >= 8 else set()
+    required |= {"memories", "memory_refs", "memory_proposals", "memory_operations", "memory_audit"} if version >= 9 else set()
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -202,3 +203,29 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         connection.execute("CREATE INDEX idx_friend_actions_account ON friend_actions(self_id, created_at)")
         connection.execute("CREATE TABLE friend_policies (self_id TEXT PRIMARY KEY, protected_json TEXT NOT NULL)")
         connection.execute("PRAGMA user_version = 8")
+    if version < 9:
+        connection.execute("CREATE TABLE IF NOT EXISTS memories (id TEXT PRIMARY KEY, scope TEXT NOT NULL, "
+                           "title TEXT NOT NULL, content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', "
+                           "importance INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)")
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(memories)")}
+        additions = {"kind": "TEXT NOT NULL DEFAULT 'conversation'", "owner_user_id": "TEXT NOT NULL DEFAULT ''",
+                     "purpose_key": "TEXT NOT NULL DEFAULT ''", "revision": "INTEGER NOT NULL DEFAULT 1",
+                     "origin": "TEXT NOT NULL DEFAULT 'legacy'"}
+        for name, definition in additions.items():
+            if name not in columns:
+                connection.execute(f"ALTER TABLE memories ADD COLUMN {name} {definition}")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope)")
+        connection.execute("CREATE UNIQUE INDEX idx_memory_purpose ON memories(scope, kind, owner_user_id, purpose_key) WHERE purpose_key<>''")
+        connection.execute("CREATE TABLE memory_refs (memory_id TEXT NOT NULL, scope_key TEXT NOT NULL, message_id TEXT NOT NULL, "
+                           "PRIMARY KEY(memory_id, message_id), FOREIGN KEY(memory_id) REFERENCES memories(id) ON DELETE CASCADE)")
+        connection.execute("CREATE INDEX idx_memory_ref_source ON memory_refs(scope_key, message_id)")
+        connection.execute("CREATE TABLE memory_proposals (proposal_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, "
+                           "operation TEXT NOT NULL, memory_id TEXT, purpose_key TEXT NOT NULL, base_revision INTEGER NOT NULL, "
+                           "payload_json TEXT NOT NULL, actor_id TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', "
+                           "created_at REAL NOT NULL, expires_at REAL NOT NULL, decision_at REAL)")
+        connection.execute("CREATE INDEX idx_memory_proposal_scope ON memory_proposals(scope_key, state, created_at)")
+        connection.execute("CREATE TABLE memory_operations (scope_key TEXT NOT NULL, operation_id TEXT NOT NULL, fingerprint TEXT NOT NULL, "
+                           "result_json TEXT NOT NULL, PRIMARY KEY(scope_key, operation_id))")
+        connection.execute("CREATE TABLE memory_audit (event_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL, memory_id TEXT NOT NULL, "
+                           "actor_id TEXT NOT NULL, operation TEXT NOT NULL, created_at REAL NOT NULL)")
+        connection.execute("PRAGMA user_version = 9")

@@ -16,27 +16,28 @@ class AddMemoryTool(_AddMemoryToolCore, _MemoryToolBase):
         content: str,
         tags: list[str] | None = None,
         importance: int = 1,
-    ) -> str:
+        **group_values: Any,
+    ) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(title, content, tags, importance)
+        return self._execute(title, content, tags, importance, **group_values)
 
 
 class UpdateMemoryTool(_UpdateMemoryToolCore, _MemoryToolBase):
-    def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
+    def execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(memory_id, content, title)
+        return self._execute(memory_id, content, title, **group_values)
 
 
 class DeleteMemoryTool(_DeleteMemoryToolCore, _MemoryToolBase):
-    def execute(self, memory_id: str) -> str:
+    def execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(memory_id)
+        return self._execute(memory_id, **group_values)
 
 
 class ListMemoriesTool(_ListMemoriesToolCore, _MemoryToolBase):
-    def execute(self) -> str:
+    def execute(self, **filters: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute()
+        return self._execute(**filters)
 
 
 class GetMemoryTool(_GetMemoryToolCore, _MemoryToolBase):

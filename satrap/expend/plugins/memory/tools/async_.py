@@ -1,6 +1,8 @@
 """记忆工具的同步与异步入口"""
 from __future__ import annotations
 from typing import Any
+import asyncio
+from satrap.expend.plugins.memory.runtime import group_call
 from satrap.core.utils.TCBuilder import AsyncTool
 from .base import (_MemoryBinding, _AddMemoryToolCore, _UpdateMemoryToolCore, _DeleteMemoryToolCore, _ListMemoriesToolCore, _GetMemoryToolCore)
 
@@ -16,27 +18,41 @@ class AsyncAddMemoryTool(_AddMemoryToolCore, _AsyncMemoryToolBase):
         content: str,
         tags: list[str] | None = None,
         importance: int = 1,
-    ) -> str:
+        **group_values: Any,
+    ) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(title, content, tags, importance)
+        if group_call():
+            return await self._group("create", {"title": title, "content": content, **group_values})
+        return await asyncio.to_thread(self._execute, title, content, tags, importance, **group_values)
 
 
 class AsyncUpdateMemoryTool(_UpdateMemoryToolCore, _AsyncMemoryToolBase):
-    async def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
+    async def execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(memory_id, content, title)
+        if group_call():
+            values = {"memory_id": memory_id, **group_values}
+            if content:
+                values["content"] = content
+            if title:
+                values["title"] = title
+            return await self._group("update", values)
+        return await asyncio.to_thread(self._execute, memory_id, content, title, **group_values)
 
 
 class AsyncDeleteMemoryTool(_DeleteMemoryToolCore, _AsyncMemoryToolBase):
-    async def execute(self, memory_id: str) -> str:
+    async def execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute(memory_id)
+        if group_call():
+            return await self._group("delete", {"memory_id": memory_id, **group_values})
+        return await asyncio.to_thread(self._execute, memory_id, **group_values)
 
 
 class AsyncListMemoriesTool(_ListMemoriesToolCore, _AsyncMemoryToolBase):
-    async def execute(self) -> str:
+    async def execute(self, **filters: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
-        return self._execute()
+        if group_call():
+            return await self._group("list", filters)
+        return await asyncio.to_thread(self._execute, **filters)
 
 
 class AsyncGetMemoryTool(_GetMemoryToolCore, _AsyncMemoryToolBase):
@@ -50,4 +66,6 @@ class AsyncGetMemoryTool(_GetMemoryToolCore, _AsyncMemoryToolBase):
         返回:
         - 记忆详情或明确错误
         """
-        return self._execute(memory_id)
+        if group_call():
+            return await self._group("get", {"memory_id": memory_id})
+        return await asyncio.to_thread(self._execute, memory_id)

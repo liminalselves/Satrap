@@ -24,4 +24,7 @@ def get_tools(session: SimpleSession | AsyncSimpleSession, config: dict[str, Any
     classes = ([AsyncAddMemoryTool, AsyncUpdateMemoryTool, AsyncDeleteMemoryTool, AsyncListMemoriesTool, AsyncGetMemoryTool]
                if isinstance(session, AsyncSimpleSession)
                else [AddMemoryTool, UpdateMemoryTool, DeleteMemoryTool, ListMemoriesTool, GetMemoryTool])
-    return [tool(state["store"], service=state["service"]) for tool in classes]
+    result = [tool(state["store"], service=state["service"]) for tool in classes]
+    for tool in result:
+        tool.config = dict(config or {})
+    return result

@@ -1,5 +1,6 @@
 """记忆插件拆分的配置迁移, 不保留旧运行入口"""
 from __future__ import annotations
+import traceback
 
 from copy import deepcopy
 from contextlib import closing
@@ -57,7 +58,7 @@ def migrate_memory_globals(manager: Any) -> None:
                         temporary.unlink(missing_ok=True)
             logger.info("[插件迁移] 已迁移记忆全局配置")
     except Exception:
-        logger.exception("[插件迁移] 记忆全局配置迁移失败, 原配置保留以便重试")
+        logger.error("[插件迁移] 记忆全局配置迁移失败, 原配置保留以便重试" + "\n" + traceback.format_exc())
         raise
 
 
@@ -105,7 +106,7 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
                                "WHERE session_id=? AND namespace='plugins.base_take'", (json.dumps(old, ensure_ascii=False), now, session_id))
             return True
     except Exception:
-        logger.exception("[插件迁移] 记忆会话覆盖迁移失败, 事务已回滚")
+        logger.error("[插件迁移] 记忆会话覆盖迁移失败, 事务已回滚" + "\n" + traceback.format_exc())
         raise
 
 
@@ -121,7 +122,7 @@ def migrate_memory_specs(value: list[Any], catalog: Any) -> list[Any]:
     - 迁移后的配置副本, 旧关闭状态保留, 缺少新插件时明确报错
     """
     result = deepcopy(value)
-    base = next((item for item in result if isinstance(item, dict) and item.get("name") == "base_take"), None)
+    base: Any = next((item for item in result if isinstance(item, dict) and item.get("name") == "base_take"), None)
     bare = "base_take" in result
     if base is None and not bare:
         return result

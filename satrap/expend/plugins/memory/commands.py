@@ -11,6 +11,8 @@ from typing import Any, Callable
 
 from satrap.expend.plugins.memory.state import get_plugin_state
 from satrap.core.memory.service import MemoryService
+from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
+from satrap.core.call_context import current_call_origin
 from satrap.edictum import AsyncSimpleSession, SimpleSession
 
 _MEMORY_MODES = ("disabled", "base", "full")
@@ -50,6 +52,30 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
     store = state["service"]
     assert isinstance(store, MemoryService)
     sub = args[0] if args else "list"
+    if group_call():
+        origin = current_call_origin()
+        assert origin is not None
+        access = lambda: active_config(store.session, state["config"], "commands", "memory")
+        if sub in {"mode", "模式", "clear", "清空"}:
+            return "群内不能通过命令更改记忆权限或批量删除; 请在管理界面操作, 或明确删除自己的某条偏好"
+        if sub in {"list", "查看"}:
+            result = wait_host(store.group_operation("list", {}, access=access, principal="command"))
+        elif sub in {"add", "添加"}:
+            rest = _parse_args(args[1:]).split(" ", 1)
+            if len(rest) != 2:
+                return "用法: /memory add <标题> <内容>; 群内命令只保存本人的偏好"
+            result = wait_host(store.group_operation("create", {"kind": "member_preference", "key": rest[0], "title": rest[0], "content": rest[1],
+                                                   "source_message_ids": [origin.source_message_id]}, access=access, principal="command"))
+        elif sub in {"del", "delete", "删除"} and len(args) == 2:
+            detail = wait_host(store.group_operation("get", {"memory_id": args[1]}, access=access, principal="command"))
+            if not detail.get("ok"):
+                return str(detail.get("error", "读取失败"))
+            result = wait_host(store.group_operation("delete", {"memory_id": args[1], "expected_revision": detail["memory"]["revision"],
+                                                   "request_message_id": origin.source_message_id}, access=access, principal="command"))
+        else:
+            return "用法: /memory list | add <标题> <内容> | del <完整记忆 ID>"
+        import json
+        return json.dumps(result, ensure_ascii=False)
     if sub in ("list", "查看"):
         memories = store.execute("list_all")
         if isinstance(memories, dict):

@@ -1,6 +1,6 @@
 # group_chat 第二阶段: 群摘要, 图片与表情, 群记忆, 提醒
 
-状态: A1/A2 群摘要与 B1/B2 图片和表情已实现; C1 独立记忆插件拆分实施中, C2/D 未完成; 回归与冒烟在全部批次结束后统一执行
+状态: A1/A2 群摘要与 B1/B2 图片和表情已实现; C1/C2 记忆插件拆分与群记忆已实现, D1/D2 未完成; 回归与冒烟在全部批次结束后统一执行
 
 实施顺序: 1. 群摘要 → 2. 图片与表情 → 3. 群记忆与成员偏好 → 4. 一次性提醒
 
@@ -498,7 +498,7 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 ### 5.1 存储
 
 优先扩展现有每平台 `platform.db`, 使用统一 `ensure_platform_tables` 版本迁移, 不另开零散 JSON
-当前平台 schema 是 v8; 实施时为每批统一分配下一版本, 不让新服务各自写 user_version
+当前平台 schema 是 v9; 实施时为每批统一分配下一版本, 不让新服务各自写 user_version
 
 拟新增表:
 
@@ -536,8 +536,8 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 | `/summaries/{summary_id}` | GET, DELETE | 详情与删除 |
 | `/memories` | GET, POST | 列表与人工新增 |
 | `/memories/{memory_id}` | GET, PATCH, DELETE | 查看/修改/删除 |
-| `/memory-proposals` | GET | 待审批和已处理提案 |
-| `/memory-proposals/{proposal_id}/decision` | POST | approve/reject, 校验基准修订 |
+| `/proposals` | GET | 待审批和已处理提案 |
+| `/proposals/{proposal_id}/decision` | POST | approve/reject, 校验基准修订 |
 | `/reminders` | GET, POST | 列表与创建 |
 | `/reminders/{reminder_id}` | GET | 任务详情 |
 | `/reminders/{reminder_id}/cancel` | POST | 取消 |

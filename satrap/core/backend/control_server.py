@@ -53,6 +53,8 @@ from satrap.core.config.conversation_catalog import platform_catalog, filter_rec
 from satrap.core.config.conversation_data import ConversationDataService, ConversationDataConflict
 from satrap.core.config.platform_message_data import platform_archive_catalog, platform_archive_operation
 from satrap.core.config.group_chat_data import summary_management, parse_sticker_upload, native_sticker_catalog, sticker_settings_management
+from satrap.core.memory.management import memory_management
+from satrap.core.memory.scoped import MemoryError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.group_chat.assets import MAX_IMAGE_BYTES
 from satrap.core.group_chat.types import GroupChatError
@@ -2143,6 +2145,45 @@ async def _route_group_chat_content(ctx: _RouteContext) -> ControlResponse | Non
         return 503, {"error": "群摘要暂不可用, 请查看控制服务日志", "code": "unavailable"}
 
 
+async def _route_memories(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    管理群记忆与提案, 与模型工具开关独立认证
+
+    参数:
+    - ctx: 已认证控制请求
+
+    返回:
+    - 管理响应, 未匹配返回 None
+    """
+    match = re.fullmatch(r"/api/platforms/([^/]+)/memory/(memories|proposals)(?:/([^/]+))?(?:/(decision))?", ctx.path)
+    if match is None:
+        return None
+    try:
+        platform, kind, identity, decision = [urllib.parse.unquote(item or "") for item in match.groups()]
+        parsed = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query, keep_blank_values=True)
+        if any(len(values) != 1 for values in parsed.values()):
+            raise ValueError("记忆参数不能重复")
+        query = {key: values[0] for key, values in parsed.items()}
+        if kind == "proposals":
+            action = "decide" if identity and decision and ctx.method == "POST" else "proposals" if not identity and ctx.method == "GET" else ""
+        else:
+            action = ("get" if identity else "list") if ctx.method == "GET" else "create" if ctx.method == "POST" and not identity else "update" if ctx.method == "PATCH" and identity else "delete" if ctx.method == "DELETE" and identity else ""
+        if not action:
+            return 405, {"error": "该入口不支持此操作"}
+        payload = await _read_json_body(ctx.reader, ctx.raw_request) if ctx.method != "GET" else None
+        result = await RAG_WORKERS.run(memory_management, _configured_storage_layout(), load_config_document(CONFIG_PATH), platform, query, action, identity, payload)
+        return 200, result
+    except MemoryError as exc:
+        logger.warning(f"[长期记忆] 管理操作拒绝, 错误={exc.code}: {exc}")
+        return {"not_found": 404, "revision_conflict": 409, "idempotency_conflict": 409, "unavailable": 503}.get(exc.code, 400), {"error": str(exc), "code": exc.code}
+    except (ValueError, TypeError) as exc:
+        logger.warning(f"[长期记忆] 管理参数无效: {exc}")
+        return 400, {"error": str(exc), "code": "invalid_argument"}
+    except Exception:
+        logger.error("[长期记忆] 管理操作异常" + "\n" + traceback.format_exc())
+        return 503, {"error": "长期记忆暂不可用, 请查看控制服务日志", "code": "unavailable"}
+
+
 async def _route_group_chat_media(ctx: _RouteContext) -> ControlResponse | None:
     """
     在已认证控制入口管理表情, 上传与逐群授权
@@ -3082,6 +3123,7 @@ async def _handle_request(
             _route_conversation_users,
             _route_platform_archive,
             _route_group_chat_content,
+            _route_memories,
             _route_group_chat_media,
             _route_conversation_data,
             _route_plugin_install,

@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { formatTime } from '@/utils/format';
 import { GroupSummaries } from './GroupSummaries';
+import { GroupMemories } from './GroupMemories';
 import { StickerSettings } from './StickerSettings';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 
@@ -95,16 +96,17 @@ export function ArchiveView({ platforms }: { platforms: ConversationPlatform[] }
 type PendingAction = { action: 'delete' | 'clear' | 'restore'; revision: number; message_ids?: string[]; backup_id?: string };
 
 function ArchivePanel(props: { record: PlatformArchiveRecord; refresh: number; onChanged: () => void }) {
-  const [view, setView] = useState<'messages' | 'summaries' | 'stickers'>('messages');
+  const [view, setView] = useState<'messages' | 'summaries' | 'stickers' | 'memories'>('messages');
   const [dirty, setDirty] = useState(false);
   const switchView = (next: typeof view) => { if (next !== view && (!dirty || confirmDiscard())) { setDirty(false); setView(next); } };
   return <div className="min-w-0 space-y-3">
     <Card><div className="flex flex-wrap gap-2" aria-label="平台对话内容">
       <Button variant={view === 'messages' ? 'primary' : 'ghost'} onClick={() => switchView('messages')}>原始消息</Button>
       <Button variant={view === 'summaries' ? 'primary' : 'ghost'} onClick={() => switchView('summaries')}>群摘要</Button>
+      {props.record.conversation_kind === 'group' && <Button variant={view === 'memories' ? 'primary' : 'ghost'} onClick={() => switchView('memories')}>长期记忆</Button>}
       <Button variant={view === 'stickers' ? 'primary' : 'ghost'} onClick={() => switchView('stickers')}>表情设置</Button>
     </div></Card>
-    {view === 'messages' ? <ArchiveDetail {...props} /> : view === 'stickers' ? <StickerSettings record={props.record} onDirty={setDirty} /> : <GroupSummaries record={props.record} refresh={props.refresh} />}
+    {view === 'messages' ? <ArchiveDetail {...props} /> : view === 'stickers' ? <StickerSettings record={props.record} onDirty={setDirty} /> : view === 'memories' ? <GroupMemories record={props.record} refresh={props.refresh} onDirty={setDirty} /> : <GroupSummaries record={props.record} refresh={props.refresh} />}
   </div>;
 }
 

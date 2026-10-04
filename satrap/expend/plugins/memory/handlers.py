@@ -9,6 +9,7 @@ from typing import Any
 
 from satrap.expend.plugins.memory.state import get_plugin_state
 from satrap.core.memory.service import MemoryService
+from satrap.expend.plugins.memory.runtime import active_config, group_call
 from satrap.edictum import (
     AsyncSimpleSession,
     HandlerContext,
@@ -70,6 +71,9 @@ def build_handlers(session: SessionType, config: dict[str, Any] | None = None) -
     injector = _MemoryInjector(store)
 
     def before_user_send(text: str, ctx: HandlerContext) -> str:
+        if group_call():
+            block = store.group_context_sync(access=lambda: active_config(session, dict(config or {}), "handlers", "memory.memory_inject"))
+            return block + "\n\n" + text if block else text
         return injector.inject(text)
 
     return [SessionHandler(name="memory.memory_inject", priority=0, before_user_send=before_user_send)]

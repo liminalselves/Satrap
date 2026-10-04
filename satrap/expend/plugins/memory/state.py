@@ -64,7 +64,7 @@ def get_plugin_state(session: SessionType, config: dict[str, Any] | None = None)
     registry_key = id(session)
     with _registry_lock:
         state = _registry.get(registry_key)
-        if state is None or state.get("_owner") is not session:
+        if state is None or state.get("_owner") is not session or config is not None and state.get("config") != dict(config):
             state = _build_state(session, config or {})
             state["_owner"] = session
             _registry[registry_key] = state
