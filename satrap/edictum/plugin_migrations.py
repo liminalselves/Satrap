@@ -28,7 +28,7 @@ def migrate_group_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
     返回:
     - 只含新工具名称的配置副本, 权限冲突时拒绝迁移
     """
-    result = deepcopy(value)
+    result = migrate_friend_tool_specs(value, catalog)
     admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
     if admin is None or not isinstance(admin.get("capabilities"), dict):
         return result
@@ -92,4 +92,86 @@ def migrate_group_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
         if not allowed:
             raise ValueError("群工具迁移的允许群范围无交集, 请明确设置查询范围")
         config["allowed_groups"] = "\n".join(allowed)
+    return result
+
+
+FRIEND_MOVES = {
+    "group_admin_list_friend_requests": "friend_manager_list_requests",
+    "group_admin_handle_friend_request": "friend_manager_handle_request",
+}
+
+
+def migrate_friend_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
+    """
+    迁移旧好友申请工具, 不启用新增查询或删除能力
+
+    参数:
+    - value: 原始插件列表
+    - catalog: 可用插件目录
+
+    返回:
+    - 不含旧好友工具名的副本, 授权冲突时明确拒绝
+    """
+    result = deepcopy(value)
+    admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
+    if admin is None:
+        if "group_admin" not in result:
+            return result
+        admin = {"name": "group_admin"}
+    caps = admin.get("capabilities", {})
+    if not isinstance(caps, dict) or not isinstance(caps.get("tools", {}), dict):
+        return result
+    old_tools = caps.get("tools", {})
+    old_entry = catalog.get("group_admin")
+    global_config = PluginConfigManager().load_global_explicit("group_admin", old_entry.config_schema) if old_entry else {}
+    raw_config = admin.get("config", {})
+    if not isinstance(raw_config, dict):
+        return result
+    old_config = {**global_config, **raw_config}
+    managers = config_ids(old_config.get("request_managers"))
+    existing: dict[str, Any] | None = next((item for item in result if isinstance(item, dict) and item.get("name") == "friend_manager"), None)
+    has_existing = existing is not None or "friend_manager" in result
+    explicit = any(name in old_tools for name in FRIEND_MOVES)
+    if not explicit and (has_existing or not managers):
+        return result
+    entry = catalog.get("friend_manager")
+    if entry is None:
+        raise ValueError("旧好友工具迁移需要可用的 friend_manager 插件")
+    moved = {}
+    for old, new in FRIEND_MOVES.items():
+        enabled = old_tools.pop(old, True)
+        if type(enabled) is not bool:
+            raise ValueError("旧好友工具开关必须为布尔值")
+        moved[new] = enabled and admin.get("enabled", True) is True
+    if existing is None:
+        if has_existing:
+            existing = {"name": "friend_manager"}
+            result[result.index("friend_manager")] = existing
+        else:
+            existing = {"name": "friend_manager", "enabled": admin.get("enabled", True), "config": {},
+                        "capabilities": {kind: {name: False for name in names} for kind, names in entry.capabilities.items()}}
+            result.append(existing)
+    new_config = existing.setdefault("config", {})
+    new_caps = existing.setdefault("capabilities", {}).setdefault("tools", {})
+    if not isinstance(new_config, dict) or not isinstance(new_caps, dict):
+        raise ValueError("好友插件配置或能力开关无效")
+    new_global = PluginConfigManager().load_global_explicit("friend_manager", entry.config_schema)
+    merged = {**new_global, **new_config}
+    new_managers = config_ids(merged.get("managers"))
+    if has_existing:
+        managers = sorted(set(managers) & set(new_managers))
+    callers = config_ids(old_config.get("allowed_callers"))
+    writers = sorted(set(managers) & set(callers)) if callers else managers
+    if has_existing:
+        writers = sorted(set(writers) & set(config_ids(merged.get("write_callers"))))
+    new_config["managers"] = "\n".join(managers)
+    new_config["write_callers"] = "\n".join(writers)
+    new_config["request_handling_enabled"] = (old_config.get("write_tools_enabled") is True
+                                              and bool(writers) and (not has_existing or merged.get("request_handling_enabled") is True))
+    if not has_existing:
+        new_config["delete_friend_enabled"] = False
+        for kind, names in entry.capabilities.items():
+            existing.setdefault("capabilities", {}).setdefault(kind, {}).update({name: False for name in names})
+    for name, state in moved.items():
+        new_caps[name] = state and (new_caps.get(name, True) if has_existing else True)
     return result

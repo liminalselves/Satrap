@@ -127,6 +127,7 @@ class PlatformAdapter(ABC):
         self._agent_route_memory: dict[tuple[str, str, str], tuple[tuple[object, ...], int]] = {}
         self.event_handler = event_handler
         self.started = False
+        self.friend_host: Any = None
 
         self.client_self_id = uuid.uuid4().hex
         validate_event_limits(config.settings)
@@ -532,6 +533,71 @@ class PlatformAdapter(ABC):
         capabilities["archive_search"] = {"state": "supported" if self.message_archive is not None else "unavailable",
                                           "reason": "local_archive" if self.message_archive is not None else "archive_not_configured"}
         return capabilities
+
+    def friend_account(self) -> str:
+        """返回好友关系所属的已确认账号, 未实现时为空"""
+        return ""
+
+    def friend_generation(self) -> object:
+        """返回账号连接代次, 未实现时保持不可用"""
+        return None
+
+    def friend_capabilities(self) -> dict[str, dict[str, str]]:
+        """返回好友能力状态, 未实现的平台不提供操作"""
+        return {name: {"state": "unsupported", "reason": "当前适配器未实现好友操作"}
+                for name in ("list_friends", "list_requests", "handle_request", "delete_friend")}
+
+    async def friend_list(self, account: str) -> dict[str, Any]:
+        """
+        读取好友目录
+
+        参数:
+        - account: 固定账号
+
+        返回:
+        - 有界目录及完整性证据
+        """
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持好友列表")
+
+    async def friend_requests(self, account: str, limit: int, cursor: str | None) -> dict[str, Any]:
+        """
+        查询宿主收到的好友申请
+
+        参数:
+        - account: 固定账号
+        - limit: 查询数量
+        - cursor: 继续查询的位置
+
+        返回:
+        - 不含平台凭据的申请列表
+        """
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持好友申请")
+
+    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
+        """
+        处理好友申请
+
+        参数:
+        - account: 固定账号
+        - request_id: 宿主申请 ID
+        - approve: 是否同意
+        - remark: 好友备注
+        """
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持处理好友申请")
+
+    async def friend_delete(self, account: str, user_id: str) -> None:
+        """
+        删除好友
+
+        参数:
+        - account: 固定账号
+        - user_id: 目标好友 ID
+        """
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持删除好友")
 
     def group_chat_media_limits(self) -> dict[str, int]:
         """返回适配器较小的媒体上限, 宿主和插件上限仍同时有效"""

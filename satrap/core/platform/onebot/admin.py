@@ -63,7 +63,7 @@ GROUP_DIRECTORY_BYTES = 4 * 1024 * 1024
 WRITE_ACTIONS = frozenset({
     "delete_msg", "set_group_kick", "set_group_ban", "set_group_whole_ban", "set_group_anonymous_ban", "set_group_admin",
     "set_group_anonymous", "set_group_card", "set_group_name", "set_group_special_title", "set_group_leave",
-    "set_friend_add_request", "set_group_add_request",
+    "set_friend_add_request", "set_group_add_request", "delete_friend",
 })
 """会改变平台状态的 OneBot 动作名, 执行成功记审计日志"""
 
@@ -74,6 +74,8 @@ APPROVAL_FLAG_KINDS: dict[str, str] = {
 """审批动作到账本 flag 域的映射, 供审计日志用同域摘要替代原始标识"""
 
 ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
+    "get_friend_list": ("read", "获取好友列表"),
+    "delete_friend": ("write", "删除好友"),
     "get_group_list": ("read", "获取机器人所在群列表"),
     "get_group_info": ("read", "获取群信息"),
     "get_group_member_list": ("read", "获取群成员列表"),
@@ -103,6 +105,8 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
 """OneBot v11 标准管理动作登记表: 名称到读写属性与说明"""
 
 _CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
+    "get_friend_list": ("get_friend_list",),
+    "delete_friend": ("delete_friend",),
     "get_group_list": ("get_group_list",),
     "get_group_info": ("get_group_info",),
     "get_group_member_list": ("get_group_member_list",),

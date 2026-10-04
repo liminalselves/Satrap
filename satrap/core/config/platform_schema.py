@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 
 
-PLATFORM_SCHEMA_VERSION = 7
+PLATFORM_SCHEMA_VERSION = 8
 
 _OVERRIDE_TABLE = "session_config_overrides"
 _GROUP_TABLES = frozenset({
@@ -46,6 +46,7 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
                 | ({"platform_message_policy"} if version >= 5 else set())
                 | (_SUMMARY_TABLES if version >= 6 else set()))
     required |= {"group_chat_assets"} if version >= 7 else set()
+    required |= {"friend_actions", "friend_policies"} if version >= 8 else set()
     missing = required - existing
     if missing:
         raise RuntimeError(f"平台数据库结构损坏: 版本 {version} 缺少表 {', '.join(sorted(missing))}")
@@ -191,3 +192,13 @@ def ensure_platform_tables(connection: sqlite3.Connection) -> None:
         )
         connection.execute("CREATE INDEX idx_group_chat_asset_source ON group_chat_assets(scope_key, source_message_id)")
         connection.execute("PRAGMA user_version = 7")
+    if version < 8:
+        connection.execute(
+            "CREATE TABLE friend_actions (self_id TEXT NOT NULL, action_id TEXT NOT NULL, action_type TEXT NOT NULL, "
+            "params_json TEXT NOT NULL, actor_kind TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, "
+            "expires_at REAL NOT NULL, decision_at REAL, executed_at REAL, result_json TEXT, target_json TEXT, actor_id TEXT NOT NULL, "
+            "PRIMARY KEY(self_id, action_id))"
+        )
+        connection.execute("CREATE INDEX idx_friend_actions_account ON friend_actions(self_id, created_at)")
+        connection.execute("CREATE TABLE friend_policies (self_id TEXT PRIMARY KEY, protected_json TEXT NOT NULL)")
+        connection.execute("PRAGMA user_version = 8")

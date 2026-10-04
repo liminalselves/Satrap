@@ -48,7 +48,7 @@ def test_real_platform_database_migration_preserves_context_and_configs(tmp_path
         connection.execute("INSERT INTO session_config_overrides VALUES('session-1', 'prompt', '{}', 1, 2, 1)")
         for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
             connection.execute(f'DROP TABLE "{table}"')
-        for table in ("platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
+        for table in ("friend_actions", "friend_policies", "platform_message_policy", "platform_message_backups", "platform_messages", "platform_message_chats"):
             connection.execute(f"DROP TABLE {table}")
         connection.execute("PRAGMA user_version=3")
     store = _store(tmp_path)

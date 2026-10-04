@@ -102,6 +102,8 @@ def test_v4_archive_policy_migrates_without_losing_messages(tmp_path: Path) -> N
     database = layout.platform_db("legacy")
     with sqlite3.connect(database) as connection:
         connection.execute("DROP TABLE platform_message_policy")
+        connection.execute("DROP TABLE friend_actions")
+        connection.execute("DROP TABLE friend_policies")
         for (table,) in connection.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'group_chat_%'").fetchall():
             connection.execute(f'DROP TABLE "{table}"')
         connection.execute("PRAGMA user_version=4")

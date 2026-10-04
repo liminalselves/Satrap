@@ -77,7 +77,7 @@ def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
 class TestToolConstruction:
     def test_sync_session_gets_sync_tools(self):
         tools = get_tools(cast(Session, object()), {})
-        assert len(tools) == len(_DEFINITIONS) == 18
+        assert len(tools) == len(_DEFINITIONS) == 16
         assert not any(isinstance(t, type) for t in tools)
         ban = next(t for t in tools if t.tool_name == "group_admin_ban")
         assert ban.recovery_policy == "manual"
@@ -89,7 +89,7 @@ class TestToolConstruction:
 
     def test_async_session_gets_async_tools(self):
         tools = _async_tools({})
-        assert len(tools) == 18
+        assert len(tools) == 16
         assert all(asyncio.iscoroutinefunction(t.execute) for t in tools)
 
 
@@ -266,7 +266,7 @@ class TestExecution:
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=True, reason="")
 
     @pytest.mark.asyncio
-    async def test_group_write_uses_approval_handler_but_friend_request_stays_direct(self):
+    async def test_group_write_uses_approval_handler(self):
         adapter = _setup_adapter()
         adapter.bot_self_id = "10000"
         adapter.group_action_handler = AsyncMock(return_value={"state": "pending", "action_id": "action-model-1"})
@@ -276,17 +276,11 @@ class TestExecution:
         adapter._bot.set_friend_add_request.return_value = {}
         tools = _async_tools({"write_tools_enabled": True, "request_managers": "123"})
         group = next(tool for tool in tools if tool.tool_name == "group_admin_set_name")
-        friend = next(tool for tool in tools if tool.tool_name == "group_admin_handle_friend_request")
         with bind_call_origin(_origin()):
             pending = await group.execute(name="新群名")
-        with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-            accepted = await friend.execute(flag="friend-flag", approve=True)
         assert pending["status"] == "ok" and pending["data"]["state"] == "pending"
-        assert accepted == {"status": "ok"}
         adapter.group_action_handler.assert_awaited_once_with("456", "set_group_name", {"name": "新群名"})
-        adapter._bot.set_friend_add_request.assert_awaited_once_with(
-            flag="friend-flag", approve=True, remark="",
-        )
+        adapter._bot.set_friend_add_request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_unknown_platform_returns_unsupported(self):

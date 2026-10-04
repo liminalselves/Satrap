@@ -213,6 +213,7 @@ class BackendManager:
         self._group_action_lock = asyncio.Lock()
         self._group_action_flags: dict[str, str] = {}
         self._group_action_authorizers: dict[str, ModelActionAuthorization] = {}
+        self._friend_services: dict[str, Any] = {}
         self._group_events = GroupEventBuffer()
 
         self._model_cfg: ModelConfigManager | None = None
@@ -378,6 +379,69 @@ class BackendManager:
                 detail = f"通信请求失败 ({type(error).__name__})"
                 # 不把第三方异常正文中的 URL, 令牌或响应内容返回管理界面
         return ConnectionProbeResult(ok, detail, round((time.monotonic() - started) * 1000))
+
+    def friend_service(self, adapter_id: str) -> Any:
+        """
+        为已配置平台建立账号级好友管理宿主
+
+        参数:
+        - adapter_id: 平台实例 ID
+
+        返回:
+        - 不依赖模型插件的好友宿主
+        """
+        from satrap.core.friends.service import FriendService
+        if not any(isinstance(item, dict) and item.get("id") == adapter_id for item in self.config.platforms):
+            raise ValueError("平台实例不存在")
+        if adapter_id not in self._friend_services:
+            self._friend_services[adapter_id] = FriendService(
+                adapter_id, self._storage.platform_db(adapter_id),
+                lambda: self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None,
+                self._model_source_permission_fingerprint, lambda: self._friend_protected_managers(adapter_id),
+            )
+        return self._friend_services[adapter_id]
+
+    def _friend_protected_managers(self, adapter_id: str) -> list[str]:
+        """
+        从当前命名和实例配置读取管理入口, 插件停用也保留保护
+
+        参数:
+        - adapter_id: 平台实例
+
+        返回:
+        - 受保护的好友管理者 ID
+        """
+        from satrap.core.config.model_tool_authorization import config_ids
+        from satrap.edictum.plugin_config import PluginConfigManager
+        from satrap.edictum.plugin_spec import parse_plugin_specs
+        values: set[str] = set()
+        runtime = self.get_platform_runtime(adapter_id)
+        provider = runtime[0].provider_registry.get("edictum") if runtime else None
+        global_config = {}
+        if isinstance(provider, EdictumProvider):
+            catalog = provider.plugin_catalog
+            entry = catalog.get("friend_manager")
+            if entry is not None:
+                global_config = PluginConfigManager().load_global_explicit("friend_manager", entry.config_schema)
+                values.update(config_ids(global_config.get("managers")))
+        configs = self._edictum_cfg.list_configs().values() if self._edictum_cfg else []
+        for config in configs:
+            raw_specs = config.get("plugins", [])
+            if isinstance(provider, EdictumProvider):
+                raw_specs = [spec.to_config() for spec in parse_plugin_specs(raw_specs, provider.plugin_catalog, require_available=False)]
+            for spec in raw_specs:
+                if isinstance(spec, dict) and spec.get("name") == "friend_manager":
+                    values.update(config_ids({**global_config, **spec.get("config", {})}.get("managers")))
+        if runtime:
+            for entry in runtime[0].pool.list_entries().values():
+                session = entry.session
+                if session is not None and callable(getattr(session, "list_plugins", None)):
+                    workflow = getattr(session, "_wf", None)
+                    tools_manager = getattr(workflow, "tools_manager", None)
+                    for tool in getattr(tools_manager, "tools", {}).values():
+                        if str(getattr(tool, "tool_name", "")).startswith("friend_manager_"):
+                            values.update(config_ids(tool.config.get("managers")))
+        return sorted(values)
 
     async def group_accounts(self, adapter_id: str) -> dict[str, Any]:
         """
@@ -1326,8 +1390,9 @@ class BackendManager:
         session_id = identity["session_id"]
         runtime = self.get_platform_runtime(adapter_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
-        if (not session_id or runtime is None or not isinstance(adapter, OneBotAdapter)
-                or adapter.bot_self_id != self_id):
+        friend_action = identity["tool_name"].startswith("friend_manager_")
+        if (not session_id or runtime is None or adapter is None
+                or (adapter.friend_account() if friend_action else getattr(adapter, "bot_self_id", "")) != self_id):
             raise PermissionError("模型动作来源会话或平台已失效")
         manager = runtime[0]
         entry = manager.pool.list_entries().get(session_id)
@@ -1375,11 +1440,29 @@ class BackendManager:
         specs = resolve_runtime_specs(session, parse_plugin_specs(plugins, provider.plugin_catalog), provider.plugin_catalog)
         tool_name = identity["tool_name"]
         self_nickname = tool_name == "group_chat_set_group_nickname"
-        plugin_name = "group_chat" if self_nickname else "group_admin"
+        plugin_name = "friend_manager" if friend_action else "group_chat" if self_nickname else "group_admin"
         spec = next((item for item in specs if item.name == plugin_name), None)
         if (spec is None or not spec.enabled or not spec.capabilities.get("tools", {}).get(tool_name, False)):
             raise PermissionError("模型动作来源管理插件或工具已停用")
         config = spec.config
+        if friend_action:
+            platform = next((item for item in self.config.platforms if item.get("id") == adapter_id), None)
+            if (platform is None or not platform.get("enable", True)
+                    or not platform.get("settings", {}).get("enable_private", True)):
+                raise PermissionError("好友管理来源私聊已停用")
+            binding, _ = resolve_agent_binding(platform, "private")
+            if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
+                raise PermissionError("好友管理来源 Agent 路由已变化")
+            managers = sorted(set(_lines(config.get("managers"))))
+            callers = sorted(set(_lines(config.get("write_callers"))))
+            switch = "delete_friend_enabled" if tool_name == "friend_manager_delete_friend" else "request_handling_enabled"
+            if config.get(switch) is not True or identity["actor_id"] not in managers or identity["actor_id"] not in callers:
+                raise PermissionError("好友模型写操作授权已撤销")
+            if tool_name == "friend_manager_delete_friend" and target_group in managers + _lines(config.get("protected_friend_ids")):
+                raise PermissionError("目标好友受保护")
+            payload = [session_id, tool_name, managers, callers, config.get(switch), binding, target_group,
+                       sorted(set(_lines(config.get("protected_friend_ids"))))]
+            return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
         callers = sorted(set(_lines(config.get("nickname_allowed_callers" if self_nickname else "allowed_callers"))))
         groups = sorted(set(_lines(config.get("allowed_groups"))))
         if (config.get("self_nickname_enabled" if self_nickname else "write_tools_enabled") is not True
@@ -1388,7 +1471,7 @@ class BackendManager:
                 or self_nickname and target_group != identity["chat_id"]):
             raise PermissionError("模型动作来源写权限已撤销")
         payload = [route, session_id, tool_name, True, callers, groups, target_group]
-        if tool_name in {"group_admin_handle_friend_request", "group_admin_handle_group_request"}:
+        if tool_name == "group_admin_handle_group_request":
             managers = sorted(set(_lines(config.get("request_managers"))))
             if not managers or identity["actor_id"] not in managers:
                 raise PermissionError("模型动作来源申请管理权限已撤销")
@@ -2256,6 +2339,7 @@ class BackendManager:
                     action_type, params, actor_kind="model",
                 )
             self._attach_send_attempt_recorder(replacement)
+            replacement.friend_host = self.friend_service(platform_id)
             self._attach_request_ledger(replacement)
         try:
             if old is not None:
@@ -2961,6 +3045,7 @@ class BackendManager:
                 action_type, params, actor_kind="model",
             )
         self._attach_send_attempt_recorder(adapter)
+        adapter.friend_host = self.friend_service(pid)
         self._attach_request_ledger(adapter)
         self._platform_active_configs[pid] = self._normalized_platform_snapshot(pcfg)
         logger.info(f"[BackendManager] 已创建平台适配器: {pid} ({ptype})")

@@ -319,6 +319,7 @@ class BackendHTTPServer(MiniHTTPServer):
         for handler in (
             self._route_ui_health_reload,
             self._route_platform_connection,
+            self._route_friends,
             self._route_groups,
             self._route_edictum_runtime_plugins,
             self._route_storage,
@@ -355,6 +356,67 @@ class BackendHTTPServer(MiniHTTPServer):
             return None
         result = await self.backend.check_platform_connection(unquote(parts[3]))
         return 200, dataclasses.asdict(result)
+
+    async def _route_friends(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        已登录后台的人工好友操作, 不依赖模型插件开关
+
+        参数:
+        - method: HTTP 方法
+        - path: 路径和查询参数
+        - body: JSON 请求体
+
+        返回:
+        - 好友接口响应, 不匹配时为 None
+        """
+        from satrap.core.friends.service import failure, text_id
+        parsed = urlsplit(path)
+        parts = parsed.path.split("/")
+        if len(parts) < 5 or parts[:3] != ["", "api", "platforms"] or parts[4] != "friends":
+            return None
+        query = parse_qs(parsed.query)
+        try:
+            host = self.backend.friend_service(unquote(parts[3]))
+            tail = parts[5:]
+            if method == "GET" and tail == ["info"]:
+                return 200, await host.info()
+            if method == "GET":
+                account = text_id(query.get("account", [""])[0], "机器人账号")
+                if not tail:
+                    return 200, await host.list_friends(account, actor="panel", query=query.get("q", [""])[0],
+                                                       limit=int(query.get("limit", ["20"])[0]), cursor=query.get("cursor", [None])[0])
+                if tail == ["requests"]:
+                    return 200, await host.requests(account, int(query.get("limit", ["20"])[0]), query.get("cursor", [None])[0])
+                if tail == ["actions"]:
+                    return 200, await host.actions(account, int(query.get("page", ["1"])[0]), int(query.get("limit", ["20"])[0]))
+                if len(tail) == 2 and tail[0] == "actions":
+                    host.context(account)
+                    store = await host.store()
+                    return 200, await asyncio.to_thread(store.get, account, unquote(tail[1]))
+                if tail == ["policy"]:
+                    return 200, await host.policy(account)
+            if method in {"POST", "PATCH"}:
+                payload = _parse_json_object(body)
+                account = text_id(payload.get("expected_self_id"), "机器人账号")
+                if method == "POST" and tail == ["actions"]:
+                    if set(payload) != {"expected_self_id", "action_id", "action_type", "params"}:
+                        raise ValueError("好友动作参数无效")
+                    result = await host.submit(account, payload["action_id"], payload["action_type"], payload["params"], actor="panel")
+                    return 200, result
+                if method == "POST" and len(tail) == 3 and tail[0] == "actions" and tail[2] == "decision":
+                    if set(payload) != {"expected_self_id", "approve"}:
+                        raise ValueError("好友审批参数无效")
+                    return 200, await host.decide(account, unquote(tail[1]), payload["approve"])
+                if method == "PATCH" and tail == ["policy"]:
+                    if set(payload) != {"expected_self_id", "protected_friend_ids"}:
+                        raise ValueError("保护名单参数无效")
+                    return 200, await host.policy(account, payload["protected_friend_ids"])
+            return 404, {"error": "好友接口不存在", "reason": "not_found"}
+        except Exception as error:
+            code, message, _ = failure(error)
+            logger.warning(f"[好友接口] 请求失败 code={code} reason={message}")
+            status = 403 if code in {"permission_denied", "protected_friend"} else 409 if code in {"stale_account", "action_conflict"} else 503 if code in {"unavailable", "unconfirmed", "busy"} else 400
+            return status, {"error": message, "reason": code}
 
     async def _route_groups(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """

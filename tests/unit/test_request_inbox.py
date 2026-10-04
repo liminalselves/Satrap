@@ -11,19 +11,39 @@ from satrap.core.call_context import bind_call_origin
 from satrap.core.platform import set_current_adapter_manager
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.expend.plugins.group_admin.tools import get_tools
+from satrap.expend.plugins.friend_manager.tools import AsyncFriendTool, get_tools as friend_tools
+from satrap.core.friends.service import FriendService
+from satrap.core.platform import current_adapter_manager
 from satrap.core.framework.Base import Session
 from typing import Any, cast
 from .test_group_admin_plugin import _setup_adapter, _async_tools, _origin
 
 
 @pytest.fixture(autouse=True)
-def restore_manager():
+def restore_manager(tmp_path, monkeypatch):
+    monkeypatch.setattr(FriendService, "_test_path", tmp_path / "friends.db", raising=False)
     yield
     set_current_adapter_manager(None)
 
 
 def tool(name, *, write=True, **extra):
+    if name.startswith("friend_manager_"):
+        adapter = current_adapter_manager().get_adapter("ob")
+        attach_friend_host(adapter)
+        config = {"managers": extra.pop("request_managers", "123"), "write_callers": "123", "request_handling_enabled": write, **extra}
+        item = AsyncFriendTool(name, "好友工具", {})
+        item.config = config
+        return item
     return next(t for t in _async_tools({"request_managers": "123", "write_tools_enabled": write, **extra}) if t.tool_name == name)
+
+
+def attach_friend_host(adapter):
+    adapter._running = True
+    if adapter.friend_host is None:
+        def verify(source, target):
+            source.verify(target)
+            return "authorized"
+        adapter.friend_host = FriendService("ob", FriendService._test_path, lambda: adapter, verify, lambda: ["123"])
 
 
 async def incoming(adapter, kind="friend", flag="private-flag", **extra):
@@ -41,16 +61,17 @@ async def test_inbound_query_and_friend_decision_without_raw_flag_and_no_replay(
     adapter.bot_self_id = "10000"
     await adapter._handle_request({"self_id": "10000", "request_type": "friend", "flag": "private-flag", "user_id": "321", "comment": "验证信息"})
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-        result = await tool("group_admin_list_friend_requests", write=False).execute()
+        result = await tool("friend_manager_list_requests", write=False).execute()
         entry = result["data"]["items"][0]
         assert entry["comment"] == "验证信息" and entry["user_id"] == "321"
         assert "private-flag" not in json.dumps(result) and "flag" not in entry
-        assert (await tool("group_admin_handle_friend_request", write=False).execute(request_id=entry["request_id"], approve=True))["status"] == "error"
-        handle = tool("group_admin_handle_friend_request")
-        assert await handle.execute(request_id=entry["request_id"], approve=True, remark="测试") == {"status": "ok"}
+        assert (await tool("friend_manager_handle_request", write=False).execute(request_id=entry["request_id"], approve=True))["ok"] is False
+        handle = tool("friend_manager_handle_request")
+        accepted = await handle.execute(request_id=entry["request_id"], approve=True, remark="测试")
+        assert accepted["ok"] and accepted["data"]["state"] == "succeeded"
         repeated = await handle.execute(request_id=entry["request_id"], approve=False)
-        assert repeated["status"] == "error"
-        assert (await tool("group_admin_list_friend_requests").execute())["data"]["items"] == []
+        assert repeated["ok"] and repeated["data"]["state"] == "failed"
+        assert (await tool("friend_manager_list_requests").execute())["data"]["items"] == []
     adapter._bot.set_friend_add_request.assert_awaited_once_with(flag="private-flag", approve=True, remark="测试")
     assert "private-flag" not in caplog.text
     assert "private-flag" not in (tmp_path / "request_ledger.json").read_text(encoding="utf-8")
@@ -60,18 +81,18 @@ async def test_inbound_query_and_friend_decision_without_raw_flag_and_no_replay(
 async def test_request_permissions_private_visibility_account_change_and_invalid_scope():
     adapter = _setup_adapter()
     await incoming(adapter)
-    query = tool("group_admin_list_friend_requests", write=False)
+    query = tool("friend_manager_list_requests", write=False)
     for origin in [_origin(), _origin(chat_type="FriendMessage", actor="999"), replace(_origin(chat_type="FriendMessage"), self_id="other")]:
         with bind_call_origin(origin):
             assert not query.is_available_for_call()
-            assert (await query.execute())["status"] == "error"
+            assert not (await query.execute())["ok"]
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-        disabled = tool("group_admin_list_friend_requests", request_managers="")
+        disabled = tool("friend_manager_list_requests", request_managers="")
         assert not disabled.is_available_for_call()
-        assert (await disabled.execute())["status"] == "error"
+        assert not (await disabled.execute())["ok"]
         assert query.is_available_for_call()
-        assert (await query.execute(self_id="other"))["status"] == "error"
-        assert (await query.execute(limit=True))["status"] == "error"
+        assert not (await query.execute(self_id="other"))["ok"]
+        assert not (await query.execute(limit=True))["ok"]
 
 
 @pytest.mark.asyncio
@@ -167,11 +188,12 @@ async def test_sync_query_executes_on_platform_loop_and_registration_failure_is_
     adapter = _setup_adapter()
     adapter._loop = asyncio.get_running_loop()
     await incoming(adapter)
-    config = {"request_managers": "123"}
-    query = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_list_friend_requests")
+    attach_friend_host(adapter)
+    config = {"managers": "123"}
+    query = next(t for t in friend_tools(cast(Session, object()), config) if t.tool_name == "friend_manager_list_requests")
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
         result = await asyncio.to_thread(query.execute)
-    assert result["status"] == "ok" and result["data"]["items"][0]["user_id"] == "321"
+    assert result["ok"] and result["data"]["items"][0]["user_id"] == "321"
     adapter.set_request_ledger(RequestApprovalLedger(tmp_path / "ledger.json"))
     path = adapter.request_flags.inbox.path
     assert path is not None
@@ -182,8 +204,8 @@ async def test_sync_query_executes_on_platform_loop_and_registration_failure_is_
     adapter._emit_notice.assert_awaited_once()
     assert "request 登记失败" in caplog.text and "Traceback" in caplog.text and "never-log-secret" not in caplog.text
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
-        failed = await tool("group_admin_list_friend_requests").execute()
-    assert failed["status"] == "error" and "请查看后端日志" in failed["error"]
+        failed = await tool("friend_manager_list_requests").execute()
+    assert not failed["ok"] and "请查看后端日志" in failed["error"]["message"]
 
 
 @pytest.mark.asyncio
@@ -248,16 +270,17 @@ async def test_real_agent_queries_request_id_and_handles_request_in_private(tmp_
         data = json.loads(messages[-1]["content"])
         entry = data["data"]["items"][0]
         definitions = {definition["function"]["name"]: definition["function"] for definition in kwargs["tools"]}
-        assert "request_id" in definitions["group_admin_handle_friend_request"]["parameters"]["properties"]
-        assert "flag" not in definitions["group_admin_handle_friend_request"]["parameters"]["properties"]
-        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "decide", "name": "group_admin_handle_friend_request", "arguments": {"request_id": entry["request_id"], "approve": True}}])
-    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "query", "name": "group_admin_list_friend_requests", "arguments": {}}]),
+        assert "request_id" in definitions["friend_manager_handle_request"]["parameters"]["properties"]
+        assert "flag" not in definitions["friend_manager_handle_request"]["parameters"]["properties"]
+        return LLMCallResponse("tools_call", "", tool_calls=[{"id": "decide", "name": "friend_manager_handle_request", "arguments": {"request_id": entry["request_id"], "approve": True}}])
+    script = Script([LLMCallResponse("tools_call", "", tool_calls=[{"id": "query", "name": "friend_manager_list_requests", "arguments": {}}]),
                      decide, LLMCallResponse("message", "申请已处理")])
     model = (AsyncModel if asynchronous else Model)(script)
     session = (AsyncSimpleSession if asynchronous else SimpleSession)("request-agent", cast(Any, model), enable_checkpoint=False,
                                                                    db_path=str(tmp_path / "ctx.db"), plugin_environment=PluginEnvironment("platform", "onebot"))
-    plugin = Path(__file__).resolve().parents[2] / "satrap/expend/plugins/group_admin"
-    config = {"request_managers": "123", "write_tools_enabled": True}
+    attach_friend_host(adapter)
+    plugin = Path(__file__).resolve().parents[2] / "satrap/expend/plugins/friend_manager"
+    config = {"managers": "123", "write_callers": "123", "request_handling_enabled": True}
     if asynchronous:
         await session.initialize()
         await session.install_plugin(str(plugin), config=config)

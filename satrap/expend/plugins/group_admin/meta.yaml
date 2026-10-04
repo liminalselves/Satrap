@@ -1,5 +1,5 @@
 name: group_admin
-version: 0.3.0
+version: 0.4.0
 author: Satrap Team
 description: "管理 OneBot 群的禁言, 群昵称, 群名和入群请求, 查询荣誉与合并转发; 修改和发送操作默认关闭"
 
@@ -19,7 +19,7 @@ config_schema:
   request_managers:
     type: textarea
     default: ""
-    description: "允许查询和处理好友/加群申请的管理者 QQ 号, 每行一个; 留空禁用申请工具. 好友申请仅在管理者私聊中可用, 处理还需开启管理写操作"
+    description: "允许查询和处理加群申请的管理者 ID, 每行一个; 留空禁用加群申请工具, 处理还需开启管理写操作"
 
 tools:
   group_admin_get_honors: "查看群荣誉信息"
@@ -36,9 +36,7 @@ tools:
   group_admin_set_name: "修改群名"
   group_admin_set_title: "设置或清除成员的专属头衔"
   group_admin_leave: "退出或解散群"
-  group_admin_handle_friend_request: "批准或拒绝好友添加请求"
   group_admin_handle_group_request: "批准或拒绝加群请求或邀请"
-  group_admin_list_friend_requests: "查询机器人待处理的好友申请"
   group_admin_list_group_requests: "查询指定群待处理的加群申请和邀请"
 
 compatibility:

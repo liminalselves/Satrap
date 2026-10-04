@@ -840,6 +840,78 @@ class OneBotAdapter(PlatformAdapter):
             raise GroupChatError("asset_unavailable", "原生表情目录键无效")
         return Face(id=value)
 
+    def friend_account(self) -> str:
+        """返回协议确认的机器人账号"""
+        return self.bot_self_id
+
+    def friend_generation(self) -> object:
+        """返回当前平台连接代次"""
+        return self.connection_generation()
+
+    def friend_capabilities(self) -> dict[str, dict[str, str]]:
+        """返回好友接口实际能力, 扩展接口保持未知直到真实调用确认"""
+        states = self.admin_capabilities()
+        result = {}
+        for name, action in {"list_friends": "get_friend_list", "list_requests": "handle_friend_request",
+                             "handle_request": "handle_friend_request", "delete_friend": "delete_friend"}.items():
+            state = states.get(action, "unknown")
+            if state == "unknown" and name != "delete_friend":
+                state = "supported"
+            result[name] = {"state": state, "reason": {"unsupported": "当前实现不支持此接口", "unavailable": "平台未连接",
+                            "unknown": "扩展接口尚未验证, 可在确认目标后尝试", "supported": "适配器已实现"}[state]}
+        return result
+
+    async def friend_list(self, account: str) -> dict[str, Any]:
+        """
+        获取账号好友目录
+
+        参数:
+        - account: 固定账号
+
+        返回:
+        - 目录及覆盖证据
+        """
+        from satrap.core.platform.onebot.friends import OneBotFriends
+        return await OneBotFriends(self).list(account)
+
+    async def friend_requests(self, account: str, limit: int, cursor: str | None) -> dict[str, Any]:
+        """
+        查询好友申请
+
+        参数:
+        - account: 固定账号
+        - limit: 返回数量
+        - cursor: 分页位置
+
+        返回:
+        - 不含原始 flag 的申请记录
+        """
+        return await self.request_flags.list_requests("friend", self_id=account, limit=limit, cursor=cursor)
+
+    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
+        """
+        处理账号好友申请
+
+        参数:
+        - account: 固定账号
+        - request_id: 申请 ID
+        - approve: 是否同意
+        - remark: 同意后的备注
+        """
+        from satrap.core.platform.onebot.friends import OneBotFriends
+        await OneBotFriends(self).handle(account, request_id, approve, remark)
+
+    async def friend_delete(self, account: str, user_id: str) -> None:
+        """
+        删除当前账号的单个好友
+
+        参数:
+        - account: 固定账号
+        - user_id: 好友 ID
+        """
+        from satrap.core.platform.onebot.friends import OneBotFriends
+        await OneBotFriends(self).delete(account, user_id)
+
     def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
         """
         声明 OneBot 已实现的群聊能力, 按连接与被动学习结果更新状态
