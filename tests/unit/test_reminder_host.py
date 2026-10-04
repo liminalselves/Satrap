@@ -12,10 +12,13 @@ from satrap.core.backend.BackendManager import BackendConfig, BackendManager
 from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore, ArchiveMessage
+from satrap.core.config.group_store import GroupConfigStore
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.framework.providers import EdictumProvider
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
+from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
+from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.type import SessionConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.registry import create_default_edictum_type_registry
@@ -116,6 +119,71 @@ def test_source_overrides_expire_on_route_change_and_named_config_is_reloaded(tm
     assert backend.reminder_host.policy(reminder).reason == 'group_chat_disabled'
     configs.update('without-reminders', {'plugins': [spec()]})
     assert backend.reminder_host.policy(reminder).state == 'ready'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('group_enabled', [True, False])
+async def test_onebot_restart_waits_for_snapshot_then_honors_actual_group_policy(tmp_path, group_enabled):
+    backend, previous, _, _, old_scope, old_reminder = setup(tmp_path)
+    database = backend.platform_db_path('future')
+    store = ReminderStore(database)
+    store.change(old_scope, old_reminder['reminder_id'], 'cancel', 1, actor=old_reminder['creator_user_id'])
+    scope = MessageScope('future', '10000', 'group', '456')
+    adapter = OneBotAdapter(PlatformConfig(
+        id='future', type='onebot', instance_id=previous.config.instance_id,
+        session_provider='edictum', session_type='assistant',
+        settings={'group_whitelist': ['456' if group_enabled else '999']},
+    ))
+    adapter._bot = AsyncMock()
+    adapter._bot.send_group_msg.return_value = {'message_id': 9876}
+    adapter._running = adapter.started = True
+    adapter._meta_hooked = True
+    adapter.bot_self_id = adapter.client_self_id = scope.self_id
+    adapter._archive_sent_segments = Mock()
+    adapter.message_archive = PlatformMessageStore(database, 'future')
+    adapter.set_group_access_store(GroupConfigStore(database))
+    backend._adapter_mgr._adapters['future'] = adapter
+    reminder = store.create(
+        scope, actor='authenticated_operator', creator_kind='operator', text='重启提醒', mentions=[],
+        source_message_id='', operation_id='restart', time_spec={'after_seconds': 30},
+        source_agent={'instance_id': adapter.config.instance_id},
+    )['reminder']
+    scheduler = ReminderScheduler(lambda: [store], backend.reminder_host.resolve)
+    backend._reminder_scheduler = scheduler
+    try:
+        assert adapter.group_route(scope.chat_id)[1] == -1
+        assert not adapter.group_chat_group_visible(scope.chat_id)
+        policy = backend.reminder_host.policy(reminder)
+        assert (policy.state, policy.reason) == ('waiting', 'group_state_pending')
+        await scheduler.tick()
+        current = store.get(scope, reminder['reminder_id'])['reminder']
+        assert current['state'] == 'scheduled' and current['revision'] == 1
+        adapter._bot.send_group_msg.assert_not_awaited()
+
+        await adapter._ensure_group_access(scope.self_id)
+        policy = backend.reminder_host.policy(reminder)
+        assert (policy.state, policy.reason) == ('waiting', 'platform_offline')
+        await adapter._handle_meta({'self_id': 10000, 'meta_event_type': 'lifecycle', 'sub_type': 'connect'})
+        if not group_enabled:
+            policy = backend.reminder_host.policy(reminder)
+            assert (policy.state, policy.reason) == ('paused', 'group_disabled')
+            await scheduler.tick()
+            assert store.get(scope, reminder['reminder_id'])['reminder']['state'] == 'paused'
+            adapter._bot.send_group_msg.assert_not_awaited()
+            return
+        assert backend.reminder_host.policy(reminder).state == 'ready'
+        with store._connect() as connection:
+            connection.execute('UPDATE group_chat_reminders SET due_at=? WHERE reminder_id=?',
+                               (time.time() - 1, reminder['reminder_id']))
+        await scheduler.tick()
+        await asyncio.gather(*list(scheduler._workers.values()))
+        await asyncio.sleep(0)
+        current = store.get(scope, reminder['reminder_id'])['reminder']
+        assert current['state'] == 'sent' and current['delivery']['message_ids'] == ['9876']
+        await scheduler.tick()
+        adapter._bot.send_group_msg.assert_awaited_once()
+    finally:
+        await scheduler.stop()
 
 
 @pytest.mark.asyncio

@@ -128,6 +128,8 @@ class ReminderHost:
             if not isinstance(route, tuple) or len(route) != 2 or not isinstance(route[0], dict) or type(route[1]) is not int:
                 raise ValueError("当前平台群路由快照无效")
             explicit, group_generation = route
+            if group_generation < 0:
+                return ReminderPolicy("waiting", "group_state_pending")  # 群快照尚未就绪时等待, 不把临时拒绝判为永久停用
         effective, _ = resolve_group_session(platform, explicit)
         binding = effective.get("binding", resolve_agent_binding(platform, "group")[0])
         runtime = self.backend.get_platform_runtime(scope.adapter_id)
@@ -179,6 +181,8 @@ class ReminderHost:
             return ReminderPolicy("waiting", "platform_offline", revision, config)
         if account != scope.self_id:
             return ReminderPolicy("paused", "account_changed", revision, config)
+        if adapter.group_chat_capabilities().get("text", {}).get("state") == "unavailable":
+            return ReminderPolicy("waiting", "platform_offline", revision, config)
         if not adapter.group_chat_group_visible(scope.chat_id):
             return ReminderPolicy("paused", "group_disabled", revision, config)
         return ReminderPolicy("ready", revision=revision, config=config)

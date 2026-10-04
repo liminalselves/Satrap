@@ -17,6 +17,7 @@ const reasonLabels: Record<string, string> = {
   agent_without_reminders: '当前 Agent 未配置提醒', agent_unavailable: '当前 Agent 不可用', agent_disabled: '当前 Agent 已停用',
   group_chat_disabled: '群聊插件已停用', reminder_capability_disabled: '创建提醒能力已停用', group_chat_unavailable: '群聊插件不可用',
   reminders_disabled: '提醒功能已关闭', group_not_allowed: '当前群不在插件允许范围内', platform_offline: '平台离线',
+  group_state_pending: '正在等待平台群配置就绪',
   account_changed: '机器人账号已变化', group_disabled: '当前群已停用', member_unverified: '无法确认相关成员仍属于当前群',
   member_unavailable: '暂时无法查询成员', catchup_expired: '已超过到期补发宽限', interrupted_send: '进程退出时发送未获确认',
   scheduled_target_changed: '发送前账号或权限发生变化', instance_changed: '平台实例已重新创建',
