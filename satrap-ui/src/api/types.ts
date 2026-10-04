@@ -411,6 +411,10 @@ export interface PlatformArchiveMutation {
   deleted_count?: number;
   restored_count?: number;
   skipped_count?: number;
+  deleted_memory_count?: number;
+  cleared_memory_proposal_count?: number;
+  cancelled_reminder_count?: number;
+  sending_reminder_count?: number;
 }
 
 export interface ConversationCatalog {

@@ -20,6 +20,7 @@ const reasonLabels: Record<string, string> = {
   account_changed: '机器人账号已变化', group_disabled: '当前群已停用', member_unverified: '无法确认相关成员仍属于当前群',
   member_unavailable: '暂时无法查询成员', catchup_expired: '已超过到期补发宽限', interrupted_send: '进程退出时发送未获确认',
   scheduled_target_changed: '发送前账号或权限发生变化', instance_changed: '平台实例已重新创建',
+  conversation_cleanup: '已在对话数据清理时取消',
   action_rejected: '平台拒绝了这次发送', action_unconfirmed: '请求提交后没有获得平台确认', missing_message_id: '平台没有返回消息确认',
   scheduled_tracking_unavailable: '无法保存必要的发送记录，已停止发送', scheduled_tracking_incomplete: '发送记录不完整，无法确认全部结果',
   scheduled_send_interrupted: '发送过程中任务被中断', scheduled_finalize_unavailable: '无法保存最终发送结果',
@@ -51,7 +52,7 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
   const [sourceBusy, setSourceBusy] = useState(false);
   const sourceSequence = useRef(0);
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; sourceSequence.current++; }; }, []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => { onDirty(!!draft); return () => onDirty(false); }, [draft, onDirty]);
   useEffect(() => {
     let live = true;

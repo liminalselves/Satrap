@@ -150,8 +150,8 @@ class PlatformMessageDataService:
         """
         common = {"self_id", "conversation_kind", "chat_id", "action"}
         options = {"read": {"keyword", "sender_id", "start_time", "end_time", "cursor", "limit", "text_budget"},
-                   "message": {"message_id"}, "delete": {"message_ids", "expected_revision"},
-                   "clear": {"expected_revision"}, "restore": {"backup_id", "expected_revision"}}
+                   "message": {"message_id"}, "delete": {"message_ids", "expected_revision", "delete_memories", "cancel_reminders"},
+                   "clear": {"expected_revision", "delete_memories", "cancel_reminders"}, "restore": {"backup_id", "expected_revision"}}
         action = payload.get("action", "read")
         if not isinstance(action, str) or action not in options or set(payload) - common - options[action]:
             raise ValueError("档案操作或参数无效, 原始平台消息不支持编辑")
@@ -186,7 +186,9 @@ class PlatformMessageDataService:
         elif action == "delete":
             if not isinstance(arguments.get("message_ids"), list) or not arguments["message_ids"]:
                 raise ValueError("单条或批量删除需要明确的消息 ID")
-            result = self.store.delete(scope, message_ids=arguments["message_ids"], expected_revision=arguments["expected_revision"])
+            result = self.store.delete(scope, message_ids=arguments["message_ids"], expected_revision=arguments["expected_revision"],
+                                       delete_memories=arguments.get("delete_memories", False), cancel_reminders=arguments.get("cancel_reminders", False))
         else:
-            result = self.store.delete(scope, expected_revision=arguments["expected_revision"])
+            result = self.store.delete(scope, expected_revision=arguments["expected_revision"],
+                                       delete_memories=arguments.get("delete_memories", False), cancel_reminders=arguments.get("cancel_reminders", False))
         return {"ok": True, **result}

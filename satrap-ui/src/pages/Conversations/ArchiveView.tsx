@@ -94,7 +94,7 @@ export function ArchiveView({ platforms }: { platforms: ConversationPlatform[] }
   </div>;
 }
 
-type PendingAction = { action: 'delete' | 'clear' | 'restore'; revision: number; message_ids?: string[]; backup_id?: string };
+type PendingAction = { action: 'delete' | 'clear' | 'restore'; revision: number; message_ids?: string[]; backup_id?: string; delete_memories?: boolean; cancel_reminders?: boolean };
 
 function ArchivePanel(props: { record: PlatformArchiveRecord; refresh: number; onChanged: () => void }) {
   const [view, setView] = useState<'messages' | 'summaries' | 'stickers' | 'memories' | 'reminders'>('messages');
@@ -162,9 +162,13 @@ function ArchiveDetail({ record, refresh, onChanged }: { record: PlatformArchive
     if (!pending || busy) return;
     setBusy(true); setActionError('');
     try {
-      const result = await controlApi.mutatePlatformArchive(identity, pending.action, pending.revision, { message_ids: pending.message_ids, backup_id: pending.backup_id });
+      const result = await controlApi.mutatePlatformArchive(identity, pending.action, pending.revision, { message_ids: pending.message_ids, backup_id: pending.backup_id,
+        ...(pending.action === 'restore' ? {} : { delete_memories: !!pending.delete_memories, cancel_reminders: !!pending.cancel_reminders }) });
       if (!mounted.current) return;
-      setNotice(pending.action === 'restore' ? `已恢复 ${result.restored_count || 0} 条记录状态，跳过 ${result.skipped_count || 0} 条` : `已从档案删除 ${result.deleted_count || 0} 条消息，可在 ${result.expires_at ? formatTime(result.expires_at) : '备份有效期'} 前恢复`);
+      setNotice(pending.action === 'restore' ? `已恢复 ${result.restored_count || 0} 条记录状态，跳过 ${result.skipped_count || 0} 条`
+        : `已从档案删除 ${result.deleted_count || 0} 条消息，可在 ${result.expires_at ? formatTime(result.expires_at) : '备份有效期'} 前恢复`
+          + (pending.delete_memories ? `；另已永久删除 ${result.deleted_memory_count || 0} 条长期记忆，清理 ${result.cleared_memory_proposal_count || 0} 条提案` : '')
+          + (pending.cancel_reminders ? `；另已取消 ${result.cancelled_reminder_count || 0} 个提醒` + (result.sending_reminder_count ? `，${result.sending_reminder_count} 个已经开始发送，无法保证撤回` : '') : ''));
       setPending(undefined); setInspected(undefined); setCursors([]); setSelection([]); onChanged();
     } catch (error) { if (mounted.current) setActionError(`${errorText(error)}；如状态已变化，请取消并刷新后重新选择操作`); }
     finally { if (mounted.current) setBusy(false); }
@@ -209,7 +213,14 @@ function ArchiveDetail({ record, refresh, onChanged }: { record: PlatformArchive
       <div className="space-y-4">
         <p className="break-all text-sm">目标：{record.platform_id} / {record.self_id} / {record.conversation_kind_label} / {record.chat_id}</p>
         <p className="text-sm">{pending?.action === 'clear' ? '这会清空此对话的全部档案，不受当前消息筛选影响。' : pending?.action === 'delete' ? `这会删除选中的 ${pending.message_ids?.length || 0} 条档案消息。` : '这会恢复仍归属该删除操作且未过期的记录状态。'}</p>
-        <p className="text-sm text-text-secondary">仅影响平台消息档案及工具检索，模型上下文和平台原消息保持原状。删除备份按档案保留期过期。</p>
+        <p className="text-sm text-text-secondary">档案操作影响本地消息及工具检索，模型上下文和平台原消息保持原状。删除备份按档案保留期过期。</p>
+        {pending && pending.action !== 'restore' && record.conversation_kind === 'group' && <div className="space-y-3">
+          <label className="flex items-start gap-2 text-sm"><input type="checkbox" disabled={busy} checked={!!pending.delete_memories} onChange={(event) => setPending({ ...pending, delete_memories: event.target.checked })} />
+            {pending.action === 'clear' ? '同时永久删除本群全部长期记忆与记忆提案' : '同时永久删除引用所选消息的长期记忆与记忆提案'}</label>
+          <label className="flex items-start gap-2 text-sm"><input type="checkbox" disabled={busy} checked={!!pending.cancel_reminders} onChange={(event) => setPending({ ...pending, cancel_reminders: event.target.checked })} />
+            {pending.action === 'clear' ? '同时取消本群尚未开始发送的提醒' : '同时取消来源为所选消息且尚未开始发送的提醒'}</label>
+          <p className="text-xs text-text-secondary">默认保留长期记忆和提醒，仅标注来源不可用。勾选后删除的记忆与取消的提醒不会随档案恢复；已开始发送的提醒无法保证撤回。</p>
+        </div>}
         {actionError && <p role="alert" className="text-error">{actionError}</p>}
         <div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setPending(undefined)}>取消</Button><Button variant={pending?.action === 'restore' ? 'primary' : 'danger'} disabled={busy} onClick={mutate}>{busy ? '正在处理…' : pending?.action === 'restore' ? '确认恢复' : '确认删除档案'}</Button></div>
       </div>

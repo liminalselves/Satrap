@@ -13,6 +13,7 @@ from typing import Any
 
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.memory.store import MemoryStore
+from satrap.core.memory.lifecycle import erase_memory
 
 
 class MemoryError(ValueError):
@@ -265,10 +266,7 @@ class ScopedMemories:
         """
         if operation == "delete":
             assert row is not None
-            connection.execute("DELETE FROM memory_refs WHERE scope_key=? AND memory_id=?", (self.scope.key, row["id"]))
-            connection.execute("DELETE FROM memories WHERE scope=? AND id=?", (self.scope.key, row["id"]))
-            connection.execute("UPDATE memory_proposals SET payload_json='{}', state=CASE WHEN state='pending' THEN 'conflicted' ELSE state END WHERE scope_key=? AND memory_id=?", (self.scope.key, row["id"]))
-            self._audit(connection, row["id"], actor, operation)
+            erase_memory(connection, self.scope.key, row["id"], actor=actor, now=self.archive._clock())
             return {"ok": True, "status": "deleted", "memory_id": row["id"], "revision": row["revision"] + 1}
         now = datetime.fromtimestamp(self.archive._clock(), timezone.utc).isoformat()
         if operation == "create":

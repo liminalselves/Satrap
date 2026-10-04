@@ -565,7 +565,7 @@ class PlatformMessageStore:
             connection.execute("UPDATE platform_message_chats SET revision=revision+1 WHERE scope_key=?", (scope.key,))
 
     def delete(self, scope: MessageScope, *, message_ids: Sequence[str] | None = None,
-               expected_revision: int) -> dict[str, Any]:
+               expected_revision: int, delete_memories: bool = False, cancel_reminders: bool = False) -> dict[str, Any]:
         """
         删除选定消息或清空对话档案, 保存有限期恢复备份
 
@@ -573,6 +573,8 @@ class PlatformMessageStore:
         - scope: 已授权管理的对话
         - message_ids: 指定消息列表, None 表示清空当前对话档案
         - expected_revision: 界面读取的删除状态修订, 防止覆盖并发管理动作
+        - delete_memories: 明确选择硬删除关联记忆, 清空档案时删除本对话全部长期记忆
+        - cancel_reminders: 明确选择取消关联未发送提醒, 清空档案时取消本对话全部未发送任务
 
         返回:
         - 删除数量, 新修订, 备份 ID 和恢复截止时间
@@ -580,6 +582,8 @@ class PlatformMessageStore:
         self._check_scope(scope)
         if type(expected_revision) is not int or expected_revision < 0:
             raise ValueError("删除修订必须是非负整数")
+        if type(delete_memories) is not bool or type(cancel_reminders) is not bool:
+            raise ValueError("长期记忆和提醒清理选项必须是布尔值")
         if message_ids is not None:
             if isinstance(message_ids, (str, bytes)) or not 1 <= len(message_ids) <= 100:
                 raise ValueError("每次删除必须指定 1 到 100 条消息")
@@ -624,8 +628,22 @@ class PlatformMessageStore:
                     "WHERE scope_key=?", (now, now, token, scope.key),
                 )
             connection.execute("UPDATE platform_message_chats SET revision=revision+1 WHERE scope_key=?", (scope.key,))
+            cleanup = {}
+            if delete_memories:
+                from satrap.core.memory.lifecycle import cleanup_memories
+
+                cleanup.update(cleanup_memories(connection, scope.key, sources=message_ids, actor="authenticated_operator", now=now))
+            if cancel_reminders:
+                selection = " AND source_message_id IN (" + ",".join("?" for _ in message_ids) + ")" if message_ids else ""
+                parameters = (scope.key, *(message_ids or []))
+                sending = connection.execute("SELECT COUNT(*) FROM group_chat_reminders WHERE scope_key=? AND state='sending'" + selection,
+                                             parameters).fetchone()[0]
+                cancelled = connection.execute("UPDATE group_chat_reminders SET state='cancelled', revision=revision+1, reason='conversation_cleanup', "
+                                               "settled_at=?, retry_at=NULL WHERE scope_key=? AND state IN ('scheduled','waiting_delivery','paused')" + selection,
+                                               (now, *parameters))
+                cleanup.update(cancelled_reminder_count=cancelled.rowcount, sending_reminder_count=sending)
             return {"deleted_count": sum(row["status"] == "active" for row in rows), "revision": expected_revision + 1,
-                    "backup_id": token, "expires_at": expires}
+                    "backup_id": token, "expires_at": expires, **cleanup}
 
     def restore(self, scope: MessageScope, backup_id: str, *, expected_revision: int) -> dict[str, Any]:
         """
