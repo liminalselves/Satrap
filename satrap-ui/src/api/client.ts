@@ -65,8 +65,8 @@ class ApiClient {
     return this.client.get(url, { params }) as Promise<T>;
   }
 
-  async post<T>(url: string, data?: unknown): Promise<T> {
-    return this.client.post(url, data) as Promise<T>;
+  async post<T>(url: string, data?: unknown, timeout?: number): Promise<T> {
+    return this.client.post(url, data, timeout === undefined ? undefined : { timeout }) as Promise<T>;
   }
 
   async put<T>(url: string, data?: unknown): Promise<T> {

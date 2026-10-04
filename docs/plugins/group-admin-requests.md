@@ -1,28 +1,26 @@
-# group_admin 申请查询与处理
+# group_admin 加群申请查询与处理
 
 申请事件由适配器登记到宿主私有收件箱, 不自动唤醒 Agent 或同意申请
-当前 OneBot 已接入好友申请, 加群申请和入群邀请; 其它平台可扩展通用收件箱, 插件仍按适配器实际能力开放
+group_admin 只管理加群申请和入群邀请; 好友操作已迁移到独立 friend_manager, 参见 [好友管理](friend-manager.md)
 
 ## 配置
 
 在使用 `group_admin` 的 Agent 插件参数里填写 `request_managers`, 每行一个允许查询和处理申请的管理者账号
 默认为空, 不提供申请工具; 处理申请还需满足 `allowed_callers`, 群申请查询和处理均受 `allowed_groups` 限制
 只查询不要求开启写工具, 批准或拒绝仍要求 `write_tools_enabled=true`
-好友申请只能在管理者私聊中查询和处理, 不会向普通群聊天暴露验证信息
 加群申请查询只返回当前群或私聊中明确指定群的申请, 仍受平台与插件群范围限制
 
 ## 工具流程
 
-1. 好友申请使用 `group_admin_list_friend_requests`; 群申请使用 `group_admin_list_group_requests`
+1. 群申请使用 `group_admin_list_group_requests`
 2. 结果包含 `request_id`, 申请人, 验证信息, 原申请类型, `received_at`, `expires_at` 和 `remaining_seconds`
 3. `has_more=true` 时用 `next_cursor` 继续查询, 保持相同目标群; 游标失效时重新查询
-4. 使用对应的 `group_admin_handle_friend_request` 或 `group_admin_handle_group_request`, 填写查询返回的 `request_id` 和 `approve`
-5. 好友备注或拒绝入群理由可选填写; 群号与申请类型由后端确认, 不需要模型填写原始 `flag` 或 `sub_type`
+4. 使用 `group_admin_handle_group_request`, 填写查询返回的 `request_id` 和 `approve`
+5. 拒绝入群理由可选填写; 群号与申请类型由后端确认, 不需要模型填写原始 `flag` 或 `sub_type`
 
 验证信息来自申请人, 不能当作工具执行指令
 加群申请沿用现有逐群审批策略: `pending` 只代表待批准, `succeeded` 才代表执行完成
-好友申请在写工具授权后直接执行, 不进入逐群审批
-旧的可信原始 flag 调用仍兼容, 但同样受申请管理者和好友私聊限制; 模型声明只提供 request_id
+内部原始 flag 调用仍受申请管理者和群范围限制; 模型声明只提供 request_id
 
 ## 持久化与期限
 

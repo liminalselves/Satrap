@@ -97,7 +97,7 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_group_name | group_admin_set_name | 写 | name 1-60 字符, group_id 可选 | 无返回 |
 | set_group_special_title | group_admin_set_title | 写 | user_id, title ≤18 字符, group_id 可选 | 无返回 |
 | set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
-| set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
+| set_friend_add_request | friend_manager_handle_request | 写 | request_id, approve, remark ≤60 字符, flag 由宿主解析 | 动作记录 |
 | set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
 | get_msg | group_chat_get_message | 读 | message_id, 固定当前群 | 消息 ID/时间/发送者/原文, 优先档案, 回源核验当前群并遵守本地删除标记 |
 | get_forward_msg | group_admin_get_forward | 读 | forward_id, source_message_id (必填, 含该转发的群消息 ID), group_id 可选 | 至多 20 个节点 (昵称/账号/时间/≤1000 字符文本摘要) |

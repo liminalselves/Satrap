@@ -17,6 +17,7 @@
     "test:e2e:edictum": "node e2e/edictum-settings.mjs",
     "test:e2e:plugins": "node e2e/plugins.mjs",
     "test:e2e:group-chat": "node e2e/group-chat-plugin.mjs",
+    "test:e2e:friends": "node e2e/friends.mjs",
     "test:e2e:group-chat-summaries": "node e2e/group-chat-summaries.mjs",
     "test:e2e:group-chat-media": "node e2e/group-chat-media.mjs",
     "test:e2e:conversations": "node e2e/conversations.mjs",

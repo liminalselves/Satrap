@@ -630,6 +630,9 @@ export function Platforms() {
                     管理群聊
                   </Link>
                 )}
+                <Link className="glass-button px-3 py-1.5 text-sm" to={`/platforms/${encodeURIComponent(platform.id)}/friends`}>
+                  管理好友
+                </Link>
                 <ActionButtons
                   actions={[
                     {
