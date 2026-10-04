@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     )
     from satrap.core.pipeline.scheduler import PipelineScheduler
     from satrap.core.call_context import CallOrigin
-    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage
+    from satrap.core.group_chat.types import MemberSnapshot, VerifiedMember, VerifiedMessage, VerifiedGroup, GroupSnapshot
 
 
 EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
@@ -425,6 +425,87 @@ class PlatformAdapter(ABC):
         generation = getattr(self, "connection_generation", None)
         value = generation() if callable(generation) else 0
         return self.get_client(), value if type(value) is int else 0
+
+    def group_chat_self_id(self) -> str:
+        """
+        提供当前已确认的平台账号, 不接受模型指定
+
+        返回:
+        - 当前账号 ID
+        """
+        return self.client_self_id
+
+    async def group_chat_private_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        核验跨群查询的私聊来源, 路由变化后拒绝旧轮次
+
+        参数:
+        - origin: 宿主固定的平台来源
+
+        返回:
+        - 当前私聊身份, 非私聊或失效时抛出 GroupChatError
+        """
+        from satrap.core.group_chat.types import GroupChatError
+
+        kind = origin.conversation_kind or ("private" if origin.chat_type == "FriendMessage" else "")
+        if (not self.config.enable or origin.adapter_id != self.config.id or not origin.self_id
+                or origin.self_id != self.group_chat_self_id() or kind != "private" or kind not in self.conversation_kinds):
+            raise GroupChatError("wrong_conversation", "群列表仅在当前账号的管理者私聊中提供")
+        scope = MessageScope(self.config.id, origin.self_id, kind, origin.conversation_id or origin.chat_id)
+        if scope.chat_id != origin.chat_id:
+            raise GroupChatError("stale_call", "私聊身份已经变化")
+        if origin.conversation_kind:
+            if self.config.session_bindings and not origin.agent_route_generation:
+                raise GroupChatError("stale_call", "私聊 Agent 路由已经变化")
+            if self.agent_route_store is not None:
+                try:
+                    revision = await asyncio.to_thread(self.agent_route_store.current_revision, scope.self_id, kind, scope.chat_id)
+                except Exception as exc:
+                    logger.error(f"[群列表来源] 私聊路由核验失败, 平台={self.config.id}, 原因={type(exc).__name__}")
+                    raise GroupChatError("unavailable", "来源私聊路由暂时无法核验", retryable=True) from exc
+            else:
+                state = self._agent_route_memory.get((scope.self_id, kind, scope.chat_id))
+                revision = state[1] if state else 0
+            if revision != origin.agent_route_generation:
+                raise GroupChatError("stale_call", "私聊 Agent 路由已经变化")
+        return scope
+
+    async def group_chat_groups(self, scope: MessageScope) -> GroupSnapshot:
+        """
+        查询当前账号所在群, 默认不支持
+
+        参数:
+        - scope: 获授权的私聊来源
+
+        返回:
+        - 带完整性声明的群列表
+        """
+        raise NotImplementedError("适配器未实现群列表查询")
+
+    def group_chat_group_visible(self, group_id: str) -> bool:
+        """
+        检查群列表条目是否在当前平台允许的范围内, 默认拒绝
+
+        参数:
+        - group_id: 平台返回的真实群 ID
+
+        返回:
+        - 可向获授权的私聊管理者展示时为 True
+        """
+        return False
+
+    async def group_chat_group(self, scope: MessageScope) -> VerifiedGroup:
+        """
+        查询当前群资料, 默认不支持
+
+        参数:
+        - scope: 当前群身份
+
+        返回:
+        - 已核验群资料
+        """
+        raise NotImplementedError("适配器未实现群资料查询")
+
 
     def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
         """

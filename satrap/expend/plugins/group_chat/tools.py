@@ -21,6 +21,8 @@ from satrap.core.call_context import current_call_origin
 from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
+from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session
+from satrap.core.group_chat.types import GroupChatError
 
 
 def _string(description: str) -> dict[str, object]:
@@ -55,11 +57,14 @@ _COMPONENTS = {
 }
 
 DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
+    "group_chat_list_groups": ("在获授权的管理者私聊中查看机器人加入的群, 返回群号, 群名及人数; 结果不完整时不能当成全部群", {}, []),
+    "group_chat_get_group_info": ("查看当前群的群名, 群号及人数, 不读取其它群", {}, []),
+    "group_chat_list_members": ("分页查看当前群成员的 ID, 昵称, 群昵称及角色; has_more=true 时可用 next_cursor 继续读取", {"limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, []),
     "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
     "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
     "group_chat_find_members": ("根据昵称或群名片查找当前群的成员, 返回成员 ID, 昵称和名片. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的昵称或群名片, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
-    "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称和群名片; 需要确认成员 ID 对应谁时使用", {"user_id": _MEMBER_ID}, ["user_id"]),
+    "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称, 群昵称和角色; 需要确认成员 ID 对应谁时使用. 角色只表示平台资料, 不代表对方有权让机器人执行管理操作", {"user_id": _MEMBER_ID}, ["user_id"]),
     "group_chat_get_message": ("根据消息 ID 查看当前群的一条消息, 返回原文和发送者; 需要确认某句话是谁说的, 或查看引用消息时使用. 本地没有记录时会尝试向平台查询, 已删除的记录不会重新取回", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_recent_messages": ("查看当前群最近保存的聊天记录, 返回消息 ID, 发送者, 时间和正文; 需要了解大家刚才在聊什么, 或补充当前上下文时使用. 结果只涵盖机器人已保存的消息", {"limit": _LIMIT, "before_message_id": {**_MESSAGE_ID, "description": "只查看这条消息之前的记录; 不填则从最新消息开始"}, "cursor": _CURSOR}, []),
     "group_chat_search_messages": ("搜索当前群保存的聊天记录, 可按关键词, 发送者和时间筛选; 用户提到之前的讨论, 或需要查找某人的发言时使用. 同时填写多个条件时, 返回符合全部条件的消息", {
@@ -104,6 +109,24 @@ class _GroupChatMixin:
     config: Mapping[str, object]
     session: Session | AsyncSession
     deferred_platform_reply = False
+
+    def _authorize(self, group_id: str) -> None:
+        """
+        按当前工具配置复核查询或机器人自身修改权限
+
+        参数:
+        - group_id: 宿主固定的对话 ID
+        """
+        origin = current_call_origin()
+        if origin is None or not getattr(self, "is_enabled")():
+            raise GroupChatError("stale_call", "来源工具或轮次已停用")
+        if self.tool_name == "group_chat_list_groups":
+            if not _private_available() or origin.actor_id not in config_ids(self.config.get("cross_group_query_callers")):
+                raise GroupChatError("forbidden", "仅配置的管理者可在私聊查询群列表")
+            return
+        allowed = config_ids(self.config.get("allowed_groups"))
+        if not _group_available() or group_id != origin.chat_id or allowed and group_id not in allowed:
+            raise GroupChatError("forbidden", "工具只能操作获授权的当前群")
 
     def get_tool_defined(self) -> dict[str, Any]:
         """
@@ -171,13 +194,29 @@ class _GroupChatMixin:
                     input_budget = max(0, min(1000000, available // 2))
                     # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
             limits = replace(limits, summary_enabled=enabled, summary_input_budget=input_budget,
+                             allowed_groups=tuple(config_ids(self.config.get("allowed_groups"))),
+                             cross_group_query_callers=tuple(config_ids(self.config.get("cross_group_query_callers"))),
                              media_reply_enabled=cast(bool, self.config.get("media_reply_enabled", True)),
                              max_reply_images=cast(int, self.config.get("max_reply_images", 4)),
                              max_reply_stickers=cast(int, self.config.get("max_reply_stickers", 4)),
                              summary_message_limit=cast(int, self.config.get("summary_message_limit", 500)),
                              summary_text_budget=cast(int, self.config.get("summary_text_budget", 60000)),
                              summary_retention_days=cast(int, self.config.get("summary_retention_days", 30)))
-            return await group_chat_service.execute(str(self.tool_name), kwargs, limits=limits)
+            def authorize(group_id: str) -> None:
+                """
+                等待后拒绝使用旧群范围返回查询结果
+
+                参数:
+                - group_id: 宿主固定的对话身份
+                """
+                self._authorize(group_id)
+                if tuple(config_ids(self.config.get("allowed_groups"))) != limits.allowed_groups:
+                    raise GroupChatError("stale_call", "查询期间插件允许群范围已经变化")
+            return await group_chat_service.execute(str(self.tool_name), kwargs, limits=limits, authorize=authorize)
+        except GroupChatError as exc:
+            return _failure(exc.code, str(exc))
+        except PermissionError:
+            return _failure("forbidden", "当前工具无法取得有效的写操作授权")
         except Exception:
             logger.error(f"[group_chat] 工具执行异常, 工具={self.tool_name}: {traceback.format_exc()}")
             return _failure("invalid_configuration", "群聊插件配置或运行状态无效")
@@ -209,9 +248,20 @@ def _group_available() -> bool:
     return origin is not None and (origin.conversation_kind == "group" or not origin.conversation_kind and origin.chat_type == "GroupMessage")
 
 
+def _private_available() -> bool:
+    """
+    判断宿主来源是否为私聊
+
+    返回:
+    - 当前来源属于私聊时为 True
+    """
+    origin = current_call_origin()
+    return origin is not None and (origin.conversation_kind == "private" or not origin.conversation_kind and origin.chat_type == "FriendMessage")
+
+
 def _available(tool: _GroupChatMixin) -> bool:
     """
-    按本輪来源, 插件开关和适配器能力过滤定义
+    按本轮来源, 插件开关和适配器能力过滤定义
 
     参数:
     - tool: 当前工具实例
@@ -219,17 +269,27 @@ def _available(tool: _GroupChatMixin) -> bool:
     返回:
     - 当前 Agent 可调用时为 True
     """
+    name = str(tool.tool_name)
+    origin = current_call_origin()
+    manager = current_adapter_manager()
+    adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
+    capabilities = adapter.group_chat_capabilities() if adapter else {}
+    if name == "group_chat_list_groups":
+        return (_private_available() and origin is not None
+                and origin.actor_id in config_ids(tool.config.get("cross_group_query_callers"))
+                and capabilities.get("group_list", {}).get("state") == "supported")
     if not _group_available():
         return False
-    name = str(tool.tool_name)
+    allowed = config_ids(tool.config.get("allowed_groups"))
+    if allowed and (origin is None or origin.chat_id not in allowed):
+        return False
+    capability = {"group_chat_get_group_info": "group_info", "group_chat_list_members": "member_list"}.get(name)
+    if capability is not None:
+        return capabilities.get(capability, {}).get("state") == "supported"
     if "summary" in name and tool.config.get("summary_enabled", True) is not True:
         return False
     if name == "group_chat_reply":
-        origin = current_call_origin()
-        manager = current_adapter_manager()
-        adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
         if adapter is not None:
-            capabilities = adapter.group_chat_capabilities()
             kinds = {"text", "quote", "mention"}
             if tool.config.get("media_reply_enabled", True) is True:
                 kinds.update({"image", "sticker"})
@@ -237,10 +297,6 @@ def _available(tool: _GroupChatMixin) -> bool:
     if name in {"group_chat_get_message_assets", "group_chat_list_stickers"}:
         if tool.config.get("media_reply_enabled", True) is not True:
             return False
-        origin = current_call_origin()
-        manager = current_adapter_manager()
-        adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
-        capabilities = adapter.group_chat_capabilities() if adapter else {}
         return capabilities.get("image", {}).get("state") == "supported" or name == "group_chat_list_stickers" and capabilities.get("sticker", {}).get("state") == "supported"
     return True
 
@@ -335,7 +391,8 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool = kind(name, description, {})
         tool.config = dict(config)
         tool.session = session
+        bind_tool_session(tool, session)
         tool.deferred_platform_reply = name == "group_chat_reply"
-        tool.recovery_policy = "manual" if name == "group_chat_reply" else "retry"
+        tool.recovery_policy = "manual" if name in {"group_chat_reply"} else "retry"
         result.append(tool)
     return result

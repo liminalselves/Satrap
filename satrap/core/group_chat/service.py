@@ -22,7 +22,7 @@ import traceback
 
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
-from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
+from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.group_chat.summaries import SummaryStore, SummaryLimits
 from satrap.core.platform import PlatformAdapter, current_adapter_manager
 from satrap.core.components import At, Plain, Reply, Image, BaseMessageComponent
@@ -34,6 +34,9 @@ from satrap.core.log import logger
 
 T = TypeVar("T")
 _ARGUMENTS = {
+    "group_chat_list_groups": frozenset(),
+    "group_chat_get_group_info": frozenset(),
+    "group_chat_list_members": frozenset({"limit", "cursor"}),
     "group_chat_reply": frozenset({"components"}),
     "group_chat_find_members": frozenset({"query", "limit", "cursor"}),
     "group_chat_get_member": frozenset({"user_id"}),
@@ -126,6 +129,7 @@ class _ReadContext:
     adapter: PlatformAdapter
     scope: MessageScope
     store: PlatformMessageStore | None
+    authorize: Callable[[str], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -153,9 +157,13 @@ class GroupChatService:
         self._members: OrderedDict[str, _MemberCache] = OrderedDict()
         self._summary_lock = asyncio.Lock()
 
-    async def _resolve(self) -> _ReadContext:
+    async def _resolve(self, *, private: bool = False, authorize: Callable[[str], None] | None = None) -> _ReadContext:
         """
         从仍有效的轮次来源取得当前适配器与群身份
+
+        参数:
+        - private: 是否读取获授权私聊中的账号群列表
+        - authorize: 等待后重新读取插件权限的回调
 
         返回:
         - 本次操作的可信读取上下文
@@ -168,8 +176,8 @@ class GroupChatService:
         adapter = manager.get_adapter(origin.adapter_id) if manager else None
         if adapter is None:
             raise GroupChatError("unavailable", "来源平台实例不可用", retryable=True)
-        scope = await adapter.group_chat_scope(origin)
-        context = _ReadContext(origin, adapter, scope, adapter.message_archive)
+        scope = await (adapter.group_chat_private_scope(origin) if private else adapter.group_chat_scope(origin))
+        context = _ReadContext(origin, adapter, scope, adapter.message_archive, authorize)
         await self._revalidate(context)
         return context
 
@@ -184,12 +192,15 @@ class GroupChatService:
         if (current_call_origin() is not context.origin or manager is None
                 or manager.get_adapter(context.origin.adapter_id) is not context.adapter):
             raise GroupChatError("stale_call", "轮次结束或平台实例已替换, 丢弃旧查询结果")
-        scope = await context.adapter.group_chat_scope(context.origin)
+        scope = await (context.adapter.group_chat_private_scope(context.origin) if context.scope.conversation_kind == "private"
+                       else context.adapter.group_chat_scope(context.origin))
         if (scope != context.scope or current_call_origin() is not context.origin
                 or manager is not current_adapter_manager()
                 or manager.get_adapter(context.origin.adapter_id) is not context.adapter
                 or context.adapter.message_archive is not context.store):
             raise GroupChatError("stale_call", "查询来源已经变化")
+        if context.authorize is not None:
+            context.authorize(scope.chat_id)
 
     @staticmethod
     def _capability(context: _ReadContext, name: str) -> None:
@@ -257,7 +268,7 @@ class GroupChatService:
         return context.store
 
     async def execute(self, operation: str, arguments: Mapping[str, object], *,
-                      limits: GroupChatLimits | None = None) -> dict[str, Any]:
+                      limits: GroupChatLimits | None = None, authorize: Callable[[str], None] | None = None) -> dict[str, Any]:
         """
         执行当前群查询或准备回复, 在工具边界捕获并记录失败
 
@@ -265,6 +276,7 @@ class GroupChatService:
         - operation: 注册的 group_chat 工具名称
         - arguments: 模型参数, 不允许平台, 账号或目标群字段
         - limits: 宿主查询上限, 缺省使用首批默认值
+        - authorize: 可选的当前插件权限复核回调
 
         返回:
         - 明确成功结果或包含错误码和可重试状态的失败结果
@@ -276,7 +288,23 @@ class GroupChatService:
             if set(arguments) - _ARGUMENTS[operation]:
                 raise ValueError("群聊工具含有未知参数, 只能操作当前群")
             bounds = limits or GroupChatLimits()
-            context = await self._resolve()
+            private = operation == "group_chat_list_groups"
+            context = await self._resolve(private=private, authorize=authorize)
+            if private:
+                if context.origin.actor_id not in bounds.cross_group_query_callers:
+                    raise GroupChatError("forbidden", "未配置为跨群查询管理者")
+                return await self._groups(context, bounds)
+            if bounds.allowed_groups and context.scope.chat_id not in bounds.allowed_groups:
+                raise GroupChatError("forbidden", "当前群不在插件允许范围内")
+            if operation == "group_chat_get_group_info":
+                self._capability(context, "group_info")
+                connection = context.adapter.group_chat_connection_token()
+                info = await context.adapter.group_chat_group(context.scope)
+                await self._revalidate(context)
+                if (not isinstance(info, VerifiedGroup) or info.scope != context.scope or info.group.group_id != context.scope.chat_id
+                        or not math.isfinite(info.fetched_at) or not _same_connection(connection, context.adapter.group_chat_connection_token())):
+                    raise GroupChatError("unverified_target", "群资料来源已经变化或不属于当前群")
+                return {"ok": True, "item": self._group_item(info.group), "source": "adapter", "fetched_at": info.fetched_at}
             if operation in {"group_chat_get_message_assets", "group_chat_list_stickers"}:
                 if not bounds.media_reply_enabled:
                     raise GroupChatError("unsupported", "当前 Agent 未启用图片与表情回复")
@@ -318,8 +346,8 @@ class GroupChatService:
                     return await self._reply_components(context, components, bounds)
 
                 return await turn.prepare(validate_reply)
-            if operation == "group_chat_find_members":
-                return await self._find(context, arguments, bounds)
+            if operation in {"group_chat_find_members", "group_chat_list_members"}:
+                return await self._find(context, arguments, bounds, list_all=operation == "group_chat_list_members")
             if operation == "group_chat_get_member":
                 return await self._member(context, _id(arguments.get("user_id")))
             if operation == "group_chat_get_message":
@@ -344,6 +372,62 @@ class GroupChatService:
         logger.warning(f"[群聊工具] 执行失败, 操作={operation}, 错误={code}, "
                        f"平台={origin.adapter_id if origin else ''}, 轮次={origin.request_id if origin else ''}")
         return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
+
+    @staticmethod
+    def _group_item(group: GroupRecord) -> dict[str, Any]:
+        """
+        校验通用群资料并输出有限字段
+
+        参数:
+        - group: 适配器核验后的群资料
+
+        返回:
+        - 不含平台额外字段的群条目
+        """
+        if (not isinstance(group, GroupRecord) or not isinstance(group.name, str) or len(group.name) > 512
+                or any(value is not None and (type(value) is not int or value < 0)
+                       for value in (group.member_count, group.max_member_count))):
+            raise GroupChatError("unavailable", "适配器群资料不符合契约")
+        return {"group_id": _id(group.group_id), "group_name": group.name, "member_count": group.member_count,
+                "max_member_count": group.max_member_count, "verified": True}
+
+    async def _groups(self, context: _ReadContext, bounds: GroupChatLimits) -> dict[str, Any]:
+        """
+        读取管理者私聊中的账号群列表, 不超过上下文预算
+
+        参数:
+        - context: 可信私聊来源
+        - bounds: 允许群与正文预算
+
+        返回:
+        - 当前账号的群列表及完整性声明
+        """
+        self._capability(context, "group_list")
+        connection = context.adapter.group_chat_connection_token()
+        snapshot = await context.adapter.group_chat_groups(context.scope)
+        await self._revalidate(context)
+        if (not isinstance(snapshot, GroupSnapshot) or snapshot.scope != context.scope or len(snapshot.groups) > 512
+                or type(snapshot.complete) is not bool or type(snapshot.truncated) is not bool
+                or snapshot.complete and snapshot.truncated or not math.isfinite(snapshot.fetched_at)
+                or not _same_connection(connection, context.adapter.group_chat_connection_token())):
+            raise GroupChatError("unverified_target", "群列表身份或完整性声明无效")
+        items, seen, budget = [], set(), 0
+        truncated = snapshot.truncated
+        for group in snapshot.groups:
+            item = self._group_item(group)
+            if group.group_id in seen:
+                raise GroupChatError("unavailable", "群列表包含重复身份")
+            seen.add(group.group_id)
+            if (not context.adapter.group_chat_group_visible(group.group_id)
+                    or bounds.allowed_groups and group.group_id not in bounds.allowed_groups):
+                continue
+            budget += len(json.dumps(item, ensure_ascii=False))
+            if budget > bounds.text_budget:
+                truncated = True
+                continue
+            items.append(item)
+        return {"ok": True, "items": items, "source": "adapter", "fetched_at": snapshot.fetched_at,
+                "coverage": {"complete": snapshot.complete and not truncated}, "truncated": truncated}
 
     async def _message_assets(self, context: _ReadContext, message_id: str, bounds: GroupChatLimits) -> dict[str, Any]:
         """
@@ -668,7 +752,9 @@ class GroupChatService:
             user_id = _id(member.user_id)
         except ValueError as exc:
             raise GroupChatError("unverified_target", "适配器未返回有效成员身份") from exc
-        return {"user_id": user_id, "nickname": member.nickname, "card": member.card, "verified": True}
+        if not isinstance(member.role, str) or len(member.role) > 64:
+            raise GroupChatError("unavailable", "成员角色资料无效")
+        return {"user_id": user_id, "nickname": member.nickname, "card": member.card, "role": member.role, "verified": True}
 
     async def _member(self, context: _ReadContext, user_id: str) -> dict[str, Any]:
         """
@@ -702,7 +788,7 @@ class GroupChatService:
         while len(self._members) > 32 or sum(len(entry.snapshot.members) for entry in self._members.values()) > 20000:
             self._members.popitem(last=False)
 
-    async def _find(self, context: _ReadContext, arguments: Mapping[str, object], bounds: GroupChatLimits) -> dict[str, Any]:
+    async def _find(self, context: _ReadContext, arguments: Mapping[str, object], bounds: GroupChatLimits, *, list_all: bool = False) -> dict[str, Any]:
         """
         按昵称与名片查找, 重名返回候选, 分页保持同一短期快照
 
@@ -710,16 +796,17 @@ class GroupChatService:
         - context: 当前可信操作来源
         - arguments: query, limit 和 cursor 参数
         - bounds: 宿主查询和缓存上限
+        - list_all: 是否分页列出全部成员, 默认按名称匹配
 
         返回:
         - 候选, 匹配方式, 完整性与分页信息
         """
-        query = arguments.get("query")
-        if not isinstance(query, str) or not query.strip() or len(query) > 128:
+        query = "" if list_all else arguments.get("query")
+        if not isinstance(query, str) or not list_all and not query.strip() or len(query) > 128:
             raise ValueError("成员查询必须是 1 到 128 字符的昵称或名片")
         query = query.strip().casefold()
         limit = _limit(arguments.get("limit", min(10, bounds.member_limit)), bounds.member_limit)
-        fingerprint = hashlib.sha256((context.scope.key + "\0" + query).encode("utf-8")).hexdigest()
+        fingerprint = hashlib.sha256((context.scope.key + "\0" + ("list:" if list_all else "find:") + query).encode("utf-8")).hexdigest()
         self._capability(context, "member_list")
         self._prune()
         token, offset = "", 0
@@ -775,23 +862,39 @@ class GroupChatService:
         self._members.move_to_end(token)
         matches: list[dict[str, Any]] = []
         for member in cached.snapshot.members:
+            if list_all:
+                matches.append(self._member_item(member))
+                continue
             by = [name for name, text in (("nickname", member.nickname), ("card", member.card)) if query in text.casefold()]
             if by:
                 exact = any(query == text.casefold() for text in (member.nickname, member.card))
                 matches.append({**self._member_item(member), "matched_by": by, "match": "exact" if exact else "contains"})
-        matches.sort(key=lambda item: (item["match"] != "exact", item["user_id"]))
+        matches.sort(key=lambda item: (item.get("match") != "exact", item["user_id"]))
         if offset > len(matches):
             raise ValueError("成员游标超出匹配范围")
         items = matches[offset:offset + limit]
-        more = offset + limit < len(matches)
+        if list_all:
+            page, used = [], 0
+            for item in items:
+                used += len(json.dumps(item, ensure_ascii=False))
+                if used > bounds.text_budget:
+                    break
+                page.append(item)
+            if items and not page:
+                raise ValueError("成员资料超出单次查询预算, 请提高插件 text_budget")
+            items = page
+        next_offset = offset + len(items)
+        more = next_offset < len(matches)
         next_cursor = base64.urlsafe_b64encode(json.dumps(
-            [1, token, fingerprint, offset + limit], separators=(",", ":"),
+            [1, token, fingerprint, next_offset], separators=(",", ":"),
         ).encode("utf-8")).decode("ascii").rstrip("=") if more else None
         await self._revalidate(context)
-        return {"ok": True, "items": items, "source": "adapter_snapshot", "fetched_at": cached.snapshot.fetched_at,
+        result = {"ok": True, "items": items, "source": "adapter_snapshot", "fetched_at": cached.snapshot.fetched_at,
                 "coverage": {"complete": cached.snapshot.complete, "reason": cached.snapshot.reason},
-                "truncated": cached.snapshot.truncated, "has_more": more, "next_cursor": next_cursor,
-                "ambiguous": len(matches) > 1, "unique": len(matches) == 1 and cached.snapshot.complete}
+                "truncated": cached.snapshot.truncated, "has_more": more, "next_cursor": next_cursor}
+        if not list_all:
+            result.update(ambiguous=len(matches) > 1, unique=len(matches) == 1 and cached.snapshot.complete)
+        return result
 
     async def _message(self, context: _ReadContext, message_id: str, bounds: GroupChatLimits) -> dict[str, Any]:
         """

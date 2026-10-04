@@ -1,8 +1,16 @@
 name: group_chat
 version: 0.3.0
 author: Satrap Team
-description: "在当前群查成员, 查记录, 写带出处的摘要, 组合引用, @, 图片和表情回复"
+description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复"
 config_schema:
+  allowed_groups:
+    type: textarea
+    default: ""
+    description: "允许使用群聊工具的群 ID, 每行一个; 留空不额外限制, 仍遵守平台范围"
+  cross_group_query_callers:
+    type: textarea
+    default: ""
+    description: "允许在私聊查询机器人所在群列表的管理者账号 ID, 每行一个; 留空禁用跨群查询"
   media_reply_enabled:
     type: bool
     default: true
@@ -75,6 +83,9 @@ config_schema:
     integer: true
     description: "成员查询结果缓存多久, 单位为秒; 0 表示每次新查询都刷新, 翻页仍沿用短期缓存"
 tools:
+  group_chat_list_groups: "在管理者私聊查看机器人所在群"
+  group_chat_get_group_info: "查看当前群的群名与人数"
+  group_chat_list_members: "分页查看当前群成员与角色"
   group_chat_get_message_assets: "取出当前群消息中的可用图片"
   group_chat_list_stickers: "查找当前群已启用的表情"
   group_chat_prepare_summary: "读取指定时段的摘要来源"
@@ -84,7 +95,7 @@ tools:
   group_chat_list_summaries: "查找当前群已保存摘要"
   group_chat_reply: "回复群消息, 支持引用和 @ 多人"
   group_chat_find_members: "按昵称或群名片查找成员"
-  group_chat_get_member: "查看指定成员的昵称和群名片"
+  group_chat_get_member: "查看指定成员的昵称, 群昵称和角色"
   group_chat_get_message: "查看一条消息的原文和发送者"
   group_chat_recent_messages: "查看最近的聊天记录"
   group_chat_search_messages: "按关键词, 成员和时间搜索聊天记录"

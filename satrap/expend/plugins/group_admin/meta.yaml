@@ -22,12 +22,7 @@ config_schema:
     description: "允许查询和处理好友/加群申请的管理者 QQ 号, 每行一个; 留空禁用申请工具. 好友申请仅在管理者私聊中可用, 处理还需开启管理写操作"
 
 tools:
-  group_admin_list_groups: "列出机器人所在群"
-  group_admin_get_group_info: "查看群信息"
-  group_admin_list_members: "列出群成员"
-  group_admin_get_member: "查看群成员信息"
   group_admin_get_honors: "查看群荣誉信息"
-  group_admin_get_message: "向平台查询消息原文和发送者"
   group_admin_get_forward: "查看合并转发消息的内容"
   group_admin_send_forward: "向群发送合并转发消息"
   group_admin_recall_message: "撤回指定消息"

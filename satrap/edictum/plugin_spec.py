@@ -126,6 +126,8 @@ def parse_plugin_specs(
         return []
     if not isinstance(value, list):
         raise ValueError("plugins 必须是数组")
+    from satrap.edictum.plugin_migrations import migrate_group_tool_specs
+    value = migrate_group_tool_specs(value, catalog)
     specs: list[PluginSpec] = []
     names: set[str] = set()
     for raw_item in cast(list[object], value):

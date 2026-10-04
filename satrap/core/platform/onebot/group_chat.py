@@ -10,7 +10,7 @@ import time
 from dataclasses import replace
 
 from satrap.core.config.platform_messages import MessageScope
-from satrap.core.group_chat.types import GroupChatError, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage
+from satrap.core.group_chat.types import GroupChatError, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
 from satrap.core.log import logger
@@ -61,8 +61,10 @@ class OneBotGroupChatReader:
         - scope: 宿主固定的群身份
         """
         adapter = self.adapter
-        if (scope.adapter_id != adapter.config.id or scope.self_id != adapter.bot_self_id
-                or scope.conversation_kind != "group" or not adapter.allows_group(scope.chat_id)):
+        allowed = (adapter.allows_group(scope.chat_id) if scope.conversation_kind == "group"
+                   else scope.conversation_kind == "private" and adapter.config.enable
+                   and adapter.config.settings.get("enable_private", True))
+        if (scope.adapter_id != adapter.config.id or scope.self_id != adapter.bot_self_id or not allowed):
             raise GroupChatError("stale_call", "来源群或机器人账号已经失效")
         if _numeric_id(scope.chat_id) != scope.chat_id:
             raise GroupChatError("wrong_conversation", "来源群身份不符合协议")
@@ -125,7 +127,78 @@ class OneBotGroupChatReader:
         nickname, card = data.get("nickname", ""), data.get("card", "")
         if not isinstance(nickname, str) or not isinstance(card, str):
             raise ValueError("成员昵称或名片格式不符")
-        return MemberRecord(user_id, nickname[:512], card[:512])
+        role = data.get("role", "")
+        if not isinstance(role, str) or len(role) > 64:
+            raise ValueError("成员角色格式不符")
+        return MemberRecord(user_id, nickname[:512], card[:512], role)
+
+    @staticmethod
+    def _group(data: dict[str, Any]) -> GroupRecord:
+        """
+        收窄群资料并拒绝不合法人数
+
+        参数:
+        - data: 原始群条目
+
+        返回:
+        - 通用群资料
+        """
+        gid = _numeric_id(data.get("group_id"))
+        name = data.get("group_name", "")
+        counts = [data.get(key) for key in ("member_count", "max_member_count")]
+        if not isinstance(name, str) or any(value is not None and (type(value) is not int or value < 0) for value in counts):
+            raise ValueError("群资料格式不符")
+        return GroupRecord(gid, name[:512], *counts)
+
+    async def group(self, scope: MessageScope) -> VerifiedGroup:
+        """
+        读取当前群资料并复核目标
+
+        参数:
+        - scope: 当前群身份
+
+        返回:
+        - 当前群资料, 越界回包拒绝返回
+        """
+        result = await self._read(scope, "get_group_info", max_bytes=16384, group_id=int(scope.chat_id), no_cache=True)
+        if not isinstance(result, dict) or ("self_id" in result and _numeric_id(result["self_id"]) != scope.self_id):
+            raise GroupChatError("unverified_target", "群资料缺少可核验身份")
+        group = self._group(result)
+        if group.group_id != scope.chat_id:
+            raise GroupChatError("unverified_target", "群资料不属于当前群")
+        return VerifiedGroup(scope, group, time.time())
+
+    async def groups(self, scope: MessageScope) -> GroupSnapshot:
+        """
+        在获授权私聊中读取群列表并标明完整性
+
+        参数:
+        - scope: 当前私聊身份
+
+        返回:
+        - 最多 512 个群的快照, 无效条目或超限时标明部分结果
+        """
+        if scope.conversation_kind != "private":
+            raise GroupChatError("wrong_conversation", "群列表只能在管理者私聊查询")
+        result = await self._read(scope, "get_group_list", max_bytes=1024 * 1024)
+        if not isinstance(result, list):
+            raise GroupChatError("unavailable", "平台群列表格式不符")
+        groups, seen = [], set()
+        incomplete = len(result) > 512
+        for raw in result[:512]:
+            try:
+                if not isinstance(raw, dict) or ("self_id" in raw and _numeric_id(raw["self_id"]) != scope.self_id):
+                    raise ValueError("群条目身份无效")
+                item = self._group(raw)
+                if item.group_id in seen:
+                    raise ValueError("群条目重复")
+                seen.add(item.group_id)
+                groups.append(item)
+            except ValueError:
+                incomplete = True
+        if incomplete:
+            logger.warning(f"[群聊读取] 群列表不完整, 平台={self.adapter.config.id}")
+        return GroupSnapshot(scope, tuple(groups), time.time(), not incomplete, incomplete)
 
     async def members(self, scope: MessageScope) -> MemberSnapshot:
         """

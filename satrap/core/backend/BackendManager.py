@@ -1315,7 +1315,7 @@ class BackendManager:
         from satrap.core.platform.onebot.adapter import OneBotAdapter
         from satrap.edictum.plugin_settings import resolve_runtime_specs
         from satrap.edictum.plugin_spec import parse_plugin_specs
-        from satrap.expend.plugins.group_admin.tools import _lines
+        from satrap.core.config.model_tool_authorization import config_ids as _lines
 
         authorization.verify(target_group)
         source_ref = authorization.source_session

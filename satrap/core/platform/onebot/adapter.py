@@ -54,7 +54,7 @@ from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.platform.message_archive import archive_snapshot
-from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage
+from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupSnapshot, VerifiedGroup
 
 
 class _MissingCQHttp:
@@ -850,6 +850,7 @@ class OneBotAdapter(PlatformAdapter):
         capabilities = super().group_chat_capabilities()
         states = self.admin_capabilities()
         for name, action in {"member_list": "get_group_member_list", "member_info": "get_group_member_info",
+                             "group_list": "get_group_list", "group_info": "get_group_info",
                              "message_lookup": "get_msg"}.items():
             learned = self._capability_states.get(action)
             if learned is not None and learned[0] == self.connection_generation() and learned[1] == "unsupported":
@@ -864,6 +865,68 @@ class OneBotAdapter(PlatformAdapter):
             capabilities[name] = {"state": "unavailable" if disconnected else "supported",
                                   "reason": "platform_disconnected" if disconnected else "adapter_implemented"}
         return capabilities
+
+    def group_chat_self_id(self) -> str:
+        """
+        返回连接确认的机器人账号
+
+        返回:
+        - 当前机器人账号 ID
+        """
+        return self.bot_self_id
+
+    async def group_chat_private_scope(self, origin: CallOrigin) -> MessageScope:
+        """
+        按平台私聊开关核验群列表查询来源
+
+        参数:
+        - origin: 宿主固定的调用来源
+
+        返回:
+        - 当前私聊身份
+        """
+        if not self.config.settings.get("enable_private", True):
+            raise GroupChatError("wrong_conversation", "平台私聊已停用")
+        return await super().group_chat_private_scope(origin)
+
+    async def group_chat_groups(self, scope: MessageScope) -> GroupSnapshot:
+        """
+        读取账号群列表
+
+        参数:
+        - scope: 管理者私聊身份
+
+        返回:
+        - 群列表快照
+        """
+        from satrap.core.platform.onebot.group_chat import OneBotGroupChatReader
+        return await OneBotGroupChatReader(self).groups(scope)
+
+    async def group_chat_group(self, scope: MessageScope) -> VerifiedGroup:
+        """
+        读取当前群资料
+
+        参数:
+        - scope: 当前群身份
+
+        返回:
+        - 已核验群资料
+        """
+        from satrap.core.platform.onebot.group_chat import OneBotGroupChatReader
+        return await OneBotGroupChatReader(self).group(scope)
+
+    def group_chat_group_visible(self, group_id: str) -> bool:
+        """
+        群列表沿用平台当前允许的群范围
+
+        参数:
+        - group_id: 真实群 ID
+
+        返回:
+        - 当前群未停用且在平台范围内时为 True
+        """
+        return self.allows_group(group_id)
+
 
     async def group_chat_members(self, scope: MessageScope) -> MemberSnapshot:
         """

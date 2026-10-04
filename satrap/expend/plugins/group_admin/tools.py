@@ -5,39 +5,26 @@ from collections.abc import Awaitable, Coroutine
 from typing import Any, TypeVar, cast, overload
 
 import asyncio
-import weakref
 import traceback
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.call_context import CallOrigin, bind_call_origin, require_call_origin
+from satrap.core.call_context import CallOrigin, require_call_origin
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
+from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, bool]] = {
     # 工具名: (描述, 参数, 必填参数, 是否写操作, 是否需要群上下文)
-    "group_admin_list_groups": ("查看机器人加入了哪些群, 返回群号和群名", {}, [], False, False),
-    "group_admin_get_group_info": ("查看群名, 群号和成员人数等基本信息; 不填 group_id 时查看当前群", {
-        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
-    }, [], False, True),
-    "group_admin_list_members": ("查看群成员列表, 包括成员 QQ 号, 昵称, 群名片和角色; 需要确认群里有哪些人时使用", {
-        "group_id": ("string", "要查看的群号, 不填则查看当前群"),
-    }, [], False, True),
-    "group_admin_get_member": ("查看某位群成员的资料, 包括昵称, 群名片和群主/管理员/普通成员身份; 需要确认操作对象时使用", {
-        "user_id": ("string", "要查看的成员 QQ 号, 填写数字字符串; 可从群成员查询结果中取得"), "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
-    }, ["user_id"], False, True),
     "group_admin_get_honors": ("查看群里的龙王, 群聊之火等荣誉及对应成员; 不指定荣誉类型时查询全部类型", {
         "group_id": ("string", "要查看的群号, 不填则查看当前群"),
         "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
     }, [], False, True),
-    "group_admin_get_message": ("向平台查询一条群消息, 返回原文和发送者; 需要查看引用消息或确认某条原话时使用", {
-        "message_id": ("string", "要查看的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
-    }, ["message_id"], False, True),
     "group_admin_get_forward": ("查看群里一条合并转发消息的内容; 同时提供转发 ID 和群里包含它的消息 ID. 转发中的其他合并转发不会自动展开", {
         "forward_id": ("string", "合并转发内容的 ID, 从包含转发的群消息中取得"),
         "source_message_id": ("string", "群里包含这条合并转发的消息 ID, 用来确认转发属于目标群"),
@@ -76,7 +63,7 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "user_id": ("string", "要修改群名片的成员 QQ 号"), "card": ("string", "新的群名片, 不超过 60 字符; 填写空字符串可清空"),
         "group_id": ("string", "成员所在的群号, 不填则使用当前群"),
     }, ["user_id"], True, True),
-    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群名片请使用 group_admin_set_card" + _ACTION_RESULT_DESCRIPTION, {
+    "group_admin_set_name": ("修改整个群的名称; 修改某位成员的群昵称请使用 group_admin_set_card" + _ACTION_RESULT_DESCRIPTION, {
         "name": ("string", "新的群名称, 1 到 60 字符, 不能只填空格"), "group_id": ("string", "要改名的群号, 不填则使用当前群"),
     }, ["name"], True, True),
     "group_admin_set_title": ("设置指定群成员的专属头衔; title 填空字符串表示清除头衔, 需要机器人具有相应权限" + _ACTION_RESULT_DESCRIPTION, {
@@ -106,14 +93,6 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
     }, ["request_id", "approve"], True, True),
 }
-
-
-def _lines(value: Any) -> list[str]:
-    """将逐行配置拆为非空字符串列表"""
-    if isinstance(value, list):
-        items = cast(list[Any], value)
-        return [str(item).strip() for item in items if str(item).strip()]
-    return [line.strip() for line in str(value or "").splitlines() if line.strip()]
 
 
 def _as_bool(value: Any, name: str) -> bool:
@@ -194,41 +173,33 @@ def _request_access(tool: Any, origin: CallOrigin, adapter: Any, kind: str) -> N
         raise PermissionError("好友申请只能在申请管理者私聊中查询和处理")
 
 
-def _authorization_source(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
-    """固定可信来源并在审批时从仍有效的工具读取当前权限"""
-    tool_ref = weakref.ref(tool)
-    session_ref = getattr(tool, "_group_admin_session_ref", None)
-    if hasattr(tool, "_group_admin_session_ref") and session_ref is None:
-        raise PermissionError("模型管理工具无法复核来源会话")
-    identity = {"adapter_id": origin.adapter_id, "self_id": origin.self_id,
-                "chat_type": origin.chat_type, "chat_id": origin.chat_id,
-                "actor_id": origin.actor_id, "session_id": str(getattr(tool, "_group_admin_session_id", "")),
-                "tool_name": str(tool.tool_name)}
+def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> ModelActionAuthorization:
+    """
+    用本插件配置复核管理写授权, 来源存活校验由宿主完成
 
-    def verify(target_group: str) -> None:
-        """重验工具存活、插件启用状态及当前调用者和目标群限制"""
-        live_tool = tool_ref()
-        if live_tool is None or not live_tool.is_enabled():
-            raise PermissionError("模型管理工具已停用或来源已失效")
-        if session_ref is not None:
-            session = session_ref()
-            workflow = getattr(session, "_wf", None) if session is not None else None
-            tools_manager = getattr(workflow, "tools_manager", None)
-            plugins = session.list_plugins() if session is not None else []
-            plugin = next((item for item in plugins if item.name == "group_admin"), None)
-            if (tools_manager is None or tools_manager.tools.get(live_tool.tool_name) is not live_tool
-                    or not tools_manager.is_tool_enabled(live_tool.tool_name)
-                    or plugin is None or not plugin.enabled or not plugin.tools.get(live_tool.tool_name, False)):
-                raise PermissionError("模型管理工具已从来源会话移除或停用")
-        with bind_call_origin(origin):
-            current_adapter, _, current_groups = _resolve(live_tool.config, True)
-            if live_tool.tool_name == "group_admin_handle_group_request":
-                _request_access(live_tool, origin, current_adapter, "group")
+    参数:
+    - tool: 当前管理工具
+    - admin: 当前平台动作集
+    - origin: 宿主冻结的调用来源
+
+    返回:
+    - 可交给宿主审批的写授权
+    """
+    def permission(live: Any, target_group: str) -> None:
+        """
+        从管理插件当前配置复核目标与调用者
+
+        参数:
+        - live: 仍有效的管理工具
+        - target_group: 固定目标群
+        """
+        current_adapter, _, groups = _resolve(live.config, True)
+        if live.tool_name == "group_admin_handle_group_request":
+            _request_access(live, origin, current_adapter, "group")
         if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
             raise PermissionError("模型管理工具的机器人账号或平台已变化")
-        _group_id(origin, current_groups, {"group_id": target_group})
-
-    return ModelActionAuthorization(identity, verify, session_ref)
+        _group_id(origin, groups, {"group_id": target_group})
+    return model_tool_authorization(tool, origin, "group_admin", permission)
 
 
 def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
@@ -322,23 +293,13 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
 
         async def submit() -> dict[str, Any]:
             """把已授权的模型群管理请求交给统一审批与执行服务"""
-            source = _authorization_source(source_tool, admin, origin)
+            source = _write_authorization(source_tool, admin, origin)
             with bind_model_action_authorization(source):
                 return await cast(Awaitable[dict[str, Any]], handler(gid, action, params))
 
         return submit()
-    if name == "group_admin_list_groups":
-        return admin.get_group_list()
-    if name == "group_admin_get_group_info":
-        return admin.get_group_info(gid)
-    if name == "group_admin_list_members":
-        return admin.get_group_member_list(gid)
-    if name == "group_admin_get_member":
-        return admin.get_group_member_info(gid, kwargs.get("user_id", ""))
     if name == "group_admin_get_honors":
         return admin.get_group_honor_info(gid, str(kwargs.get("honor_type") or "all"))
-    if name == "group_admin_get_message":
-        return admin.get_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_get_forward":
         source_id = str(kwargs.get("source_message_id") or "").strip()
         if not source_id:
@@ -380,8 +341,6 @@ class _GroupAdminMixin:
 
     tool_name: str | None
     config: dict[str, Any]
-    _group_admin_session_ref: weakref.ReferenceType[Session | AsyncSession] | None
-    _group_admin_session_id: str
 
     def is_available_for_call(self) -> bool:
         """
@@ -514,11 +473,6 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     """创建平台管理工具并保留审批时可复核的来源会话引用"""
     tools = (_build_tools(AsyncGroupAdminTool, config) if isinstance(session, AsyncSimpleSession)
              else _build_tools(GroupAdminTool, config))
-    try:
-        session_ref = weakref.ref(session)
-    except TypeError:
-        session_ref = None
     for tool in tools:
-        tool._group_admin_session_ref = session_ref
-        tool._group_admin_session_id = str(getattr(session, "session_id", ""))
+        bind_tool_session(tool, session)
     return tools

@@ -77,11 +77,11 @@ def _async_tools(config: dict[str, Any]) -> list[AsyncGroupAdminTool]:
 class TestToolConstruction:
     def test_sync_session_gets_sync_tools(self):
         tools = get_tools(cast(Session, object()), {})
-        assert len(tools) == len(_DEFINITIONS) == 23
+        assert len(tools) == len(_DEFINITIONS) == 18
         assert not any(isinstance(t, type) for t in tools)
         ban = next(t for t in tools if t.tool_name == "group_admin_ban")
         assert ban.recovery_policy == "manual"
-        info = next(t for t in tools if t.tool_name == "group_admin_list_groups")
+        info = next(t for t in tools if t.tool_name == "group_admin_get_honors")
         assert info.recovery_policy == "retry"
         definition = ban.get_tool_defined()
         assert definition["function"]["parameters"]["required"] == ["user_id"]
@@ -89,7 +89,7 @@ class TestToolConstruction:
 
     def test_async_session_gets_async_tools(self):
         tools = _async_tools({})
-        assert len(tools) == 23
+        assert len(tools) == 18
         assert all(asyncio.iscoroutinefunction(t.execute) for t in tools)
 
 
@@ -97,7 +97,7 @@ class TestPermissionGate:
     @pytest.mark.asyncio
     async def test_missing_origin_is_rejected(self):
         _setup_adapter()
-        tool = next(t for t in get_tools(cast(Session, object()), {}) if t.tool_name == "group_admin_get_group_info")
+        tool = next(t for t in get_tools(cast(Session, object()), {}) if t.tool_name == "group_admin_get_honors")
         result = await asyncio.get_running_loop().run_in_executor(None, lambda: tool.execute())
         assert result["status"] == "error" and "来源身份" in result["error"]
 
@@ -124,7 +124,7 @@ class TestPermissionGate:
     @pytest.mark.asyncio
     async def test_private_context_requires_explicit_group(self):
         _setup_adapter()
-        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_group_info")
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             result = await tool.execute()
         assert result["status"] == "error" and "group_id" in result["error"]
@@ -142,15 +142,6 @@ class TestExecution:
         assert result == {"status": "ok"}
         adapter._bot.set_group_ban.assert_awaited_once_with(group_id=456, user_id=321, duration=600)
 
-    @pytest.mark.asyncio
-    async def test_read_tool_works_without_write_enable(self):
-        adapter = _setup_adapter()
-        adapter._bot.get_group_info.return_value = {"group_id": 456, "group_name": "测试群", "secret": "x"}
-        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_group_info")
-        with bind_call_origin(_origin()):
-            result = await tool.execute()
-        assert result["status"] == "ok" and result["data"]["group_name"] == "测试群"
-        assert "secret" not in result["data"]
 
     @pytest.mark.asyncio
     async def test_send_forward_tool_uses_shared_outbound_path(self, monkeypatch: pytest.MonkeyPatch):
@@ -186,14 +177,6 @@ class TestExecution:
             result = await tool.execute(nodes=[{"content": "x"}])
         assert result["status"] == "error" and "目标群" in result["error"]
 
-    @pytest.mark.asyncio
-    async def test_get_message_tool_rejects_cross_group_read(self):
-        adapter = _setup_adapter()
-        adapter._bot.get_msg.return_value = {"message_type": "group", "group_id": 999}
-        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_message")
-        with bind_call_origin(_origin()):
-            result = await tool.execute(message_id="77")
-        assert result["status"] == "error" and "已拒绝读取" in result["error"]
 
     @pytest.mark.asyncio
     async def test_get_forward_tool_reads_nodes_without_write_enable(self):
@@ -324,7 +307,7 @@ class TestExecution:
         manager = PlatformAdapterManager(registry=registry)
         assert manager.add_adapter(PlatformConfig(id="ob", type="bare")) is not None
         set_current_adapter_manager(manager)
-        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_list_groups")
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
         with bind_call_origin(_origin()):
             result = await tool.execute()
         assert result["status"] == "unsupported"

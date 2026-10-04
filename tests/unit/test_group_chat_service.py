@@ -301,7 +301,7 @@ async def test_member_detail_returns_confirmed_current_group_identity(tmp_path: 
     adapter._bot.get_group_member_info.return_value = {"group_id": 456, "user_id": 123, "nickname": "甲", "card": "名片"}
     with bind_call_origin(origin):
         result = await service.execute("group_chat_get_member", {"user_id": "123"})
-    assert result["ok"] and result["item"] == {"user_id": "123", "nickname": "甲", "card": "名片", "verified": True}
+    assert result["ok"] and result["item"] == {"user_id": "123", "nickname": "甲", "card": "名片", "role": "", "verified": True}
     adapter._bot.get_group_member_info.assert_awaited_once_with(group_id=456, user_id=123, no_cache=True)
 
 

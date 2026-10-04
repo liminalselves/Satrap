@@ -37,11 +37,17 @@ def build_handlers(session: SimpleSession | AsyncSimpleSession, config: dict[str
         - ctx: 当前 handler 只读配置与运行状态
 
         返回:
-        - 带群环境资料的输入, 非群聊时原样返回
+        - 带群环境资料的输入, 管理者私聊仅说明授权群列表查询
         """
         origin = current_call_origin()
         turn = current_reply_turn()
-        if origin is None or (origin.conversation_kind or ("group" if origin.chat_type == "GroupMessage" else "")) != "group":
+        if origin is None:
+            return text
+        kind = origin.conversation_kind or {"GroupMessage": "group", "FriendMessage": "private"}.get(origin.chat_type, "")
+        if kind != "group":
+            available = [item["function"]["name"] for item in session.tools_manager.get_tools_definitions()]
+            if kind == "private" and "group_chat_list_groups" in available:
+                return "群列表查询说明: 当前是获授权的管理者私聊, 可调用 group_chat_list_groups 查看允许范围内的群; 不能在私聊使用当前群工具\n\n" + text
             return text
         manager = current_adapter_manager()
         adapter = manager.get_adapter(origin.adapter_id) if manager else None
