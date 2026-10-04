@@ -138,7 +138,7 @@ plugin.list_capabilities()        # 展示插件内每项能力的实效状态 (
 
 > 注意: 插件内能力的独立启停建议走插件实例接口, 会话全局接口 (`session.disable_tool`) 不维护插件状态; 插件停用期间对名下能力的操作以恢复时的独立状态为准。
 >
-> 工具与处理器采用**执行路径合成**: 插件停用后, 即使 `enable_tool` / `enable_all_tools` / `enable_handler` 更新了独立位, 执行时仍按「独立位 ∧ 插件聚合开关」过滤 (`execute_tool` 返回 disabled 错误, 处理器不执行); 工具定义列表 (`get_tools_definitions`) 按独立位展示, 与执行路径解耦。
+> 工具定义与执行均按「独立位 ∧ 插件聚合开关」过滤: 插件停用后, 即使 `enable_tool` / `enable_all_tools` 更新了独立位, 工具也不会出现在模型收到的 `get_tools_definitions()` 中, 直接执行仍返回 disabled 错误. 当前调用不可用的工具也会从模型定义中隐藏. 处理器同样按独立位与插件聚合开关过滤; 停用期间修改独立状态不会绕过插件开关, 重新启用插件后按独立状态恢复
 
 ## 插件配置与会话级覆盖
 

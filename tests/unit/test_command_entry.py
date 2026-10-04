@@ -205,7 +205,7 @@ class _RecorderAdapter(PlatformAdapter):
     """记录 send_message 调用的测试适配器"""
 
     def __init__(self, adapter_id: str = "rec1", settings: dict[str, Any] | None = None):
-        self.config = PlatformConfig(id=adapter_id, type="rec", settings=settings or {})
+        super().__init__(PlatformConfig(id=adapter_id, type="rec", settings=settings or {}))
         self.sent: list[tuple[str, MessageChain, str]] = []
 
     async def run(self) -> None:

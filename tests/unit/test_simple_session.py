@@ -1650,8 +1650,9 @@ def test_plugin_aggregate_enable_disable(tmp_path: Path):
     assert plugin.enabled is False
     session.run("hi")
     tools_def = llm.calls[-1]["tools"]
-    # 定义列表按独立位过滤, 工具仍可见; 执行路径合成 (effectiveness_guard) 拒绝执行
-    assert any(t["function"]["name"] == "greet" for t in tools_def)
+    assert not any(t["function"]["name"] == "greet" for t in tools_def)
+    # 插件聚合停用同时隐藏模型工具定义和拒绝执行, 不改工具独立状态
+    assert session.is_tool_enabled("greet") is True
     err = session.tools_manager.execute_tool("greet", {"name": "x"})
     assert err["ok"] is False and err["error_type"] == "disabled"
     user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
@@ -1662,6 +1663,7 @@ def test_plugin_aggregate_enable_disable(tmp_path: Path):
     session.run("hi")
     tools_def = llm.calls[-1]["tools"]
     assert any(t["function"]["name"] == "greet" for t in tools_def)
+    assert session.tools_manager.execute_tool("greet", {"name": "x"}) == "hi x"
     user_msgs = [m for m in llm.calls[-1]["messages"] if m.get("role") == "user"]
     assert user_msgs[-1]["content"] == "hi [插件]"
 
