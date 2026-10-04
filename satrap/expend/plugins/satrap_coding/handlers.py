@@ -4,7 +4,7 @@ satrap_coding 处理器: 持续目标注入模型输入
 注入点: before_user_send (用户消息进入模型前), 把目标块拼接到消息头部;
 每轮读取内容并比较缓存, 内容变化时重新拼接注入文本
 
-注: 长期记忆注入已移交 base_take 插件 (priority=0), 本处理器只注入目标 (priority=1)
+注: 长期记忆注入已移交 memory 插件 (priority=0), 本处理器只注入目标 (priority=1)
 """
 from __future__ import annotations
 
@@ -76,4 +76,4 @@ def build_handlers(session: SessionType) -> list[SessionHandler]:
         return injector.inject(text)
 
     return [SessionHandler(name="satrap_coding.inject", priority=1, before_user_send=before_user_send)]
-    # priority=1: 错开 base_take 的记忆注入 (priority=0), 记忆在前目标在后
+    # priority=1: 错开 memory 的记忆注入 (priority=0), 记忆在前目标在后

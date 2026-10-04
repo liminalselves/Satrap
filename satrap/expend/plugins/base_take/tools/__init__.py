@@ -1,4 +1,4 @@
-"""基础插件工具兼容入口, 共用文档和记忆业务"""
+"""基础插件工具入口, 提供搜索, 沙箱和文档读取"""
 
 from __future__ import annotations
 import asyncio
@@ -8,8 +8,6 @@ from typing import Any, cast
 from typing import Awaitable, Callable
 import sys
 from satrap.expend.plugins.base_take.core.docread import extract_text
-from satrap.expend.plugins.base_take.state import get_plugin_state
-from satrap.expend.tools.memory_store import MemoryStore
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.utils.sandbox import CodeSandbox
 from satrap.core.utils.paths import get_project_root
@@ -36,32 +34,22 @@ from .utils import (
 )
 from .sync import (
     ReadDocumentTool,
-    _MemoryToolBase,
-    AddMemoryTool,
-    UpdateMemoryTool,
-    DeleteMemoryTool,
-    ListMemoriesTool,
 )
 from .async_ import (
     AsyncReadDocumentTool,
-    _AsyncMemoryToolBase,
-    AsyncAddMemoryTool,
-    AsyncUpdateMemoryTool,
-    AsyncDeleteMemoryTool,
-    AsyncListMemoriesTool,
 )
 
 
 def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> list[Any]:
     """
-    按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root/memory)
+    按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root)
 
     参数:
     - session: 会话
     - config: 配置信息
 
     返回:
-    - list[Any]: 按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root/memory)
+    - list[Any]: 按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root)
     """
     cfg = config or {}
     timeout = int(cfg.get("search_timeout") or 10)
@@ -75,10 +63,6 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
         str(ws_override or cfg.get("workspace_root") or get_project_root())
     )
 
-    state = get_plugin_state(session, cfg)
-    store = state["store"]
-    assert isinstance(store, MemoryStore)
-
     sandbox = CodeSandbox(str(sandbox_root), sys.executable)
 
     if isinstance(session, AsyncSimpleSession):
@@ -87,10 +71,6 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
             AsyncFetchPageTool(timeout=timeout),
             AsyncCodeSandboxTool(sandbox, _make_async_execution_authorizer(session)),
             AsyncReadDocumentTool(workspace_root),
-            AsyncAddMemoryTool(store),
-            AsyncUpdateMemoryTool(store),
-            AsyncDeleteMemoryTool(store),
-            AsyncListMemoriesTool(store),
         ]
     else:
         tools = [
@@ -98,10 +78,6 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
             FetchPageTool(timeout=timeout),
             CodeSandboxTool(sandbox, _make_sync_execution_authorizer(session)),
             ReadDocumentTool(workspace_root),
-            AddMemoryTool(store),
-            UpdateMemoryTool(store),
-            DeleteMemoryTool(store),
-            ListMemoriesTool(store),
         ]
     # 绑定会话 (read_document 等工具按会话解析工作区)
     for tool in tools:

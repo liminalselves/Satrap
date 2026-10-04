@@ -128,7 +128,7 @@ def get_tools(
     - session: 会话
     - config: 配置信息
 
-    注: search/fetch_page/memory 已移交 base_take 插件, 本插件只保留 coding 专属能力
+    注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供, 本插件只保留 coding 专属能力
 
     返回:
     - list[Any]: 按会话形态构建全部工具 (注入 llm / 权限引擎 / 会话引用 + 应用插件配置)

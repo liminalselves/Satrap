@@ -1,6 +1,6 @@
 # group_chat 第二阶段: 群摘要, 图片与表情, 群记忆, 提醒
 
-状态: A1/A2 群摘要与 B1/B2 图片和表情已实现, C/D 未实施
+状态: A1/A2 群摘要与 B1/B2 图片和表情已实现; C1 独立记忆插件拆分实施中, C2/D 未完成; 回归与冒烟在全部批次结束后统一执行
 
 实施顺序: 1. 群摘要 → 2. 图片与表情 → 3. 群记忆与成员偏好 → 4. 一次性提醒
 
@@ -17,7 +17,8 @@
 
 ### 0.2 插件与平台边界
 
-继续扩展官方 `group_chat` 插件, 不把这四项混入踢人, 禁言等 `group_admin` 动作
+摘要, 媒体和提醒继续扩展官方 `group_chat` 插件; 长期记忆从 `base_take` 独立为 `memory` 插件
+三个插件互不依赖, 记忆由平台无关的宿主服务统一管理; 不将记忆或提醒混入 `group_admin` 动作
 
 模型工具不接受 `adapter_id/self_id/chat_id/agent_config` 参数, 这些字段始终从可信当前群来源解析
 所有消息, 成员, 资产和记录 ID 都是字符串, 不假定数字 ID 或 QQ 格式
@@ -269,7 +270,20 @@ scope 和有效工作流由宿主取得, payload 只来自受信任工具产物,
 共享表情文件可以物理去重, 授权和引用按群分别核验
 删除正在发送的条目会撤销未提交草稿; 已提交发送用原版本租约完成, 不能换成同 ID 新图片
 
-## 3. 群记忆与成员偏好
+## 3. 独立 memory 插件与群记忆
+
+### 3.0 拆分与旧配置迁移
+
+- `base_take` 仅保留搜索, 网页抓取, 沙箱和文档工具; 删除原记忆工具核心, state, handlers, commands 和配置声明
+- 独立 `memory` 提供工具, skill, `memory.memory_inject` 前处理和 `/memory` 命令, 不要求安装 `base_take` 或 `group_chat`
+- 公共存储与业务层放在 `satrap/core/memory`, 插件和管理 API 调用同一业务服务
+- 保留已有 `memories` 数据, ID 和 `session:<session_id>` 归属, 不自动将旧会话记录变为成员偏好或已批准群约定
+- 迁移旧全局配置, Agent 配置与会话覆盖中的 memory_scope/memory_mode 和能力开关; 关闭状态保留, 新增 get_memory 和 skill 不因迁移自动启用
+- 新插件已有显式字段优先, 冲突记录明确提示; 全局新配置成功落盘后才清除旧字段, 会话覆盖在同一事务中迁移
+- 新增群聊写入开关默认关闭, 旧 full 不自动授予群聊写入权限
+- 普通 Chat 与私聊旧记忆保留会话范围; 新群约定与偏好使用稳定 MessageScope, Agent 切换不改变数据归属
+- `/memory` 的写入, clear 和 mode 同样经过权限入口, 不能绕过群约定审批或其他成员所有权
+- 记忆注入仅由 memory 插件执行一次, group_chat 不新增记忆工具或第二个注入器
 
 ### 3.1 类型, 所有权与注入
 
@@ -287,11 +301,11 @@ scope 和有效工作流由宿主取得, payload 只来自受信任工具产物,
 
 | 工具 | 参数 | 语义 |
 | --- | --- | --- |
-| `group_chat_search_memories` | 可选 `kind`, `user_id`, `keyword`, `limit=20`, `cursor` | 只查当前群有效记忆; user_id 仅用于读已核验成员偏好 |
-| `group_chat_get_memory` | `memory_id` | 读正文, 所有者, 来源状态, revision 与生效状态 |
-| `group_chat_remember` | `kind`, `key`, `content`, `source_message_ids` | 新增本人偏好或提交群规则提案; 成员偏好 owner 自动取当前发言者 |
-| `group_chat_update_memory` | `memory_id`, `content`, `source_message_ids`, `expected_revision` | 更新本人偏好; 群规则更新仍走审批 |
-| `group_chat_forget_memory` | `memory_id`, `request_message_id`, `expected_revision` | 删除本人偏好; 群规则删除提交审批提案 |
+| `list_memories` | 可选 `kind`, `user_id`, `keyword`, `limit=20`, `cursor` | 只查当前群有效记忆; user_id 仅用于读已核验成员偏好 |
+| `get_memory` | `memory_id` | 读正文, 所有者, 来源状态, revision 与生效状态 |
+| `add_memory` | `title`, `content`; 群聊另需 `kind`, `key`, `source_message_ids` | 新增本人偏好或提交群规则提案; 成员偏好 owner 自动取当前发言者 |
+| `update_memory` | `memory_id`, `content`, `source_message_ids`, `expected_revision` | 更新本人偏好; 群规则更新仍走审批 |
+| `delete_memory` | `memory_id`, `request_message_id`, `expected_revision` | 删除本人偏好; 群规则删除提交审批提案 |
 
 `key` 是稳定用途键, 例如 `preferred_name`, `response_style`, `project_meeting_time`, 长度 1-64
 `content` 长度 1-2000, 来源 1-10 条; 不让模型填写所有者, 权限或任意数据库路径
@@ -484,7 +498,7 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 ### 5.1 存储
 
 优先扩展现有每平台 `platform.db`, 使用统一 `ensure_platform_tables` 版本迁移, 不另开零散 JSON
-当前平台 schema 是 v5; 实施时为每批统一分配下一版本, 不让新服务各自写 user_version
+当前平台 schema 是 v8; 实施时为每批统一分配下一版本, 不让新服务各自写 user_version
 
 拟新增表:
 
@@ -494,8 +508,8 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 | `group_chat_summary_snapshots` / `group_chat_summary_sources` | 有效期有界快照与出处, 阅读进度 |
 | `group_chat_summaries` / `group_chat_summary_refs` | 摘要结构, 来源 ID/内容摘要, 状态与修订 |
 | `group_chat_assets` | 资产归属, 类型, 来源, hash, 缓存相对位置, 到期与授权版本 |
-| `group_chat_memories` / `group_chat_memory_refs` | 当前记忆, 所有权, 来源和修订 |
-| `group_chat_memory_proposals` | 群规则增改删提案, 基准 revision, 审批与执行状态 |
+| 扩展已有 `memories` / `memory_refs` | 当前记忆, 所有权, 来源和修订 |
+| `memory_proposals` | 群规则增改删提案, 基准 revision, 审批与执行状态 |
 | `group_chat_reminders` / `group_chat_reminder_attempts` | 提醒状态, 固定内容与发送证据 |
 | `group_chat_preferences` | 每群功能开关/表情集合/配额覆盖与修订 |
 
@@ -513,7 +527,8 @@ UI 保存状态与任务执行状态分开, 不沿用“配置已生效”表示
 
 复用现有认证控制入口与后端代理, URL 路径不传 opaque chat ID, 范围通过 `self_id/chat_id` 查询字段解析
 
-基础路径: `/api/platforms/{adapter_id}/group-chat`
+摘要与提醒基础路径: `/api/platforms/{adapter_id}/group-chat`
+记忆与记忆审批基础路径: `/api/platforms/{adapter_id}/memory`, 不依赖 group_chat 的安装状态
 
 | 相对路径 | 方法 | 作用 |
 | --- | --- | --- |
@@ -550,10 +565,10 @@ PATCH/DELETE/decision/cancel/resume 使用 expected_revision; 写请求使用幂
 | `media_reply_enabled` | true | 仍受适配器能力与来源约束 |
 | `max_reply_images` | 4 | 0-8 |
 | `max_reply_stickers` | 4 | 0-8 |
-| `memory_enabled` | true | 有效记忆读取/注入 |
-| `memory_write_enabled` | false | 模型写入显式开启 |
-| `memory_injection_limit` | 20 | 1-50 |
-| `memory_injection_budget` | 6000 | 1000-20000, 受模型上下文约束 |
+| `memory_mode` | full | memory 插件的 disabled/base/full, 不覆盖能力与身份限制 |
+| `group_write_enabled` | false | memory 插件的群聊模型写入显式开启 |
+| `injection_limit` | 20 | 1-50 |
+| `injection_budget` | 6000 | 1000-20000, 受模型上下文约束 |
 | `reminders_enabled` | false | 创建与后台发送一起受开关控制 |
 | `reminder_catchup_seconds` | 600 | 0-3600, 0 表示不补发 |
 | `active_reminders_per_member` | 20 | 1-100 |
@@ -574,8 +589,8 @@ PATCH/DELETE/decision/cancel/resume 使用 expected_revision; 写请求使用幂
 | A2 | 五个摘要工具, skill 与摘要页 | 可追溯保存/查询, 无额外模型调用, 超限与 0 条行为 |
 | B1 | 资产登记, 文件租约与两类新组件 | 临时文件结束后仍可发送, 禁止跨群/路径/过期引用 |
 | B2 | 适配器能力/表情库/插件工具与 UI | QQ 图片和配置表情, 额外虚拟平台不依赖原生编号 |
-| C1 | 记忆存储/权限/提案/修订 | 本人修改, 他人拒绝, 待审批不生效, 审批冲突 |
-| C2 | 五个记忆工具, 前处理和记忆页 | 切换 Agent/重启仍可读, 下一轮生效, 删除不误改历史 |
+| C1 | 独立 memory 插件, 公共存储与业务, 全局/Agent/会话覆盖迁移, 清除旧实现 | 原记录与 ID 保留, 能力关闭状态不改变, 重复迁移无副作用 |
+| C2 | 群约定/成员偏好, 来源/所有权/审批/revision, 统一工具/命令/注入和记忆页 | 他人修改拒绝, pending 不生效, 切换 Agent/重启仍可读, 下一轮生效 |
 | D1 | 提醒状态机/发送账本/后台发送接口 | 重启恢复, 取消竞争, 崩溃 sending 变 unknown 且不重发 |
 | D2 | 四个提醒工具, UI 与生命周期协调 | 离线宽限, 停用暂停, 路由切换, QQ 实际单次到期发送 |
 

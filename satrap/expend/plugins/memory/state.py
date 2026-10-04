@@ -1,5 +1,5 @@
 """
-base_take 插件级共享状态: 记忆库按会话隔离单例
+memory 插件级共享状态: 记忆库按会话隔离单例
 
 memory 工具与 inject handler 通过本模块获取同一份 MemoryStore (按会话隔离),
 scope 使用会话注入的 `session:<session_id>`, 不提供跨会话共享层
@@ -9,7 +9,8 @@ from __future__ import annotations
 import threading
 from typing import TYPE_CHECKING, Any
 
-from satrap.expend.tools.memory_store import DEFAULT_MEMORY_DB, MemoryStore
+from satrap.core.memory.service import MemoryService
+from satrap.core.memory.store import DEFAULT_MEMORY_DB, MemoryStore
 from satrap.core.type import safe_getattr
 
 if TYPE_CHECKING:
@@ -34,15 +35,17 @@ def _build_state(session: SessionType, config: dict[str, Any]) -> dict[str, Any]
     - dict[str, Any]: 当前会话的插件记忆状态
     """
     scope = str(
-        safe_getattr(session, "coding_memory_scope")
+        safe_getattr(session, "memory_scope")
         or config.get("memory_scope")
         or f"session:{session.session_id}"
     )
     mode = str(config.get("memory_mode") or "full")
-    db_path = safe_getattr(session, "coding_memory_db") or DEFAULT_MEMORY_DB
-    store = MemoryStore(db_path=db_path, scope=scope, mode=mode)
+    db_path = safe_getattr(session, "memory_db") or DEFAULT_MEMORY_DB
+    store = MemoryStore(db_path=db_path, scope=scope, mode=mode, max_entries=int(config.get("injection_limit", 30)))
     return {
         "store": store,
+        "service": MemoryService(store, session=session, budget=int(config.get("injection_budget", 6000))),
+        "config": dict(config),
         "session_scope": scope,
     }
 

@@ -2487,8 +2487,8 @@ class SessionManager:
         setattr(session, "coding_artifacts_root", str(root / "artifacts"))
         setattr(session, "coding_indexes_root", str(root / "indexes"))
         setattr(session, "coding_cache_root", str(root / "cache"))
-        setattr(session, "coding_memory_db", str(self.storage_layout.platform_db(self.platform_id)))
-        setattr(session, "coding_memory_scope", f"session:{session_id}")
+        setattr(session, "memory_db", str(self.storage_layout.platform_db(self.platform_id)))
+        setattr(session, "memory_scope", f"session:{session_id}")
 
     def _sync_runtime_to_store(self, session_id: str, session: Session | AsyncSession):
         """

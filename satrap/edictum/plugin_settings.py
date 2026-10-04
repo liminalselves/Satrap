@@ -49,6 +49,9 @@ class PluginSettingsService:
     ) -> dict[str, Any]:
         """返回显式覆盖, 生效配置, 上层配置和逐字段来源"""
         namespace = self._register(name, schema)
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_overrides
+            migrate_memory_overrides(self.overrides.store, session_id)
         global_values = self.manager.load_global_explicit(name, schema)
         layers = [("default", {key: item.default for key, item in schema.items()}), ("global", global_values)]
         if named:
@@ -116,6 +119,9 @@ def resolve_session_plugin_config(
     store = getattr(session, "plugin_override_store", None)
     if store is None:
         return dict(base)
+    if name in {"base_take", "memory"}:
+        from satrap.edictum.memory_migration import migrate_memory_overrides
+        migrate_memory_overrides(store, session.session_id)
     values = store.read(session.session_id, f"plugins.{name}")["overrides"]
     return {**base, **validate_config_values(schema, values, session_override=True)}
 
@@ -123,6 +129,12 @@ def resolve_session_plugin_config(
 def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any) -> list[Any]:
     """把全局, 命名和会话配置合成为可比较的运行目标"""
     manager = PluginConfigManager()
+    store = getattr(session, "plugin_override_store", None)
+    if store is not None and any(spec.name == "base_take" for spec in specs):
+        from satrap.edictum.memory_migration import migrate_memory_overrides
+        if migrate_memory_overrides(store, session.session_id) and not any(spec.name == "memory" for spec in specs):
+            from satrap.edictum.plugin_spec import parse_plugin_specs
+            specs = [*specs, *parse_plugin_specs(["memory"], catalog, require_available=True)]
     models = getattr(session, "plugin_model_manager", None)
     resolved: list[Any] = []
     for spec in specs:

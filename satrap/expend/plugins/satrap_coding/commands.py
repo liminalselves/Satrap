@@ -5,7 +5,7 @@ satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
 - build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
 - 命令共享插件状态 (state.py), 与工具/处理器同实例: /plan 直接影响工具审批引擎
 
-注: /memory 命令已随长期记忆移交 base_take 插件
+注: /memory 命令已随长期记忆移交 memory 插件
 """
 from __future__ import annotations
 

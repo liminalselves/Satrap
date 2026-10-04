@@ -32,7 +32,7 @@ def prepare_session_recovery(session: Any) -> None:
                for p in sorted(cast(list[Any], session.list_plugins()), key=lambda p: p.name)]
     scope = {key: getattr(session, key, None) for key in (
         "coding_workspace_root", "coding_session_root", "coding_sandbox_root",
-        "coding_upload_root", "coding_memory_db", "coding_memory_scope",
+        "coding_upload_root", "memory_db", "memory_scope",
     )}
     wf.recovery_plugin_fingerprint = fingerprint({"plugins": plugins, "scope": scope})
     wf.recovery_origin = getattr(session, "recovery_origin", {})

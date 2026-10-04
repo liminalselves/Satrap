@@ -13,7 +13,7 @@ import yaml
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.memory.store import MemoryStore
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema
 from satrap.core.APICall.LLMCall import AsyncLLM
 from satrap.display.recorder import DisplayRecorder, list_conversations, get_conversation_meta
@@ -22,7 +22,7 @@ from satrap.display.service import ChatService
 from satrap.display.server import ChatHTTPServer
 from satrap.edictum.plugin import load_plugin_meta
 from satrap.core.storage import StorageLayout
-from satrap.expend.tools import memory_store as ms_mod
+from satrap.core.memory import store as ms_mod
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
 from satrap.display import service as service_mod
 

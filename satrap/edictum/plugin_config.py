@@ -233,6 +233,9 @@ class PluginConfigManager:
         - dict[str, Any]: 读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
         """
         merged = {key: fld.default for key, fld in schema.items()}
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
         path = self._global_path(name)
         if not path.is_file():
             return merged
@@ -255,6 +258,9 @@ class PluginConfigManager:
 
     def load_global_explicit(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
         """仅读取全局显式字段, 用于区分默认值和全局值来源"""
+        if name in {"base_take", "memory"}:
+            from satrap.edictum.memory_migration import migrate_memory_globals
+            migrate_memory_globals(self)
         path = self._global_path(name)
         if not path.is_file():
             return {}

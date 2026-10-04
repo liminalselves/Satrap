@@ -30,7 +30,8 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.storage.session_fork import fork_session_settings
 from satrap.core.utils.context_policy import resolve_context_policy
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.memory.store import MemoryStore
+from satrap.core.memory.service import MemoryService
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.edictum.plugin_settings import (
     resolve_runtime_specs,
@@ -2000,8 +2001,8 @@ class ChatService:
         setattr(session, "coding_artifacts_root", str(session_root / "artifacts"))
         setattr(session, "coding_indexes_root", str(session_root / "indexes"))
         setattr(session, "coding_cache_root", str(session_root / "cache"))
-        setattr(session, "coding_memory_db", str(self._storage.platform_db(self._platform_id)))
-        setattr(session, "coding_memory_scope", f"session:{session.session_id}")
+        setattr(session, "memory_db", str(self._storage.platform_db(self._platform_id)))
+        setattr(session, "memory_scope", f"session:{session.session_id}")
 
     def create_project(self, name: str, root_path: str) -> dict[str, object]:
         """
@@ -2586,8 +2587,9 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        return {"ok": True, "memories": store.list_all()}
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        result = store.execute("list_all")
+        return result if isinstance(result, dict) else {"ok": True, "memories": result}
 
     def add_memory(self, title: str, content: str, *, tags: str = "", importance: int = 1, scope: str) -> dict[str, Any]:
         """
@@ -2605,9 +2607,9 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-        record = store.add(title=title, content=content, tags=tag_list, importance=importance)
+        record = store.execute("add", title=title, content=content, tags=tag_list, importance=importance)
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "添加失败")}
         return {"ok": True, "memory": record}
@@ -2626,8 +2628,8 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        record = store.update(memory_id, **fields)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        record = store.execute("update", memory_id, **fields)
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "更新失败")}
         return {"ok": True, "memory": record}
@@ -2645,8 +2647,8 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        result = store.delete(memory_id)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        result = store.execute("delete", memory_id)
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error", "删除失败")}
         return {"ok": True}

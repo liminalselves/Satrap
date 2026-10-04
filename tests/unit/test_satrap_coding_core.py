@@ -12,7 +12,7 @@ from satrap.expend.plugins.satrap_coding.core.permission import (
     PermissionEngine,
     RiskLevel,
 )
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.memory.store import MemoryStore
 
 
 # ================= command_gate: 命令风险分级 =================
