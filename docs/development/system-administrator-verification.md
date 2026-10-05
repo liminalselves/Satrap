@@ -33,6 +33,8 @@
 
 状态: 尚未执行. 需要由用户操作现有 QQ 测试环境, 不发送未经用户确认的实际平台消息
 
+本地环境复核: 控制服务 /status 返回 running=false, 已配置的后端 19870 端口未监听; 运行中的旧控制服务对 /config/administrator-groups 返回 404. 需先重新启动控制服务及后端加载新代码, 再继续真实平台验收. 这次复核只读状态, 未修改用户配置或发送平台消息
+
 1. 在系统设置创建测试管理组, 添加当前 OneBot 平台与测试用户 QQ 号, 指定 group_admin 和 friend_manager, 保存后确认“已保存并生效”
 2. 使用已安装插件的私聊 Agent, 暂时清空 friend_manager.managers 和 write_callers, 保留原写开关状态. 测试用户请求实际调用 friend_manager 的好友列表读取工具, 应成功; 不修改好友关系
 3. 排除 friend_manager 并保存生效, 新对话请求同一读取工具, 应拒绝或不再提供该管理工具. 恢复插件自己的 managers 名单后, 原名单路径应独立恢复读取
