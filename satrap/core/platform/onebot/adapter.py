@@ -152,6 +152,21 @@ class OneBotAdapter(PlatformAdapter):
     """OneBot v11 平台适配器, 使用 aiocqhttp 反向 WebSocket"""
 
     adapter_type = "onebot"
+
+    @staticmethod
+    def normalize_user_identifier(value: str) -> str:
+        """
+        将 QQ 用户 ID 规范为与入站事件一致的十进制身份
+
+        参数:
+        - value: 用户填写的 QQ 号
+
+        返回:
+        - 正整数的十进制文字, 格式错误抛出 ValueError
+        """
+        if not isinstance(value, str) or not value.strip().isascii() or not value.strip().isdigit() or len(value.strip()) > 20 or int(value.strip()) <= 0:
+            raise ValueError("此平台的用户识别号必须是有效 QQ 号")
+        return str(int(value.strip()))
     display_name = "OneBot"
     supports_scheduled_group_send = True
 

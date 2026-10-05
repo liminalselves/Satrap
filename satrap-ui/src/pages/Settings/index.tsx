@@ -12,6 +12,8 @@ import { BackendControls, backendStateLabel } from '@/components/common/BackendC
 import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
 import { LogRetentionPanel } from './LogRetentionPanel';
+import { AdministratorsPanel } from './AdministratorsPanel';
+import { administratorError } from '@/api/administrators';
 
 interface ConfigData {
   api?: {
@@ -37,6 +39,7 @@ export function Settings() {
   const [saving, setSaving] = useState(false);
   const [configPath, setConfigPath] = useState('');
   const [configExists, setConfigExists] = useState(false);
+  const [configRevision, setConfigRevision] = useState<string | undefined>();
   const [controlAvailable, setControlAvailable] = useState(false);
   const [settingsTab, setSettingsTab] = useState('general');
 
@@ -47,6 +50,7 @@ export function Settings() {
       const result = await controlApi.getConfig();
       if (result.ok && result.config) {
         setConfig(result.config);
+        setConfigRevision(result.revision);
         setRawConfig(yaml.dump(result.config, { indent: 2 }));
         setConfigPath(result.path || '');
         setConfigExists(result.exists !== false);
@@ -68,10 +72,11 @@ export function Settings() {
   const persistConfig = useCallback(async (data: ConfigData) => {
     setSaving(true);
     try {
-      const result = await controlApi.saveConfig(data);
+      const result = await controlApi.saveConfig(data, configRevision);
       if (result.ok) {
-        setConfig(data);
-        setRawConfig(yaml.dump(data, { indent: 2 }));
+        setConfig(result.config || data);
+        setConfigRevision(result.revision);
+        setRawConfig(yaml.dump(result.config || data, { indent: 2 }));
         setConfigExists(true);
         if (isRunning) {
           const restarted = await controlBackend('restart');
@@ -86,11 +91,11 @@ export function Settings() {
         toast('error', result.error || '保存失败');
       }
     } catch (e) {
-      toast('error', '保存失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
+      toast('error', '保存失败: ' + administratorError(e));
     } finally {
       setSaving(false);
     }
-  }, [isRunning, controlBackend]);
+  }, [isRunning, controlBackend, configRevision]);
 
   // 保存配置
   const handleSave = useCallback(async () => {
@@ -228,11 +233,26 @@ export function Settings() {
         <Tabs defaultValue="general" onValueChange={setSettingsTab}>
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
+            <TabsTrigger value="administrators">管理员</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
             <TabsTrigger value="logging">日志保留</TabsTrigger>
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
+
+          <div hidden={settingsTab !== 'administrators'}>
+            <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, revision, previousRevision) => {
+              setConfig(current => ({ ...current, administrator_groups: groups }));
+              setConfigRevision(current => current === previousRevision ? revision : current);
+              setRawConfig(current => {
+                try {
+                  const parsed = yaml.load(current, { schema: yaml.JSON_SCHEMA, json: true });
+                  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                    ? yaml.dump({ ...parsed, administrator_groups: groups }, { indent: 2 }) : current;
+                } catch { return current; }
+              });
+            }} />
+          </div>
 
           <div hidden={settingsTab !== 'logging'}>
             <LogRetentionPanel active={settingsTab === 'logging'} />

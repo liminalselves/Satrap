@@ -100,6 +100,21 @@ class PlatformAdapter(ABC):
     conversation_kinds: dict[str, str] = {"private": "私聊", "group": "群聊"}
     supports_scheduled_group_send: bool = False
 
+    @staticmethod
+    def normalize_user_identifier(value: str) -> str:
+        """
+        校验配置中的平台成员身份, 适配器可覆盖自身格式规则
+
+        参数:
+        - value: 用户填写的成员识别号
+
+        返回:
+        - 保留大小写的规范字符串, 无效格式抛出 ValueError
+        """
+        if not isinstance(value, str) or not 1 <= len(value.strip()) <= 256 or any(ord(char) < 32 for char in value):
+            raise ValueError("平台用户识别号必须是有效文字")
+        return value.strip()
+
     @classmethod
     def conversation_catalog_metadata(cls, connection: sqlite3.Connection, route: dict[str, str]) -> dict[str, str]:
         """

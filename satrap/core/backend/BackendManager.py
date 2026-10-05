@@ -425,6 +425,51 @@ class BackendManager:
             )
         return self._friend_services[adapter_id]
 
+    def administrator_runtime_status(self) -> dict[str, Any]:
+        """
+        返回当前宿主实际使用的管理员修订和进程身份
+
+        返回:
+        - 不含名单正文的运行时状态, 用于控制端确认应用结果
+        """
+        _, revision = self.administrator_service.snapshot()
+        return {"ok": True, "section_revision": revision, "runtime_id": self._runtime_id, "pid": os.getpid(),
+                "config_path": str(Path(self.config.source_path).resolve()) if self.config.source_path else ""}
+
+    def apply_saved_administrator_groups(self, expected_revision: str) -> dict[str, Any]:
+        """
+        从本进程配置文件应用已保存的管理员区段, 不接受外部授权正文
+
+        参数:
+        - expected_revision: 已保存管理员区段的修订
+
+        返回:
+        - 应用后的实际宿主状态; 配置或修订冲突交给 API 边界捕获
+        """
+        from satrap.core.config.administrator_groups import administrator_revision, normalize_administrator_groups
+        from satrap.core.config.document import ConfigRevisionConflict, load_config_document, validate_platforms
+        from satrap.core.storage.file_lock import FileLock
+
+        if not isinstance(expected_revision, str) or not expected_revision or not self.config.source_path:
+            raise ValueError("无法确认管理员配置来源或修订")
+        source = Path(self.config.source_path).resolve()
+        with FileLock(source.with_name(f".{source.name}.lock")):
+            document = load_config_document(source)
+            platforms = validate_platforms(document.get("platforms", []))
+            groups = normalize_administrator_groups(document.get("administrator_groups"), platforms)
+            if administrator_revision(groups) != expected_revision:
+                raise ConfigRevisionConflict("管理员配置已变化, 请重新读取后应用")
+            from satrap.core.config.platform_identity import platform_instance_id
+
+            live = {item["id"]: platform_instance_id(item) for item in self.config.platforms}
+            saved = {item["id"]: platform_instance_id(item) for item in platforms}
+            if live != saved:
+                raise ConfigRevisionConflict("平台实例配置已变化, 请先应用平台配置后再应用管理员设置")
+            self.administrator_service.apply(groups)
+            self.config.administrator_groups = groups
+        logger.info(f"[管理员设置] 配置已应用, revision={expected_revision}, runtime={self._runtime_id}")
+        return self.administrator_runtime_status()
+
     def _friend_protected_managers(self, adapter_id: str) -> list[str]:
         """
         从当前命名和实例配置读取管理入口, 插件停用也保留保护

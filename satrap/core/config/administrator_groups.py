@@ -60,6 +60,7 @@ def _names(value: object, label: str) -> list[str]:
 def normalize_administrator_groups(
     raw: object, platforms: Sequence[Mapping[str, Any]], *, bind_new: bool = False,
     previous: Sequence[Mapping[str, Any]] = (),
+    normalize_user: Callable[[Mapping[str, Any], str], str] | None = None,
 ) -> list[dict[str, Any]]:
     """
     校验管理组并为新成员绑定服务端平台代次
@@ -69,6 +70,7 @@ def normalize_administrator_groups(
     - platforms: 当前真实平台注册配置
     - bind_new: 管理接口保存时绑定新成员, 不信任提交的实例代次
     - previous: 已保存管理组, 保留旧身份绑定而不自动重新授权
+    - normalize_user: 保存新身份时使用适配器的用户 ID 规范接口
 
     返回:
     - 规范管理组, 无效结构抛出 ValueError; 已保存的失效平台身份保留
@@ -77,9 +79,9 @@ def normalize_administrator_groups(
         return []
     if not isinstance(raw, list) or len(raw) > 256:
         raise ValueError("administrator_groups 必须是列表且不超过 256 组")
-    if any(not isinstance(item, Mapping) or not isinstance(item.get("id"), str) for item in platforms):
-        raise ValueError("管理员绑定的平台目录无效")
-    configured = {item["id"]: item for item in platforms}
+    configured = {item["id"]: item for item in platforms if isinstance(item, Mapping)
+                  and isinstance(item.get("id"), str) and item["id"]}
+    # 无效平台由平台初始化边界记录并隔离, 不阻止其他实例与空管理员配置启动
     old_members = {(group["id"], member["platform_id"], member["user_id"]): member["platform_instance_id"]
                    for group in previous for member in group.get("members", [])}
     result: list[dict[str, Any]] = []
@@ -112,11 +114,13 @@ def normalize_administrator_groups(
                 raise ValueError("管理员成员字段无效")
             platform_id = _text(member.get("platform_id"), "平台 ID", 128)
             user_id = _text(member.get("user_id"), "平台用户识别号")
+            platform = configured.get(platform_id)
+            if bind_new and platform is not None and normalize_user is not None:
+                user_id = _text(normalize_user(platform, user_id), "平台用户识别号")
             key = (platform_id, user_id)
             if key in member_keys:
                 raise ValueError("同一管理组包含重复平台成员")
             member_keys.add(key)
-            platform = configured.get(platform_id)
             stored = old_members.get((identity, platform_id, user_id))
             if bind_new:
                 if stored is not None:
@@ -215,7 +219,7 @@ class AdministratorService:
         返回:
         - 有效匹配组, 已移除或重建的平台不会匹配
         """
-        platform = next((item for item in self._platforms() if item.get("id") == platform_id), None)
+        platform = next((item for item in self._platforms() if isinstance(item, Mapping) and item.get("id") == platform_id), None)
         if platform is None:
             return []
         instance = platform_instance_id(platform)

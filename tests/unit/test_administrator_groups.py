@@ -95,3 +95,11 @@ def test_empty_configuration_and_disabled_group_grant_nothing():
     service = AdministratorService(lambda: [platform()], [group(enabled=False)])
     assert not service.resolve(origin(), "example").allowed
     assert service.protected_users("qq") == []
+
+
+def test_bad_platform_entry_does_not_interrupt_other_platforms_or_empty_groups():
+    platforms = ["bad-config", {"type": "missing-id"}, platform()]
+    service = AdministratorService(lambda: platforms, [])
+    assert not service.resolve(origin(), "example").allowed
+    service.apply([group()])
+    assert service.resolve(origin(), "example").allowed

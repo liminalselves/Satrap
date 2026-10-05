@@ -143,6 +143,7 @@ export interface ControlResult {
 }
 
 export interface ConfigResult {
+  revision?: string;
   ok: boolean;
   config?: Record<string, unknown>;
   path?: string;
@@ -323,8 +324,8 @@ export const controlApi = {
   },
 
   // 保存配置文件
-  saveConfig: async (config: Record<string, unknown>): Promise<ConfigResult> => {
-    const response = await controlClient.put<ConfigResult>('/config', config);
+  saveConfig: async (config: Record<string, unknown>, revision?: string): Promise<ConfigResult> => {
+    const response = await controlClient.put<ConfigResult>('/config', config, { params: { expected_revision: revision } });
     return response.data;
   },
 

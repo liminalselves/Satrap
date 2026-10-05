@@ -74,6 +74,7 @@ class PluginCatalog:
         """
         self.preset_dir = Path(preset_dir) if preset_dir is not None else PLUGINS_PRESET_DIR
         self.user_dir = Path(user_dir) if user_dir is not None else USER_PLUGINS_DIR
+        self.scan_errors: list[dict[str, str]] = []
 
     @staticmethod
     def _load_entry(plugin_dir: Path) -> PluginCatalogEntry:
@@ -118,6 +119,7 @@ class PluginCatalog:
         - list[PluginCatalogEntry]: 去重后的插件目录条目
         """
         found: dict[str, PluginCatalogEntry] = {}
+        failures: list[dict[str, str]] = []
         for base in (self.preset_dir, self.user_dir):
             if not base.is_dir():
                 continue
@@ -129,9 +131,11 @@ class PluginCatalog:
                     json.dumps(entry.to_payload(), allow_nan=False)
                 except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError) as error:
                     logger.warning(f"[插件目录] 元数据加载失败, 目录={plugin_dir.name}, 原因={error}")
+                    failures.append({"name": plugin_dir.name, "error": str(error)})
                     continue
                 if entry.name not in found:   # 官方目录先扫描, 同名用户插件不覆盖
                     found[entry.name] = entry
+        self.scan_errors = failures
         return [found[name] for name in sorted(found)]
 
     def get(self, name: str) -> PluginCatalogEntry | None:

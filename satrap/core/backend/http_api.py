@@ -317,6 +317,7 @@ class BackendHTTPServer(MiniHTTPServer):
         - tuple[int, dict[str, Any]]: 路由分发到 BackendManager 对应方法
         """
         for handler in (
+            self._route_administrators,
             self._route_ui_health_reload,
             self._route_platform_connection,
             self._route_friends,
@@ -339,6 +340,40 @@ class BackendHTTPServer(MiniHTTPServer):
             if response is not None:
                 return response
         return 404, {"error": f"unknown route: {method} {path}"}
+
+    async def _route_administrators(self, method: str, path: str, body: bytes) -> RouteResponse | None:
+        """
+        读取或应用已保存的管理员配置, 沿用服务管理 API 鉴权
+
+        参数:
+        - method: HTTP 方法
+        - path: 精确接口路径
+        - body: 仅可携带已保存区段修订
+
+        返回:
+        - 运行修订, 非法请求 400, 保存版本冲突 409, 无关路径 None
+        """
+        from satrap.core.config.document import ConfigRevisionConflict
+
+        if method == "GET" and path == "/api/administrators/status":
+            return 200, self.backend.administrator_runtime_status()
+        if method != "POST" or path != "/api/administrators/apply":
+            return None
+        try:
+            payload = _parse_json_object(body)
+            if set(payload) != {"section_revision"}:
+                raise ValueError("应用接口只接受 section_revision, 不接受管理员配置正文")
+            result = await asyncio.to_thread(self.backend.apply_saved_administrator_groups, payload["section_revision"])
+            return 200, result
+        except ConfigRevisionConflict as error:
+            logger.warning(f"[管理员设置] 运行应用冲突: {error}")
+            return 409, {"ok": False, "code": "config_revision_conflict", "error": str(error)}
+        except (ValueError, OSError) as error:
+            logger.warning(f"[管理员设置] 运行应用失败: {error}")
+            return 400, {"ok": False, "error": str(error)}
+        except Exception:
+            logger.error(f"[管理员设置] 运行应用异常: {traceback.format_exc()}")
+            return 500, {"ok": False, "error": "管理员配置应用失败, 请查看后端日志"}
 
     async def _route_platform_connection(self, method: str, path: str, body: bytes) -> RouteResponse | None:
         """

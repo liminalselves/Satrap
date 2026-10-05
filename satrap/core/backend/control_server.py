@@ -1598,6 +1598,105 @@ async def _route_logging(ctx: _RouteContext) -> ControlResponse | None:
         return 500, {"ok": False, "error": "日志管理失败, 请查看日志"}
 
 
+def _administrator_runtime_request(section_revision: str, *, apply: bool = False) -> dict[str, Any]:
+    """
+    确认同一配置来源的运行宿主已应用管理员权限
+
+    参数:
+    - section_revision: 保存区段的实际修订
+    - apply: 是否请求应用, 默认只读状态
+
+    返回:
+    - applied, next_start 或 unconfirmed, 连接或业务失败不会误报已生效
+    """
+    host, port = _configured_backend_address()
+    host = _connect_host(host)
+    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    request = _authenticated_request(f"http://{host}:{port}/api/administrators/{'apply' if apply else 'status'}", "POST" if apply else "GET")
+    if apply:
+        request.data = json.dumps({"section_revision": section_revision}).encode("utf-8")
+        request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            payload = json.loads(response.read(1024 * 1024))
+        if (not isinstance(payload, dict) or payload.get("ok") is not True or not payload.get("runtime_id")
+                or not payload.get("config_path") or Path(payload["config_path"]).resolve() != CONFIG_PATH.resolve()):
+            raise ValueError("无法确认运行宿主和当前配置来源一致")
+        status = "applied" if payload.get("section_revision") == section_revision else "unconfirmed"
+        return {"status": status, "section_revision": payload.get("section_revision"), "runtime_id": payload["runtime_id"],
+                "error": "" if status == "applied" else "运行中的管理员配置尚未同步"}
+    except urllib.error.HTTPError as error:
+        try:
+            message = json.loads(error.read(65536)).get("error", f"HTTP {error.code}")
+        except (ValueError, AttributeError):
+            message = f"HTTP {error.code}"
+        logger.warning(f"[管理员设置] 运行应用未确认: {message}")
+        return {"status": "unconfirmed", "error": str(message)}
+    except urllib.error.URLError as error:
+        refused = isinstance(error.reason, ConnectionRefusedError)
+        logger.debug(f"[管理员设置] 宿主连接不可用: {error.reason}")
+        return {"status": "next_start" if refused else "unconfirmed", "error": "" if refused else str(error.reason)}
+    except Exception as error:
+        logger.warning(f"[管理员设置] 运行状态无法确认: {error}")
+        return {"status": "unconfirmed", "error": str(error)}
+
+
+async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    管理员区段的读取, 保存, 草稿预览及独立热应用
+
+    参数:
+    - ctx: 已通过控制服务鉴权的请求上下文
+
+    返回:
+    - 区段与应用状态, 版本冲突 409, 非法草稿 400, 无关路径 None
+    """
+    from satrap.core.config.administrator_settings import administrator_settings_snapshot, save_administrator_groups, preview_administrator_groups
+
+    root = "/config/administrator-groups"
+    if ctx.path not in {root, root + "/apply", root + "/preview"}:
+        return None
+    try:
+        if ctx.method == "GET" and ctx.path == root:
+            snapshot = await asyncio.to_thread(administrator_settings_snapshot, load_config_document(CONFIG_PATH))
+            runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"])
+            return 200, {"ok": True, **snapshot, "runtime": runtime}
+        if ctx.method == "PUT" and ctx.path == root:
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            if set(payload) - {"groups", "expected_revision", "rebind_members"} or "groups" not in payload:
+                raise ValueError("管理员保存正文无效")
+            expected_revision = payload.get("expected_revision")
+            if not isinstance(expected_revision, str) or not expected_revision:
+                raise ValueError("保存管理员配置需要有效的版本号")
+            saved = await asyncio.to_thread(save_administrator_groups, CONFIG_PATH, payload["groups"], expected_revision, payload.get("rebind_members"))
+            snapshot = await asyncio.to_thread(administrator_settings_snapshot, saved)
+            runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"], apply=True)
+            return 200, {"ok": True, **snapshot, "runtime": runtime}
+        if ctx.method == "POST" and ctx.path == root + "/preview":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            if set(payload) - {"groups", "rebind_members"} or "groups" not in payload:
+                raise ValueError("管理员预览正文无效")
+            preview = await asyncio.to_thread(preview_administrator_groups, load_config_document(CONFIG_PATH), payload["groups"], payload.get("rebind_members"))
+            return 200, {"ok": True, **preview}
+        if ctx.method == "POST" and ctx.path == root + "/apply":
+            payload = await _read_json_body(ctx.reader, ctx.raw_request)
+            snapshot = await asyncio.to_thread(administrator_settings_snapshot, load_config_document(CONFIG_PATH))
+            if set(payload) != {"section_revision"} or payload["section_revision"] != snapshot["section_revision"]:
+                raise ConfigRevisionConflict("管理员配置已变化, 请重新读取后应用")
+            runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"], apply=True)
+            return 200, {"ok": True, "runtime": runtime, "section_revision": snapshot["section_revision"]}
+        return 405, {"ok": False, "error": "此管理员接口不支持该方法"}
+    except ConfigRevisionConflict as error:
+        logger.warning(f"[管理员设置] 保存或应用冲突: {error}")
+        return 409, {"ok": False, "error": str(error), "code": "config_revision_conflict"}
+    except (ValueError, OSError, TypeError) as error:
+        logger.warning(f"[管理员设置] 请求失败: {error}")
+        return 400, {"ok": False, "error": str(error)}
+    except Exception:
+        logger.error(f"[管理员设置] 请求异常: {traceback.format_exc()}")
+        return 500, {"ok": False, "error": "管理员设置请求失败, 请查看后端日志"}
+
+
 async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     """
     配置文档与平台区段: /config, /config/default, /config/validate, /config/platforms
@@ -1614,6 +1713,7 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             return 200, {
                 "ok": True,
                 "config": redact_config_document(config_data),
+                "revision": config_document_revision(config_data),
                 "path": str(CONFIG_PATH),
                 "exists": CONFIG_PATH.exists(),
             }
@@ -1625,15 +1725,27 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
             current_config = load_config_document(CONFIG_PATH)
             submitted_config = await _read_json_body(ctx.reader, ctx.raw_request)
             merged_config = merge_masked_secrets(current_config, submitted_config)
-            config_data = await asyncio.to_thread(save_config_document, CONFIG_PATH, merged_config)
+            if not isinstance(merged_config, dict):
+                raise ValueError("配置正文必须是对象")
+            from satrap.core.config.administrator_settings import prepare_administrator_groups
+
+            merged_config["administrator_groups"] = prepare_administrator_groups(
+                current_config, merged_config.get("administrator_groups", current_config.get("administrator_groups", [])),
+            )
+            config_data = await asyncio.to_thread(save_config_document, CONFIG_PATH, merged_config, expected_revision=_expected_revision(ctx))
             return 200, {
                 "ok": True,
                 "message": "配置已保存",
+                "revision": config_document_revision(config_data),
                 "config": redact_config_document(config_data),
                 "path": str(CONFIG_PATH),
                 "exists": True,
             }
+        except ConfigRevisionConflict as e:
+            logger.warning(f"[配置设置] 保存冲突: {e}")
+            return 409, {"ok": False, "error": str(e), "code": "config_revision_conflict"}
         except (json.JSONDecodeError, OSError, ValueError) as e:
+            logger.warning(f"[配置设置] 保存失败: {e}")
             return 400, {"ok": False, "error": str(e)}
 
     if ctx.method == "POST" and ctx.path == "/config/default":
@@ -3152,6 +3264,7 @@ async def _handle_request(
             _route_chat_history,
             _route_lifecycle,
             _route_logging,
+            _route_administrator_settings,
             _route_config_document,
             _route_group_directory,
             _route_models,
