@@ -15,12 +15,12 @@ from .paths import (
     _tool_root,
     _resolve_path,
     _resolve_grep_file,
-    _protection_reason,
+    _FileProtectionMixin,
     _read_file_page,
 )
 
 
-class _ReadFileToolCore(_ToolBase):
+class _ReadFileToolCore(_FileProtectionMixin, _ToolBase):
     """读取工作区内文件 (支持分页)"""
 
     recovery_policy = "retry"
@@ -53,7 +53,7 @@ class _ReadFileToolCore(_ToolBase):
             abs_path = _resolve_path(path, _tool_root(self))
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, _tool_root(self))
         if reason is not None:
             return f"拒绝读取: {reason}"
         if not abs_path.is_file():
@@ -109,7 +109,7 @@ class _ListDirToolCore(_ToolBase):
         return "\n".join(lines)
 
 
-class _GlobFilesToolCore(_ToolBase):
+class _GlobFilesToolCore(_FileProtectionMixin, _ToolBase):
     """按 glob 模式搜索工作区内文件"""
 
     recovery_policy = "retry"
@@ -136,7 +136,7 @@ class _GlobFilesToolCore(_ToolBase):
             for p in root.glob(pattern)
             if p.is_file()
             and p.resolve().is_relative_to(root)
-            and _protection_reason(p, root) is None
+            and self._protection_reason(p, root) is None
         ]
         matches.sort()
         if not matches:
@@ -146,7 +146,7 @@ class _GlobFilesToolCore(_ToolBase):
         )
 
 
-class _GrepFilesToolCore(_ToolBase):
+class _GrepFilesToolCore(_FileProtectionMixin, _ToolBase):
     """正则搜索工作区内文件内容"""
 
     recovery_policy = "retry"
@@ -183,7 +183,7 @@ class _GrepFilesToolCore(_ToolBase):
         hits: list[str] = []
         for p in base.rglob(glob or "*"):
             resolved = _resolve_grep_file(p, root)
-            if resolved is None or _protection_reason(resolved, root) is not None:
+            if resolved is None or self._protection_reason(resolved, root) is not None:
                 continue
             try:
                 text = resolved.read_text(encoding="utf-8", errors="ignore")

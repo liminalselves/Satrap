@@ -387,18 +387,101 @@ def test_create_platform_message_tolerates_non_numeric_time():
     assert message.message_str == "hi" and isinstance(message.timestamp, int)
 
 
-def test_normalize_file_source_tolerates_embedded_nul():
-    """含 NUL 的非法路径按原样透传, 不在路径检查处抛出"""
+def test_normalize_file_source_rejects_embedded_nul():
+    """非法本地路径不能透传给平台服务读取"""
     from satrap.core.platform.onebot.onebot_utils import _normalize_file_source
-    assert _normalize_file_source("bad\0path") == "bad\0path"
+    with pytest.raises(PermissionError):
+        _normalize_file_source("bad\0path")
+
+
+def test_normalize_file_source_rejects_paths_outside_media_roots(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+):
+    """白名单外的本地路径不再包装为 file:// 上传, 直接拒绝"""
+    from satrap.core.platform.onebot.onebot_utils import _normalize_file_source
+    from satrap.core.utils import paths as paths_mod
+
+    fake_root = tmp_path / "allowed"
+    fake_root.mkdir()
+    monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+    outside = tmp_path / "secret.txt"
+    outside.write_text("x", encoding="utf-8")
+    with pytest.raises(PermissionError):
+        _normalize_file_source(str(outside))
+
+
+class TestMediaSourceRejection:
+    """媒体白名单拒绝在发送链上保留专属原因码, 不与目标范围拒绝混淆"""
+
+    @pytest.mark.asyncio
+    async def test_file_uri_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        """file:// 前缀的本地来源同样受白名单约束, fromFileSystem 生成的形态不能绕过"""
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"png")
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([Image.fromFileSystem(str(outside))]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert adapter._bot.calls == []
+
+    @pytest.mark.asyncio
+    async def test_image_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+    ):
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"png")
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([Image(file=str(outside))]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert adapter._bot.calls == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("use_uri", [False, True], ids=["raw-path", "file-uri"])
+    async def test_file_segment_denied_reports_media_reason(
+        self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, use_uri: bool
+    ):
+        from satrap.core.utils import paths as paths_mod
+
+        fake_root = tmp_path / "allowed"
+        fake_root.mkdir()
+        monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+        outside = tmp_path / "secret.bin"
+        outside.write_bytes(b"bin")
+        source = outside.as_uri() if use_uri else str(outside)
+
+        adapter = make_adapter()
+        receipt = await adapter.send_message("group%456", MessageChain([File(name="secret.bin", file=source)]))
+        assert receipt.status == "failed" and receipt.reason == "media_source_denied"
+        assert [name for name, _ in adapter._bot.calls] == []
+
+
+def test_file_uri_to_path_preserves_unix_absolute_root():
+    """Unix file:///absolute/path 必须保留根斜杠, 不能变成相对路径"""
+    from satrap.core.utils.paths import file_uri_to_path
+
+    assert file_uri_to_path("file:///var/tmp/example.txt") == "/var/tmp/example.txt"
 
 
 class TestFileOutboundSplit:
     """File 组件按实现能力分流上传, 混合链保持原序, 未验证回落显式标注"""
 
     @pytest.mark.asyncio
-    async def test_mixed_chain_uploads_in_order(self, tmp_path: Any):
+    async def test_mixed_chain_uploads_in_order(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
         import os
+        monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
 
         target = tmp_path / "probe.bin"
         target.write_bytes(b"x")
@@ -665,3 +748,39 @@ class TestSegmentProgress:
         warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING and not r.name.endswith("_file")]
         assert len(warnings) == 1
         assert "发送收尾未落盘 turn=turn-false-only status=sent" in warnings[0]
+
+
+def test_file_uri_to_path_handles_encoding_and_unc(monkeypatch):
+    """percent-encoding 还原, Windows UNC 形式还原为反斜杠路径"""
+    from satrap.core.utils.paths import file_uri_to_path
+
+    assert file_uri_to_path("file:///var/tmp/my%20file.txt") == "/var/tmp/my file.txt"
+    import os
+    monkeypatch.setattr(os, "name", "nt")
+    assert file_uri_to_path("file:///D:/%E4%B8%AD%E6%96%87.png") == "D:/中文.png"
+    assert file_uri_to_path("file://server/share/doc.txt") == r"\\server\share\doc.txt"
+
+
+def test_media_default_whitelist_allows_only_media_subdirs(tmp_path: Any, monkeypatch: pytest.MonkeyPatch):
+    """默认白名单下数据根内仅媒体子目录放行, 数据库与回收站等子树拒绝; 注册自定义 storage root 后按新根判定"""
+    from satrap.core.utils import paths as paths_mod
+
+    storage = tmp_path / "custom-data"
+    uploads = storage / "platforms" / "p1" / "sessions" / "s1" / "uploads"
+    uploads.mkdir(parents=True)
+    media = uploads / "pic.png"
+    media.write_bytes(b"png")
+    db = storage / "platforms" / "p1" / "platform.db"
+    db.write_bytes(b"db")
+    trash_item = storage / "platforms" / "p1" / "trash" / "item.txt"
+    trash_item.parent.mkdir(parents=True)
+    trash_item.write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [])
+    monkeypatch.setattr(paths_mod, "_media_storage_root", storage.resolve())
+
+    assert paths_mod.ensure_allowed_media_path(str(media)) == str(media)
+    with pytest.raises(PermissionError):
+        paths_mod.ensure_allowed_media_path(str(db))
+    with pytest.raises(PermissionError):
+        paths_mod.ensure_allowed_media_path(str(trash_item))

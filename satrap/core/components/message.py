@@ -8,13 +8,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from pydantic import BaseModel, ConfigDict, Field
-import asyncio
 from pathlib import Path
-import base64
+import asyncio
 from typing import Any, Dict, cast
+import base64
 from enum import Enum
 import json
 import uuid
+import time
 import os
 import re
 
@@ -23,12 +24,12 @@ from satrap.core.utils.outbound import (
     safe_async_get,
     trusted_hosts_from_env,
 )
-from satrap.core.storage import LOCAL_PLATFORM_ID, default_storage_layout
+from satrap.core.utils.paths import MediaSourcePermissionError, ensure_allowed_media_path, file_uri_to_path, get_media_storage_root, normalize_media_source
+from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout
 
 from satrap.core.log import logger
 
 
-_SATRAP_TEMP_DIR = default_storage_layout.platform_cache(LOCAL_PLATFORM_ID) / "temp"
 _callback_api_base: str = ""
 
 
@@ -56,8 +57,9 @@ def get_satrap_temp_path() -> str:
     返回:
     - str:  Satrap 临时目录, 不存在时自动创建
     """
-    _SATRAP_TEMP_DIR.mkdir(parents=True, exist_ok=True)
-    return str(_SATRAP_TEMP_DIR)
+    temp_dir = StorageLayout(get_media_storage_root()).platform_cache(LOCAL_PLATFORM_ID) / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    return str(temp_dir)
 
 
 def set_callback_api_base(base_url: str | None) -> None:
@@ -143,34 +145,29 @@ async def download_image_by_url(url: str) -> str:
     return await download_file(url, path)
 
 
-def _strip_file_uri(path: str) -> str:
-    """
-    兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
-
-    参数:
-    - path: 路径
-
-    返回:
-    - str: 兼容 file:// 与 file:/// 路径, 并处理 Windows 盘符
-    """
-    if not path.startswith("file://"):
-        return path
-    stripped = path[7:]
-    if os.name == "nt" and len(stripped) > 2 and stripped[0] == "/" and stripped[2] == ":":
-        stripped = stripped[1:]
-    return stripped
-
-
 class SatrapFileTokenService:
-    """轻量文件 token 注册服务, 只维护 token 到本地路径的映射"""
+    """轻量文件 token 注册服务, 只维护带过期时间的 token 到本地路径的映射"""
+
+    _TOKEN_TTL_SECONDS = 24 * 60 * 60
+    """注册条目存活时间, 超时后 token 失效"""
+    _MAX_ENTRIES = 1024
+    """同时存活的注册条目上限, 超出时淘汰最早注册的条目"""
 
     def __init__(self) -> None:
         """初始化 SatrapFileTokenService"""
-        self._files: dict[str, str] = {}
+        self._files: dict[str, tuple[str, float]] = {}
+
+    def _evict_expired(self) -> None:
+        """清除超过存活时间的注册条目"""
+        now = time.monotonic()
+        expired = [token for token, (_, registered_at) in self._files.items()
+                   if now - registered_at > self._TOKEN_TTL_SECONDS]
+        for token in expired:
+            del self._files[token]
 
     async def register_file(self, path: str) -> str:
         """
-        注册文件路径并返回 token
+        注册文件路径并返回 token; 仅允许注册媒体白名单内的路径
 
         参数:
         - path: 路径
@@ -178,16 +175,20 @@ class SatrapFileTokenService:
         返回:
         - str: 注册文件路径并返回 token
         """
-        real_path = os.path.abspath(_strip_file_uri(path))
+        real_path = ensure_allowed_media_path(file_uri_to_path(path))
         if not os.path.exists(real_path):
             raise FileNotFoundError(f"文件不存在, 无法注册: {real_path}")
+        self._evict_expired()
+        while len(self._files) >= self._MAX_ENTRIES:
+            oldest = min(self._files, key=lambda token: self._files[token][1])
+            del self._files[oldest]
         token = uuid.uuid4().hex
-        self._files[token] = real_path
+        self._files[token] = (real_path, time.monotonic())
         return token
 
     def get_file(self, token: str) -> str | None:
         """
-        按 token 获取已注册的本地文件路径
+        按 token 获取已注册的本地文件路径, 过期 token 返回 None
 
         参数:
         - token: 令牌
@@ -195,7 +196,14 @@ class SatrapFileTokenService:
         返回:
         - str | None: 按 token 获取已注册的本地文件路径
         """
-        return self._files.get(token)
+        entry = self._files.get(token)
+        if entry is None:
+            return None
+        real_path, registered_at = entry
+        if time.monotonic() - registered_at > self._TOKEN_TTL_SECONDS:
+            del self._files[token]
+            return None
+        return real_path
 
 
 file_token_service = SatrapFileTokenService()
@@ -360,7 +368,7 @@ class _FileLikeComponent(BaseMessageComponent):
         返回:
         - 从文件系统创建实例
         """
-        return cls(file=f"file:///{os.path.abspath(path)}", path=path, **kwargs)
+        return cls(file=Path(path).absolute().as_uri(), path=path, **kwargs)
 
     @classmethod
     def fromURL(cls, url: str, **kwargs: Any):
@@ -374,8 +382,8 @@ class _FileLikeComponent(BaseMessageComponent):
         返回:
         - 从 URL 创建实例
         """
-        if url.startswith(("http://", "https://")):
-            return cls(file=url, **kwargs)
+        if url.lower().startswith(("http://", "https://")):
+            return cls(file=normalize_media_source(url), **kwargs)
         raise ValueError("not a valid url")
 
     @classmethod
@@ -405,24 +413,27 @@ class _FileLikeComponent(BaseMessageComponent):
         返回:
         - str: 将消息段统一转换为本地文件路径
         """
-        source = self._source()
-        if source.startswith("file://"):
-            path = _strip_file_uri(source)
-            if os.path.exists(path):
-                return os.path.abspath(path)
-            raise FileNotFoundError(f"not a valid file: {source}")
-        if source.startswith("http"):
+        source = normalize_media_source(self._source())
+        if source.startswith(("http://", "https://")):
             filename = f"{self.type.value.lower()}seg_{uuid.uuid4().hex}"
             suffix = Path(source.split("?", 1)[0]).suffix
-            return await download_file(source, os.path.join(get_satrap_temp_path(), filename + suffix))
-        if source.startswith("base64://"):
-            bs64_data = source.removeprefix("base64://")
-            file_path = os.path.join(get_satrap_temp_path(), f"{self.type.value.lower()}seg_{uuid.uuid4().hex}")
+            target = ensure_allowed_media_path(os.path.join(get_satrap_temp_path(), filename + suffix))
+            return ensure_allowed_media_path(await download_file(source, target))
+        if source.startswith(("base64://", "data:")):
+            if source.startswith("data:"):
+                header, separator, bs64_data = source.partition(",")
+                if not separator or not header.endswith(";base64"):
+                    raise ValueError("媒体 Data URL 必须使用 Base64 编码")
+            else:
+                bs64_data = source.removeprefix("base64://")
+            file_path = ensure_allowed_media_path(
+                os.path.join(get_satrap_temp_path(), f"{self.type.value.lower()}seg_{uuid.uuid4().hex}")
+            )
             with open(file_path, "wb") as f:
-                f.write(base64.b64decode(bs64_data))
-            return os.path.abspath(file_path)
+                f.write(base64.b64decode(bs64_data, validate=True))
+            return file_path
         if os.path.exists(source):
-            return os.path.abspath(source)
+            return source
         raise FileNotFoundError(f"not a valid file: {source}")
 
     async def convert_to_base64(self) -> str:
@@ -432,19 +443,16 @@ class _FileLikeComponent(BaseMessageComponent):
         返回:
         - str: 将消息段统一转换为 base64 字符串
         """
-        source = self._source()
-        if source.startswith("file://"):
-            bs64_data = file_to_base64(_strip_file_uri(source))
-        elif source.startswith("http"):
-            file_path = await self.convert_to_file_path()
-            bs64_data = file_to_base64(file_path)
-        elif source.startswith("base64://"):
-            bs64_data = source
-        elif os.path.exists(source):
-            bs64_data = file_to_base64(source)
-        else:
-            raise FileNotFoundError(f"not a valid file: {source}")
-        return bs64_data.removeprefix("base64://")
+        source = normalize_media_source(self._source())
+        if source.startswith("base64://"):
+            return source.removeprefix("base64://")
+        if source.startswith("data:"):
+            header, separator, encoded = source.partition(",")
+            if not separator or not header.endswith(";base64"):
+                raise ValueError("媒体 Data URL 必须使用 Base64 编码")
+            base64.b64decode(encoded, validate=True)
+            return encoded
+        return file_to_base64(await self.convert_to_file_path())
 
     async def register_to_file_service(self) -> str:
         """
@@ -458,7 +466,7 @@ class _FileLikeComponent(BaseMessageComponent):
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
         file_path = await self.convert_to_file_path()
         token = await file_token_service.register_file(file_path)
-        logger.debug(f"已注册: {callback_host}/api/file/{token}")
+        logger.debug(f"已注册: {callback_host}/api/file/{token[:8]}***")
         return f"{callback_host}/api/file/{token}"
 
 
@@ -503,13 +511,16 @@ class Video(_FileLikeComponent):
         返回:
         - dict[str, Any]: 异步序列化视频, 支持按 callback 地址暴露本地文件
         """
-        payload_file = self.file
-        if payload_file and not payload_file.startswith("http"):
+        source = self.url or self.file or ""
+        payload_file = normalize_media_source(source) if source else ""
+        if payload_file and not payload_file.startswith(("http://", "https://")):
             callback_host = get_callback_api_base()
             if callback_host:
                 file_path = await self.convert_to_file_path()
                 token = await file_token_service.register_file(file_path)
                 payload_file = f"{callback_host}/api/file/{token}"
+            elif not payload_file.startswith(("base64://", "data:")):
+                payload_file = Path(payload_file).as_uri()
         return {"type": "video", "data": {"file": payload_file}}
 
 
@@ -762,7 +773,7 @@ class Node(BaseMessageComponent):
                         "data": {"file": f"base64://{bs64_data}"},
                     }
                 )
-            elif isinstance(comp, (Plain, File, Node, Nodes)):
+            elif isinstance(comp, (Plain, File, Video, Node, Nodes)):
                 data_content.append(await comp.to_dict())
             else:
                 data_content.append(comp.toDict())
@@ -872,7 +883,8 @@ class File(BaseMessageComponent):
         返回:
         - dict[str, Any]: 同步序列化文件消息段, 不触发网络下载
         """
-        payload_file = self.file_ or self.url or ""
+        source = self.file_ or self.url or ""
+        payload_file = normalize_media_source(source) if source else ""
         return {"type": "file", "data": {"name": self.name, "file": payload_file}}
 
     @property
@@ -883,25 +895,29 @@ class File(BaseMessageComponent):
         返回:
         - str: 同步获取文件路径, 异步上下文中不会阻塞下载
         """
-        if self.file_:
-            path = _strip_file_uri(self.file_)
-            if os.path.exists(path):
-                return os.path.abspath(path)
-        if self.url:
+        for raw_source in (self.file_, self.url):
+            if not raw_source:
+                continue
+            source = normalize_media_source(raw_source)
+            if not source.startswith(("http://", "https://")):
+                if os.path.exists(source):
+                    return source
+                continue
             try:
                 asyncio.get_running_loop()
-                logger.warning(
-                    "不可以在异步上下文中同步等待下载! "
-                    "请使用 await get_file() 代替直接获取 <File>.file 字段"
-                )
-                return ""
             except RuntimeError:
                 try:
-                    asyncio.run(self._download_file())
-                except Exception as e:
-                    logger.error(f"文件下载失败: {e}")
-                if self.file_ and os.path.exists(_strip_file_uri(self.file_)):
-                    return os.path.abspath(_strip_file_uri(self.file_))
+                    return asyncio.run(self.get_file())
+                except MediaSourcePermissionError:
+                    raise
+                except Exception as error:
+                    logger.error(f"文件下载失败: {error}")
+                    return ""
+            logger.warning(
+                "不可以在异步上下文中同步等待下载! "
+                "请使用 await get_file() 代替直接获取 <File>.file 字段"
+            )
+            return ""
         return ""
 
     @file.setter
@@ -922,32 +938,43 @@ class File(BaseMessageComponent):
         异步获取文件路径, 可选择直接返回 URL
 
         参数:
-        - allow_return_url: 是否allowreturnURL
+        - allow_return_url: 为 True 时优先返回已校验来源的 URL, 否则优先已有本地文件
 
         返回:
         - str: 异步获取文件路径, 可选择直接返回 URL
         """
-        if allow_return_url and self.url:
-            return self.url
-        if self.file_:
-            path = _strip_file_uri(self.file_)
-            if os.path.exists(path):
-                return os.path.abspath(path)
-        if self.url:
-            await self._download_file()
-            if self.file_:
-                return os.path.abspath(_strip_file_uri(self.file_))
+        sources = (self.url, self.file_) if allow_return_url else (self.file_, self.url)
+        for raw_source in sources:
+            if not raw_source:
+                continue
+            source = normalize_media_source(raw_source)
+            if source.startswith(("http://", "https://")):
+                if allow_return_url:
+                    return source
+                await self._download_file(source)
+                return ensure_allowed_media_path(self.file_ or "")
+            if source.startswith(("base64://", "data:")):
+                raise ValueError("File 组件不支持内联媒体来源")
+            if os.path.exists(source):
+                return source
         return ""
 
-    async def _download_file(self) -> None:
-        """下载文件到 Satrap 临时目录"""
-        if not self.url:
-            raise ValueError("Download failed: No URL provided in File component.")
+    async def _download_file(self, source: str) -> None:
+        """
+        下载已选定的远程来源到授权的 Satrap 临时目录
+
+        参数:
+        - source: get_file 选择的 HTTP(S) 来源
+        """
+        source = normalize_media_source(source)
+        if not source.startswith(("http://", "https://")):
+            raise ValueError("Download failed: No HTTP URL provided in File component.")
         temp_root = Path(get_satrap_temp_path()).resolve()
         target = (temp_root / _safe_download_filename(self.name)).resolve()
         if not target.is_relative_to(temp_root):
             raise ValueError("文件下载目标越出临时目录")
-        self.file_ = await download_file(self.url, str(target))
+        target_path = ensure_allowed_media_path(str(target))
+        self.file_ = ensure_allowed_media_path(await download_file(source, target_path))
 
     async def register_to_file_service(self) -> str:
         """
@@ -961,7 +988,7 @@ class File(BaseMessageComponent):
             raise RuntimeError("未配置 callback_api_base, 文件服务不可用")
         file_path = await self.get_file()
         token = await file_token_service.register_file(file_path)
-        logger.debug(f"已注册: {callback_host}/api/file/{token}")
+        logger.debug(f"已注册: {callback_host}/api/file/{token[:8]}***")
         return f"{callback_host}/api/file/{token}"
 
     async def to_dict(self) -> dict[str, Any]:

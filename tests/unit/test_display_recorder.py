@@ -389,7 +389,6 @@ def test_end_to_end_session_with_plugin(tmp_path: Any, monkeypatch: Any):
     """
     import satrap.expend.plugins.satrap_coding.tools as tools_mod
 
-    monkeypatch.setattr(tools_mod, "DATA_ROOT", tmp_path / "coding")
     monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", tmp_path / "workspace")
     (tmp_path / "workspace").mkdir()
 

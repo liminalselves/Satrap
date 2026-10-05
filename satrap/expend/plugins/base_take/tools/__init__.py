@@ -79,7 +79,10 @@ def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> lis
     store = state["store"]
     assert isinstance(store, MemoryStore)
 
-    sandbox = CodeSandbox(str(sandbox_root), sys.executable)
+    allowed_env = frozenset(
+        name.strip() for name in str(cfg.get("allowed_env_vars") or "").split(",") if name.strip()
+    )
+    sandbox = CodeSandbox(str(sandbox_root), sys.executable, allowed_env=allowed_env)
 
     if isinstance(session, AsyncSimpleSession):
         tools: list[Any] = [

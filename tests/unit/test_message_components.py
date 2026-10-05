@@ -1,6 +1,4 @@
 from pathlib import Path
-from pathlib import Path
-from pathlib import Path
 import base64
 import pytest
 import os
@@ -29,6 +27,15 @@ from satrap.core.components import (
     file_token_service,
     set_callback_api_base,
 )
+
+
+@pytest.fixture
+def allowed_media_tmp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """组件成功路径只显式授权本用例的文件和缓存, 不依赖整个系统 temp"""
+    from satrap.core.utils import paths
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path / "data")
+    monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(tmp_path))
 
 
 def test_core_components_can_serialize():
@@ -85,6 +92,7 @@ async def test_node_and_nodes_to_dict():
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_image_and_record_base64_file_conversion(tmp_path: Path):
     raw = b"satrap"
     encoded = base64.b64encode(raw).decode("utf-8")
@@ -106,6 +114,7 @@ async def test_image_and_record_base64_file_conversion(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_get_file_local_and_async_guard(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
@@ -129,6 +138,7 @@ async def test_file_get_file_local_and_async_guard(tmp_path: Path):
         ("payload.超长危险扩展名", ""),
     ],
 )
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_download_uses_server_generated_safe_name(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -179,6 +189,7 @@ async def test_file_download_uses_server_generated_safe_name(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_file_register_to_file_service(tmp_path: Path):
     path = tmp_path / "demo.txt"
     path.write_text("hello", encoding="utf-8")
@@ -193,13 +204,14 @@ async def test_file_register_to_file_service(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("allowed_media_tmp")
 async def test_video_and_file_to_dict_without_callback(tmp_path: Path):
     path = tmp_path / "video.bin"
     path.write_bytes(b"video")
 
     assert await Video.fromFileSystem(str(path)).to_dict() == {
         "type": "video",
-        "data": {"file": f"file:///{os.path.abspath(path)}"},
+        "data": {"file": path.resolve().as_uri()},
     }
     assert await File(name="video.bin", file=str(path)).to_dict() == {
         "type": "file",
@@ -237,3 +249,55 @@ def test_component_types_mapping_contains_astrbot_keys():
         "unknown",
     ]:
         assert key in ComponentTypes
+
+
+@pytest.mark.asyncio
+async def test_media_source_whitelist_rejects_paths_outside_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    消息组件不得读取媒体白名单之外的本地路径, 防止本地文件随消息外发
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    from satrap.core.utils import paths as paths_mod
+
+    fake_root = tmp_path / "allowed"
+    fake_root.mkdir()
+    monkeypatch.setattr(paths_mod, "get_allowed_media_roots", lambda: [fake_root.resolve()])
+
+    outside = tmp_path / "secret.txt"
+    outside.write_text("top secret", encoding="utf-8")
+    image = Image.fromFileSystem(str(outside))
+    with pytest.raises(PermissionError):
+        await image.convert_to_file_path()
+    with pytest.raises(PermissionError):
+        await image.convert_to_base64()
+
+    set_callback_api_base("https://callback.example/")
+    try:
+        with pytest.raises(PermissionError):
+            await File(name="secret.txt", file=str(outside)).register_to_file_service()
+    finally:
+        set_callback_api_base("")
+
+
+@pytest.mark.asyncio
+async def test_media_source_whitelist_allows_extra_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    SATRAP_EXTRA_MEDIA_ROOTS 追加的根目录内路径可正常读取
+
+    参数:
+    - tmp_path: 临时目录
+    - monkeypatch: pytest monkeypatch 夹具
+    """
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    picture = extra / "pic.png"
+    picture.write_bytes(b"png")
+
+    monkeypatch.setenv("SATRAP_EXTRA_MEDIA_ROOTS", str(extra))
+    image = Image.fromFileSystem(str(picture))
+    assert await image.convert_to_file_path() == os.path.abspath(picture)

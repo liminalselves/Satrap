@@ -81,7 +81,6 @@ def workspace(tmp_path: Any, monkeypatch: Any) -> Any:
     root = tmp_path / "workspace"
     root.mkdir()
     monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", root)
-    monkeypatch.setattr(tools_mod, "DATA_ROOT", tmp_path / "coding")
     return root
 
 

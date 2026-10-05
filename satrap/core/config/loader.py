@@ -55,6 +55,7 @@ class ConfigLoader:
             "session_classes": dict(cfg.session_classes),
             "session_scan_paths": list(cfg.session_scan_paths),
             "workspace_roots": list(cfg.workspace_roots),
+            "media_allowed_roots": list(cfg.media_allowed_roots or []),
             "api": {
                 "host": cfg.api_host,
                 "port": cfg.api_port,

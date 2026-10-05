@@ -1,3 +1,5 @@
+"""异步目录插件的安装, 失败回滚与能力卸载"""
+
 from __future__ import annotations
 import asyncio
 from pathlib import Path
@@ -70,6 +72,7 @@ async def install_plugin(
     mcp_states: dict[str, bool] = {}
     mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
     resources = None
+    cleanup = None
     try:
         name = str(meta.get("name") or "").strip()
         if not name:
@@ -99,6 +102,7 @@ async def install_plugin(
             model_manager, config_schema, plugin_config, async_=True
         )
 
+        cleanup = collect_cleanup(plugin_dir, name, self)
         for t in collect_tools(
             plugin_dir, name, AsyncTool, self, plugin_config, resources
         ):
@@ -172,7 +176,7 @@ async def install_plugin(
         )
         plugin.resources = resources
         plugin._session = self
-        plugin._cleanup = collect_cleanup(plugin_dir, name, self)
+        plugin._cleanup = cleanup
         plugin.tools = tool_states
         plugin.skills = skill_states
         plugin.mcp = mcp_states
@@ -226,6 +230,11 @@ async def install_plugin(
                     await close()
                 except Exception:
                     pass
+        if cleanup is not None:
+            try:
+                cleanup(self)
+            except Exception as error:
+                logger.warning(f"[edictum] 插件安装回滚清理失败: {error}")
         raise
 
 
