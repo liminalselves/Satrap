@@ -69,6 +69,7 @@ from satrap.core.platform import (
     registry as global_registry,
     set_current_adapter_manager,
 )
+from satrap.core.utils.paths import set_media_allowed_roots, set_media_storage_root
 from satrap.core.storage import LOCAL_PLATFORM_ID, StorageLayout, default_storage_layout
 from satrap.core.type import safe_getattr, safe_getattr_bool, safe_getattr_str
 
@@ -111,6 +112,8 @@ class BackendConfig:
     session_scan_paths: List[str] = field(default_factory=lambda: [".satrap/session"])
     workspace_roots: List[str] = field(default_factory=lambda: ["."])
     # Chat 项目允许浏览和绑定的工作区根目录
+    media_allowed_roots: List[str] | None = None
+    # 默认目录和显式覆盖语义见 docs/getting-started/configuration.md 的媒体来源白名单
 
     api_host: str = "127.0.0.1"
     # HTTP API 配置
@@ -157,6 +160,12 @@ class BackendConfig:
             raise ValueError(
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
+        media_roots = data.get("media_allowed_roots")
+        if media_roots is not None and (
+            not isinstance(media_roots, list)
+            or any(not isinstance(root, str) for root in media_roots)
+        ):
+            raise ValueError("media_allowed_roots 必须是字符串列表或 null")
         return cls(
             model_config_path=data.get("model_config_path"),
             data_root=data.get("data_root"),
@@ -173,6 +182,7 @@ class BackendConfig:
             session_classes=dict(data.get("session_classes", {})),
             session_scan_paths=list(data.get("session_scan_paths", [".satrap/session"])),
             workspace_roots=list(data.get("workspace_roots", ["."])),
+            media_allowed_roots=list(media_roots) if media_roots else None,
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
@@ -227,6 +237,9 @@ class BackendManager:
         self._session_mgr: SessionManager | None = None
         self._user_mgr: UserManager | None = None
         self._storage = StorageLayout(self.config.data_root) if self.config.data_root else default_storage_layout
+        # 媒体白名单在组件转换层全局生效, 默认白名单按实际数据根推导
+        set_media_allowed_roots(self.config.media_allowed_roots)
+        set_media_storage_root(str(self._storage.root))
         self._platform_runtimes: dict[str, tuple[SessionManager, UserManager]] = {}
         self._rate_limiter: RateLimiter | None = None
         self._scheduler: PipelineScheduler | None = None
@@ -1471,11 +1484,19 @@ class BackendManager:
         callers = sorted(set(_lines(config.get("nickname_allowed_callers" if self_nickname else "allowed_callers"))))
         groups = sorted(set(_lines(config.get("allowed_groups"))))
         if (config.get("self_nickname_enabled" if self_nickname else "write_tools_enabled") is not True
+                or not self_nickname and not callers
                 or callers and identity["actor_id"] not in callers
                 or groups and target_group not in groups
                 or self_nickname and target_group != identity["chat_id"]):
             raise PermissionError("模型动作来源写权限已撤销")
         payload = [route, session_id, tool_name, True, callers, groups, target_group]
+        if not self_nickname:
+            from satrap.core.config.group_approval import model_plugin_requires_approval
+
+            requires_approval = model_plugin_requires_approval(tool_name, config)
+            if requires_approval != authorization.approval_required:
+                raise PermissionError("模型动作来源审批要求已变化")
+            payload.append(requires_approval)
         if tool_name == "group_admin_handle_group_request":
             managers = sorted(set(_lines(config.get("request_managers"))))
             if not managers or identity["actor_id"] not in managers:
@@ -1502,7 +1523,7 @@ class BackendManager:
             if authorization.source_session is not None:
                 authorization = ModelActionAuthorization(
                     {**authorization.identity, "auth_fingerprint": source_fingerprint},
-                    authorization.verify, authorization.source_session,
+                    authorization.verify, authorization.source_session, authorization.approval_required,
                 )
         model_origin = authorization.identity if authorization is not None else None
         store = await self._group_action_store(adapter_id)
@@ -1527,9 +1548,10 @@ class BackendManager:
             request_deadline = entry["received_at"] + adapter.request_flags.ledger.ttl
         if authorization is not None and self._model_source_permission_fingerprint(authorization, group_id) != source_fingerprint:
             raise PermissionError("模型动作来源授权已变化")
+        requires_approval = mode == "approval_required" or (authorization is not None and authorization.approval_required)
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
-            actor_kind, version, approval_required=mode == "approval_required", model_origin=model_origin, deadline=request_deadline,
+            actor_kind, version, approval_required=requires_approval, model_origin=model_origin, deadline=request_deadline,
         )
         if not created:
             return record
@@ -1537,7 +1559,7 @@ class BackendManager:
             self._group_action_authorizers[action_id] = authorization
         if secret_flag is not None:
             self._group_action_flags[action_id] = secret_flag
-        if mode == "approval_required":
+        if requires_approval:
             return record
         return await self._execute_group_action(adapter_id, self_id, group_id, action_id, record)
 

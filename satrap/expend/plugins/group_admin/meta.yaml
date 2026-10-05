@@ -11,7 +11,15 @@ config_schema:
   allowed_callers:
     type: textarea
     default: ""
-    description: "哪些成员可以让模型调用群管理工具, 填写 QQ 号, 每行一个; 留空不额外限制成员, 修改和发送操作仍需开启上面的开关"
+    description: "允许请求管理写操作的成员 ID, 每行一个; 留空拒绝全部模型写操作, 仍需开启写操作开关"
+  allowed_read_callers:
+    type: textarea
+    default: ""
+    description: "允许使用本插件查询工具的成员 ID, 每行一个; 留空不额外限制, 不影响 group_chat 的查询工具"
+  high_risk_approval:
+    type: bool
+    default: false
+    description: "踢人, 禁言, 设置管理员, 改群名, 退群及处理加群请求等高危模型操作必须在群管理页面批准; 关闭此项仍遵守宿主审批策略"
   allowed_groups:
     type: textarea
     default: ""

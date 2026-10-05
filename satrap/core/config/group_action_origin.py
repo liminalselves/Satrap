@@ -14,6 +14,7 @@ class ModelActionAuthorization:
     identity: Mapping[str, str]
     verify: Callable[[str], None]
     source_session: Callable[[], object | None] | None = None
+    approval_required: bool = False
 
 
 class ModelActionAuthorizationError(PermissionError):

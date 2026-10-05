@@ -99,13 +99,36 @@ Copy-Item config.example.yaml config.yaml
 | `api.host` | `127.0.0.1` | 后端 HTTP API 监听地址 |
 | `api.port` | `19870` | 后端 HTTP API 监听端口 |
 | `session_classes` | `{}` | 启动时静态注册的 Session 类 |
-| `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录 |
+| `session_scan_paths` | `[".satrap/session"]` | 管理面板和 CLI 扫描 Session 类的目录; 目录下的 .py 会被导入执行, 属于可信代码目录, 不要允许不可信来源写入 |
 | `workspace_roots` | `["."]` | Chat 项目允许浏览和绑定的工作区根目录 |
+| `media_allowed_roots` | `null` | 本地媒体允许目录, 仅接受字符串列表或 null; 规则见下文 |
 | `platforms` | `[]` | 平台适配器实例配置 |
 
 平台实例 `settings` 内的策略字段 (唤醒规则, 窗口与输入预算, 媒体下载, 命令入口等) 由 `satrap/core/config/platform_policy.py` 的 `POLICY_FIELD_CONTRACT` 声明并校验, 逐字段口径与默认值见[平台接入](../platform/platforms.md)。其中 `command_operators` 是 `/approve` 与 `/plan` 的操作员名单: 缺失, 为空或取值非法时这两条命令一律拒绝 (fail-closed), 升级后需先在平台设置中登记操作员, 否则群内与私聊都会收到固定拒绝文案。
 
 平台实例的 `session_type` 与 `session_provider` 在保存阶段不做存在性校验, 可以先保存一个暂时不可用的绑定。可用性只在平台启用时强制: `enable: false` 的平台允许绑定缺失或失效, 重载成功且实例保持惰性; `enable: true` 时只有定义或 Provider 不存在才拒绝应用 (保留原实例与原生效版本, 不回退到 `default_session_type`), 而绑定的会话定义被禁用时平台照常连接与启动, 该绑定的消息在进入唤醒与窗口之前被丢弃, 重新启用定义后无需重建平台即恢复。详见[平台接入](../platform/platforms.md)的配置保存与生效一节与[会话 Provider 与 Edictum 冷配置](../edictum/session-providers.md)的 `enabled` 完整效果。
+
+### 媒体来源白名单
+
+`media_allowed_roots` 为 `null` 或空列表时允许 `.satrap/sandbox`, 以及实际 `data_root` 下的以下目录及其子目录:
+
+- `platforms/<平台键>/cache`
+- `platforms/<平台键>/sessions/<会话键>/{uploads,artifacts,sandbox,cache}`
+- `group-chat/stickers/<64位小写十六进制内容摘要>`: 共享表情库登记的图片文件, 不包含相邻的 catalog.db 或任意文件名
+
+不按任意祖先目录名放行, 因此数据根中的数据库、用户、项目、索引和回收站不属于默认媒体目录。系统临时目录 (`%TEMP%` / `/tmp`) 不默认授权, `data_root` 位于其中时仍只允许上述媒体子目录。需要发送其他临时文件时, 显式授权其所在目录。
+
+非空列表完全替换上述默认授权。`SATRAP_EXTRA_MEDIA_ROOTS` 始终追加目录, 用当前系统的路径分隔符分隔 (Windows 为 `;`, Unix 为 `:`); 配置列表中的路径不按此分隔符拆分, 允许 Windows 目录名含 `;`。路径在校验时解析符号链接和 `..`。
+
+下载和内联媒体的临时文件位于实际 `data_root` 的 `platforms/<local平台键>/cache/temp`。使用显式白名单且需要下载、Base64 转换或文件回调时, 必须将该缓存目录或其父目录列入白名单; 未授权时拒绝落盘, 不额外扩大权限。HTTP(S) 来源可直接交给平台处理。
+
+本地来源支持裸路径和标准 `file:` URI, URI 中的 `#`、`%` 和中文文件名须转义 (Python 可用 `Path.as_uri()`)。所有本地路径先校验授权, 不以文件是否存在决定是否检查; Windows 支持 UNC authority, Unix 拒绝非本机 authority。此白名单约束的是 Satrap 允许外发的路径, 不证明独立部署的 OneBot 服务能访问同一文件系统。
+
+### 群管理插件升级
+
+group_admin 开启 `write_tools_enabled` 后还必须在 `allowed_callers` 中显式配置可发起模型写操作的成员 ID. 留空拒绝全部模型管理写操作, 不从群管理员或其他配置自动补名单. `allowed_read_callers` 独立限制本插件现有查询工具, 留空不额外限制, 不影响 group_chat 或 friend_manager 的权限
+
+`high_risk_approval` 开启后, 踢人, 禁言, 设置管理员, 修改群名, 退群及处理加群请求等高危模型动作必须进入群管理页面的持久审批队列. 宿主账号/群策略要求审批时, 关闭此项也不能取消审批. pending 仅代表申请已保存, succeeded 才表示已执行; 不增加另一套即时询问流程. 已保存配置不会被自动改写, 升级前允许空写名单的配置需由管理员明确补充授权成员
 
 ## 模型配置
 

@@ -10,6 +10,14 @@ from satrap.core.group_chat.assets import AssetStore, _LEASES
 from satrap.core.components import Image
 from .test_group_chat_assets import png
 from .test_group_chat_reply import setup, owner, SCOPE
+from satrap.core.storage import StorageLayout
+from satrap.core.utils import paths
+
+
+@pytest.fixture(autouse=True)
+def managed_media_layout(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path)
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
 
 
 @pytest.mark.asyncio
@@ -164,7 +172,7 @@ async def test_misskey_one_attachment_and_upload_failure_never_send_partial_text
     manager = PlatformAdapterManager(registry)
     manager._adapters["mk"] = adapter
     set_current_adapter_manager(manager)
-    adapter.message_archive = PlatformMessageStore(tmp_path / "misskey.db", "mk")
+    adapter.message_archive = PlatformMessageStore(StorageLayout(tmp_path).platform_db("mk"), "mk")
     import time
     scope = MessageScope("mk", "bot-id", "group", "r1")
     adapter.message_archive.record(scope, ArchiveMessage("source", "member", time.time(), "图片"))

@@ -6,7 +6,7 @@
 
 ## 安装
 
-`satra_coding` 位于官方预设目录, 可一键安装全部预设插件, 也可以手动安装:
+`satrap_coding` 位于官方预设目录, 可一键安装全部预设插件, 也可以手动安装:
 
 ```python
 from satrap import SimpleSession
@@ -52,7 +52,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 写类操作和所有 Shell 命令经过 `PermissionEngine`, 三种策略 (`/approve mode <user|auto-agent|full>`):
 
 - `user` (默认): 需要用户批准, 通过 `session.user_input_provider` 询问; 未配置输入通道则返回"需要用户批准"
-- `auto-agent`: 调用会话主模型只读判断 (allow / deny / ask), 判断失败降级为询问
+- `auto-agent`: 调用会话主模型只读判断, 写类操作的模型批准仍转人工确认, 判断失败同样转为询问
 - `full`: 普通操作放行, 任意本机 Shell 仍需逐次批准
 
 询问时用户输入 `y` 仅批准本次操作, 普通操作可用 `all` 授予本会话权限 (不跨会话持久化)。Shell 不接受 `all` 或历史规则自动授权, 审批说明绑定本次命令、解释器和工作目录。审批策略本身 (`/approve mode`) 随规则文件持久化, 跨会话生效。
@@ -81,27 +81,30 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 插件不再提供独立 sandbox 工具 (与 shell / 文件工具重复, 已移除)。平台运行时注入会话私有 sandbox; Chat 项目会话可以操作外部工作区, 但插件缓存和沙箱仍属于当前会话。
 
-**工作区按会话解析 (项目功能)**: 文件/shell 工具的工作区根在**调用时**按会话解析 —— 会话鸭子属性 `session.coding_workspace_root` 优先 (项目会话由 ChatService 在建会话/改绑时注入), 属性不存在则回落全局 `workspace_root` 配置。多项目会话并存时各自操作各自的工作区, 互不干扰; 无项目会话行为与全局配置一致。免审批范围:
+文件/shell 工具在调用时优先读取宿主注入的 `session.coding_workspace_root`; 未注入时使用安装期保存在工具实例上的 `workspace_root`, 再回落项目根。其他会话的安装或空配置不会修改已有工具的工作区。文件写操作审批后会复核计划模式、工作区和目标路径, 审批期间发生变化则取消执行。
+
+免审批范围:
 
 - 文件和目录只读工具访问工作区内路径
+- 文件写工具修改有效沙箱内的非保护路径; 沙箱按宿主 `coding_sandbox_root`、工具实例 `sandbox_root`、固定默认目录依次选取, `/plan on` 仍拒绝所有文件写入
+
+文件保护与免审批共用实际沙箱的选择规则, 包括宿主属性、插件实例配置和固定默认值。工作区与沙箱可以相同或互相包含; 只允许同时位于工作区和实际沙箱内的普通文件, 不因其祖先是系统 `.satrap` 而误拦截。沙箱内 `.env`、`.git`、`.satrap`、`node_modules` 和额外保护目录仍拒绝, 其余运行数据不被放行。
 
 以下情况需要审批或直接拒绝:
 
-- 文件写入、编辑、删除和所有 Shell 命令
+- 沙箱外文件写入、编辑和所有 Shell 命令
 - 环境修改类命令 (pip install 等)
 - 黑名单命令直接拒绝
-- Shell 命令引用工作区外的绝对或相对逃逸路径
-- Shell 命令包含动态环境路径、嵌套 shell 或无法可靠解析的路径
 - 文件工具操作工作区外路径 (越界拒绝)
 
 `ask_user` 工具建议模型提供 2-3 个推荐选项 (options 参数, 编号展示), 用户可输入序号选择。执行统一走 `shell` (共享本机全环境, 非安全边界), 文件读写走文件工具。免审批读取仅通过文件工具并复用工作区与敏感路径保护; 任意已授权 Shell 程序仍具有当前进程的文件访问权限。`code_sandbox` 仅限制工作目录, 不构成操作系统隔离, 因此 `run` 和 `run_file` 没有明确用户授权时默认拒绝。沙箱路径越界和删除沙箱根目录始终拒绝。
 
 ## 数据目录
 
-插件数据保存在 `.satrap/coding/` (测试环境通过 monkeypatch 隔离):
+权限引擎、目标命令和目标注入处理器共用同一数据根。选择顺序为宿主注入的 `coding_cache_root/satrap_coding`、显式插件 `data_root`、当前会话的默认缓存目录。默认目录为会话数据库旁的 `sessions/<storage_key(session_id)>/cache/satrap_coding`; 无数据库的 embedded Session 使用项目根下 `.satrap/data/unscoped/<storage_key(session_id)>`。路径键由框架生成, 不直接拼接未经处理的 ID。
 
 ```text
-.satrap/coding/
+<data_root>/
 ├── permissions.json     # 持久审批规则
 ├── approval_log.jsonl   # 审批记录
 └── goal.json            # 目标与子任务状态
@@ -111,7 +114,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 
 ## 卸载与隔离
 
-`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置内存级状态 (计划模式 / 审批记忆 / 注入缓存), 不遗留孤儿; 目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份权限引擎 / 目标状态。安装任一步失败时自动回滚已注册能力与 sys.path。
+`uninstall_plugin` 回收全部工具 / 命令 / 技能 / 处理器并调用插件清理回调, 重置内存级状态 (计划模式 / 审批记忆 / 注入缓存), 不遗留孤儿; 目标等数据文件保留, 重装后数据仍在。插件级共享状态按会话隔离 (state.py), 同一会话的工具、命令、处理器共享同一份权限引擎 / 目标状态。安装失败时回滚已注册能力与 sys.path, 并调用清理回调释放已构建的共享状态; 重复安装已安装插件只报错, 不清除其正常状态。
 
 ## 插件配置
 
@@ -120,9 +123,10 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | 配置键 | 类型 | 默认 | 说明 |
 | --- | --- | --- | --- |
 | workspace_root | path | 项目根 | 文件工具白名单根目录 |
-| data_root | path | .satrap/coding | 插件数据目录 |
-| sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时使用会话私有 sandbox |
-| shell_timeout | number | 30 | shell 命令超时 (秒) |
-| protected_dirs | string | - | 额外保护目录 (逗号分隔) |
+| data_root | path | 会话缓存 | 权限、目标和审批日志的数据根, 选择规则见“数据目录” |
+| sandbox_root | path | 项目根/.satrap/sandbox | 文件免审批目录; 宿主会话路径优先, 内部敏感路径和计划模式仍受保护 |
+| shell_timeout | number | 120 | 1-3600 的整数秒; 按工具实例保存; 模型调用可省略 timeout, 单次调用可覆盖; 工厂拒绝超出范围或非整数的生效值 |
+| protected_dirs | string | - | 额外保护目录名 (逗号分隔, 忽略大小写); 按工具实例保存, 空配置仅保留内置保护 |
+| allowed_env_vars | string | - | Shell 子进程显式放行的环境变量名 (逗号分隔); 其他密钥类变量默认剥离 |
 
-安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/satrap_coding.json`。
+安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/satrap_coding.json`。配置在安装时解析, 不支持原地改绑数据根; 更改配置须卸载后重装, 防止已有工具、命令和处理器指向不同状态。卸载不搬迁或删除持久文件。

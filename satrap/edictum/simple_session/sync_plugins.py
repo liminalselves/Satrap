@@ -1,4 +1,7 @@
+"""同步目录插件的安装, 失败回滚与能力卸载"""
+
 from __future__ import annotations
+import traceback
 from pathlib import Path
 from .recovery import plugin_fingerprint
 from satrap.edictum.plugin_compatibility import check_plugin_compatibility
@@ -72,6 +75,7 @@ def install_plugin(
     installed_plugin: Plugin | None = None
     name = ""
     previous_tools = [(tool, tool.is_enabled()) for tool in self._wf.tools_manager.tools.values()]
+    cleanup = None
     try:
         name = str(meta.get("name") or "").strip()
         if not name:
@@ -100,6 +104,7 @@ def install_plugin(
             model_manager, config_schema, plugin_config, async_=False
         )
 
+        cleanup = collect_cleanup(plugin_dir, name, self)
         for t in collect_tools(plugin_dir, name, Tool, self, plugin_config, resources):
             tname = t.get_tool_name()
             if tname in self._wf.tools_manager.tools or tname in tool_states:
@@ -156,7 +161,7 @@ def install_plugin(
                     try:
                         close()
                     except Exception:
-                        pass
+                        logger.error(f"[edictum] 插件 {name} 的 MCP {mcp_name} 回滚关闭失败\n{traceback.format_exc()}")
                 raise
             mcp_clients[mcp_name] = (client, list(adapters))
             mcp_states[mcp_name] = True
@@ -172,7 +177,7 @@ def install_plugin(
         )
         plugin.resources = resources
         plugin._session = self
-        plugin._cleanup = collect_cleanup(plugin_dir, name, self)
+        plugin._cleanup = cleanup
         plugin.tools = tool_states
         plugin.skills = skill_states
         plugin.mcp = mcp_states
@@ -232,9 +237,14 @@ def install_plugin(
                 try:
                     close()
                 except Exception:
-                    pass
+                    logger.error(f"[edictum] 插件 {name} 的 MCP {mcp_name} 回滚关闭失败\n{traceback.format_exc()}")
         for tool, was_enabled in previous_tools:
             tool.enable() if was_enabled else tool.disable()   # 安装回滚后保留已有工具的启用状态
+        if cleanup is not None:
+            try:
+                cleanup(self)
+            except Exception:
+                logger.error(f"[edictum] 插件 {name} 安装回滚清理失败\n{traceback.format_exc()}")
         raise
 
 

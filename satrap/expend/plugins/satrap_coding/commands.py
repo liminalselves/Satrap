@@ -2,7 +2,7 @@
 satrap_coding 插件命令: /goal /plan /approve (同步 + 异步)
 
 约定:
-- build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
+- build_commands(session, config) 工厂返回 (同步命令映射, 异步命令映射)
 - 命令共享插件状态 (state.py), 与工具/处理器同实例: /plan 直接影响工具审批引擎
 
 注: /memory 命令已随长期记忆移交 memory 插件
@@ -148,17 +148,20 @@ def _cmd_approve_impl(state: dict[str, Any], args: list[str]) -> str:
     return f"用法: /approve mode <{'|'.join(_APPROVE_MODES)}> | rules | rule <操作> <风险级>; 当前策略: {engine.mode}"
 
 
-def build_commands(session: SessionType) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
+def build_commands(
+    session: SessionType, config: dict[str, Any] | None = None,
+) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
     """
     构建插件命令: 返回 (同步命令, 异步命令) 映射
 
     参数:
     - session: 会话
+    - config: 与工具和处理器共用的合成插件配置
 
     返回:
     - tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:  (同步命令, 异步命令) 映射
     """
-    state = get_plugin_state(session)
+    state = get_plugin_state(session, config=config)
 
     def cmd_goal(*args: str) -> str:
         """

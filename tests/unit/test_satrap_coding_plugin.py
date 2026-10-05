@@ -168,7 +168,7 @@ def test_plan_mode_blocks_writes(session: SimpleSession):
     - session: 会话
     """
     write_tool = session.tools_manager.tools["write_file"]
-    target = tools_mod.WORKSPACE_ROOT / "x.txt"
+    target = tools_mod._tool_root(write_tool) / "x.txt"
 
     session.user_input_provider = _approve
     session.run("占位")   # 触发一次完整流程
@@ -219,7 +219,7 @@ def test_approve_command(session: SimpleSession):
     - session: 会话
     """
     write_tool = session.tools_manager.tools["write_file"]
-    target = tools_mod.WORKSPACE_ROOT / "x.txt"
+    target = tools_mod._tool_root(write_tool) / "x.txt"
 
     out = write_tool.execute(str(target), "hi")
     # user 模式无输入通道: 拒绝

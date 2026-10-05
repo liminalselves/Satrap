@@ -8,6 +8,8 @@ satrap_coding 处理器: 持续目标注入模型输入
 """
 from __future__ import annotations
 
+from typing import Any
+
 from satrap.expend.plugins.satrap_coding.core.goal_state import GoalState
 from satrap.expend.plugins.satrap_coding.state import get_plugin_state
 from satrap.edictum import (
@@ -57,17 +59,20 @@ class _GoalInjector:
             self._cache = (goal_block, _HEADER + goal_block + "\n")
         return self._cache[1] + text
 
-def build_handlers(session: SessionType) -> list[SessionHandler]:
+def build_handlers(
+    session: SessionType, config: dict[str, Any] | None = None,
+) -> list[SessionHandler]:
     """
     构建处理器: 注入目标到模型输入
 
     参数:
     - session: 会话
+    - config: 与工具和命令共用的合成插件配置
 
     返回:
     - list[SessionHandler]: 构建处理器: 注入目标到模型输入
     """
-    state = get_plugin_state(session)
+    state = get_plugin_state(session, config=config)
     goals = state["goals"]
     assert isinstance(goals, GoalState)
     injector = _GoalInjector(goals, session)

@@ -144,9 +144,14 @@ async def test_first_install_independent_skills_and_reconciliation(tmp_path, asy
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
 @pytest.mark.parametrize("borrowed_enabled", [False, True])
-async def test_failed_first_activation_rolls_back_instructions_and_tools(tmp_path, asynchronous, borrowed_enabled):
+@pytest.mark.parametrize("cleanup_fails", [False, True])
+async def test_failed_first_activation_rolls_back_instructions_and_tools(tmp_path, caplog, asynchronous, borrowed_enabled, cleanup_fails):
     """首次技能连接失败应回滚全部已装配能力, 不把失败状态显示为已加载"""
     plugin_dir = _write_plugin(tmp_path / "plugin", asynchronous, fail_mcp=True)
+    (plugin_dir / "hooks.py").write_text(
+        "def cleanup(session):\n    session.cleanup_calls = getattr(session, 'cleanup_calls', 0) + 1\n"
+        + ("    raise ValueError('清理失败测试')\n" if cleanup_fails else ""), encoding="utf-8",
+    )
     session: Any = (AsyncSimpleSession if asynchronous else SimpleSession)(
         "failed", cast(Any, object()), system_prompt="基础提示词", db_path=str(tmp_path / "context.db"), enable_checkpoint=False,
     )
@@ -172,6 +177,9 @@ async def test_failed_first_activation_rolls_back_instructions_and_tools(tmp_pat
     assert session._skills_manager._active == {}
     assert session._skills_manager._active_mcp == {}
     assert session._skills_manager._owned_tools == {}
+    assert session.cleanup_calls == 1
+    if cleanup_fails:
+        assert "安装回滚清理失败" in caplog.text and "清理失败测试" in caplog.text
 
 
 @pytest.mark.asyncio

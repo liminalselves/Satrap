@@ -52,16 +52,24 @@ def _build_state(session: SessionType, data_root: Path) -> dict[str, Any]:
     }
 
 
-def get_plugin_state(session: SessionType, data_root: Path | None = None) -> dict[str, Any]:
+def get_plugin_state(
+    session: SessionType,
+    data_root: Path | None = None,
+    *,
+    config: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """
     获取会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)
 
     参数:
     - session: 会话
-    - data_root: 插件数据目录
+    - data_root: 显式数据根, 仅供独立调用使用
+    - config: 合成后的插件配置, 宿主缓存根优先于其中的 data_root
+
+    已初始化的状态不允许改绑目录, 避免工具和命令捕获不同引擎; 改配须先卸载
 
     返回:
-    - dict[str, Any]: 会话的插件共享状态 (同 ID 不同对象时重建, 防测试/重建污染)
+    - dict[str, Any]: 当前会话的共享状态; 显式请求不同数据根时抛出 ValueError
     """
     session_cache = safe_getattr(session, "coding_cache_root")
     session_context = safe_getattr(session, "session_ctx")
@@ -81,18 +89,20 @@ def get_plugin_state(session: SessionType, data_root: Path | None = None) -> dic
             session.session_id,
             fallback="session",
         )
-    resolved_data_root = (data_root or default_root).resolve()
+    configured_root = (config or {}).get("data_root")
+    selected_root = default_root
+    if configured_root and not session_cache:
+        selected_root = Path(str(configured_root))
+    resolved_data_root = (data_root or selected_root).resolve()
     registry_key = id(session)
     with _registry_lock:
         state = _registry.get(registry_key)
-        if (
-            state is None
-            or state.get("_owner") is not session
-            or (data_root is not None and state.get("_data_root") != str(resolved_data_root))
-        ):
+        if state is None or state.get("_owner") is not session:
             state = _build_state(session, resolved_data_root)
             state["_owner"] = session
             _registry[registry_key] = state
+        elif (data_root is not None or config is not None) and state.get("_data_root") != str(resolved_data_root):
+            raise ValueError("插件数据目录已绑定, 更改配置前请先卸载 satrap_coding")
     return state
 
 

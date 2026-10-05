@@ -2,12 +2,12 @@
 from __future__ import annotations
 import re
 
+from pydantic import ValidationError
+from pathlib import Path
 from typing import Any, cast
 import json
-import os
 
-from pydantic import ValidationError
-
+from satrap.core.utils.paths import normalize_media_source
 from satrap.core.components import (
     At,
     AtAll,
@@ -386,12 +386,7 @@ def _normalize_file_source(source: str) -> str:
     """
     if not source:
         return source
-    if source.startswith(("http://", "https://", "file://", "base64://")):
-        return source
-    try:
-        if os.path.exists(source):
-            return f"file:///{os.path.abspath(source)}"
-    except ValueError:
-        pass
-    # 含 NUL 等非法路径按原样透传, 由平台侧报错
-    return source
+    normalized = normalize_media_source(source)
+    if normalized.startswith(("http://", "https://", "base64://", "data:")):
+        return normalized
+    return Path(normalized).as_uri()

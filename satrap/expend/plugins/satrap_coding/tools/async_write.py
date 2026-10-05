@@ -17,11 +17,11 @@ from .file_io import write_file, edit_file, replace_file
 from .paths import (
     _tool_root,
     _resolve_path,
-    _protection_reason,
+    _FileProtectionMixin,
     _approve_file_write_async,
 )
 
-class AsyncWriteFileTool(AsyncTool):
+class AsyncWriteFileTool(_FileProtectionMixin, AsyncTool):
     """写入/追加工作区内文件 (异步, 写操作走审批)"""
 
     tool_name = "write_file"
@@ -58,10 +58,11 @@ class AsyncWriteFileTool(AsyncTool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝写入: {reason}"
         # Step.2 请求文件修改审批
@@ -70,9 +71,12 @@ class AsyncWriteFileTool(AsyncTool):
             self.engine,
             abs_path,
             "写入文件",
+            self.sandbox_root,
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
 
         # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(write_file, abs_path, content, append)
@@ -87,7 +91,7 @@ class AsyncWriteFileTool(AsyncTool):
         self._session = session
 
 
-class AsyncEditFileTool(AsyncTool):
+class AsyncEditFileTool(_FileProtectionMixin, AsyncTool):
     """精确替换工作区内文件内容 (异步, 写操作走审批)"""
 
     tool_name = "edit_file"
@@ -128,10 +132,11 @@ class AsyncEditFileTool(AsyncTool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -148,9 +153,12 @@ class AsyncEditFileTool(AsyncTool):
             self.engine,
             abs_path,
             "编辑文件",
+            self.sandbox_root,
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
 
         # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(
@@ -167,7 +175,7 @@ class AsyncEditFileTool(AsyncTool):
         self._session = session
 
 
-class AsyncSearchReplaceTool(AsyncTool):
+class AsyncSearchReplaceTool(_FileProtectionMixin, AsyncTool):
     """批量精确替换 (异步): 一个文件内多对 old->new"""
 
     tool_name = "search_replace"
@@ -208,10 +216,11 @@ class AsyncSearchReplaceTool(AsyncTool):
         # Step.1 检查会话绑定并校验路径和修改输入
         session = require_bound_session(self._session, self.tool_name)
         try:
-            abs_path = _resolve_path(path, _tool_root(self))
+            root = _tool_root(self)
+            abs_path = _resolve_path(path, root)
         except ValueError as e:
             return f"错误: {e}"
-        reason = _protection_reason(abs_path, _tool_root(self))
+        reason = self._protection_reason(abs_path, root)
         if reason is not None:
             return f"拒绝修改: {reason}"
         if not abs_path.is_file():
@@ -229,9 +238,12 @@ class AsyncSearchReplaceTool(AsyncTool):
             self.engine,
             abs_path,
             "批量替换",
+            self.sandbox_root,
         )
         if not allowed:
             return message
+        if self.engine.plan_mode or _tool_root(self) != root or abs_path.resolve() != abs_path:
+            return "执行已取消: 审批期间计划模式或工作区路径发生变化"
 
         # Step.3 执行已批准的文件修改
         return await asyncio.to_thread(replace_file, abs_path, content, pairs)

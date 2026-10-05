@@ -6,6 +6,26 @@ from collections.abc import Mapping
 from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS, HIGH_IMPACT_ACTIONS
 
 
+_PLUGIN_HIGH_RISK_TOOLS = frozenset({
+    "group_admin_kick", "group_admin_ban", "group_admin_whole_ban", "group_admin_ban_anonymous",
+    "group_admin_set_admin", "group_admin_set_name", "group_admin_leave", "group_admin_handle_group_request",
+})
+
+
+def model_plugin_requires_approval(tool_name: str, config: Mapping[str, object]) -> bool:
+    """
+    解析模型插件对当前管理工具的额外审批要求
+
+    参数:
+    - tool_name: 宿主确认的当前工具名
+    - config: 当前会话的有效插件配置
+
+    返回:
+    - bool: 高危管理工具且显式启用逐次审批时为 True
+    """
+    return tool_name in _PLUGIN_HIGH_RISK_TOOLS and config.get("high_risk_approval") is True
+
+
 def approval_values(explicit: Mapping[str, object]) -> dict[str, str]:
     """解析群审批设置的继承或显式模式"""
     result: dict[str, str] = {}

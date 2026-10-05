@@ -10,6 +10,10 @@ config_schema:
     type: path
     default: ""
     description: "独立调用的沙箱兜底路径 (平台运行时固定使用会话私有 sandbox)"
+  allowed_env_vars:
+    type: string
+    default: ""
+    description: "沙箱子进程显式放行的环境变量名 (逗号分隔); 其余密钥类变量 (如 *_API_KEY, *_TOKEN) 默认剥离"
   workspace_root:
     type: path
     default: ""

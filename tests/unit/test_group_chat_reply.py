@@ -18,6 +18,7 @@ from satrap.core.group_chat.service import GroupChatService
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform.event import MessageEvent
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.storage import StorageLayout
 
 
 SCOPE = MessageScope("ob", "10000", "group", "456")
@@ -44,7 +45,7 @@ def setup(tmp_path: Path, *, private: bool = False) -> tuple[OneBotAdapter, Mess
     adapter._bot = AsyncMock()
     adapter._running = True
     adapter.bot_self_id = adapter.client_self_id = "10000"
-    adapter.message_archive = PlatformMessageStore(tmp_path / "platform.db", "ob")
+    adapter.message_archive = PlatformMessageStore(StorageLayout(tmp_path).platform_db("ob"), "ob")
     import time
     adapter.message_archive.record(SCOPE, ArchiveMessage("77", "123", time.time(), "甲提及了乙", mentions=["789"]))
     adapter._bot.get_group_member_info.return_value = {"group_id": 456, "user_id": 789, "nickname": "乙"}

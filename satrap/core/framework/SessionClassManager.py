@@ -19,6 +19,7 @@ import os
 from satrap.core.framework.session_discovery import (
     build_session_module_catalog,
     ensure_session_scan_paths,
+    load_session_module,
 )
 from satrap.core.framework.Base import AsyncSession, Session
 
@@ -218,7 +219,13 @@ class SessionClassConfigManager:
         """
         module_path, class_name, expected_source = self._trusted_module_source(class_path)
         try:
-            module = importlib.import_module(module_path)
+            module = sys.modules.get(module_path)
+            if module is None:
+                catalog = build_session_module_catalog(self.session_scan_paths)
+                if catalog.get(module_path) == expected_source:
+                    module = load_session_module(module_path, expected_source)
+                else:
+                    module = importlib.import_module(module_path)
             cls = getattr(module, class_name)   # 动态类加载, 类名运行时决定, 保留裸 getattr
             if not inspect.isclass(cls) or not issubclass(cls, (Session, AsyncSession)):
                 raise ValueError(f"{class_path} 不是 Session/AsyncSession 子类")

@@ -6,6 +6,7 @@ from typing import Any, TypeVar, cast, overload
 
 import asyncio
 import traceback
+from dataclasses import replace
 
 from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
@@ -16,6 +17,7 @@ from satrap.core.platform import current_adapter_manager
 from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
+from satrap.core.config.group_approval import model_plugin_requires_approval
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
@@ -110,8 +112,10 @@ def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list
     origin = require_call_origin()
     if write and config.get("write_tools_enabled") is not True:
         raise PermissionError("管理写操作未在插件配置中开启")
-    callers = _lines(config.get("allowed_callers"))
-    if write and callers and origin.actor_id not in callers:
+    callers = _lines(config.get("allowed_callers" if write else "allowed_read_callers"))
+    if write and not callers:
+        raise PermissionError("管理写操作要求 allowed_callers 显式列出调用者, 留空拒绝写操作")
+    if callers and origin.actor_id not in callers:
         raise PermissionError("当前调用者不在管理动作允许范围内")
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager is not None else None
@@ -188,7 +192,8 @@ def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> M
         if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
             raise PermissionError("模型管理工具的机器人账号或平台已变化")
         _group_id(origin, groups, {"group_id": target_group})
-    return model_tool_authorization(tool, origin, "group_admin", permission)
+    source = model_tool_authorization(tool, origin, "group_admin", permission)
+    return replace(source, approval_required=model_plugin_requires_approval(str(tool.tool_name), tool.config))
 
 
 def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list[str],
@@ -272,6 +277,8 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
     }
     handler = getattr(admin._adapter, "group_action_handler", None)
+    if model_plugin_requires_approval(name, source_tool.config) and not callable(handler):
+        raise PermissionError("高危动作需要持久审批, 当前审批服务尚未装配")
     if name in action_names and callable(handler):
         action = action_names[name]
         if name == "group_admin_set_group_nickname":

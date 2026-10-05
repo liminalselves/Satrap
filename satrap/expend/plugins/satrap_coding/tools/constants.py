@@ -1,10 +1,10 @@
+"""编程插件的固定默认路径与提示文本, 不承载会话配置"""
+
 from __future__ import annotations
 import re
 from satrap.core.utils.paths import get_project_root
 
 WORKSPACE_ROOT = get_project_root()
-
-DATA_ROOT = WORKSPACE_ROOT / ".satrap" / "coding"
 
 _APPROVAL_PROMPT = """你是一个操作审批助手。请判断以下操作是否允许执行, 只回答一个词:
 - allow: 操作安全或属于常规开发操作

@@ -105,7 +105,10 @@ async def test_unknown_send_never_archives(tmp_path: Path, result: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_upload_id_is_not_a_message_id(tmp_path: Path) -> None:
+async def test_file_upload_id_is_not_a_message_id(tmp_path: Path, monkeypatch) -> None:
+    from satrap.core.utils import paths
+
+    monkeypatch.setattr(paths, "_configured_media_roots", (str(tmp_path),))
     adapter = _onebot(tmp_path)
     adapter._bot.upload_group_file = AsyncMock(return_value={"file_id": "file-1"})
     target = tmp_path / "asset.bin"

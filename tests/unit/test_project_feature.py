@@ -631,7 +631,6 @@ def test_coding_tools_per_session_workspace(tmp_path: Path, monkeypatch: Any):
     (ws_a / "a.txt").write_text("aaa", encoding="utf-8")
     (ws_b / "b.txt").write_text("bbb", encoding="utf-8")
     monkeypatch.setattr(tools_mod, "WORKSPACE_ROOT", global_ws)
-    monkeypatch.setattr(tools_mod, "DATA_ROOT", tmp_path / "coding")
 
     class _StubLLM:
         def call(self, *a: Any, **kw: Any) -> Any:

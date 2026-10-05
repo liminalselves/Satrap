@@ -12,13 +12,13 @@ satrap_coding 插件 TUI Demo: 终端交互展示插件全部能力
 
 注: 插件 sandbox 工具已移除 (与 shell/文件工具重复), 执行统一走 shell, 文件读写走文件工具
 
-界面: 顶部状态面板 (审批策略/计划模式/记忆/目标) + 消息区 + 底部输入
+界面: 顶部状态面板 (审批策略/计划模式/目标) + 消息区 + 底部输入
 
 输入:
 - 普通文本: 走 Agent 流程 (模型 + 工具调用)
-- /new: 清空上下文历史, 开始新会话 (记忆/目标/审批规则保留)
+- /new: 清空上下文历史, 开始新会话 (目标/审批规则保留)
 - /goal <描述>: 设置目标并自动进入 yolo 推进 (模型连续执行直到完成或达轮数上限)
-- /plan /memory /approve: 插件命令
+- /plan /approve: 插件命令
 - 离线模式额外支持 @write <路径> <内容> / @read <路径> / @shell <命令> ... 模拟工具调用
 - exit / quit / q: 退出
 """
@@ -73,7 +73,7 @@ KEY_FILE = PROJECT_ROOT / ".toolkit" / "apikey.txt"
 SESSION_ID = "tui-demo"
 CHAT_DB = PROJECT_ROOT / ".satrap" / "tui_demo" / "chat.db"
 DEFAULT_WORKSPACE = PROJECT_ROOT / ".satrap" / "coding" / "sandbox"
-# 默认工作区 = 沙箱根: 与插件 DEFAULT_SANDBOX_ROOT 一致, 一个目录双重身份 (可被 -- workspace 覆盖)
+# Demo 单独配置沙箱, --workspace 只改变文件工具的工作区
 
 AUTO_MAX_ROUNDS = 8
 """yolo 自动推进轮数上限"""
@@ -204,6 +204,7 @@ class DemoLLM(LLM):
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
+        *, video_urls: list[str] | None = None,
     ) -> LLMCallResponse:
         return LLMCallResponse(type="answer", content=self._simulate(messages))
 
@@ -213,6 +214,7 @@ class DemoLLM(LLM):
         top_p: float | None = None, max_tokens: int | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: str = "auto", img_urls: list[str] | None = None,
+        *, video_urls: list[str] | None = None,
     ) -> Iterator[LLMCallStreamEvent]:
         text = self._simulate(messages)
         if thinking:
@@ -264,7 +266,7 @@ class DemoLLM(LLM):
                 "  @write <路径> <内容>   模拟调用 write_file (沙箱内免审批)\n"
                 "  @read <路径>           模拟调用 read_file\n"
                 "  @shell <命令>          模拟调用 shell\n"
-                "  /goal /plan /memory /approve  插件命令"
+                "  /goal /plan /approve  插件命令"
             )
         return f"[离线演示] 收到: {text[:60]}\n输入 help 查看演示指令"
 
@@ -291,7 +293,6 @@ class TuiApp:
     def _status_table(self) -> Table:
         state = self._state()
         engine = state["engine"]
-        store = state["store"]
         goals = state["goals"]
         goal = goals.get_goal(self.session.session_id)
 
@@ -303,7 +304,6 @@ class TuiApp:
             f"[bold]计划[/bold] {'[red]ON[/red]' if engine.plan_mode else '[green]off[/green]'}",
         )
         table.add_row(
-            f"[bold]记忆[/bold] {store.mode} ({store.count()} 条)",
             f"[bold]目标[/bold] {escape(goal['text'][:22]) if goal else '(无)'}"
             + (f" [{goal['status']}]" if goal else ""),
         )
@@ -401,7 +401,7 @@ class TuiApp:
 
     def _new_session(self) -> None:
         """
-        /new: 清空上下文历史, 开始新会话 (记忆/目标/审批规则等持久数据保留)
+        /new: 清空上下文历史, 开始新会话 (目标/审批规则等持久数据保留)
 
         ContextManager 无公开清空 API, 利用增量保存机制: _saved_count 置 -1
         触发全量重写 (先 DELETE 再 INSERT), 空消息列表落库即清空历史
@@ -415,7 +415,7 @@ class TuiApp:
             self.messages.append(("系统", f"清空上下文失败: {e}"))
             return
         self.messages = []
-        self.messages.append(("系统", "已开始新会话 (上下文历史已清空, 记忆/目标/审批规则保留)"))
+        self.messages.append(("系统", "已开始新会话 (上下文历史已清空, 目标/审批规则保留)"))
 
     def _auto_progress(self) -> None:
         """
@@ -511,12 +511,8 @@ def main() -> None:
     workspace.mkdir(parents=True, exist_ok=True)
     if not any(workspace.iterdir()):
         (workspace / "README.md").write_text(
-            "这是 TUI demo 的工作区/沙箱: 模型在这里读写文件无需审批。\n", encoding="utf-8",
+                "这是 TUI Demo 工作区, 沙箱外文件写入需要批准。\n", encoding="utf-8",
         )
-    import satrap.expend.plugins.satrap_coding.tools as tools_mod
-
-    tools_mod.WORKSPACE_ROOT = workspace
-
     llm: LLM | DemoLLM
     if args.demo:
         llm = DemoLLM()
@@ -535,7 +531,10 @@ def main() -> None:
         thinking_callback=_thinking_forward,
     )
     CHAT_DB.parent.mkdir(parents=True, exist_ok=True)
-    session.install_plugin(str(PLUGIN_DIR))
+    session.install_plugin(str(PLUGIN_DIR), config={
+        "workspace_root": str(workspace),
+        "sandbox_root": str(DEFAULT_WORKSPACE),
+    })
     if args.demo:
         demo_llm = llm
         assert isinstance(demo_llm, DemoLLM), "离线模式必须使用 DemoLLM"
@@ -544,7 +543,7 @@ def main() -> None:
     app = TuiApp(session, demo=args.demo)
     session.user_input_provider = app.ask_user
     app.messages.append(("系统", f"插件已安装: {len(session.list_tools())} 工具 / {len(session.list_commands())} 命令"))
-    app.messages.append(("系统", f"工作区 = 沙箱根: {workspace} (沙箱内写文件免审批)"))
+    app.messages.append(("系统", f"工作区: {workspace}; 免审批沙箱: {DEFAULT_WORKSPACE}"))
     app.run_loop()
 
 

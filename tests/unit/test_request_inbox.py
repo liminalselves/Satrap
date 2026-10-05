@@ -34,7 +34,7 @@ def tool(name, *, write=True, **extra):
         item = AsyncFriendTool(name, "好友工具", {})
         item.config = config
         return item
-    return next(t for t in _async_tools({"request_managers": "123", "write_tools_enabled": write, **extra}) if t.tool_name == name)
+    return next(t for t in _async_tools({"request_managers": "123", "allowed_callers": "123", "write_tools_enabled": write, **extra}) if t.tool_name == name)
 
 
 def attach_friend_host(adapter):
@@ -317,7 +317,7 @@ async def test_group_request_deadline_and_revoked_request_manager_are_rechecked(
     await adapter.request_flags.register("group", "deadline-flag", self_id="10000", group_id="456", sub_type="add", user_id="321", now=time.time() - 500)
     request = (await adapter.request_flags.list_requests("group", self_id="10000", group_id="456"))["items"][0]
     adapter.group_action_handler = lambda gid, action, params: backend.submit_group_action("ob", "10000", gid, "request-pending-1", action, params, actor_kind="model")
-    config = {"request_managers": "123", "write_tools_enabled": True}
+    config = {"request_managers": "123", "allowed_callers": "123", "write_tools_enabled": True}
     handle = next(t for t in _build_tools(AsyncGroupAdminTool, config) if t.tool_name == "group_admin_handle_group_request")
     with bind_call_origin(_origin()):
         submitted = await handle.execute(request_id=request["request_id"], approve=True)

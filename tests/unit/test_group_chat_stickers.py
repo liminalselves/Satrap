@@ -7,6 +7,13 @@ from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.group_chat.types import GroupChatError
 from satrap.core.storage.layout import StorageLayout
 from .test_group_chat_assets import png
+from satrap.core.utils import paths
+
+
+@pytest.fixture(autouse=True)
+def managed_media_layout(tmp_path, monkeypatch):
+    monkeypatch.setattr(paths, "_media_storage_root", tmp_path)
+    monkeypatch.setattr(paths, "_configured_media_roots", ())
 
 
 def metadata(key="upload-one"):

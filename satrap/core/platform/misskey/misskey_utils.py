@@ -1,10 +1,16 @@
-"""Misskey 消息组件转换与文件标识处理工具"""
+"""
+Misskey 消息组件与媒体来源转换
+
+转换平台消息和统一组件, 为适配器解析上传来源,
+本地路径在返回上传调用方前完成媒体白名单校验
+"""
 from __future__ import annotations
 
 from typing import Any, cast
 from datetime import datetime
 
 from satrap.core.platform.event import MessageChain
+from satrap.core.utils.paths import MediaSourcePermissionError, normalize_media_source
 from satrap.core.components import At, File, Image, Plain, PlatformComponentType, Record, Video
 from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType, safe_getattr, safe_getattr_str
 from satrap.core.log import logger
@@ -473,37 +479,50 @@ async def resolve_component_url_or_path(comp: Any) -> tuple[str | None, str | No
     从消息组件中解析远程 URL 或本地路径
 
     参数:
-    - comp: comp 输入值
+    - comp: 消息组件或提供 get_file / 来源属性的对象
 
     返回:
-    - tuple[str | None, str | None]: 从消息组件中解析远程 URL 或本地路径
+    - tuple[str | None, str | None]: 远程 URL 与本地路径, 至多一个非空
+      本地路径须通过白名单, 内联图片/语音/视频先落盘, 权限拒绝不进入属性回退
     """
     if hasattr(comp, "get_file"):
         try:
             value = await comp.get_file(True)
-            if isinstance(value, str) and value.startswith("http"):
-                return value, None
+        except MediaSourcePermissionError:
+            raise
         except Exception:
-            pass
+            if isinstance(comp, File):
+                raise
+        else:
+            if isinstance(value, str) and value:
+                source = normalize_media_source(value)
+                if source.startswith(("base64://", "data:")):
+                    raise ValueError("get_file 必须返回 HTTP URL 或本地路径")
+                return (source, None) if source.startswith(("http://", "https://")) else (None, source)
+            if isinstance(comp, File):
+                return None, None
     for attr in ("url", "file", "path", "src", "source"):
         try:
             value = safe_getattr(comp, attr)
+        except MediaSourcePermissionError:
+            raise
         except Exception:
             continue
         if not isinstance(value, str) or not value:
             continue
-        if value.startswith("http"):
-            return value, None
-        return None, value
+        source = normalize_media_source(value)
+        if source.startswith(("http://", "https://")):
+            return source, None
+        if source.startswith(("base64://", "data:")):
+            if isinstance(comp, (Image, Record, Video)):
+                return None, normalize_media_source(await comp.convert_to_file_path())
+            raise ValueError("此组件不支持内联媒体转换")
+        return None, source
     if hasattr(comp, "convert_to_file_path"):
-        try:
-            value = await comp.convert_to_file_path()
-            if isinstance(value, str):
-                if value.startswith("http"):
-                    return value, None
-                return None, value
-        except Exception:
-            pass
+        value = await comp.convert_to_file_path()
+        if isinstance(value, str) and value:
+            source = normalize_media_source(value)
+            return (source, None) if source.startswith(("http://", "https://")) else (None, source)
     return None, None
 
 
