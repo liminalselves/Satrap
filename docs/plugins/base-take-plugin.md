@@ -36,12 +36,15 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | sandbox_root | path | 空 | 独立调用的兜底值; 平台运行时始终使用会话私有 sandbox |
 | workspace_root | path | 项目根 | read_document 白名单根目录 |
 | search_timeout | number | 10 | 搜索超时 (秒) |
+| allowed_env_vars | string | 空 | 代码子进程显式放行的环境变量名, 多个名称用逗号分隔 |
 
 安装时经 `install_plugin(path, config={...})` 传入会话级覆盖; 全局默认存于 `.satrap/config/plugins/base_take.json`。
 
 ## 沙箱协调
 
 base_take 与 satrap_coding 在同一会话内共享该会话的私有 sandbox, 不与其他会话共享。当两插件同时启用时, ChatService 自动停用 base_take 的 `code_sandbox` 工具, 避免能力重复。
+
+代码子进程默认移除密钥类环境变量, `allowed_env_vars` 可按名称显式放行; Windows 按不区分大小写的名称匹配. 目录约束和环境过滤不等同于操作系统级隔离
 
 ## 记忆能力拆分
 

@@ -30,8 +30,9 @@
 
 ### plugins/ 内置插件与扩展
 
-- [satrap_coding 插件](plugins/satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / 沙箱 / 记忆 / 子代理 / 目标与计划模式
-- [base_take 插件](plugins/base-take-plugin.md): 长期记忆插件, 全局 / 项目分层与注入机制
+- [satrap_coding 插件](plugins/satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / shell / 子代理 / 目标与计划模式
+- [base_take 插件](plugins/base-take-plugin.md): 网页搜索与抓取, 代码沙箱和文档解析
+- [memory 插件](plugins/memory-plugin.md): 独立长期记忆, 来源, 权限与上下文注入
 - [RAG 与会话覆盖](plugins/rag-and-session-overrides.md): RAG 插件使用流程, 知识库参数与文档管理, Embedding 绑定与索引重建, 检索参数, 会话级插件配置覆盖
 - [扩展模块](plugins/extensions.md): `satrap.expend` 工具集: 搜索, 网页抓取, 代码沙箱, RAG, 长期记忆和 sub-agent
 
@@ -56,6 +57,8 @@
 - [开发规范](development/development-guidelines.md): 注释规范, 静态类型检查规范与门禁
 - [测试说明](development/testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
 - [安全审查报告](development/security-review-issue-12.md): issue #12 / PR #15 的审查范围、修复契约与验证缺口
+- [main 合并契约](development/main-merge-plan-contracts.md): 合并范围, 媒体授权, 插件生命周期和群管理审批
+- [main 合并验收](development/main-merge-verification.md): 集成适配, 回归结果与升级要求
 
 ### archive/ 过程记录 (本地留档, 不入库)
 
