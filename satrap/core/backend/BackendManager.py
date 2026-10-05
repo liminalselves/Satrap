@@ -121,6 +121,7 @@ class BackendConfig:
 
     platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
     # 平台适配器配置
+    administrator_groups: list[dict[str, Any]] = field(default_factory=list)
 
     @staticmethod
     def _as_bool(value: Any) -> bool:
@@ -161,6 +162,8 @@ class BackendConfig:
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
         media_roots = data.get("media_allowed_roots")
+        from satrap.core.config.administrator_groups import normalize_administrator_groups
+        administrators = normalize_administrator_groups(data.get("administrator_groups"), data.get("platforms", []))
         if media_roots is not None and (
             not isinstance(media_roots, list)
             or any(not isinstance(root, str) for root in media_roots)
@@ -186,6 +189,7 @@ class BackendConfig:
             api_host=str(data.get("api", {}).get("host", data.get("api_host", "127.0.0.1"))),
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
+            administrator_groups=administrators,
         )
 
 
@@ -215,6 +219,8 @@ class BackendManager:
         - edictum_type_registry: 可选扩展类型注册表, 未提供时使用内置类型
         """
         self.config = config or BackendConfig()
+        from satrap.core.config.administrator_groups import AdministratorService
+        self.administrator_service = AdministratorService(lambda: self.config.platforms, self.config.administrator_groups)
         self._platform_active_configs: dict[str, dict[str, Any]] = {}
         self._platform_config_results: list[dict[str, Any]] = []
         self._platform_apply_lock = asyncio.Lock()
@@ -3102,6 +3108,7 @@ class BackendManager:
             pass
 
         self._adapter_mgr = PlatformAdapterManager(registry=global_registry)
+        self._adapter_mgr.administrator_service = self.administrator_service
         self._adapter_mgr.reminder_host = self.reminder_host
         if self.platform_events.closed:
             self.platform_events = PlatformEventHub()

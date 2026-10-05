@@ -9,6 +9,8 @@ import yaml
 import json
 
 from satrap.edictum.plugin_config import ConfigField, parse_config_schema, schema_to_payload
+from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
+from satrap.core.log import logger
 from satrap.edictum.plugin import (
     CAPABILITY_KINDS,
     PLUGINS_PRESET_DIR,
@@ -31,6 +33,7 @@ class PluginCatalogEntry:
     capabilities: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
     compatibility: dict[str, Any] = field(default_factory=dict[str, Any])
     applicability: dict[str, Any] = field(default_factory=dict[str, Any])
+    permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
 
     def check_environment(self, environment: PluginEnvironment):
         """根据指定环境计算适用性"""
@@ -39,6 +42,7 @@ class PluginCatalogEntry:
     def to_payload(self) -> dict[str, Any]:
         """转换为前端可使用的插件元数据"""
         return {
+            **self.permissions.to_payload(),
             "name": self.name,
             "version": self.version,
             "compatibility": dict(self.compatibility),
@@ -88,6 +92,8 @@ class PluginCatalog:
             raise ValueError(f"插件目录缺少合法 name: {plugin_dir}")
         compatibility, applicability = parse_compatibility(meta)
         descriptions = parse_capability_descriptions(meta)
+        config_schema = parse_config_schema(meta)
+        permissions = parse_plugin_permissions(meta, config_schema)
         return PluginCatalogEntry(
             name=name,
             path=plugin_dir,
@@ -96,7 +102,8 @@ class PluginCatalog:
             version=str(meta.get("version") or ""),
             author=str(meta.get("author") or ""),
             description=str(meta.get("description") or ""),
-            config_schema=parse_config_schema(meta),
+            config_schema=config_schema,
+            permissions=permissions,
             capabilities={
                 kind: dict(descriptions.get(kind, {}))
                 for kind in CAPABILITY_KINDS
@@ -120,7 +127,8 @@ class PluginCatalog:
                 try:
                     entry = self._load_entry(plugin_dir)
                     json.dumps(entry.to_payload(), allow_nan=False)
-                except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError):
+                except (OSError, ValueError, TypeError, yaml.YAMLError, RecursionError) as error:
+                    logger.warning(f"[插件目录] 元数据加载失败, 目录={plugin_dir.name}, 原因={error}")
                     continue
                 if entry.name not in found:   # 官方目录先扫描, 同名用户插件不覆盖
                     found[entry.name] = entry

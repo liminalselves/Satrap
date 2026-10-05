@@ -1243,6 +1243,7 @@ class PlatformAdapterManager:
         self.registry = registry or PlatformAdapterRegistry()
         self._adapters: Dict[str, PlatformAdapter] = {}
         self.reminder_host: Any = None
+        self.administrator_service: Any = None
 
     def add_adapter(self, config: PlatformConfig, event_handler: EventHandler | None = None) -> Optional[PlatformAdapter]:
         """

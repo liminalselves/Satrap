@@ -16,6 +16,7 @@ from typing import (
 from .base import DEFAULT_COMMAND_PARAM_SPLIT, DEFAULT_COMMAND_PREFIX, _CommandRegistry
 
 from satrap.core.log import logger
+from satrap.core.plugin_authorization import bind_native_command, require_plugin_entry_permission, PluginPermissionDenied
 
 
 class AsyncCommandHandler(_CommandRegistry):
@@ -57,12 +58,19 @@ class AsyncCommandHandler(_CommandRegistry):
         try:
             if cmd in self.commands and cmd not in self._disabled_commands:
                 handler = self.commands[cmd]
+                binding = getattr(self, "_permission_bindings", {}).get(cmd)
+                if binding is not None:
+                    with bind_native_command(binding):
+                        require_plugin_entry_permission(binding, subcommand=args[0] if args else None)
+                        return await handler(*args)
                 # 直接异步调用, handler 必须为异步函数
                 return await handler(*args)
             else:
                 logger.warning(f"未注册命令: {cmd}")
                 return None
 
+        except PluginPermissionDenied as error:
+            return str(error)
         except Exception as e:
             logger.error(f"命令执行错误: {cmd}, {e}")
             return None

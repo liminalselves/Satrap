@@ -50,6 +50,7 @@ import yaml
 import sys
 
 from satrap.core.utils.skills import Skill
+from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions
 from satrap.core.type import (
     safe_getattr_callable,
     safe_getattr_str,
@@ -671,6 +672,8 @@ class Plugin:
     capability_descriptions: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
     """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
     config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
+    effective_config: dict[str, Any] = field(default_factory=dict, repr=False)
     resources: Any = field(default=None, repr=False)
     recovery_fingerprint: str = ""
     """配置项声明 (meta.yaml config_schema): 键 -> {type/default/description/options}, 供前端渲染表单"""

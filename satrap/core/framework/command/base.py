@@ -1,3 +1,4 @@
+"""命令注册与解析, 支持宿主绑定的管理权限声明"""
 from typing import Any, Optional, Dict, List, Tuple
 
 DEFAULT_COMMAND_PREFIX = "/"
@@ -14,6 +15,7 @@ class _CommandRegistry:
     pref_len: int
     param_split: str
     _disabled_commands: set[str]
+    _permission_bindings: Dict[str, Any]
 
     def _parse(self, message: str) -> Tuple[Optional[str], Optional[List[str]]]:
         """
@@ -77,7 +79,7 @@ class _CommandRegistry:
         """
         return self.intros.copy()
 
-    def register_command(self, name: str, handler: Any, intro: str = "None"):
+    def register_command(self, name: str, handler: Any, intro: str = "None", *, permission_binding: Any = None):
         """
         注册命令处理函数
 
@@ -85,9 +87,15 @@ class _CommandRegistry:
         - name: 命令名
         - handler: 处理函数
         - intro: 命令简介 (可选), 默认为 "None"
+        - permission_binding: 宿主创建的管理权限绑定, 旧命令默认不追加规则
         """
         self.commands[name] = handler
         self.intros[name] = intro
+        if not hasattr(self, "_permission_bindings"):
+            self._permission_bindings = {}
+        self._permission_bindings.pop(name, None)
+        if permission_binding is not None:
+            self._permission_bindings[name] = permission_binding
 
     def unregister_command(self, name: str) -> bool:
         """
@@ -103,6 +111,7 @@ class _CommandRegistry:
             return False
         self.commands.pop(name, None)
         self.intros.pop(name, None)
+        getattr(self, "_permission_bindings", {}).pop(name, None)
         self._disabled_commands.discard(name)
         return True
 

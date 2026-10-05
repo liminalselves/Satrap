@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 import traceback
+import weakref
 from pathlib import Path
 from .recovery import plugin_fingerprint
 from satrap.edictum.plugin_compatibility import check_plugin_compatibility
+from satrap.edictum.plugin_permissions import parse_plugin_permissions, validate_permission_install
+from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool
 from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
 from satrap.edictum.plugin_settings import (
@@ -85,6 +88,7 @@ def install_plugin(
                 raise ValueError(f"插件 {name} 已安装")
 
         config_schema = parse_config_schema(meta)
+        permissions = parse_plugin_permissions(meta, config_schema)
         # 合成插件配置: schema.default < 全局 json < 会话覆盖
         if isinstance(config, EffectivePluginConfig):
             plugin_config = dict(config)
@@ -110,6 +114,7 @@ def install_plugin(
             if tname in self._wf.tools_manager.tools or tname in tool_states:
                 raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
             t.owner_plugin = name
+            bind_plugin_tool(t, name, permissions, getattr(t, "config", plugin_config), self)
             self._wf.tools_manager.register_tool(t)
             tool_states[tname] = True
 
@@ -144,7 +149,9 @@ def install_plugin(
             if cname in self.cmd_handler.commands or cname in command_states:
                 raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
             self.cmd_handler.register_command(
-                cname, chandler, intro=_command_intro(chandler)
+                cname, chandler, intro=_command_intro(chandler),
+                permission_binding=PluginEntryBinding(name, "commands", cname, permissions, plugin_config, weakref.ref(chandler), weakref.ref(self))
+                if cname in permissions.commands else None,
             )
             command_states[cname] = True
 
@@ -176,6 +183,9 @@ def install_plugin(
             path=str(plugin_dir),
         )
         plugin.resources = resources
+        plugin.permissions = permissions
+        plugin.effective_config = plugin_config
+        validate_permission_install(permissions, tool_states, sync_commands)
         plugin._session = self
         plugin._cleanup = cleanup
         plugin.tools = tool_states

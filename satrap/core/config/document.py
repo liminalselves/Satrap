@@ -344,6 +344,8 @@ def validate_config_document(data: object) -> dict[str, Any]:
         raise ValueError("配置根节点必须是对象")
     normalized = dict(cast(dict[str, Any], data))
     normalized["platforms"] = validate_platforms(normalized.get("platforms", []))
+    from satrap.core.config.administrator_groups import normalize_administrator_groups
+    normalized["administrator_groups"] = normalize_administrator_groups(normalized.get("administrator_groups"), normalized["platforms"])
     BackendConfig.from_dict(normalized)
     return normalized
 
