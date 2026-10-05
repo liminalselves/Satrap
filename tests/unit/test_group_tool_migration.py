@@ -135,7 +135,7 @@ async def test_group_list_is_private_authorized_scoped_and_revalidates_permissio
         assert not denied["ok"] and denied["error"]["code"] == "stale_call"
 
 
-async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str):
+async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str, plugin_config: dict[str, Any] | None = None):
     from satrap.core.backend.BackendManager import BackendManager, BackendConfig
     from satrap.core.config.group_directory import GroupDirectoryStore
     from satrap.core.platform import PlatformAdapterManager
@@ -163,6 +163,8 @@ async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str):
     configs = EdictumConfigManager(registry, tmp_path / "edictum.json")
     config = ({"self_nickname_enabled": True, "nickname_allowed_callers": "123"} if plugin_name == "group_chat"
               else {"write_tools_enabled": True, "allowed_callers": "123"})
+    if plugin_config is not None:
+        config = plugin_config
     configs.create("assistant", {"edictum_type": "async_simple" if asynchronous else "simple", "model_name": "base",
                                  "plugins": [{"name": plugin_name, "enabled": True, "config": config}]})
     provider = EdictumProvider(configs, registry, default_checkpoint_db=str(backend.platform_db_path("ob")))
@@ -369,13 +371,13 @@ async def test_new_queries_support_another_platform_and_private_route_revocation
         assert group["item"]["group_id"] == "room/群" and group["item"]["member_count"] == 2
     private = replace(origin, chat_type="DirectEvent", chat_id="user:甲", conversation_kind="private", conversation_id="user:甲")
     with bind_call_origin(private):
-        groups = await service.execute("group_chat_list_groups", {}, limits=GroupChatLimits(cross_group_query_callers=("user:甲",)))
+        groups = await service.execute("group_chat_list_groups", {}, authorize=lambda _: None)
         assert [item["group_id"] for item in groups["items"]] == ["room/群"]
         adapter._agent_route_memory[("robot:一", "private", "user:甲")] = ({}, 2)
-        stale = await service.execute("group_chat_list_groups", {}, limits=GroupChatLimits(cross_group_query_callers=("user:甲",)))
+        stale = await service.execute("group_chat_list_groups", {}, authorize=lambda _: None)
         assert stale["error"]["code"] == "stale_call"
     with bind_call_origin(replace(private, self_id="robot:二")):
-        wrong_account = await service.execute("group_chat_list_groups", {}, limits=GroupChatLimits(cross_group_query_callers=("user:甲",)))
+        wrong_account = await service.execute("group_chat_list_groups", {}, authorize=lambda _: None)
         assert not wrong_account["ok"]
 
 

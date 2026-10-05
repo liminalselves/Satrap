@@ -292,8 +292,8 @@ class GroupChatService:
             private = operation == "group_chat_list_groups"
             context = await self._resolve(private=private, authorize=authorize)
             if private:
-                if context.origin.actor_id not in bounds.cross_group_query_callers:
-                    raise GroupChatError("forbidden", "未配置为跨群查询管理者")
+                if authorize is None:
+                    raise GroupChatError("forbidden", "群列表查询必须由当前插件入口授权")
                 return await self._groups(context, bounds)
             if bounds.allowed_groups and context.scope.chat_id not in bounds.allowed_groups:
                 raise GroupChatError("forbidden", "当前群不在插件允许范围内")

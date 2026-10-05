@@ -190,6 +190,25 @@ def bind_plugin_tool(tool: Any, plugin_name: str, permissions: PluginPermissions
                                                    weakref.ref(tool), weakref.ref(session) if session is not None else None)
 
 
+def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
+    """
+    为直接工厂调用绑定同一份声明, 正式安装时追加真实会话注册状态
+
+    参数:
+    - tools: 工厂实际构造的工具列表
+    - source_file: 工厂模块路径, 固定从相邻 meta.yaml 读取声明
+    """
+    from pathlib import Path
+    from satrap.edictum.plugin import load_plugin_meta
+    from satrap.edictum.plugin_config import parse_config_schema
+    from satrap.edictum.plugin_permissions import parse_plugin_permissions
+
+    meta = load_plugin_meta(Path(source_file).parent)
+    permissions = parse_plugin_permissions(meta, parse_config_schema(meta))
+    for tool in tools:
+        bind_plugin_tool(tool, meta["name"], permissions, tool.config)
+
+
 def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | None = None) -> AuthorizationDecision:
     """
     从真实作用域校验当前插件入口与名单
@@ -254,4 +273,10 @@ def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: 
         logger.warning(f"[管理权限] 调用拒绝, 插件={binding.plugin_name}, 入口={binding.name}, "
                        f"调用者={origin.actor_id if origin else ''}, 原因={result.reason_code}")
         raise PluginPermissionDenied(result)
+    if result.status == "allowed":
+        origin = current_call_origin()
+        logger.debug(f"[管理权限] 调用允许, 插件={binding.plugin_name}, 入口={binding.name}, "
+                     f"平台={origin.adapter_id if origin else ''}, 调用者={origin.actor_id if origin else ''}, "
+                     f"请求={origin.request_id if origin else ''}, "
+                     f"授权={[(item.permission, item.source, item.group_ids) for item in result.grants]}")
     return result

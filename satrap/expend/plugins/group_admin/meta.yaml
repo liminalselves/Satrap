@@ -1,4 +1,38 @@
 name: group_admin
+permission_schema_version: 1
+management_permissions:
+  read:
+    description: 查询群荣誉和转发内容
+    caller_list: allowed_read_callers
+    empty_policy: allow
+    system_admin: true
+  write:
+    description: 请求群管理修改和发送操作
+    caller_list: allowed_callers
+    empty_policy: deny
+    system_admin: true
+  requests:
+    description: 查询和处理入群申请与邀请
+    caller_list: request_managers
+    empty_policy: deny
+    system_admin: true
+tool_permissions:
+  group_admin_get_honors: [read]
+  group_admin_get_forward: [read]
+  group_admin_list_group_requests: [read, requests]
+  group_admin_send_forward: [write]
+  group_admin_recall_message: [write]
+  group_admin_kick: [write]
+  group_admin_ban: [write]
+  group_admin_whole_ban: [write]
+  group_admin_ban_anonymous: [write]
+  group_admin_set_admin: [write]
+  group_admin_set_anonymous: [write]
+  group_admin_set_group_nickname: [write]
+  group_admin_set_name: [write]
+  group_admin_set_title: [write]
+  group_admin_leave: [write]
+  group_admin_handle_group_request: [write, requests]
 version: 0.4.0
 author: Satrap Team
 description: "管理 OneBot 群的禁言, 群昵称, 群名和入群请求, 查询荣誉与合并转发; 修改和发送操作默认关闭"
@@ -11,7 +45,7 @@ config_schema:
   allowed_callers:
     type: textarea
     default: ""
-    description: "允许请求管理写操作的成员 ID, 每行一个; 留空拒绝全部模型写操作, 仍需开启写操作开关"
+    description: "哪些成员可以让模型执行禁言, 踢人, 修改群昵称等管理操作或发送合并转发. 填写成员账号 ID, 每行一个; 留空时拒绝全部模型写操作; 还须开启管理写操作, 需要审批的动作须人工批准"
   allowed_read_callers:
     type: textarea
     default: ""
@@ -27,7 +61,7 @@ config_schema:
   request_managers:
     type: textarea
     default: ""
-    description: "允许查询和处理加群申请的管理者 ID, 每行一个; 留空禁用加群申请工具, 处理还需开启管理写操作"
+    description: "哪些人可以让模型查看入群申请和邀请, 并同意或拒绝它们. 填写成员账号 ID, 每行一个; 留空时禁用申请查询和处理; 查询还受查询调用者名单限制, 处理还须在管理写操作调用者名单中并开启管理写操作"
 
 tools:
   group_admin_get_honors: "查看群荣誉信息"

@@ -199,11 +199,10 @@ async def test_misskey_one_attachment_and_upload_failure_never_send_partial_text
 
 @pytest.mark.asyncio
 async def test_reply_definition_hides_unusable_components_and_disconnected_tool(tmp_path: Path, monkeypatch):
-    from types import SimpleNamespace
-    from satrap.expend.plugins.group_chat.tools import _available, _GroupChatMixin
+    from satrap.expend.plugins.group_chat.tools import _available, _GroupChatMixin, get_tools
 
     adapter, event, _ = setup(tmp_path)
-    tool = SimpleNamespace(tool_name="group_chat_reply", config={"media_reply_enabled": True})
+    tool = next(item for item in get_tools(object(), {"media_reply_enabled": True}) if item.tool_name == "group_chat_reply")
     with bind_call_origin(event.call_origin):
         monkeypatch.setattr(adapter, "group_chat_capabilities", lambda: {"text": {"state": "supported"}, "image": {"state": "unsupported"}})
         assert _available(tool)

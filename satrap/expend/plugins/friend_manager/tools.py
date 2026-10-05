@@ -13,6 +13,7 @@ from satrap.core.platform import current_adapter_manager
 from satrap.core.friends import FriendError
 from satrap.core.friends.service import failure, text_id
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
+from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.core.log import logger
 
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 100, "description": "最多返回多少条, 默认 20; 有下一页时用 next_cursor 继续查询"}
@@ -37,9 +38,12 @@ class _FriendMixin:
     tool_name: str | None
     config: dict[str, Any]
 
-    def _resolve(self) -> tuple[Any, Any]:
+    def _resolve(self, *, preview: bool = False) -> tuple[Any, Any]:
         """
         核验来源账号, 私聊和配置名单
+
+        参数:
+        - preview: 声明过滤时不记录预期权限拒绝
 
         返回:
         - 当前适配器和可信调用来源
@@ -47,8 +51,11 @@ class _FriendMixin:
         origin = current_call_origin()
         if origin is None or not (origin.conversation_kind == "private" or not origin.conversation_kind and origin.chat_type == "FriendMessage"):
             raise FriendError("permission_denied", "好友工具仅限管理者私聊")
-        if not getattr(self, "is_enabled")() or origin.actor_id not in config_ids(self.config.get("managers")):
-            raise FriendError("permission_denied", "当前调用者未配置为好友管理者")
+        if preview:
+            if authorize_plugin_entry(self._plugin_entry_binding).status == "denied":
+                raise FriendError("permission_denied", "当前调用者未获得好友管理权限")
+        else:
+            require_plugin_entry_permission(self._plugin_entry_binding)
         manager = current_adapter_manager()
         adapter = manager.get_adapter(origin.adapter_id) if manager else None
         if adapter is None or not adapter.friend_host or not origin.self_id or adapter.friend_account() != origin.self_id:
@@ -58,7 +65,7 @@ class _FriendMixin:
         name = str(self.tool_name)
         if name in {"friend_manager_handle_request", "friend_manager_delete_friend"}:
             switch = "request_handling_enabled" if name.endswith("handle_request") else "delete_friend_enabled"
-            if self.config.get(switch) is not True or origin.actor_id not in config_ids(self.config.get("write_callers")):
+            if self.config.get(switch) is not True:
                 raise FriendError("permission_denied", "好友模型写操作未开启或调用者未获授权")
         return adapter, origin
 
@@ -70,7 +77,7 @@ class _FriendMixin:
         - 当前调用是否有对应能力和权限
         """
         try:
-            adapter, _ = self._resolve()
+            adapter, _ = self._resolve(preview=True)
             cap = {"friend_manager_list_friends": "list_friends", "friend_manager_find_friends": "list_friends",
                    "friend_manager_list_requests": "list_requests", "friend_manager_handle_request": "handle_request",
                    "friend_manager_delete_friend": "delete_friend"}[str(self.tool_name)]
@@ -209,4 +216,5 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         bind_tool_session(tool, session)
         tool.recovery_policy = "manual" if name in {"friend_manager_handle_request", "friend_manager_delete_friend"} else "retry"
         tools.append(tool)
+    bind_plugin_factory_tools(tools, __file__)
     return tools

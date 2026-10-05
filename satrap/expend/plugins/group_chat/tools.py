@@ -23,6 +23,7 @@ from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session, model_tool_authorization
+from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
 
@@ -66,7 +67,7 @@ DEFINITIONS: dict[str, tuple[str, dict[str, object], list[str]]] = {
     "group_chat_reply": ("给当前群回复一条消息, 可组合文字, 引用, 多个 @, 图片和表情; 回复在本轮成功结束后发送. 返回 prepared 表示待发送, 此后不要再次调用本工具或重复提交正文", {"components": _COMPONENTS}, ["components"]),
     "group_chat_get_message_assets": ("取出当前群某条消息中的图片, 返回可发送的 asset_id; 图片已经失效, 撤回或无法下载时会注明原因. 只按需读取这条消息, 不读取其它群", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_list_stickers": ("查看当前群已启用的表情, 返回名称, 标签和 sticker_id; 选择符合语境的表情后放进回复组件. 未在该群启用的表情不会出现在结果中", {"keyword": _string("想找的表情名称或标签, 不填则查看可用目录"), "limit": _LIMIT, "cursor": _CURSOR}, []),
-    "group_chat_find_members": ("根据昵称或群名片查找当前群的成员, 返回成员 ID, 昵称和名片. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的昵称或群名片, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
+    "group_chat_find_members": ("根据账号昵称或本群昵称查找当前群的成员, 返回成员 ID, 账号昵称和本群昵称. 找到多个同名成员时, 先确认目标再操作", {"query": _string("要查找的账号昵称或本群昵称, 可以填写其中一部分"), "limit": {**_LIMIT, "maximum": 50, "description": "最多返回多少位成员, 不填默认 10; 实际数量不超过插件配置的上限"}, "cursor": _CURSOR}, ["query"]),
     "group_chat_get_member": ("查看当前群某位成员的 ID, 昵称, 群昵称和角色; 需要确认成员 ID 对应谁时使用. 角色只表示平台资料, 不代表对方有权让机器人执行管理操作", {"user_id": _MEMBER_ID}, ["user_id"]),
     "group_chat_get_message": ("根据消息 ID 查看当前群的一条消息, 返回原文和发送者; 需要确认某句话是谁说的, 或查看引用消息时使用. 本地没有记录时会尝试向平台查询, 已删除的记录不会重新取回", {"message_id": _MESSAGE_ID}, ["message_id"]),
     "group_chat_recent_messages": ("查看当前群最近保存的聊天记录, 返回消息 ID, 发送者, 时间和正文; 需要了解大家刚才在聊什么, 或补充当前上下文时使用. 结果只涵盖机器人已保存的消息", {"limit": _LIMIT, "before_message_id": {**_MESSAGE_ID, "description": "只查看这条消息之前的记录; 不填则从最新消息开始"}, "cursor": _CURSOR}, []),
@@ -141,16 +142,19 @@ class _GroupChatMixin:
         origin = current_call_origin()
         if origin is None or not getattr(self, "is_enabled")():
             raise GroupChatError("stale_call", "来源工具或轮次已停用")
+        try:
+            require_plugin_entry_permission(self._plugin_entry_binding)
+        except PermissionError as error:
+            raise GroupChatError("forbidden", str(error)) from error
         if self.tool_name == "group_chat_list_groups":
-            if not _private_available() or origin.actor_id not in config_ids(self.config.get("cross_group_query_callers")):
+            if not _private_available():
                 raise GroupChatError("forbidden", "仅配置的管理者可在私聊查询群列表")
             return
         allowed = config_ids(self.config.get("allowed_groups"))
         if not _group_available() or group_id != origin.chat_id or allowed and group_id not in allowed:
             raise GroupChatError("forbidden", "工具只能操作获授权的当前群")
         if self.tool_name == "group_chat_set_group_nickname":
-            callers = config_ids(self.config.get("nickname_allowed_callers"))
-            if self.config.get("self_nickname_enabled") is not True or callers and origin.actor_id not in callers:
+            if self.config.get("self_nickname_enabled") is not True:
                 raise GroupChatError("forbidden", "机器人自身群昵称修改未获授权")
         if self.tool_name in REMINDER_ARGUMENTS:
             workflow = getattr(self.session, "_wf", None)
@@ -237,7 +241,6 @@ class _GroupChatMixin:
                     # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
             limits = replace(limits, summary_enabled=enabled, summary_input_budget=input_budget,
                              allowed_groups=tuple(config_ids(self.config.get("allowed_groups"))),
-                             cross_group_query_callers=tuple(config_ids(self.config.get("cross_group_query_callers"))),
                              media_reply_enabled=cast(bool, self.config.get("media_reply_enabled", True)),
                              max_reply_images=cast(int, self.config.get("max_reply_images", 4)),
                              max_reply_stickers=cast(int, self.config.get("max_reply_stickers", 4)),
@@ -341,9 +344,10 @@ def _available(tool: _GroupChatMixin) -> bool:
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
     capabilities = adapter.group_chat_capabilities() if adapter else {}
+    if authorize_plugin_entry(tool._plugin_entry_binding).status == "denied":
+        return False
     if name == "group_chat_list_groups":
         return (_private_available() and origin is not None
-                and origin.actor_id in config_ids(tool.config.get("cross_group_query_callers"))
                 and capabilities.get("group_list", {}).get("state") == "supported")
     if not _group_available():
         return False
@@ -354,9 +358,7 @@ def _available(tool: _GroupChatMixin) -> bool:
     if capability is not None:
         return capabilities.get(capability, {}).get("state") == "supported"
     if name == "group_chat_set_group_nickname":
-        callers = config_ids(tool.config.get("nickname_allowed_callers"))
         return (tool.config.get("self_nickname_enabled") is True and origin is not None
-                and (not callers or origin.actor_id in callers)
                 and capabilities.get("self_nickname", {}).get("state") == "supported")
     if "summary" in name and tool.config.get("summary_enabled", True) is not True:
         return False
@@ -469,4 +471,5 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool.deferred_platform_reply = name == "group_chat_reply"
         tool.recovery_policy = "manual" if name in {"group_chat_reply", "group_chat_set_group_nickname", "group_chat_create_reminder"} else "retry"
         result.append(tool)
+    bind_plugin_factory_tools(result, __file__)
     return result

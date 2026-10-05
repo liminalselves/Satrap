@@ -18,6 +18,7 @@ from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
 from satrap.core.config.group_approval import model_plugin_requires_approval
+from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
@@ -98,25 +99,27 @@ def _as_bool(value: Any, name: str) -> bool:
     raise ValueError(f"{name} 必须为布尔值")
 
 
-def _resolve(config: dict[str, Any], write: bool) -> tuple[Any, CallOrigin, list[str]]:
+def _resolve(tool: Any, write: bool, *, preview: bool = False) -> tuple[Any, CallOrigin, list[str]]:
     """
     校验来源身份, 写操作开关, 调用者与群范围, 返回来源适配器
 
     参数:
-    - config: 插件配置
+    - tool: 实际来源工具及配置
     - write: 是否为写操作
+    - preview: 声明过滤时不重复记录预期权限拒绝
 
     返回:
     - tuple: (适配器, 调用来源, 允许的群列表)
     """
     origin = require_call_origin()
+    config = tool.config
     if write and config.get("write_tools_enabled") is not True:
         raise PermissionError("管理写操作未在插件配置中开启")
-    callers = _lines(config.get("allowed_callers" if write else "allowed_read_callers"))
-    if write and not callers:
-        raise PermissionError("管理写操作要求 allowed_callers 显式列出调用者, 留空拒绝写操作")
-    if callers and origin.actor_id not in callers:
-        raise PermissionError("当前调用者不在管理动作允许范围内")
+    if preview:
+        if authorize_plugin_entry(tool._plugin_entry_binding).status == "denied":
+            raise PermissionError("当前调用者未获得管理权限")
+    else:
+        require_plugin_entry_permission(tool._plugin_entry_binding)
     manager = current_adapter_manager()
     adapter = manager.get_adapter(origin.adapter_id) if manager is not None else None
     if adapter is None:
@@ -156,12 +159,9 @@ def _request_access(tool: Any, origin: CallOrigin, adapter: Any) -> None:
     - origin: 宿主提供的真实发言者
     - adapter: 当前来源平台实例
     """
-    current_adapter, _, _ = _resolve(tool.config, _DEFINITIONS[str(tool.tool_name)][3])
+    current_adapter, _, _ = _resolve(tool, _DEFINITIONS[str(tool.tool_name)][3])
     if current_adapter is not adapter or not tool.is_enabled():
         raise PermissionError("申请工具已停用或平台实例已变化")
-    managers = _lines(tool.config.get("request_managers"))
-    if not managers or origin.actor_id not in managers:
-        raise PermissionError("当前调用者未配置为申请管理者")
     if not origin.self_id or adapter.bot_self_id != origin.self_id:
         raise PermissionError("申请来源机器人账号已变化或未确认")
 
@@ -186,7 +186,7 @@ def _write_authorization(tool: Any, admin: OneBotAdmin, origin: CallOrigin) -> M
         - live: 仍有效的管理工具
         - target_group: 固定目标群
         """
-        current_adapter, _, groups = _resolve(live.config, True)
+        current_adapter, _, groups = _resolve(live, True)
         if live.tool_name == "group_admin_handle_group_request":
             _request_access(live, origin, current_adapter)
         if current_adapter.admin is not admin or current_adapter.bot_self_id != origin.self_id:
@@ -238,7 +238,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
                                                                   limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"))
                 _request_access(source_tool, origin, adapter)
                 if gid:
-                    _, _, current_groups = _resolve(source_tool.config, False)
+                    _, _, current_groups = _resolve(source_tool, False)
                     _group_id(origin, current_groups, {"group_id": gid})
                     if not adapter.allows_group(gid):
                         raise PermissionError("申请目标群不在平台可管理范围内")
@@ -252,7 +252,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             if origin.chat_type == "GroupMessage" and origin.chat_id != row["group_id"]:
                 raise PermissionError("群申请不属于当前群")
             values.update(group_id=row["group_id"], sub_type=row["sub_type"])
-            _, _, current_groups = _resolve(source_tool.config, True)
+            _, _, current_groups = _resolve(source_tool, True)
             return await _build_call(name, admin, origin, current_groups, values, source_tool)
         return request_call()
     if name == "group_admin_handle_group_request":
@@ -349,11 +349,11 @@ class _GroupAdminMixin:
         - 当前请求可用时为 True
         """
         name = str(self.tool_name)
-        if name not in {"group_admin_list_group_requests", "group_admin_handle_group_request"}:
-            return True
         try:
-            adapter, origin, _ = _resolve(self.config, _DEFINITIONS[name][3])
-            _request_access(self, origin, adapter)
+            adapter, origin, _ = _resolve(self, _DEFINITIONS[name][3], preview=True)
+            if name in {"group_admin_list_group_requests", "group_admin_handle_group_request"} and (
+                    not origin.self_id or adapter.bot_self_id != origin.self_id):
+                return False
             return True
         except (PermissionError, ValueError, PlatformAdminError):
             return False
@@ -369,7 +369,7 @@ class _GroupAdminMixin:
         """在当前上下文完成身份校验后执行管理动作"""
         name = str(self.tool_name)
         write = _DEFINITIONS[name][3]
-        adapter, origin, allowed = _resolve(self.config, write)
+        adapter, origin, allowed = _resolve(self, write)
         result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
@@ -379,7 +379,7 @@ class _GroupAdminMixin:
         try:
             name = str(self.tool_name)
             write = _DEFINITIONS[name][3]
-            adapter, origin, allowed = _resolve(self.config, write)
+            adapter, origin, allowed = _resolve(self, write)
             loop = getattr(adapter, "_loop", None)
             if loop is None or loop.is_closed():
                 raise ValueError("平台事件循环不可用")
@@ -458,6 +458,7 @@ def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list
         tool.recovery_policy = "retry" if not _DEFINITIONS[name][3] else "manual"
         tool.config = config
         result.append(tool)
+    bind_plugin_factory_tools(result, __file__)
     return result
 
 

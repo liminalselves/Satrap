@@ -438,7 +438,8 @@ class BackendManager:
         from satrap.core.config.model_tool_authorization import config_ids
         from satrap.edictum.plugin_config import PluginConfigManager
         from satrap.edictum.plugin_spec import parse_plugin_specs
-        values: set[str] = set()
+        administrators = getattr(self, "administrator_service", None)
+        values: set[str] = set(administrators.protected_users(adapter_id) if administrators else ())
         runtime = self.get_platform_runtime(adapter_id)
         provider = runtime[0].provider_registry.get("edictum") if runtime else None
         global_config = {}
@@ -1404,6 +1405,8 @@ class BackendManager:
         from satrap.edictum.plugin_settings import resolve_runtime_specs
         from satrap.edictum.plugin_spec import parse_plugin_specs
         from satrap.core.config.model_tool_authorization import config_ids as _lines
+        from satrap.core.call_context import CallOrigin
+        from satrap.core.plugin_authorization import evaluate_plugin_permissions, PluginPermissionDenied
 
         authorization.verify(target_group)
         source_ref = authorization.source_session
@@ -1469,6 +1472,16 @@ class BackendManager:
         if (spec is None or not spec.enabled or not spec.capabilities.get("tools", {}).get(tool_name, False)):
             raise PermissionError("模型动作来源管理插件或工具已停用")
         config = spec.config
+        catalog_entry = provider.plugin_catalog.get(plugin_name)
+        if catalog_entry is None or tool_name not in catalog_entry.permissions.tools:
+            raise PermissionError("模型管理入口的权限声明已失效")
+        decision = evaluate_plugin_permissions(
+            plugin_name, catalog_entry.permissions, "tools", tool_name, config,
+            CallOrigin(adapter_id, self_id, identity["chat_type"], identity["chat_id"], identity["actor_id"], "", ""),
+            getattr(self, "administrator_service", None),
+        )
+        if decision.status != "allowed":
+            raise PluginPermissionDenied(decision)
         if friend_action:
             platform = next((item for item in self.config.platforms if item.get("id") == adapter_id), None)
             if (platform is None or not platform.get("enable", True)
@@ -1478,24 +1491,21 @@ class BackendManager:
             if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
                 raise PermissionError("好友管理来源 Agent 路由已变化")
             managers = sorted(set(_lines(config.get("managers"))))
-            callers = sorted(set(_lines(config.get("write_callers"))))
             switch = "delete_friend_enabled" if tool_name == "friend_manager_delete_friend" else "request_handling_enabled"
-            if config.get(switch) is not True or identity["actor_id"] not in managers or identity["actor_id"] not in callers:
+            if config.get(switch) is not True:
                 raise PermissionError("好友模型写操作授权已撤销")
             if tool_name == "friend_manager_delete_friend" and target_group in managers + _lines(config.get("protected_friend_ids")):
                 raise PermissionError("目标好友受保护")
-            payload = [session_id, tool_name, managers, callers, config.get(switch), binding, target_group,
+            payload = [session_id, tool_name, decision.permission_fingerprint, config.get(switch), binding, target_group,
+                       managers,
                        sorted(set(_lines(config.get("protected_friend_ids"))))]
             return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
-        callers = sorted(set(_lines(config.get("nickname_allowed_callers" if self_nickname else "allowed_callers"))))
         groups = sorted(set(_lines(config.get("allowed_groups"))))
         if (config.get("self_nickname_enabled" if self_nickname else "write_tools_enabled") is not True
-                or not self_nickname and not callers
-                or callers and identity["actor_id"] not in callers
                 or groups and target_group not in groups
                 or self_nickname and target_group != identity["chat_id"]):
             raise PermissionError("模型动作来源写权限已撤销")
-        payload = [route, session_id, tool_name, True, callers, groups, target_group]
+        payload = [route, session_id, tool_name, True, decision.permission_fingerprint, groups, target_group]
         if not self_nickname:
             from satrap.core.config.group_approval import model_plugin_requires_approval
 
@@ -1503,11 +1513,6 @@ class BackendManager:
             if requires_approval != authorization.approval_required:
                 raise PermissionError("模型动作来源审批要求已变化")
             payload.append(requires_approval)
-        if tool_name == "group_admin_handle_group_request":
-            managers = sorted(set(_lines(config.get("request_managers"))))
-            if not managers or identity["actor_id"] not in managers:
-                raise PermissionError("模型动作来源申请管理权限已撤销")
-            payload.append(managers)
         return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
 
     async def submit_group_action(

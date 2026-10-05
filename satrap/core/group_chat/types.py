@@ -112,7 +112,6 @@ class GroupChatLimits:
     max_reply_images: int = 4
     max_reply_stickers: int = 4
     allowed_groups: tuple[str, ...] = ()
-    cross_group_query_callers: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         """拒绝无界条数, 非整数预算和无法失效的成员缓存"""

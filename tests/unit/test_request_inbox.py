@@ -8,6 +8,7 @@ import sqlite3
 import pytest
 
 from satrap.core.call_context import bind_call_origin
+from satrap.core.plugin_authorization import bind_plugin_factory_tools
 from satrap.core.platform import set_current_adapter_manager
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.expend.plugins.group_admin.tools import get_tools
@@ -33,6 +34,7 @@ def tool(name, *, write=True, **extra):
         config = {"managers": extra.pop("request_managers", "123"), "write_callers": "123", "request_handling_enabled": write, **extra}
         item = AsyncFriendTool(name, "好友工具", {})
         item.config = config
+        bind_plugin_factory_tools([item], str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/friend_manager/tools.py"))
         return item
     return next(t for t in _async_tools({"request_managers": "123", "allowed_callers": "123", "write_tools_enabled": write, **extra}) if t.tool_name == name)
 

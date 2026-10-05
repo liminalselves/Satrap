@@ -1,4 +1,19 @@
 name: group_chat
+permission_schema_version: 1
+management_permissions:
+  group_list:
+    description: 在私聊中查询机器人可访问的群列表
+    caller_list: cross_group_query_callers
+    empty_policy: deny
+    system_admin: true
+  self_nickname:
+    description: 请求修改机器人自己的本群昵称
+    caller_list: nickname_allowed_callers
+    empty_policy: allow
+    system_admin: true
+tool_permissions:
+  group_chat_list_groups: [group_list]
+  group_chat_set_group_nickname: [self_nickname]
 version: 0.4.0
 author: Satrap Team
 description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复, 可选修改机器人自己的群昵称"
@@ -35,7 +50,7 @@ config_schema:
   cross_group_query_callers:
     type: textarea
     default: ""
-    description: "允许在私聊查询机器人所在群列表的管理者账号 ID, 每行一个; 留空禁用跨群查询"
+    description: "哪些人可以在私聊中让模型查询机器人加入的群列表. 填写成员账号 ID, 每行一个; 留空时所有人都不能使用此工具; 此名单仅授予群列表查询权限"
   self_nickname_enabled:
     type: bool
     default: false
@@ -132,7 +147,7 @@ tools:
   group_chat_get_summary: "查看已保存摘要及来源状态"
   group_chat_list_summaries: "查找当前群已保存摘要"
   group_chat_reply: "回复群消息, 支持引用和 @ 多人"
-  group_chat_find_members: "按昵称或群名片查找成员"
+  group_chat_find_members: "按账号昵称或本群昵称查找成员"
   group_chat_get_member: "查看指定成员的昵称, 群昵称和角色"
   group_chat_get_message: "查看一条消息的原文和发送者"
   group_chat_recent_messages: "查看最近的聊天记录"
