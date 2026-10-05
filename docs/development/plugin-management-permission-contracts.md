@@ -2,7 +2,7 @@
 
 日期: 2026-10-06
 
-状态: 实施中; 配置解析与宿主权限核心已接入, 后续批次继续按本契约交付
+状态: A / B / C 已实现; D 的自动验收与文档已完成, 真实平台验收待执行. 结果见 [验收记录](system-administrator-verification.md)
 
 关联设计: [系统管理员与插件授权计划](system-administrator-plan-contracts.md), [插件聊天命令计划](plugin-command-plan-contracts.md), [现有权限核查](plugin-permission-audit.md)
 
@@ -30,6 +30,7 @@
 | 字段 | 类型与要求 | 含义 |
 | --- | --- | --- |
 | description | 必填非空字符串 | 前端显示的权限用途 |
+| requirements | 可选列表, 每项为非空字符串, 最多 32 项 | 展示功能开关, 范围和审批等剩余条件; 仅为说明, 不参与授权判断 |
 | caller_list | 可选 config_schema 字段名 | 使用此插件实际安装配置中的 ID 名单作为本地授权来源 |
 | empty_policy | caller_list 存在时必填, allow 或 deny | 名单空时的本地判断, 保留既有语义 |
 | system_admin | 必填布尔值 | true 时允许管理组授予该权限; false 时仅使用本地名单 |
@@ -40,6 +41,16 @@
 
 ```yaml
 permission_schema_version: 1
+tools:
+  group_admin_list_group_requests: 查询申请
+  group_admin_handle_group_request: 处理申请
+config_schema:
+  allowed_read_callers:
+    type: textarea
+  allowed_callers:
+    type: textarea
+  request_managers:
+    type: textarea
 management_permissions:
   read:
     description: 使用群管理查询工具
@@ -69,6 +80,8 @@ tool_permissions:
 
 ```yaml
 permission_schema_version: 1
+commands:
+  memory: 群记忆管理
 management_permissions:
   approve_memory:
     description: 查看并批准或拒绝本群的群记忆提案
@@ -94,6 +107,8 @@ command_permissions:
 5. 未知规则字段, 无效 empty_policy, 非布尔 system_admin, 不合法子命令结构均拒绝加载相关插件, 前端显示可读原因, 后端记录日志
 6. 插件目录扫描与实际安装使用同一解析器; 不能出现前端认为接入, 运行时忽略声明的情况
 7. 单个插件声明错误不得中断目录扫描或平台进程, 不退化成无条件允许
+
+接入版本 1 时, 通过权限服务使用的入口须列入 tools 或 commands. 已声明且未映射管理权限的入口是普通入口, 不新增管理员身份要求; 未知名称不能伪装成普通入口
 
 为 PluginCatalogEntry 与安装后的插件对象增加不可变权限声明. 目录接口返回 permission_schema_version, management_permissions 和入口映射, 供配置页面展示; 不返回其他用户名单或本轮身份
 

@@ -3,11 +3,13 @@ permission_schema_version: 1
 management_permissions:
   access:
     description: 在私聊中查询和管理机器人的好友
+    requirements: [仅限管理者私聊, 来源机器人账号与平台好友能力必须有效]
     caller_list: managers
     empty_policy: deny
     system_admin: true
   write:
     description: 处理好友申请和提交删除好友请求
+    requirements: [需开启对应好友写功能, 删除好友固定需要人工批准, 受保护账号不能删除]
     caller_list: write_callers
     empty_policy: deny
     system_admin: true
@@ -24,11 +26,11 @@ config_schema:
   managers:
     type: textarea
     default: ""
-    description: "哪些人可以在私聊中让模型查看和搜索机器人好友, 查看好友申请. 填写成员账号 ID, 每行一个; 留空时禁用全部好友工具; 处理申请和删除好友另需写操作授权, 名单中的账号禁止被模型删除"
+    description: "允许在私聊中查询和管理机器人好友的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 处理和删除另需写授权, 名单账号禁止被模型删除"
   write_callers:
     type: textarea
     default: ""
-    description: "哪些人可以在私聊中让模型同意或拒绝好友申请, 或申请删除好友. 填写成员账号 ID, 每行一个; 必须同时在好友管理者名单中并开启对应功能; 留空时禁用全部模型好友写操作, 删除好友仍须人工批准"
+    description: "允许处理好友申请和请求删除好友的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 还需好友访问授权和对应功能开关, 删除仍须人工批准"
   request_handling_enabled:
     type: bool
     default: false

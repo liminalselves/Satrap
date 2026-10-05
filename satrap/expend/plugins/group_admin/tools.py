@@ -18,7 +18,7 @@ from satrap.edictum import AsyncSimpleSession
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
 from satrap.core.config.group_approval import model_plugin_requires_approval
-from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
@@ -340,6 +340,7 @@ class _GroupAdminMixin:
 
     tool_name: str | None
     config: dict[str, Any]
+    _plugin_entry_binding: PluginEntryBinding
 
     def is_available_for_call(self) -> bool:
         """

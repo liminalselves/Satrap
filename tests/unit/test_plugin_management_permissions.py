@@ -96,6 +96,7 @@ def test_permissions_may_explicitly_reject_system_admin_grants():
     lambda m: m["management_permissions"]["write"].update(empty_policy=[]),
     lambda m: m["management_permissions"]["write"].update(system_admin="true"),
     lambda m: m["management_permissions"]["write"].update(unknown=True),
+    lambda m: m["management_permissions"]["write"].update(requirements=[True]),
 ])
 def test_invalid_metadata_is_rejected(mutate):
     meta = metadata()
@@ -156,3 +157,38 @@ def test_copied_native_command_context_is_revoked_after_dispatch():
             copied = copy_context()
             assert copied.run(authorize_plugin_entry, binding, subcommand="approve").status == "allowed"
         assert copied.run(authorize_plugin_entry, binding, subcommand="approve").status == "denied"
+
+
+def test_business_requirement_descriptions_are_visible_but_never_grant_permission():
+    meta = metadata()
+    meta["management_permissions"]["write"]["requirements"] = ["需开启功能并等待审批"]
+    rules = parse_plugin_permissions(meta, parse_config_schema(meta))
+    assert rules.to_payload()["management_permissions"]["write"]["requirements"] == ["需开启功能并等待审批"]
+    assert evaluate_plugin_permissions("example", rules, "tools", "write", {}, origin()).status == "denied"
+
+
+@pytest.mark.parametrize("kind, name", [("tools", "unregistered"), ("commands", "unregistered"), ("unknown", "write")])
+def test_unknown_entries_cannot_be_treated_as_ordinary(kind, name):
+    result = evaluate_plugin_permissions("example", spec(), kind, name, {}, origin(), administrators())
+    assert result.status == "denied" and result.reason_code == "unknown_entry"
+
+
+def test_authorization_exception_is_logged_and_denied(monkeypatch):
+    import satrap.core.platform as platform
+    from satrap.core import plugin_authorization as authorization
+
+    class Entry:
+        def is_enabled(self):
+            return True
+
+    def broken_manager():
+        raise RuntimeError("authorization fault injection")
+
+    logged = []
+    entry = Entry()
+    binding = PluginEntryBinding("example", "tools", "write", spec(), {}, weakref.ref(entry))
+    monkeypatch.setattr(platform, "current_adapter_manager", broken_manager)
+    monkeypatch.setattr(authorization.logger, "error", logged.append)
+    result = authorize_plugin_entry(binding)
+    assert result.status == "denied" and result.reason_code == "invalid_permission_config"
+    assert logged and "authorization fault injection" in logged[0]

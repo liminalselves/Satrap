@@ -3,11 +3,13 @@ permission_schema_version: 1
 management_permissions:
   group_list:
     description: 在私聊中查询机器人可访问的群列表
+    requirements: [仅限私聊, 只返回平台和插件允许访问的群]
     caller_list: cross_group_query_callers
     empty_policy: deny
     system_admin: true
   self_nickname:
     description: 请求修改机器人自己的本群昵称
+    requirements: [需开启机器人自身群昵称修改, 只能修改机器人自己, 仍遵守宿主审批策略]
     caller_list: nickname_allowed_callers
     empty_policy: allow
     system_admin: true
@@ -50,7 +52,7 @@ config_schema:
   cross_group_query_callers:
     type: textarea
     default: ""
-    description: "哪些人可以在私聊中让模型查询机器人加入的群列表. 填写成员账号 ID, 每行一个; 留空时所有人都不能使用此工具; 此名单仅授予群列表查询权限"
+    description: "允许在私聊中查询机器人群列表的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 此项不授予跨群读取正文的权限"
   self_nickname_enabled:
     type: bool
     default: false
@@ -58,7 +60,7 @@ config_schema:
   nickname_allowed_callers:
     type: textarea
     default: ""
-    description: "允许请求修改机器人自身群昵称的成员 ID, 每行一个; 留空不额外限制调用者"
+    description: "允许请求修改机器人自身群昵称的成员 ID, 每行一个; 留空不额外限制调用者. 已获本插件授权的系统管理员无需重复填写"
   media_reply_enabled:
     type: bool
     default: true

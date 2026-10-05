@@ -13,7 +13,7 @@ from satrap.core.platform import current_adapter_manager
 from satrap.core.friends import FriendError
 from satrap.core.friends.service import failure, text_id
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
-from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.core.log import logger
 
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 100, "description": "最多返回多少条, 默认 20; 有下一页时用 next_cursor 继续查询"}
@@ -37,6 +37,7 @@ class _FriendMixin:
     """注入和执行时分别检查可信私聊来源"""
     tool_name: str | None
     config: dict[str, Any]
+    _plugin_entry_binding: PluginEntryBinding
 
     def _resolve(self, *, preview: bool = False) -> tuple[Any, Any]:
         """

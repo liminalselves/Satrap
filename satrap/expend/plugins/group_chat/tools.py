@@ -23,7 +23,7 @@ from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session, model_tool_authorization
-from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
 
@@ -131,6 +131,7 @@ class _GroupChatMixin:
     config: Mapping[str, object]
     session: Session | AsyncSession
     deferred_platform_reply = False
+    _plugin_entry_binding: PluginEntryBinding
 
     def _authorize(self, group_id: str) -> None:
         """

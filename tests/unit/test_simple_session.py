@@ -3213,3 +3213,84 @@ async def test_async_concurrent_remove_and_run(tmp_path: Path):
         "enter", "exit", "victim_after", "close", "a_done",
         "enter", "exit", "b_done",
     ]   # close 在 victim_after 之后 (A 用完资源), B 执行之前
+
+
+def _write_management_plugin(tmp_path: Path, *, broken: bool = False) -> Path:
+    """
+    构造带权限映射的真实插件安装包
+
+    参数:
+    - tmp_path: 测试目录
+    - broken: 将权限映射绑定到实际未创建的工具
+
+    返回:
+    - 插件目录
+    """
+    plugin_dir = _write_plugin_dir(tmp_path, name="permission_fixture", with_commands=True)
+    metadata = (
+        "name: permission_fixture\npermission_schema_version: 1\n"
+        "tools:\n  greet: 问候\ncommands:\n  hello: 问候\n"
+        "management_permissions:\n  manage:\n    description: 管理测试\n"
+        "    caller_list: managers\n    empty_policy: deny\n    system_admin: true\n"
+        "config_schema:\n  managers:\n    type: textarea\n    default: alice\n"
+        "command_permissions:\n  hello:\n    default: [manage]\n"
+    )
+    if broken:
+        metadata = metadata.replace("  greet: 问候", "  greet: 问候\n  not_created: 不存在")
+        metadata += "tool_permissions:\n  not_created: [manage]\n"
+    (plugin_dir / "meta.yaml").write_text(metadata, encoding="utf-8")
+    return plugin_dir
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_real_installed_management_command_checks_native_caller(tmp_path: Path, asynchronous: bool):
+    """
+    同步与异步命令使用真实注册表检查发言者, 不接受工具参数冒充身份
+
+    参数:
+    - tmp_path: 测试目录
+    - asynchronous: 是否使用异步会话
+    """
+    from satrap.core.call_context import CallOrigin, bind_call_origin, bind_tool_workflow
+    plugin_dir = _write_management_plugin(tmp_path)
+    if asynchronous:
+        (plugin_dir / "commands.py").write_text("async def cmd_hello(name: str = ''):\n    return f'hello {name}'\n", encoding="utf-8")
+    session = AsyncSimpleSession("permission-async", _FakeAsyncLLM(), db_path=str(tmp_path / "async.db")) if asynchronous else _make_session(tmp_path)
+    if asynchronous:
+        await session.install_plugin(str(plugin_dir))
+    else:
+        session.install_plugin(str(plugin_dir))
+    registry = session.command_handler if asynchronous else session.cmd_handler
+    async def process():
+        return await registry.process_message("/hello alice") if asynchronous else registry.process_message("/hello alice")
+    alice = CallOrigin("p", "bot", "PrivateMessage", "alice", "alice", "message", "request")
+    with bind_call_origin(alice):
+        assert (await process())[0] == "hello alice"
+        with bind_tool_workflow(object()):
+            assert "identity_missing" in (await process())[0]
+    with bind_call_origin(CallOrigin("p", "bot", "PrivateMessage", "bob", "bob", "message", "request")):
+        assert "permission_denied" in (await process())[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_invalid_management_binding_rolls_back_real_install(tmp_path: Path, asynchronous: bool):
+    """
+    权限映射与实际入口不匹配时回滚工具, 命令和处理器
+
+    参数:
+    - tmp_path: 测试目录
+    - asynchronous: 是否使用异步会话
+    """
+    plugin_dir = _write_management_plugin(tmp_path, broken=True)
+    if asynchronous:
+        (plugin_dir / "commands.py").write_text("async def cmd_hello(name: str = ''):\n    return f'hello {name}'\n", encoding="utf-8")
+    session = AsyncSimpleSession("permission-async", _FakeAsyncLLM(), db_path=str(tmp_path / "async.db")) if asynchronous else _make_session(tmp_path)
+    with pytest.raises(ValueError, match="实际注册入口"):
+        if asynchronous:
+            await session.install_plugin(str(plugin_dir))
+        else:
+            session.install_plugin(str(plugin_dir))
+    assert not session.list_plugins() and not session.list_tools() and not session.list_handlers()
+    assert "hello" not in session.list_commands()

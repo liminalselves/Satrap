@@ -28,8 +28,8 @@ class _ToolsRegistry(Generic[_ToolT]):
             for tool in self.tools.values()
             if tool.assert_tool() and tool.is_enabled() and tool.is_available_for_call()
             and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
-            and (getattr(tool, "_plugin_entry_binding", None) is None
-                 or authorize_plugin_entry(tool._plugin_entry_binding).status != "denied")
+            and ((binding := getattr(tool, "_plugin_entry_binding", None)) is None
+                 or authorize_plugin_entry(binding).status != "denied")
         ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:
@@ -190,12 +190,6 @@ class _ToolsRegistry(Generic[_ToolT]):
             )
 
         tool = self.tools[tool_name]
-        binding = getattr(tool, "_plugin_entry_binding", None)
-        if binding is not None:
-            try:
-                require_plugin_entry_permission(binding)
-            except PluginPermissionDenied as error:
-                return None, {}, _create_tool_error(tool_name, str(error), error.code)
         if not tool.is_enabled():
             return (
                 None,
@@ -214,6 +208,12 @@ class _ToolsRegistry(Generic[_ToolT]):
                 ),
             )
 
+        binding = getattr(tool, "_plugin_entry_binding", None)
+        if binding is not None:
+            try:
+                require_plugin_entry_permission(binding)
+            except PluginPermissionDenied as error:
+                return None, {}, _create_tool_error(tool_name, str(error), error.code)
         if not tool.is_available_for_call():
             logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
             return None, {}, _create_tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")

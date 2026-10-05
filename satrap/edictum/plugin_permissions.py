@@ -20,6 +20,7 @@ class ManagementPermission:
     caller_list: str | None
     empty_policy: str
     system_admin: bool
+    requirements: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,8 @@ class PluginPermissions:
     rules: Mapping[str, ManagementPermission]
     tools: Mapping[str, tuple[str, ...]]
     commands: Mapping[str, CommandPermissions]
+    declared_tools: frozenset[str] = frozenset()
+    declared_commands: frozenset[str] = frozenset()
 
     @property
     def supports_administrators(self) -> bool:
@@ -70,6 +73,7 @@ class PluginPermissions:
         """
         return {"permission_schema_version": self.version,
                 "management_permissions": {name: {"description": rule.description, "system_admin": rule.system_admin,
+                    "requirements": list(rule.requirements),
                     **({"caller_list": rule.caller_list, "empty_policy": rule.empty_policy} if rule.caller_list else {})}
                     for name, rule in self.rules.items()},
                 "tool_permissions": {name: list(values) for name, values in self.tools.items()},
@@ -104,7 +108,7 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
     for name, value in raw_rules.items():
         if not isinstance(name, str) or not name.strip() or name != name.strip() or not isinstance(value, dict):
             raise ValueError("管理权限名称或定义无效")
-        if set(value) - {"description", "caller_list", "empty_policy", "system_admin"}:
+        if set(value) - {"description", "caller_list", "empty_policy", "system_admin", "requirements"}:
             raise ValueError(f"管理权限 {name} 含有未知字段")
         description = value.get("description")
         if not isinstance(description, str) or not description.strip() or type(value.get("system_admin")) is not bool:
@@ -119,7 +123,10 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
             field_type = config_field.get("type") if isinstance(config_field, dict) else getattr(config_field, "type", None)
             if config_field is None or field_type not in ("string", "textarea") or value.get("empty_policy") not in ("allow", "deny"):
                 raise ValueError(f"管理权限 {name} 的名单引用或空值规则无效")
-        rules[name] = ManagementPermission(description.strip(), caller_list, policy, value["system_admin"])
+        requirements = value.get("requirements", [])
+        if not isinstance(requirements, list) or len(requirements) > 32 or any(not isinstance(item, str) or not item.strip() for item in requirements):
+            raise ValueError(f"管理权限 {name} 的业务条件说明无效")
+        rules[name] = ManagementPermission(description.strip(), caller_list, policy, value["system_admin"], tuple(item.strip() for item in requirements))
 
     def permission_ids(value: object) -> tuple[str, ...]:
         """
@@ -142,6 +149,8 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
     if not isinstance(raw_tools, dict):
         raise ValueError("tool_permissions 必须是对象")
     declared_tools = meta.get("tools", {})
+    if not isinstance(declared_tools, dict):
+        raise ValueError("接入管理权限的工具声明必须是对象")
     for name, value in raw_tools.items():
         if not isinstance(name, str) or not isinstance(declared_tools, dict) or name not in declared_tools:
             raise ValueError("管理工具映射引用未声明工具")
@@ -151,6 +160,8 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
     if not isinstance(raw_commands, dict):
         raise ValueError("command_permissions 必须是对象")
     declared_commands = meta.get("commands", {})
+    if not isinstance(declared_commands, dict):
+        raise ValueError("接入管理权限的命令声明必须是对象")
     for name, value in raw_commands.items():
         if not isinstance(name, str) or not isinstance(declared_commands, dict) or name not in declared_commands:
             raise ValueError("管理命令映射引用未声明命令")
@@ -160,8 +171,11 @@ def parse_plugin_permissions(meta: Mapping[str, Any], config_schema: Mapping[str
         children = value.get("subcommands", {})
         if not isinstance(children, dict) or any(not isinstance(key, str) or not key or any(c.isspace() for c in key) for key in children):
             raise ValueError("管理子命令名称或映射无效")
+        if not default and not children:
+            raise ValueError("管理命令需要至少一项权限映射")
         commands[name] = CommandPermissions(default, MappingProxyType({key: permission_ids(item) for key, item in children.items()}))
-    return PluginPermissions(1, MappingProxyType(rules), MappingProxyType(tools), MappingProxyType(commands))
+    return PluginPermissions(1, MappingProxyType(rules), MappingProxyType(tools), MappingProxyType(commands),
+                             frozenset(declared_tools), frozenset(declared_commands))
 
 
 def validate_permission_install(spec: PluginPermissions, tools: Mapping[str, Any], commands: Mapping[str, Any]) -> None:

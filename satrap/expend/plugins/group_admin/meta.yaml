@@ -3,16 +3,19 @@ permission_schema_version: 1
 management_permissions:
   read:
     description: 查询群荣誉和转发内容
+    requirements: [仍受平台和插件的群范围限制, 转发内容必须核验来源归属]
     caller_list: allowed_read_callers
     empty_policy: allow
     system_admin: true
   write:
     description: 请求群管理修改和发送操作
+    requirements: [需开启管理写操作, 需机器人具备相应平台权限, 需要审批的动作仍须批准]
     caller_list: allowed_callers
     empty_policy: deny
     system_admin: true
   requests:
     description: 查询和处理入群申请与邀请
+    requirements: [查询还需读取授权, 处理还需写授权及管理写操作开关, 仍核验申请归属与有效期]
     caller_list: request_managers
     empty_policy: deny
     system_admin: true
@@ -45,11 +48,11 @@ config_schema:
   allowed_callers:
     type: textarea
     default: ""
-    description: "哪些成员可以让模型执行禁言, 踢人, 修改群昵称等管理操作或发送合并转发. 填写成员账号 ID, 每行一个; 留空时拒绝全部模型写操作; 还须开启管理写操作, 需要审批的动作须人工批准"
+    description: "允许请求群管理修改和发送合并转发的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 还须开启管理写操作, 需要审批的动作须人工批准"
   allowed_read_callers:
     type: textarea
     default: ""
-    description: "允许使用本插件查询工具的成员 ID, 每行一个; 留空不额外限制, 不影响 group_chat 的查询工具"
+    description: "允许使用本插件查询工具的成员 ID, 每行一个; 留空不额外限制. 已获本插件授权的系统管理员无需重复填写; 不影响 group_chat 的查询工具"
   high_risk_approval:
     type: bool
     default: false
@@ -61,7 +64,7 @@ config_schema:
   request_managers:
     type: textarea
     default: ""
-    description: "哪些人可以让模型查看入群申请和邀请, 并同意或拒绝它们. 填写成员账号 ID, 每行一个; 留空时禁用申请查询和处理; 查询还受查询调用者名单限制, 处理还须在管理写操作调用者名单中并开启管理写操作"
+    description: "允许查看和处理入群申请与邀请的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 查询还需读取授权, 处理还需写授权和管理写操作开关"
 
 tools:
   group_admin_get_honors: "查看群荣誉信息"

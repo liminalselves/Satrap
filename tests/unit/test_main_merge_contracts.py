@@ -77,7 +77,7 @@ async def test_empty_write_list_and_read_list_are_independent():
             tools = _async_tools({"write_tools_enabled": True})
             write = next(t for t in tools if t.tool_name == "group_admin_kick")
             denied = await write.execute(user_id="321")
-            assert denied["status"] == "error" and "allowed_callers" in denied["error"]
+            assert denied["status"] == "error" and "permission_denied" in denied["error"]
             read = next(t for t in tools if t.tool_name == "group_admin_get_honors")
             assert (await read.execute())["status"] == "ok"
             read.config["allowed_read_callers"] = "999"
