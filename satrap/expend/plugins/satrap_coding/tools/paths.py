@@ -120,8 +120,8 @@ class _FileProtectionMixin:
         返回:
         - 命中内置或实例保护规则时返回原因, 否则返回 None
         """
-        host_sandbox = safe_getattr(getattr(self, "_session", None), "coding_sandbox_root")
-        sandbox_root = Path(str(host_sandbox)).resolve() if host_sandbox else None
+        session = getattr(self, "_session", None)
+        sandbox_root = _session_sandbox_root(session, self.sandbox_root)
         return _protection_reason(path, root, self.protected_dirs, sandbox_root=sandbox_root)
 
 
@@ -136,7 +136,7 @@ def _protection_reason(
     - path: 路径
     - root: 根目录
     - protected_dirs: 当前工具的额外保护目录名, 默认为空且不替换内置保护
-    - sandbox_root: 宿主沙箱, 仅当它同时是当前工作区时允许访问系统数据根内的普通文件
+    - sandbox_root: 实际生效沙箱, 仅放行工作区内且位于该沙箱中的普通文件
 
     返回:
     - str | None: 原因 (敏感目录/文件)
@@ -150,16 +150,19 @@ def _protection_reason(
 
     root = root or WORKSPACE_ROOT
     resolved = path.resolve()
-    in_host_workspace = (
-        sandbox_root is not None and root == sandbox_root
-        and (resolved == root or resolved.is_relative_to(root))
+    in_sandbox_workspace = (
+        sandbox_root is not None and resolved.is_relative_to(root)
+        and resolved.is_relative_to(sandbox_root)
     )
-    if not in_host_workspace and (
+    if not in_sandbox_workspace and (
         resolved == _SYSTEM_PROTECTED_ROOT or resolved.is_relative_to(_SYSTEM_PROTECTED_ROOT)
     ):
         return "路径位于受保护目录 .satrap/ 下"
-    rel = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
+    protection_root = sandbox_root if in_sandbox_workspace and sandbox_root is not None else root
+    rel = resolved.relative_to(protection_root) if resolved.is_relative_to(protection_root) else resolved
     parts = [p.lower() for p in rel.parts]
+    if in_sandbox_workspace and sandbox_root is not None and sandbox_root.is_relative_to(root):
+        parts.extend(p.lower() for p in sandbox_root.relative_to(root).parts if p.lower() != ".satrap")
     for name in (*_PROTECTED_DIRS, *sorted(protected_dirs)):
         if name in parts:
             return f"路径位于受保护目录 {name}/ 下"
@@ -170,13 +173,13 @@ def _protection_reason(
 
 
 def _session_sandbox_root(
-    session: SimpleSession | AsyncSimpleSession, configured_root: Path | None = None
+    session: SimpleSession | AsyncSimpleSession | None, configured_root: Path | None = None
 ) -> Path:
     """
     获取会话沙箱根 (会话属性优先, 否则默认)
 
     参数:
-    - session: 会话
+    - session: 当前会话, 未绑定时为 None
     - configured_root: 工具实例的沙箱配置
 
     返回:

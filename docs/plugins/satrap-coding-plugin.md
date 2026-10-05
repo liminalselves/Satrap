@@ -88,7 +88,7 @@ session.uninstall_plugin("satrap_coding")   # 全部回收
 - 文件和目录只读工具访问工作区内路径
 - 文件写工具修改有效沙箱内的非保护路径; 沙箱按宿主 `coding_sandbox_root`、工具实例 `sandbox_root`、固定默认目录依次选取, `/plan on` 仍拒绝所有文件写入
 
-宿主会话沙箱可以位于 `.satrap/data` 内; 只有宿主指定的沙箱同时是当前工作区时, 普通文件读写不受系统 `.satrap` 根保护误拦截。沙箱内 `.env`、`.git`、`.satrap`、`node_modules` 和额外保护目录仍拒绝, 其他运行数据和其他会话路径不被放行。
+文件保护与免审批共用实际沙箱的选择规则, 包括宿主属性、插件实例配置和固定默认值。工作区与沙箱可以相同或互相包含; 只允许同时位于工作区和实际沙箱内的普通文件, 不因其祖先是系统 `.satrap` 而误拦截。沙箱内 `.env`、`.git`、`.satrap`、`node_modules` 和额外保护目录仍拒绝, 其余运行数据不被放行。
 
 以下情况需要审批或直接拒绝:
 
@@ -124,7 +124,7 @@ meta.yaml 声明 `config_schema`, 支持以下配置项 (全局默认 + 按会�
 | --- | --- | --- | --- |
 | workspace_root | path | 项目根 | 文件工具白名单根目录 |
 | data_root | path | 会话缓存 | 权限、目标和审批日志的数据根, 选择规则见“数据目录” |
-| sandbox_root | path | 项目根/.satrap/sandbox | 文件免审批目录; 宿主会话路径优先, 不覆盖保护规则或计划模式 |
+| sandbox_root | path | 项目根/.satrap/sandbox | 文件免审批目录; 宿主会话路径优先, 内部敏感路径和计划模式仍受保护 |
 | shell_timeout | number | 120 | 1-3600 的整数秒; 按工具实例保存; 模型调用可省略 timeout, 单次调用可覆盖; 工厂拒绝超出范围或非整数的生效值 |
 | protected_dirs | string | - | 额外保护目录名 (逗号分隔, 忽略大小写); 按工具实例保存, 空配置仅保留内置保护 |
 | allowed_env_vars | string | - | Shell 子进程显式放行的环境变量名 (逗号分隔); 其他密钥类变量默认剥离 |

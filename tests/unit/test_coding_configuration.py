@@ -421,6 +421,95 @@ async def test_host_sandbox_inside_system_data_remains_usable_and_scoped(
         reset_plugin_state(session)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("embedded", [False, True], ids=["ordinary", "embedded"])
+@pytest.mark.parametrize("source", ["default", "configured", "host"])
+@pytest.mark.parametrize("relation", ["same", "ancestor", "descendant"])
+async def test_effective_sandbox_protection_matches_file_approval(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asynchronous: bool,
+    embedded: bool, source: str, relation: str,
+) -> None:
+    """
+    实际沙箱的普通文件可用, 祖先工作区不会放开其他运行数据或敏感目录
+
+    参数:
+    - tmp_path: 模拟项目, 沙箱和状态数据的隔离目录
+    - monkeypatch: 隔离固定默认路径与系统保护根
+    - asynchronous: 是否使用异步工具
+    - embedded: 是否使用无宿主路径的轻量嵌入会话
+    - source: 沙箱来自默认值, 配置或优先的宿主属性
+    - relation: 工作区与沙箱相同, 包含沙箱或位于沙箱内
+    """
+    project = tmp_path / "project"
+    system = project / ".satrap"
+    default = system / "sandbox"
+    configured = system / "coding/sandbox"
+    sandbox = {"default": default, "configured": configured, "host": system / "data/sessions/current/sandbox"}[source]
+    workspace = {"same": sandbox, "ancestor": project, "descendant": sandbox / "nested"}[relation]
+    target_dir = workspace if relation == "descendant" else sandbox
+    target_dir.mkdir(parents=True)
+    monkeypatch.setattr(coding, "WORKSPACE_ROOT", project)
+    monkeypatch.setattr(coding, "DEFAULT_SANDBOX_ROOT", default)
+    monkeypatch.setattr(coding, "_SYSTEM_PROTECTED_ROOT", system)
+    base, llm_type = (AsyncSimpleSession, AsyncLLM) if asynchronous else (SimpleSession, LLM)
+    if embedded:
+        session: Any = object.__new__(base)
+        session.session_id = "embedded-sandbox"
+        session._wf = SimpleNamespace(llm=None, tools_manager=None)
+        session.session_ctx = SimpleNamespace(db_path=str(tmp_path / "chat.db"))
+    else:
+        session = base("ordinary-sandbox", MagicMock(spec=llm_type), db_path=str(tmp_path / "chat.db"))
+        if isinstance(session, AsyncSimpleSession):
+            await session.initialize()
+    if source == "host":
+        setattr(session, "coding_sandbox_root", str(sandbox))
+    config = {"workspace_root": str(workspace), "protected_dirs": "private"}
+    if source != "default":
+        config["sandbox_root"] = str(configured)
+    tools = {tool.tool_name: tool for tool in coding.get_tools(session, config)}
+    target = target_dir / "normal.txt"
+    relative = str(target.relative_to(workspace))
+    try:
+        assert "已写入" in await _execute(tools["write_file"], relative, "original")
+        assert "original" in await _execute(tools["read_file"], relative)
+        assert "已编辑" in await _execute(tools["edit_file"], relative, "original", "changed")
+        assert "已批量替换" in await _execute(tools["search_replace"], relative, [{"old": "changed", "new": "updated"}])
+        assert "normal.txt" in await _execute(tools["glob_files"], str(target_dir.relative_to(workspace) / "*.txt"))
+        assert "updated" in await _execute(tools["grep_files"], "updated", str(target_dir.relative_to(workspace)))
+        for protected in (".env", ".satrap/secret.txt", ".git/secret.txt", "node_modules/secret.txt", "private/secret.txt"):
+            path = target_dir / protected
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("protected-marker", encoding="utf-8")
+            name = str(path.relative_to(workspace))
+            assert "拒绝" in await _execute(tools["write_file"], name, "blocked")
+            assert "拒绝" in await _execute(tools["read_file"], name)
+            assert path.read_text(encoding="utf-8") == "protected-marker"
+        assert "protected-marker" not in await _execute(tools["grep_files"], "protected-marker")
+        assert "secret.txt" not in await _execute(tools["glob_files"], "**/*.txt")
+        get_plugin_state(session)["engine"].set_plan_mode(True)
+        assert "计划模式" in await _execute(tools["write_file"], relative, "blocked")
+        assert target.read_text(encoding="utf-8") == "updated"
+        setattr(session, "coding_workspace_root", str(project))
+        for sibling in (system / "credentials.txt", system / "data/sessions/other/sandbox/secret.txt", configured / "unused.txt" if source == "host" else system / "unused/secret.txt"):
+            sibling.parent.mkdir(parents=True, exist_ok=True)
+            sibling.write_text("outside-marker", encoding="utf-8")
+            name = str(sibling.relative_to(project))
+            assert "拒绝" in await _execute(tools["read_file"], name)
+            assert "拒绝" in await _execute(tools["write_file"], name, "blocked")
+            assert sibling.read_text(encoding="utf-8") == "outside-marker"
+        assert "outside-marker" not in await _execute(tools["grep_files"], "outside-marker")
+        for ancestor in (".git", "node_modules", "private"):
+            blocked_sandbox = system / ancestor / "sandbox"
+            blocked_sandbox.mkdir(parents=True)
+            secret = blocked_sandbox / "secret.txt"
+            secret.write_text("protected-ancestor", encoding="utf-8")
+            setattr(session, "coding_sandbox_root", str(blocked_sandbox))
+            assert "拒绝" in await _execute(tools["read_file"], str(secret.relative_to(project)))
+    finally:
+        reset_plugin_state(session)
+
+
 @pytest.mark.parametrize("value", [0, -1, 3601, 1.5, True, "bad", float("inf"), float("nan")])
 def test_factory_rejects_invalid_default_timeout(tmp_path: Path, value: object) -> None:
     """
