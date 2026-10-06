@@ -16,7 +16,7 @@
 | 本轮生产 Python 模块 pyright | 0 errors, 0 warnings |
 | 新增记忆/提醒浏览器冒烟 | 通过, 已查看 390px 窄屏截图 |
 | 既有浏览器回归 | 档案, Agent 路由, 对话编辑, 群聊插件, 好友, 摘要, 媒体共 7 个脚本通过 |
-| 真实 QQ 现场验收 | 核心流程通过; 成员偏好保存/注入/重启/更正/忘记, 群约定审批, 短提醒发送, 模型取消, 重启发送, 离线补发及停用后人工恢复已核验; 测试群约定清理和个别前端展示确认待收尾 |
+| 真实 QQ 现场验收 | 核心流程通过; 成员偏好保存/注入/重启/更正/忘记, 群记忆审批, 短提醒发送, 模型取消, 重启发送, 离线补发及停用后人工恢复已核验; 测试群记忆清理和个别前端展示确认待收尾 |
 | 现场重启误暂停修复 | 提醒相关 7 个文件 47 passed, 最终参数化启动/真实停用反例 2 passed; 生产模块 pyright 无错误, 前端 234 passed / lint / tsc / 构建通过 |
 | 现场离线误暂停修复 | 6 项针对性检查通过; OneBot, 群聊, 管理与提醒相关回归 453 passed; adapter.py 的 pyright 无错误 |
 
@@ -38,7 +38,7 @@
 | D2 当前授权 | test_reminder_host.py | 真实命名配置/Provider, 非数字虚拟平台 ID, 平台实例, 账号, 群, 插件/能力, 来源覆盖与路由切换 |
 | D2 运行时 HTTP | test_reminder_host.py, test_reminder_management.py | 完整 HTTP 认证边界, 创建幂等, 恢复版本冲突和当前权限, 冷读取/取消, 删除来源标不可用 |
 | 长期数据清理 | test_conversation_long_term_cleanup.py | 默认保留, 独立勾选, 跨群/账号隔离, 提案正文擦除, 全事务回滚, 已发送权取得后不取消, 档案恢复不恢复记忆或任务 |
-| 本轮人机界面 | e2e/group-chat-memory-reminders.mjs | 来源查看, 成员偏好增删, 群约定编辑/审批, 冲突保留草稿, 创建失败稳定幂等键, 日期转换, 取消/恢复, unknown 提示, 账号隔离和清理影响范围 |
+| 本轮人机界面 | e2e/group-chat-memory-reminders.mjs | 来源查看, 成员偏好增删, 群记忆编辑/审批, 冲突保留草稿, 创建失败稳定幂等键, 日期转换, 取消/恢复, unknown 提示, 账号隔离和清理影响范围 |
 
 OneBot 自动化使用替身客户端回包, 未连接真实适配器. 浏览器脚本运行真实前端与 Vite, API 使用替身路由; 后端认证和真实数据库操作由独立 HTTP 测试覆盖
 
@@ -78,8 +78,8 @@ npm.cmd run test:e2e:group-chat-memory-reminders
 - C4 实际查询 revision=2 后调用 delete_memory, 携带 expected_revision=2 和本轮请求消息 73234945, 返回 deleted / revision=3; 数据库中该记忆及其 memory_refs 均为 0 条, 保留最小 delete 审计
 - 删除后的新对话 loOd58_main 中, 消息 1634 和 1636 均没有注入该记忆; 用户补充允许查询后实际调用 list_memories(user_id=2410323775), 返回 items=[], has_more=false; 删除和停止注入通过, 其他成员的记忆未被清理
 - C5 实际 add_memory 返回 pending / proposal_id=mp_6c00bab259ef43d592980e041f675ee8; 提案处于 pending, decision_at=null, base_revision=0, 同范围 group_rule / acceptance_test_token 的有效记忆数量为 0; 来源 1997719517 为当前成员已核验入站消息, 待审批未生效通过
-- C5 人工批准后提案为 approved, 新增群约定 mm_e6d1c7c06f5748408f53404fc7c4a684 / revision=1, 最小审计 actor_id=authenticated_operator, 来源仍为 1997719517
-- 批准后的新对话 sShzwV_main 首次提问前仅有 system 消息; user 消息 1652 自动注入有效群约定, assistant 消息 1653 无工具调用即回答“C5-青竹-1005”; 人工审批及下一轮生效通过
+- C5 人工批准后提案为 approved, 新增群记忆 mm_e6d1c7c06f5748408f53404fc7c4a684 / revision=1, 最小审计 actor_id=authenticated_operator, 来源仍为 1997719517
+- 批准后的新对话 sShzwV_main 首次提问前仅有 system 消息; user 消息 1652 自动注入有效群记忆, assistant 消息 1653 无工具调用即回答“C5-青竹-1005”; 人工审批及下一轮生效通过
 - D1 实际调用 group_chat_create_reminder(after_seconds=30, mention_user_ids=[2410323775]), 返回 created / scheduled, 提醒 rem_dc1e871a3a644b348bd830fb857fc04e; created_at=01:19:38.860919+08:00, due_at=01:20:08.860919+08:00, 相差恰好 30 秒
 - D1 最终 state=sent, retry_count=0, 仅有一次 attempt 和一个确认消息 ID -962296133; 同范围提醒正文的确认出站档案仅 1 条, 包含原生 At(user_id=2410323775), source=confirmed_send, verified=1; 用户确认收到到期消息
 - D1 attempt 开始于 01:20:13.330449+08:00, 比到期晚约 4.47 秒, 落在默认 5 秒扫描周期内; settled_at=01:20:20.580729+08:00, 本次发送阶段约 7.25 秒, 完成比到期晚约 11.72 秒; 已送达不代表严格准点, 后续场景继续观察发送时延
@@ -126,7 +126,7 @@ npm.cmd run test:e2e:group-chat-memory-reminders
 
 1. 已完成成员偏好保存及数据库来源核验; 前端成员和来源展示仍待用户确认
 2. 已完成新对话自动注入, 重启后读取, 更正及忘记后的新对话生效核验
-3. 已完成群约定 pending 未生效, 人工批准后新对话读取核验; 验收结束时清理测试群约定
+3. 已完成群记忆 pending 未生效, 人工批准后新对话读取核验; 验收结束时清理测试群记忆
 4. 已完成短提醒的模型创建和前端人工创建, 原生 @, 单次发送和实际消息 ID 核验; 前端最终详情展示仍待用户确认
 5. 已完成到期前取消, 等待过程中重启, 暂时离线恢复后的补发及停用后人工恢复; 用户确认 D4 和 D5 正常接收
 6. unknown/partial 和崩溃提交窗口继续使用隔离替身验证, 不在真实群故意制造重复消息

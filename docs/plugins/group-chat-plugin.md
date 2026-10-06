@@ -23,7 +23,7 @@ group_chat 与 group_admin 独立安装和启用, 共享宿主的适配器, 授�
 | `group_chat_list_members` | 分页列出当前群成员 ID, 昵称, 群昵称与角色 |
 | `group_chat_set_group_nickname` | 只修改当前机器人自身的群昵称, nickname 为空则清空, 默认关闭 |
 | `group_chat_reply` | 准备本轮唯一的最终回复, 可组合文本, 一条引用与多个提及 |
-| `group_chat_find_members` | 按昵称与群名片返回候选, 重名时不自动选一个 |
+| `group_chat_find_members` | 按昵称与本群昵称返回候选, 重名时不自动选一个 |
 | `group_chat_get_member` | 核验当前群成员 ID, 返回昵称, 群昵称与角色 |
 | `group_chat_get_message` | 读取消息, 发送者与引用关系, 缺失时核验回源 |
 | `group_chat_recent_messages` | 补取最近讨论, 返回消息 ID 和采集范围 |
