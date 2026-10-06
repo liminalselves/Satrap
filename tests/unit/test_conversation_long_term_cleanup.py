@@ -23,7 +23,7 @@ def setup(tmp_path):
         archive.record(scope, ArchiveMessage('same', 'member', now[0], '请求来源'))
         archive.record(scope, ArchiveMessage('other', 'member', now[0], '另一个来源'))
         repository = ScopedMemories(archive, scope)
-        memory = repository.mutate('create', {'kind': 'group_rule', 'key': 'rule', 'title': '群约定', 'content': f'独立记忆正文{index}', 'source_message_ids': ['same']},
+        memory = repository.mutate('create', {'kind': 'group_rule', 'key': 'rule', 'title': '群记忆', 'content': f'独立记忆正文{index}', 'source_message_ids': ['same']},
                                    actor='operator', operator=True, operation_id='memory')['memory']
         reminder = store.create(scope, actor='member', text='检查结果', mentions=[], source_message_id='same', operation_id='reminder', time_spec={'after_seconds': 10})['reminder']
         memories.append(memory)

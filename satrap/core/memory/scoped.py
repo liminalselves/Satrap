@@ -1,4 +1,4 @@
-"""群约定与成员偏好的事务存储, 复用已有 memories 表"""
+"""群记忆与成员偏好的事务存储, 复用已有 memories 表"""
 from __future__ import annotations
 
 from contextlib import closing
@@ -139,7 +139,7 @@ class ScopedMemories:
         - keyword: 普通文本关键词
         - limit: 返回条数, 1 至 50
         - cursor: 上次相同筛选返回的游标
-        - viewer: 模型默认列表仅显示本群约定和该成员偏好, 人工管理为空
+        - viewer: 模型默认列表仅显示本群记忆和该成员偏好, 人工管理为空
 
         返回:
         - items, has_more 与 next_cursor
@@ -172,7 +172,7 @@ class ScopedMemories:
 
     def mutate(self, operation: str, values: dict[str, Any], *, actor: str, current_message: str = "", operator: bool = False, operation_id: str) -> dict[str, Any]:
         """
-        事务保存本人偏好或群约定提案, 人工管理可直接应用
+        事务保存本人偏好或群记忆提案, 人工管理可直接应用
 
         参数:
         - operation: create, update 或 delete

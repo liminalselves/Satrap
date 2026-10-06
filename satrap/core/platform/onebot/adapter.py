@@ -2135,7 +2135,7 @@ class OneBotAdapter(PlatformAdapter):
 
     async def resolve_self_identity(self, self_id: str, group_id: str = "") -> BotIdentity | None:
         """
-        返回当前事件可用的机器人自身昵称和群名片
+        返回当前事件可用的机器人自身昵称和本群昵称
 
         参数:
         - self_id: 事件固定的机器人账号

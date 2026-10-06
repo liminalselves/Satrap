@@ -754,7 +754,7 @@ class GroupChatService:
         - member: 适配器核验的成员
 
         返回:
-        - 有限长度的 ID, 昵称和名片
+        - 有限长度的 ID, 昵称和本群昵称
         """
         if (not isinstance(member, MemberRecord) or not isinstance(member.nickname, str) or not isinstance(member.card, str)
                 or len(member.nickname) > 512 or len(member.card) > 512):
@@ -801,7 +801,7 @@ class GroupChatService:
 
     async def _find(self, context: _ReadContext, arguments: Mapping[str, object], bounds: GroupChatLimits, *, list_all: bool = False) -> dict[str, Any]:
         """
-        按昵称与名片查找, 重名返回候选, 分页保持同一短期快照
+        按昵称与本群昵称查找, 重名返回候选, 分页保持同一短期快照
 
         参数:
         - context: 当前可信操作来源
@@ -814,7 +814,7 @@ class GroupChatService:
         """
         query = "" if list_all else arguments.get("query")
         if not isinstance(query, str) or not list_all and not query.strip() or len(query) > 128:
-            raise ValueError("成员查询必须是 1 到 128 字符的昵称或名片")
+            raise ValueError("成员查询必须是 1 到 128 字符的昵称或本群昵称")
         query = query.strip().casefold()
         limit = _limit(arguments.get("limit", min(10, bounds.member_limit)), bounds.member_limit)
         fingerprint = hashlib.sha256((context.scope.key + "\0" + ("list:" if list_all else "find:") + query).encode("utf-8")).hexdigest()

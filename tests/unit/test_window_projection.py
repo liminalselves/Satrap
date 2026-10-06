@@ -324,7 +324,7 @@ async def test_deadline_wake_preserves_picture_and_original_sender(with_identity
     await scheduler.wake_timers.close()
     manager.handle_call_async.assert_awaited_once()
     call = manager.handle_call_async.await_args.args[0]
-    prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群名片 本群助手]\n" if with_identity else ""
+    prefix = "[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]\n" if with_identity else ""
     assert call.message == prefix + "[用户 小明 (ID 30), 消息 1] [图片 1]"
     assert len(call.img_urls) == 1 and downloads == ["https://cdn/timer.png"]
 
@@ -392,7 +392,7 @@ async def test_own_identity_is_distinct_from_sender_and_wake_alias():
     adapter._bot.get_group_member_info.return_value = {"user_id": 10, "group_id": 20, "card": "本群助手"}
     await scheduler.execute(await incoming(adapter, 1, [AT, text("你叫什么")], sender={"user_id": 30, "nickname": "用户甲"}))
     call = manager.handle_call_async.await_args.args[0]
-    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群名片 本群助手]\n")
+    assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]\n")
     assert "[用户 用户甲 (ID 30), 消息 1]" in call.message
     assert "你叫什么" in call.message and "唤醒别名" not in call.message
     assert call.origin.actor_id == "30" and call.origin.self_id == "10"
@@ -408,7 +408,7 @@ async def test_private_message_gets_own_account_nickname():
     await scheduler.execute(adapter._event_queue.get_nowait())
     call = manager.handle_call_async.await_args.args[0]
     assert call.message.startswith("[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙]\n")
-    assert "你叫什么" in call.message and "本群名片" not in call.message
+    assert "你叫什么" in call.message and "本群昵称" not in call.message
     adapter._bot.get_group_member_info.assert_not_awaited()
 
 

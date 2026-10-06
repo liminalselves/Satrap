@@ -95,7 +95,7 @@ class TestOneBotAdminValidation:
     @pytest.mark.asyncio
     async def test_text_field_limits(self):
         admin = _adapter().admin
-        with pytest.raises(ValueError, match="群名片"):
+        with pytest.raises(ValueError, match="本群昵称"):
             await admin.set_group_card("456", "123", "x" * 61)
         with pytest.raises(ValueError, match="群名"):
             await admin.set_group_name("456", "  ")

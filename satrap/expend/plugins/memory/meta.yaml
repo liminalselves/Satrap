@@ -16,7 +16,7 @@ config_schema:
   group_write_enabled:
     type: bool
     default: false
-    description: "允许模型保存本人的群内偏好或提交群约定提案; 不授予修改其他成员的权限"
+    description: "允许模型保存本人的群内偏好或提交群记忆提案; 不授予修改其他成员的权限"
   injection_limit:
     type: number
     default: 30

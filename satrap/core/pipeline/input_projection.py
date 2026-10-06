@@ -437,7 +437,7 @@ def bot_identity_block(event: MessageEvent, identity: BotIdentity | None) -> str
     - identity: 平台确认的机器人资料, 缺失或来源不符时不生成标记
 
     返回:
-    - str: 已清理显示字段的身份标记, 无可用昵称和名片时为空
+    - str: 已清理显示字段的身份标记, 无可用昵称和本群昵称时为空
     """
     if identity is None or identity.self_id != event.get_self_id() or (identity.group_id and identity.group_id != event.get_group_id()):
         return ""
@@ -446,7 +446,7 @@ def bot_identity_block(event: MessageEvent, identity: BotIdentity | None) -> str
         return ""
     fields = [f"账号 ID {display_label(identity.self_id)}", f"账号昵称 {nickname or '未获取'}"]
     if card:
-        fields.append(f"本群名片 {card}")
+        fields.append(f"本群昵称 {card}")
     return f"[你当前的平台机器人身份: {', '.join(fields)}]"
 
 

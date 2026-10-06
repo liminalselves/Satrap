@@ -115,7 +115,7 @@ class OneBotGroupChatReader:
     @staticmethod
     def _member(data: dict[str, Any]) -> MemberRecord:
         """
-        收窄成员字段, 保留昵称与名片并限制长度
+        收窄成员字段, 保留昵称与本群昵称并限制长度
 
         参数:
         - data: 已核验群归属的成员响应
@@ -126,7 +126,7 @@ class OneBotGroupChatReader:
         user_id = _numeric_id(data.get("user_id"))
         nickname, card = data.get("nickname", ""), data.get("card", "")
         if not isinstance(nickname, str) or not isinstance(card, str):
-            raise ValueError("成员昵称或名片格式不符")
+            raise ValueError("成员昵称或本群昵称格式不符")
         role = data.get("role", "")
         if not isinstance(role, str) or len(role) > 64:
             raise ValueError("成员角色格式不符")

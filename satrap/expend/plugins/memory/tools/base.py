@@ -243,24 +243,24 @@ _ID = {**_TEXT, "description": "记忆查询结果中的完整 ID"}
 _SOURCES = {"type": "array", "minItems": 1, "maxItems": 10, "items": _TEXT, "description": "支持这条信息的来源消息 ID; 群内本人偏好必须包含本轮本人发言"}
 _REVISION = {"type": "integer", "minimum": 1, "description": "查询结果中的 revision; 内容已变化时需要重新查询"}
 DEFINITIONS = {
-    "add_memory": ("用户明确要求记住时, 保存一条长期信息; 群内只能保存本人偏好或提交群约定. pending 表示待审批, 不能说群约定已经生效", {
+    "add_memory": ("用户明确要求记住时, 保存一条长期信息; 群内只能保存本人偏好或提交群记忆. pending 表示待审批, 不能说群记忆已经生效", {
         "title": {**_TEXT, "maxLength": 120, "description": "方便查找的简短标题"},
         "content": {**_TEXT, "maxLength": 2000, "description": "用户明确要求保存的信息, 不推测未表达的偏好"},
-        "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "群聊必填: 本人的偏好, 或全群约定提案"},
+        "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "群聊必填: 本人的偏好, 或群记忆提案"},
         "key": {**_TEXT, "maxLength": 64, "description": "稳定的用途键, 例如 preferred_name 或 response_style"},
         "source_message_ids": _SOURCES,
         "tags": {"type": "array", "maxItems": 20, "items": _TEXT, "description": "普通会话记忆的分类标签"},
         "importance": {"type": "integer", "minimum": 1, "maximum": 5, "description": "普通会话记忆的重要程度, 默认 1"},
     }, ["title", "content"]),
-    "update_memory": ("用户明确更正已保存的信息时使用; 先查询记忆和修订号. 群内只能改本人偏好, 群约定修改仍需审批", {
+    "update_memory": ("用户明确更正已保存的信息时使用; 先查询记忆和修订号. 群内只能改本人偏好, 群记忆修改仍需审批", {
         "memory_id": _ID, "content": {**_TEXT, "maxLength": 2000, "description": "更正后的信息"},
         "title": {**_TEXT, "maxLength": 120, "description": "需要更名时填写"}, "source_message_ids": _SOURCES, "expected_revision": _REVISION,
     }, ["memory_id"]),
-    "delete_memory": ("用户在本轮明确要求忘记时删除记忆; 群内只能删除本人偏好, 群约定删除需要审批, 不删除聊天原文", {
+    "delete_memory": ("用户在本轮明确要求忘记时删除记忆; 群内只能删除本人偏好, 群记忆删除需要审批, 不删除聊天原文", {
         "memory_id": _ID, "expected_revision": _REVISION,
         "request_message_id": {**_TEXT, "description": "本轮明确要求忘记的消息 ID, 不能使用旧聊天中的删除请求"},
     }, ["memory_id"]),
-    "list_memories": ("查找当前范围内的有效长期记忆; 群内可筛选群约定或已核验成员的偏好, 不跨群读取", {
+    "list_memories": ("查找当前范围内的有效长期记忆; 群内可筛选群记忆或已核验成员的偏好, 不跨群读取", {
         "kind": {"type": "string", "enum": ["member_preference", "group_rule"], "description": "只查该类型"},
         "user_id": {**_TEXT, "description": "只查当前群这位已确认成员的偏好"},
         "keyword": {**_TEXT, "description": "标题或正文包含的文字"},

@@ -18,7 +18,7 @@ description: 查看群资料和成员, 查询聊天记录, 组合引用和 @ 回
 回应某人的一条发言时, 优先使用 mention.source_message_id, 填写那条发言的消息 ID
 工具会 @ 该消息的发送者; 如果这条消息还 @ 了别人, 那些人不是本次自动选择的对象
 
-只有昵称或群名片时, 先调用 group_chat_find_members 找人
+只有账号昵称或本群昵称时, 先调用 group_chat_find_members 找人
 找到多个同名成员时, 根据已有信息确认目标; 无法确定就询问用户, 不随意选择第一位
 已经有成员 ID 时, 可以用 group_chat_get_member 查看对应的昵称, 群昵称和角色
 nickname 是账号昵称, card 是群昵称; role 是平台返回的群角色, 不能代替工具调用权限检查

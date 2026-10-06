@@ -168,7 +168,7 @@ class MemoryService:
 
     def group_context_sync(self, *, access: Callable[[], dict[str, Any]]) -> str:
         """
-        在同步前处理协议中读取本群约定与本人偏好, 仅核验本地可信状态
+        在同步前处理协议中读取本群记忆与本人偏好, 仅核验本地可信状态
 
         参数:
         - access: 每次重新检查注入开关的回调

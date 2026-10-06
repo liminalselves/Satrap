@@ -1,4 +1,4 @@
-"""OneBot 自身昵称及群名片的有界回源缓存"""
+"""OneBot 自身昵称及本群昵称的有界回源缓存"""
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -22,7 +22,7 @@ IDENTITY_ACTION_TIMEOUT = 1.0
 
 
 class OneBotSelfIdentity:
-    """按当前连接隔离账号昵称与各群名片, 查询结果不可跨连接复用"""
+    """按当前连接隔离账号昵称与本群昵称, 查询结果不可跨连接复用"""
 
     def __init__(self, adapter: OneBotAdapter) -> None:
         """
@@ -93,7 +93,7 @@ class OneBotSelfIdentity:
 
     async def resolve(self, self_id: str, group_id: str = "") -> BotIdentity | None:
         """
-        查询当前账号昵称及可访问群的自身名片
+        查询当前账号昵称及机器人在可访问群中的本群昵称
 
         参数:
         - self_id: 当前事件固定的机器人账号

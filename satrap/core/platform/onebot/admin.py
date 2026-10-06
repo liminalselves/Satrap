@@ -91,7 +91,7 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "ban_anonymous": ("write", "禁言匿名成员"),
     "set_group_admin": ("write", "设置或取消群管理员"),
     "set_group_anonymous": ("write", "群匿名开关"),
-    "set_group_card": ("write", "设置群名片"),
+    "set_group_card": ("write", "设置本群昵称"),
     "set_group_name": ("write", "修改群名"),
     "set_group_special_title": ("write", "设置专属头衔"),
     "leave_group": ("write", "退出或解散群"),
@@ -839,18 +839,18 @@ class OneBotAdmin:
 
     async def set_group_card(self, group_id: Any, user_id: Any, card: Any = "") -> None:
         """
-        设置群成员名片
+        设置成员在本群的昵称
 
         参数:
         - group_id: 目标群
         - user_id: 目标成员
-        - card: 新名片, 空字符串表示删除
+        - card: 新的本群昵称, 空字符串表示删除
         """
         gid, uid = normalize_group_id(group_id), normalize_user_id(user_id)
         self._check_group(gid)
         text = str(card)
         if len(text) > 60:
-            raise ValueError("群名片长度不能超过 60 字符")
+            raise ValueError("本群昵称长度不能超过 60 字符")
         await self._call("set_group_card", group_id=int(gid), user_id=int(uid), card=text)
 
     async def set_group_name(self, group_id: Any, name: Any) -> None:
