@@ -61,7 +61,7 @@ ADM6 管理员不能越过写功能开关通过: QQ 管理组已重新启用并 
 
 收尾配置核对通过: QQ 管理组启用, 允许 group_admin / group_chat / friend_manager, excluded 为空, 无失效成员或插件目录错误. 已保存与运行时修订均为 e77f85e75706f1cd4dc9f86291ecbe54c2a8ece338c8bbb60a1bca5be172ab63, applied; 恢复时 PID 37712 / runtime_id 未变. group_admin.write_tools_enabled=true / allowed_callers 为空, 活跃群会话 applied_fingerprint 与 desired_fingerprint 一致; 修改群昵称的需审批设置保留. onebot-private-test 的 friend_manager.managers 已清空, 该私聊 Agent 当前没有活跃实例, 后续激活从已保存配置安装; 不声称已核对不存在实例的运行配置. 验收失败申请保持终态, 未发送额外平台消息或执行任何好友写操作
 
-待后续处理的提示词问题: group_chat.environment 的 available_tools 名称未说明仅限本插件, 真实 ADM4 首轮模型据此与默认关闭说明声称接口未开放, 明确部分清单后 ADM4B 调用成功. 本轮记录误判与复测证据, 未修改提示词, 未宣称仅凭两轮行为就能证明因果
+提示词范围歧义已修正: group_chat.environment 的 available_tools 改为 available_group_chat_tools, 注入说明明确只列本插件工具, 其他插件是否可调用以本轮实际工具接口为准. 24 项群聊插件与管理员组测试通过; 分别在同步 / 异步会话中安装 group_chat 和 group_admin 并经过实际 PipelineScheduler 调用, 捕获首轮模型请求, 确认环境清单只包含 group_chat 工具, 实际 tools 参数仍包含 group_admin_set_group_nickname, 且范围说明已注入. 验证使用离线模型与测试适配器, 未执行真实平台写操作. 当前运行后端需重新加载代码后才能使用新说明; 不宣称已经完成修改后的真实 QQ 复测
 
 1. 在系统设置创建测试管理组, 添加当前 OneBot 平台与测试用户 QQ 号, 指定 group_admin 和 friend_manager, 保存后确认“已保存并生效”
 2. 使用已安装插件的私聊 Agent, 暂时清空 friend_manager.managers 和 write_callers, 保留原写开关状态. 测试用户请求实际调用 friend_manager 的好友列表读取工具, 应成功; 不修改好友关系
