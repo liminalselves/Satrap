@@ -1131,7 +1131,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                          "approval_actions": [action_metadata(action) for action in sorted(GROUP_APPROVAL_ACTIONS)],
                          "approval_inheriting_counts": counts}
         if ctx.method == "PATCH" and parts[4:] == ["settings"]:
-            if _check_backend_health().get("running"):
+            if (await asyncio.to_thread(_check_backend_health)).get("running"):
                 return 409, {"error": "后端正在运行, 请使用运行时群配置接口", "reason": "use_runtime_api"}
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             expected_self_id = payload.get("expected_self_id")
@@ -1171,7 +1171,7 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 if account is None or record is None:
                     return 404, {"error": "群记录不存在", "reason": "group_record_not_found"}
             else:
-                if _check_backend_health().get("running"):
+                if (await asyncio.to_thread(_check_backend_health)).get("running"):
                     return 409, {"error": "后端正在运行, 请使用运行时群配置接口", "reason": "use_runtime_api"}
                 payload = await _read_json_body(ctx.reader, ctx.raw_request)
                 expected_self_id = payload.get("expected_self_id")
@@ -1295,7 +1295,7 @@ async def _route_ui_config_status(ctx: _RouteContext) -> ControlResponse | None:
             return 400, {"error": str(e)}
 
     if ctx.method == "GET" and ctx.path == "/status":
-        health = _check_backend_health()
+        health = await asyncio.to_thread(_check_backend_health)
         return 200, {
             "running": health.get("running", False),
             "managed": _backend_process is not None and _backend_process.poll() is None,
@@ -1339,7 +1339,7 @@ async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/chat/history/delete":
         try:
-            _require_chat_stopped()
+            await asyncio.to_thread(_require_chat_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             raw_ids = payload.get("conversation_ids", [])
             raw_filters = payload.get("filters", {})
@@ -1397,7 +1397,7 @@ async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/chat/history/trash/restore":
         try:
-            _require_chat_stopped()
+            await asyncio.to_thread(_require_chat_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             archive_id = str(payload.get("archive_id") or "").strip()
             if not archive_id:
@@ -1414,7 +1414,7 @@ async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/chat/history/trash/purge":
         try:
-            _require_chat_stopped()
+            await asyncio.to_thread(_require_chat_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             archive_id = str(payload.get("archive_id") or "").strip()
             if not archive_id:
@@ -1447,15 +1447,15 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
     """
     global _backend_process
     if ctx.method == "POST" and ctx.path == "/start":
-        health = _check_backend_health()
+        health = await asyncio.to_thread(_check_backend_health)
         # 检查是否已在运行
         if health.get("running"):
             return 200, {"ok": True, "message": "后端已在运行中"}
         if _backend_process is not None and _backend_process.poll() is None:
             return 200, {"ok": True, "message": "后端正在启动中"}
-        old_runtime = _read_backend_runtime()
+        old_runtime = await asyncio.to_thread(_read_backend_runtime)
         if old_runtime is not None:
-            old_health = _check_backend_health(old_runtime.host, old_runtime.port)
+            old_health = await asyncio.to_thread(_check_backend_health, old_runtime.host, old_runtime.port)
         else:
             old_health = {}
         if (
@@ -1483,29 +1483,20 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
             creationflags = subprocess.CREATE_NO_WINDOW
 
         try:
-            _backend_process = subprocess.Popen(
-                cmd,
-                cwd=str(PROJECT_ROOT),
-                env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
+            _backend_process = await asyncio.to_thread(
+                subprocess.Popen, cmd, cwd=str(PROJECT_ROOT), env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo, creationflags=creationflags,
             )
 
-            _write_backend_runtime(
-                BackendRuntimeRecord(
-                    _backend_process.pid,
-                    runtime_id,
-                    _connect_host(backend_host),
-                    backend_port,
-                )
+            await asyncio.to_thread(
+                _write_backend_runtime,
+                BackendRuntimeRecord(_backend_process.pid, runtime_id, _connect_host(backend_host), backend_port),
             )
             # 记录后端 PID
 
             for _ in range(30):   # 最多等待 15 秒
                 await asyncio.sleep(0.5)
-                health = _check_backend_health()
+                health = await asyncio.to_thread(_check_backend_health)
                 if health.get("running"):
                     return 200, {"ok": True, "message": "后端已启动"}
             return 200, {"ok": True, "message": "后端启动中，请稍候..."}
@@ -1515,11 +1506,11 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
             return 500, {"ok": False, "error": str(e)}
 
     if ctx.method == "POST" and ctx.path == "/stop":
-        _cleanup_backend()
+        await asyncio.to_thread(_cleanup_backend)
         return 200, {"ok": True, "message": "后端已停止"}
 
     if ctx.method == "POST" and ctx.path == "/restart":
-        _cleanup_backend()
+        await asyncio.to_thread(_cleanup_backend)
         await asyncio.sleep(1)
 
         backend_host, backend_port = _configured_backend_address()
@@ -1534,22 +1525,13 @@ async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
             creationflags = subprocess.CREATE_NO_WINDOW
 
         try:
-            _backend_process = subprocess.Popen(
-                cmd,
-                cwd=str(PROJECT_ROOT),
-                env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
+            _backend_process = await asyncio.to_thread(
+                subprocess.Popen, cmd, cwd=str(PROJECT_ROOT), env={**os.environ, "SATRAP_BACKEND_RUNTIME_ID": runtime_id},
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, startupinfo=startupinfo, creationflags=creationflags,
             )
-            _write_backend_runtime(
-                BackendRuntimeRecord(
-                    _backend_process.pid,
-                    runtime_id,
-                    _connect_host(backend_host),
-                    backend_port,
-                )
+            await asyncio.to_thread(
+                _write_backend_runtime,
+                BackendRuntimeRecord(_backend_process.pid, runtime_id, _connect_host(backend_host), backend_port),
             )
             return 200, {"ok": True, "message": "后端重启中"}
         except Exception as e:
@@ -2004,7 +1986,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/storage/cleanup":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             raw_ids = payload.get("item_ids", [])
             if not isinstance(raw_ids, list):
@@ -2024,7 +2006,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/storage/trash/restore":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             return 200, await asyncio.to_thread(
                 StorageMaintenanceService(_configured_storage_layout()).restore_archive,
@@ -2038,7 +2020,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/storage/trash/purge":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             deleted = await asyncio.to_thread(
                 StorageMaintenanceService(_configured_storage_layout()).purge_archive,
@@ -2053,7 +2035,7 @@ async def _route_storage(ctx: _RouteContext) -> ControlResponse | None:
 
     if ctx.method == "POST" and ctx.path == "/storage/trash/purge-batch":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             raw_refs = payload.get("archive_refs")
             if raw_refs is not None and not isinstance(raw_refs, list):
@@ -2842,7 +2824,7 @@ async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None
 
     if ctx.method == "POST" and ctx.path == "/config/session-instances":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             raw_params: object = payload.get("params", {})
             if not isinstance(raw_params, dict):
@@ -2873,7 +2855,7 @@ async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None
 
     if ctx.method == "POST" and ctx.path == "/config/session-instances/bulk-delete":
         try:
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             mode = str(payload.get("mode", "selected")).strip()
             platform_ids = _configured_platform_ids()
@@ -2926,7 +2908,7 @@ async def _route_session_instances(ctx: _RouteContext) -> ControlResponse | None
                 return 404, {"error": f"not found: {ctx.method} {ctx.path}"}
             if not session_id:
                 return 400, {"error": "session_id 不能为空"}
-            _require_backend_stopped()
+            await asyncio.to_thread(_require_backend_stopped)
             query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
             platform_id = str(query.get("platform_id", [""])[0]).strip()
             if platform_id not in _configured_platform_ids():
@@ -3338,11 +3320,11 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     _CONTROL_AUTH = ServerAuth.create(host, port, session_namespace="control")
 
     # 检查单实例
-    if not _check_single_instance():
+    if not await asyncio.to_thread(_check_single_instance):
         print("Control server is already running")
         sys.exit(1)
     
-    _write_pid_file(CONTROL_PID_FILE, os.getpid())
+    await asyncio.to_thread(_write_pid_file, CONTROL_PID_FILE, os.getpid())
     # 写入 PID 文件
     
     atexit.register(_cleanup_control)

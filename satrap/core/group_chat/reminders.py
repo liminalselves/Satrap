@@ -222,22 +222,63 @@ class ReminderStore:
             raise ReminderError("invalid_argument", "提醒状态或分页无效")
         if not isinstance(cursor, str) or len(cursor) > 4096:
             raise ReminderError("invalid_cursor", "提醒游标无效")
+        filters = ["scope_key=?"]
+        arguments = [scope.key]
+        if actor:
+            filters.append("creator_id=?")
+            arguments.append(actor)
+        if state:
+            filters.append("state=?")
+            arguments.append(state)
+        clause = " AND ".join(filters)
         with closing(self._connect()) as connection:
-            rows = connection.execute("SELECT * FROM group_chat_reminders WHERE scope_key=?" + (" AND creator_id=?" if actor else "")
-                                      + (" AND state=?" if state else "") + " ORDER BY due_at, reminder_id", (scope.key, *([actor] if actor else []), *([state] if state else []))).fetchall()
+            # 签名只需要 ID 与修订, 窄查询避免为每页物化全部正文
+            rows = connection.execute(f"SELECT reminder_id, revision FROM group_chat_reminders WHERE {clause} ORDER BY due_at, reminder_id", arguments).fetchall()
             signature = hashlib.sha256(json.dumps([scope.key, actor, state, limit, [(row["reminder_id"], row["revision"]) for row in rows]]).encode()).hexdigest()
-            offset = 0
-            if cursor:
-                try:
-                    token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-                    if token[0] != signature or type(token[1]) is not int or token[1] < 0:
-                        raise ValueError()
-                    offset = token[1]
-                except Exception as exc:
-                    raise ReminderError("invalid_cursor", "任务或筛选已变化, 请重新查询") from exc
+            offset = self._offset(cursor, signature)
             more = offset + limit < len(rows)
-            return {"ok": True, "items": [self._record(row) for row in rows[offset:offset + limit]], "has_more": more,
+            return {"ok": True, "items": self._page_records(connection, [row["reminder_id"] for row in rows[offset:offset + limit]]), "has_more": more,
                     "next_cursor": base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None}
+
+    @staticmethod
+    def _offset(cursor: str, signature: str) -> int:
+        """
+        校验游标仍属于同一筛选与内容版本
+
+        参数:
+        - cursor: 上次返回的游标, 空串表示第一页
+        - signature: 当前筛选与内容签名
+
+        返回:
+        - 当前页起始偏移, 游标无效或内容已变化时抛出 invalid_cursor
+        """
+        if not cursor:
+            return 0
+        try:
+            token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+            if token[0] != signature or type(token[1]) is not int or token[1] < 0:
+                raise ValueError()
+            return int(token[1])
+        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            raise ReminderError("invalid_cursor", "任务或筛选已变化, 请重新查询") from exc
+
+    def _page_records(self, connection: sqlite3.Connection, identities: list[str]) -> list[dict[str, Any]]:
+        """
+        按主键回取当页正文并保持签名顺序
+
+        参数:
+        - connection: 当前连接
+        - identities: 当页任务 ID
+
+        返回:
+        - 与 identities 同序的提醒, 期间被删除的行跳过
+        """
+        if not identities:
+            return []
+        placeholders = ",".join("?" for _ in identities)
+        rows = connection.execute(f"SELECT * FROM group_chat_reminders WHERE reminder_id IN ({placeholders})", identities)
+        found = {str(row["reminder_id"]): self._record(row) for row in rows}
+        return [found[identity] for identity in identities if identity in found]
 
     def change(self, scope: MessageScope, identity: str, action: str, expected_revision: int, *, actor: str = "", grace: int = 600,
                authorize: Callable[[], None] | None = None) -> dict[str, Any]:

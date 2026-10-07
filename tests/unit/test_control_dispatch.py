@@ -9,12 +9,14 @@
 """
 from __future__ import annotations
 
+import threading
 import asyncio
 import sqlite3
 from pathlib import Path
 import pytest
 from typing import Any, cast
 import json
+import time
 
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.backend import control_server
@@ -483,6 +485,71 @@ async def test_control_lifecycle_start_stop_restart_side_effects(
     assert cleanup_calls == ["cleanup", "cleanup"]
     assert len(popen_calls) == 2
     assert [record.pid for record in written] == [43210, 43210]
+
+
+@pytest.mark.asyncio
+async def test_blocking_health_check_runs_off_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /status 的阻塞健康检查在工作线程执行, 期间事件循环继续推进"""
+    threads: list[threading.Thread] = []
+    ticks = {"count": 0}
+
+    def slow_health() -> dict[str, object]:
+        """
+        记录调用线程并模拟 200 毫秒的阻塞 IO
+
+        返回:
+        - 停止状态的健康结果
+        """
+        threads.append(threading.current_thread())
+        time.sleep(0.2)
+        return {"running": False}
+
+    monkeypatch.setattr(control_server, "_check_backend_health", slow_health)
+
+    async def heartbeat() -> None:
+        while True:
+            ticks["count"] += 1
+            await asyncio.sleep(0.01)
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        response = await _request("/status")
+    finally:
+        beat.cancel()
+
+    assert _json_body(response)["running"] is False
+    assert threads and threads[0] is not threading.main_thread()
+    assert ticks["count"] >= 5
+
+
+@pytest.mark.asyncio
+async def test_stop_cleans_backend_off_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /stop 的后端清理在工作线程执行, 期间事件循环继续推进"""
+    threads: list[threading.Thread] = []
+    ticks = {"count": 0}
+
+    def slow_cleanup() -> None:
+        """记录调用线程并模拟 200 毫秒的进程收尾"""
+        threads.append(threading.current_thread())
+        time.sleep(0.2)
+
+    monkeypatch.setattr(control_server, "_cleanup_backend", slow_cleanup)
+    monkeypatch.setattr(control_server, "_backend_process", None)
+
+    async def heartbeat() -> None:
+        while True:
+            ticks["count"] += 1
+            await asyncio.sleep(0.01)
+
+    beat = asyncio.create_task(heartbeat())
+    try:
+        response = await _request("/stop", "POST")
+    finally:
+        beat.cancel()
+
+    assert _json_body(response) == {"ok": True, "message": "后端已停止"}
+    assert threads and threads[0] is not threading.main_thread()
+    assert ticks["count"] >= 5
 
 
 class _FakeOsModule:
