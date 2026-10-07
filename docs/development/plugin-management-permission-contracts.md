@@ -135,11 +135,13 @@ AuthorizationDecision 的字段契约:
 | plugin_name / entry_kind / entry_name | 固定当前安装入口身份 |
 | required_permissions | 实际需要的权限 ID |
 | grants | 每项权限的允许结果, 来源为 local_list, local_empty_allow 或 administrator_group, 以及命中的管理组 ID |
-| reason_code | 稳定失败原因, 如 permission_denied, identity_missing, entry_disabled, stale_authorization, invalid_permission_config |
+| reason_code | 稳定失败原因, 如 permission_denied, identity_missing, entry_disabled, stale_authorization, invalid_permission_config, authorization_error |
 | policy_revision | 本轮读取的授权配置版本, 用于等待后的复核 |
 | permission_fingerprint | 当前身份与相关权限规则 / 有效授权的指纹, 用于持久申请复核 |
 
 未知入口, 插件或入口已停用, 管理入口缺少可信平台身份, 运行时名单结构错误返回 denied; 不能按 not_applicable 处理. 未映射管理权限的普通入口不新增平台身份要求. 真实平台调用者通过平台实例及 instance_id + actor_id 匹配管理组. 控制面人工 API 保持其现有鉴权入口, 不伪造平台管理员来源
+
+授权检查本身抛出异常时仍按拒绝处理, 记录完整堆栈并返回 authorization_error; 该原因码与名单结构错误的 invalid_permission_config, 以及调用者确实未获授权的 permission_denied 相互区分. 转换为 PluginPermissionDenied 时只有 authorization_error 使用 “管理入口权限检查暂时失败, 请查看后端日志” 提示, 其余原因码保持 “当前调用者未获得 <插件> 管理入口权限” 文案
 
 commands 入口另需宿主在已识别原生命令后创建的可信执行作用域; 仅有某人的 CallOrigin 不足以调用审批命令. 模型工具作用域不能创建 command 授权, 插件注册表中的命令名称也不能直接当成已获批准的调用凭证
 

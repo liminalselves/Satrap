@@ -61,7 +61,11 @@ class PluginPermissionDenied(PermissionError):
         """
         self.decision = decision
         self.code = decision.reason_code
-        super().__init__(f"当前调用者未获得 {decision.plugin_name} 管理入口权限 ({self.code})")
+        if self.code == "authorization_error":   # 系统故障与权限决定必须可区分, 避免运维误判
+            message = f"{decision.plugin_name} 管理入口权限检查暂时失败, 请查看后端日志 ({self.code})"
+        else:
+            message = f"当前调用者未获得 {decision.plugin_name} 管理入口权限 ({self.code})"
+        super().__init__(message)
 
 
 def permission_id_list(value: object) -> tuple[str, ...]:
@@ -281,7 +285,7 @@ def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | Non
                                            binding.config, current_call_origin(), administrators, subcommand=subcommand)
     except Exception:
         logger.error(f"[管理权限] 授权检查异常, 插件={binding.plugin_name}, 入口={binding.name}: {traceback.format_exc()}")
-        return AuthorizationDecision("denied", *identity, reason_code="invalid_permission_config")
+        return AuthorizationDecision("denied", *identity, reason_code="authorization_error")
 
 
 def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: str | None = None) -> AuthorizationDecision:

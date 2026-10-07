@@ -39,12 +39,13 @@ class _FriendMixin:
     config: dict[str, Any]
     _plugin_entry_binding: PluginEntryBinding
 
-    def _resolve(self, *, preview: bool = False) -> tuple[Any, Any]:
+    def _resolve(self, *, preview: bool = False, recheck_entry: bool = True) -> tuple[Any, Any]:
         """
         核验来源账号, 私聊和配置名单
 
         参数:
         - preview: 声明过滤时不记录预期权限拒绝
+        - recheck_entry: 执行入口已核验管理权限时可跳过重复判定, 等待之后的复检不受影响
 
         返回:
         - 当前适配器和可信调用来源
@@ -55,7 +56,7 @@ class _FriendMixin:
         if preview:
             if authorize_plugin_entry(self._plugin_entry_binding).status == "denied":
                 raise FriendError("permission_denied", "当前调用者未获得好友管理权限")
-        else:
+        elif recheck_entry:
             require_plugin_entry_permission(self._plugin_entry_binding)
         manager = current_adapter_manager()
         adapter = manager.get_adapter(origin.adapter_id) if manager else None
@@ -112,7 +113,8 @@ class _FriendMixin:
             _, properties, required = DEFINITIONS[name]
             if set(kwargs) - set(properties) or not set(required) <= kwargs.keys():
                 raise FriendError("invalid_parameters", "工具参数缺失或含未知字段")
-            adapter, origin = self._resolve()
+            adapter, origin = self._resolve(recheck_entry=False)
+            # 管理入口权限已由框架在派发前核验, 这里只核验本地来源; 等待之后的复检保持不变
             await adapter.group_chat_private_scope(origin)
             host = adapter.friend_host
             if name in {"friend_manager_list_friends", "friend_manager_find_friends"}:

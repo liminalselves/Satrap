@@ -2,6 +2,8 @@
 from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
+from typing import Any, NoReturn
+import sqlite3
 
 import pytest
 
@@ -68,16 +70,18 @@ async def test_group_write_switch_and_main_workflow_are_checked(tmp_path):
 
 
 @pytest.mark.parametrize('change', ['route', 'account', 'disabled'])
-def test_context_injection_rechecks_identity_after_database_reads(tmp_path, monkeypatch, change):
+def test_context_injection_rechecks_identity_after_database_reads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                                 caplog: pytest.LogCaptureFixture, change: str) -> None:
     adapter, event, _ = setup(tmp_path)
     origin = replace(event.call_origin, conversation_kind='group', conversation_id=SCOPE.chat_id)
     repository = ScopedMemories(adapter.message_archive, SCOPE)
     repository.mutate('create', {'kind': 'group_rule', 'key': 'rule', 'content': '旧范围记忆正文'}, actor='operator', operator=True, operation_id='create')
     original = ScopedMemories.list
 
-    def changed_after_read(self, **values):
-        result = original(self, **values)
-        if values.get('kind') == 'member_preference':
+    def changed_after_read(self: ScopedMemories, *, kind: str = "", user_id: str = "", keyword: str = "",
+                           limit: int = 20, cursor: str = "", viewer: str = "") -> dict[str, Any]:
+        result = original(self, kind=kind, user_id=user_id, keyword=keyword, limit=limit, cursor=cursor, viewer=viewer)
+        if kind == 'member_preference':
             if change == 'route':
                 adapter._agent_route_memory[(SCOPE.self_id, 'group', SCOPE.chat_id)] = ((), 1)
             elif change == 'account':
@@ -90,3 +94,30 @@ def test_context_injection_rechecks_identity_after_database_reads(tmp_path, monk
     service = MemoryService(MemoryStore(db_path=adapter.message_archive.database, scope='unused'))
     with bind_call_origin(origin):
         assert service.group_context_sync(access=lambda: {'memory_mode': 'base'}) == ''
+    records = [record for record in caplog.records if '注入来源核验失败' in record.getMessage()]
+    assert [record.levelname for record in records] == ['WARNING']
+
+
+@pytest.mark.parametrize('failure', ['storage', 'unexpected'])
+def test_context_injection_degrades_with_matching_log_level(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           caplog: pytest.LogCaptureFixture, failure: str) -> None:
+    """存储不可用只记录警告, 非预期异常记录完整堆栈, 两者都降级为不注入"""
+    adapter, event, _ = setup(tmp_path)
+    origin = replace(event.call_origin, conversation_kind='group', conversation_id=SCOPE.chat_id)
+    archive = adapter.message_archive
+    assert archive is not None
+
+    def broken(self: ScopedMemories, **values: object) -> NoReturn:
+        if failure == 'storage':
+            raise sqlite3.OperationalError('database is locked')
+        raise RuntimeError('模拟未预期损坏')
+
+    monkeypatch.setattr(ScopedMemories, 'list', broken)
+    service = MemoryService(MemoryStore(db_path=archive.database, scope='unused'))
+    with bind_call_origin(origin):
+        assert service.group_context_sync(access=lambda: {'memory_mode': 'base'}) == ''
+    records = {record.levelname: record.getMessage() for record in caplog.records if '群记忆' in record.getMessage()}
+    if failure == 'storage':
+        assert 'WARNING' in records and '记忆存储不可用' in records['WARNING'] and 'Traceback' not in records['WARNING']
+    else:
+        assert 'ERROR' in records and '本轮记忆注入失败' in records['ERROR'] and 'Traceback' in records['ERROR']

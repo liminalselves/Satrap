@@ -135,6 +135,18 @@ async def test_group_list_is_private_authorized_scoped_and_revalidates_permissio
         assert not denied["ok"] and denied["error"]["code"] == "stale_call"
 
 
+@pytest.mark.asyncio
+async def test_group_query_rejects_group_outside_plugin_allowance(tmp_path: Path) -> None:
+    """允许群范围只在插件权限复核处判定, 越权群在读取之前被拒绝"""
+    _, _, origin = _setup(tmp_path)
+    session = AsyncSimpleSession("group-scope", cast(Any, object()), enable_checkpoint=False, db_path=str(tmp_path / "ctx.db"))
+    config = {"allowed_groups": "789"}
+    query = next(tool for tool in get_tools(session, config) if tool.tool_name == "group_chat_recent_messages")
+    with bind_call_origin(origin):
+        result = await query.execute()
+    assert result == {"ok": False, "error": {"code": "forbidden", "message": "工具只能操作获授权的当前群", "retryable": False}}
+
+
 async def runtime(tmp_path: Path, asynchronous: bool, plugin_name: str, plugin_config: dict[str, Any] | None = None):
     from satrap.core.backend.BackendManager import BackendManager, BackendConfig
     from satrap.core.config.group_directory import GroupDirectoryStore

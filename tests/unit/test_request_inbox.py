@@ -13,6 +13,7 @@ from satrap.core.platform import set_current_adapter_manager
 from satrap.core.platform.onebot.request_registry import RequestApprovalLedger, RequestFlagRegistry
 from satrap.expend.plugins.group_admin.tools import get_tools
 from satrap.expend.plugins.friend_manager.tools import AsyncFriendTool, get_tools as friend_tools
+from satrap.expend.plugins.friend_manager import tools as friend_tools_module
 from satrap.core.friends.service import FriendService
 from satrap.core.platform import current_adapter_manager
 from satrap.core.framework.Base import Session
@@ -95,6 +96,31 @@ async def test_request_permissions_private_visibility_account_change_and_invalid
         assert query.is_available_for_call()
         assert not (await query.execute(self_id="other"))["ok"]
         assert not (await query.execute(limit=True))["ok"]
+
+
+@pytest.mark.asyncio
+async def test_entry_permission_is_rechecked_after_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
+    """等待期间管理入口权限被撤销时仍会被拒绝, 等待之前不再重复判定"""
+    adapter = _setup_adapter()
+    await incoming(adapter)
+    stages: list[str] = []
+    original = adapter.friend_requests
+
+    async def listing(account: str, limit: int, cursor: str | None) -> Any:
+        stages.append("host")
+        return await original(account, limit, cursor)
+
+    def revoked(binding: Any) -> Any:
+        stages.append("check")
+        raise PermissionError("权限已撤销")
+
+    query = tool("friend_manager_list_requests", write=False)
+    monkeypatch.setattr(adapter, "friend_requests", listing)
+    monkeypatch.setattr(friend_tools_module, "require_plugin_entry_permission", revoked)
+    with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
+        result = await query.execute()
+    assert stages == ["host", "check"]
+    assert result == {"ok": False, "error": {"code": "permission_denied", "message": "当前操作未获授权或权限已变化", "retryable": False}}
 
 
 @pytest.mark.asyncio

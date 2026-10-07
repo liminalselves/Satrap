@@ -277,15 +277,13 @@ class GroupChatService:
         - operation: 注册的 group_chat 工具名称
         - arguments: 模型参数, 不允许平台, 账号或目标群字段
         - limits: 宿主查询上限, 缺省使用首批默认值
-        - authorize: 可选的当前插件权限复核回调
+        - authorize: 当前插件权限复核回调, 负责允许群范围与调用来源; 群列表查询必须提供
 
         返回:
         - 明确成功结果或包含错误码和可重试状态的失败结果
         """
         context: _ReadContext | None = None
         try:
-            if not isinstance(operation, str) or operation not in _ARGUMENTS or not isinstance(arguments, Mapping):
-                raise ValueError("群聊读取操作或参数格式不符")
             if set(arguments) - _ARGUMENTS[operation]:
                 raise ValueError("群聊工具含有未知参数, 只能操作当前群")
             bounds = limits or GroupChatLimits()
@@ -295,8 +293,6 @@ class GroupChatService:
                 if authorize is None:
                     raise GroupChatError("forbidden", "群列表查询必须由当前插件入口授权")
                 return await self._groups(context, bounds)
-            if bounds.allowed_groups and context.scope.chat_id not in bounds.allowed_groups:
-                raise GroupChatError("forbidden", "当前群不在插件允许范围内")
             if operation == "group_chat_set_group_nickname":
                 self._capability(context, "self_nickname")
                 if authorize is None:

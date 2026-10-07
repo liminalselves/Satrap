@@ -2,16 +2,24 @@ from copy import deepcopy
 from contextvars import copy_context
 from dataclasses import replace
 from types import SimpleNamespace
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 import weakref
+import json
+import os
 import pytest
 
 from satrap.core.call_context import CallOrigin, bind_call_origin, bind_tool_workflow
 from satrap.core.config.administrator_groups import AdministratorService
 from satrap.core.plugin_authorization import (
-    PluginEntryBinding, authorize_plugin_entry, bind_native_command, evaluate_plugin_permissions,
+    AuthorizationDecision, PluginEntryBinding, authorize_plugin_entry, bind_authorization_step,
+    bind_native_command, bind_plugin_factory_tools, evaluate_plugin_permissions,
 )
+from satrap.core.utils.TCBuilder.manager import ToolsManager
+from satrap.core.utils.TCBuilder.tool import Tool
 from satrap.edictum.plugin_config import parse_config_schema
-from satrap.edictum.plugin_permissions import parse_plugin_permissions, validate_permission_install
+from satrap.edictum.plugin_permissions import PluginPermissions, parse_plugin_permissions, validate_permission_install
 
 
 def metadata():
@@ -176,6 +184,7 @@ def test_unknown_entries_cannot_be_treated_as_ordinary(kind, name):
 def test_authorization_exception_is_logged_and_denied(monkeypatch):
     import satrap.core.platform as platform
     from satrap.core import plugin_authorization as authorization
+    from satrap.core.plugin_authorization import PluginPermissionDenied, require_plugin_entry_permission
 
     class Entry:
         def is_enabled(self):
@@ -190,5 +199,18 @@ def test_authorization_exception_is_logged_and_denied(monkeypatch):
     monkeypatch.setattr(platform, "current_adapter_manager", broken_manager)
     monkeypatch.setattr(authorization.logger, "error", logged.append)
     result = authorize_plugin_entry(binding)
-    assert result.status == "denied" and result.reason_code == "invalid_permission_config"
+    assert result.status == "denied" and result.reason_code == "authorization_error"
     assert logged and "authorization fault injection" in logged[0]
+    with pytest.raises(PluginPermissionDenied) as caught:
+        require_plugin_entry_permission(binding)
+    assert caught.value.code == "authorization_error"
+    assert str(caught.value) == "example 管理入口权限检查暂时失败, 请查看后端日志 (authorization_error)"
+
+
+def test_structural_bad_config_still_reports_invalid_config():
+    result = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": 123}, origin(), administrators())
+    assert result.status == "denied" and result.reason_code == "invalid_permission_config"
+    denied = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "other"}, origin(), administrators(excluded=["example"]))
+    assert denied.status == "denied" and denied.reason_code == "permission_denied"
+
+
