@@ -101,9 +101,8 @@ class MemoryService:
             origin = current_call_origin()
             manager = current_adapter_manager()
             adapter = manager.get_adapter(origin.adapter_id) if manager is not None and origin is not None else None
-            if origin is None or adapter is None:
+            if manager is None or origin is None or adapter is None:
                 raise MemoryError("stale_call", "当前调用没有有效的平台来源")
-            assert manager is not None
             config = access()
             writing = operation in {"create", "update", "delete"}
             if config.get("memory_mode", "full") == "disabled":
@@ -184,9 +183,9 @@ class MemoryService:
             origin = current_call_origin()
             manager = current_adapter_manager()
             adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
-            if origin is None or adapter is None or not adapter.config.enable or adapter.group_chat_self_id() != origin.self_id:
+            if (manager is None or origin is None or adapter is None or not adapter.config.enable
+                    or adapter.group_chat_self_id() != origin.self_id):
                 raise MemoryError("stale_call", "记忆注入来源平台或账号已经失效")
-            assert manager is not None
             scope = MessageScope(origin.adapter_id, origin.self_id, "group", origin.conversation_id or origin.chat_id)
             if scope.chat_id != origin.chat_id or not adapter.group_chat_group_visible(scope.chat_id):
                 raise MemoryError("wrong_conversation", "当前群已停用或范围不一致")

@@ -132,6 +132,9 @@ class BackendRuntimeRecord:
 _backend_process: subprocess.Popen[bytes] | None = None
 # 后端进程
 
+_LIFECYCLE_LOCK = asyncio.Lock()
+# 串行化 /start, /stop, /restart
+
 CONFIG_PATH = find_config_path(PROJECT_ROOT)
 PLUGIN_INSTALLER = PluginArchiveInstaller(PluginCatalog())
 # 配置文件路径
@@ -1438,6 +1441,23 @@ async def _route_chat_history(ctx: _RouteContext) -> ControlResponse | None:
 async def _route_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
     """
     生命周期区段: POST /start, /stop, /restart (直接维护 _backend_process)
+
+    参数:
+    - ctx: 路由处理器上下文
+
+    返回:
+    - ControlResponse | None: 路径不属于本区段时返回 None
+    """
+    if ctx.method != "POST" or ctx.path not in ("/start", "/stop", "/restart"):
+        return None
+    # 检查进程状态到写入 _backend_process 之间有多处让出, 生命周期操作必须串行, 否则并发启动会拉起两个后端
+    async with _LIFECYCLE_LOCK:
+        return await _run_lifecycle(ctx)
+
+
+async def _run_lifecycle(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在生命周期锁内执行启动, 停止或重启
 
     参数:
     - ctx: 路由处理器上下文

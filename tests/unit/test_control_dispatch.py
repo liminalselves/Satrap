@@ -488,6 +488,54 @@ async def test_control_lifecycle_start_stop_restart_side_effects(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_start_spawns_single_backend(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两个并发 /start 只拉起一个后端, 后到的请求看到已有进程并返回正在启动"""
+    _use_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(control_server, "_backend_process", None)
+    monkeypatch.setattr(control_server, "_read_backend_runtime", lambda: None)
+    def _skip_runtime(record: control_server.BackendRuntimeRecord) -> None:
+        """不写运行时记录"""
+
+    monkeypatch.setattr(control_server, "_write_backend_runtime", _skip_runtime)
+
+    def slow_health(*args: object, **kwargs: object) -> dict[str, object]:
+        """
+        模拟耗时的健康检查, 让两个请求都在检查阶段让出
+
+        返回:
+        - 始终未运行的健康结果
+        """
+        time.sleep(0.05)
+        return {"running": False}
+
+    monkeypatch.setattr(control_server, "_check_backend_health", slow_health)
+    popen_calls: list[_FakeProcess] = []
+
+    def _fake_popen(cmd: object, *args: object, **kwargs: object) -> _FakeProcess:
+        proc = _FakeProcess(cmd, *args, **kwargs)
+        popen_calls.append(proc)
+        return proc
+
+    monkeypatch.setattr(control_server.subprocess, "Popen", _fake_popen)
+    real_sleep = asyncio.sleep
+
+    async def short_sleep(delay: float) -> None:
+        """把就绪轮询压缩到毫秒级, 仍保留让出点"""
+        await real_sleep(0.001)
+
+    monkeypatch.setattr(control_server.asyncio, "sleep", short_sleep)
+
+    first, second = await asyncio.gather(_request("/start", "POST"), _request("/start", "POST"))
+
+    assert len(popen_calls) == 1
+    messages = sorted(_json_body(response)["message"] for response in (first, second))
+    assert messages == ["后端启动中，请稍候...", "后端正在启动中"]
+
+
+@pytest.mark.asyncio
 async def test_blocking_health_check_runs_off_event_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /status 的阻塞健康检查在工作线程执行, 期间事件循环继续推进"""
     threads: list[threading.Thread] = []
