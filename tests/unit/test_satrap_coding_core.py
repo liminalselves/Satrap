@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from contextlib import closing
 import pytest
 from typing import Any
 
@@ -441,6 +442,21 @@ class TestMemoryStore:
         assert block.count("<long-term-memory>") == 1
         other = MemoryStore(db_path=tmp_path / "m.db", scope="nobody")
         assert other.to_context_block() == ""
+
+    def test_context_block_sql_limit_matches_full_slice(self, tmp_path: Path):
+        """
+        SQL 侧 LIMIT 截断与逐行切片在重要度和时间相同时保持同一结果
+
+        参数:
+        - tmp_path: tmp路径
+        """
+        store = MemoryStore(db_path=tmp_path / "m.db", scope="u1", max_entries=3)
+        for index in range(5):
+            store.add(f"标题{index}", f"正文{index}", importance=2)
+        with closing(store._connect()) as conn, conn:
+            conn.execute("UPDATE memories SET updated_at='2026-01-01T00:00:00'")
+        # 参照实现即改动前的 list_all() 切片, 用于对照 SQL LIMIT 的取行与顺序
+        assert store.to_context_block() == store._render_block(store.list_all()[:3])
 
     def test_empty_content_rejected(self, store: MemoryStore):
         """

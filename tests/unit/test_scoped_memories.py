@@ -1,5 +1,8 @@
 """群记忆的真实事务, 所有权, 来源失效和审批冲突"""
 from types import SimpleNamespace
+from pathlib import Path
+from contextlib import closing
+import sqlite3
 
 import pytest
 
@@ -11,7 +14,7 @@ from satrap.core.memory.store import MemoryStore
 
 
 @pytest.fixture
-def memories(tmp_path):
+def memories(tmp_path: Path) -> tuple[ScopedMemories, list[float]]:
     clock = [1_800_000_000.0]
     archive = PlatformMessageStore(tmp_path / "platform.db", "platform:custom", clock=lambda: clock[0])
     scope = MessageScope("platform:custom", "account:bot", "group", "group/特殊")
@@ -138,3 +141,51 @@ def test_model_cannot_supply_owner_identity(memories):
     result = repository.mutate("create", {"kind": "member_preference", "key": "name", "title": "称呼", "content": "小明", "owner_user_id": "user:b", "source_message_ids": ["m1"]},
                                actor="user:a", current_message="m1", operation_id="owner-spoof")
     assert result["memory"]["owner_user_id"] == "user:a"
+
+
+def reference_rows(repository: ScopedMemories, *, kind: str = "", user_id: str = "", keyword: str = "", viewer: str = "") -> list[sqlite3.Row]:
+    """
+    改动前的逐行筛选参照实现, 仅用于对照 SQL 侧筛选
+
+    参数:
+    - repository: 当前群记忆仓库
+    - kind: 可选的记忆类型
+    - user_id: 可选的成员所有者
+    - keyword: 普通文本关键词
+    - viewer: 非空时只保留本群记忆与该成员偏好
+
+    返回:
+    - 与筛选条件一致的全部记忆行, 次序与分页一致
+    """
+    with closing(repository.store._connect()) as connection:
+        rows = connection.execute("SELECT * FROM memories WHERE scope=? ORDER BY importance DESC, updated_at DESC, id",
+                                  (repository.scope.key,)).fetchall()
+    return [row for row in rows if (not viewer or row["kind"] == "group_rule" or row["owner_user_id"] == viewer)
+            and (not kind or row["kind"] == kind)
+            and (not user_id or row["kind"] == "member_preference" and row["owner_user_id"] == user_id)
+            and (not keyword or keyword.casefold() in (row["title"] + "\n" + row["content"]).casefold())]
+
+
+def fill_mixed_memories(repository: ScopedMemories) -> None:
+    """铺两位成员的偏好与一条已应用群记忆, 覆盖全部筛选维度"""
+    add_preference(repository)
+    add_preference(repository, owner="user:b", source="m3", operation="other")
+    repository.mutate("create", {"kind": "group_rule", "key": "meeting", "title": "会议", "content": "周五开会 Meeting",
+                                 "source_message_ids": ["m1"]}, actor="user:a", current_message="m1", operator=True, operation_id="rule")
+
+
+@pytest.mark.parametrize("filters", [{}, {"kind": "group_rule"}, {"kind": "member_preference"}, {"user_id": "user:a"},
+                                     {"viewer": "user:b"}, {"keyword": "称呼"}, {"keyword": "meeting"},
+                                     {"user_id": "user:a", "keyword": "小明"}])
+def test_list_filters_and_pagination_match_reference(memories: tuple[ScopedMemories, list[float]], filters: dict[str, str]) -> None:
+    repository, _ = memories
+    fill_mixed_memories(repository)
+    collected: list[str] = []
+    cursor = ""
+    while True:
+        response = repository.list(limit=1, cursor=cursor, **filters)
+        collected.extend(item["memory_id"] for item in response["items"])
+        cursor = response["next_cursor"] or ""
+        if not cursor:
+            break
+    assert collected == [row["id"] for row in reference_rows(repository, **filters)]

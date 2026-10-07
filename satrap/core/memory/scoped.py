@@ -15,6 +15,9 @@ from satrap.core.config.platform_messages import MessageScope, PlatformMessageSt
 from satrap.core.memory.store import MemoryStore
 from satrap.core.memory.lifecycle import erase_memory
 
+_MEMORY_ORDER = "importance DESC, updated_at DESC, id"
+"""当前群记忆的确定性分页次序, 末位 ID 保证同重要度与同时间记录的稳定顺序"""
+
 
 class MemoryError(ValueError):
     """带稳定错误码的记忆业务错误"""
@@ -136,7 +139,7 @@ class ScopedMemories:
         参数:
         - kind: 可选的记忆类型
         - user_id: 可选的成员所有者
-        - keyword: 普通文本关键词
+        - keyword: 普通文本关键词, 按 Unicode 折叠在读取后匹配
         - limit: 返回条数, 1 至 50
         - cursor: 上次相同筛选返回的游标
         - viewer: 模型默认列表仅显示本群记忆和该成员偏好, 人工管理为空
@@ -150,25 +153,72 @@ class ScopedMemories:
             raise MemoryError("invalid_argument", "筛选字段过长或类型错误")
         if not isinstance(cursor, str) or len(cursor) > 4096:
             raise MemoryError("invalid_cursor", "分页游标无效")
+        clause, arguments = self._filters(kind=kind, user_id=user_id, viewer=viewer)
         with closing(self.store._connect()) as connection:
-            rows = connection.execute("SELECT * FROM memories WHERE scope=? ORDER BY importance DESC, updated_at DESC, id", (self.scope.key,)).fetchall()
-            rows = [row for row in rows if (not viewer or row["kind"] == "group_rule" or row["owner_user_id"] == viewer)
-                    and (not kind or row["kind"] == kind) and (not user_id or row["kind"] == "member_preference" and row["owner_user_id"] == user_id)
-                    and (not keyword or keyword.casefold() in (row["title"] + "\n" + row["content"]).casefold())]
-            signature = hashlib.sha256(json.dumps([self.scope.key, kind, user_id, keyword, limit, viewer, [(row["id"], row["revision"]) for row in rows]], ensure_ascii=False).encode()).hexdigest()
-            offset = 0
-            if cursor:
-                try:
-                    token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-                    if token[0] != signature or type(token[1]) is not int or token[1] < 0:
-                        raise ValueError()
-                    offset = token[1]
-                except Exception as exc:
-                    raise MemoryError("invalid_cursor", "筛选或记忆内容已变化, 请重新查询") from exc
-            items = [self._record(connection, row) for row in rows[offset:offset + limit]]
-            more = offset + limit < len(rows)
-            next_cursor = base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None
-            return {"ok": True, "items": items, "has_more": more, "next_cursor": next_cursor}
+            if keyword:
+                rows = connection.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY {_MEMORY_ORDER}", arguments).fetchall()
+                rows = [row for row in rows if keyword.casefold() in (row["title"] + "\n" + row["content"]).casefold()]
+            else:
+                rows = connection.execute(f"SELECT id, revision FROM memories WHERE {clause} ORDER BY {_MEMORY_ORDER}", arguments).fetchall()
+            signature = hashlib.sha256(json.dumps([self.scope.key, kind, user_id, keyword, limit, viewer,
+                [(row["id"], row["revision"]) for row in rows]], ensure_ascii=False).encode()).hexdigest()
+            offset = self._offset(cursor, signature)
+            if keyword:
+                page = rows[offset:offset + limit]
+            else:
+                page = connection.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY {_MEMORY_ORDER} LIMIT ? OFFSET ?",
+                                          (*arguments, limit, offset)).fetchall()
+            items = [self._record(connection, row) for row in page]
+        more = offset + limit < len(rows)
+        next_cursor = base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None
+        return {"ok": True, "items": items, "has_more": more, "next_cursor": next_cursor}
+
+    def _filters(self, *, kind: str, user_id: str, viewer: str) -> tuple[str, tuple[str, ...]]:
+        """
+        生成当前群的 SQL 侧筛选条件
+
+        参数:
+        - kind: 可选的记忆类型
+        - user_id: 可选的成员所有者
+        - viewer: 非空时只保留本群记忆与该成员偏好
+
+        返回:
+        - WHERE 子句与位置参数, scope 固定在第一个条件
+        """
+        where = ["scope=?"]
+        arguments = [self.scope.key]
+        if viewer:
+            where.append("(kind='group_rule' OR owner_user_id=?)")
+            arguments.append(viewer)
+        if kind:
+            where.append("kind=?")
+            arguments.append(kind)
+        if user_id:
+            where.extend(("kind='member_preference'", "owner_user_id=?"))
+            arguments.append(user_id)
+        return " AND ".join(where), tuple(arguments)
+
+    @staticmethod
+    def _offset(cursor: str, signature: str) -> int:
+        """
+        校验游标仍属于同一筛选与内容版本
+
+        参数:
+        - cursor: 上次返回的游标, 空串表示第一页
+        - signature: 当前筛选与内容签名
+
+        返回:
+        - 当前页起始偏移, 游标无效或内容已变化时抛出 invalid_cursor
+        """
+        if not cursor:
+            return 0
+        try:
+            token = json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+            if token[0] != signature or type(token[1]) is not int or token[1] < 0:
+                raise ValueError()
+            return int(token[1])
+        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            raise MemoryError("invalid_cursor", "筛选或记忆内容已变化, 请重新查询") from exc
 
     def mutate(self, operation: str, values: dict[str, Any], *, actor: str, current_message: str = "", operator: bool = False, operation_id: str) -> dict[str, Any]:
         """

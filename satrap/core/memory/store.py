@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime
+from contextlib import closing
 from pathlib import Path
 import sqlite3
 from typing import Any, cast
@@ -50,7 +51,7 @@ class MemoryStore:
         self.scope = scope.strip()
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
+        with closing(self._connect()) as conn, conn:
             ensure_platform_tables(conn)
 
     def _connect(self) -> sqlite3.Connection:
@@ -154,7 +155,7 @@ class MemoryStore:
             "created_at": now,
             "updated_at": now,
         }
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 "INSERT INTO memories (id, scope, title, content, tags, importance, created_at, updated_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -196,7 +197,7 @@ class MemoryStore:
         if not updates:
             return {"error": "没有可更新的字段", "ok": False}
         updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
                 return {"error": f"记忆不存在: {memory_id}", "ok": False}
@@ -230,7 +231,7 @@ class MemoryStore:
         if not self.can_write():
             return self._write_denied_error("删除")
         clause, params = self._scope_filter()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
                 return {"error": f"记忆不存在: {memory_id}", "ok": False}
@@ -253,7 +254,7 @@ class MemoryStore:
         - dict[str, Any]: 按 ID (或唯一前缀) 获取单条记忆
         """
         clause, params = self._scope_filter()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             resolved = self._resolve_memory_id(conn, memory_id)
             row = None
             if resolved is not None:
@@ -297,9 +298,9 @@ class MemoryStore:
         - list[dict[str, Any]]: 当前会话的记忆列表
         """
         clause, params = self._scope_filter()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             rows = conn.execute(
-                f"SELECT * FROM memories WHERE 1=1{clause} ORDER BY importance DESC, updated_at DESC",
+                f"SELECT * FROM memories WHERE 1=1{clause} ORDER BY importance DESC, updated_at DESC, id",
                 params,
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
@@ -314,7 +315,7 @@ class MemoryStore:
         if not self.can_write():
             return 0
         clause, params = self._scope_filter()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             cursor = conn.execute(
                 f"DELETE FROM memories WHERE 1=1{clause}",
                 params,
@@ -332,7 +333,14 @@ class MemoryStore:
         """
         if self.mode == "disabled":
             return ""
-        return self._render_block(self.list_all()[: self.max_entries])
+        clause, params = self._scope_filter()
+        with self._lock, closing(self._connect()) as conn, conn:
+            rows = conn.execute(
+                f"SELECT * FROM memories WHERE 1=1{clause} ORDER BY importance DESC, updated_at DESC, id LIMIT ?",
+                (*params, self.max_entries),
+            ).fetchall()
+        # 注入只渲染重要性最高的 max_entries 条, 在 SQL 侧截断而不构造全部记忆
+        return self._render_block([self._row_to_dict(row) for row in rows])
 
     def _render_block(self, memories: list[dict[str, Any]]) -> str:
         """
@@ -376,7 +384,7 @@ class MemoryStore:
         - int: 统计可见集合内记忆条数
         """
         clause, params = self._scope_filter()
-        with self._lock, self._connect() as conn:
+        with self._lock, closing(self._connect()) as conn, conn:
             row = conn.execute(
                 f"SELECT COUNT(*) AS n FROM memories WHERE 1=1{clause}",
                 params,
