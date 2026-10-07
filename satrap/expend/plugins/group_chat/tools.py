@@ -135,6 +135,36 @@ class _GroupChatMixin:
     session: Session | AsyncSession
     deferred_platform_reply = False
     _plugin_entry_binding: PluginEntryBinding
+    _static_limits: GroupChatLimits | None = None
+
+    def _base_limits(self) -> GroupChatLimits:
+        """
+        解析并缓存安装配置里的查询上限, 同一实例只解析一次
+
+        本轮摘要预算与它无关, 由调用方用 replace 覆盖; 缓存只在解析成功后写入, 配置非法时
+        仍按原路径抛出 ValueError
+
+        返回:
+        - 不含本轮摘要预算的查询上限
+        """
+        cached = self._static_limits
+        if cached is None:
+            cached = GroupChatLimits(
+                message_limit=cast(int, self.config.get("message_limit", 100)),
+                member_limit=cast(int, self.config.get("member_limit", 50)),
+                text_budget=cast(int, self.config.get("text_budget", 12000)),
+                member_cache_ttl=cast(int, self.config.get("member_cache_ttl", 60)),
+                summary_enabled=cast(bool, self.config.get("summary_enabled", True)),
+                allowed_groups=permission_id_list(self.config.get("allowed_groups")),
+                media_reply_enabled=cast(bool, self.config.get("media_reply_enabled", True)),
+                max_reply_images=cast(int, self.config.get("max_reply_images", 4)),
+                max_reply_stickers=cast(int, self.config.get("max_reply_stickers", 4)),
+                summary_message_limit=cast(int, self.config.get("summary_message_limit", 500)),
+                summary_text_budget=cast(int, self.config.get("summary_text_budget", 60000)),
+                summary_retention_days=cast(int, self.config.get("summary_retention_days", 30)),
+            )
+            self._static_limits = cached
+        return cached
 
     def _authorize(self, group_id: str) -> None:
         """
@@ -154,7 +184,7 @@ class _GroupChatMixin:
             if not _private_available():
                 raise GroupChatError("forbidden", "仅配置的管理者可在私聊查询群列表")
             return
-        allowed = config_ids(self.config.get("allowed_groups"))
+        allowed = permission_id_list(self.config.get("allowed_groups"))
         if not _group_available() or group_id != origin.chat_id or allowed and group_id not in allowed:
             raise GroupChatError("forbidden", "工具只能操作获授权的当前群")
         if self.tool_name == "group_chat_set_group_nickname":
@@ -190,7 +220,7 @@ class _GroupChatMixin:
                     or variant["properties"]["type"]["const"] == "sticker" and media and capabilities.get("image", {}).get("state") == "supported"]
                 if not media:
                     schema["items"]["oneOf"] = [variant for variant in schema["items"]["oneOf"] if variant["properties"]["type"]["const"] not in {"image", "sticker"}]
-        parameters: dict[str, Any] = {"type": "object", "properties": copy.deepcopy(properties), "required": list(required), "additionalProperties": False}
+        parameters: dict[str, Any] = {"type": "object", "properties": properties, "required": list(required), "additionalProperties": False}
         if name == "group_chat_create_reminder":
             parameters["oneOf"] = [{"required": ["due_at"], "not": {"required": ["after_seconds"]}},
                                    {"required": ["after_seconds"], "not": {"required": ["due_at"]}}]
@@ -209,18 +239,6 @@ class _GroupChatMixin:
         try:
             if self.tool_name in REMINDER_ARGUMENTS:
                 return await execute_reminder_tool(str(self.tool_name), kwargs, session=self.session, config=self.config, authorize=self._authorize)
-            values = {key: self.config.get(key, default) for key, default in (
-                ("message_limit", 100), ("member_limit", 50), ("text_budget", 12000), ("member_cache_ttl", 60),
-            )}
-            if any(type(value) is not int for value in values.values()):
-                raise ValueError("群聊查询配置必须是整数")
-            from typing import cast
-            limits = GroupChatLimits(message_limit=cast(int, values["message_limit"]), member_limit=cast(int, values["member_limit"]),
-                                     text_budget=cast(int, values["text_budget"]), member_cache_ttl=cast(int, values["member_cache_ttl"]))
-            enabled = self.config.get("summary_enabled", True)
-            if type(enabled) is not bool:
-                raise ValueError("摘要开关必须是布尔值")
-            from dataclasses import replace
 
             input_budget = 24000
             if self.tool_name == "group_chat_prepare_summary":
@@ -233,14 +251,8 @@ class _GroupChatMixin:
                     available = usage.history_upper_tokens - usage.history_tokens - overhead
                     input_budget = max(0, min(1000000, available // 2))
                     # 来源按 UTF-8 字节保守限额, 预留工具定义, 摘要正文与工具结果空间
-            limits = replace(limits, summary_enabled=enabled, summary_input_budget=input_budget,
-                             allowed_groups=tuple(config_ids(self.config.get("allowed_groups"))),
-                             media_reply_enabled=cast(bool, self.config.get("media_reply_enabled", True)),
-                             max_reply_images=cast(int, self.config.get("max_reply_images", 4)),
-                             max_reply_stickers=cast(int, self.config.get("max_reply_stickers", 4)),
-                             summary_message_limit=cast(int, self.config.get("summary_message_limit", 500)),
-                             summary_text_budget=cast(int, self.config.get("summary_text_budget", 60000)),
-                             summary_retention_days=cast(int, self.config.get("summary_retention_days", 30)))
+            limits = replace(self._base_limits(), summary_input_budget=input_budget)
+
             def authorize(group_id: str) -> None:
                 """
                 等待后拒绝使用旧群范围返回查询结果
@@ -249,7 +261,7 @@ class _GroupChatMixin:
                 - group_id: 宿主固定的对话身份
                 """
                 self._authorize(group_id)
-                if tuple(config_ids(self.config.get("allowed_groups"))) != limits.allowed_groups:
+                if permission_id_list(self.config.get("allowed_groups")) != limits.allowed_groups:
                     raise GroupChatError("stale_call", "查询期间插件允许群范围已经变化")
             if self.tool_name == "group_chat_set_group_nickname":
                 origin = current_call_origin()
@@ -308,8 +320,7 @@ def _group_available() -> bool:
     返回:
     - 当前入站身份属于群聊时为 True
     """
-    origin = current_call_origin()
-    return origin is not None and (origin.conversation_kind == "group" or not origin.conversation_kind and origin.chat_type == "GroupMessage")
+    return is_group_origin(current_call_origin())
 
 
 def _private_available() -> bool:
@@ -319,8 +330,7 @@ def _private_available() -> bool:
     返回:
     - 当前来源属于私聊时为 True
     """
-    origin = current_call_origin()
-    return origin is not None and (origin.conversation_kind == "private" or not origin.conversation_kind and origin.chat_type == "FriendMessage")
+    return is_private_origin(current_call_origin())
 
 
 def _available(tool: _GroupChatMixin) -> bool:
@@ -345,7 +355,7 @@ def _available(tool: _GroupChatMixin) -> bool:
                 and capabilities.get("group_list", {}).get("state") == "supported")
     if not _group_available():
         return False
-    allowed = config_ids(tool.config.get("allowed_groups"))
+    allowed = permission_id_list(tool.config.get("allowed_groups"))
     if allowed and (origin is None or origin.chat_id not in allowed):
         return False
     capability = {"group_chat_get_group_info": "group_info", "group_chat_list_members": "member_list"}.get(name)
@@ -398,21 +408,14 @@ class GroupChatTool(_GroupChatMixin, Tool):
         manager = current_adapter_manager()
         adapter = manager.get_adapter(origin.adapter_id) if manager and origin else None
         loop = turn.loop if turn else getattr(adapter, "_loop", None)
-        if loop is None or not loop.is_running():
+        try:
+            return run_on_platform_loop(self._run(kwargs), loop, 30)
+        except PlatformLoopUnavailable as error:
+            if error.reason == "same_loop":
+                return _failure("unavailable", "同步工具不能在平台事件循环内阻塞调用")
             return _failure("unavailable", "来源事件循环不可用")
-        try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if running is loop:
-            return _failure("unavailable", "同步工具不能在平台事件循环内阻塞调用")
-        try:
-            future = asyncio.run_coroutine_threadsafe(self._run(kwargs), loop)
-            try:
-                return future.result(timeout=30)
-            except TimeoutError:
-                future.cancel()
-                return _failure("unavailable", "群聊宿主调用超时, 已取消")
+        except TimeoutError:
+            return _failure("unavailable", "群聊宿主调用超时, 已取消")
         except Exception:
             logger.error(f"[group_chat] 同步桥接失败, 工具={self.tool_name}: {traceback.format_exc()}")
             return _failure("unavailable", "来源宿主暂不可用")

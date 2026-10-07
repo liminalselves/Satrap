@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 from typing import Any
-import asyncio
 import copy
 import secrets
 
-from satrap.core.call_context import current_call_origin
-from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session, model_tool_authorization
+from satrap.core.call_context import current_call_origin, is_private_origin
+from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
 from satrap.core.framework.Base import Session, AsyncSession
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.platform import current_adapter_manager
 from satrap.core.friends import FriendError
 from satrap.core.friends.service import failure, text_id
@@ -50,7 +50,7 @@ class _FriendMixin:
         - 当前适配器和可信调用来源
         """
         origin = current_call_origin()
-        if origin is None or not (origin.conversation_kind == "private" or not origin.conversation_kind and origin.chat_type == "FriendMessage"):
+        if origin is None or not is_private_origin(origin):
             raise FriendError("permission_denied", "好友工具仅限管理者私聊")
         if preview:
             if authorize_plugin_entry(self._plugin_entry_binding).status == "denied":
@@ -135,7 +135,7 @@ class _FriendMixin:
                     current, _ = live._resolve()
                     if current is not adapter:
                         raise PermissionError("来源适配器已变化")
-                    if name == "friend_manager_delete_friend" and target in config_ids(live.config.get("managers")) + config_ids(live.config.get("protected_friend_ids")):
+                    if name == "friend_manager_delete_friend" and target in permission_id_list(live.config.get("managers")) + permission_id_list(live.config.get("protected_friend_ids")):
                         raise PermissionError("目标好友受保护")
                 source = model_tool_authorization(self, origin, "friend_manager", permission)
                 action = "delete_friend" if name == "friend_manager_delete_friend" else "handle_request"
@@ -159,23 +159,16 @@ class FriendTool(_FriendMixin, Tool):
         - kwargs: 模型参数
 
         返回:
-        - 宿主结果或失败说明
+        - 宿主结果; 平台循环不可用返回 unavailable, 超时返回未确认结果, 其余失败按宿主错误码返回
         """
-        future = None
         try:
             adapter, _ = self._resolve()
             loop = getattr(adapter, "_loop", None)
             try:
-                running = asyncio.get_running_loop()
-            except RuntimeError:
-                running = None
-            if loop is None or not loop.is_running() or loop is running:
-                raise FriendError("unavailable", "来源平台事件循环不可用于同步工具")
-            future = asyncio.run_coroutine_threadsafe(self._run(kwargs), loop)
-            return future.result(40)
+                return run_on_platform_loop(self._run(kwargs), loop, 40)
+            except PlatformLoopUnavailable as error:
+                raise FriendError("unavailable", "来源平台事件循环不可用于同步工具") from error
         except Exception as error:
-            if future is not None:
-                future.cancel()
             code, message, _ = failure(error)
             logger.warning(f"[friend_manager] 同步调用失败 code={code} reason={message}")
             return {"ok": False, "error": {"code": code, "message": message}}

@@ -245,6 +245,22 @@ class TestExecution:
         with bind_call_origin(_origin()):
             result = await asyncio.to_thread(tool.execute, user_id="321")
         assert result["status"] == "error" and "事件循环" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_sync_tool_with_not_running_loop_fails_fast(self):
+        adapter = _setup_adapter()
+        adapter._loop = asyncio.new_event_loop()
+        adapter._bot.set_group_kick.return_value = {}
+        config: dict[str, Any] = {"allowed_callers": "123", "write_tools_enabled": True}
+        tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
+        started = asyncio.get_running_loop().time()
+        try:
+            with bind_call_origin(_origin()):
+                result = await asyncio.to_thread(tool.execute, user_id="321")
+        finally:
+            adapter._loop.close()
+        assert asyncio.get_running_loop().time() - started < 1
+        assert result["ok"] is False and result["error_type"] == "invalid_arguments" and "事件循环" in result["error"]
         adapter._bot.set_group_kick.assert_not_called()
 
     @pytest.mark.asyncio
@@ -368,7 +384,7 @@ class TestLoggingAndTimeout:
     @pytest.mark.asyncio
     async def test_sync_tool_timeout_cancels_and_reports_unconfirmed(self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture):
         import logging
-        from satrap.expend.plugins.group_admin import tools as module
+        from satrap.core.platform import loop_bridge
         adapter = _setup_adapter()
         adapter._loop = asyncio.get_running_loop()
         started = asyncio.Event()
@@ -379,7 +395,7 @@ class TestLoggingAndTimeout:
             return {}
 
         adapter._bot.set_group_kick = slow
-        original = module.asyncio.run_coroutine_threadsafe
+        original = loop_bridge.asyncio.run_coroutine_threadsafe
 
         def fast_timeout(coro: Any, loop: Any) -> Any:
             future: Any = original(coro, loop)
@@ -387,7 +403,7 @@ class TestLoggingAndTimeout:
             future.result = lambda timeout=None: real_result(timeout=0.05)
             return future
 
-        monkeypatch.setattr(module.asyncio, "run_coroutine_threadsafe", fast_timeout)
+        monkeypatch.setattr(loop_bridge.asyncio, "run_coroutine_threadsafe", fast_timeout)
         tool = next(t for t in get_tools(cast(Session, object()), {"allowed_callers": "123", "write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
 
         def run() -> Any:

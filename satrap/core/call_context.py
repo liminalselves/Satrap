@@ -108,3 +108,33 @@ def bind_call_origin(origin: CallOrigin | None) -> Iterator[None]:
     finally:
         scope.active = False
         _CURRENT_CALL.reset(token)
+
+
+def is_group_origin(origin: CallOrigin | None) -> bool:
+    """
+    判断来源是否属于群聊, conversation_kind 优先, 为空时才回退到 chat_type
+
+    参数:
+    - origin: 入站来源, None 视为非群聊
+
+    返回:
+    - 来源为群聊时返回 True
+    """
+    if origin is None:
+        return False
+    return origin.conversation_kind == "group" or not origin.conversation_kind and origin.chat_type == "GroupMessage"
+
+
+def is_private_origin(origin: CallOrigin | None) -> bool:
+    """
+    判断来源是否属于私聊, conversation_kind 优先, 为空时才回退到 chat_type
+
+    参数:
+    - origin: 入站来源, None 视为非私聊
+
+    返回:
+    - 来源为私聊时返回 True
+    """
+    if origin is None:
+        return False
+    return origin.conversation_kind == "private" or not origin.conversation_kind and origin.chat_type == "FriendMessage"

@@ -480,7 +480,7 @@ class BackendManager:
         返回:
         - 受保护的好友管理者 ID
         """
-        from satrap.core.config.model_tool_authorization import config_ids
+        from satrap.core.plugin_authorization import permission_id_list
         from satrap.edictum.plugin_config import PluginConfigManager
         from satrap.edictum.plugin_spec import parse_plugin_specs
         administrators = getattr(self, "administrator_service", None)
@@ -493,7 +493,7 @@ class BackendManager:
             entry = catalog.get("friend_manager")
             if entry is not None:
                 global_config = PluginConfigManager().load_global_explicit("friend_manager", entry.config_schema)
-                values.update(config_ids(global_config.get("managers")))
+                values.update(permission_id_list(global_config.get("managers")))
         configs = self._edictum_cfg.list_configs().values() if self._edictum_cfg else []
         for config in configs:
             raw_specs = config.get("plugins", [])
@@ -501,7 +501,8 @@ class BackendManager:
                 raw_specs = [spec.to_config() for spec in parse_plugin_specs(raw_specs, provider.plugin_catalog, require_available=False)]
             for spec in raw_specs:
                 if isinstance(spec, dict) and spec.get("name") == "friend_manager":
-                    values.update(config_ids({**global_config, **spec.get("config", {})}.get("managers")))
+                    merged: dict[str, Any] = {**global_config, **spec.get("config", {})}
+                    values.update(permission_id_list(merged.get("managers")))
         if runtime:
             for entry in runtime[0].pool.list_entries().values():
                 session = entry.session
@@ -510,7 +511,7 @@ class BackendManager:
                     tools_manager = getattr(workflow, "tools_manager", None)
                     for tool in getattr(tools_manager, "tools", {}).values():
                         if str(getattr(tool, "tool_name", "")).startswith("friend_manager_"):
-                            values.update(config_ids(tool.config.get("managers")))
+                            values.update(permission_id_list(tool.config.get("managers")))
         return sorted(values)
 
     async def group_accounts(self, adapter_id: str) -> dict[str, Any]:
@@ -1449,7 +1450,7 @@ class BackendManager:
         from satrap.core.platform.onebot.adapter import OneBotAdapter
         from satrap.edictum.plugin_settings import resolve_runtime_specs
         from satrap.edictum.plugin_spec import parse_plugin_specs
-        from satrap.core.config.model_tool_authorization import config_ids as _lines
+        from satrap.core.plugin_authorization import permission_id_list as _lines
         from satrap.core.call_context import CallOrigin
         from satrap.core.plugin_authorization import evaluate_plugin_permissions, PluginPermissionDenied
 
@@ -1539,7 +1540,7 @@ class BackendManager:
             switch = "delete_friend_enabled" if tool_name == "friend_manager_delete_friend" else "request_handling_enabled"
             if config.get(switch) is not True:
                 raise PermissionError("好友模型写操作授权已撤销")
-            if tool_name == "friend_manager_delete_friend" and target_group in managers + _lines(config.get("protected_friend_ids")):
+            if tool_name == "friend_manager_delete_friend" and target_group in managers + list(_lines(config.get("protected_friend_ids"))):
                 raise PermissionError("目标好友受保护")
             payload = [session_id, tool_name, decision.permission_fingerprint, config.get(switch), binding, target_group,
                        managers,

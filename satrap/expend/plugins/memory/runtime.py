@@ -49,8 +49,7 @@ def group_call() -> bool:
     返回:
     - 当前来源为群聊时返回 True
     """
-    origin = current_call_origin()
-    return origin is not None and (origin.conversation_kind == "group" or not origin.conversation_kind and origin.chat_type == "GroupMessage")
+    return is_group_origin(current_call_origin())
 
 
 def wait_host(coroutine: Coroutine[Any, Any, Any]) -> Any:
@@ -61,7 +60,7 @@ def wait_host(coroutine: Coroutine[Any, Any, Any]) -> Any:
     - coroutine: 需要在原平台循环执行的宿主操作
 
     返回:
-    - 宿主结果, 超时或桥接失败返回明确错误
+    - 宿主结果; 循环不可用或超时返回 ok 为 False 的失败结果, 且已取消提交
     """
     origin = current_call_origin()
     manager = current_adapter_manager()
@@ -70,17 +69,10 @@ def wait_host(coroutine: Coroutine[Any, Any, Any]) -> Any:
     loop = turn.loop if turn is not None else getattr(adapter, "_loop", None)
     try:
         try:
-            running = asyncio.get_running_loop()
-        except RuntimeError:
-            running = None
-        if loop is None or not loop.is_running() or running is loop:
-            coroutine.close()
-            raise MemoryError("unavailable", "同步记忆操作需要有效的平台工作线程")
-        future = asyncio.run_coroutine_threadsafe(coroutine, loop)
-        try:
-            return future.result(timeout=30)
+            return run_on_platform_loop(coroutine, loop, 30)
+        except PlatformLoopUnavailable as error:
+            raise MemoryError("unavailable", "同步记忆操作需要有效的平台工作线程") from error
         except TimeoutError:
-            future.cancel()
             raise MemoryError("unavailable", "记忆操作超时, 已取消等待")
     except Exception as exc:
         logger.warning(f"[长期记忆] 同步桥接失败: {exc}")

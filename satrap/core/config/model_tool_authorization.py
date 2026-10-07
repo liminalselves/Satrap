@@ -10,19 +10,23 @@ from collections.abc import Callable
 from typing import Any
 import weakref
 
-from satrap.core.call_context import CallOrigin, bind_call_origin
 from satrap.core.config.group_action_origin import ModelActionAuthorization
+from satrap.core.call_context import CallOrigin, bind_call_origin
+from satrap.core.plugin_authorization import plugin_tool_live
 
 
 def config_ids(value: Any) -> list[str]:
     """
-    解析逐行或列表配置的账号与群 ID
+    宽松解析业务配置里的逐行或列表 ID, 保留顺序并逐项转成文字
+
+    只用于引用其他对象的业务配置 (迁移, 展示, 引用清单); 决定权限边界的名单请用
+    satrap.core.plugin_authorization.permission_id_list, 它拒绝无效类型且去重排序
 
     参数:
-    - value: 原始配置
+    - value: 原始配置, 可以是逐行文字, 字符串列表或其他会被转成文字的值
 
     返回:
-    - 去除空值后的 ID 列表
+    - 去除空值后的 ID 列表, 顺序与原始配置一致
     """
     values = value if isinstance(value, list) else str(value or "").splitlines()
     return [str(item).strip() for item in values if str(item).strip()]
@@ -77,13 +81,7 @@ def model_tool_authorization(tool: Any, origin: CallOrigin, plugin_name: str,
             raise PermissionError("模型写工具已停用或来源失效")
         if session_ref is not None:
             session = session_ref()
-            workflow = getattr(session, "_wf", None) if session is not None else None
-            manager = getattr(workflow, "tools_manager", None)
-            plugins = session.list_plugins() if session is not None else []
-            plugin = next((item for item in plugins if item.name == plugin_name), None)
-            if (manager is None or manager.tools.get(live.tool_name) is not live
-                    or not manager.is_tool_enabled(live.tool_name) or plugin is None
-                    or not plugin.enabled or not plugin.tools.get(live.tool_name, False)):
+            if session is None or plugin_tool_live(session, plugin_name, str(live.tool_name), live) is not None:
                 raise PermissionError("模型写工具已从来源会话移除或停用")
         with bind_call_origin(origin):
             permission(live, target_group)

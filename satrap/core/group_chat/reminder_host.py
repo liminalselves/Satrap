@@ -18,7 +18,7 @@ from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.config.group_session import resolve_group_session
 from satrap.core.config.platform_messages import MessageScope
 from satrap.core.config.session_overrides import SessionOverrideStore
-from satrap.core.config.model_tool_authorization import config_ids
+from satrap.core.plugin_authorization import permission_id_list
 from satrap.core.group_chat.reminders import ReminderStore, ReminderError
 from satrap.core.group_chat.reminder_scheduler import ReminderDelivery
 from satrap.core.group_chat.types import GroupChatError
@@ -171,7 +171,7 @@ class ReminderHost:
             config.update(validate_config_values(entry.config_schema, overrides, session_override=True))
         if config.get("reminders_enabled") is not True:
             return ReminderPolicy("paused", "reminders_disabled", config=config)
-        allowed = config_ids(config.get("allowed_groups"))
+        allowed = permission_id_list(config.get("allowed_groups"))
         if allowed and scope.chat_id not in allowed:
             return ReminderPolicy("paused", "group_not_allowed", config=config)
         revision = hashlib.sha256(json.dumps([scope.key, binding, group_generation, current_generation, config,

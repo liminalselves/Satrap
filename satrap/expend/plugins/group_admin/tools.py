@@ -4,13 +4,15 @@ from __future__ import annotations
 from collections.abc import Awaitable, Coroutine
 from typing import Any, TypeVar, cast, overload
 
-import asyncio
 import traceback
 from dataclasses import replace
 
-from satrap.core.platform.onebot.admin import OneBotAdmin, PlatformAdminError, UnsupportedAdminAction
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
-from satrap.core.call_context import CallOrigin, require_call_origin
+from satrap.core.platform.onebot.admin import (OneBotAdmin, AdminActionRejected, AdminActionUnconfirmed,
+                                                PlatformAdminError, UnsupportedAdminAction)
+from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
+from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
+from satrap.core.call_context import CallOrigin, require_call_origin, is_group_origin
 from satrap.core.config.group_action_origin import ModelActionAuthorization, bind_model_action_authorization
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.platform import current_adapter_manager
@@ -152,7 +154,7 @@ def _group_id(origin: CallOrigin, allowed: list[str], kwargs: dict[str, Any]) ->
     - str: 目标群号
     """
     raw = str(kwargs.get("group_id") or "").strip()
-    group_id = raw or (origin.chat_id if origin.chat_type == "GroupMessage" else "")
+    group_id = raw or (origin.chat_id if is_group_origin(origin) else "")
     if not group_id:
         raise ValueError("当前不是群聊上下文, 必须显式指定 group_id")
     if allowed and group_id not in allowed:
@@ -259,11 +261,12 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
             values["flag"] = row["flag"]
             if kwargs.get("group_id") and str(kwargs["group_id"]) != row["group_id"]:
                 raise PermissionError("目标群与原申请不符")
-            if origin.chat_type == "GroupMessage" and origin.chat_id != row["group_id"]:
+            if is_group_origin(origin) and origin.chat_id != row["group_id"]:
                 raise PermissionError("群申请不属于当前群")
             values.update(group_id=row["group_id"], sub_type=row["sub_type"])
             _, _, current_groups = _resolve(source_tool, True)
-            return await _build_call(name, admin, origin, current_groups, values, source_tool)
+            # 上一行与这里的等待后复核刚刚覆盖权限, 开关与账号, 直接组装动作而不重复授权
+            return await _dispatch_action(name, admin, origin, _group_id(origin, current_groups, values), values, source_tool)
         return request_call()
     if name == "group_admin_handle_group_request":
         _request_access(source_tool, origin, admin._adapter)
@@ -278,14 +281,25 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
         gid = _group_id(origin, allowed, {"group_id": target})
     else:
         gid = _group_id(origin, allowed, kwargs) if needs_group else ""
-    action_names = {
-        "group_admin_recall_message": "recall_message", "group_admin_kick": "kick_group_member",
-        "group_admin_ban": "ban_group_member", "group_admin_whole_ban": "set_group_whole_ban",
-        "group_admin_ban_anonymous": "ban_anonymous", "group_admin_set_admin": "set_group_admin",
-        "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_group_nickname": "set_group_card",
-        "group_admin_set_name": "set_group_name", "group_admin_set_title": "set_group_special_title",
-        "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
-    }
+    return _dispatch_action(name, admin, origin, gid, kwargs, source_tool)
+
+
+def _dispatch_action(name: str, admin: OneBotAdmin, origin: CallOrigin, gid: str, kwargs: dict[str, Any],
+                     source_tool: Any) -> Coroutine[Any, Any, Any]:
+    """
+    把已授权且已解析群目标的动作组装成待执行协程
+
+    参数:
+    - name: 工具名
+    - admin: 当前平台动作集
+    - origin: 宿主冻结的调用来源
+    - gid: 已解析并校验的目标群, 不需要群上下文时为空
+    - kwargs: 工具参数
+    - source_tool: 当前来源工具, 用于等待和审批时复核权限
+
+    返回:
+    - Coroutine: 待执行的管理动作
+    """
     handler = getattr(admin._adapter, "group_action_handler", None)
     if model_plugin_requires_approval(name, source_tool.config) and not callable(handler):
         raise PermissionError("高危动作需要持久审批, 当前审批服务尚未装配")
@@ -424,15 +438,10 @@ class _GroupAdminMixin:
             write = _DEFINITIONS[name][3]
             adapter, origin, allowed = _resolve(self, write)
             loop = getattr(adapter, "_loop", None)
-            if loop is None or loop.is_closed():
-                raise ValueError("平台事件循环不可用")
             coro = _build_call(name, adapter.admin, origin, allowed, kwargs, self)
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
             try:
-                result = future.result(timeout=15)
+                result = run_on_platform_loop(coro, loop, 15)
             except TimeoutError:
-                # 超时后取消协程, 避免写动作在平台循环里继续生效却被报为失败
-                future.cancel()
                 logger.warning(f"[group_admin] 动作超时已取消 tool={name} actor={origin.actor_id}")
                 return {"status": "unconfirmed", "error": "动作超时, 结果未知"}
             if write:

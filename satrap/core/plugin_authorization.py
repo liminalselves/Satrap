@@ -64,21 +64,24 @@ class PluginPermissionDenied(PermissionError):
         super().__init__(f"当前调用者未获得 {decision.plugin_name} 管理入口权限 ({self.code})")
 
 
-def _ids(value: object) -> tuple[str, ...]:
+def permission_id_list(value: object) -> tuple[str, ...]:
     """
-    严格读取名单, 不将无效对象转换成身份
+    严格读取权限名单, 不将无效对象转换成身份
+
+    权限名单 (调用者, 允许群, 保护对象等限定访问范围或保护对象的名单) 一律走本函数; 普通业务
+    配置请用 satrap.core.config.model_tool_authorization.config_ids, 它宽松接受任意类型且不去重排序
 
     参数:
     - value: 实际安装配置中的名单
 
     返回:
-    - 去重账号元组, 缺失按空名单; 类型错误抛出 ValueError
+    - 去重排序后的账号元组, 缺失按空名单; 类型错误抛出 ValueError
     """
     if value is None:
         return ()
     values = value.splitlines() if isinstance(value, str) else value
     if not isinstance(values, list) or any(not isinstance(item, str) for item in values):
-        raise ValueError("调用者名单必须是逐行文字或字符串列表")
+        raise ValueError("权限名单必须是逐行文字或字符串列表")
     return tuple(sorted({item.strip() for item in values if item.strip()}))
 
 
@@ -116,7 +119,7 @@ def evaluate_plugin_permissions(
     try:
         for permission in required:
             rule = spec.rules[permission]
-            callers = _ids(config.get(rule.caller_list)) if rule.caller_list else ()
+            callers = permission_id_list(config.get(rule.caller_list)) if rule.caller_list else ()
             local = bool(rule.caller_list) and (origin.actor_id in callers or not callers and rule.empty_policy == "allow")
             source = "local_list" if local and callers else "local_empty_allow" if local else ""
             allowed = local
