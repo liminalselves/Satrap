@@ -8,7 +8,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from types import MappingProxyType
+from typing import Any, cast
 import hashlib
 import json
 import re
@@ -163,6 +164,38 @@ class AdministratorGrant:
     revision: str = ""
 
 
+def _freeze(value: Any) -> Any:
+    """
+    冻结已规范化的管理组结构
+
+    参数:
+    - value: 规范化后的配置值
+
+    返回:
+    - 字典转为只读映射, 列表转为元组, 其余原样
+    """
+    if isinstance(value, Mapping):
+        entries = cast("Mapping[str, Any]", value)
+        return MappingProxyType({str(key): _freeze(item) for key, item in entries.items()})
+    if isinstance(value, (list, tuple)):
+        items = cast("Sequence[Any]", value)
+        return tuple(_freeze(item) for item in items)
+    return value
+
+
+def _frozen_groups(groups: list[dict[str, Any]]) -> tuple[Mapping[str, Any], ...]:
+    """
+    生成可安全共享的管理组只读视图
+
+    参数:
+    - groups: 已规范化的管理组
+
+    返回:
+    - 深只读的管理组元组, 读取时不需再复制或解析
+    """
+    return _freeze(groups)
+
+
 class AdministratorService:
     """按真实平台目录与原子快照解析管理员授权"""
 
@@ -178,6 +211,7 @@ class AdministratorService:
         self._lock = threading.RLock()
         self._snapshot = "[]"
         self._revision = administrator_revision([])
+        self._frozen: tuple[Mapping[str, Any], ...] = ()
         self.apply(groups)
 
     def apply(self, groups: object) -> str:
@@ -193,8 +227,9 @@ class AdministratorService:
         normalized = normalize_administrator_groups(groups, self._platforms())
         encoded = json.dumps(normalized, ensure_ascii=False)
         revision = administrator_revision(normalized)
+        frozen = _frozen_groups(normalized)
         with self._lock:
-            self._snapshot, self._revision = encoded, revision
+            self._snapshot, self._revision, self._frozen = encoded, revision, frozen
         return revision
 
     def snapshot(self) -> tuple[list[dict[str, Any]], str]:
@@ -207,7 +242,7 @@ class AdministratorService:
         with self._lock:
             return json.loads(self._snapshot), self._revision
 
-    def _matching(self, platform_id: str, user_id: str, groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _matching(self, platform_id: str, user_id: str, groups: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
         """
         核验启用组内的平台持久绑定与用户身份
 
@@ -238,7 +273,8 @@ class AdministratorService:
         返回:
         - 当前授权及命中组, 不支持的身份返回拒绝
         """
-        groups, revision = self.snapshot()
+        with self._lock:
+            groups, revision = self._frozen, self._revision
         if origin is None or origin.actor_kind != "platform_user" or not origin.actor_id:
             return AdministratorGrant(False, revision=revision)
         matched = self._matching(origin.adapter_id, origin.actor_id, groups)
@@ -257,6 +293,7 @@ class AdministratorService:
         返回:
         - 当前实例的受保护管理员 ID
         """
-        groups, _ = self.snapshot()
+        with self._lock:
+            groups = self._frozen
         candidates = {member["user_id"] for group in groups for member in group["members"] if member["platform_id"] == platform_id}
         return sorted(user_id for user_id in candidates if self._matching(platform_id, user_id, groups))

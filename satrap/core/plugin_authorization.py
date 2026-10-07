@@ -2,7 +2,7 @@
 插件管理入口的统一授权
 
 显式声明决定哪些入口需要管理权限, 本地名单与系统管理组提供两条授权路径;
-业务开关, 对话范围和审批仍由各宿主服务核验
+业务开关, 对话范围和审批仍由各宿主服务核验; 入口判定只在当前处理步骤内复用
 """
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, TYPE_CHECKING
 import hashlib
 import json
@@ -165,6 +166,32 @@ class _CommandScope:
 _NATIVE_COMMAND: ContextVar[_CommandScope | None] = ContextVar("satrap_native_management_command", default=None)
 
 
+_AUTHORIZATION_STEP: ContextVar[list[tuple[PluginEntryBinding, str | None, AuthorizationDecision]] | None] = ContextVar(
+    "satrap_authorization_step", default=None)
+"""当前处理步骤内的入口判定缓存, 未进入作用域时不缓存任何结果"""
+
+
+@contextmanager
+def bind_authorization_step() -> Iterator[None]:
+    """
+    在当前处理步骤内复用同一入口的授权判定
+
+    同一入口在该步骤内只判定一次, 声明过滤与执行前检查共享结果; 嵌套进入沿用外层缓存,
+    退出最外层后立即丢弃, 之后的调用仍重新判定
+
+    返回:
+    - 单步作用域
+    """
+    if _AUTHORIZATION_STEP.get() is not None:
+        yield
+        return
+    token = _AUTHORIZATION_STEP.set([])
+    try:
+        yield
+    finally:
+        _AUTHORIZATION_STEP.reset(token)
+
+
 @contextmanager
 def bind_native_command(binding: PluginEntryBinding) -> Iterator[None]:
     """
@@ -200,6 +227,46 @@ def bind_plugin_tool(tool: Any, plugin_name: str, permissions: PluginPermissions
                                                    weakref.ref(tool), weakref.ref(session) if session is not None else None)
 
 
+_FACTORY_DECLARATIONS: dict[str, tuple[tuple[int, int], str, PluginPermissions]] = {}
+"""工厂声明按路径缓存, meta.yaml 以修改时间与大小标识内容"""
+
+_FACTORY_DECLARATIONS_LIMIT = 128
+
+
+def _factory_declarations(meta_path: Path) -> tuple[str, PluginPermissions]:
+    """
+    读取工厂声明, meta.yaml 未变化时复用已解析结果
+
+    参数:
+    - meta_path: 工厂模块相邻的 meta.yaml
+
+    返回:
+    - 插件名与已严格解析的声明; 文件缺失或声明非法时抛出与直接解析一致的错误
+    """
+    from satrap.edictum.plugin import load_plugin_meta
+    from satrap.edictum.plugin_config import parse_config_schema
+    from satrap.edictum.plugin_permissions import parse_plugin_permissions
+
+    try:
+        stat = meta_path.stat()
+    except OSError:
+        # 缺失或不可读时仍由 load_plugin_meta 抛出既有错误
+        meta = load_plugin_meta(meta_path.parent)
+        return meta["name"], parse_plugin_permissions(meta, parse_config_schema(meta))
+    signature = (stat.st_mtime_ns, stat.st_size)
+    cached = _FACTORY_DECLARATIONS.get(str(meta_path))
+    if cached is not None and cached[0] == signature:
+        return cached[1], cached[2]
+    meta = load_plugin_meta(meta_path.parent)
+    name = meta["name"]
+    permissions = parse_plugin_permissions(meta, parse_config_schema(meta))
+    # 上限内保持稳定, 超出后整体丢弃, 避免常驻增长
+    if len(_FACTORY_DECLARATIONS) >= _FACTORY_DECLARATIONS_LIMIT:
+        _FACTORY_DECLARATIONS.clear()
+    _FACTORY_DECLARATIONS[str(meta_path)] = (signature, name, permissions)
+    return name, permissions
+
+
 def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
     """
     为直接工厂调用绑定同一份声明, 正式安装时追加真实会话注册状态
@@ -209,14 +276,10 @@ def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
     - source_file: 工厂模块路径, 固定从相邻 meta.yaml 读取声明
     """
     from pathlib import Path
-    from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import parse_config_schema
-    from satrap.edictum.plugin_permissions import parse_plugin_permissions
 
-    meta = load_plugin_meta(Path(source_file).parent)
-    permissions = parse_plugin_permissions(meta, parse_config_schema(meta))
+    name, permissions = _factory_declarations(Path(source_file).parent / "meta.yaml")
     for tool in tools:
-        bind_plugin_tool(tool, meta["name"], permissions, tool.config)
+        bind_plugin_tool(tool, name, permissions, tool.config)
 
 
 def plugin_tool_live(session: Any, plugin_name: str, name: str, tool: Any) -> str | None:
@@ -242,6 +305,31 @@ def plugin_tool_live(session: Any, plugin_name: str, name: str, tool: Any) -> st
 
 
 def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | None = None) -> AuthorizationDecision:
+    """
+    读取当前处理步骤内的入口判定
+
+    同一入口在同一处理步骤内只判定一次, 声明过滤与执行前检查共享同一结果;
+    未进入步骤作用域或跨步骤调用时每次都重新判定并记录日志
+
+    参数:
+    - binding: 宿主创建的入口绑定
+    - subcommand: 原生命令解析后的子命令
+
+    返回:
+    - 当前授权结果, 失效或意外异常按拒绝处理并记录日志
+    """
+    memo = _AUTHORIZATION_STEP.get()
+    if memo is None:
+        return _evaluate_plugin_entry(binding, subcommand)
+    for cached_binding, cached_subcommand, decision in memo:
+        if cached_binding is binding and cached_subcommand == subcommand:
+            return decision
+    decision = _evaluate_plugin_entry(binding, subcommand)
+    memo.append((binding, subcommand, decision))
+    return decision
+
+
+def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None) -> AuthorizationDecision:
     """
     从真实作用域校验当前插件入口与名单
 

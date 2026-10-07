@@ -214,3 +214,275 @@ def test_structural_bad_config_still_reports_invalid_config():
     assert denied.status == "denied" and denied.reason_code == "permission_denied"
 
 
+class _EnabledEntry:
+    """入口绑定需要的常驻工具替身"""
+
+    def is_enabled(self) -> bool:
+        return True
+
+
+def tool_enabled(name: str) -> bool:
+    """
+    模拟仍启用的注册工具
+
+    参数:
+    - name: 工具注册名
+
+    返回:
+    - 恒为 True
+    """
+    return True
+
+
+_ENTRY = _EnabledEntry()
+
+
+def tool_binding() -> PluginEntryBinding:
+    """
+    构造普通工具入口
+
+    返回:
+    - 指向常驻工具替身的工具绑定
+    """
+    return PluginEntryBinding("example", "tools", "query", spec(), {}, weakref.ref(_ENTRY))
+
+
+def counted_evaluations(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str | None]]:
+    """
+    记录每次真实权限判定的入口与子命令
+
+    参数:
+    - monkeypatch: pytest 补丁工具
+
+    返回:
+    - 依次追加 (入口名, 子命令) 的列表
+    """
+    from satrap.core import plugin_authorization as authorization
+
+    recorded: list[tuple[str, str | None]] = []
+    real = authorization.evaluate_plugin_permissions
+
+    def counted(plugin_name: str, spec_value: PluginPermissions, kind: str, name: str, config: Mapping[str, Any],
+                call_origin: CallOrigin | None, administrators: AdministratorService | None = None,
+                *, subcommand: str | None = None) -> AuthorizationDecision:
+        recorded.append((name, subcommand))
+        return real(plugin_name, spec_value, kind, name, config, call_origin, administrators, subcommand=subcommand)
+
+    monkeypatch.setattr(authorization, "evaluate_plugin_permissions", counted)
+    return recorded
+
+
+def test_entry_decision_is_evaluated_once_inside_one_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    binding = tool_binding()
+    with bind_call_origin(origin()), bind_authorization_step():
+        first = authorize_plugin_entry(binding)
+        second = authorize_plugin_entry(binding)
+    assert first is second and first.status == "allowed"
+    assert evaluations == [("query", None)]
+
+
+def test_entry_decision_is_not_reused_outside_its_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    binding = tool_binding()
+    with bind_call_origin(origin()):
+        first = authorize_plugin_entry(binding)
+        with bind_authorization_step():
+            second = authorize_plugin_entry(binding)
+        third = authorize_plugin_entry(binding)
+    assert first is not second and second is not third
+    assert all(decision.status == "allowed" for decision in (first, second, third))
+    assert evaluations == [("query", None), ("query", None), ("query", None)]
+
+
+def test_entry_decision_is_re_evaluated_when_revoked_between_steps(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Entry:
+        def is_enabled(self) -> bool:
+            return True
+    entry = Entry()
+    installed = SimpleNamespace(name="example", enabled=True, tools={"query": True})
+
+    class Session:
+        def __init__(self) -> None:
+            self._wf = SimpleNamespace(tools_manager=SimpleNamespace(tools={"query": entry}, is_tool_enabled=tool_enabled))
+
+        def list_plugins(self) -> list[SimpleNamespace]:
+            return [installed]
+
+    session = Session()
+    evaluations = counted_evaluations(monkeypatch)
+    binding = PluginEntryBinding("example", "tools", "query", spec(), {}, weakref.ref(entry), weakref.ref(session))
+    with bind_call_origin(origin()):
+        with bind_authorization_step():
+            assert authorize_plugin_entry(binding).status == "allowed"
+            assert authorize_plugin_entry(binding).status == "allowed"
+        installed.tools["query"] = False
+        with bind_authorization_step():
+            assert authorize_plugin_entry(binding).status == "denied"
+    assert evaluations == [("query", None)]
+
+
+def test_nested_step_scope_shares_the_outer_decision(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    binding = tool_binding()
+    with bind_call_origin(origin()):
+        with bind_authorization_step():
+            outer = authorize_plugin_entry(binding)
+            with bind_authorization_step():
+                inner = authorize_plugin_entry(binding)
+        after = authorize_plugin_entry(binding)
+    assert inner is outer
+    assert after is not outer and after.status == "allowed"
+    assert evaluations == [("query", None), ("query", None)]
+
+
+class _AuthorizedTool(Tool):
+    """记录每次授权判定结果的工具替身"""
+
+    def __init__(self, binding: PluginEntryBinding, seen: list[AuthorizationDecision]) -> None:
+        super().__init__(tool_name="query", description="读取", params_dict={})
+        self._plugin_entry_binding = binding
+        self._seen = seen
+
+    def is_available_for_call(self) -> bool:
+        self._seen.append(authorize_plugin_entry(self._plugin_entry_binding))
+        return True
+
+    def execute(self) -> str:
+        return "ok"
+
+
+def test_definition_filter_evaluates_authorization_once_per_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    seen: list[AuthorizationDecision] = []
+    manager = ToolsManager()
+    manager.register_tool(_AuthorizedTool(tool_binding(), seen))
+    with bind_call_origin(origin()):
+        definitions = manager.get_tools_definitions()
+    assert [item["function"]["name"] for item in definitions] == ["query"]
+    assert evaluations == [("query", None)]
+    assert seen[0].status == "allowed"
+
+
+def test_execution_shares_one_authorization_decision_within_each_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    seen: list[AuthorizationDecision] = []
+    manager = ToolsManager()
+    manager.register_tool(_AuthorizedTool(tool_binding(), seen))
+    with bind_call_origin(origin()):
+        assert manager.execute_tool("query", {}) == "ok"
+        assert manager.execute_tool("query", {}) == "ok"
+    assert evaluations == [("query", None), ("query", None)]
+    assert [decision.status for decision in seen] == ["allowed", "allowed"]
+    assert seen[0] is not seen[1]
+
+
+class _FactoryTool:
+    """工厂绑定需要的工具替身, 支持弱引用"""
+
+    def __init__(self) -> None:
+        self.config: dict[str, Any] = {}
+        self._plugin_entry_binding: PluginEntryBinding | None = None
+
+    def get_tool_name(self) -> str:
+        return "query"
+
+
+def _factory_plugin(plugin_dir: Path, name: str = "example") -> Path:
+    """
+    写出工厂插件目录的 meta.yaml
+
+    参数:
+    - plugin_dir: 插件目录
+    - name: 插件名
+
+    返回:
+    - 写出的 meta.yaml 路径
+    """
+    plugin_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = plugin_dir / "meta.yaml"
+    # YAML 是 JSON 的超集, 这里直接用 JSON 写出同一份声明
+    meta_path.write_text(json.dumps({"name": name, **metadata()}, ensure_ascii=False), encoding="utf-8")
+    return meta_path
+
+
+def _counted_meta_loads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """
+    记录每次真实的 meta.yaml 读取
+
+    参数:
+    - monkeypatch: pytest 补丁工具
+
+    返回:
+    - 依次追加插件目录的列表
+    """
+    from satrap.core import plugin_authorization as authorization
+    from satrap.edictum import plugin as plugin_module
+
+    monkeypatch.setattr(authorization, "_FACTORY_DECLARATIONS", {})
+    recorded: list[str] = []
+    real = plugin_module.load_plugin_meta
+
+    def counted(plugin_directory: Path) -> dict[str, Any]:
+        recorded.append(str(plugin_directory))
+        return real(plugin_directory)
+
+    monkeypatch.setattr(plugin_module, "load_plugin_meta", counted)
+    return recorded
+
+
+def test_factory_declarations_reuse_unchanged_meta_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    loads = _counted_meta_loads(monkeypatch)
+    plugin_dir = tmp_path / "example"
+    _factory_plugin(plugin_dir)
+    first, second = _FactoryTool(), _FactoryTool()
+    bind_plugin_factory_tools([first], str(plugin_dir / "tools.py"))
+    bind_plugin_factory_tools([second], str(plugin_dir / "tools.py"))
+    assert loads == [str(plugin_dir)]
+    first_binding, second_binding = first._plugin_entry_binding, second._plugin_entry_binding
+    assert first_binding is not None and second_binding is not None
+    assert first_binding.plugin_name == "example"
+    assert first_binding.permissions is second_binding.permissions
+
+
+def test_factory_declarations_refresh_after_meta_yaml_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    loads = _counted_meta_loads(monkeypatch)
+    plugin_dir = tmp_path / "example"
+    meta_path = _factory_plugin(plugin_dir)
+    before = meta_path.stat()
+    bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
+    os.utime(meta_path, ns=(before.st_atime_ns, before.st_mtime_ns + 1_000_000_000))
+    touched = _FactoryTool()
+    bind_plugin_factory_tools([touched], str(plugin_dir / "tools.py"))
+    _factory_plugin(plugin_dir, name="renamed")
+    refreshed = _FactoryTool()
+    bind_plugin_factory_tools([refreshed], str(plugin_dir / "tools.py"))
+    assert loads == [str(plugin_dir)] * 3
+    touched_binding, refreshed_binding = touched._plugin_entry_binding, refreshed._plugin_entry_binding
+    assert touched_binding is not None and refreshed_binding is not None
+    assert touched_binding.plugin_name == "example"
+    assert refreshed_binding.plugin_name == "renamed"
+
+
+def test_factory_declarations_do_not_survive_missing_meta_yaml(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    loads = _counted_meta_loads(monkeypatch)
+    plugin_dir = tmp_path / "example"
+    meta_path = _factory_plugin(plugin_dir)
+    bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
+    meta_path.unlink()
+    with pytest.raises(ValueError, match="meta.yaml"):
+        bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
+    # 文件消失后仍走真实读取并抛出既有错误, 不返回缓存声明
+    assert loads == [str(plugin_dir)] * 2
+
+
+def test_factory_declaration_cache_stays_bounded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from satrap.core import plugin_authorization as authorization
+
+    _counted_meta_loads(monkeypatch)
+    monkeypatch.setattr(authorization, "_FACTORY_DECLARATIONS_LIMIT", 1)
+    for name in ("first", "second"):
+        plugin_dir = tmp_path / name
+        _factory_plugin(plugin_dir, name=name)
+        bind_plugin_factory_tools([_FactoryTool()], str(plugin_dir / "tools.py"))
+    assert list(authorization._FACTORY_DECLARATIONS) == [str(tmp_path / "second" / "meta.yaml")]

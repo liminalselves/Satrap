@@ -6,7 +6,8 @@
 """
 from typing import Dict, Any, Callable, cast
 from satrap.core.log import logger
-from satrap.core.plugin_authorization import authorize_plugin_entry, require_plugin_entry_permission, PluginPermissionDenied
+from satrap.core.plugin_authorization import (authorize_plugin_entry, bind_authorization_step,
+                                              require_plugin_entry_permission, PluginPermissionDenied)
 from .utils import _create_tool_error, _safe_json_dumps
 from typing import Generic, TypeVar
 from .tool import Tool
@@ -23,14 +24,16 @@ class _ToolsRegistry(Generic[_ToolT]):
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
         """
-        return [
-            tool.get_tool_defined()
-            for tool in self.tools.values()
-            if tool.assert_tool() and tool.is_enabled() and tool.is_available_for_call()
-            and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
-            and ((binding := getattr(tool, "_plugin_entry_binding", None)) is None
-                 or authorize_plugin_entry(binding).status != "denied")
-        ]
+        # 声明过滤在一次构建内共用同一份授权判定, 不跨步保留
+        with bind_authorization_step():
+            return [
+                tool.get_tool_defined()
+                for tool in self.tools.values()
+                if tool.assert_tool() and tool.is_enabled() and tool.is_available_for_call()
+                and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
+                and ((binding := getattr(tool, "_plugin_entry_binding", None)) is None
+                     or authorize_plugin_entry(binding).status != "denied")
+            ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:
         """
@@ -209,13 +212,15 @@ class _ToolsRegistry(Generic[_ToolT]):
             )
 
         binding = getattr(tool, "_plugin_entry_binding", None)
-        if binding is not None:
-            try:
-                require_plugin_entry_permission(binding)
-            except PluginPermissionDenied as error:
-                return None, {}, _create_tool_error(tool_name, str(error), error.code)
-        if not tool.is_available_for_call():
-            logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
-            return None, {}, _create_tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")
+        # 来源可用性与入口权限属于同一步判定, 共用同一份结果; 工具执行时的复检在此作用域之外
+        with bind_authorization_step():
+            if binding is not None:
+                try:
+                    require_plugin_entry_permission(binding)
+                except PluginPermissionDenied as error:
+                    return None, {}, tool_error(tool_name, str(error), error.code)
+            if not tool.is_available_for_call():
+                logger.warning(f"[执行工具] 当前来源不可用, 工具={tool_name}")
+                return None, {}, tool_error(tool_name, "当前对话不能使用此工具", "wrong_conversation")
 
         return tool, arguments, None
