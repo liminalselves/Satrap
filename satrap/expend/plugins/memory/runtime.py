@@ -1,14 +1,15 @@
 """独立记忆插件的当前安装状态与同步协程桥接"""
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Coroutine
 from typing import Any
 
-from satrap.core.call_context import current_call_origin
-from satrap.core.platform import current_adapter_manager
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
+from satrap.core.plugin_authorization import plugin_tool_live
 from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.memory.scoped import MemoryError
+from satrap.core.call_context import current_call_origin, is_group_origin
+from satrap.core.platform import current_adapter_manager
 from satrap.core.log import logger
 
 
@@ -28,13 +29,16 @@ def active_config(session: Any, config: dict[str, Any], kind: str, name: str, to
     """
     if session is None:
         return dict(config)
+    if tool is not None:
+        reason = plugin_tool_live(session, "memory", name, tool)
+        if reason == "entry_disabled":
+            raise MemoryError("stale_call", "记忆插件或该能力已停用")
+        if reason is not None:
+            raise MemoryError("stale_call", "记忆工具已从原会话移除或停用")
+        return dict(config)
     plugin = next((item for item in session.list_plugins() if item.name == "memory"), None)
     if plugin is None or not plugin.enabled or not getattr(plugin, kind).get(name, False):
         raise MemoryError("stale_call", "记忆插件或该能力已停用")
-    if tool is not None:
-        manager = session.tools_manager
-        if manager.tools.get(name) is not tool or not manager.is_tool_enabled(name) or not tool.is_enabled():
-            raise MemoryError("stale_call", "记忆工具已从原会话移除或停用")
     return dict(config)
 
 

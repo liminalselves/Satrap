@@ -1,10 +1,13 @@
 """记忆工具的公共执行核心"""
 from __future__ import annotations
-from typing import Any
-from satrap.core.memory.store import MemoryStore
-from satrap.core.memory.service import MemoryService
+
+from typing import Any, cast
+import copy
+
 from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.memory.service import MemoryService
+from satrap.core.memory.store import MemoryStore
 
 
 class _MemoryBinding(_ToolBase):
@@ -20,7 +23,6 @@ class _MemoryBinding(_ToolBase):
         self.store = store
         self.service = service or MemoryService(store)
         self.config: dict[str, Any] = {}
-
 
     def _access(self) -> dict[str, Any]:
         """
@@ -51,20 +53,18 @@ class _MemoryBinding(_ToolBase):
         返回:
         - 包含来源与修订参数的完整 JSON schema
         """
-        import copy
         description, properties, required = DEFINITIONS[str(self.tool_name)]
         properties = copy.deepcopy(properties)
         if group_call() and self.tool_name == "add_memory":
             properties.pop("tags", None)
             properties.pop("importance", None)
-        if group_call() and self.tool_name == "add_memory":
             required = [*required, "kind", "key", "source_message_ids"]
         if group_call() and self.tool_name == "update_memory":
             required = [*required, "content", "expected_revision", "source_message_ids"]
         if group_call() and self.tool_name == "delete_memory":
             required = [*required, "expected_revision", "request_message_id"]
         return {"type": "function", "function": {"name": self.tool_name, "description": description,
-                "parameters": {"type": "object", "properties": copy.deepcopy(properties), "required": required, "additionalProperties": False}}}
+                "parameters": {"type": "object", "properties": properties, "required": required, "additionalProperties": False}}}
 
 
 class _AddMemoryToolCore(_MemoryBinding):
@@ -79,6 +79,20 @@ class _AddMemoryToolCore(_MemoryBinding):
         "importance": ("number", "重要程度 1-5, 默认 1"),
     }
 
+    def _group_values(self, title: str, content: str, group_values: dict[str, Any]) -> dict[str, Any]:
+        """
+        组装群范围新增记忆的宿主参数
+
+        参数:
+        - title: 记忆标题
+        - content: 记忆内容
+        - group_values: 群聊必填的 kind, key 与来源消息 ID
+
+        返回:
+        - 群记忆宿主的操作参数
+        """
+        return {"title": title, "content": content, **group_values}
+
     def _execute(
         self,
         title: str,
@@ -88,16 +102,17 @@ class _AddMemoryToolCore(_MemoryBinding):
         **group_values: Any,
     ) -> str | dict[str, Any]:
         """
-        执行
+        新增一条记忆, 群聊交给群记忆宿主
 
         参数:
-        - title: 标题
-        - content: 内容
-        - tags: 标签集合
-        - importance: 重要度
+        - title: 记忆标题
+        - content: 记忆内容
+        - tags: 分类标签, 普通会话使用
+        - importance: 重要度 1-5, 普通会话使用
+        - group_values: 群聊必填的 kind, key 与来源消息 ID
 
         返回:
-        - str: 执行
+        - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
             return wait_host(self._group("create", {"title": title, "content": content, **group_values}))
@@ -122,17 +137,38 @@ class _UpdateMemoryToolCore(_MemoryBinding):
         "title": ("string", "更新后的标题"),
     }
 
-    def _execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
+    def _group_values(self, memory_id: str, content: str, title: str, group_values: dict[str, Any]) -> dict[str, Any]:
         """
-        执行
+        组装群范围更新记忆的宿主参数
 
         参数:
-        - memory_id: 记忆id
-        - content: 内容
-        - title: 标题
+        - memory_id: 要更新的记忆 ID
+        - content: 更新后的正文, 为空表示不改
+        - title: 更新后的标题, 为空表示不改
+        - group_values: 群聊的 revision 与来源消息 ID
 
         返回:
-        - str: 执行
+        - 群记忆宿主的操作参数
+        """
+        values: dict[str, Any] = {"memory_id": memory_id, **group_values}
+        if content:
+            values["content"] = content
+        if title:
+            values["title"] = title
+        return values
+
+    def _execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
+        """
+        更新一条记忆, 群聊只能改本人偏好
+
+        参数:
+        - memory_id: 要更新的记忆 ID
+        - content: 更新后的正文, 为空表示不改
+        - title: 更新后的标题, 为空表示不改
+        - group_values: 群聊的 revision 与来源消息 ID
+
+        返回:
+        - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
             values = {"memory_id": memory_id, **group_values}
@@ -163,15 +199,29 @@ class _DeleteMemoryToolCore(_MemoryBinding):
         "memory_id": ("string", "要删除的记忆 ID"),
     }
 
-    def _execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
+    def _group_values(self, memory_id: str, group_values: dict[str, Any]) -> dict[str, Any]:
         """
-        执行
+        组装群范围删除记忆的宿主参数
 
         参数:
-        - memory_id: 记忆id
+        - memory_id: 要删除的记忆 ID
+        - group_values: 群聊的 revision 与请求消息 ID
 
         返回:
-        - str: 执行
+        - 群记忆宿主的操作参数
+        """
+        return {"memory_id": memory_id, **group_values}
+
+    def _execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
+        """
+        删除一条记忆, 群聊只能删本人偏好
+
+        参数:
+        - memory_id: 要删除的记忆 ID
+        - group_values: 群聊的 revision 与请求消息 ID
+
+        返回:
+        - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
             return wait_host(self._group("delete", {"memory_id": memory_id, **group_values}))
@@ -194,10 +244,13 @@ class _ListMemoriesToolCore(_MemoryBinding):
 
     def _execute(self, **filters: Any) -> str | dict[str, Any]:
         """
-        执行
+        列出当前范围的记忆, 群聊交给群记忆宿主
+
+        参数:
+        - filters: 群聊的筛选条件 (kind, user_id, keyword, limit, cursor)
 
         返回:
-        - str: 执行
+        - 普通会话成功返回清单文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
             return wait_host(self._group("list", filters))
@@ -223,15 +276,27 @@ class _GetMemoryToolCore(_MemoryBinding):
     description = "查看记忆列表返回的一条记忆, 返回完整 ID, 标题和正文; 不读取当前范围之外的数据"
     params_dict = {"memory_id": ("string", "记忆列表返回的完整 ID")}
 
-    def _execute(self, memory_id: str) -> dict[str, Any]:
+    def _group_values(self, memory_id: str) -> dict[str, Any]:
         """
-        读取记忆详情
+        组装群范围读取记忆的宿主参数
 
         参数:
         - memory_id: 当前范围内的记忆 ID
 
         返回:
-        - 完整记忆记录或明确的错误结果
+        - 群记忆宿主的操作参数
+        """
+        return {"memory_id": memory_id}
+
+    def _execute(self, memory_id: str) -> dict[str, Any]:
+        """
+        读取一条记忆的完整记录, 群聊交给群记忆宿主
+
+        参数:
+        - memory_id: 当前范围内的记忆 ID
+
+        返回:
+        - 普通会话返回完整记忆记录或框架扁平失败结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
             return wait_host(self._group("get", {"memory_id": memory_id}))

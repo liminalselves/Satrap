@@ -89,6 +89,16 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
     }, ["request_id", "approve"], True, True),
 }
 
+_ACTION_NAMES: dict[str, str] = {
+    # 工具名: 统一审批服务的动作名
+    "group_admin_recall_message": "recall_message", "group_admin_kick": "kick_group_member",
+    "group_admin_ban": "ban_group_member", "group_admin_whole_ban": "set_group_whole_ban",
+    "group_admin_ban_anonymous": "ban_anonymous", "group_admin_set_admin": "set_group_admin",
+    "group_admin_set_anonymous": "set_group_anonymous", "group_admin_set_group_nickname": "set_group_card",
+    "group_admin_set_name": "set_group_name", "group_admin_set_title": "set_group_special_title",
+    "group_admin_leave": "leave_group", "group_admin_handle_group_request": "handle_group_request",
+}
+
 
 def _as_bool(value: Any, name: str) -> bool:
     """严格解析布尔参数, 拒绝真值语义"""
@@ -279,12 +289,10 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     handler = getattr(admin._adapter, "group_action_handler", None)
     if model_plugin_requires_approval(name, source_tool.config) and not callable(handler):
         raise PermissionError("高危动作需要持久审批, 当前审批服务尚未装配")
-    if name in action_names and callable(handler):
-        action = action_names[name]
+    if name in _ACTION_NAMES and callable(handler):
+        action = _ACTION_NAMES[name]
         if name == "group_admin_set_group_nickname":
             kwargs = {**kwargs, "card": kwargs["nickname"]}
-        from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS
-
         params: dict[str, object] = {
             key: value for key, value in kwargs.items() if key in ACTION_FIELDS[action]
         }
@@ -335,6 +343,42 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
     return admin.handle_group_request(gid, kwargs.get("flag", ""), str(kwargs.get("sub_type", "")), _as_bool(kwargs.get("approve"), "approve"), str(kwargs.get("reason", "")))
 
 
+def _error_result(tool_name: str | None, error: Exception) -> dict[str, Any]:
+    """
+    把同步与异步入口的异常映射为同一工具结果, 须在 except 块内调用以保留堆栈
+
+    参数:
+    - tool_name: 当前工具名
+    - error: 捕获的异常
+
+    返回:
+    - 框架扁平失败结果, 稳定类型区分不支持, 拒绝, 未确认, 权限, 参数与执行故障
+    """
+    name = tool_name or "unknown_tool"
+    if isinstance(error, UnsupportedAdminAction):
+        return tool_error(name, str(error), "unsupported")
+    if isinstance(error, PermissionError):
+        logger.debug(f"[group_admin] 权限拒绝 tool={name}: {error}")
+        return tool_error(name, str(error), "permission_denied")
+    if isinstance(error, AdminActionRejected):
+        logger.warning(f"[group_admin] 动作被拒绝 tool={name}: {error}")
+        return tool_error(name, str(error), "rejected")
+    if isinstance(error, AdminActionUnconfirmed):
+        logger.warning(f"[group_admin] 动作结果未知 tool={name}: {error}")
+        return tool_error(name, str(error), "unconfirmed")
+    if isinstance(error, PlatformAdminError):
+        logger.warning(f"[group_admin] 动作失败 tool={name}: {type(error).__name__}: {error}")
+        return tool_error(name, str(error), "unavailable")
+    if isinstance(error, LookupError):
+        logger.warning(f"[group_admin] 申请已失效 tool={name}: {error}")
+        return tool_error(name, str(error), "not_found")
+    if isinstance(error, ValueError):
+        logger.warning(f"[group_admin] 动作参数错误 tool={name}: {error}")
+        return tool_error(name, str(error), "invalid_arguments")
+    logger.error(f"[group_admin] 动作异常 tool={name}: {traceback.format_exc()}")
+    return tool_error(name, "管理操作暂不可用, 请查看后端日志", "execution_error")
+
+
 class _GroupAdminMixin:
     """权限解析与执行归一, 同步入口把协程桥接到平台事件循环"""
 
@@ -360,11 +404,9 @@ class _GroupAdminMixin:
             return False
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
-        if not definition or self.tool_name is None:
+        if self.tool_name is None:
             return definition
-        definition["function"]["parameters"]["required"] = _DEFINITIONS[self.tool_name][2]
-        definition["function"]["parameters"]["additionalProperties"] = False
-        return definition
+        return strict_tool_definition(definition, _DEFINITIONS[self.tool_name][2])
 
     async def _run(self, **kwargs: Any) -> dict[str, Any]:
         """在当前上下文完成身份校验后执行管理动作"""
@@ -395,21 +437,9 @@ class _GroupAdminMixin:
                 return {"status": "unconfirmed", "error": "动作超时, 结果未知"}
             if write:
                 logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
-            return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
-        except UnsupportedAdminAction as error:
-            return {"status": "unsupported", "error": str(error)}
-        except PermissionError as error:
-            logger.debug(f"[group_admin] 权限拒绝 tool={self.tool_name}: {error}")
-            return {"status": "error", "error": str(error)}
-        except PlatformAdminError as error:
-            logger.warning(f"[group_admin] 动作失败 tool={self.tool_name}: {type(error).__name__}: {error}")
-            return {"status": "error", "error": str(error)}
-        except (ValueError, LookupError) as error:
-            logger.warning(f"[group_admin] 动作参数或申请已失效 tool={self.tool_name}: {error}")
-            return {"status": "error", "error": str(error)}
-        except Exception:
-            logger.error(f"[group_admin] 动作异常 tool={self.tool_name}: {traceback.format_exc()}")
-            return {"status": "error", "error": "管理操作暂不可用, 请查看后端日志"}
+            return {"ok": True, "data": result} if result is not None else {"ok": True}
+        except Exception as error:
+            return _error_result(self.tool_name, error)
 
 
 class GroupAdminTool(_GroupAdminMixin, Tool):
@@ -429,23 +459,10 @@ class AsyncGroupAdminTool(_GroupAdminMixin, AsyncTool):
         return self._complete_definition(super().get_tool_defined())
 
     async def execute(self, **kwargs: Any) -> dict[str, Any]:
-        name = str(self.tool_name)
         try:
             return await self._run(**kwargs)
-        except UnsupportedAdminAction as error:
-            return {"status": "unsupported", "error": str(error)}
-        except PermissionError as error:
-            logger.debug(f"[group_admin] 权限拒绝 tool={name}: {error}")
-            return {"status": "error", "error": str(error)}
-        except PlatformAdminError as error:
-            logger.warning(f"[group_admin] 动作失败 tool={name}: {type(error).__name__}: {error}")
-            return {"status": "error", "error": str(error)}
-        except (ValueError, LookupError) as error:
-            logger.warning(f"[group_admin] 动作参数或申请已失效 tool={name}: {error}")
-            return {"status": "error", "error": str(error)}
-        except Exception:
-            logger.error(f"[group_admin] 动作异常 tool={name}: {traceback.format_exc()}")
-            return {"status": "error", "error": "管理操作暂不可用, 请查看后端日志"}
+        except Exception as error:
+            return _error_result(self.tool_name, error)
 
 
 _AnyGroupAdminTool = TypeVar("_AnyGroupAdminTool", GroupAdminTool, AsyncGroupAdminTool)

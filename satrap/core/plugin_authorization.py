@@ -212,6 +212,28 @@ def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
         bind_plugin_tool(tool, meta["name"], permissions, tool.config)
 
 
+def plugin_tool_live(session: Any, plugin_name: str, name: str, tool: Any) -> str | None:
+    """
+    判定工具是否仍是来源会话主工作流中启用的同一插件工具
+
+    参数:
+    - session: 来源会话
+    - plugin_name: 工具所属插件
+    - name: 工具注册名
+    - tool: 工具实例
+
+    返回:
+    - 仍有效返回 None; 插件或该能力停用返回 entry_disabled, 工具被移除, 替换或停用返回 stale_authorization
+    """
+    plugin = next((item for item in session.list_plugins() if item.name == plugin_name), None)
+    if plugin is None or not plugin.enabled or not plugin.tools.get(name, False):
+        return "entry_disabled"
+    manager = getattr(getattr(session, "_wf", None), "tools_manager", None)
+    if manager is None or manager.tools.get(name) is not tool or not manager.is_tool_enabled(name) or not tool.is_enabled():
+        return "stale_authorization"
+    return None
+
+
 def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | None = None) -> AuthorizationDecision:
     """
     从真实作用域校验当前插件入口与名单
@@ -235,14 +257,14 @@ def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | Non
             session = binding.session_ref()
             if session is None:
                 return AuthorizationDecision("denied", *identity, reason_code="stale_authorization")
-            plugin = next((item for item in session.list_plugins() if item.name == binding.plugin_name), None)
-            if plugin is None or not plugin.enabled or not getattr(plugin, binding.kind).get(binding.name, False):
-                return AuthorizationDecision("denied", *identity, reason_code="entry_disabled")
             if binding.kind == "tools":
-                manager = getattr(getattr(session, "_wf", None), "tools_manager", None)
-                if manager is None or manager.tools.get(binding.name) is not entry or not manager.is_tool_enabled(binding.name):
-                    return AuthorizationDecision("denied", *identity, reason_code="stale_authorization")
+                reason = plugin_tool_live(session, binding.plugin_name, binding.name, entry)
+                if reason is not None:
+                    return AuthorizationDecision("denied", *identity, reason_code=reason)
             else:
+                plugin = next((item for item in session.list_plugins() if item.name == binding.plugin_name), None)
+                if plugin is None or not plugin.enabled or not plugin.commands.get(binding.name, False):
+                    return AuthorizationDecision("denied", *identity, reason_code="entry_disabled")
                 registry = getattr(session, "command_handler", None) or getattr(session, "cmd_handler", None)
                 if registry is None or registry.commands.get(binding.name) is not entry or not registry.is_command_enabled(binding.name):
                     return AuthorizationDecision("denied", *identity, reason_code="stale_authorization")

@@ -22,7 +22,7 @@ class AsyncAddMemoryTool(_AddMemoryToolCore, _AsyncMemoryToolBase):
     ) -> str | dict[str, Any]:
         """执行共用记忆操作"""
         if group_call():
-            return await self._group("create", {"title": title, "content": content, **group_values})
+            return await self._group("create", self._group_values(title, content, group_values))
         return await asyncio.to_thread(self._execute, title, content, tags, importance, **group_values)
 
 
@@ -30,12 +30,7 @@ class AsyncUpdateMemoryTool(_UpdateMemoryToolCore, _AsyncMemoryToolBase):
     async def execute(self, memory_id: str, content: str = "", title: str = "", **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
         if group_call():
-            values = {"memory_id": memory_id, **group_values}
-            if content:
-                values["content"] = content
-            if title:
-                values["title"] = title
-            return await self._group("update", values)
+            return await self._group("update", self._group_values(memory_id, content, title, group_values))
         return await asyncio.to_thread(self._execute, memory_id, content, title, **group_values)
 
 
@@ -43,7 +38,7 @@ class AsyncDeleteMemoryTool(_DeleteMemoryToolCore, _AsyncMemoryToolBase):
     async def execute(self, memory_id: str, **group_values: Any) -> str | dict[str, Any]:
         """执行共用记忆操作"""
         if group_call():
-            return await self._group("delete", {"memory_id": memory_id, **group_values})
+            return await self._group("delete", self._group_values(memory_id, group_values))
         return await asyncio.to_thread(self._execute, memory_id, **group_values)
 
 
@@ -67,5 +62,5 @@ class AsyncGetMemoryTool(_GetMemoryToolCore, _AsyncMemoryToolBase):
         - 记忆详情或明确错误
         """
         if group_call():
-            return await self._group("get", {"memory_id": memory_id})
+            return await self._group("get", self._group_values(memory_id))
         return await asyncio.to_thread(self._execute, memory_id)

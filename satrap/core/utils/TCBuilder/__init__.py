@@ -13,6 +13,7 @@ from .utils import (
     _summarize_arguments,
     _tool_execution_error,
     create_tool_defined,
+    strict_tool_definition,
 )
 from .tool import Tool
 from .async_tool import AsyncTool

@@ -48,11 +48,9 @@ class _RagToolMixin:
     config: dict[str, Any]
 
     def _complete_definition(self, definition: dict[str, Any]) -> dict[str, Any]:
-        if not definition or self.tool_name is None:
+        if self.tool_name is None:
             return definition
-        definition["function"]["parameters"]["required"] = _DEFINITIONS[self.tool_name][2]
-        definition["function"]["parameters"]["additionalProperties"] = False
-        return definition
+        return strict_tool_definition(definition, _DEFINITIONS[self.tool_name][2])
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
         try:

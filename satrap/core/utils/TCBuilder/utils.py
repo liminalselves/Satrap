@@ -188,3 +188,22 @@ def create_tool_defined(
             },
         },
     }
+
+
+def strict_tool_definition(definition: Dict[str, Any], required: list[str]) -> Dict[str, Any]:
+    """
+    把工具定义改为只要求指定参数且拒绝未声明参数
+
+    参数:
+    - definition: create_tool_defined 生成的工具定义, 会被就地修改
+    - required: 必填参数名列表, 其余已声明参数视为可选
+
+    返回:
+    - 修改后的同一个工具定义; 定义为空时原样返回
+    """
+    if not definition:
+        return definition
+    parameters = definition["function"]["parameters"]
+    parameters["required"] = list(required)
+    parameters["additionalProperties"] = False
+    return definition

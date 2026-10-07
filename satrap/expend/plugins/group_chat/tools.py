@@ -7,10 +7,11 @@ group_chat 同步与异步工具
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
-import asyncio
-import copy
+from dataclasses import replace
+from typing import Any, cast
 import traceback
+import copy
+import json
 
 from satrap.core.group_chat.service import group_chat_service
 from satrap.core.group_chat.reminder_service import execute_reminder_tool, REMINDER_ARGUMENTS
@@ -18,12 +19,14 @@ from satrap.core.group_chat.reply import current_reply_turn
 from satrap.core.group_chat.types import GroupChatLimits
 from satrap.core.utils.TCBuilder import AsyncTool, Tool
 from satrap.core.framework.Base import AsyncSession, Session
-from satrap.core.call_context import current_call_origin
+from satrap.core.call_context import current_call_origin, is_group_origin, is_private_origin
+from satrap.core.platform.loop_bridge import PlatformLoopUnavailable, run_on_platform_loop
 from satrap.core.platform import current_adapter_manager
 
 from satrap.core.log import logger
-from satrap.core.config.model_tool_authorization import config_ids, bind_tool_session, model_tool_authorization
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.config.model_tool_authorization import bind_tool_session, model_tool_authorization
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, plugin_tool_live, permission_id_list
+from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.config.group_action_origin import bind_model_action_authorization
 from satrap.core.group_chat.types import GroupChatError
 
@@ -158,15 +161,8 @@ class _GroupChatMixin:
             if self.config.get("self_nickname_enabled") is not True:
                 raise GroupChatError("forbidden", "机器人自身群昵称修改未获授权")
         if self.tool_name in REMINDER_ARGUMENTS:
-            workflow = getattr(self.session, "_wf", None)
-            manager = getattr(workflow, "tools_manager", None)
-            getter = getattr(self.session, "list_plugins", None)
-            plugins = getter() if callable(getter) else []
-            if not isinstance(plugins, list):
-                raise GroupChatError("stale_call", "来源 Agent 插件状态无效")
-            plugin = next((item for item in plugins if item.name == "group_chat"), None)
-            if (manager is None or manager.tools.get(self.tool_name) is not self or not manager.is_tool_enabled(self.tool_name)
-                    or plugin is None or not plugin.enabled or not plugin.tools.get(self.tool_name, False)):
+            if (not callable(getattr(self.session, "list_plugins", None))
+                    or plugin_tool_live(self.session, "group_chat", self.tool_name, self) is not None):
                 raise GroupChatError("stale_call", "提醒工具已从来源 Agent 移除或停用")
             if self.tool_name == "group_chat_create_reminder" and self.config.get("reminders_enabled") is not True:
                 raise GroupChatError("write_disabled", "请先在群聊插件配置中开启提醒")
@@ -230,12 +226,9 @@ class _GroupChatMixin:
             if self.tool_name == "group_chat_prepare_summary":
                 workflow = getattr(self.session, "_wf", None)
                 context = getattr(workflow, "ctx", None)
-                usage = context.get_context_usage(method="experience") if context is not None else None
-                if usage is not None:
-                    assert workflow is not None
+                usage = context.get_context_usage(method="experience") if workflow is not None and context is not None else None
+                if workflow is not None and usage is not None:
                     definitions = workflow.tools_manager.get_tools_definitions()
-                    import json
-
                     overhead = len(json.dumps(definitions, ensure_ascii=False).encode("utf-8")) + 8192
                     available = usage.history_upper_tokens - usage.history_tokens - overhead
                     input_budget = max(0, min(1000000, available // 2))
