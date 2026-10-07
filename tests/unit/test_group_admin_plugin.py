@@ -245,6 +245,46 @@ class TestExecution:
         with bind_call_origin(_origin()):
             result = await asyncio.to_thread(tool.execute, user_id="321")
         assert result["status"] == "error" and "事件循环" in result["error"]
+        adapter._bot.set_group_kick.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sync_tool_inside_platform_loop_fails_fast(self):
+        adapter = _setup_adapter()
+        adapter._loop = asyncio.get_running_loop()
+        adapter._bot.set_group_kick.return_value = {}
+        config: dict[str, Any] = {"allowed_callers": "123", "write_tools_enabled": True}
+        tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
+        started = asyncio.get_running_loop().time()
+        with bind_call_origin(_origin()):
+            result = tool.execute(user_id="321")
+        assert asyncio.get_running_loop().time() - started < 1
+        assert result["ok"] is False and result["error_type"] == "invalid_arguments" and "事件循环" in result["error"]
+        adapter._bot.set_group_kick.assert_not_called()
+
+
+class TestConversationKind:
+    @pytest.mark.asyncio
+    async def test_group_conversation_kind_uses_current_group(self):
+        from dataclasses import replace
+        adapter = _setup_adapter()
+        adapter._bot.get_group_honor_info.return_value = {}
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
+        origin = replace(_origin(chat_type=""), conversation_kind="group", conversation_id="456")
+        with bind_call_origin(origin):
+            result = await tool.execute()
+        assert result["ok"] is True, result
+        assert adapter._bot.get_group_honor_info.await_args.kwargs["group_id"] == 456
+
+    @pytest.mark.asyncio
+    async def test_private_conversation_kind_requires_explicit_group(self):
+        from dataclasses import replace
+        adapter = _setup_adapter()
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
+        origin = replace(_origin(), conversation_kind="private", conversation_id="123")
+        with bind_call_origin(origin):
+            result = await tool.execute()
+        assert result["ok"] is False and result["error_type"] == "invalid_arguments" and "group_id" in result["error"]
+        adapter._bot.get_group_honor_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_group_request_requires_matching_sub_type(self):
