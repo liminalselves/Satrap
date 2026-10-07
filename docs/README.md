@@ -56,13 +56,12 @@
 
 - [开发规范](development/development-guidelines.md): 注释规范, 静态类型检查规范与门禁
 - [测试说明](development/testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
-- [安全审查报告](development/security-review-issue-12.md): issue #12 / PR #15 的审查范围、修复契约与验证缺口
-- [main 合并契约](development/main-merge-plan-contracts.md): 合并范围, 媒体授权, 插件生命周期和群管理审批
-- [main 合并验收](development/main-merge-verification.md): 集成适配, 回归结果与升级要求
+- [对话目录与旧上下文清理](development/conversation-catalog.md): 对话目录字段, 临时子 Agent 与旧上下文清理命令
+- [开发过程记录摘要](development/history.md): 安全审查, main 合并, 群聊两期, 系统管理员等计划与验收的结论和遗留问题
 
 ### archive/ 过程记录 (本地留档, 不入库)
 
-实施 / 迁移 / 清理 / 优化的过程记录留在本地工作区 `docs/archive/`, 只反映当时状态, 不作为现行参考: RAG 实施记录, 恢复机制验收与存储优化记录, 向量存储迁移, 前端迁移, 死代码清理。Issue #10 的计划、进度、联调记录、规模统计和各轮审计报告统一归档到 `docs/archive/issue-10/`; 当前平台能力与配置以 [平台接入](platform/platforms.md) 为准。
+实施 / 迁移 / 清理 / 优化的过程记录留在本地工作区 `docs/archive/`, 只反映当时状态, 不作为现行参考: RAG 实施记录, 恢复机制验收与存储优化记录, 向量存储迁移, 前端迁移, 死代码清理。Issue #1 分支上的安全审查, main 合并, 群聊两期, 文案审阅, 插件权限与系统管理员的计划 / 验收原文在 `docs/archive/development/`, 结论见 [开发过程记录摘要](development/history.md)。Issue #10 的计划、进度、联调记录、规模统计和各轮审计报告统一归档到 `docs/archive/issue-10/`; 当前平台能力与配置以 [平台接入](platform/platforms.md) 为准。
 
 `docs/archive/` 在根 `.gitignore` 中被忽略且已从索引移除, 因此不随仓库分发: 新克隆的工作区没有这些文件, 其他文档只在正文里按路径引用它们。归档时用文件系统移动保留本地文件, 提交原路径的删除和相关索引调整; 不使用 `git mv` 把归档目标重新加入索引, 不强制添加被忽略的归档文件。新写的本地过程稿直接放入归档目录。
 

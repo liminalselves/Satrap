@@ -44,7 +44,7 @@ C1/C2 已实现拆分, 群记忆与成员偏好, 并与 D1/D2 一并完成自动
 `error_type` 取值: `read_only` / `memory_disabled` (只读或已禁用), `invalid_argument`, `not_found`, `write_disabled` (群记忆写入未开启),
 `read_only_workflow` (子工作流), `stale_call` (来源或配置已变化), `unavailable` (存储或平台暂不可用)
 
-群记忆, 成员偏好, 审批与提醒的后续契约见 [第二阶段计划](../development/group-chat-phase2-contracts.md)
+群提醒见 [group_chat 插件](group-chat-plugin.md#一次性提醒)
 
 
 ## 群记忆与成员偏好

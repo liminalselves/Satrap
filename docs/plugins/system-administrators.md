@@ -40,4 +40,34 @@ requirements 只显示业务条件说明, 不决定是否允许执行. 业务功
 
 本轮保留原生命令与子命令的权限绑定接口, 尚未新增业务审批命令. 群记忆本人所有权, 共享记忆提案及编程插件执行权限机制不随管理员授权放宽
 
-完整声明与 API 契约见 [插件管理权限契约](../development/plugin-management-permission-contracts.md)
+声明字段, 判定规则与宿主接口见 [插件系统: 管理权限声明](../edictum/plugin-system.md#管理权限声明-可选)
+
+## 配置结构与接口
+
+管理组保存在后端配置文档的 `administrator_groups` 区段, 页面编辑即可, 无需手写:
+
+```yaml
+administrator_groups:
+  - id: primary-admins
+    name: 主要管理员
+    enabled: true
+    members:
+      - platform_id: onebot-main
+        platform_instance_id: 由服务保存时绑定
+        user_id: "10001"
+    plugin_scope:
+      mode: selected            # selected 或 all
+      included: [group_admin, friend_manager, group_chat]
+      excluded: []
+```
+
+`platform_instance_id` 由服务端按所选平台实例绑定, 不接受前端指定; 授权同时匹配入站来源的平台 ID, 用户 ID 与该实例 ID
+
+控制服务接口沿用现有鉴权:
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /config/administrator-groups` | 读取管理组, 配置 revision 与运行时应用状态 |
+| `PUT /config/administrator-groups` | 提交完整组列表与 `expected_revision`, 只更新该区段; 版本冲突返回 409, 结构或身份错误返回 400 |
+| `POST /config/administrator-groups/apply` | 将已保存的指定 revision 应用到运行中的后端 |
+| `POST /config/administrator-groups/preview` | 校验草稿并返回各成员的有效插件范围, 不保存不授权 |

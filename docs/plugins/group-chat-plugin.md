@@ -92,6 +92,51 @@ OneBot 支持组合图片与原生表情; Misskey 房间只支持一个图片附
 不得直接透传模型提供的文件路径; 登记检查真实格式并复制到平台缓存, 返回 `{"ok":true,"asset":...}` 或明确失败
 后端自动维护会清理过期图片和无活动引用的表情文件, 租约仍在使用的文件等待发送结束后再回收
 
+## 一次性提醒
+
+| 工具 | 用途 |
+| --- | --- |
+| `group_chat_create_reminder` | 在当前群创建一次性固定文本提醒, `due_at` 与 `after_seconds` 二选一, 可选 `mention_user_ids` |
+| `group_chat_list_reminders` | 默认列出当前群由当前发言者创建的提醒, 可按 `state` 过滤, `limit` 1-50 |
+| `group_chat_get_reminder` | 查看本人提醒的期限, 状态, 修订与发送结果 |
+| `group_chat_cancel_reminder` | 携带 `expected_revision` 取消尚未开始发送的本人提醒 |
+
+正文 1-2000 字; 提及最多 10 个不重复成员, 不支持 @全体, 创建与发送前均核验当前群成员
+`after_seconds` 为 10-31536000 的整数, `due_at` 至少 10 秒后且不超过一年
+到期直接发送固定正文, 不调用模型, 不执行工具, 不触发新的 Agent 轮次; 模型只能读取和取消本人创建的提醒
+
+```text
+scheduled -> waiting_delivery -> sending -> sent / partial / failed / unknown
+scheduled / waiting_delivery -> cancelled / paused / missed
+paused -> scheduled / missed / cancelled
+```
+
+- `created` / `cancelled` 表示数据库已提交, 不表示已送达; 送达以任务的 `sent` 状态和消息 ID 为准
+- 取消晚于发送开始时返回 `too_late_to_cancel` 与任务详情, 不改状态
+- `unknown` 表示请求已提交但无法确认 (含崩溃时正在发送), 不自动重发; `partial` 已确认的分段不重发, 需要时人工新建任务
+- 到期离线或重启错过时在 `reminder_catchup_seconds` 内等待, 短暂失败按 30/120/300 秒退避, 超出变 `missed`, 不批量补发旧提醒
+- 发送前重新核验平台实例, 账号, 群, 插件开关与发起者权限; 停用平台, 群, 插件或提醒开关会暂停未发送任务, 再启用不自动恢复, 需在界面明确恢复
+- 调度器随后端启停, 默认 5 秒兜底扫描; 终态提醒保留 30 天后清理, 活动提醒不清理
+- 删除或清空消息档案时可勾选 `cancel_reminders` 取消关联的未发送提醒, 默认不取消
+
+| 配置 | 默认值 | 范围 |
+| --- | --- | --- |
+| `reminders_enabled` | false | 同时控制创建和后台发送 |
+| `reminder_catchup_seconds` | 600 | 0-3600, 0 表示错过即记为 missed |
+| `active_reminders_per_member` | 20 | 1-100, 暂停的任务也占额度 |
+| `active_reminders_per_group` | 200 | 1-1000 |
+
+在「对话记录 → 平台对话 → 提醒」查看, 创建, 取消和恢复
+管理 API 基础路径为 `/api/platforms/{adapter_id}/group-chat/reminders`, 范围由 `self_id` / `chat_id` 查询字段指定; 后端运行时支持列表, 详情, 创建, `/{id}/cancel` 与 `/{id}/resume`, 后端未运行时控制服务仍可列表, 查看和取消
+取消与恢复需要最近读到的 `expected_revision`, 冲突返回 409
+
+## 结果与错误
+
+成功结果为 `{"ok": true, ...}`, 新对象带 `schema_version: 1`; 失败为嵌套形状 `{"ok": false, "error": {"code", "message", "retryable"}}`
+常见 `code`: `invalid_argument`, `unsupported`, `unavailable`, `stale_call`, `permission_denied`, `not_found`, `revision_conflict`, `idempotency_conflict`, `quota_exceeded`, `invalid_time`, `invalid_cursor`, `source_unavailable`, `snapshot_expired`, `sources_not_read`, `asset_unavailable`, `archive_unavailable`, `unverified_target`, `already_prepared`
+`retryable` 只说明能否安全地再次查询, 或在尚未提交时重试; 它不授权重新发送结果为 `unknown` 的消息
+超时或失败不会包装成零条消息, 空结果或发送成功
+
 ## 配置与上下文
 
 摘要默认启用, 最多选取 500 条/60000 正文字符, 还受当前模型剩余上下文的保守输入预算限制
