@@ -5,7 +5,7 @@ import threading
 from pathlib import Path
 import sqlite3
 import pytest
-from typing import Any
+from typing import Any, cast
 from types import SimpleNamespace
 import yaml
 
@@ -280,7 +280,8 @@ def test_plugin_save_validates_effective_budgets_and_session_references(environm
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_installed_rag_tools_use_current_session_and_do_not_generate_answers(environment, tmp_path, monkeypatch, asynchronous):
+async def test_installed_rag_tools_use_current_session_and_do_not_generate_answers(
+        environment: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, asynchronous: bool) -> None:
     layout, models, _ = environment
     monkeypatch.setattr("satrap.edictum.simple_session.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
     service = RagService(layout, models, "chat", "one")
@@ -307,10 +308,38 @@ async def test_installed_rag_tools_use_current_session_and_do_not_generate_answe
     found = await invoke("rag_search", query="苹果")
     assert found["results"][0]["text"] == "苹果知"
     assert found["results"][0]["sources"][0]["kb_id"] == kb
-    assert (await invoke("rag_search", query="苹果", kb_id="foreign"))["status"] == "error"
+    denied = await invoke("rag_search", query="苹果", kb_id="foreign")
+    assert denied["ok"] is False and denied["error_type"] == "invalid_arguments" and denied["tool_name"] == "rag_search"
+
+    def broken(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("内部路径 D:/secret")
+
+    from satrap.expend.plugins.rag.tools import AsyncRagTool, RagTool
+    search_tool = cast(AsyncRagTool | RagTool, tools_manager.tools["rag_search"])
+    search_service: RagService = search_tool.service
+    monkeypatch.setattr(search_service, "search", broken)
+    hidden = await invoke("rag_search", query="苹果")
+    assert hidden == {"ok": False, "error": "知识库操作暂不可用, 请查看后端日志", "error_type": "execution_error", "tool_name": "rag_search"}
+    assert "D:/secret" not in str(hidden)
     model.call.assert_not_called()
     if isinstance(session, AsyncSimpleSession):
         await session.uninstall_plugin("rag")
     else:
         session.uninstall_plugin("rag")
     assert not any(name.startswith("rag_") for name in tools_manager.tools)
+
+
+def test_rag_factory_tools_carry_entry_binding(environment: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """直接工厂构造的 RAG 工具也带入口绑定, 与官方安装路径一致"""
+    from satrap.expend.plugins.rag.tools import get_tools
+
+    layout, models, _ = environment
+    monkeypatch.setattr("satrap.edictum.simple_session.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "config"))
+    session = SimpleSession("one", Mock(spec=LLM), db_path=str(layout.platform_db("chat")))
+    session.storage_layout, session.storage_platform_id, session.plugin_model_manager = layout, "chat", models
+    tools = get_tools(session, {})
+    assert {tool.get_tool_name() for tool in tools} == {"rag_search", "rag_list", "rag_ingest"}
+    for tool in tools:
+        # 绑定由 bind_plugin_tool 动态写入, 类型上不可见
+        binding = cast(Any, tool)._plugin_entry_binding
+        assert binding.plugin_name == "rag" and binding.name == tool.get_tool_name()

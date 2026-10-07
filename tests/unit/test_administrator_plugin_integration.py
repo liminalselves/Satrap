@@ -65,12 +65,12 @@ async def test_request_queries_pass_multiple_admin_gates_but_never_open_write_sw
     with bind_call_origin(_origin()):
         assert query.is_available_for_call()
         result = await query.execute()
-        assert result["status"] == "ok"
+        assert result["ok"] is True
         denied = await write.execute(request_id="request", approve=True)
-        assert denied["status"] == "error" and "未在插件配置中开启" in denied["error"]
+        assert denied["ok"] is False and denied["error_type"] == "permission_denied" and "未在插件配置中开启" in denied["error"]
     with bind_call_origin(_origin(actor="999")):
         assert not query.is_available_for_call()
-        assert (await query.execute())["status"] == "error"
+        assert (await query.execute())["ok"] is False
 
 
 @pytest.mark.asyncio

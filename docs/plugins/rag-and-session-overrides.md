@@ -62,6 +62,8 @@ Embedding 绑定到知识库, 模型名称、服务地址或向量维度变化�
 文件路径必须位于当前工作区或会话允许的文件目录, 支持已有文档解析器支持的格式
 单次文本上限为 1000000 个字符, 管理页面上传文件上限为 32 MiB
 检索无命中返回 `empty`, 配置或模型调用失败返回错误, 两种情况分别处理
+成功的业务载荷 (含 `found` / `empty` / `indexed` / `skipped`) 原样返回; 失败为框架扁平结果
+`{"ok": false, "error": <说明>, "error_type": <稳定类型>, "tool_name": <工具名>}`, `error_type` 取值 `invalid_arguments`, `permission_denied`, `execution_error`
 
 ## 管理页面文档上传
 

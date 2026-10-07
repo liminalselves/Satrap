@@ -13,7 +13,8 @@ from satrap.core.platform import current_adapter_manager
 from satrap.core.friends import FriendError
 from satrap.core.friends.service import failure, text_id
 from satrap.core.utils.TCBuilder import Tool, AsyncTool
-from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools, permission_id_list
+from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.log import logger
 
 LIMIT = {"type": "integer", "minimum": 1, "maximum": 100, "description": "最多返回多少条, 默认 20; 有下一页时用 next_cursor 继续查询"}
@@ -31,6 +32,20 @@ DEFINITIONS: dict[str, tuple[str, dict[str, Any], list[str]]] = {
     "friend_manager_delete_friend": ("申请删除机器人的一位好友; 填写已确认的好友 ID, 人工批准后才执行. pending 表示等待审批, 不代表已删除; 结果未知时不要重复提交", {
         "user_id": {"type": "string", "minLength": 1, "maxLength": 256, "description": "好友查询结果中已确认的目标 ID, 不能填写昵称"}}, ["user_id"]),
 }
+
+
+def _failure_result(error: Exception) -> dict[str, Any]:
+    """
+    按好友工具契约构造嵌套失败结果
+
+    参数:
+    - error: 捕获的异常
+
+    返回:
+    - 带 code, message 与 retryable 的失败结果
+    """
+    code, message, retryable = failure(error)
+    return {"ok": False, "error": {"code": code, "message": message, "retryable": retryable}}
 
 
 class _FriendMixin:
@@ -147,7 +162,7 @@ class _FriendMixin:
         except Exception as error:
             code, message, _ = failure(error)
             logger.warning(f"[friend_manager] 工具失败 tool={self.tool_name} code={code} reason={message}")
-            return {"ok": False, "error": {"code": code, "message": message}}
+            return _failure_result(error)
 
 
 class FriendTool(_FriendMixin, Tool):
@@ -173,7 +188,7 @@ class FriendTool(_FriendMixin, Tool):
         except Exception as error:
             code, message, _ = failure(error)
             logger.warning(f"[friend_manager] 同步调用失败 code={code} reason={message}")
-            return {"ok": False, "error": {"code": code, "message": message}}
+            return _failure_result(error)
 
 
 class AsyncFriendTool(_FriendMixin, AsyncTool):
@@ -192,14 +207,15 @@ class AsyncFriendTool(_FriendMixin, AsyncTool):
         return await self._run(kwargs)
 
 
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[Any]:
+def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[Any]:
     """
     建立独立好友工具并保留弱会话身份
 
     参数:
     - session: 当前会话
     - config: 已合成的插件配置
-    - resources: 插件资源
+    - resources: 插件资源对象, 本插件从会话读取好友宿主
 
     返回:
     - 与会话执行方式一致的五个工具
@@ -208,7 +224,7 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
     kind = AsyncFriendTool if isinstance(session, AsyncSession) else FriendTool
     for name, (description, _, _) in DEFINITIONS.items():
         tool = kind(name, description, {})
-        tool.config = dict(config)
+        tool.config = dict(config or {})
         bind_tool_session(tool, session)
         tool.recovery_policy = "manual" if name in {"friend_manager_handle_request", "friend_manager_delete_friend"} else "retry"
         tools.append(tool)

@@ -8,7 +8,7 @@ from typing import Dict, Any, Callable, cast
 from satrap.core.log import logger
 from satrap.core.plugin_authorization import (authorize_plugin_entry, bind_authorization_step,
                                               require_plugin_entry_permission, PluginPermissionDenied)
-from .utils import _create_tool_error, _safe_json_dumps
+from .utils import tool_error, _safe_json_dumps
 from typing import Generic, TypeVar
 from .tool import Tool
 from .async_tool import AsyncTool
@@ -122,17 +122,17 @@ class _ToolsRegistry(Generic[_ToolT]):
         - Dict[str, Any] | None: 校验工具调用信息
         """
         if not isinstance(call_info, dict):
-            return _create_tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
+            return tool_error("", "工具调用信息必须是字典", "invalid_tool_call")
 
         tool_name = call_info.get("name", "")
         if not isinstance(tool_name, str) or not tool_name.strip():
-            return _create_tool_error(
+            return tool_error(
                 "", "工具调用缺少有效工具名称", "invalid_tool_call"
             )
 
         arguments = call_info.get("arguments", {})
         if arguments is not None and not isinstance(arguments, dict):
-            return _create_tool_error(
+            return tool_error(
                 tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments"
             )
 
@@ -172,7 +172,7 @@ class _ToolsRegistry(Generic[_ToolT]):
     ) -> tuple[_ToolT | None, Dict[str, Any], Dict[str, object] | None]:
         """统一工具参数和可用性校验, 执行方式由入口决定"""
         if not isinstance(tool_name, str) or not tool_name.strip():
-            return None, {}, _create_tool_error("", "工具名称无效", "invalid_tool_call")
+            return None, {}, tool_error("", "工具名称无效", "invalid_tool_call")
 
         if arguments is None:
             arguments = {}
@@ -180,7 +180,7 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(
+                tool_error(
                     tool_name, f"工具 {tool_name} 参数必须是字典", "invalid_arguments"
                 ),
             )
@@ -189,7 +189,7 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found"),
+                tool_error(tool_name, f"工具 {tool_name} 不存在", "not_found"),
             )
 
         tool = self.tools[tool_name]
@@ -197,14 +197,14 @@ class _ToolsRegistry(Generic[_ToolT]):
             return (
                 None,
                 {},
-                _create_tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled"),
+                tool_error(tool_name, f"工具 {tool_name} 已禁用", "disabled"),
             )
         guard = self.effectiveness_guard
         if guard is not None and not guard(tool_name):
             return (
                 None,
                 {},
-                _create_tool_error(
+                tool_error(
                     tool_name,
                     f"工具 {tool_name} 当前不可用 (所属插件已禁用)",
                     "disabled",

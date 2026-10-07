@@ -93,6 +93,11 @@ manager.unregister_tool("weather")
 | `execution_error` | 工具内部执行异常 |
 | `invalid_tool_call` | 模型返回的 tool call 格式不合法 |
 
+插件工具与框架共用同一扁平失败形状 (`tool_error`): 管理入口权限拒绝使用 `permission_denied` 与 `authorization_error`,
+group_admin 补充 `unsupported` / `rejected` / `unconfirmed` / `unavailable`, rag 使用 `invalid_arguments` / `permission_denied` / `execution_error`,
+memory 使用 `read_only` / `memory_disabled` / `write_disabled` / `read_only_workflow` / `stale_call` 等; 各插件文档列出自己的取值
+group_chat 与 friend_manager 沿用第二阶段嵌套结果 (`{"ok": false, "error": {"code", "message", "retryable"}}`), 不在扁平形状内
+
 ## 手动处理 Tool Call
 
 ```python

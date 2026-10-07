@@ -4,13 +4,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import traceback
+
 from satrap.edictum.plugin_resources import PluginResources
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.core.utils.documents import extract_document
-from satrap.core.utils.TCBuilder import AsyncTool, Tool
+from satrap.core.utils.TCBuilder import AsyncTool, Tool, strict_tool_definition, tool_error
 from satrap.core.framework.Base import Session, AsyncSession
 from satrap.core.rag import RagService
 from satrap.edictum import AsyncSimpleSession
+from satrap.core.plugin_authorization import bind_plugin_factory_tools
+from satrap.core.log import logger
 
 
 _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str]]] = {
@@ -71,8 +75,15 @@ class _RagToolMixin:
                 source = source or filename
             target = self.service.write_target(self.config, kb_id)
             return self.service.ingest(target, text, source)
-        except Exception as error:
-            return {"status": "error", "error": str(error)}
+        except PermissionError as error:
+            logger.warning(f"[RAG] 工具权限拒绝 tool={self.tool_name}: {error}")
+            return tool_error(str(self.tool_name), str(error), "permission_denied")
+        except ValueError as error:
+            logger.warning(f"[RAG] 工具参数或范围错误 tool={self.tool_name}: {error}")
+            return tool_error(str(self.tool_name), str(error), "invalid_arguments")
+        except Exception:
+            logger.error(f"[RAG] 工具执行异常 tool={self.tool_name}: {traceback.format_exc()}")
+            return tool_error(str(self.tool_name), "知识库操作暂不可用, 请查看后端日志", "execution_error")
 
 
 class RagTool(_RagToolMixin, Tool):
@@ -91,15 +102,26 @@ class AsyncRagTool(_RagToolMixin, AsyncTool):
         return await RAG_WORKERS.run(self._execute, **kwargs)
 
 
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: PluginResources | None = None) -> list[RagTool | AsyncRagTool]:
-    """依赖由会话入口注入, 不从插件参数读取任意数据库路径"""
+def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[RagTool | AsyncRagTool]:
+    """
+    依赖由会话入口注入, 不从插件参数读取任意数据库路径
+
+    参数:
+    - session: 会话
+    - config: 插件配置
+    - resources: 插件资源对象, 本插件从会话读取存储与模型服务
+
+    返回:
+    - 与会话执行方式一致的知识库工具
+    """
     layout = getattr(session, "storage_layout", None)
     models = getattr(session, "plugin_model_manager", None)
     platform_id = getattr(session, "storage_platform_id", None)
     if layout is None or models is None or not platform_id:
         raise ValueError("RAG 插件需要明确的会话存储作用域和后端模型配置服务")
     service = RagService(layout, models, platform_id, session.session_id)
-    config = service.validate_references(config)
+    config = service.validate_references(config or {})
     base = AsyncRagTool if isinstance(session, AsyncSimpleSession) else RagTool
     result: list[RagTool | AsyncRagTool] = []
     for name, (description, params, _) in _DEFINITIONS.items():
@@ -107,4 +129,5 @@ def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources
         tool.recovery_policy = "retry" if name in {"rag_search", "rag_list"} else "manual"
         tool.service, tool.session, tool.config = service, session, config
         result.append(tool)
+    bind_plugin_factory_tools(result, __file__)
     return result

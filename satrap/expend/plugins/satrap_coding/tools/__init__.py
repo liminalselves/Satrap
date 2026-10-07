@@ -38,6 +38,7 @@ from .async_interaction import AsyncAskUserTool, AsyncShellTool, AsyncSubAgentTo
 from satrap.core.type import safe_getattr_callable
 from .sync_interaction import AskUserTool, ShellTool, SubAgentTool
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.edictum.plugin_resources import PluginResources
 from .async_write import AsyncWriteFileTool, AsyncEditFileTool, AsyncSearchReplaceTool
 from .sync_write import WriteFileTool, EditFileTool, SearchReplaceTool
 from .async_read import (

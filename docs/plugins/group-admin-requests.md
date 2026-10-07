@@ -22,6 +22,11 @@ group_admin 只管理加群申请和入群邀请; 好友操作已迁移到独立
 加群申请沿用现有逐群审批策略: `pending` 只代表待批准, `succeeded` 才代表执行完成
 内部原始 flag 调用仍受申请管理者和群范围限制; 模型声明只提供 request_id
 
+模型结果的形状: 成功返回 `{"ok": true, "data": ...}`, 无返回内容时只有 `{"ok": true}`; 失败返回框架扁平结果
+`{"ok": false, "error": <说明>, "error_type": <稳定类型>, "tool_name": <工具名>}`, 不再使用 `status` 字段
+`error_type` 取值: `unsupported` (平台不支持该动作), `rejected` (平台或来源核验明确拒绝), `unconfirmed` (结果未知, 不要重复执行),
+`permission_denied`, `invalid_arguments`, `not_found` (申请已过期或不属于当前账号), `unavailable` (平台暂不可用), `execution_error` (内部异常, 详情见后端日志)
+
 ## 持久化与期限
 
 原始申请值只保存在用户数据根 `requests/inbox.db`, 不进入模型结果, 审计日志或 `request_ledger.json`

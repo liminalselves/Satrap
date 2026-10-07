@@ -25,19 +25,17 @@ _SENSITIVE_ARGUMENT_NAMES = {
 """工具参数日志中必须脱敏的字段名"""
 
 
-def _create_tool_error(
-    tool_name: str, message: str, error_type: str
-) -> Dict[str, object]:
+def tool_error(tool_name: str, message: str, error_type: str) -> Dict[str, object]:
     """
-    创建工具错误结果
+    创建框架统一的工具失败结果
 
     参数:
     - tool_name: 工具名称
     - message: 消息内容
-    - error_type: 错误类型
+    - error_type: 稳定错误类型
 
     返回:
-    - Dict[str, object]: 创建工具错误结果
+    - Dict[str, object]: 扁平失败结果, 框架兜底与各插件共用同一形状
     """
     return {
         "error": message,
@@ -133,7 +131,7 @@ def _tool_execution_error(
     logger.error(
         f"[执行{mode}] 工具 {tool_name} 执行出错: {type(error).__name__}: {error}, 参数: {args_summary}"
     )
-    return _create_tool_error(
+    return tool_error(
         tool_name,
         f"工具执行失败: {type(error).__name__}",
         "execution_error",

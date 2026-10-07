@@ -21,6 +21,7 @@ from satrap.core.log import logger
 from satrap.core.config.model_tool_authorization import config_ids as _lines, bind_tool_session, model_tool_authorization
 from satrap.core.config.group_approval import model_plugin_requires_approval
 from satrap.core.plugin_authorization import PluginEntryBinding, authorize_plugin_entry, require_plugin_entry_permission, bind_plugin_factory_tools
+from satrap.edictum.plugin_resources import PluginResources
 
 _ACTION_RESULT_DESCRIPTION = "; 返回动作记录时, pending 表示等待批准, succeeded 表示已执行; 失败或结果未知时不要说操作成功"
 
@@ -430,7 +431,7 @@ class _GroupAdminMixin:
         result = await _build_call(name, adapter.admin, origin, allowed, kwargs, self)
         if write:
             logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
-        return {"status": "ok", "data": result} if result is not None else {"status": "ok"}
+        return {"ok": True, "data": result} if result is not None else {"ok": True}
 
     def _execute(self, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -443,7 +444,10 @@ class _GroupAdminMixin:
                 result = run_on_platform_loop(coro, loop, 15)
             except TimeoutError:
                 logger.warning(f"[group_admin] 动作超时已取消 tool={name} actor={origin.actor_id}")
-                return {"status": "unconfirmed", "error": "动作超时, 结果未知"}
+                return tool_error(name, "动作超时, 结果未知", "unconfirmed")
+            except PlatformLoopUnavailable as error:
+                # 桥接已关闭未提交的协程, 这里只把原因还原成同步入口原有的参数错误结果
+                raise ValueError(str(error)) from error
             if write:
                 logger.info(f"[group_admin] 写动作完成 tool={name} actor={origin.actor_id} chat={origin.chat_id}")
             return {"ok": True, "data": result} if result is not None else {"ok": True}
@@ -490,15 +494,30 @@ def _build_tools(kind: type[_AnyGroupAdminTool], config: dict[str, Any]) -> list
 
 
 @overload
-def get_tools(session: AsyncSimpleSession, config: dict[str, Any], resources: Any = None) -> list[AsyncGroupAdminTool]: ...
+def get_tools(session: AsyncSimpleSession, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[AsyncGroupAdminTool]: ...
 @overload
-def get_tools(session: Session, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool]: ...
+def get_tools(session: Session, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[GroupAdminTool]: ...
 @overload
-def get_tools(session: AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]: ...
-def get_tools(session: Session | AsyncSession, config: dict[str, Any], resources: Any = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
-    """创建平台管理工具并保留审批时可复核的来源会话引用"""
-    tools = (_build_tools(AsyncGroupAdminTool, config) if isinstance(session, AsyncSimpleSession)
-             else _build_tools(GroupAdminTool, config))
+def get_tools(session: AsyncSession, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]: ...
+def get_tools(session: Session | AsyncSession, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[GroupAdminTool] | list[AsyncGroupAdminTool]:
+    """
+    创建平台管理工具并保留审批时可复核的来源会话引用
+
+    参数:
+    - session: 会话
+    - config: 插件配置
+    - resources: 插件资源对象, 本插件从会话读取平台适配器
+
+    返回:
+    - 与会话执行方式一致的群管理工具
+    """
+    settings = config or {}
+    tools = (_build_tools(AsyncGroupAdminTool, settings) if isinstance(session, AsyncSimpleSession)
+             else _build_tools(GroupAdminTool, settings))
     for tool in tools:
         bind_tool_session(tool, session)
     return tools

@@ -99,7 +99,7 @@ class TestPermissionGate:
         _setup_adapter()
         tool = next(t for t in get_tools(cast(Session, object()), {}) if t.tool_name == "group_admin_get_honors")
         result = await asyncio.get_running_loop().run_in_executor(None, lambda: tool.execute())
-        assert result["status"] == "error" and "来源身份" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "来源身份" in result["error"]
 
     @pytest.mark.asyncio
     async def test_write_requires_explicit_enable(self):
@@ -107,7 +107,7 @@ class TestPermissionGate:
         with bind_call_origin(_origin()):
             tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_kick")
             result = await tool.execute(user_id="321")
-        assert result["status"] == "error" and "写操作" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "写操作" in result["error"]
 
     @pytest.mark.asyncio
     async def test_caller_and_group_allowlists(self):
@@ -115,11 +115,11 @@ class TestPermissionGate:
         tool = next(t for t in _async_tools({"write_tools_enabled": True, "allowed_callers": "999"}) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin(actor="123")):
             result = await tool.execute(user_id="321")
-        assert result["status"] == "error" and "调用者" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "调用者" in result["error"]
         tool = next(t for t in _async_tools({"allowed_callers": "123", "write_tools_enabled": True, "allowed_groups": "789"}) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await tool.execute(user_id="321")
-        assert result["status"] == "error" and "目标群" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "目标群" in result["error"]
 
     @pytest.mark.asyncio
     async def test_private_context_requires_explicit_group(self):
@@ -127,7 +127,7 @@ class TestPermissionGate:
         tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
         with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
             result = await tool.execute()
-        assert result["status"] == "error" and "group_id" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "invalid_arguments" and "group_id" in result["error"]
 
 
 class TestExecution:
@@ -139,7 +139,7 @@ class TestExecution:
         tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_ban")
         with bind_call_origin(_origin()):
             result = await tool.execute(user_id="321", duration=600)
-        assert result == {"status": "ok"}
+        assert result == {"ok": True}
         adapter._bot.set_group_ban.assert_awaited_once_with(group_id=456, user_id=321, duration=600)
 
 
@@ -160,7 +160,7 @@ class TestExecution:
         tool = next(t for t in _async_tools({"allowed_callers": "123", "write_tools_enabled": True}) if t.tool_name == "group_admin_send_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(nodes=[{"content": "第一段"}, {"content": "第二段", "name": "助手"}])
-        assert result["status"] == "ok"
+        assert result["ok"] is True
         assert result["data"]["status"] == "success" and result["data"]["message_ids"] == ["555"]
         assert calls == ["group%456"]
         adapter._bot.send_group_forward_msg.assert_awaited_once()
@@ -171,11 +171,11 @@ class TestExecution:
         denied = next(t for t in _async_tools({}) if t.tool_name == "group_admin_send_forward")
         with bind_call_origin(_origin()):
             result = await denied.execute(nodes=[{"content": "x"}])
-        assert result["status"] == "error" and "写操作" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "写操作" in result["error"]
         tool = next(t for t in _async_tools({"allowed_callers": "123", "write_tools_enabled": True, "allowed_groups": "789"}) if t.tool_name == "group_admin_send_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(nodes=[{"content": "x"}])
-        assert result["status"] == "error" and "目标群" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "目标群" in result["error"]
 
 
     @pytest.mark.asyncio
@@ -194,7 +194,7 @@ class TestExecution:
         tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(forward_id="fwd-1", source_message_id="77")
-        assert result["status"] == "ok"
+        assert result["ok"] is True
         assert result["data"] == [{"name": "甲", "uin": "123", "time": 1, "text": "第一条"}]
 
     @pytest.mark.asyncio
@@ -203,7 +203,7 @@ class TestExecution:
         tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(forward_id="fwd-1")
-        assert result["status"] == "error" and "source_message_id" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "invalid_arguments" and "source_message_id" in result["error"]
         adapter._bot.get_msg.assert_not_called()
         adapter._bot.get_forward_msg.assert_not_called()
 
@@ -218,7 +218,7 @@ class TestExecution:
         tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_forward")
         with bind_call_origin(_origin()):
             result = await tool.execute(forward_id="fwd-1", source_message_id="77")
-        assert result["status"] == "error" and "来源消息属于目标群" in result["error"]
+        assert result["ok"] is False and result["error_type"] == "rejected" and "来源消息属于目标群" in result["error"]
         adapter._bot.get_forward_msg.assert_not_called()
 
     @pytest.mark.asyncio
@@ -234,7 +234,7 @@ class TestExecution:
                 return tool.execute(user_id="321")
 
         result = await asyncio.to_thread(run)
-        assert result == {"status": "ok"}
+        assert result == {"ok": True}
         adapter._bot.set_group_kick.assert_awaited_once_with(group_id=456, user_id=321, reject_add_request=False)
 
     @pytest.mark.asyncio
@@ -244,7 +244,7 @@ class TestExecution:
         tool = next(t for t in get_tools(cast(Session, object()), config) if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await asyncio.to_thread(tool.execute, user_id="321")
-        assert result["status"] == "error" and "事件循环" in result["error"]
+        assert result["ok"] is False and "事件循环" in result["error"]
 
     @pytest.mark.asyncio
     async def test_sync_tool_with_not_running_loop_fails_fast(self):
@@ -316,10 +316,35 @@ class TestConversationKind:
             bad = await tool.execute(flag="f1", sub_type="other", approve=True, group_id="456")
             missing = await tool.execute(flag="f1", sub_type="add", approve=True)
             ok = await tool.execute(flag="f1", sub_type="add", approve=False, reason="拒绝", group_id="456")
-        assert bad["status"] == "error" and "sub_type" in bad["error"]
-        assert missing == {"status": "ok"}
-        assert ok["status"] == "error"
+        assert bad["ok"] is False and bad["error_type"] == "invalid_arguments" and "sub_type" in bad["error"]
+        assert missing == {"ok": True}
+        assert ok["ok"] is False
         adapter._bot.set_group_add_request.assert_awaited_once_with(flag="f1", sub_type="add", approve=True, reason="")
+
+    @pytest.mark.asyncio
+    async def test_group_request_rechecks_account_after_waiting(self, monkeypatch: pytest.MonkeyPatch):
+        adapter = _setup_adapter()
+        adapter.bot_self_id = "10000"
+        adapter._bot.set_group_add_request.return_value = {}
+        await adapter.request_flags.register(
+            "group", "f1", self_id="10000", group_id="456", sub_type="add", user_id="1",
+        )
+        listing = await adapter.request_flags.list_requests("group", self_id="10000", group_id="456")
+        request_id = cast(dict[str, Any], listing["items"][0])["request_id"]
+        original = adapter.request_flags.resolve_request
+
+        async def mutate(kind: str, value: str, *, self_id: str) -> dict[str, Any]:
+            row = await original(kind, value, self_id=self_id)
+            adapter.bot_self_id = "99999"
+            return row
+
+        monkeypatch.setattr(adapter.request_flags, "resolve_request", mutate)
+        config: dict[str, Any] = {"allowed_callers": "123", "write_tools_enabled": True, "request_managers": "123"}
+        tool = next(t for t in _async_tools(config) if t.tool_name == "group_admin_handle_group_request")
+        with bind_call_origin(_origin()):
+            result = await tool.execute(request_id=request_id, approve=True)
+        assert result["ok"] is False and result["error_type"] == "permission_denied" and "账号" in result["error"]
+        adapter._bot.set_group_add_request.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_group_write_uses_approval_handler(self):
@@ -334,7 +359,7 @@ class TestConversationKind:
         group = next(tool for tool in tools if tool.tool_name == "group_admin_set_name")
         with bind_call_origin(_origin()):
             pending = await group.execute(name="新群名")
-        assert pending["status"] == "ok" and pending["data"]["state"] == "pending"
+        assert pending["ok"] is True and pending["data"]["state"] == "pending"
         adapter.group_action_handler.assert_awaited_once_with("456", "set_group_name", {"name": "新群名"})
         adapter._bot.set_friend_add_request.assert_not_awaited()
 
@@ -360,7 +385,7 @@ class TestConversationKind:
         tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
         with bind_call_origin(_origin()):
             result = await tool.execute()
-        assert result["status"] == "unsupported"
+        assert result["error_type"] == "unsupported"
 
 
 class TestLoggingAndTimeout:
@@ -371,14 +396,15 @@ class TestLoggingAndTimeout:
         adapter._bot.set_group_kick.return_value = {}
         tool = next(t for t in _async_tools({"allowed_callers": "123", "write_tools_enabled": True}) if t.tool_name == "group_admin_kick")
         with caplog.at_level(logging.DEBUG), bind_call_origin(_origin()):
-            assert (await tool.execute(user_id="321"))["status"] == "ok"
+            assert (await tool.execute(user_id="321"))["ok"] is True
             adapter._bot.set_group_kick.side_effect = ActionFailed({"retcode": 1200})
-            assert (await tool.execute(user_id="321"))["status"] == "error"
+            rejected = await tool.execute(user_id="321")
+            assert rejected["ok"] is False and rejected["error_type"] == "rejected"
             denied = await next(t for t in _async_tools({}) if t.tool_name == "group_admin_kick").execute(user_id="321")
-        assert denied["status"] == "error"
+        assert denied["ok"] is False
         messages = [r.getMessage() for r in caplog.records if not r.name.endswith("_file")]
         assert any("写动作完成 tool=group_admin_kick actor=123 chat=456" in m for m in messages)
-        assert any("动作失败 tool=group_admin_kick" in m and "AdminActionRejected" in m for m in messages)
+        assert any("动作被拒绝 tool=group_admin_kick" in m and "retcode=1200" in m for m in messages)
         assert any("权限拒绝 tool=group_admin_kick" in m for m in messages)
 
     @pytest.mark.asyncio
@@ -412,5 +438,37 @@ class TestLoggingAndTimeout:
 
         with caplog.at_level(logging.WARNING):
             result = await asyncio.to_thread(run)
-        assert result["status"] == "unconfirmed"
+        assert result["ok"] is False and result["error_type"] == "unconfirmed"
         assert any("动作超时已取消 tool=group_admin_kick" in r.getMessage() for r in caplog.records)
+
+
+class TestFailureEnvelope:
+    @pytest.mark.asyncio
+    async def test_unexpected_failure_hides_internals_and_keeps_flat_shape(self, monkeypatch: pytest.MonkeyPatch,
+                                                                          caplog: pytest.LogCaptureFixture):
+        """未预期异常按 execution_error 归一, 内部细节只进日志"""
+        import logging
+        adapter = _setup_adapter()
+
+        def broken(gid: str, honor_type: str = "all") -> dict[str, Any]:
+            raise RuntimeError("内部细节 D:/secret")
+
+        monkeypatch.setattr(adapter.admin, "get_group_honor_info", broken)
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
+        with caplog.at_level(logging.ERROR), bind_call_origin(_origin()):
+            result = await tool.execute()
+        assert result == {"ok": False, "error": "管理操作暂不可用, 请查看后端日志",
+                          "error_type": "execution_error", "tool_name": "group_admin_get_honors"}
+        assert "D:/secret" not in str(result)
+        assert any("内部细节 D:/secret" in r.getMessage() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    async def test_platform_unknown_result_is_reported_as_unconfirmed(self):
+        """平台结果未知按 unconfirmed 归一, 不当作成功也不泄露响应正文"""
+        adapter = _setup_adapter()
+        adapter._bot.get_group_honor_info.side_effect = RuntimeError("内部细节 D:/secret")
+        tool = next(t for t in _async_tools({}) if t.tool_name == "group_admin_get_honors")
+        with bind_call_origin(_origin()):
+            result = await tool.execute()
+        assert result["ok"] is False and result["error_type"] == "unconfirmed"
+        assert result["tool_name"] == "group_admin_get_honors" and "D:/secret" not in str(result)

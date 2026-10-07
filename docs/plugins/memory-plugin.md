@@ -39,6 +39,11 @@ C1/C2 已实现拆分, 群记忆与成员偏好, 并与 D1/D2 一并完成自动
 子工作流不能修改长期记忆, 记忆读取失败不会中断普通对话
 重置模型上下文与删除长期记忆是不同操作, 前端需要明确选择范围
 
+模型结果的形状: 普通会话成功仍返回中文说明文本, 群聊成功返回群记忆宿主结果; 失败统一为框架扁平结果
+`{"ok": false, "error": <说明>, "error_type": <稳定类型>, "tool_name": <工具名>}`
+`error_type` 取值: `read_only` / `memory_disabled` (只读或已禁用), `invalid_argument`, `not_found`, `write_disabled` (群记忆写入未开启),
+`read_only_workflow` (子工作流), `stale_call` (来源或配置已变化), `unavailable` (存储或平台暂不可用)
+
 群记忆, 成员偏好, 审批与提醒的后续契约见 [第二阶段计划](../development/group-chat-phase2-contracts.md)
 
 

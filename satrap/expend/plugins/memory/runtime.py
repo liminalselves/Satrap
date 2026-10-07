@@ -76,4 +76,4 @@ def wait_host(coroutine: Coroutine[Any, Any, Any]) -> Any:
             raise MemoryError("unavailable", "记忆操作超时, 已取消等待")
     except Exception as exc:
         logger.warning(f"[长期记忆] 同步桥接失败: {exc}")
-        return {"ok": False, "code": getattr(exc, "code", "unavailable"), "error": str(exc)}
+        return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code", "unavailable")}

@@ -202,13 +202,13 @@ async def test_group_request_uses_original_target_and_existing_approval_handler(
         request_id = queried["data"]["items"][0]["request_id"]
         handle = tool("group_admin_handle_group_request")
         bad = await handle.execute(request_id=request_id, approve=True, group_id="789")
-        assert bad["status"] == "error"
+        assert bad["ok"] is False and bad["error_type"] == "permission_denied"
         prepared = await handle.execute(request_id=request_id, approve=True)
         assert prepared["data"]["state"] == "pending"
     adapter.group_action_handler.assert_awaited_once_with("456", "handle_group_request", {"flag": "private-flag", "sub_type": "add", "approve": True})
     adapter._bot.set_group_add_request.assert_not_called()
     with bind_call_origin(_origin(chat_id="789")):
-        assert (await handle.execute(request_id=request_id, approve=True))["status"] == "error"
+        assert (await handle.execute(request_id=request_id, approve=True))["ok"] is False
 
 
 @pytest.mark.asyncio
@@ -257,7 +257,7 @@ async def test_query_rechecks_access_after_waiting(revocation, monkeypatch):
     monkeypatch.setattr(adapter.request_flags, "list_requests", revoke)
     with bind_call_origin(_origin()):
         result = await query.execute()
-    assert result["status"] == "error" and "data" not in result
+    assert result["ok"] is False and "data" not in result
 
 
 @pytest.mark.asyncio

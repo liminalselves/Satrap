@@ -287,7 +287,7 @@ async def test_pending_model_action_uses_latest_source_group_plugin_config(tmp_p
             connection.execute("UPDATE group_configs SET config_json='{' WHERE self_id='100' AND group_id='456'")
         with bind_call_origin(origin):
             denied = await tool.execute(group_id="789", user_id="42")
-        assert denied["status"] == "error"
+        assert denied["ok"] is False
         assert GroupActionStore(backend.platform_db_path("bot")).get("100", "789", "invalid-source-action") is None
     finally:
         await provider.release_session_async(session)

@@ -7,7 +7,7 @@ from satrap.core.type import LLMCallResponse, safe_getattr
 from satrap.core.log import logger
 from .utils import (
     _SENSITIVE_ARGUMENT_NAMES,
-    _create_tool_error,
+    tool_error,
     _safe_json_dumps,
     _redact_argument_value,
     _summarize_arguments,

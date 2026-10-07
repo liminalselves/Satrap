@@ -106,17 +106,18 @@ class MemoryStore:
             return f"记忆功能已禁用 (disabled), 无法{action}"
         return f"记忆处于只读模式 (base), 无法{action}"
 
-    def _write_denied_error(self, action: str) -> dict[str, Any]:
+    def write_denied_error(self, action: str) -> dict[str, Any]:
         """
-        写拒绝错误 (按实际模式生成文案)
+        写拒绝结果 (按实际模式生成文案与稳定类型)
 
         参数:
         - action: 操作类型
 
         返回:
-        - dict[str, Any]: 写拒绝错误 (按实际模式生成文案)
+        - dict[str, Any]: 带 error_type 的失败结果
         """
-        return {"error": self.write_denied_reason(action), "ok": False}
+        return {"error": self.write_denied_reason(action), "ok": False,
+                "error_type": "memory_disabled" if self.mode == "disabled" else "read_only"}
 
     # ---------- 增删改查 ----------
 
@@ -140,9 +141,9 @@ class MemoryStore:
         - dict[str, Any]: 记忆记录
         """
         if not self.can_write():
-            return self._write_denied_error("添加")
+            return self.write_denied_error("添加")
         if not title.strip() or not content.strip():
-            return {"error": "title 与 content 不能为空", "ok": False}
+            return {"error": "title 与 content 不能为空", "ok": False, "error_type": "invalid_argument"}
         memory_id = uuid.uuid4().hex
         now = datetime.now().isoformat(timespec="seconds")
         record: dict[str, Any] = {
@@ -179,7 +180,7 @@ class MemoryStore:
         - dict[str, Any]: 更新后记录
         """
         if not self.can_write():
-            return self._write_denied_error("更新")
+            return self.write_denied_error("更新")
         updates: dict[str, Any] = {}
         for key in ("title", "content", "importance"):
             if key in fields and fields[key] is not None:
@@ -189,18 +190,18 @@ class MemoryStore:
                     try:
                         updates[key] = int(fields[key])
                     except (TypeError, ValueError):
-                        return {"error": "importance 必须是整数", "ok": False}
+                        return {"error": "importance 必须是整数", "ok": False, "error_type": "invalid_argument"}
                 else:
                     updates[key] = fields[key]
         if "tags" in fields and fields["tags"] is not None:
             updates["tags"] = json.dumps([str(t) for t in cast(list[Any], fields["tags"])], ensure_ascii=False)
         if not updates:
-            return {"error": "没有可更新的字段", "ok": False}
+            return {"error": "没有可更新的字段", "ok": False, "error_type": "invalid_argument"}
         updates["updated_at"] = datetime.now().isoformat(timespec="seconds")
         with self._lock, closing(self._connect()) as conn, conn:
             resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
-                return {"error": f"记忆不存在: {memory_id}", "ok": False}
+                return {"error": f"记忆不存在: {memory_id}", "ok": False, "error_type": "not_found"}
             existing = conn.execute(
                 "SELECT * FROM memories WHERE id=? AND scope=?",
                 (resolved, self.scope),
@@ -229,18 +230,18 @@ class MemoryStore:
         - dict[str, Any]: 按 ID (或唯一前缀) 删除记忆
         """
         if not self.can_write():
-            return self._write_denied_error("删除")
+            return self.write_denied_error("删除")
         clause, params = self._scope_filter()
         with self._lock, closing(self._connect()) as conn, conn:
             resolved = self._resolve_memory_id(conn, memory_id)
             if resolved is None:
-                return {"error": f"记忆不存在: {memory_id}", "ok": False}
+                return {"error": f"记忆不存在: {memory_id}", "ok": False, "error_type": "not_found"}
             cursor = conn.execute(
                 f"DELETE FROM memories WHERE id=?{clause}",
                 (resolved, *params),
             )
         if cursor.rowcount == 0:
-            return {"error": f"记忆不存在: {memory_id}", "ok": False}
+            return {"error": f"记忆不存在: {memory_id}", "ok": False, "error_type": "not_found"}
         return {"memory_id": resolved, "status": "deleted", "ok": True}
 
     def get(self, memory_id: str) -> dict[str, Any]:
@@ -262,7 +263,7 @@ class MemoryStore:
                     f"SELECT * FROM memories WHERE id=?{clause}",
                     (resolved, *params),
                 ).fetchone()
-        return self._row_to_dict(row) if row is not None else {"error": f"记忆不存在: {memory_id}", "ok": False}
+        return self._row_to_dict(row) if row is not None else {"error": f"记忆不存在: {memory_id}", "ok": False, "error_type": "not_found"}
 
     def _resolve_memory_id(self, conn: sqlite3.Connection, memory_id: str) -> str | None:
         """

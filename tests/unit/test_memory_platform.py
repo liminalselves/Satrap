@@ -60,12 +60,12 @@ async def test_group_write_switch_and_main_workflow_are_checked(tmp_path):
     values = {"kind": "member_preference", "key": "name", "title": "称呼", "content": "小明", "source_message_ids": [event.call_origin.source_message_id]}
     with bind_call_origin(event.call_origin), bind_tool_workflow(workflow):
         disabled = await service.group_operation("create", values, access=lambda: {"memory_mode": "full", "group_write_enabled": False})
-        assert disabled["code"] == "write_disabled"
+        assert disabled["error_type"] == "write_disabled" and disabled["ok"] is False
         with bind_tool_workflow(object()):
             child = await service.group_operation("create", values, access=lambda: {"memory_mode": "full", "group_write_enabled": True})
-        assert child["code"] == "read_only_workflow"
+        assert child["error_type"] == "read_only_workflow"
         spoof = await service.group_operation("create", {**values, "owner_user_id": "other"}, access=lambda: {"memory_mode": "full", "group_write_enabled": True})
-        assert spoof["code"] == "invalid_argument"
+        assert spoof["error_type"] == "invalid_argument"
     assert ScopedMemories(adapter.message_archive, SCOPE).list()["items"] == []
 
 

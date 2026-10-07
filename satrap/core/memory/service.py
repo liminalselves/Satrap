@@ -55,20 +55,20 @@ class MemoryService:
             workflow = current_tool_workflow()
             main = getattr(self.session, "_wf", None)
             if writing and workflow is not None and main is not None and workflow is not main:
-                return {"ok": False, "code": "read_only_workflow", "error": "子工作流不能修改长期记忆"}
+                return {"ok": False, "error": "子工作流不能修改长期记忆", "error_type": "read_only_workflow"}
             if writing and self.session is not None and origin is not None:
                 kind = origin.conversation_kind or origin.chat_type
                 if kind in {"group", "GroupMessage"}:
-                    return {"ok": False, "code": "group_memory_not_ready", "error": "群记忆写入尚未开放, 不能通过旧工具或命令绕过权限"}
+                    return {"ok": False, "error": "群记忆写入尚未开放, 不能通过旧工具或命令绕过权限", "error_type": "group_memory_not_ready"}
             if operation in {"get", "list_all"} and self.session is not None and self.store.mode == "disabled":
-                return {"ok": False, "code": "memory_disabled", "error": "记忆功能已禁用"}
+                return {"ok": False, "error": "记忆功能已禁用", "error_type": "memory_disabled"}
             return getattr(self.store, operation)(*args, **kwargs)
         except (ValueError, TypeError) as exc:
             logger.warning(f"[长期记忆] 参数校验失败, 操作={operation}, 错误={exc}")
-            return {"ok": False, "code": getattr(exc, "code", "invalid_argument"), "error": str(exc)}
+            return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code", "invalid_argument")}
         except Exception:
             logger.error(f"[长期记忆] 操作失败, 操作={operation}" + "\n" + traceback.format_exc())
-            return {"ok": False, "code": "storage_unavailable", "error": "记忆存储暂不可用"}
+            return {"ok": False, "error": "记忆存储暂不可用", "error_type": "storage_unavailable"}
 
     def context_block(self) -> str:
         """
@@ -159,13 +159,13 @@ class MemoryService:
             return result
         except (MemoryError, ValueError, PermissionError) as exc:
             logger.warning(f"[群记忆] 操作拒绝, 操作={operation}, 错误={exc}")
-            return {"ok": False, "code": getattr(exc, "code", "invalid_argument"), "error": str(exc)}
+            return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code", "invalid_argument")}
         except Exception as exc:
             if hasattr(exc, "code"):
                 logger.warning(f"[群记忆] 来源核验失败, 操作={operation}, 错误={exc}")
-                return {"ok": False, "code": getattr(exc, "code"), "error": str(exc)}
+                return {"ok": False, "error": str(exc), "error_type": getattr(exc, "code")}
             logger.error(f"[群记忆] 操作异常, 操作={operation}" + "\n" + traceback.format_exc())
-            return {"ok": False, "code": "unavailable", "error": "群记忆暂不可用, 请查看后端日志"}
+            return {"ok": False, "error": "群记忆暂不可用, 请查看后端日志", "error_type": "unavailable"}
 
     def group_context_sync(self, *, access: Callable[[], dict[str, Any]]) -> str:
         """

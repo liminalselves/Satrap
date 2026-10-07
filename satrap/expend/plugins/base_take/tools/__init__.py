@@ -21,6 +21,7 @@ from satrap.expend.tools import (
 )
 from satrap.core.type import safe_getattr, safe_getattr_callable
 from satrap.edictum import AsyncSimpleSession, SimpleSession
+from satrap.edictum.plugin_resources import PluginResources
 from .utils import (
     SessionType,
     DEFAULT_SANDBOX_ROOT,
@@ -40,13 +41,15 @@ from .async_ import (
 )
 
 
-def get_tools(session: SessionType, config: dict[str, Any] | None = None) -> list[Any]:
+def get_tools(session: SessionType, config: dict[str, Any] | None = None,
+              resources: PluginResources | None = None) -> list[Any]:
     """
     按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root)
 
     参数:
     - session: 会话
     - config: 配置信息
+    - resources: 插件资源对象, 本插件从会话读取沙箱与工作区
 
     返回:
     - list[Any]: 按会话形态构建全部工具 (注入配置: timeout/sandbox_root/workspace_root)

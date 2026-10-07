@@ -77,11 +77,11 @@ async def test_empty_write_list_and_read_list_are_independent():
             tools = _async_tools({"write_tools_enabled": True})
             write = next(t for t in tools if t.tool_name == "group_admin_kick")
             denied = await write.execute(user_id="321")
-            assert denied["status"] == "error" and "permission_denied" in denied["error"]
+            assert denied["ok"] is False and denied["error_type"] == "permission_denied"
             read = next(t for t in tools if t.tool_name == "group_admin_get_honors")
-            assert (await read.execute())["status"] == "ok"
+            assert (await read.execute())["ok"] is True
             read.config["allowed_read_callers"] = "999"
-            assert (await read.execute())["status"] == "error"
+            assert (await read.execute())["ok"] is False
         adapter._bot.set_group_kick.assert_not_awaited()
         adapter._bot.get_group_honor_info.assert_awaited_once()
     finally:
@@ -96,7 +96,7 @@ async def test_forced_approval_cannot_fall_back_to_direct_sdk():
                     if t.tool_name == "group_admin_kick")
         with bind_call_origin(_origin()):
             result = await tool.execute(user_id="321")
-        assert result["status"] == "error" and "审批服务" in result["error"]
+        assert result["ok"] is False and "审批服务" in result["error"]
         adapter._bot.set_group_kick.assert_not_awaited()
     finally:
         set_current_adapter_manager(None)

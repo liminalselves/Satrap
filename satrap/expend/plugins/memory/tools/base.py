@@ -6,6 +6,7 @@ import copy
 
 from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
+from satrap.core.utils.TCBuilder import tool_error
 from satrap.core.memory.service import MemoryService
 from satrap.core.memory.store import MemoryStore
 
@@ -45,6 +46,21 @@ class _MemoryBinding(_ToolBase):
         - 真实业务结果或明确错误
         """
         return await self.service.group_operation(operation, values, access=self._access)
+
+    def _visible(self, result: Any) -> Any:
+        """
+        把面向模型的失败结果补成框架扁平形状
+
+        参数:
+        - result: 宿主或存储返回的结果
+
+        返回:
+        - 成功结果与文本原样返回; ok 为 False 的字典补上工具名并统一键名
+        """
+        payload = cast("dict[str, Any] | str | list[Any] | None", result)
+        if not isinstance(payload, dict) or payload.get("ok") is not False:
+            return result
+        return tool_error(str(self.tool_name), str(payload.get("error", "")), str(payload.get("error_type", "unavailable")))
 
     def get_tool_defined(self) -> dict[str, Any]:
         """
@@ -115,15 +131,15 @@ class _AddMemoryToolCore(_MemoryBinding):
         - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
-            return wait_host(self._group("create", {"title": title, "content": content, **group_values}))
+            return self._visible(wait_host(self._group("create", self._group_values(title, content, group_values))))
         if group_values:
-            return {"ok": False, "error": "普通会话不能写入群范围记忆"}
+            return tool_error(str(self.tool_name), "普通会话不能写入群范围记忆", "invalid_argument")
         if not self.store.can_write():
-            return self.store.write_denied_reason("添加")
+            return self._visible(self.store.write_denied_error("添加"))
         result = self.service.execute("add", title, content, tags, importance)
         if result.get("ok"):
             return f"记忆已添加: [{title}] {content}"
-        return f"添加失败: {result.get('error')}"
+        return self._visible(result)
 
 
 class _UpdateMemoryToolCore(_MemoryBinding):
@@ -171,14 +187,9 @@ class _UpdateMemoryToolCore(_MemoryBinding):
         - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
-            values = {"memory_id": memory_id, **group_values}
-            if content:
-                values["content"] = content
-            if title:
-                values["title"] = title
-            return wait_host(self._group("update", values))
+            return self._visible(wait_host(self._group("update", self._group_values(memory_id, content, title, group_values))))
         if not self.store.can_write():
-            return self.store.write_denied_reason("更新")
+            return self._visible(self.store.write_denied_error("更新"))
         fields: dict[str, Any] = {}
         if content:
             fields["content"] = content
@@ -187,7 +198,7 @@ class _UpdateMemoryToolCore(_MemoryBinding):
         result = self.service.execute("update", memory_id, **fields)
         if result.get("ok"):
             return f"记忆已更新: [{result['title']}] {result['content']}"
-        return f"更新失败: {result.get('error')}"
+        return self._visible(result)
 
 
 class _DeleteMemoryToolCore(_MemoryBinding):
@@ -224,13 +235,13 @@ class _DeleteMemoryToolCore(_MemoryBinding):
         - 普通会话成功返回中文结果文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
-            return wait_host(self._group("delete", {"memory_id": memory_id, **group_values}))
+            return self._visible(wait_host(self._group("delete", self._group_values(memory_id, group_values))))
         if not self.store.can_write():
-            return self.store.write_denied_reason("删除")
+            return self._visible(self.store.write_denied_error("删除"))
         result = self.service.execute("delete", memory_id)
         if result.get("ok"):
             return f"记忆已删除: {memory_id}"
-        return f"删除失败: {result.get('error')}"
+        return self._visible(result)
 
 
 class _ListMemoriesToolCore(_MemoryBinding):
@@ -253,10 +264,10 @@ class _ListMemoriesToolCore(_MemoryBinding):
         - 普通会话成功返回清单文字, 失败返回框架扁平结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
-            return wait_host(self._group("list", filters))
+            return self._visible(wait_host(self._group("list", filters)))
         memories = self.service.execute("list_all")
         if isinstance(memories, dict):
-            return f"查询失败: {memories.get('error')}"
+            return self._visible(memories)
         if not memories:
             return "当前没有长期记忆"
         lines = [f"共 {len(memories)} 条记忆:"]
@@ -299,8 +310,8 @@ class _GetMemoryToolCore(_MemoryBinding):
         - 普通会话返回完整记忆记录或框架扁平失败结果; 群聊返回宿主结果或同一扁平形状
         """
         if group_call():
-            return wait_host(self._group("get", {"memory_id": memory_id}))
-        return self.service.execute("get", memory_id)
+            return self._visible(wait_host(self._group("get", self._group_values(memory_id))))
+        return self._visible(self.service.execute("get", memory_id))
 
 
 _TEXT = {"type": "string", "minLength": 1, "maxLength": 256}
