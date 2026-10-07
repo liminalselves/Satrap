@@ -240,5 +240,6 @@ satrap-ui/benchmarks/results/traces/
 
 satrap-ui/test-results/
 docs/archive/
+.zcodeignore
 .runtime/
 .locks/
