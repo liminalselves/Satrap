@@ -17,6 +17,7 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
+import { Toggle } from '@/components/ui/Toggle';
 import { toast } from '@/components/ui/Toast';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { cn } from '@/utils/cn';
@@ -2142,28 +2143,6 @@ function DirectoryPicker({
         </div>
       </div>
     </Modal>
-  );
-}
-
-// 精致拨杆开关
-function Toggle({ checked, onChange, title, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; title?: string; disabled?: boolean }) {
-  return (
-    <button
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'w-9 h-5 rounded-full relative transition-colors shrink-0 border disabled:opacity-40 disabled:cursor-not-allowed',
-        checked ? 'bg-accent border-accent' : 'bg-glass-active border-glass-border'
-      )}
-      title={title}
-    >
-      <span
-        className={cn(
-          'absolute top-1/2 -translate-y-1/2 left-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform',
-          checked && 'translate-x-4'
-        )}
-      />
-    </button>
   );
 }
 
