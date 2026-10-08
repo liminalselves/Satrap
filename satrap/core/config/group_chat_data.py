@@ -19,6 +19,8 @@ from satrap.core.group_chat.types import GroupChatError
 from satrap.core.group_chat.stickers import StickerStore
 from satrap.core.storage.layout import StorageLayout
 
+from satrap.core.platform import registry
+
 
 def summary_management(layout: StorageLayout, document: dict[str, Any], platform_id: str,
                        query: dict[str, str], action: str, summary_id: str = "",
@@ -107,7 +109,6 @@ def native_sticker_catalog(layout: StorageLayout, document: dict[str, Any], plat
     - 适配器协议和有限原生目录
     """
     from satrap.core.platform.catalog import adapter_catalog
-    from satrap.core.platform import registry
     from satrap.core.config.document import validate_platforms
 
     platform = next((item for item in validate_platforms(document.get("platforms", [])) if item["id"] == platform_id), None)

@@ -20,6 +20,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Type, cast, T
 import json
 import time
 
+import traceback
+
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.providers import (
@@ -52,6 +54,9 @@ if TYPE_CHECKING:
     from satrap.core.framework.UserManager import UserManager
 
 _UID_ALPHABET = string.digits + string.ascii_lowercase + string.ascii_uppercase
+
+from satrap.edictum.plugin_compatibility import PluginEnvironment
+from satrap.core.config.group_session import resolve_group_session
 
 
 def _short_uid(n: int = 6) -> str:
@@ -753,7 +758,6 @@ class SessionManager:
         self.default_session_type = default_session_type
         self._default_checkpoint = default_checkpoint
         self._default_checkpoint_db = default_checkpoint_db
-        from satrap.edictum.plugin_compatibility import PluginEnvironment
 
         self.plugin_environment = PluginEnvironment()
         self.platform_id = platform_id.strip() or LOCAL_PLATFORM_ID
@@ -1439,7 +1443,6 @@ class SessionManager:
             logger.warning(f"[SessionManager] 同步会话处理繁忙, session_id={user_call.session_id}")
             return "同步会话处理繁忙, 请稍后重试"
         except Exception as e:
-            import traceback
             abort_reply_turn()
             logger.error(f"[SessionManager] handle_call_async 发生异常: {e}, 堆栈={traceback.format_exc()}")
             return ""
@@ -1503,7 +1506,6 @@ class SessionManager:
             return plugins if isinstance(plugins, list) else None
         if "plugins" not in overrides:
             return None
-        from satrap.core.config.group_session import resolve_group_session
 
         resolved = self.provider_registry.resolve_definition(
             session_cfg.session_type_name or "", EDICTUM_PROVIDER,
@@ -2526,7 +2528,6 @@ class SessionManager:
             with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            import traceback
             abort_reply_turn()
             logger.error(f"[SessionManager] 同步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""
@@ -2549,7 +2550,6 @@ class SessionManager:
             with bind_call_origin(user_call.origin), buffer_session_reply(session):
                 return await run_method(*args, **SessionManager._build_media_kwargs(run_method, user_call))
         except Exception as e:
-            import traceback
             abort_reply_turn()
             logger.error(f"[SessionManager] 异步会话执行失败: {e}, 堆栈={traceback.format_exc()}")
             return ""

@@ -25,6 +25,8 @@ from satrap.core.framework.Base import AsyncSession, Session
 
 from satrap.core.log import logger
 
+from satrap.core.config_paths import get_config_path
+
 
 class SessionClassConfigManager:
     """
@@ -79,7 +81,6 @@ class SessionClassConfigManager:
         env_path = os.getenv("SATRAP_SESSION_CLASS_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        from satrap.core.config_paths import get_config_path
 
         return get_config_path("session_class_config.json")
 

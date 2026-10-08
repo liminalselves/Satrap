@@ -67,6 +67,8 @@ _SETTLEMENT_WAIT_SECONDS = 1.5
 _SETTLEMENT_POLL_SECONDS = 0.05
 """发送收尾等待轮询间隔"""
 
+from satrap.core.platform.onebot.adapter import OneBotAdapter
+
 
 class PipelineScheduler:
     """
@@ -615,7 +617,6 @@ class PipelineScheduler:
                 if not event.agent_route_is_current():
                     logger.debug(f"[PipelineScheduler] 丢弃旧 Agent 路由事件: {event.session_id}")
                     return
-                from satrap.core.platform.onebot.adapter import OneBotAdapter
 
                 if (not event.is_private_chat() and isinstance(event.adapter, OneBotAdapter)
                         and event.adapter.group_route(event.get_group_id())[1] != event.group_route_generation):
@@ -809,7 +810,6 @@ class PipelineScheduler:
             return True
         if event.is_private_chat():
             return bool(settings.get("enable_private", True))
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if isinstance(adapter, OneBotAdapter):
             return adapter.allows_group(event.get_group_id())
@@ -829,7 +829,6 @@ class PipelineScheduler:
         """
         if not isinstance(event.adapter, PlatformAdapter):
             return False
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         current = (
             event.adapter.resolve_policy_settings(event.call_origin.chat_id)

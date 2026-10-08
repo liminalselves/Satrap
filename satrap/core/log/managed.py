@@ -26,6 +26,7 @@ from satrap.core.log.stream import standard_log_stream
 
 if os.name == "nt":
     import msvcrt
+    from ctypes import wintypes
 else:
     import fcntl
 
@@ -259,7 +260,6 @@ def _legacy_delete(path: Path) -> str:
     """
     if os.name != "nt":
         return "unverified"
-    from ctypes import wintypes
 
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     create = kernel.CreateFileW

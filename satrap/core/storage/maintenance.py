@@ -11,6 +11,8 @@ from typing import Any, Iterable, cast
 import json
 import time
 
+import traceback
+
 from satrap.core.storage.file_lock import session_storage_lock
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
 from satrap.core.storage.layout import StorageLayout
@@ -103,7 +105,6 @@ class StorageMaintenanceService:
                 AssetStore(store).purge()
                 results.append({"platform_id": platform_id, "ok": True, **counts})
             except Exception:
-                import traceback
 
                 logger.error(f"[消息档案] 自动维护失败, 平台={platform_id}: {traceback.format_exc()}")
                 results.append({"platform_id": platform_id, "ok": False, "error": "archive_unavailable"})
@@ -113,7 +114,6 @@ class StorageMaintenanceService:
             if (self.layout.root / "group-chat" / "catalog.db").is_file():
                 StickerStore(self.layout).purge()
         except Exception:
-            import traceback
 
             logger.error(f"[群表情] 自动维护失败: {traceback.format_exc()}")
         from satrap.core.platform.request_inbox import RequestInbox
@@ -123,7 +123,6 @@ class StorageMaintenanceService:
             if path.is_file():
                 RequestInbox(path, 600).purge(time.time())
         except Exception:
-            import traceback
 
             logger.error(f"[申请收件箱] 自动维护失败: {traceback.format_exc()}")
         return {"items": results}

@@ -49,6 +49,8 @@ CAPABILITY_LABELS = {
 }
 # 能力类别中文名 (供前端展示)
 
+from satrap.core.config_paths import get_config_path
+
 
 def _default_state_path() -> Path:
     """
@@ -57,7 +59,6 @@ def _default_state_path() -> Path:
     返回:
     - Path: 插件启用状态 json 默认路径 (.satrap/config/chat_plugins.json)
     """
-    from satrap.core.config_paths import get_config_path
 
     return get_config_path("chat_plugins.json")
 

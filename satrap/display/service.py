@@ -13,6 +13,8 @@
 - DisplayRecorder 内部 RLock + 独立连接, 多会话并发安全
 """
 from __future__ import annotations
+import mimetypes, base64
+
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
@@ -80,6 +82,12 @@ MSG_ASK_USER = "ask_user"
 MSG_ASK_USER_END = "ask_user_end"
 MSG_TURN_DONE = "turn_done"
 MSG_ERROR = "error"
+
+from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
+from satrap.core.framework.Base.execution.engine import configuration
+from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
+from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.conversation_runtime import perform_data_operation
 
 
 def build_llm(cfg: LLMConfig) -> AsyncLLM:
@@ -1649,15 +1657,12 @@ class ChatService:
         conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
         if conv is None:
             return {"ok": False, "error": "会话不存在"}
-        from satrap.edictum.simple_session.recovery import store_for_session
 
         return {"ok": True, **store_for_session(conv.session).summaries(limit, cursor, unfinished)}
 
     @_exclusive_conversation_operation
     async def manage_run(self, conversation_id: str, run_id: str, action: str, step_id: str = "") -> dict[str, Any]:
         """恢复和取消均复用现有会话占用及插件互斥"""
-        from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
-        from satrap.core.framework.Base.execution.engine import configuration
 
         conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
         if conv is None:
@@ -2207,8 +2212,6 @@ class ChatService:
         返回:
         - 图片和视频本地路径列表, 无效类型, 越界路径或未启用视觉时抛出 ValueError
         """
-        import mimetypes
-        from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
 
         images: list[str] = []
         videos: list[str] = []
@@ -2247,8 +2250,6 @@ class ChatService:
         返回:
         - 包含 Data URL 的字典, 越界路径, 非媒体和超限文件抛出 ValueError
         """
-        import mimetypes
-        import base64
 
         root = self._storage.session_uploads(self._platform_id, conversation_id).resolve()
         path = Path(source).resolve()
@@ -2289,7 +2290,6 @@ class ChatService:
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         fpath = upload_dir / unique_name
         fpath.write_bytes(file_data)
-        import mimetypes
 
         file_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         return {
@@ -2367,7 +2367,6 @@ class ChatService:
         返回:
         - 数据快照, 不激活尚未加载的历史对话
         """
-        from satrap.core.config.conversation_data import ConversationDataConflict
 
         conversation = payload.get("conversation_id", "")
         layer = str(payload.get("layer", "context"))
@@ -2395,7 +2394,6 @@ class ChatService:
         返回:
         - 最新快照和保存结果
         """
-        from satrap.core.config.conversation_runtime import perform_data_operation
 
         conv = self._conversations.get(owner)
         self._operations[owner].state = "data_edit"

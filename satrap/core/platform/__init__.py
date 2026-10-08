@@ -40,6 +40,11 @@ EventHandler = Callable[["PlatformEvent"], Awaitable[Any] | Any]
 # - 输入: PlatformEvent
 # - 输出: 可等待对象或 None (均可)
 
+from satrap.core.config.group_session import session_values
+from satrap.core.platform.message_archive import archive_snapshot
+from satrap.core.group_chat.types import GroupChatError, CAPABILITIES
+from satrap.core.platform.receipt import SendReceipt
+
 
 @dataclass
 class PlatformConfig:
@@ -206,7 +211,6 @@ class PlatformAdapter(ABC):
         返回:
         - 绑定, 来源, 范围, 对话类型, 对话 ID 与代次
         """
-        from satrap.core.config.group_session import session_values
 
         kind = self.conversation_kind(message)
         if self.config.session_bindings and kind not in self.conversation_kinds:
@@ -297,7 +301,6 @@ class PlatformAdapter(ABC):
         if store is None:
             return False
         try:
-            from satrap.core.platform.message_archive import archive_snapshot
 
             identity = scope or self.message_archive_scope(message)
             if identity.self_id != message.self_id or identity.adapter_id != self.config.id:
@@ -393,7 +396,6 @@ class PlatformAdapter(ABC):
         返回:
         - 当前仍可访问的群档案身份, 失效或非群来源抛出 GroupChatError
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         if (not self.config.enable or origin.adapter_id != self.config.id or not origin.self_id
                 or origin.self_id != self.client_self_id):
@@ -467,7 +469,6 @@ class PlatformAdapter(ABC):
         返回:
         - 未实现时明确返回 scheduled_send_unsupported, 不尝试普通事件回复
         """
-        from satrap.core.platform.receipt import SendReceipt
 
         return SendReceipt("failed", reason="scheduled_send_unsupported")
 
@@ -481,7 +482,6 @@ class PlatformAdapter(ABC):
         返回:
         - 当前私聊身份, 非私聊或失效时抛出 GroupChatError
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         kind = origin.conversation_kind or ("private" if origin.chat_type == "FriendMessage" else "")
         if (not self.config.enable or origin.adapter_id != self.config.id or not origin.self_id
@@ -562,7 +562,6 @@ class PlatformAdapter(ABC):
         返回:
         - 能力名称到 supported, unsupported, unavailable 及原因的映射
         """
-        from satrap.core.group_chat.types import CAPABILITIES
 
         capabilities = {name: {"state": "unsupported", "reason": "adapter_not_implemented"} for name in CAPABILITIES}
         capabilities["archive_search"] = {"state": "supported" if self.message_archive is not None else "unavailable",
@@ -669,7 +668,6 @@ class PlatformAdapter(ABC):
         返回:
         - 原生消息组件, 未实现时明确拒绝
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         raise GroupChatError("unsupported", "当前平台没有原生表情发送实现")
 
@@ -696,7 +694,6 @@ class PlatformAdapter(ABC):
         返回:
         - 已核验成员快照, 未实现时抛出 GroupChatError
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         raise GroupChatError("unsupported", "当前适配器未实现成员列表读取")
 
@@ -711,7 +708,6 @@ class PlatformAdapter(ABC):
         返回:
         - 当前群成员资料, 未实现时抛出 GroupChatError
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         raise GroupChatError("unsupported", "当前适配器未实现成员详情读取")
 
@@ -726,7 +722,6 @@ class PlatformAdapter(ABC):
         返回:
         - 已核验的消息及所属对话, 未实现时抛出 GroupChatError
         """
-        from satrap.core.group_chat.types import GroupChatError
 
         raise GroupChatError("unsupported", "当前适配器未实现单条消息回源")
 

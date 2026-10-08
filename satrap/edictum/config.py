@@ -21,6 +21,8 @@ from satrap.edictum.settings import normalize_session_settings
 from satrap.core.log import logger
 from satrap.core.storage.file_lock import FileLock
 
+from satrap.core.config_paths import get_config_path
+
 
 class EdictumConfigManager:
     """管理按名称组织的 Edictum 会话冷配置"""
@@ -58,7 +60,6 @@ class EdictumConfigManager:
         - Path: 环境变量路径或默认数据目录路径
         """
         env_path = os.getenv("SATRAP_EDICTUM_CONFIG_PATH")
-        from satrap.core.config_paths import get_config_path
 
         return Path(env_path) if env_path else get_config_path("edictum_session_config.json")
 

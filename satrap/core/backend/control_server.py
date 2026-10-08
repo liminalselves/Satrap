@@ -119,6 +119,12 @@ CONTROL_PID_FILE = get_runtime_path("control_server.pid")
 # PID 文件路径
 BACKEND_PID_FILE = get_runtime_path("backend.pid")
 
+from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+from satrap.core.config.group_events import EVENT_KINDS, event_values
+from satrap.core.config.group_policy import policy_values, resolve_group_policy
+from satrap.core.config.group_session import group_binding_chain, resolve_group_session
+from satrap.core.config.wake_overrides import GROUP_KEYS
+
 
 @dataclasses.dataclass(frozen=True)
 class BackendRuntimeRecord:
@@ -379,11 +385,11 @@ def _check_single_instance() -> bool:
     """
     if not CONTROL_PID_FILE.exists():
         return True
-    
+
     old_pid = _read_pid_file(CONTROL_PID_FILE)
     if old_pid is None:
         return True
-    
+
     if _is_process_running(old_pid):
         try:
             url = "http://127.0.0.1:19871/status"
@@ -393,7 +399,7 @@ def _check_single_instance() -> bool:
         except Exception:
             pass
         # 检查是否是我们的控制服务
-    
+
     _remove_pid_file(CONTROL_PID_FILE)
     # 旧进程已不存在, 清理 PID 文件
     return True
@@ -1126,7 +1132,6 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
             record = await asyncio.to_thread(store.read_account, self_id)
             if record is None:
                 return 404, {"error": "账号群配置不存在", "reason": "account_not_found"}
-            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
             from satrap.core.platform.onebot.group_action_types import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
@@ -1150,7 +1155,6 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                 store.patch_account, expected_self_id, expected_revision=revision,
                 mode=mode, approval_defaults=cast(dict[str, object], defaults),
             )
-            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
             from satrap.core.platform.onebot.group_action_types import action_metadata
 
             counts = await asyncio.to_thread(store.approval_inheritance_counts, expected_self_id)
@@ -1159,11 +1163,6 @@ async def _route_group_directory(ctx: _RouteContext) -> ControlResponse | None:
                          "approval_inheriting_counts": counts, "apply_status": "pending"}
         if len(parts) == 6 and parts[5] == "config" and ctx.method in {"GET", "PATCH"}:
             from satrap.core.config.group_approval import effective_approval
-            from satrap.core.config.group_events import EVENT_KINDS, event_values
-            from satrap.core.config.group_policy import policy_values, resolve_group_policy
-            from satrap.core.config.group_session import group_binding_chain, resolve_group_session
-            from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
-            from satrap.core.config.wake_overrides import GROUP_KEYS
 
             group_id = urllib.parse.unquote(parts[4])
             if ctx.method == "GET":
@@ -3343,18 +3342,18 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     if not await asyncio.to_thread(_check_single_instance):
         print("Control server is already running")
         sys.exit(1)
-    
+
     await asyncio.to_thread(_write_pid_file, CONTROL_PID_FILE, os.getpid())
     # 写入 PID 文件
-    
+
     atexit.register(_cleanup_control)
     # 注册退出清理
-    
+
     if sys.platform != "win32":
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
         signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
     # 注册信号处理
-    
+
     server = await asyncio.start_server(
         _handle_request,
         host,
@@ -3377,7 +3376,7 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     print("  GET/POST/PATCH/DELETE /config/session-classes - Manage session class config")
     print("  GET  /config/session/discovery - Discover session classes")
     print("  POST /config/session/discovery/directories - Create session scan directory")
-    
+
     async with server:
         await server.serve_forever()
 
@@ -3389,7 +3388,7 @@ def main():
     parser.add_argument("--host", default="127.0.0.1", help="Listen host")
     parser.add_argument("--port", type=int, default=19871, help="Listen port")
     args = parser.parse_args()
-    
+
     try:
         asyncio.run(run_server(args.host, args.port))
     except KeyboardInterrupt:

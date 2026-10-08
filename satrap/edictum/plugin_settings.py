@@ -10,6 +10,8 @@ from satrap.core.config.session_overrides import SessionOverrideService, Session
 from satrap.edictum.plugin_resources import model_reference_fingerprint, MODEL_TYPES, named_model_config
 from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
 
+from satrap.edictum.plugin_spec import parse_plugin_specs
+
 
 class PluginInstallConfig(dict[str, Any]):
     """安装参数携带首次技能状态, 不混入插件业务配置字段"""
@@ -133,7 +135,6 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any) -> list[
     if store is not None and any(spec.name == "base_take" for spec in specs):
         from satrap.edictum.memory_migration import migrate_memory_overrides
         if migrate_memory_overrides(store, session.session_id) and not any(spec.name == "memory" for spec in specs):
-            from satrap.edictum.plugin_spec import parse_plugin_specs
             specs = [*specs, *parse_plugin_specs(["memory"], catalog, require_available=True)]
     models = getattr(session, "plugin_model_manager", None)
     resolved: list[Any] = []

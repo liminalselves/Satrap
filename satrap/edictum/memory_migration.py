@@ -16,6 +16,8 @@ from satrap.core.log import logger
 MEMORY_FIELDS = frozenset({"memory_scope", "memory_mode"})
 MEMORY_TOOLS = frozenset({"add_memory", "update_memory", "delete_memory", "list_memories"})
 
+from satrap.core.storage.file_lock import FileLock, database_session_lock
+
 
 def migrate_memory_globals(manager: Any) -> None:
     """
@@ -28,7 +30,6 @@ def migrate_memory_globals(manager: Any) -> None:
     target = manager._global_path("memory")
     if not source.is_file():
         return
-    from satrap.core.storage.file_lock import FileLock
     from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
     try:
@@ -73,7 +74,6 @@ def migrate_memory_overrides(store: Any, session_id: str) -> bool:
     返回:
     - 是否迁移了旧记忆覆盖字段
     """
-    from satrap.core.storage.file_lock import database_session_lock
     from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
     try:

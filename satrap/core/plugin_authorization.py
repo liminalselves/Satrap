@@ -287,7 +287,6 @@ def bind_plugin_factory_tools(tools: list[Any], source_file: str) -> None:
     - tools: 工厂实际构造的工具列表
     - source_file: 工厂模块路径, 固定从相邻 meta.yaml 读取声明
     """
-    from pathlib import Path
 
     name, permissions = _factory_declarations(Path(source_file).parent / "meta.yaml")
     for tool in tools:

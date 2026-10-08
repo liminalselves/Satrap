@@ -9,6 +9,8 @@ import os
 import re
 from time import time
 
+import traceback
+
 from satrap.core.platform.misskey.misskey_utils import (
     add_at_mention_if_needed,
     cache_room_info,
@@ -49,6 +51,10 @@ MAX_FILE_UPLOAD_COUNT = 16
 """Misskey 最大文件上传数量"""
 DEFAULT_UPLOAD_CONCURRENCY = 3
 """Misskey 默认上传并发数"""
+
+from satrap.core.group_chat.types import GroupChatError
+from satrap.core.platform.receipt import SendReceipt
+from satrap.core.call_context import current_call_origin
 
 
 @register_platform_adapter("misskey")
@@ -554,13 +560,10 @@ class MisskeyAdapter(PlatformAdapter):
         except Exception as exc:
             if not any(getattr(comp, "asset_lease", None) is not None for comp in components):
                 raise
-            from satrap.core.group_chat.types import GroupChatError
-            import traceback
 
             logger.error(f"[MisskeyAdapter] 必需图片上传异常: {traceback.format_exc()}")
             raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败") from exc
         if any(getattr(comp, "asset_lease", None) is not None and not result for comp, result in zip(components, results)):
-            from satrap.core.group_chat.types import GroupChatError
 
             raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败")
         return [file_id for file_id in results if file_id]
@@ -596,8 +599,6 @@ class MisskeyAdapter(PlatformAdapter):
         - 原生结果或结构化媒体的明确发送回执
         """
         from satrap.core.group_chat.assets import fork_message_leases
-        from satrap.core.platform.receipt import SendReceipt
-        from satrap.core.group_chat.types import GroupChatError
 
         leases = fork_message_leases(message)
         if not leases:
@@ -624,7 +625,6 @@ class MisskeyAdapter(PlatformAdapter):
                 logger.warning(f"[MisskeyAdapter] 结构化媒体发送拒绝, 原因={exc.code}")
                 return SendReceipt("failed", reason=exc.code)
             except Exception:
-                import traceback
 
                 logger.error(f"[MisskeyAdapter] 结构化媒体发送失败: {traceback.format_exc()}")
                 return SendReceipt("unknown", reason="media_send_error")
@@ -675,14 +675,12 @@ class MisskeyAdapter(PlatformAdapter):
 
         text, has_at_user = serialize_message_chain(message)
         if any(getattr(comp, "asset_lease", None) is not None for comp in message) and (not self.enable_file_upload or len(text) > self.max_message_length):
-            from satrap.core.group_chat.types import GroupChatError
 
             raise GroupChatError("media_upload_failed", "图片上传已停用或正文超过平台上限")
         if len(text) > self.max_message_length:
             text = text[: self.max_message_length] + "..."
         file_ids = await self._collect_file_ids(message)
         if any(getattr(comp, "asset_lease", None) is not None for comp in message):
-            from satrap.core.call_context import current_call_origin
 
             origin = current_call_origin()
             if origin is None:

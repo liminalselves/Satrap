@@ -22,6 +22,8 @@ ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
 ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
 TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
 
+from satrap.core.config_paths import get_config_path
+
 
 class ConfigInUseError(ValueError):
     """命名配置仍被平台或插件引用, 禁止删除或重命名; references 为结构化引用清单"""
@@ -108,7 +110,6 @@ class ModelConfigManager:
         env_path = os.getenv("SATRAP_MODEL_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        from satrap.core.config_paths import get_config_path
 
         return get_config_path("model_config.json")
 

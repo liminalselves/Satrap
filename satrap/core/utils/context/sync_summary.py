@@ -20,6 +20,8 @@ if TYPE_CHECKING:
     from satrap.core.APICall.LLMCall import LLM, AsyncLLM
 from .sync_checkpoints import _SyncCheckpoints
 
+from satrap.core.utils.media import project_messages, visual_enabled
+
 
 class _SyncSummary(_SyncCheckpoints):
 
@@ -173,7 +175,6 @@ class _SyncSummary(_SyncCheckpoints):
         messages = copy.deepcopy(self._messages)
         if pending_messages:
             messages.extend(copy.deepcopy(pending_messages))
-        from satrap.core.utils.media import project_messages, visual_enabled
 
         messages = project_messages(messages, visual_enabled(llm))
         original_turns = len(self._conversation_turns(messages))

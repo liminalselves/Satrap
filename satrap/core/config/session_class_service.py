@@ -21,6 +21,8 @@ _ALLOWED_FIELDS = {
 }
 """会话类配置允许写入的字段"""
 
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+
 
 class SessionClassConfigService:
     """供平台后端和控制服务共用的会话类配置增删改查服务"""
@@ -45,7 +47,6 @@ class SessionClassConfigService:
         参数:
         - name: 待变更的配置名称
         """
-        from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
 
         if self.reference_checker is None:
             return

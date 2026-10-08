@@ -15,6 +15,8 @@ import time
 
 from satrap.core.config.group_store import GroupConfigStore, _identity
 
+from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
+
 
 class GroupDirectoryStore(GroupConfigStore):
     """按账号保存群目录和同步状态, 与群配置共用平台数据库"""
@@ -31,7 +33,6 @@ class GroupDirectoryStore(GroupConfigStore):
     def approval_inheritance_counts(self, self_id: str) -> dict[str, int]:
         """统计当前已加入且继承账号审批默认值的群数"""
         from satrap.core.config.group_approval import approval_values
-        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
 
         _identity(self_id)
         with closing(self._connect()) as connection:

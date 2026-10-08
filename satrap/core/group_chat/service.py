@@ -20,6 +20,9 @@ import time
 import uuid
 import traceback
 
+from copy import deepcopy
+from pathlib import Path
+
 from satrap.core.call_context import CallOrigin, current_call_origin, require_call_origin
 from satrap.core.config.platform_messages import MessageArchiveError, MessageScope, PlatformMessageStore
 from satrap.core.group_chat.types import GroupChatError, GroupChatLimits, MemberRecord, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupRecord, GroupSnapshot, VerifiedGroup
@@ -52,6 +55,9 @@ _ARGUMENTS = {
     "group_chat_get_message_assets": frozenset({"message_id"}),
     "group_chat_list_stickers": frozenset({"keyword", "limit", "cursor"}),
 }
+
+from satrap.core.group_chat.reply import current_reply_turn
+from satrap.core.pipeline import attachments
 
 
 def _id(value: object) -> str:
@@ -329,8 +335,6 @@ class GroupChatService:
                              "group_chat_get_summary", "group_chat_list_summaries"}:
                 return await self._summary(context, operation, arguments, bounds)
             if operation == "group_chat_reply":
-                from copy import deepcopy
-                from satrap.core.group_chat.reply import current_reply_turn
 
                 turn = current_reply_turn()
                 if turn is None or turn.origin is not context.origin:
@@ -448,9 +452,6 @@ class GroupChatService:
         返回:
         - 按原媒体顺序的目录, 逐项说明可用状态与失败原因
         """
-        from pathlib import Path
-        from satrap.core.group_chat.reply import current_reply_turn
-        from satrap.core.pipeline.attachments import _download
 
         item = (await self._message(context, message_id, bounds))["item"]
         if not item["verified"]:
@@ -499,7 +500,7 @@ class GroupChatService:
                     address = reference.get("url")
                     if isinstance(address, str) and address:
                         try:
-                            return await _download(address, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
+                            return await attachments._download(address, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
                                                    settings.get("media_plaintext_http", False) is True)
                         except Exception as exc:
                             logger.warning(f"[群图片] 原地址读取失败, 平台={context.scope.adapter_id}, 原因={type(exc).__name__}")
@@ -507,7 +508,7 @@ class GroupChatService:
                     if not fresh:
                         raise GroupChatError("asset_unavailable", "图片地址已失效且平台无法刷新")
                     await self._revalidate(context)
-                    return await _download(fresh, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
+                    return await attachments._download(fresh, MAX_IMAGE_BYTES, trusted, settings.get("media_insecure_tls", False) is not True,
                                            settings.get("media_plaintext_http", False) is True)
                 if data is None:
                     data = await asyncio.wait_for(fetch(), max(0.01, deadline - time.monotonic()))
@@ -556,7 +557,6 @@ class GroupChatService:
             return await self._archive(context, store.get, context.scope, _id(arguments.get("summary_id")), argument_errors=True)
         if operation == "group_chat_list_summaries":
             return await self._archive(context, store.list, context.scope, **dict(arguments), argument_errors=True)
-        from satrap.core.group_chat.reply import current_reply_turn
 
         turn = current_reply_turn()
         if turn is None or turn.origin is not context.origin:
@@ -690,7 +690,6 @@ class GroupChatService:
                 maximum = min(bounds.max_reply_images, context.adapter.group_chat_media_limits()["max_images"])
                 if image_count > maximum:
                     raise GroupChatError("quota_exceeded", f"当前回复最多支持 {maximum} 张图片")
-                from satrap.core.group_chat.reply import current_reply_turn
 
                 turn = current_reply_turn()
                 if turn is None:

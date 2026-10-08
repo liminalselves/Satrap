@@ -59,6 +59,11 @@ from satrap.core.config.platform_messages import MessageScope, PlatformMessageSt
 from satrap.core.platform.message_archive import archive_snapshot
 from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupSnapshot, VerifiedGroup
 
+from satrap.core.config.group_policy import resolve_group_policy
+from satrap.core.config.wake_overrides import resolve_wake_settings
+from satrap.core.components import Face
+from satrap.core.config.group_action_origin import current_model_action_authorization
+
 
 class _MissingCQHttp:
     """缺少 aiocqhttp 时的占位类型, 用于给出清晰错误"""
@@ -488,8 +493,6 @@ class OneBotAdapter(PlatformAdapter):
 
     def resolve_policy_settings(self, group_id: str) -> dict[str, Any]:
         """取得与入站群消息同一快照的有效策略"""
-        from satrap.core.config.group_policy import resolve_group_policy
-        from satrap.core.config.wake_overrides import resolve_wake_settings
 
         if self._group_access_store is None:
             return resolve_wake_settings(self.config.settings, group_id)
@@ -863,7 +866,6 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - 原生表情组件, 禁止任意模型编号
         """
-        from satrap.core.components import Face
 
         value = key.removeprefix("face:")
         if not key.startswith("face:") or not value.isascii() or not value.isdigit() or len(value) > 5:
@@ -1040,7 +1042,6 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - 审批或执行结果, 宿主未装配时拒绝执行
         """
-        from satrap.core.config.group_action_origin import current_model_action_authorization
         source = current_model_action_authorization()
         if (scope.adapter_id != self.config.id or scope.self_id != self.bot_self_id
                 or scope.conversation_kind != "group" or not self.allows_group(scope.chat_id) or source is None):
@@ -1281,7 +1282,6 @@ class OneBotAdapter(PlatformAdapter):
         if await self._ensure_group_access(incoming_self):
             notice_type = str(event.get("notice_type") or "")
             if notice_type in {"group_recall", "friend_recall"} and self.config.enable:
-                from satrap.core.config.platform_messages import MessageScope
 
                 group_id = str(event.get("group_id") or "")
                 peer_id = str(event.get("user_id") or "")
@@ -1704,7 +1704,6 @@ class OneBotAdapter(PlatformAdapter):
 
     async def send_management_message(self, group_id: str, text: str) -> SendReceipt:
         """经管理服务授权后向已确认加入的群发送单条纯文本消息"""
-        from satrap.core.platform.onebot.onebot_utils import group_session_id
 
         if not self.allows_management_target(group_id):
             return SendReceipt("failed", reason="membership_unconfirmed")

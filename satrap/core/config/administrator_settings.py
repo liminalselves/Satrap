@@ -17,6 +17,8 @@ from satrap.core.config.platform_identity import platform_instance_id
 from satrap.core.call_context import CallOrigin
 from satrap.edictum.plugin_catalog import PluginCatalog
 
+from satrap.core.platform import registry
+
 
 def normalize_platform_user(platform: Mapping[str, Any], user_id: str) -> str:
     """
@@ -30,7 +32,6 @@ def normalize_platform_user(platform: Mapping[str, Any], user_id: str) -> str:
     - 规范身份, 适配器不可用或格式错误时抛出 ValueError
     """
     from satrap.core.platform.catalog import adapter_catalog
-    from satrap.core.platform import registry
 
     adapter_catalog()
     adapter = registry.get(str(platform.get("type", "")))

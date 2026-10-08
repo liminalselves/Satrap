@@ -24,6 +24,10 @@ REFERENCE_SCAN_LOCK = threading.RLock()
 OVERRIDE_TABLE = "session_config_overrides"
 """会话覆盖表名, 与 session_overrides.ensure_override_tables 保持一致"""
 
+from satrap.edictum.plugin import PLUGINS_PRESET_DIR, USER_PLUGINS_DIR, load_plugin_meta
+from satrap.edictum.plugin_config import parse_config_schema, CONFIG_DIR
+from satrap.core.config.session_overrides import OVERRIDE_SCHEMA_VERSION
+
 
 class AsrReferenceScanError(RuntimeError):
     """引用扫描不完整: 调用方必须按"无法确认无引用"处理, 不能据此删除或重命名配置"""
@@ -64,7 +68,6 @@ def _platform_references(platforms: list[object], config_name: str) -> list[dict
 
 def _plugin_dirs(plugins_dir: Path | None) -> list[Path]:
     """枚举插件目录: 不依赖 scan_plugin_dirs 的静默过滤, 元数据损坏的目录必须参与扫描"""
-    from satrap.edictum.plugin import PLUGINS_PRESET_DIR, USER_PLUGINS_DIR
 
     bases = [PLUGINS_PRESET_DIR, Path(plugins_dir) if plugins_dir is not None else USER_PLUGINS_DIR]
     found: list[Path] = []
@@ -79,8 +82,6 @@ def _plugin_dirs(plugins_dir: Path | None) -> list[Path]:
 
 def _asr_plugin_fields(plugins_dir: Path | None) -> dict[str, list[str]]:
     """全部已安装插件中 asr 类型的配置字段 (插件名 -> 字段列表); 元数据损坏即扫描不完整"""
-    from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import parse_config_schema
 
     fields: dict[str, list[str]] = {}
     for plugin_dir in _plugin_dirs(plugins_dir):
@@ -107,7 +108,6 @@ def _plugin_global_references(
     config_name: str,
 ) -> list[dict[str, str]]:
     """插件全局 JSON 配置中 asr 字段的显式引用"""
-    from satrap.edictum.plugin_config import CONFIG_DIR
 
     base = plugin_config_dir or CONFIG_DIR
     references: list[dict[str, str]] = []
@@ -198,7 +198,6 @@ def _read_override_rows(database: Path, platform_id: str) -> list[tuple[Any, ...
     - AsrReferenceScanError: 结构版本表明覆盖表应存在却缺失
     - sqlite3.Error: 其余数据库错误由调用方包装
     """
-    from satrap.core.config.session_overrides import OVERRIDE_SCHEMA_VERSION
 
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True, timeout=5)
     try:

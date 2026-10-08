@@ -11,6 +11,9 @@ from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK, _plugin_dirs
 from satrap.core.config.platform_schema import PLATFORM_SCHEMA_VERSION
 from satrap.core.storage import StorageLayout
 
+from satrap.edictum.plugin import load_plugin_meta
+from satrap.edictum.plugin_config import parse_config_schema
+
 
 class GroupReferenceScanError(RuntimeError):
     """群配置读取不完整, 调用方不得据此删除资源"""
@@ -20,8 +23,6 @@ def _plugin_fields(target: str, plugins_dir: Path | None) -> dict[str, list[str]
     """从全部插件声明中严格识别资源引用字段"""
     if target not in {"llm", "asr"}:
         return {}
-    from satrap.edictum.plugin import load_plugin_meta
-    from satrap.edictum.plugin_config import parse_config_schema
 
     result: dict[str, list[str]] = {}
     for directory in _plugin_dirs(plugins_dir):

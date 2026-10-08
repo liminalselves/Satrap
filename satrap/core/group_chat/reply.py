@@ -13,6 +13,8 @@ from typing import Any, TYPE_CHECKING
 import asyncio
 import uuid
 
+import traceback
+
 from satrap.core.call_context import current_call_origin, current_tool_workflow, bind_call_origin
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.platform import current_adapter_manager
@@ -22,6 +24,9 @@ from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.platform.event import MessageChain, MessageEvent
+
+from satrap.core.platform.event import MessageChain
+from satrap.core.framework.Base import AsyncSession
 
 
 class ReplyTurn:
@@ -159,7 +164,6 @@ class ReplyTurn:
             return False
         if not self.active or self.failed or self.submitted:
             return True
-        from satrap.core.platform.event import MessageChain
 
         try:
             with bind_call_origin(self.origin):
@@ -199,7 +203,6 @@ class ReplyTurn:
             self.event._record_send_result(SendReceipt("failed", reason=exc.code))
             logger.warning(f"[群聊回复] 提交拒绝, 轮次={self.origin.request_id}, 错误={exc.code}")
         except Exception:
-            import traceback
             self.abort()
             self.event._record_send_result(SendReceipt("unknown" if self.submitted else "failed", reason="reply_commit_error"))
             logger.error(f"[群聊回复] 提交异常, 轮次={self.origin.request_id}: {traceback.format_exc()}")
@@ -292,7 +295,6 @@ def buffer_session_reply(session: object) -> Iterator[None]:
         yield
         return
     turn._enabled = enabled
-    from satrap.core.framework.Base import AsyncSession
 
     asynchronous = isinstance(session, AsyncSession)
     saved: list[tuple[Any, str, Any]] = []

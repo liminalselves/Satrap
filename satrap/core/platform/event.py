@@ -17,6 +17,8 @@ import uuid
 import os
 import re
 
+import traceback
+
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.platform.receipt import SendReceipt
 from satrap.core.call_context import CallOrigin
@@ -26,6 +28,8 @@ from satrap.core.type import PlatformMessage, PlatformMessageType, safe_getattr,
 
 from satrap.core.log import logger
 # 模块级导入, 避免每个方法重复 lazy import; 无循环依赖风险 (__init__.py 仅在 TYPE_CHECKING 下引用 event.py)
+
+from satrap.core.config.group_session import session_values
 
 
 @dataclass
@@ -369,7 +373,6 @@ class MessageEvent:
         self.conversation_id = ""
         group_route = getattr(adapter, "group_route", None)
         if self.get_group_id() and callable(group_route):
-            from satrap.core.config.group_session import session_values
 
             route_revision = getattr(adapter, "group_route_revision", None)
             route_result = route_revision(self.get_group_id()) if callable(route_revision) else group_route(self.get_group_id())
@@ -913,7 +916,6 @@ class MessageEvent:
                 )
                 self._record_send_result(result, purpose=purpose)
             except Exception as e:
-                import traceback
                 if explicit_reply:
                     self._record_send_result(SendReceipt("unknown" if submitted else "failed", reason="explicit_reply_send_error"), purpose=purpose)
                 logger.error(

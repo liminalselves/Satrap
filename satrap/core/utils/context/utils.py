@@ -39,6 +39,8 @@ _MAX_SUMMARY_OUTPUT_TOKENS = 2048
 
 _SUMMARY_RETRY_OUTPUT_TOKENS = 4096
 
+from satrap.core.utils.media import MEDIA_RESULT_KEY
+
 
 def _summary_output_budget(target_tokens: int) -> int:
     """
@@ -483,7 +485,6 @@ def add_tool_message(
     - tool_call_id: 工具调用 ID
     - tool_result: 工具调用结果, 字典转为 JSON, 字符串原样保存
     """
-    from satrap.core.utils.media import MEDIA_RESULT_KEY
 
     content = (
         [{"type": "text", "text": str(tool_result.get("text", ""))}, *tool_result.get("media", [])]

@@ -6,6 +6,8 @@ from satrap.expend.plugins.base_take.core.docread import extract_text
 from .utils import _resolve_doc_path, _doc_workspace_root, _doc_upload_root
 from satrap.core.utils.TCBuilder.tool_base import _ToolBase
 
+from satrap.core.utils.media import visual_enabled
+
 
 class _DocumentCore(_ToolBase):
     recovery_policy = "retry"
@@ -47,7 +49,6 @@ class _DocumentCore(_ToolBase):
             return "错误: max_length 必须是整数"
         if not isinstance(mode, str) or mode not in {"auto", "text", "visual"}:
             return "错误: mode 必须是 auto, text 或 visual"
-        from satrap.core.utils.media import visual_enabled
         from satrap.core.utils.pdf_pages import read_pdf_pages
 
         enabled = visual_enabled(getattr(getattr(self, "_session", None), "llm", None))

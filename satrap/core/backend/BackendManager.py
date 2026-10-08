@@ -77,6 +77,26 @@ from satrap.core.log import logger
 from satrap.core.group_chat.reminder_host import ReminderHost
 from satrap.core.group_chat.reminder_scheduler import ReminderScheduler
 
+from satrap.core.storage.file_lock import FileLock
+from satrap.core.plugin_authorization import permission_id_list, permission_id_list as _lines, evaluate_plugin_permissions, PluginPermissionDenied
+from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
+from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS, GroupConfigConflict
+from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.config.group_session import session_values, group_binding_chain, resolve_group_session
+from satrap.core.config.group_events import EVENT_KINDS, event_values
+from satrap.core.config.group_policy import policy_values, resolve_group_policy
+from satrap.core.config.wake_overrides import GROUP_KEYS
+from satrap.edictum.plugin_settings import validate_plugin_settings, resolve_runtime_specs
+from satrap.core.type import UserCall
+from satrap.core.call_context import CallOrigin
+from satrap.core.config.group_actions import action_fingerprint
+from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
+from satrap.core.platform.onebot.request_registry import flag_digest
+from satrap.core.storage.maintenance import StorageMaintenanceService
+from satrap.core.pipeline.manual_wake import ManualWakeTicket
+from satrap.core.platform.event import MessageEvent
+
 
 @dataclass
 class BackendConfig:
@@ -448,7 +468,6 @@ class BackendManager:
         """
         from satrap.core.config.administrator_groups import administrator_revision, normalize_administrator_groups
         from satrap.core.config.document import ConfigRevisionConflict, load_config_document, validate_platforms
-        from satrap.core.storage.file_lock import FileLock
 
         if not isinstance(expected_revision, str) or not expected_revision or not self.config.source_path:
             raise ValueError("无法确认管理员配置来源或修订")
@@ -459,7 +478,6 @@ class BackendManager:
             groups = normalize_administrator_groups(document.get("administrator_groups"), platforms)
             if administrator_revision(groups) != expected_revision:
                 raise ConfigRevisionConflict("管理员配置已变化, 请重新读取后应用")
-            from satrap.core.config.platform_identity import platform_instance_id
 
             live = {item["id"]: platform_instance_id(item) for item in self.config.platforms}
             saved = {item["id"]: platform_instance_id(item) for item in platforms}
@@ -480,9 +498,6 @@ class BackendManager:
         返回:
         - 受保护的好友管理者 ID
         """
-        from satrap.core.plugin_authorization import permission_id_list
-        from satrap.edictum.plugin_config import PluginConfigManager
-        from satrap.edictum.plugin_spec import parse_plugin_specs
         administrators = getattr(self, "administrator_service", None)
         values: set[str] = set(administrators.protected_users(adapter_id) if administrators else ())
         runtime = self.get_platform_runtime(adapter_id)
@@ -545,13 +560,11 @@ class BackendManager:
         account = await asyncio.to_thread(store.read_account, self_id)
         if account is None:
             raise LookupError("账号群配置不存在")
-        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
         from satrap.core.platform.onebot.group_action_types import action_metadata
 
         counts = await asyncio.to_thread(store.approval_inheritance_counts, self_id)
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         current = str(getattr(adapter, "bot_self_id", "") or "")
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         status, active_revision, apply_error = (
             adapter.account_apply_status(self_id, account["revision"])
@@ -581,13 +594,11 @@ class BackendManager:
         返回:
         - 持久设置与运行时应用状态
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
             raise ValueError("机器人账号已变化")
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
-        from satrap.core.config.group_store import GroupConfigConflict
 
         lock = self._group_account_locks.setdefault((adapter_id, self_id), asyncio.Lock())
         async with lock:
@@ -609,8 +620,6 @@ class BackendManager:
 
     async def apply_group_settings(self, adapter_id: str, self_id: str, saved_revision: int) -> dict[str, Any]:
         """按固定账号和保存修订重试快照应用, 不重复写入"""
-        from satrap.core.config.group_store import GroupConfigConflict
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -656,7 +665,6 @@ class BackendManager:
                               response_gate=response_gate),
             asyncio.to_thread(store.sync_status, self_id),
         )
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         current = str(getattr(adapter, "bot_self_id", "") or "")
         generation = adapter.connection_generation() if isinstance(adapter, OneBotAdapter) and current == self_id else None
@@ -674,7 +682,6 @@ class BackendManager:
         返回:
         - 任务 ID 与运行状态
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter):
@@ -768,7 +775,6 @@ class BackendManager:
         self, adapter_id: str, platform: dict[str, Any], session: dict[str, object],
     ) -> str:
         """绑定的命名资源或模型目录变化时使群编辑基础版本失效"""
-        from satrap.core.config.group_session import session_values
 
         binding = session_values(session).get("binding")
         if not isinstance(binding, dict):
@@ -806,12 +812,6 @@ class BackendManager:
     async def group_config(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
         """返回单群显式配置, 有效策略来源与已应用修订"""
         from satrap.core.config.group_approval import effective_approval
-        from satrap.core.config.group_events import EVENT_KINDS, event_values
-        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
-        from satrap.core.config.group_policy import policy_values, resolve_group_policy
-        from satrap.core.config.group_session import group_binding_chain, resolve_group_session, session_values
-        from satrap.core.config.wake_overrides import GROUP_KEYS
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
         account, record, config = await asyncio.gather(
@@ -984,9 +984,6 @@ class BackendManager:
         base_revision: str, section: str, values: dict[str, object],
     ) -> dict[str, Any]:
         """核验当前账号与基础版本后按区域保存并刷新单群运行策略"""
-        from satrap.core.config.group_store import GroupConfigConflict
-        from satrap.core.config.group_session import session_values
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1018,10 +1015,6 @@ class BackendManager:
                 if model is None or not model.api_key:
                     raise ValueError("模型配置不存在或缺少必要凭据")
             if "plugins" in session:
-                from satrap.edictum.plugin_config import validate_config_values
-                from satrap.edictum.plugin_config import PluginConfigManager
-                from satrap.edictum.plugin_settings import validate_plugin_settings
-                from satrap.edictum.plugin_spec import parse_plugin_specs
 
                 type_name = str(definition.metadata.get("edictum_type") or "")
                 type_definition = self._edictum_types.get(type_name) if self._edictum_types else None
@@ -1082,8 +1075,6 @@ class BackendManager:
         self, adapter_id: str, self_id: str, group_id: str, saved_revision: int,
     ) -> dict[str, Any]:
         """只重试当前保存修订的运行时应用, 不重复写入配置"""
-        from satrap.core.config.group_store import GroupConfigConflict
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1095,7 +1086,6 @@ class BackendManager:
         async with lock:
             await adapter.refresh_group_access(self_id)
             adapter.resume_group_access(group_id)
-        from satrap.core.type import UserCall
 
         runtime = self.get_platform_runtime(adapter_id)
         if runtime is not None:
@@ -1103,7 +1093,6 @@ class BackendManager:
             if current["saved_revision"] != saved_revision:
                 raise GroupConfigConflict("群配置已变化, 请刷新后重试")
             route, route_generation, route_revision = adapter.group_route_revision(group_id)
-            from satrap.core.config.group_session import session_values
 
             overrides = {key: value for key, value in session_values(route).items()
                          if key in {"model", "prompt", "plugins"}}
@@ -1141,7 +1130,6 @@ class BackendManager:
     @staticmethod
     def _group_retry_origin(adapter_id: str, self_id: str, group_id: str):
         """构造仅供状态回传的群配置重试来源, 不赋予模型管理调用权限"""
-        from satrap.core.call_context import CallOrigin
 
         return CallOrigin(adapter_id, self_id, "GroupConfigRetry", group_id, "", "", "")
 
@@ -1150,8 +1138,6 @@ class BackendManager:
         base_revision: str, values: dict[str, object], scenario: dict[str, object],
     ) -> dict[str, Any]:
         """使用已保存平台设置和未保存群草稿进行无副作用唤醒试算"""
-        from satrap.core.config.group_policy import policy_values
-        from satrap.core.config.group_store import GroupConfigConflict
         from satrap.core.pipeline.wake_dry_run import dry_run_wake
 
         current = await self.group_config(adapter_id, self_id, group_id)
@@ -1196,8 +1182,6 @@ class BackendManager:
     ) -> tuple[Any, GroupActionStore, str, int]:
         """确认群目标、账号代次和有效审批模式并生成策略指纹"""
         from satrap.core.config.group_approval import effective_approval
-        from satrap.core.config.group_store import GROUP_APPROVAL_ACTIONS
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if action_type not in GROUP_APPROVAL_ACTIONS:
             raise ValueError("动作不属于逐群审批范围")
@@ -1230,7 +1214,6 @@ class BackendManager:
     async def group_action_types(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
         """返回当前群的动作参数结构、风险和有效审批模式"""
         from satrap.core.config.group_approval import effective_approval
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
         from satrap.core.platform.onebot.group_action_types import ACTION_FIELDS, action_metadata
 
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
@@ -1262,7 +1245,6 @@ class BackendManager:
         query: str = "", page: int = 1, page_size: int = 25,
     ) -> dict[str, Any]:
         """按需从 OneBot 读取成员, 对已取集合分页并明确截断边界"""
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1286,7 +1268,6 @@ class BackendManager:
 
     async def group_events(self, adapter_id: str, self_id: str, group_id: str, *, limit: int = 50) -> dict[str, Any]:
         """按当前群的显式可见设置查询内存中的脱敏近期事件"""
-        from satrap.core.config.group_events import event_values
 
         store = await asyncio.to_thread(self._group_directory_store, adapter_id)
         if not await asyncio.to_thread(store.group_exists, self_id, group_id):
@@ -1335,7 +1316,6 @@ class BackendManager:
 
     async def group_info(self, adapter_id: str, self_id: str, group_id: str) -> dict[str, Any]:
         """按已确认成员关系读取指定群的 OneBot 群信息"""
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1348,9 +1328,6 @@ class BackendManager:
         self, adapter_id: str, self_id: str, group_id: str, action_id: str, message: str,
     ) -> dict[str, Any]:
         """显式管理发送先持久占位, 使用同 ID 查询恢复未知回执"""
-        from satrap.core.config.group_actions import action_fingerprint
-        from satrap.core.config.group_store import GroupConfigConflict
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if not isinstance(message, str) or not message.strip() or len(message) > 1000:
             raise ValueError("手动发送正文必须为 1 到 1000 字符")
@@ -1397,7 +1374,6 @@ class BackendManager:
         self, adapter_id: str, self_id: str, group_id: str, request_id: str, prompt: str,
     ) -> dict[str, Any]:
         """固定可信账号和群目标, 复用手动唤醒的持久受理链路"""
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1414,7 +1390,6 @@ class BackendManager:
         self, adapter_id: str, self_id: str, group_id: str, request_id: str,
     ) -> dict[str, Any]:
         """仅在账号和目标群都匹配时返回手动唤醒状态"""
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
         if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1446,13 +1421,6 @@ class BackendManager:
         self, authorization: ModelActionAuthorization, target_group: str,
     ) -> str:
         """从来源群最新配置计算与本次写授权相关的指纹"""
-        from satrap.core.config.group_session import session_values
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
-        from satrap.edictum.plugin_settings import resolve_runtime_specs
-        from satrap.edictum.plugin_spec import parse_plugin_specs
-        from satrap.core.plugin_authorization import permission_id_list as _lines
-        from satrap.core.call_context import CallOrigin
-        from satrap.core.plugin_authorization import evaluate_plugin_permissions, PluginPermissionDenied
 
         authorization.verify(target_group)
         source_ref = authorization.source_session
@@ -1502,7 +1470,6 @@ class BackendManager:
             scope = group_values.get("scope") or platform.get("settings", {}).get("context_scope", "legacy_user")
             route.extend([route_generation, binding, scope])
             if "plugins" in group_values:
-                from satrap.core.type import UserCall
 
                 plugins = manager._group_plugin_target(
                     session_cfg, UserCall(group_session_overrides={"plugins": group_values["plugins"]}),
@@ -1566,8 +1533,6 @@ class BackendManager:
         action_type: str, params: dict[str, object], *, actor_kind: str,
     ) -> dict[str, Any]:
         """校验目标和参数, 按策略持久登记审批或原子占用后执行"""
-        from satrap.core.config.group_actions import action_fingerprint
-        from satrap.core.config.group_store import GroupConfigConflict
         from satrap.core.platform.onebot.group_action_types import normalize_action_params
 
         normalized, secret_flag = normalize_action_params(action_type, params, self_id)
@@ -1631,7 +1596,6 @@ class BackendManager:
                 adapter_id, self_id, group_id, current["action_type"],
             )
         else:
-            from satrap.core.platform.onebot.adapter import OneBotAdapter
 
             adapter = self._adapter_mgr.get_adapter(adapter_id) if self._adapter_mgr else None
             if not isinstance(adapter, OneBotAdapter) or adapter.bot_self_id != self_id:
@@ -1664,8 +1628,6 @@ class BackendManager:
         返回:
         - 已持久化的成功, 失败或未知结果; 持久化失败抛出明确错误
         """
-        from satrap.core.platform.onebot.admin import AdminActionRejected, AdminActionUnconfirmed, UnsupportedAdminAction
-        from satrap.core.platform.onebot.request_registry import flag_digest
 
         store = await self._group_action_store(adapter_id)
         action = str(record["action_type"])
@@ -1895,7 +1857,6 @@ class BackendManager:
 
     async def _maintain_message_archives(self) -> None:
         """启动后及每小时维护平台档案, 未启动或已移除平台也保留原策略"""
-        from satrap.core.storage.maintenance import StorageMaintenanceService
 
         service = StorageMaintenanceService(self._storage)
         while self._running:
@@ -1927,10 +1888,6 @@ class BackendManager:
         返回:
         - dict[str, Any]: accepted, already_pending, no_pending 或 rejected
         """
-        from dataclasses import replace
-        from satrap.core.pipeline.manual_wake import ManualWakeTicket
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
-        from satrap.core.platform.event import MessageEvent
 
         allowed = {"adapter_id", "group_id", "user_id", "prompt", "message_id", "request_id", "reason"}
         if set(payload) - allowed or not operator:
@@ -2282,7 +2239,6 @@ class BackendManager:
                         continue
                     changed = {key for key in set(old_settings) | set(new_settings) if old_settings.get(key) != new_settings.get(key)}
                     if candidate["type"] in {"onebot", "aiocqhttp"}:
-                        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
                         if isinstance(adapter, OneBotAdapter) and adapter.bot_self_id:
                             try:
@@ -2383,7 +2339,6 @@ class BackendManager:
         - platform_id: 目标平台 ID
         - candidate: 已校验的目标配置, None 表示删除
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         manager = self._adapter_mgr
         dispatcher = self._dispatcher
@@ -2874,7 +2829,6 @@ class BackendManager:
             if (origin is None or origin.chat_type != "GroupMessage" or origin.adapter_id != platform_id
                     or call.group_config_revision is None or call.group_route_generation is None):
                 return
-            from satrap.core.platform.onebot.adapter import OneBotAdapter
 
             adapter = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
             entry = manager.pool.list_entries().get(session_id)
@@ -2891,7 +2845,6 @@ class BackendManager:
             if (origin is None or origin.adapter_id != platform_id or call.group_config_revision is None
                     or call.group_route_generation is None):
                 return
-            from satrap.core.platform.onebot.adapter import OneBotAdapter
 
             adapter = self._adapter_mgr.get_adapter(platform_id) if self._adapter_mgr else None
             if isinstance(adapter, OneBotAdapter):
@@ -2992,7 +2945,6 @@ class BackendManager:
         参数:
         - adapter: 平台适配器实例
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if isinstance(adapter, OneBotAdapter) and self._manual_wake_store is not None:
             adapter.set_send_attempt_recorder(self._manual_wake_store)
@@ -3007,7 +2959,6 @@ class BackendManager:
         账本按数据目录共用一份, 以适配器 ID 与已绑定账号区分条目; 注入失败时保持
         适配器自带的仅进程内账本, 审批不会因此放宽
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if not isinstance(adapter, OneBotAdapter):
             return
@@ -3099,7 +3050,6 @@ class BackendManager:
         - ptype: 平台类型
         - pcfg: 原始平台配置
         """
-        from satrap.core.platform.onebot.adapter import OneBotAdapter
 
         if self._adapter_mgr is None:
             raise RuntimeError("平台运行时未初始化")

@@ -15,6 +15,8 @@ from satrap.cli.common import daemon_client_from_args, ensure_offline_allowed, l
 from satrap.cli.output import CliError, dispatch_action, info, ok, print_json, print_table, render_data
 from satrap.core.type import safe_getattr, safe_getattr_str, safe_getattr_list
 
+from satrap.core.config.session_class_service import SessionClassConfigService
+
 
 def _configured_adapter_ids(config: BackendConfig) -> set[str]:
     """
@@ -183,7 +185,6 @@ def cmd_session_unregister(args: argparse.Namespace):
         ok(f"已注销: {args.name}")
         return
     from satrap.core.config.agent_references import list_agent_references
-    from satrap.core.config.session_class_service import SessionClassConfigService
 
     config = load_cli_config(args)
     service = SessionClassConfigService(node, reference_checker=lambda name: list_agent_references(

@@ -21,6 +21,8 @@ EXIT_USAGE = 2
 
 _json_mode = False
 
+from satrap.core.framework.BackGroundManager import ConfigReferenceScanError
+
 
 class CliError(Exception):
     """CLI 业务错误, 由集中分发层渲染为统一话术并退出"""
@@ -198,7 +200,6 @@ def run_cli_action(fn: Callable[[], Any]) -> None:
     - fn: 命令函数
     """
     from satrap.cli.client import DaemonError, DaemonUnavailable   # 延迟导入避免循环依赖
-    from satrap.core.framework.BackGroundManager import ConfigReferenceScanError
 
     try:
         fn()

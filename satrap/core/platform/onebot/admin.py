@@ -21,6 +21,8 @@ from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.platform.onebot.onebot_utils import forward_ids_in_message, group_session_id
 from satrap.core.log import logger
 
+from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_request_occupancy
+
 
 class PlatformAdminError(Exception):
     """管理动作失败的基类, message 为不含平台响应正文的用户可读说明"""
@@ -299,7 +301,6 @@ class OneBotAdmin:
         try:
             async def guarded_call() -> Any:
                 """在平台写调用的同一协程中完成最后一次权限复核"""
-                from satrap.core.config.group_action_origin import current_group_action_preflight
 
                 preflight = current_group_action_preflight()
                 if preflight is not None:
@@ -1009,7 +1010,6 @@ class OneBotAdmin:
             raise AdminActionRejected(str(error)) from None
         if occupied.group_id != gid or occupied.sub_type != sub_type or occupied.state != "executing":
             raise AdminActionRejected("群请求占用凭据与当前动作不符")
-        from satrap.core.config.group_action_origin import bind_group_request_occupancy
 
         with bind_group_request_occupancy(
             self._adapter.config.id, self_id, gid, cast(str, sub_type), flag_digest("group", self_id, normalized),

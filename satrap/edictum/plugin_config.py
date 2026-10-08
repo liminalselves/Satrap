@@ -37,6 +37,8 @@ _FIELD_TYPES = ("string", "path", "textarea", "number", "bool", "select", "llm",
 _PLUGIN_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")
 """插件配置文件使用的稳定名称格式"""
 
+from satrap.core.storage.file_lock import FileLock
+
 
 @dataclass
 class ConfigField:
@@ -295,7 +297,6 @@ class PluginConfigManager:
         from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
 
         try:
-            from satrap.core.storage.file_lock import FileLock
 
             with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
                 with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:

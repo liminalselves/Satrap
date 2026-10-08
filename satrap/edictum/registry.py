@@ -31,6 +31,8 @@ EdictumPluginUninstaller = Callable[
 ]
 """Edictum 类型的插件卸载适配器"""
 
+from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
+
 
 @dataclass(frozen=True)
 class EdictumTypeDefinition:
@@ -171,7 +173,6 @@ def create_default_edictum_type_registry() -> EdictumTypeRegistry:
     返回:
     - EdictumTypeRegistry: 已注册内置类型的独立注册表
     """
-    from satrap.edictum.simple_session import AsyncSimpleSession, SimpleSession
 
     def install_plugin(
         session: Session | AsyncSession,

@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any, cast
 import json
 import traceback
 
+import re
+
 from satrap.core.pipeline.request_diagnostics import DIAGNOSTIC_STAGES, parse_stages
 from satrap.core.config.conversation_runtime import manage_platform_data
 from satrap.core.config.conversation_data import ConversationDataConflict
@@ -45,6 +47,9 @@ STATIC_DIR = DEFAULT_STATIC_DIR
 
 RouteResponse = tuple[int, dict[str, Any]]
 # 管理 API 响应: (状态码, JSON 体)
+
+from satrap.core.group_chat.reminders import ReminderError
+from satrap.core.group_chat.types import GroupChatError
 
 
 def _parse_json_object(body: bytes) -> dict[str, Any]:
@@ -405,10 +410,7 @@ class BackendHTTPServer(MiniHTTPServer):
         返回:
         - 实际任务结果, 不匹配时为 None
         """
-        import re
         from satrap.core.group_chat.reminder_management import reminder_management, reminder_scope
-        from satrap.core.group_chat.reminders import ReminderError
-        from satrap.core.group_chat.types import GroupChatError
 
         parsed = urlsplit(path)
         match = re.fullmatch(r"/api/platforms/([^/]+)/group-chat/reminders(?:/([^/]+))?(?:/(cancel|resume))?", parsed.path)
@@ -446,7 +448,6 @@ class BackendHTTPServer(MiniHTTPServer):
             logger.warning(f"[提醒接口] 参数无效: {exc}")
             return 400, {"error": str(exc), "reason": "invalid_argument"}
         except Exception:
-            import traceback
 
             logger.error("[提醒接口] 请求失败" + "\n" + traceback.format_exc())
             return 503, {"error": "提醒服务暂不可用", "reason": "unavailable"}

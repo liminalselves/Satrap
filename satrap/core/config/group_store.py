@@ -36,6 +36,8 @@ HIGH_IMPACT_ACTIONS = frozenset({
 })
 """新配置中默认需要审批的高影响群管理动作"""
 
+from satrap.core.config.group_events import event_values
+
 
 class GroupConfigConflict(ValueError):
     """群配置修订已变化, 调用方需要重新读取"""
@@ -368,7 +370,6 @@ class GroupConfigStore:
 
     def runtime_snapshot(self, self_id: str) -> GroupRuntimeSnapshot:
         """在一次数据库读事务中构造完整的账号群运行时快照"""
-        from satrap.core.config.group_events import event_values
 
         _identity(self_id)
         with closing(self._connect()) as connection:
@@ -434,7 +435,6 @@ class GroupConfigStore:
 
     def event_snapshot(self, self_id: str) -> dict[str, dict[str, bool]]:
         """读取逐群业务事件订阅开关, 不影响协议维护与请求账本"""
-        from satrap.core.config.group_events import event_values
 
         _identity(self_id)
         with closing(self._connect()) as connection:
@@ -529,7 +529,6 @@ class GroupConfigStore:
 
             approval_values(replacement)
         if section == "events":
-            from satrap.core.config.group_events import event_values
 
             event_values(replacement)
         if any(not isinstance(key, str) for key in replacement):

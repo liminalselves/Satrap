@@ -24,6 +24,9 @@ from .utils import _WorkflowT
 from .base import _WorkflowCore
 from .utils import _new_async_context
 
+from .execution.engine import run_async
+from .execution.errors import ModelCallError
+
 
 class AsyncModelWorkflowFramework(_WorkflowCore):
     """异步版模型工作流框架"""
@@ -189,7 +192,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 当前上下文和成功标志, 执行异常返回 False, 取消信号继续向外传播
         """
-        from .execution.engine import run_async
 
         try:
             await run_async(
@@ -248,7 +250,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        from .execution.engine import run_async
 
         return await run_async(
             self, user_input=user_input, callback=callback,
@@ -329,7 +330,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        from .execution.engine import run_async
 
         return await run_async(
             self, user_input=user_input, callback=callback,
@@ -362,8 +362,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         self.reset_context_stats()
         await self._restore_context_keep_system(system_messages)
 
-        from .execution.engine import run_async
-        from .execution.errors import ModelCallError
 
         try:
             return await run_async(

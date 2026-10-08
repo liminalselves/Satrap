@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any, cast
 
+import traceback
+
 from satrap.edictum.plugin_settings import validate_plugin_settings
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager, validate_config_values
@@ -21,6 +23,9 @@ _ALLOWED_FIELDS = {
     "plugins",
 }
 """Edictum 冷配置允许写入的字段"""
+
+from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
+from satrap.core.log import logger
 
 
 class EdictumConfigService:
@@ -54,9 +59,6 @@ class EdictumConfigService:
         参数:
         - name: 待变更的配置名称
         """
-        from satrap.core.framework.BackGroundManager import ConfigInUseError, ConfigReferenceScanError
-        from satrap.core.log import logger
-        import traceback
 
         if self.reference_checker is None:
             return

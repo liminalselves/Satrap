@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+import json
+
 from satrap.expend.plugins.memory.state import get_plugin_state
 from satrap.core.memory.service import MemoryService
 from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
@@ -74,7 +76,6 @@ def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
                                                    "request_message_id": origin.source_message_id}, access=access, principal="command"))
         else:
             return "用法: /memory list | add <标题> <内容> | del <完整记忆 ID>"
-        import json
         return json.dumps(result, ensure_ascii=False)
     if sub in ("list", "查看"):
         memories = store.execute("list_all")
