@@ -4,6 +4,13 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { toast } from '@/components/ui/Toast';
 
+// 单插件立场: excluded 优先显示 (与运行时"排除优先"一致); 三态控件写回时原子更新两个名单, 矛盾状态无法从界面产生
+type PluginStance = 'neutral' | 'allow' | 'exclude';
+const stanceOptions = (mode: 'selected' | 'all'): { value: PluginStance; label: string }[] =>
+  mode === 'all'
+    ? [{ value: 'neutral', label: '包含' }, { value: 'exclude', label: '排除' }]
+    : [{ value: 'neutral', label: '不表态' }, { value: 'allow', label: '允许' }, { value: 'exclude', label: '排除' }];
+
 export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSaved?: (groups: AdministratorGroup[], revision: string, previousRevision: string) => void }) {
   const [snapshot, setSnapshot] = useState<AdministratorSnapshot | null>(null);
   const [groups, setGroups] = useState<AdministratorGroup[]>([]);
@@ -121,7 +128,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
       <Button variant="primary" disabled={!snapshot || !dirty || busy} onClick={() => void save()}>保存并应用</Button>
     </div>
     {loading && <p className="text-sm text-text-secondary">正在读取管理员设置…</p>}
-    {error && <div role="alert" className="rounded-md border border-red-500/30 p-3 text-sm text-red-400">{error}</div>}
+    {error && <div role="alert" className="rounded-md border border-error p-3 text-sm text-error">{error}</div>}
     {!!snapshot?.plugin_errors?.length && <div role="alert" className="rounded-md border border-border-glass p-3 text-sm"><p>以下插件无法加载, 不会授予管理员权限:</p><ul>{snapshot.plugin_errors.map((item, index) => <li key={`${item.name}-${index}`}>{item.name}: {item.error}</li>)}</ul></div>}
     {(conflict || comparison) && <div className="space-y-2 rounded-md border border-border-glass p-3 text-sm">
       <p>{conflict ? '配置已被其他操作修改, 草稿已保留。请读取最新版本, 比较差异后再保存。' : '已读取最新版本, 以下显示已保存的配置。编辑区仍是你的草稿, 请比较后再保存。'}</p>
@@ -136,9 +143,19 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     {snapshot && !groups.length && <p className="text-text-secondary">尚未配置管理组。各插件继续使用自己的原有名单。</p>}
     {groups.map(group => <fieldset key={group.id} disabled={busy || loading} className="space-y-4 rounded-md border border-border-glass p-4">
       <div className="flex flex-wrap items-end gap-3">
-        <label className="min-w-48 flex-1 text-sm">管理组名称<Input value={group.name} maxLength={128} placeholder="例如: 主要管理员" onChange={event => change(group.id, current => ({ ...current, name: event.target.value }))} /></label>
-        <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={group.enabled} onChange={event => change(group.id, current => ({ ...current, enabled: event.target.checked }))} />启用此组</label>
-        <Button onClick={() => { setGroups(current => current.filter(item => item.id !== group.id)); setRebind(current => current.filter(item => item.group_id !== group.id)); setPreview(null); }}>删除管理组</Button>
+        <label className="min-w-48 flex-1 text-sm">管理组名称
+          <Input value={group.name} maxLength={128} placeholder="例如: 主要管理员"
+            onChange={event => change(group.id, current => ({ ...current, name: event.target.value }))} />
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={group.enabled}
+            onChange={event => change(group.id, current => ({ ...current, enabled: event.target.checked }))} />启用此组
+        </label>
+        <Button onClick={() => {
+          setGroups(current => current.filter(item => item.id !== group.id));
+          setRebind(current => current.filter(item => item.group_id !== group.id));
+          setPreview(null);
+        }}>删除管理组</Button>
       </div>
       <div className="space-y-2">
         <p className="text-sm font-medium">管理员成员</p>
@@ -148,32 +165,88 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
           const rebound = rebind.some(item => item.group_id === group.id && item.platform_id === member.platform_id && item.user_id === member.user_id);
           return <div key={index} className="space-y-2 rounded-md bg-glass p-3">
             <div className="grid items-end gap-2 md:grid-cols-[1fr_1fr_auto]">
-              <label className="text-sm">平台<select aria-label="管理员平台" className={selectClass} value={member.platform_id} onChange={event => change(group.id, current => ({ ...current, members: current.members.map((item, at) => at === index ? { platform_id: event.target.value, user_id: item.user_id } : item) }))}>
-                <option value="">选择已配置的平台</option>
-                {!platform && member.platform_id && <option value={member.platform_id}>{member.platform_id} · 平台已移除</option>}
-                {snapshot?.platforms.map(item => <option key={item.id} value={item.id}>{item.name || item.id} · {item.type}{item.enabled ? '' : ' · 已停用'}</option>)}
-              </select></label>
-              <label className="text-sm">平台用户识别号<Input value={member.user_id} maxLength={256} placeholder="填写用户 ID, 不是昵称" onChange={event => change(group.id, current => ({ ...current, members: current.members.map((item, at) => at === index ? { ...item, user_id: event.target.value } : item) }))} /></label>
-              <Button onClick={() => change(group.id, current => ({ ...current, members: current.members.filter((_, at) => at !== index) }))}>移除成员</Button>
+              <label className="text-sm">平台
+                <select aria-label="管理员平台" className={selectClass} value={member.platform_id}
+                  onChange={event => change(group.id, current => ({
+                    ...current,
+                    members: current.members.map((item, at) => at === index ? { platform_id: event.target.value, user_id: item.user_id } : item),
+                  }))}>
+                  <option value="">选择已配置的平台</option>
+                  {!platform && member.platform_id && <option value={member.platform_id}>{member.platform_id} · 平台已移除</option>}
+                  {snapshot?.platforms.map(item => <option key={item.id} value={item.id}>{item.name || item.id} · {item.type}{item.enabled ? '' : ' · 已停用'}</option>)}
+                </select>
+              </label>
+              <label className="text-sm">平台用户识别号
+                <Input value={member.user_id} maxLength={256} placeholder="填写用户 ID, 不是昵称"
+                  onChange={event => change(group.id, current => ({
+                    ...current,
+                    members: current.members.map((item, at) => at === index ? { ...item, user_id: event.target.value } : item),
+                  }))} />
+              </label>
+              <Button onClick={() => change(group.id, current => ({
+                ...current,
+                members: current.members.filter((_, at) => at !== index),
+              }))}>移除成员</Button>
             </div>
-            {invalid && <div className="text-sm text-amber-500">{rebound ? '保存时将明确绑定到当前平台实例' : '原平台已移除或重建, 此身份授权已失效'}{platform && !rebound && <Button className="ml-2" onClick={() => { setRebind(current => [...current, { group_id: group.id, platform_id: member.platform_id, user_id: member.user_id }]); setPreview(null); }}>绑定到当前平台</Button>}</div>}
+            {invalid && <div className="text-sm text-warning">
+              {rebound ? '保存时将明确绑定到当前平台实例' : '原平台已移除或重建, 此身份授权已失效'}
+              {platform && !rebound && <Button className="ml-2" onClick={() => {
+                setRebind(current => [...current, { group_id: group.id, platform_id: member.platform_id, user_id: member.user_id }]);
+                setPreview(null);
+              }}>绑定到当前平台</Button>}
+            </div>}
           </div>;
         })}
-        <Button onClick={() => change(group.id, current => ({ ...current, members: [...current.members, { platform_id: '', user_id: '' }] }))}>添加管理员成员</Button>
+        <Button onClick={() => change(group.id, current => ({
+          ...current,
+          members: [...current.members, { platform_id: '', user_id: '' }],
+        }))}>添加管理员成员</Button>
       </div>
-      <label className="block text-sm">适用插件<select aria-label="适用插件" className={selectClass} value={group.plugin_scope.mode} onChange={event => change(group.id, current => ({ ...current, plugin_scope: { ...current.plugin_scope, mode: event.target.value as 'selected' | 'all', included: [] } }))}>
-        <option value="selected">指定插件</option><option value="all">所有已接入插件, 包含未来接入的插件</option>
-      </select></label>
-      <p className="text-sm text-text-secondary">排除优先于其他管理组的允许, 仅影响系统管理员授权。插件原名单仍可独立授权。</p>
+      <label className="block text-sm">适用插件
+        <select aria-label="适用插件" className={selectClass} value={group.plugin_scope.mode}
+          onChange={event => change(group.id, current => ({
+            ...current,
+            plugin_scope: { ...current.plugin_scope, mode: event.target.value as 'selected' | 'all', included: [] },
+          }))}>
+          <option value="selected">指定插件</option><option value="all">所有已接入插件, 包含未来接入的插件</option>
+        </select>
+      </label>
+      <p className="text-sm text-text-secondary">立场仅影响系统管理员授权, 插件原名单仍可独立授权。</p>
       <div className="grid gap-3 md:grid-cols-2">
         {[...new Set([...(snapshot?.plugins.map(item => item.name) || []), ...group.plugin_scope.included, ...group.plugin_scope.excluded])].map(name => {
           const plugin = snapshot?.plugins.find(item => item.name === name);
+          const stance: PluginStance = group.plugin_scope.excluded.includes(name) ? 'exclude'
+            : group.plugin_scope.included.includes(name) ? 'allow' : 'neutral';
+          const setStance = (next: PluginStance) => change(group.id, current => {
+            const scope = current.plugin_scope;
+            const included = scope.included.filter(item => item !== name);
+            const excluded = scope.excluded.filter(item => item !== name);
+            if (next === 'allow') included.push(name);
+            if (next === 'exclude') excluded.push(name);
+            return { ...current, plugin_scope: { ...scope, included, excluded } };
+          });
           return <div key={name} className="space-y-2 rounded-md border border-border-glass p-3 text-sm">
             <p className="font-medium">{name}{!plugin ? ' · 暂不可用' : !plugin.supports_administrators ? ' · 未接入' : ''}</p>
-            {plugin?.supports_administrators && <ul className="text-text-secondary">{Object.entries(plugin.management_permissions).filter(([, rule]) => rule.system_admin).map(([id, rule]) => <li key={id}>{rule.description}{!!rule.requirements?.length && <p className="mt-1 text-xs">{rule.requirements.join('；')}</p>}</li>)}</ul>}
-            <div className="flex gap-4">
-              {group.plugin_scope.mode === 'selected' && <label className="flex items-center gap-1"><input type="checkbox" checked={group.plugin_scope.included.includes(name)} disabled={!!plugin && !plugin.supports_administrators && !group.plugin_scope.included.includes(name)} onChange={event => change(group.id, current => ({ ...current, plugin_scope: { ...current.plugin_scope, included: event.target.checked ? [...current.plugin_scope.included, name] : current.plugin_scope.included.filter(item => item !== name) } }))} />允许</label>}
-              <label className="flex items-center gap-1"><input type="checkbox" checked={group.plugin_scope.excluded.includes(name)} onChange={event => change(group.id, current => ({ ...current, plugin_scope: { ...current.plugin_scope, excluded: event.target.checked ? [...current.plugin_scope.excluded, name] : current.plugin_scope.excluded.filter(item => item !== name) } }))} />排除</label>
+            {plugin?.supports_administrators && <ul className="text-text-secondary">
+              {Object.entries(plugin.management_permissions).filter(([, rule]) => rule.system_admin).map(([id, rule]) => <li key={id}>
+                {rule.description}
+                {!!rule.requirements?.length && <p className="mt-1 text-xs">{rule.requirements.join('；')}</p>}
+              </li>)}
+            </ul>}
+            <div className="space-y-1">
+              <div role="radiogroup" aria-label={`${name} 的授权立场`}
+                className="inline-flex divide-x divide-glass-border overflow-hidden rounded-md border border-border-glass">
+                {stanceOptions(group.plugin_scope.mode).map(option => {
+                  const disabled = option.value === 'allow' && !!plugin && !plugin.supports_administrators && stance !== 'allow';
+                  return <label key={option.value}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-glass-active'} ${stance === option.value ? 'bg-glass-active font-medium' : ''}`}>
+                    <input type="radio" name={`stance-${group.id}-${name}`} checked={stance === option.value} disabled={disabled}
+                      onChange={() => setStance(option.value)} className="h-3.5 w-3.5 accent-accent" />
+                    {option.label}
+                  </label>;
+                })}
+              </div>
+              {stance === 'exclude' && <p className="text-xs text-text-secondary">否决: 覆盖此成员在其他组的允许</p>}
             </div>
           </div>;
         })}

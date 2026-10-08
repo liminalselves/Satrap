@@ -107,11 +107,20 @@ try {
   await newGroup.getByLabel('平台用户识别号').fill('another@example.test');
   await newGroup.getByLabel('适用插件', { exact: true }).selectOption('all');
   await newGroup.getByText('group_admin', { exact: true }).locator('..').getByLabel('排除').check();
+  // 三态控件: 允许→排除原子互换并显示否决提示, 不表态清空两个名单, 再允许则净效果回到原状
+  const firstCard = panel.locator('fieldset').first().getByText('group_admin', { exact: true }).locator('..');
+  await firstCard.getByLabel('排除', { exact: true }).check();
+  await firstCard.getByText('否决: 覆盖此成员在其他组的允许', { exact: true }).waitFor();
+  await firstCard.getByLabel('不表态', { exact: true }).check();
+  assert.equal(await firstCard.getByText('否决: 覆盖此成员在其他组的允许', { exact: true }).count(), 0);
+  await firstCard.getByLabel('允许', { exact: true }).check();
   runtimeStatus = 'next_start';
   await save.click();
   await panel.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
   assert.equal(snapshot.groups[1].plugin_scope.mode, 'all');
   assert.deepEqual(snapshot.groups[1].plugin_scope.excluded, ['group_admin']);
+  assert.deepEqual(snapshot.groups[0].plugin_scope.excluded, []);
+  assert.deepEqual([...snapshot.groups[0].plugin_scope.included].sort(), ['group_admin', 'temporarily_missing']);
   assert.equal(snapshot.groups[1].members[0].user_id, 'another@example.test');
   assert.equal(writes.some(item => item.path === '/restart'), false);
   assert.deepEqual(errors, []);
