@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterator
@@ -166,9 +166,18 @@ class _CommandScope:
 _NATIVE_COMMAND: ContextVar[_CommandScope | None] = ContextVar("satrap_native_management_command", default=None)
 
 
-_AUTHORIZATION_STEP: ContextVar[list[tuple[PluginEntryBinding, str | None, AuthorizationDecision]] | None] = ContextVar(
+@dataclass
+class _AuthorizationStep:
+    """单步判定缓存, 作用域结束后复制出去的上下文同样不能复用"""
+
+    decisions: list[tuple[PluginEntryBinding, str | None, CallOrigin | None, AuthorizationDecision]] = field(
+        default_factory=list[tuple[PluginEntryBinding, str | None, CallOrigin | None, AuthorizationDecision]])
+    active: bool = True
+
+
+_AUTHORIZATION_STEP: ContextVar[_AuthorizationStep | None] = ContextVar(
     "satrap_authorization_step", default=None)
-"""当前处理步骤内的入口判定缓存, 未进入作用域时不缓存任何结果"""
+"""当前处理步骤内的入口判定缓存, 未进入作用域或作用域已失效时不缓存任何结果"""
 
 
 @contextmanager
@@ -176,19 +185,22 @@ def bind_authorization_step() -> Iterator[None]:
     """
     在当前处理步骤内复用同一入口的授权判定
 
-    同一入口在该步骤内只判定一次, 声明过滤与执行前检查共享结果; 嵌套进入沿用外层缓存,
-    退出最外层后立即丢弃, 之后的调用仍重新判定
+    同一入口在该步骤内只判定一次, 声明过滤与执行前检查共享结果; 嵌套进入只沿用仍有效的
+    外层缓存, 退出最外层后立即撤销, 复制出去的上下文与之后的调用都重新判定
 
     返回:
     - 单步作用域
     """
-    if _AUTHORIZATION_STEP.get() is not None:
+    outer = _AUTHORIZATION_STEP.get()
+    if outer is not None and outer.active:
         yield
         return
-    token = _AUTHORIZATION_STEP.set([])
+    scope = _AuthorizationStep()
+    token = _AUTHORIZATION_STEP.set(scope)
     try:
         yield
     finally:
+        scope.active = False
         _AUTHORIZATION_STEP.reset(token)
 
 
@@ -309,7 +321,7 @@ def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | Non
     读取当前处理步骤内的入口判定
 
     同一入口在同一处理步骤内只判定一次, 声明过滤与执行前检查共享同一结果;
-    未进入步骤作用域或跨步骤调用时每次都重新判定并记录日志
+    缓存按当前调用身份区分, 未进入步骤作用域, 作用域已失效或跨步骤调用时每次都重新判定并记录日志
 
     参数:
     - binding: 宿主创建的入口绑定
@@ -318,14 +330,15 @@ def authorize_plugin_entry(binding: PluginEntryBinding, *, subcommand: str | Non
     返回:
     - 当前授权结果, 失效或意外异常按拒绝处理并记录日志
     """
-    memo = _AUTHORIZATION_STEP.get()
-    if memo is None:
+    step = _AUTHORIZATION_STEP.get()
+    if step is None or not step.active:
         return _evaluate_plugin_entry(binding, subcommand)
-    for cached_binding, cached_subcommand, decision in memo:
-        if cached_binding is binding and cached_subcommand == subcommand:
+    origin = current_call_origin()
+    for cached_binding, cached_subcommand, cached_origin, decision in step.decisions:
+        if cached_binding is binding and cached_subcommand == subcommand and cached_origin is origin:
             return decision
     decision = _evaluate_plugin_entry(binding, subcommand)
-    memo.append((binding, subcommand, decision))
+    step.decisions.append((binding, subcommand, origin, decision))
     return decision
 
 

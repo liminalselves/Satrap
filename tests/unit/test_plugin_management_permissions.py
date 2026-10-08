@@ -336,6 +336,31 @@ def test_nested_step_scope_shares_the_outer_decision(monkeypatch: pytest.MonkeyP
     assert evaluations == [("query", None), ("query", None)]
 
 
+def test_copied_step_context_cannot_reuse_revoked_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    binding = tool_binding()
+    with bind_call_origin(origin()):
+        with bind_authorization_step():
+            assert authorize_plugin_entry(binding).status == "allowed"
+            copied = copy_context()
+        # 步骤结束后身份仍存活: 复制出去的上下文不得沿用已失效作用域的判定
+        assert copied.run(authorize_plugin_entry, binding).status == "allowed"
+    decision = copied.run(authorize_plugin_entry, binding)
+    assert decision.status == "denied" and decision.reason_code == "identity_missing"
+    assert evaluations == [("query", None), ("query", None), ("query", None)]
+
+
+def test_step_cache_does_not_cross_call_origin(monkeypatch: pytest.MonkeyPatch) -> None:
+    evaluations = counted_evaluations(monkeypatch)
+    binding = tool_binding()
+    with bind_call_origin(origin()), bind_authorization_step():
+        assert authorize_plugin_entry(binding).status == "allowed"
+        with bind_call_origin(None):
+            masked = authorize_plugin_entry(binding)
+    assert masked.status == "denied" and masked.reason_code == "identity_missing"
+    assert evaluations == [("query", None), ("query", None)]
+
+
 class _AuthorizedTool(Tool):
     """记录每次授权判定结果的工具替身"""
 

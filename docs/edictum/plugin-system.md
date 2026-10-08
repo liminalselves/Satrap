@@ -156,7 +156,7 @@ tool_permissions:
 
 判定结果 `AuthorizationDecision` 含 `status` (allowed / denied / not_applicable), 入口身份, `required_permissions`, 每项 `grants` (来源 local_list / local_empty_allow / administrator_group 及命中组 ID), `reason_code`, `policy_revision` 与 `permission_fingerprint` (供持久申请复核)。`reason_code` 取值: `permission_denied` (确未授权), `identity_missing`, `entry_disabled`, `stale_authorization` (检查与写入之间版本变化), `invalid_permission_config` (名单结构错误), `authorization_error` (检查本身异常, 记完整堆栈, 提示查看后端日志), `unknown_entry`
 
-工具过滤结果不能作为执行凭证; 同一处理步骤内复用一份判定, 步骤结束即失效, 异步等待后和平台写入前重新校验
+工具过滤结果不能作为执行凭证; 同一处理步骤内复用一份判定, 步骤结束即失效, 复制出去的上下文同样失效, 并按当前调用身份区分, 异步等待后和平台写入前重新校验
 
 ## 安装 / 启停 / 卸载
 
