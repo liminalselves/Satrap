@@ -16,13 +16,12 @@ export function PlatformConnectionTest({ platform, revision, identity, onClose }
   const signature = `${platform?.id || ''}\u0000${revision}\u0000${identity}`;
   const previousSignature = useRef(signature);
   useEffect(() => {
-    const generation = run;
-    ++generation.current;
+    ++run.current;
     setBusy(false);
     setResult(null);
     setInvalidated(Boolean(previousSignature.current.split('\u0000')[0]) && previousSignature.current !== signature && Boolean(platform));
     previousSignature.current = signature;
-    return () => { ++generation.current; };
+    return () => { ++run.current; };
   }, [signature, platform]);
   const test = async () => {
     if (!platform || busy) return;

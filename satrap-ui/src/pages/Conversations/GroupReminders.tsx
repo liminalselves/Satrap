@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 import { reminderApi, type GroupReminder, type ReminderPage, type ReminderState } from '@/api/reminders';
 import { controlApi } from '@/api/control';
 import type { PlatformArchiveMessage, PlatformArchiveRecord } from '@/api/types';
@@ -7,6 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
+import { errorText } from '@/utils/errorText';
+import { formatTime } from '@/utils/format';
 
 export const reminderStateLabels: Record<ReminderState, string> = {
   scheduled: '待执行', waiting_delivery: '等待平台恢复', paused: '已暂停', sending: '正在发送', sent: '已发送',
@@ -27,9 +28,8 @@ const reasonLabels: Record<string, string> = {
   scheduled_send_interrupted: '发送过程中任务被中断', scheduled_finalize_unavailable: '无法保存最终发送结果',
   scheduled_send_exception: '发送过程中出现异常', scheduled_confirmation_missing: '平台没有返回消息确认',
 };
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error)
-  ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
-const formatDate = (value: string | number) => new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString();
+// 统一时间格式; due_at_utc 为 ISO 字符串, 其余为 epoch 秒
+const formatDate = (value: string | number) => formatTime(typeof value === 'number' ? value : Math.floor(new Date(value).getTime() / 1000));
 type Draft = { text: string; mode: 'relative' | 'absolute'; delay: string; unit: string; due: string; mentions: string; key: string };
 
 export function GroupReminders({ record, refresh, onDirty }: { record: PlatformArchiveRecord; refresh: number; onDirty: (dirty: boolean) => void }) {
@@ -54,7 +54,8 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
   const sourceSequence = useRef(0);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
-  useEffect(() => { onDirty(!!draft); return () => onDirty(false); }, [draft, onDirty]);
+  const hasDraft = !!draft;
+  useEffect(() => { onDirty(hasDraft); if (hasDraft) return () => onDirty(false); }, [hasDraft, onDirty]);
   useEffect(() => {
     let live = true;
     setLoading(true); setError(''); setPage(undefined);
@@ -109,39 +110,39 @@ export function GroupReminders({ record, refresh, onDirty }: { record: PlatformA
   };
 
   return <Card className="space-y-4">
-    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-medium">一次性提醒</h2>
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">一次性提醒</h2>
       <div className="flex gap-2"><Button disabled={busy} onClick={() => { setDraftError(''); setDraft({ text: '', mode: 'relative', delay: '30', unit: '60', due: '', mentions: '', key: crypto.randomUUID() }); }}>创建提醒</Button>
-        <Button variant="ghost" disabled={busy || loading} onClick={() => { setCursors([]); setVersion((value) => value + 1); }}>刷新提醒</Button></div></div>
+        <Button disabled={busy || loading} onClick={() => { setCursors([]); setVersion((value) => value + 1); }}>刷新提醒</Button></div></div>
     <p className="text-sm text-text-secondary">到期发送固定文字，可提及已确认的群成员。创建和恢复需要平台在线并开启提醒；停用后不会自动恢复暂停任务。</p>
-    <label className="block text-sm">任务状态<select className="glass-input ml-2" aria-label="提醒状态" value={state} onChange={(event) => { setState(event.target.value as ReminderState | ''); setCursors([]); }}>
+    <label className="block text-sm">任务状态<select className="glass-input mt-1 w-full" aria-label="提醒状态" value={state} onChange={(event) => { setState(event.target.value as ReminderState | ''); setCursors([]); }}>
       <option value="">全部状态</option>{Object.entries(reminderStateLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-    {error && <p role="alert" className="text-red-500">{error}</p>}{notice && <p role="status">{notice}</p>}
+    {error && <p role="alert" className="text-error">{error}</p>}{notice && <p role="status">{notice}</p>}
     {loading ? <p>正在读取提醒…</p> : page && <div className="space-y-2">{page.items.length === 0 && <p className="text-text-secondary">当前范围没有提醒</p>}
-      {page.items.map((reminder) => <div key={reminder.reminder_id} className="rounded-xl border border-border-light p-3">
+      {page.items.map((reminder) => <div key={reminder.reminder_id} className="rounded-xl border border-glass-border p-3">
         <div className="flex flex-wrap items-center justify-between gap-2"><strong>{reminderStateLabels[reminder.state]}</strong><span>{formatDate(reminder.due_at_utc)}</span></div>
         <p className="my-2 whitespace-pre-wrap break-words">{reminder.text}</p><p className="break-all text-xs text-text-tertiary">创建者：{reminder.creator_kind === 'operator' ? '管理界面' : reminder.creator_user_id} · {reminder.reminder_id}</p>
         {reminder.reason && <p className="mt-1 text-sm">{reasonLabels[reminder.reason] || '本次执行未完成，详细原因可查看运行日志'}</p>}
-        {reminder.state === 'unknown' && <p className="mt-1 text-sm text-amber-600">可能已经送达，重新创建可能导致重复发送。</p>}
-        <div className="mt-2 flex flex-wrap gap-2"><Button variant="ghost" onClick={() => { sourceSequence.current++; setSource(undefined); setSourceError(''); setSourceBusy(false); setSelected(reminder); }}>查看提醒详情</Button>
-          {['scheduled', 'waiting_delivery', 'paused'].includes(reminder.state) && <Button variant="ghost" disabled={busy} onClick={() => setAction({ reminder, kind: 'cancel' })}>取消提醒</Button>}
-          {reminder.state === 'paused' && <Button variant="ghost" disabled={busy} onClick={() => setAction({ reminder, kind: 'resume' })}>恢复提醒</Button>}</div>
+        {reminder.state === 'unknown' && <p className="mt-1 text-sm text-warning">可能已经送达，重新创建可能导致重复发送。</p>}
+        <div className="mt-2 flex flex-wrap gap-2"><Button className="transition-colors" onClick={() => { sourceSequence.current++; setSource(undefined); setSourceError(''); setSourceBusy(false); setSelected(reminder); }}>查看提醒详情</Button>
+          {['scheduled', 'waiting_delivery', 'paused'].includes(reminder.state) && <Button className="transition-colors" disabled={busy} onClick={() => setAction({ reminder, kind: 'cancel' })}>取消提醒</Button>}
+          {reminder.state === 'paused' && <Button className="transition-colors" disabled={busy} onClick={() => setAction({ reminder, kind: 'resume' })}>恢复提醒</Button>}</div>
       </div>)}</div>}
-    <div className="flex gap-2"><Button variant="ghost" disabled={loading || !cursors.length} onClick={() => setCursors((old) => old.slice(0, -1))}>上一页提醒</Button>
-      <Button variant="ghost" disabled={loading || !page?.has_more || !page.next_cursor} onClick={() => setCursors((old) => [...old, page!.next_cursor!])}>下一页提醒</Button></div>
+    <div className="flex gap-2"><Button disabled={loading || !cursors.length} onClick={() => setCursors((old) => old.slice(0, -1))}>上一页提醒</Button>
+      <Button disabled={loading || !page?.has_more || !page.next_cursor} onClick={() => setCursors((old) => [...old, page!.next_cursor!])}>下一页提醒</Button></div>
     <Modal open={!!draft} onClose={() => { if (!busy && confirmDiscard()) setDraft(undefined); }} title="创建一次性提醒">
       {draft && <form className="space-y-4" onSubmit={(event) => { event.preventDefault(); void create(); }}>
         <label className="block text-sm">提醒正文<textarea aria-label="提醒正文" className="glass-input mt-1 min-h-28 w-full" maxLength={2000} value={draft.text} onChange={(event) => changeDraft('text', event.target.value)} /></label>
-        <label className="block text-sm">执行时间<select aria-label="提醒时间方式" className="glass-input ml-2" value={draft.mode} onChange={(event) => changeDraft('mode', event.target.value)}><option value="relative">多久后</option><option value="absolute">指定日期时间</option></select></label>
+        <label className="block text-sm">执行时间<select aria-label="提醒时间方式" className="glass-input mt-1 w-full" value={draft.mode} onChange={(event) => changeDraft('mode', event.target.value)}><option value="relative">多久后</option><option value="absolute">指定日期时间</option></select></label>
         {draft.mode === 'relative' ? <div className="flex gap-2"><input aria-label="提醒等待数量" type="number" min="1" className="glass-input min-w-0 flex-1" value={draft.delay} onChange={(event) => changeDraft('delay', event.target.value)} />
           <select aria-label="提醒等待单位" className="glass-input" value={draft.unit} onChange={(event) => changeDraft('unit', event.target.value)}><option value="1">秒</option><option value="60">分钟</option><option value="3600">小时</option><option value="86400">天</option></select></div>
           : <label className="block text-sm">日期和时间<input aria-label="提醒日期时间" type="datetime-local" className="glass-input mt-1 w-full" value={draft.due} onChange={(event) => changeDraft('due', event.target.value)} /><span className="text-xs text-text-tertiary">使用当前设备时区：{Intl.DateTimeFormat().resolvedOptions().timeZone}</span></label>}
         <label className="block text-sm">要提及的成员 ID（可选）<input aria-label="提醒提及成员" className="glass-input mt-1 w-full" value={draft.mentions} onChange={(event) => changeDraft('mentions', event.target.value)} /><span className="text-xs text-text-tertiary">多个 ID 用空格或逗号分隔，保存前会核验成员属于当前群。</span></label>
-        {draftError && <p role="alert" className="text-red-500">{draftError}</p>}<Button type="submit" disabled={busy}>{busy ? '正在安排…' : '安排提醒'}</Button>
+        {draftError && <p role="alert" className="text-error">{draftError}</p>}<Button type="submit" disabled={busy}>{busy ? '正在安排…' : '安排提醒'}</Button>
       </form>}
     </Modal>
     <Modal open={!!action} onClose={() => { if (!busy) setAction(undefined); }} title={action?.kind === 'resume' ? '恢复提醒' : '取消提醒'}>
       <p>{action?.kind === 'resume' ? '恢复会重新检查当前配置和群成员，保持原定时间；超过补发宽限会记为已错过。' : '取消尚未开始发送的任务；如果发送已经开始，无法保证撤回。'}</p>
-      <p className="my-3 whitespace-pre-wrap break-words">{action?.reminder.text}</p>{error && <p role="alert" className="text-red-500">{error}</p>}<Button disabled={busy} onClick={() => void mutate()}>确认{action?.kind === 'resume' ? '恢复' : '取消'}</Button>
+      <p className="my-3 whitespace-pre-wrap break-words">{action?.reminder.text}</p>{error && <p role="alert" className="text-error">{error}</p>}<Button disabled={busy} onClick={() => void mutate()}>确认{action?.kind === 'resume' ? '恢复' : '取消'}</Button>
     </Modal>
     <Modal open={!!selected} onClose={() => { sourceSequence.current++; setSelected(undefined); setSource(undefined); setSourceError(''); }} title="提醒详情">
       {selected && <div className="space-y-3"><p>{reminderStateLabels[selected.state]} · 修订 {selected.revision}</p><p className="whitespace-pre-wrap break-words">{selected.text}</p>

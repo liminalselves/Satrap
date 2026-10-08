@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
-import { ApiError } from '@/api/client';
 import { groupApi, type GroupConfigResult } from '@/api/groups';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { errorText } from '@/utils/errorText';
 
 const sections = [
   ['overview', '概览'], ['policy', '响应策略'], ['session', '会话配置'],
@@ -38,11 +38,6 @@ export function GroupInvalidSection() {
   const { adapterId, account } = useGroupContext();
   const listPath = `/platforms/${encodeURIComponent(adapterId)}/groups?account=${encodeURIComponent(account)}`;
   return <Card role="alert">群详情标签不存在。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '群配置读取失败';
 }
 
 export function GroupLayout() {
@@ -80,14 +75,17 @@ export function GroupLayout() {
     else {
       groupApi.accounts(adapterId, isRunning).then((result) => {
         if (result.current_account) {
-          const next = new URLSearchParams(params);
-          next.set('account', result.current_account);
-          setParams(next, { replace: true });
+          // 函数式更新保留其它查询参数, 避免把 params 拉进依赖导致每次 URL 变化都重读
+          setParams((previous) => {
+            const next = new URLSearchParams(previous);
+            next.set('account', result.current_account!);
+            return next;
+          }, { replace: true });
         } else setLoading(false);
       }).catch((caught) => { setError(errorText(caught)); setLoading(false); });
     }
     return () => { request.current += 1; };
-  }, [account, adapterId, isRunning, reload, params, setParams]);
+  }, [account, adapterId, isRunning, reload, setParams]);
   useEffect(() => {
     if (!account || !isRunning) return;
     const interval = window.setInterval(() => {
@@ -126,7 +124,7 @@ export function GroupLayout() {
         <nav className="flex gap-1 overflow-x-auto border-t border-glass-border pt-3" aria-label="群详情标签">
           {sections.map(([key, label]) => (
             <NavLink key={key} to={`/platforms/${encodeURIComponent(adapterId)}/groups/${encodeURIComponent(groupId)}/${key}?account=${encodeURIComponent(account)}`}
-              className={`shrink-0 rounded-lg px-3 py-2 text-sm ${section === key ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:text-text-primary'}`}>
+              className={`shrink-0 rounded-lg px-3 py-2 text-sm transition-colors ${section === key ? 'bg-accent/15 text-accent' : 'text-text-secondary hover:bg-glass-active hover:text-text-primary'}`}>
               {label}
             </NavLink>
           ))}

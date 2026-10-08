@@ -4,6 +4,7 @@ import { groupApi, type GroupPolicyValue } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { errorText } from '@/utils/errorText';
 import { GROUP_OVERRIDE_FIELDS, type OverrideFieldDef } from '@/utils/wakeOverrides';
 import { policyField, validatePolicyValue } from '@/utils/wakePolicyContract';
 import { useGroupContext } from './GroupLayout';
@@ -50,11 +51,6 @@ function parseDraft(draft: PolicyDraft, fields: OverrideFieldDef[]): Record<stri
     result[field.key] = { mode: 'value', value };
   }
   return result;
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '保存失败';
 }
 
 export function GroupPolicy() {
@@ -146,7 +142,10 @@ export function GroupPolicy() {
         <p>服务器配置已变化。草稿仍保留, 不会自动覆盖其他修改</p>
         <div className="flex flex-wrap gap-2">
           <Button size="sm" onClick={serverLatest}>查看服务器最新值</Button>
-          <Button size="sm" variant="subtle" onClick={() => navigator.clipboard.writeText(JSON.stringify(parseDraft(draft, fields), null, 2))}>复制我的草稿</Button>
+          <Button size="sm" variant="subtle" onClick={() => {
+            try { void navigator.clipboard.writeText(JSON.stringify(parseDraft(draft, fields), null, 2)); }
+            catch (caught) { setError(errorText(caught)); }
+          }}>复制我的草稿</Button>
           <Button size="sm" variant="subtle" onClick={discardDraft}>放弃草稿并重新加载</Button>
         </div>
       </Card>}

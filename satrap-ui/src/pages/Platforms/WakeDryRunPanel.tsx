@@ -168,7 +168,7 @@ export function WakeDryRunPanel({ settings, blockedReason }: WakeDryRunPanelProp
       </div>
       {blockedReason && <p className="text-xs text-error" data-testid="wake-dry-run-blocked">{blockedReason}</p>}
       {result && (
-        <div className="space-y-1 border-t border-border/50 pt-2">
+        <div className="space-y-1 border-t border-glass-border pt-2">
           {resolved && (
             <div className="flex flex-wrap gap-1 pb-1">
               {previewFieldKeys()

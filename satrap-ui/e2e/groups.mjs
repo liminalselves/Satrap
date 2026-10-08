@@ -333,7 +333,7 @@ try {
   await page.getByRole('button', { name: '添加平台' }).click();
   await page.getByLabel('平台名称').fill('ob');
   await page.getByLabel('类型', { exact: true }).selectOption('onebot');
-  await page.getByLabel('平台默认 Provider').selectOption('edictum');
+  await page.getByLabel('平台默认流程').selectOption('edictum');
   await page.getByLabel('Edictum 命名配置').selectOption('simple');
   await page.getByLabel('Self ID').fill('100');
   await page.getByLabel('Host').fill('127.0.0.1');
@@ -629,7 +629,7 @@ try {
   assert.equal(actionPosts[0].action_id, actionPosts[1].action_id);
   assert.deepEqual(actionPosts[0].params, actionPosts[1].params);
   await page.getByRole('button', { name: '按原 ID 查询状态' }).click();
-  await page.getByText('状态: unknown').waitFor();
+  await page.getByText('状态: 结果未确认').waitFor();
   assert.equal(actionPosts.length, 2);
   assert.equal(await page.getByRole('button', { name: '开始新操作' }).isDisabled(), true);
   await page.getByRole('button', { name: '我已核实平台状态, 可以创建新操作' }).click();
@@ -651,7 +651,7 @@ try {
   assert.equal(await page.locator('label:has-text("系统提示词") textarea').inputValue(), '未保存草稿');
   await page.getByRole('button', { name: '取消' }).click();
   await page.locator('label:has-text("绑定来源") select').selectOption('value');
-  await page.locator('label:has-text("Provider") select').selectOption('session_class');
+  await page.locator('label:has-text("流程") select').selectOption('session_class');
   await page.locator('label:has-text("命名配置") select').selectOption('basic');
   await page.getByText('目标配置不支持已有的').waitFor();
   assert.equal(await page.getByRole('button', { name: '保存并应用' }).isDisabled(), true);

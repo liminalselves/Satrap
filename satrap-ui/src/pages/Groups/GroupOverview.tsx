@@ -1,15 +1,21 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ApiError } from '@/api/client';
 import { groupApi, type GroupAction } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGroupContext } from './GroupLayout';
+import { errorText } from '@/utils/errorText';
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '操作失败';
-}
+// 后端英文枚举码到中文的映射, 未覆盖的值回退原样展示
+const actionStateLabels: Record<string, string> = {
+  pending: '待处理', expired: '已过期', rejected: '已拒绝', executing: '执行中',
+  succeeded: '已成功', failed: '已失败', unknown: '结果未确认',
+};
+const wakeStatusLabels: Record<string, string> = {
+  accepted: '已受理', already_pending: '已有相同待处理请求', no_pending: '无待处理消息',
+  rejected: '已拒绝', executing: '发送中', sent: '已发送', partial: '部分发送',
+  failed: '发送失败', unknown: '结果未确认',
+};
 
 export function GroupOverview() {
   const { adapterId, groupId, account, isRunning, historical, config } = useGroupContext();
@@ -56,7 +62,7 @@ export function GroupOverview() {
       const result = await groupApi.wake(adapterId, groupId, {
         expected_self_id: account, request_id: id, prompt: wakeText,
       });
-      setWakeResult(`${result.status}${result.reason ? ` · ${result.reason}` : ''}`);
+      setWakeResult(`${wakeStatusLabels[result.status] || result.status}${result.reason ? ` · ${result.reason}` : ''}`);
     } catch (caught) { setError(errorText(caught)); }
     finally { setBusy(''); }
   };
@@ -64,7 +70,7 @@ export function GroupOverview() {
     if (!wakeId) return;
     try {
       const result = await groupApi.wakeStatus(adapterId, groupId, account, wakeId);
-      setWakeResult(`${result.status}${result.reason ? ` · ${result.reason}` : ''}`); setError('');
+      setWakeResult(`${wakeStatusLabels[result.status] || result.status}${result.reason ? ` · ${result.reason}` : ''}`); setError('');
     } catch (caught) { setError(errorText(caught)); }
   };
   return <div className="space-y-4">
@@ -108,7 +114,7 @@ export function GroupOverview() {
           <Button size="sm" variant="subtle" onClick={inspectSend} disabled={!sendId}>按操作 ID 查询</Button>
           <Button size="sm" variant="subtle" onClick={resetSend}
             disabled={!sendId || !!busy || !sendResult || ['unknown', 'executing', 'pending'].includes(sendResult.state)}>新操作</Button></div>
-        {sendId && <p role="status" className="break-all text-sm">操作 ID: {sendId} · {sendResult?.state || '结果待查询'}
+        {sendId && <p role="status" className="break-all text-sm">操作 ID: {sendId} · {actionStateLabels[sendResult?.state || ''] || sendResult?.state || '结果待查询'}
           {sendResult?.state === 'unknown' ? ' · 请先核实平台状态' : ''}</p>}
         {sendResult?.state === 'unknown' && <Button size="sm" variant="subtle" onClick={resetSend}>我已核实平台状态, 可以创建新操作</Button>}
       </Card>

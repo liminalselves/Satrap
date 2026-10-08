@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError } from '@/api/client';
-import { groupApi, type GroupAction } from '@/api/groups';
+import { groupApi, GROUP_PAGE_SIZE, type GroupAction } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGroupContext } from './GroupLayout';
 import { groupActionLabels } from './groupActionLabels';
+import { errorText } from '@/utils/errorText';
+import { formatTime } from '@/utils/format';
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '操作失败';
-}
+// 后端动作状态英文码到中文的映射, all 为前端筛选项, 未覆盖的值回退原样展示
+const actionStateLabels: Record<string, string> = {
+  all: '全部', pending: '待处理', executing: '执行中', succeeded: '已成功',
+  failed: '已失败', unknown: '结果未确认', rejected: '已拒绝', expired: '已过期',
+};
 
 export function GroupActions() {
   const { adapterId, groupId, account, historical, isRunning } = useGroupContext();
@@ -62,7 +64,7 @@ export function GroupActions() {
       <div className="flex flex-wrap gap-2">
         <select className="glass-input" value={state} onChange={(event) => { setState(event.target.value); setPage(1); }}>
           {['pending', 'all', 'executing', 'succeeded', 'failed', 'unknown', 'rejected', 'expired'].map((value) =>
-            <option key={value} value={value}>{value}</option>)}
+            <option key={value} value={value}>{actionStateLabels[value] || value}</option>)}
         </select>
         <Button size="sm" variant="subtle" onClick={refresh} disabled={!isRunning}>刷新</Button>
         <span className="text-sm text-text-secondary">共 {total} 条</span>
@@ -70,8 +72,8 @@ export function GroupActions() {
       {!isRunning && <p className="text-sm text-text-secondary">后端离线, 审批记录暂不可读取</p>}
       {actions.map((item) => <div key={item.action_id} className="rounded-lg border border-glass-border p-3 text-sm">
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <div><strong>{groupActionLabels[item.action_type] || item.action_type}</strong> · {item.state} · {item.actor_kind === 'model' ? '模型' : '面板'}</div>
-          <time>{new Date(item.created_at * 1000).toLocaleString()}</time>
+          <div><strong>{groupActionLabels[item.action_type] || item.action_type}</strong> · {actionStateLabels[item.state] || item.state} · {item.actor_kind === 'model' ? '模型' : '面板'}</div>
+          <time>{formatTime(item.created_at)}</time>
         </div>
         <p className="break-all text-text-secondary">ID: {item.action_id}</p>
         <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap text-xs">{JSON.stringify(item.params, null, 2)}</pre>
@@ -84,7 +86,7 @@ export function GroupActions() {
       <div className="flex gap-2">
         <Button size="sm" variant="subtle" onClick={() => setPage((value) => value - 1)} disabled={page <= 1}>上一页</Button>
         <span className="text-sm">第 {page} 页</span>
-        <Button size="sm" variant="subtle" onClick={() => setPage((value) => value + 1)} disabled={page * 25 >= total}>下一页</Button>
+        <Button size="sm" variant="subtle" onClick={() => setPage((value) => value + 1)} disabled={page * GROUP_PAGE_SIZE >= total}>下一页</Button>
       </div>
     </Card>
   </div>;

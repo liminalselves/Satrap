@@ -87,6 +87,6 @@ export const router = createBrowserRouter([
       { path: 'settings', element: lazyRoute(<Settings />) },
     ],
   },
-  // 未匹配路径保持与旧结构一致的空渲染, 不进入管理布局
-  { path: '*', element: null },
+  // 未匹配路径重定向到首页
+  { path: '*', element: <Navigate to="/" replace /> },
 ]);

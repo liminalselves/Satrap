@@ -197,7 +197,7 @@ export function Platforms() {
       return;
     }
     if (formData.session_provider === 'edictum' && !formData.session_type.trim()) {
-      toast('error', 'EdictumProvider 必须绑定一个命名配置');
+      toast('error', 'Edictum 必须绑定一个命名配置');
       return;
     }
     if (formData.session_type) {
@@ -335,11 +335,11 @@ export function Platforms() {
       },
       {
         key: 'session_provider',
-        label: '平台默认 Provider',
+        label: '平台默认流程',
         type: 'select',
         options: [
-          { value: 'session_class', label: 'SessionClassProvider' },
-          { value: 'edictum', label: 'EdictumProvider' },
+          { value: 'session_class', label: 'SessionClass' },
+          { value: 'edictum', label: 'Edictum' },
         ],
       },
       {

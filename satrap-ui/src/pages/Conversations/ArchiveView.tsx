@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
 import { controlApi } from '@/api/control';
 import type { ConversationPlatform, PlatformArchiveCatalog, PlatformArchiveMessage, PlatformArchiveRecord, PlatformArchiveSnapshot } from '@/api/types';
@@ -8,14 +7,13 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { formatTime } from '@/utils/format';
+import { errorText } from '@/utils/errorText';
 import { GroupSummaries } from './GroupSummaries';
 import { GroupMemories } from './GroupMemories';
 import { GroupReminders } from './GroupReminders';
 import { StickerSettings } from './StickerSettings';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
 
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error)
-  ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
 const recordKey = (record: PlatformArchiveRecord) => JSON.stringify([record.platform_id, record.self_id, record.conversation_kind, record.chat_id]);
 const emptyCatalog: PlatformArchiveCatalog = { items: [], total: 0, warnings: [], conversation_kinds: [], self_ids: [] };
 const stateNames = { active: '已采集', deleted: '已从档案删除', recalled: '平台已撤回', expired: '正文已过期' };
@@ -56,7 +54,7 @@ export function ArchiveView({ platforms }: { platforms: ConversationPlatform[] }
   const chooseFilter = (key: string, value: string) => {
     const next = new URLSearchParams(search);
     value ? next.set(key, value) : next.delete(key);
-    selectionKeys.forEach((key) => next.delete(key));
+    selectionKeys.forEach((filterKey) => next.delete(filterKey));
     if (key === 'type') next.delete('platform');
     if (key === 'type' || key === 'platform') { next.delete('archive_filter_kind'); next.delete('archive_filter_self'); }
     setSearch(next); setOffset(0);
@@ -102,11 +100,11 @@ function ArchivePanel(props: { record: PlatformArchiveRecord; refresh: number; o
   const switchView = (next: typeof view) => { if (next !== view && (!dirty || confirmDiscard())) { setDirty(false); setView(next); } };
   return <div className="min-w-0 space-y-3">
     <Card><div className="flex flex-wrap gap-2" aria-label="平台对话内容">
-      <Button variant={view === 'messages' ? 'primary' : 'ghost'} onClick={() => switchView('messages')}>原始消息</Button>
-      <Button variant={view === 'summaries' ? 'primary' : 'ghost'} onClick={() => switchView('summaries')}>群摘要</Button>
-      {props.record.conversation_kind === 'group' && <Button variant={view === 'memories' ? 'primary' : 'ghost'} onClick={() => switchView('memories')}>长期记忆</Button>}
-      {props.record.conversation_kind === 'group' && <Button variant={view === 'reminders' ? 'primary' : 'ghost'} onClick={() => switchView('reminders')}>提醒</Button>}
-      <Button variant={view === 'stickers' ? 'primary' : 'ghost'} onClick={() => switchView('stickers')}>表情设置</Button>
+      <Button variant={view === 'messages' ? 'primary' : 'ghost'} className="transition-colors" onClick={() => switchView('messages')}>原始消息</Button>
+      <Button variant={view === 'summaries' ? 'primary' : 'ghost'} className="transition-colors" onClick={() => switchView('summaries')}>群摘要</Button>
+      {props.record.conversation_kind === 'group' && <Button variant={view === 'memories' ? 'primary' : 'ghost'} className="transition-colors" onClick={() => switchView('memories')}>长期记忆</Button>}
+      {props.record.conversation_kind === 'group' && <Button variant={view === 'reminders' ? 'primary' : 'ghost'} className="transition-colors" onClick={() => switchView('reminders')}>提醒</Button>}
+      <Button variant={view === 'stickers' ? 'primary' : 'ghost'} className="transition-colors" onClick={() => switchView('stickers')}>表情设置</Button>
     </div></Card>
     {view === 'messages' ? <ArchiveDetail {...props} /> : view === 'stickers' ? <StickerSettings record={props.record} onDirty={setDirty} /> : view === 'memories' ? <GroupMemories record={props.record} refresh={props.refresh} onDirty={setDirty} /> : view === 'reminders' ? <GroupReminders record={props.record} refresh={props.refresh} onDirty={setDirty} /> : <GroupSummaries record={props.record} refresh={props.refresh} />}
   </div>;

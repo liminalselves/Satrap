@@ -112,7 +112,7 @@ function FieldList({
   onApply: (next: Record<string, unknown>) => void;
 }) {
   return (
-    <div className="divide-y divide-border/50">
+    <div className="divide-y divide-glass-border">
       {fields.map((def) => (
         <FieldRow key={def.key} def={def} override={override} onApply={onApply} />
       ))}

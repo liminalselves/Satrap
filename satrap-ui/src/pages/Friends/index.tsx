@@ -5,11 +5,11 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { toast } from '@/components/ui/Toast';
+import { errorText } from '@/utils/errorText';
+import { formatTime } from '@/utils/format';
 
 const states: Record<string, string> = { ready: '准备执行', pending: '等待人工批准', executing: '正在执行',
   succeeded: '平台返回成功', rejected: '已拒绝', expired: '已过期', failed: '执行失败', unknown: '结果未确认' };
-const time = (value: number) => new Date(value * 1000).toLocaleString();
-const errorText = (error: unknown) => error instanceof Error ? error.message : '操作失败';
 const outcome = (action: FriendAction) => {
   const verification = action.result?.verification;
   return [states[action.state] || action.state, action.result?.message,
@@ -146,7 +146,7 @@ export function Friends() {
       {unavailableCount > 0 && <p>有 {unavailableCount} 条申请缺少可执行凭据, 无法处理</p>}
       {loading && <p role="status">正在读取申请…</p>}
       {requests.map((request) => <div key={request.request_id} className="border-b py-3 space-y-2"><p>申请人 ID: {request.user_id}</p><p className="whitespace-pre-wrap break-words">验证信息: {request.comment || '无'}</p>
-        <p className="text-sm">收到: {time(request.received_at)} · 有效至: {time(request.expires_at)}</p><div className="flex gap-2">
+        <p className="text-sm">收到: {formatTime(request.received_at)} · 有效至: {formatTime(request.expires_at)}</p><div className="flex gap-2">
           <Button size="sm" disabled={busy || !available('handle_request') || request.expires_at <= Date.now() / 1000} onClick={() => open({ kind: 'request', request, approve: true })}>同意</Button>
           <Button size="sm" disabled={busy || !available('handle_request') || request.expires_at <= Date.now() / 1000} onClick={() => open({ kind: 'request', request, approve: false })}>拒绝</Button></div></div>)}
       {!loading && !error && available('list_requests') && requests.length === 0 && <p>没有待处理好友申请</p>}
@@ -157,9 +157,9 @@ export function Friends() {
       {loading && <p role="status">正在读取记录…</p>}
       {actions.map((action) => <div key={action.action_id} className="border-b py-3 space-y-2"><p className="font-medium">{action.action_type === 'delete_friend' ? '删除好友' : action.params.approve ? '同意好友申请' : '拒绝好友申请'} · {action.actor_kind === 'model' ? '模型申请' : '人工操作'} · {states[action.state] || action.state}</p>
         <p className="text-sm">发起者: {action.actor_kind === 'panel' ? '后台登录用户' : action.actor_id || '模型工具调用者'}</p>
-        <p>目标: {action.target?.nickname || ''} {action.params.user_id || action.params.request_id} {action.target?.remark ? `· 备注: ${action.target.remark}` : ''}</p><p className="text-sm break-all">动作 ID: {action.action_id} · {time(action.created_at)}</p>
+        <p>目标: {action.target?.nickname || ''} {action.params.user_id || action.params.request_id} {action.target?.remark ? `· 备注: ${action.target.remark}` : ''}</p><p className="text-sm break-all">动作 ID: {action.action_id} · {formatTime(action.created_at)}</p>
         {action.result && <p>{outcome(action)}</p>}
-        {action.state === 'pending' && <div className="flex gap-2"><Button size="sm" disabled={busy || action.expires_at <= Date.now() / 1000} onClick={() => decide(action, true)}>批准删除</Button><Button size="sm" disabled={busy} onClick={() => decide(action, false)}>拒绝申请</Button><span>有效至 {time(action.expires_at)}</span></div>}
+        {action.state === 'pending' && <div className="flex gap-2"><Button size="sm" disabled={busy || action.expires_at <= Date.now() / 1000} onClick={() => decide(action, true)}>批准删除</Button><Button size="sm" disabled={busy} onClick={() => decide(action, false)}>拒绝申请</Button><span>有效至 {formatTime(action.expires_at)}</span></div>}
         {action.state === 'unknown' && <p>结果未确认, 请刷新好友列表核查, 不要重复提交</p>}
       </div>)}
       {!loading && !error && actions.length === 0 && <p>暂无好友操作记录</p>}

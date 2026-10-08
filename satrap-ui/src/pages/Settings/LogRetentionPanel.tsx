@@ -4,10 +4,7 @@ import { loggingApi, loggingError, type LogPolicySnapshot } from '@/api/logging'
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { toast } from '@/components/ui/Toast';
-
-function displayTime(timestamp: number) {
-  return new Date(timestamp * 1000).toLocaleString();
-}
+import { formatTime } from '@/utils/format';
 
 export function LogRetentionPanel({ active }: { active: boolean }) {
   const [snapshot, setSnapshot] = useState<LogPolicySnapshot | null>(null);
@@ -138,20 +135,20 @@ export function LogRetentionPanel({ active }: { active: boolean }) {
       {base && snapshot && base.revision !== snapshot.revision && <p className="text-sm text-warning">已保存策略在其它位置发生变化, 请重新加载并核对草稿。</p>}
       <div className="flex flex-wrap gap-3">
         <Button variant="primary" onClick={() => void save()} disabled={!base || !validDays || !dirty || busy}>
-          <Save className="h-4 w-4 mr-2" />{saving ? '保存中...' : '保存日志策略'}
+          <Save className="h-4 w-4 mr-2" />{saving ? '保存中…' : '保存日志策略'}
         </Button>
         <Button onClick={() => void cleanup()} disabled={!base || dirty || busy}>
-          <Trash2 className="h-4 w-4 mr-2" />{cleaning ? '清理中...' : '立即清理过期日志'}
+          <Trash2 className="h-4 w-4 mr-2" />{cleaning ? '清理中…' : '立即清理过期日志'}
         </Button>
         {dirty && snapshot && <Button variant="ghost" onClick={() => { apply(snapshot); setError(''); }} disabled={busy}>放弃草稿并加载已保存策略</Button>}
       </div>
       <p className="text-sm text-text-tertiary">保存无需重启, 运行中的服务通常在 10 秒内读取新策略。正在使用的过期文件会暂时保留。</p>
       {snapshot?.status_error && <p role="alert" className="text-sm text-error">清理状态读取失败: {snapshot.status_error}</p>}
-      {snapshot?.maintenance_error && <p role="alert" className="text-sm text-error">最近维护失败 ({displayTime(snapshot.maintenance_error.created_at)}): {snapshot.maintenance_error.error}</p>}
+      {snapshot?.maintenance_error && <p role="alert" className="text-sm text-error">最近维护失败 ({formatTime(snapshot.maintenance_error.created_at)}): {snapshot.maintenance_error.error}</p>}
       <div className="border-t border-border-glass pt-4 space-y-3">
         <h3 className="font-medium text-text-primary">最近清理结果</h3>
         {result ? <>
-          <p className="text-sm text-text-secondary">{displayTime(result.created_at)} · 当次保留 {result.retention_days} 天 · 删除 {result.deleted.length} 项 · 跳过 {result.skipped.length} 项 · 失败 {result.errors.length} 项</p>
+          <p className="text-sm text-text-secondary">{formatTime(result.created_at)} · 当次保留 {result.retention_days} 天 · 删除 {result.deleted.length} 项 · 跳过 {result.skipped.length} 项 · 失败 {result.errors.length} 项</p>
           <p className="text-sm text-text-tertiary">清理日期早于 {result.cutoff} 的日志文件</p>
           {result.deleted.length > 0 && <details className="text-sm text-text-secondary"><summary>已删除文件</summary><ul className="mt-2 space-y-1 break-all">{result.deleted.map((file) => <li key={file}>{file}</li>)}</ul></details>}
           {result.skipped.length > 0 && <details className="text-sm text-text-secondary"><summary>跳过的文件及原因</summary><ul className="mt-2 space-y-1 break-all">{result.skipped.map((item) => <li key={item.file}>{item.file}: {item.reason}</li>)}</ul></details>}

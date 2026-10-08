@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 import { memoryApi, type MemoryKind, type MemoryPage, type MemoryProposal, type ScopedMemory } from '@/api/memory';
 import { controlApi } from '@/api/control';
 import type { PlatformArchiveMessage, PlatformArchiveRecord } from '@/api/types';
@@ -7,9 +6,8 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
+import { errorText } from '@/utils/errorText';
 
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error)
-  ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
 const proposalStates: Record<string, string> = { pending: '待审批', approved: '已批准', rejected: '已拒绝', expired: '已过期', conflicted: '内容已变化，审批冲突' };
 type Draft = { memory?: ScopedMemory; kind: MemoryKind; owner: string; key: string; title: string; content: string; operationKey: string };
 
@@ -37,14 +35,17 @@ export function GroupMemories({ record, refresh, onDirty }: { record: PlatformAr
   const [sourceError, setSourceError] = useState('');
   const sourceSequence = useRef(0);
 
-  useEffect(() => { onDirty(!!draft); return () => onDirty(false); }, [draft, onDirty]);
+  // 只在草稿真值变化时同步父级脏状态, 避免每次草稿字段变化都先复位再置位
+  const hasDraft = !!draft;
+  useEffect(() => { onDirty(hasDraft); if (hasDraft) return () => onDirty(false); }, [hasDraft, onDirty]);
   useEffect(() => {
     let live = true;
     setLoading(true); setError('');
     const task = tab === 'proposals' ? memoryApi.proposals(record) : memoryApi.list(record, { kind: tab, keyword, user_id: tab === 'member_preference' ? member : undefined, cursor });
     task.then((result) => {
       if (!live) return;
-      if (tab === 'proposals') setProposals(result.items as MemoryProposal[]); else setPage(result as MemoryPage);
+      // 按 ok 字段收窄联合返回, 避免类型断言
+      if ('ok' in result) setPage(result); else setProposals(result.items);
     }).catch((reason) => { if (live) setError(errorText(reason)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [record, tab, keyword, member, cursor, refresh, version]);

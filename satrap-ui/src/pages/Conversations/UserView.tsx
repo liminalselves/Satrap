@@ -1,5 +1,4 @@
 import { useEffect, useRef, useState } from 'react';
-import axios from 'axios';
 import { useSearchParams } from 'react-router-dom';
 import { controlApi } from '@/api/control';
 import type { ConversationPlatform, ConversationUser, ConversationUserCatalog } from '@/api/types';
@@ -8,8 +7,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui/Modal';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
-
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error) ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
+import { errorText } from '@/utils/errorText';
 
 export function UserView({ platform, platformType, platforms, query, offset, refresh, onDirty, onOffset, onRefresh, onOpen }: {
   platform: string; platformType: string; platforms: ConversationPlatform[]; query: string; offset: number; refresh: number;

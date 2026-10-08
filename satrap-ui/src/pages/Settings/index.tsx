@@ -240,7 +240,7 @@ export function Settings() {
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
 
-          <div hidden={settingsTab !== 'administrators'}>
+          <TabsContent value="administrators" forceMount>
             <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, revision, previousRevision) => {
               setConfig(current => ({ ...current, administrator_groups: groups }));
               setConfigRevision(current => current === previousRevision ? revision : current);
@@ -252,11 +252,11 @@ export function Settings() {
                 } catch { return current; }
               });
             }} />
-          </div>
+          </TabsContent>
 
-          <div hidden={settingsTab !== 'logging'}>
+          <TabsContent value="logging" forceMount>
             <LogRetentionPanel active={settingsTab === 'logging'} />
-          </div>
+          </TabsContent>
 
           <TabsContent value="general">
             <div className="grid grid-cols-2 gap-6">
@@ -351,7 +351,7 @@ export function Settings() {
             <div className="flex gap-3 mt-6 pt-6 border-t border-border-glass">
               <Button variant="primary" onClick={handleSave} disabled={!controlAvailable || !configExists || saving}>
                 <Save className="h-4 w-4 mr-2" />
-                {saving ? '保存中...' : '保存配置'}
+                {saving ? '保存中…' : '保存配置'}
               </Button>
             </div>
           </TabsContent>
@@ -373,7 +373,7 @@ export function Settings() {
               <div className="flex gap-3">
                 <Button variant="primary" onClick={handleSaveRaw} disabled={!controlAvailable || !configExists || saving}>
                   <Save className="h-4 w-4 mr-2" />
-                  {saving ? '保存中...' : '保存原始配置'}
+                  {saving ? '保存中…' : '保存原始配置'}
                 </Button>
               </div>
             </div>

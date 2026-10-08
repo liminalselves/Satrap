@@ -11,6 +11,8 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { errorText } from '@/utils/errorText';
+import { formatTime } from '@/utils/format';
 import { groupActionLabels } from './groupActionLabels';
 
 const MEMBERSHIPS = [
@@ -20,18 +22,17 @@ const MEMBERSHIPS = [
 const RESPONSES = [['all', '全部响应状态'], ['enabled', '响应开启'], ['disabled', '响应关闭']] as const;
 type ApprovalDraft = Record<string, 'inherit' | 'approval_required' | 'auto_execute'>;
 
+// 同步进度轮询节奏: 2 秒一次, 最多 30 轮 (约一分钟)
+const SYNC_POLL_INTERVAL_MS = 2000;
+const SYNC_POLL_MAX_TICKS = 30;
+
 function defaultsFrom(settings: GroupSettings): ApprovalDraft {
   return Object.fromEntries(settings.approval_actions.map((item) => [item.action_type,
     settings.approval_defaults[item.action_type] || 'inherit']));
 }
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return error.code ? `${error.message} (${error.code})` : error.message;
-  return error instanceof Error ? error.message : '请求失败';
-}
-
 function timeText(value: number | null): string {
-  return value == null ? '无记录' : new Date(value * 1000).toLocaleString();
+  return value == null ? '无记录' : formatTime(value);
 }
 
 function GroupItem({ item, destination }: { item: GroupRow; destination: string }) {
@@ -78,7 +79,6 @@ export function Groups() {
   const [approvalError, setApprovalError] = useState('');
   const [approvalConflict, setApprovalConflict] = useState(false);
   const [syncId, setSyncId] = useState('');
-  const [syncTicks, setSyncTicks] = useState(0);
   const listRequest = useRef(0);
   const accountRequest = useRef(0);
   const settingsRequest = useRef(0);
@@ -164,7 +164,6 @@ export function Groups() {
   useEffect(() => {
     if (visibleListing?.sync.status === 'running' && visibleListing.sync.sync_id && !syncId) {
       setSyncId(visibleListing.sync.sync_id);
-      setSyncTicks(0);
     }
   }, [visibleListing?.sync.status, visibleListing?.sync.sync_id, syncId]);
 
@@ -248,26 +247,30 @@ export function Groups() {
     try {
       const result = await groupApi.sync(adapterId, account);
       setSyncId(result.sync_id);
-      setSyncTicks(0);
       await loadList();
     } catch (caught) { setError(errorText(caught)); }
   }, [account, historical, isRunning, adapterId, loadList]);
 
+  // 同步进度轮询: 每个 syncId 只建一个 interval, 轮数用闭包计数 (避免靠 state 重建定时器);
+  // 超过上限仍未完成则停止轮询并解除按钮禁用, 状态以下次手动同步为准
   useEffect(() => {
-    if (!syncId || syncTicks >= 30) return;
+    if (!syncId) return;
+    let ticks = 0;
     const timer = window.setInterval(async () => {
       if (document.hidden) return;
+      ticks += 1;
       try {
         const status = await groupApi.syncStatus(adapterId, account, syncId);
-        setSyncTicks((value) => value + 1);
         if (status.status !== 'running') {
           setSyncId('');
           await loadList();
+        } else if (ticks >= SYNC_POLL_MAX_TICKS) {
+          setSyncId('');
         }
       } catch (caught) { setError(errorText(caught)); setSyncId(''); }
-    }, 2000);
+    }, SYNC_POLL_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [adapterId, account, syncId, syncTicks, loadList]);
+  }, [adapterId, account, syncId, loadList]);
 
   const sync = visibleListing?.sync;
   const totalPages = Math.max(1, Math.ceil((visibleListing?.total || 0) / pageSize));

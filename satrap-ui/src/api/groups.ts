@@ -2,6 +2,9 @@ import { isAxiosError } from 'axios';
 import { apiClient, toApiError } from './client';
 import { controlClient } from './control';
 
+// 与后端 members/actions 接口默认 page_size 对齐, 前端分页边界判断复用同一值
+export const GROUP_PAGE_SIZE = 25;
+
 export interface GroupAccount {
   self_id: string;
   mode: 'selected' | 'all';

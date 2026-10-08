@@ -115,12 +115,15 @@ try {
   assert.equal(history[0].answer, '只改展示回复');
   assert.equal(contexts[1].content, '修改后的模型输入');
   await page.getByRole('button', { name: '删除第 1 项' }).click();
+  await page.getByRole('dialog', { name: '删除历史轮次' }).getByRole('button', { name: '确认', exact: true }).click();
   await page.getByText('暂无独立展示历史', { exact: true }).waitFor();
   await page.getByText('修改备份与恢复 (2)', { exact: true }).click();
   await page.getByRole('button', { name: '恢复备份', exact: true }).first().click();
+  await page.getByRole('dialog', { name: '恢复修改备份' }).getByRole('button', { name: '确认', exact: true }).click();
   await page.getByText('用户：只改展示输入', { exact: true }).waitFor();
   await page.getByRole('button', { name: '上下文', exact: true }).click();
   await page.getByRole('button', { name: '清空上下文', exact: true }).click();
+  await page.getByRole('dialog', { name: '清空上下文' }).getByRole('button', { name: '确认', exact: true }).click();
   await page.getByText('共 1 条消息', { exact: false }).waitFor();
   assert.deepEqual(contexts, [{ role: 'system', content: '原始系统提示词' }]);
   assert.equal(history[0].answer, '只改展示回复');

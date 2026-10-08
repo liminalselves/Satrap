@@ -1,15 +1,19 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ApiError } from '@/api/client';
 import { groupApi, type GroupPolicyValue } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { errorText } from '@/utils/errorText';
 import { useGroupContext } from './GroupLayout';
 
 type Provider = 'session_class' | 'edictum';
 const sourceLabels: Record<string, string> = { platform: '平台默认', conversation_kind: '群聊类型设置', group: '本群覆盖', named_config: 'Agent 命名配置' };
+const scopeLabels: Record<string, string> = { group_shared: '全群共享', group_member: '按成员隔离', legacy_user: '沿用平台旧范围' };
+const scopeLabel = (scope: string) => scopeLabels[scope] || scope;
+const providerLabels: Record<string, string> = { session_class: 'SessionClass', edictum: 'Edictum' };
+const providerLabel = (provider: string) => providerLabels[provider] || provider;
 interface Draft {
   bindingMode: 'inherit' | 'value';
   provider: Provider;
@@ -40,11 +44,6 @@ function fromConfig(explicit: Record<string, GroupPolicyValue>): Draft {
     promptMode: typeof prompt === 'string' ? 'value' : 'inherit', prompt: typeof prompt === 'string' ? prompt : '',
     plugins,
   };
-}
-
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '保存失败';
 }
 
 export function GroupSession() {
@@ -143,7 +142,7 @@ export function GroupSession() {
       const saved = await groupApi.saveConfig(adapterId, groupId, {
         expected_self_id: account, expected_revision: config.revision,
         base_revision: config.base_revision, section: 'session', values,
-      }, true);
+      }, isRunning);
       setConfig(saved);
       const fresh = fromConfig(saved.explicit.session || {});
       setDraft(fresh);
@@ -160,9 +159,9 @@ export function GroupSession() {
       <h2 className="text-lg font-semibold">会话绑定</h2>
       <p className="text-sm text-text-secondary">平台默认 → 群聊类型设置 → 本群覆盖</p>
       {config.binding_chain?.map((layer) => <p key={layer.source} className="text-sm text-text-secondary">
-        {sourceLabels[layer.source] || layer.source}: {layer.mode === 'inherit' ? '继承 · ' : ''}{layer.provider} / {layer.config_name || '未指定'}
+        {sourceLabels[layer.source] || layer.source}: {layer.mode === 'inherit' ? '继承 · ' : ''}{providerLabel(layer.provider)} / {layer.config_name || '未指定'}
       </p>)}
-      <p className="text-sm text-text-secondary">当前: {binding?.provider || '未知'} / {binding?.config_name || '未指定'} · 来源: {sourceLabels[config.sources.session.binding] || config.sources.session.binding || '平台默认'}</p>
+      <p className="text-sm text-text-secondary">当前: {providerLabel(binding?.provider || '') || '未知'} / {binding?.config_name || '未指定'} · 来源: {sourceLabels[config.sources.session.binding] || config.sources.session.binding || '平台默认'}</p>
       <label className="block text-sm">绑定来源
         <select className="glass-input mt-1 w-full max-w-md" value={draft.bindingMode}
           onChange={(event) => setDraft((old) => ({ ...old, bindingMode: event.target.value as Draft['bindingMode'] }))}
@@ -171,7 +170,7 @@ export function GroupSession() {
         </select>
       </label>
       {draft.bindingMode === 'value' && <div className="grid gap-3 md:grid-cols-2">
-        <label className="block text-sm">Provider
+        <label className="block text-sm">流程
           <select className="glass-input mt-1 w-full" value={draft.provider}
             onChange={(event) => setDraft((old) => ({ ...old, provider: event.target.value as Provider, configName: '' }))}
             disabled={historical || saving}>
@@ -224,7 +223,7 @@ export function GroupSession() {
           onChange={(event) => setDraft((old) => ({ ...old, model: event.target.value }))}>
           <option value="">选择模型配置</option>{models.map((name) => <option key={name} value={name}>{name}</option>)}
         </select>}
-      </label> : <p className="text-sm text-warning">当前 Provider 不支持群级模型覆盖</p>}
+      </label> : <p className="text-sm text-warning">当前流程不支持群级模型覆盖</p>}
       {sessionFields.includes('prompt') ? <label className="block text-sm">系统提示词 · 当前来源: {config.sources.session.prompt || '命名配置'}
         <select className="glass-input mt-1 block w-full max-w-md" value={draft.promptMode} disabled={historical || saving}
           onChange={(event) => setDraft((old) => ({ ...old, promptMode: event.target.value as Draft['promptMode'] }))}>
@@ -233,12 +232,12 @@ export function GroupSession() {
         {draft.promptMode === 'value' && <><textarea className="glass-input mt-2 min-h-28 w-full" value={draft.prompt} maxLength={20000}
           onChange={(event) => setDraft((old) => ({ ...old, prompt: event.target.value }))} disabled={historical || saving} />
           <span className="text-xs text-text-secondary">{draft.prompt ? `${draft.prompt.length} / 20000 字符` : '显式清空'}</span></>}
-      </label> : <p className="text-sm text-warning">当前 Provider 不支持群级提示词覆盖</p>}
+      </label> : <p className="text-sm text-warning">当前流程不支持群级提示词覆盖</p>}
     </Card>
     <Card className="space-y-4">
       <h2 className="text-lg font-semibold">插件</h2>
       <p className="text-sm text-text-secondary">仅展示插件 schema 允许会话覆盖的字段。未选择时继承命名配置</p>
-      {!sessionFields.includes('plugins') && <p className="text-sm text-warning">当前 Provider 不支持群级插件覆盖</p>}
+      {!sessionFields.includes('plugins') && <p className="text-sm text-warning">当前流程不支持群级插件覆盖</p>}
       {sessionFields.includes('plugins') && plugins.map((plugin) => {
         const entry = pluginDraft(plugin.name);
         return <div key={plugin.name} className="rounded-lg border border-glass-border p-3 space-y-2 text-sm">
@@ -273,7 +272,7 @@ export function GroupSession() {
     </Card>
     <Card className="space-y-4">
       <h2 className="text-lg font-semibold">会话范围</h2>
-      <p className="text-sm text-text-secondary">当前: {effectiveScope === 'group_shared' ? '全群共享' : effectiveScope === 'group_member' ? '按成员隔离' : '沿用平台旧范围'} · 来源: {sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'}</p>
+      <p className="text-sm text-text-secondary">当前: {scopeLabel(effectiveScope)} · 来源: {sourceLabels[config.sources.session.scope] || config.sources.session.scope || '平台默认'}</p>
       <label className="block text-sm">范围来源
         <select className="glass-input mt-1 w-full max-w-md" value={draft.scopeMode}
           onChange={(event) => setDraft((old) => ({ ...old, scopeMode: event.target.value as Draft['scopeMode'] }))}
@@ -299,8 +298,8 @@ export function GroupSession() {
     </Card>}
     <Modal open={showImpact} onClose={() => setShowImpact(false)} title={routeChanged ? '切换会话绑定或范围' : '应用会话覆盖'}>
       <div className="space-y-4 text-sm text-text-secondary">
-        <p>旧绑定: {binding?.provider || '平台'} / {binding?.config_name || '未指定'}, 范围: {effectiveScope}</p>
-        <p>新绑定: {draft.bindingMode === 'inherit' ? '继承群聊 Agent（未指定时使用平台默认）' : `${draft.provider} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : draft.scope}</p>
+        <p>旧绑定: {providerLabel(binding?.provider || '') || '平台'} / {binding?.config_name || '未指定'}, 范围: {scopeLabel(effectiveScope)}</p>
+        <p>新绑定: {draft.bindingMode === 'inherit' ? '继承群聊 Agent（未指定时使用平台默认）' : `${providerLabel(draft.provider)} / ${draft.configName}`}, 范围: {draft.scopeMode === 'inherit' ? '继承平台' : scopeLabel(draft.scope)}</p>
           <p>{routeChanged ? '此后使用新会话; 原历史保留, 不自动迁移' : '现有会话在下一安全轮次应用覆盖; 历史保留'}</p>
           {routeChanged && <p>当前路由可归属实例 {instanceSummary?.current_route_count ?? '未知'} 个; 旧路由和旧版按用户共享的历史会保留, 其中旧版历史可能未计入</p>}
         <div className="flex justify-end gap-2"><Button variant="subtle" onClick={() => setShowImpact(false)}>取消</Button><Button variant="primary" onClick={submit} disabled={saving}>{routeChanged ? '确认保存并切换' : '确认保存覆盖'}</Button></div>

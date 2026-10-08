@@ -252,11 +252,13 @@ export function RequestDiagnosticsPanel({
       setPollNote(`已自动刷新 ${POLL_MAX_ROUNDS} 次, 停止轮询; 可手动刷新`);
       return;
     }
+    // 页面隐藏时暂停轮询: 不计轮数也不后台空转, 恢复可见后从当前轮数继续
+    if (document.hidden) {
+      const resume = () => { if (!document.hidden) setPollTick((tick) => tick + 1); };
+      document.addEventListener('visibilitychange', resume);
+      return () => document.removeEventListener('visibilitychange', resume);
+    }
     const timer = window.setTimeout(() => {
-      if (document.hidden) {
-        setPollTick((tick) => tick + 1);
-        return;
-      }
       rounds.current += 1;
       void load();
     }, POLL_INTERVAL_MS);
@@ -385,7 +387,7 @@ export function RequestDiagnosticsPanel({
               )}
               {summary.notes && <p className="break-all text-text-secondary">说明: {summary.notes}</p>}
               {expanded?.requestId === summary.request_id && (
-                <div className="mt-2 border-t border-border/50 pt-2">
+                <div className="mt-2 border-t border-glass-border pt-2">
                   {expanded.detail ? <DetailRecords detail={expanded.detail} /> : <p className="text-xs text-text-secondary">明细查询中...</p>}
                 </div>
               )}

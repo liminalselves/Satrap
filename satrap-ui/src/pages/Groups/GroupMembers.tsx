@@ -1,19 +1,23 @@
 import { useEffect, useState } from 'react';
-import { ApiError } from '@/api/client';
-import { groupApi, type GroupAction, type GroupMember } from '@/api/groups';
+import { groupApi, GROUP_PAGE_SIZE, type GroupAction, type GroupMember } from '@/api/groups';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useGroupContext } from './GroupLayout';
+import { errorText } from '@/utils/errorText';
 
 const memberActions = [
   ['set_group_card', '修改群昵称'], ['ban_group_member', '禁言或解除'],
   ['set_group_admin', '设置或取消管理员'], ['kick_group_member', '移出成员'],
 ] as const;
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '成员读取失败';
-}
+// 后端英文枚举码到中文的映射, 未覆盖的值回退原样展示
+const actionStateLabels: Record<string, string> = {
+  pending: '待处理', expired: '已过期', rejected: '已拒绝', executing: '执行中',
+  succeeded: '已成功', failed: '已失败', unknown: '结果未确认',
+};
+const memberRoleLabels: Record<string, string> = {
+  owner: '群主', admin: '管理员', member: '普通成员',
+};
 
 export function GroupMembers() {
   const { adapterId, groupId, account, historical, isRunning, config } = useGroupContext();
@@ -45,7 +49,7 @@ export function GroupMembers() {
     let live = true;
     groupApi.actionTypes(adapterId, groupId, account).then((value) => {
       if (live) setTypes(value.items);
-    }).catch((caught) => { if (live) setError(errorText(caught)); });
+    }).catch((caught) => { if (live) setError(errorText(caught, '成员读取失败')); });
     return () => { live = false; };
   }, [adapterId, groupId, account, isRunning, historical, config.group.membership]);
   useEffect(() => {
@@ -55,7 +59,7 @@ export function GroupMembers() {
     groupApi.members(adapterId, groupId, account, debounced, page).then((value) => {
       if (!live) return;
       setItems(value.items); setTotal(value.total_loaded); setTruncated(value.truncated); setError('');
-    }).catch((caught) => { if (live) setError(errorText(caught)); })
+    }).catch((caught) => { if (live) setError(errorText(caught, '成员读取失败')); })
       .finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
   }, [adapterId, groupId, account, isRunning, historical, config.group.membership, debounced, page, refreshKey]);
@@ -79,13 +83,13 @@ export function GroupMembers() {
         expected_self_id: account, action_id: operationId, action_type: selected.action, params: payload,
       });
       setResult(saved); setError('');
-    } catch (caught) { setError(errorText(caught)); }
+    } catch (caught) { setError(errorText(caught, '成员读取失败')); }
     finally { setBusy(false); }
   };
   const inspect = async () => {
     if (!operationId) return;
     try { setResult(await groupApi.action(adapterId, groupId, account, operationId)); setError(''); }
-    catch (caught) { setError(errorText(caught)); }
+    catch (caught) { setError(errorText(caught, '成员读取失败')); }
   };
   const available = isRunning && !historical && config.group.membership === 'joined';
 
@@ -106,7 +110,7 @@ export function GroupMembers() {
       <div className="space-y-2">
         {items.map((member) => <div key={String(member.user_id)} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-glass-border p-3 text-sm">
           <div><strong>{member.card || member.nickname || '未提供昵称'}</strong>
-            <span className="ml-2 text-text-secondary">{member.user_id} · {member.role || '角色未知'}</span></div>
+            <span className="ml-2 text-text-secondary">{member.user_id} · {memberRoleLabels[member.role || ''] || member.role || '角色未知'}</span></div>
           {available && <div className="flex flex-wrap gap-1">
             {memberActions.map(([action, label]) => {
               const meta = types.find((item) => item.action_type === action);
@@ -123,7 +127,7 @@ export function GroupMembers() {
         <span>已加载匹配 {total} 人{truncated ? ', 总人数未知' : ''}</span>
         <Button size="sm" variant="subtle" disabled={page <= 1} onClick={() => setPage((value) => value - 1)}>上一页</Button>
         <span>第 {page} 页</span>
-        <Button size="sm" variant="subtle" disabled={page * 25 >= total} onClick={() => setPage((value) => value + 1)}>下一页</Button>
+        <Button size="sm" variant="subtle" disabled={page * GROUP_PAGE_SIZE >= total} onClick={() => setPage((value) => value + 1)}>下一页</Button>
       </div>
     </Card>
     {selected && <Card className="space-y-3">
@@ -148,7 +152,7 @@ export function GroupMembers() {
         <Button variant="subtle" onClick={inspect} disabled={!operationId}>按操作 ID 查询</Button>
         <Button variant="subtle" onClick={() => setSelected(null)} disabled={result?.state === 'unknown' || result?.state === 'executing'}>关闭</Button></div>
       <p className="break-all text-xs text-text-secondary">操作 ID: {operationId}</p>
-      {result && <p role="status" className="text-sm">操作 {result.action_id}: {result.state}{result.state === 'unknown' ? ', 结果未知, 请先核实平台状态' : ''}</p>}
+      {result && <p role="status" className="text-sm">操作 {result.action_id}: {actionStateLabels[result.state] || result.state}{result.state === 'unknown' ? ', 结果未知, 请先核实平台状态' : ''}</p>}
       {result?.state === 'unknown' && <Button variant="subtle" onClick={() => {
         setSelected(null); setResult(null); setSubmitted(null); setOperationId('');
       }}>我已核实平台状态, 可以创建新操作</Button>}

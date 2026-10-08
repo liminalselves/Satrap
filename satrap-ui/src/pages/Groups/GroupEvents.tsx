@@ -5,6 +5,9 @@ import { groupApi, type GroupDiagnostic, type GroupEvent, type GroupPolicyValue 
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
+import { reasonLabel, stageLabel, statusLabel } from '@/components/diagnostics/RequestDiagnosticsPanel';
+import { errorText } from '@/utils/errorText';
+import { formatTime } from '@/utils/format';
 import { useGroupContext } from './GroupLayout';
 
 const labels: Record<string, string> = {
@@ -13,10 +16,8 @@ const labels: Record<string, string> = {
   group_card: '群昵称变更', group_request: '加群请求或邀请',
 };
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '读取失败';
-}
+// ISO 时间串只保留到秒, 与诊断面板的展示口径一致
+const recordedAtText = (value: string) => value.replace('T', ' ').slice(0, 19);
 
 export function GroupEvents() {
   const { adapterId, groupId, account, isRunning, historical, config, setConfig, reload } = useGroupContext();
@@ -123,7 +124,7 @@ export function GroupEvents() {
       {!isRunning && <p className="text-sm text-warning">后端离线, 近期事件暂不可读取</p>}
       {isRunning && events.length === 0 && <p className="text-sm text-text-secondary">近期没有可见事件</p>}
       {events.map((item) => <div key={item.id} className="rounded-lg border border-glass-border p-3 text-sm">
-        <time>{new Date(item.time * 1000).toLocaleString()}</time> · <strong>{labels[item.kind] || item.kind}</strong>
+        <time>{formatTime(item.time)}</time> · <strong>{labels[item.kind] || item.kind}</strong>
         {item.sub_type && <span> · {item.sub_type}</span>}
         {item.user_id && <span> · 成员 {item.user_id}</span>}
         {item.operator_id && <span> · 操作者 {item.operator_id}</span>}
@@ -140,9 +141,9 @@ export function GroupEvents() {
       </div>
       {isRunning && diagnostics.length === 0 && <p className="text-sm text-text-secondary">此群暂无符合条件的诊断记录</p>}
       {diagnostics.map((item) => <div key={item.request_id} className="rounded-lg border border-glass-border p-3 text-sm">
-        <div className="flex flex-wrap justify-between gap-2"><strong>{item.request_id}</strong><time>{item.recorded_at}</time></div>
-        <p>阶段: {item.stages.join(' → ') || '未知'} · 原因: {item.reason_codes.join(', ') || '无'}</p>
-        <p>发送: {item.send_status || '未记录'}</p>
+        <div className="flex flex-wrap justify-between gap-2"><strong>{item.request_id}</strong><time>{recordedAtText(item.recorded_at)}</time></div>
+        <p>阶段: {item.stages.map(stageLabel).join(' → ') || '未知'} · 原因: {item.reason_codes.map(reasonLabel).join('; ') || '无'}</p>
+        <p>发送: {item.send_status ? statusLabel(item.send_status) : '未记录'}</p>
         <Button size="sm" variant="subtle" onClick={() => openDetail(item.request_id)}>查看阶段明细</Button>
       </div>)}
       {detail && <pre className="max-h-80 overflow-auto whitespace-pre-wrap rounded-lg border border-glass-border p-3 text-xs">{JSON.stringify(detail, null, 2)}</pre>}

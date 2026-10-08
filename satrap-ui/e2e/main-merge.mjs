@@ -97,7 +97,7 @@ try {
   await page.getByText('共 0 条', { exact: true }).waitFor();
   await page.locator('select').filter({ has: page.locator('option[value="pending"]') }).selectOption('all');
   await page.getByText('ID: model-approval-1', { exact: true }).waitFor();
-  assert.ok((await page.locator('main').innerText()).includes('succeeded'));
+  assert.ok((await page.locator('main').innerText()).includes('已成功'));
   assert.equal(decisions.length, 1);
   assert.equal(await page.getByRole('button', { name: '批准', exact: true }).count(), 0);
   await page.setViewportSize({ width: 390, height: 844 });

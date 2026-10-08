@@ -1,13 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { controlApi } from '@/api/control';
 import type { GroupChatStickerSettings, PlatformArchiveRecord } from '@/api/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
-
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error) ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
+import { errorText } from '@/utils/errorText';
 
 export function StickerSettings({ record, onDirty }: { record: PlatformArchiveRecord; onDirty: (value: boolean) => void }) {
   const identity = useMemo(() => ({ platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id }), [record.platform_id, record.self_id, record.conversation_kind, record.chat_id]);
@@ -22,7 +20,7 @@ export function StickerSettings({ record, onDirty }: { record: PlatformArchiveRe
   const mounted = useRef(true);
   const dirty = !!data && JSON.stringify([...selected].sort()) !== JSON.stringify([...data.collections].sort());
   useDirtyGuard(dirty);
-  useEffect(() => { onDirty(dirty); return () => onDirty(false); }, [dirty, onDirty]);
+  useEffect(() => { onDirty(dirty); if (dirty) return () => onDirty(false); }, [dirty, onDirty]);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
     let disposed = false;

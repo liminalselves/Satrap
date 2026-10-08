@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { useGroupContext } from './GroupLayout';
 import { groupActionLabels } from './groupActionLabels';
+import { errorText } from '@/utils/errorText';
 
 const fields: Record<string, string> = {
   message_id: '消息 ID', user_id: '成员 QQ', reject_add_request: '拒绝再次加群',
@@ -13,10 +14,15 @@ const fields: Record<string, string> = {
   title: '头衔', dismiss: '解散群', sub_type: '请求类型', approve: '同意', reason: '理由',
 };
 
-function errorText(error: unknown): string {
-  if (error instanceof ApiError) return `${error.message}${error.code ? ` (${error.code})` : ''}`;
-  return error instanceof Error ? error.message : '操作失败';
-}
+// 后端英文枚举码到中文的映射, 未覆盖的值回退原样展示
+const actionStateLabels: Record<string, string> = {
+  pending: '待处理', expired: '已过期', rejected: '已拒绝', executing: '执行中',
+  succeeded: '已成功', failed: '已失败', unknown: '结果未确认',
+};
+const capabilityLabels: Record<string, string> = {
+  supported: '平台已支持', unsupported: '平台已确认不支持',
+  unavailable: '平台连接不可用', unknown: '待平台确认',
+};
 
 type ApprovalMode = 'inherit' | 'approval_required' | 'auto_execute';
 
@@ -170,7 +176,7 @@ export function GroupManage() {
         </select>
       </label>
       {selected && <>
-        <p className="text-sm">风险: {selected.risk === 'high' ? '高影响' : '普通'} · 审批: {selected.approval_mode === 'approval_required' ? '需要人工批准' : '自动执行'} · 能力: {selected.capability === 'unknown' ? '待平台确认' : selected.capability}</p>
+        <p className="text-sm">风险: {selected.risk === 'high' ? '高影响' : '普通'} · 审批: {selected.approval_mode === 'approval_required' ? '需要人工批准' : '自动执行'} · 能力: {capabilityLabels[selected.capability] || selected.capability}</p>
         {!selected.available && <p className="text-sm text-warning">此动作当前不可用: {selected.capability === 'unsupported' ? '平台已确认不支持' : selected.capability === 'unavailable' ? '平台连接不可用' : '机器人尚未确认加入目标群'}</p>}
         <div className="grid gap-3 md:grid-cols-2">
           {Object.entries(selected.schema).map(([key, kind]) => <label key={key} className="block text-sm">{fields[key] || key}
@@ -188,7 +194,7 @@ export function GroupManage() {
       </>}
       {result && <div className="rounded-lg border border-glass-border p-3 text-sm" aria-live="polite">
         <p>操作 ID: <code>{result.action_id}</code></p>
-        <p>状态: {result.state} · {result.result?.reason || '等待后续处理'}</p>
+        <p>状态: {actionStateLabels[result.state] || result.state} · {result.result?.reason || '等待后续处理'}</p>
         {result.state === 'unknown' && <p className="text-warning">结果未知, 请先核实平台状态</p>}
         <Button size="sm" variant="subtle" onClick={inspect}>按操作 ID 查询状态</Button>
         {result.state === 'unknown' && <Button size="sm" variant="subtle" onClick={resetOperation}>我已核实平台状态, 可以创建新操作</Button>}

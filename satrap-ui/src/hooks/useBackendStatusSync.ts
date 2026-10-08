@@ -32,7 +32,10 @@ export function useBackendStatusSync() {
       },
     });
     void refresh();
-    const interval = setInterval(() => void refresh(), 5000);
+    const interval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
+      void refresh();
+    }, 5000);
     const onVisibility = () => { if (!document.hidden) void refresh(); };
     document.addEventListener('visibilitychange', onVisibility);
     return () => {

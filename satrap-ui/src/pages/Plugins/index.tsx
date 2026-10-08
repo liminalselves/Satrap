@@ -6,6 +6,7 @@ import type { ManagedPlugin } from '@/api/types';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/Tabs';
 import { InstallPluginModal } from './InstallPluginModal';
 import { GlobalPluginSettings } from './GlobalPluginSettings';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
@@ -15,6 +16,8 @@ import { StickerLibrary } from './StickerLibrary';
 
 const sourceLabels = { builtin: '内置', user: '用户' };
 const sessionLabels: Record<string, string> = { chat: 'Chat', platform: '平台会话', embedded: '嵌入会话' };
+// URL 中的 tab 参数归一化: 未知取值回落到概览
+const normalizeTab = (value: string | null) => value === 'stickers' || value === 'config' || value === 'usages' ? value : 'overview';
 
 function usePluginCatalog() {
   const [plugins, setPlugins] = useState<ManagedPlugin[]>([]);
@@ -40,7 +43,7 @@ export function PluginOverview({ plugin }: { plugin: ManagedPlugin }) {
       <h2 className="text-lg font-semibold">插件信息</h2>
       <dl className="space-y-3 text-sm">
         <div><dt className="text-text-tertiary">作者</dt><dd>{plugin.author || '未声明'}</dd></div>
-        <div><dt className="text-text-tertiary">版本 / 来源</dt><dd>{plugin.version || '未声明'} · {sourceLabels[plugin.source]}</dd></div>
+        <div><dt className="text-text-tertiary">版本 / 来源</dt><dd>{plugin.version || '未声明'} · {sourceLabels[plugin.source] || plugin.source}</dd></div>
         <div><dt className="text-text-tertiary">Satrap 版本要求</dt><dd>{plugin.compatibility?.satrap || '未声明'}</dd></div>
         <div><dt className="text-text-tertiary">适用会话</dt><dd>{plugin.applicability?.session_types?.map((type) => sessionLabels[type] || type).join('、') || '未限制'}</dd></div>
         <div><dt className="text-text-tertiary">适用平台</dt><dd>{Array.isArray(plugin.applicability?.platforms) ? plugin.applicability.platforms.join('、') : '未限制'}</dd></div>
@@ -79,7 +82,7 @@ export function Plugins() {
       <p className="text-sm text-text-tertiary">共 {plugins.length} 个插件，显示 {filtered.length} 个</p>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{filtered.map((plugin) => <Link key={plugin.name} to={`/plugins/${encodeURIComponent(plugin.name)}`}>
         <Card interactive className="h-full space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="break-all text-lg font-semibold">{plugin.name}</h2><span className="text-xs text-text-tertiary">{sourceLabels[plugin.source]}</span></div>
+          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="break-all text-lg font-semibold">{plugin.name}</h2><span className="text-xs text-text-tertiary">{sourceLabels[plugin.source] || plugin.source}</span></div>
           <p className="text-sm text-text-secondary">{plugin.description || '暂无说明'}</p>
           <p className="text-xs text-text-tertiary">版本 {plugin.version || '未声明'} · {plugin.usage_count} 个使用位置</p>
           <p className="text-xs text-text-secondary">{Object.entries(capabilityLabels).filter(([kind]) => Object.keys(plugin.capabilities[kind] || {}).length).map(([, label]) => label).join(' · ') || '未声明能力'}</p>
@@ -93,17 +96,33 @@ export function Plugins() {
 
 export function PluginDetail() {
   const [search] = useSearchParams();
-  const [tab, setTab] = useState(search.get('tab') === 'stickers' ? 'stickers' : search.get('tab') === 'config' ? 'config' : search.get('tab') === 'usages' ? 'usages' : 'overview');
+  const [tab, setTab] = useState<string>(() => normalizeTab(search.get('tab')));
   const [dirty, setDirty] = useState(false);
   useDirtyGuard(dirty);
   const { name } = useParams();
   const { plugins, loading, error, refresh } = usePluginCatalog();
   const plugin = plugins.find((item) => item.name === name);
+  // URL 中的 tab 变化时同步标签, 让浏览器前进/后退与直接打开链接都能定位到对应面板
+  useEffect(() => { setTab(normalizeTab(search.get('tab'))); }, [search]);
+  const changeTab = (value: string) => {
+    if (tab === value) return;
+    // Tabs 受控: 拒绝切换时高亮仍停留在已提交的标签
+    if (dirty && !confirmDiscard()) return;
+    setDirty(false);
+    setTab(value);
+  };
   return <div className="space-y-6">
     <Link to="/plugins" className="text-sm text-accent">← 返回插件列表</Link>
     <PageHeader title={name || '插件详情'} actions={<Button onClick={refresh} disabled={loading}>刷新</Button>} />
     {error && <p role="alert" className="text-error">{error}</p>}
-    {plugin && <div className="flex flex-wrap gap-2 border-b border-glass-border pb-2">{[['overview', '概览'], ['config', '全局参数'], ['usages', '使用位置'], ...(plugin.name === 'group_chat' ? [['stickers', '表情库']] : [])].map(([value, label]) => <Button key={value} variant={tab === value ? 'primary' : 'ghost'} onClick={() => { if (tab === value) return; if (!dirty || confirmDiscard()) { setDirty(false); setTab(value); } }}>{label}</Button>)}</div>}
+    {plugin && <Tabs value={tab} onValueChange={changeTab}>
+      <TabsList>
+        <TabsTrigger value="overview">概览</TabsTrigger>
+        <TabsTrigger value="config">全局参数</TabsTrigger>
+        <TabsTrigger value="usages">使用位置</TabsTrigger>
+        {plugin.name === 'group_chat' && <TabsTrigger value="stickers">表情库</TabsTrigger>}
+      </TabsList>
+    </Tabs>}
     {plugin ? tab === 'stickers' && plugin.name === 'group_chat' ? <StickerLibrary onDirty={setDirty} /> : tab === 'overview' ? <PluginOverview plugin={plugin} /> : tab === 'config' ? <GlobalPluginSettings key={plugin.name} name={plugin.name} onDirty={setDirty} /> : <PluginUsages key={plugin.name} plugin={plugin} onDirty={setDirty} onSaved={refresh} /> : loading ? <p role="status">正在读取插件…</p> : !error && <p role="alert">插件不存在或元数据无效</p>}
   </div>;
 }

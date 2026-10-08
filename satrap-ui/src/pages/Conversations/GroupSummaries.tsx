@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import axios from 'axios';
 import { controlApi } from '@/api/control';
 import type { GroupChatSummary, GroupChatSummaryPage, PlatformArchiveMessage, PlatformArchiveRecord } from '@/api/types';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { formatTime } from '@/utils/format';
-
-const errorText = (error: unknown) => axios.isAxiosError<{ error?: string }>(error)
-  ? error.response?.data?.error || error.message : error instanceof Error ? error.message : String(error);
+import { errorText } from '@/utils/errorText';
 
 export function GroupSummaries({ record, refresh }: { record: PlatformArchiveRecord; refresh: number }) {
   const { platform_id, self_id, conversation_kind, chat_id } = record;
