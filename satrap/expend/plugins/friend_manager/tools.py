@@ -128,10 +128,13 @@ class _FriendMixin:
             _, properties, required = DEFINITIONS[name]
             if set(kwargs) - set(properties) or not set(required) <= kwargs.keys():
                 raise FriendError("invalid_parameters", "工具参数缺失或含未知字段")
+
             adapter, origin = self._resolve(recheck_entry=False)
+
             # 管理入口权限已由框架在派发前核验, 这里只核验本地来源; 等待之后的复检保持不变
             await adapter.group_chat_private_scope(origin)
             host = adapter.friend_host
+
             if name in {"friend_manager_list_friends", "friend_manager_find_friends"}:
                 query = kwargs.get("query", "")
                 if name == "friend_manager_find_friends":
