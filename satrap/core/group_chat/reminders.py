@@ -232,6 +232,8 @@ class ReminderStore:
             arguments.append(state)
         clause = " AND ".join(filters)
         with closing(self._connect()) as connection:
+            # 签名与当页正文必须出自同一读事务, 否则两次查询之间可能夹进并发写入
+            connection.execute("BEGIN")
             # 签名只需要 ID 与修订, 窄查询避免为每页物化全部正文
             rows = connection.execute(f"SELECT reminder_id, revision FROM group_chat_reminders WHERE {clause} ORDER BY due_at, reminder_id", arguments).fetchall()
             signature = hashlib.sha256(json.dumps([scope.key, actor, state, limit, [(row["reminder_id"], row["revision"]) for row in rows]]).encode()).hexdigest()
@@ -271,14 +273,14 @@ class ReminderStore:
         - identities: 当页任务 ID
 
         返回:
-        - 与 identities 同序的提醒, 期间被删除的行跳过
+        - 与 identities 同序的提醒; 与签名出自同一读事务, 缺行即数据损坏, 直接暴露异常
         """
         if not identities:
             return []
         placeholders = ",".join("?" for _ in identities)
         rows = connection.execute(f"SELECT * FROM group_chat_reminders WHERE reminder_id IN ({placeholders})", identities)
         found = {str(row["reminder_id"]): self._record(row) for row in rows}
-        return [found[identity] for identity in identities if identity in found]
+        return [found[identity] for identity in identities]
 
     def change(self, scope: MessageScope, identity: str, action: str, expected_revision: int, *, actor: str = "", grace: int = 600,
                authorize: Callable[[], None] | None = None) -> dict[str, Any]:

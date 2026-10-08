@@ -87,6 +87,38 @@ class ScopedMemories:
             raise MemoryError("not_found", "记忆不存在或不属于当前群")
         return row
 
+    def _source_ids(self, connection: sqlite3.Connection, memory_id: str) -> list[str]:
+        """
+        在同一事务连接内读取记忆的来源消息 ID
+
+        参数:
+        - connection: 当前事务连接
+        - memory_id: 完整记忆 ID
+
+        返回:
+        - 按消息 ID 排序的来源列表
+        """
+        return [str(item[0]) for item in connection.execute("SELECT message_id FROM memory_refs WHERE scope_key=? AND memory_id=? ORDER BY message_id", (self.scope.key, memory_id))]
+
+    def _present(self, row: sqlite3.Row, ids: list[str]) -> dict[str, Any]:
+        """
+        按此刻的档案状态组装公共记录, 可在读事务结束后调用
+
+        参数:
+        - row: 已限定范围的数据库记录
+        - ids: 同一读事务内取得的来源消息 ID
+
+        返回:
+        - 不含内部路径或原文副本的记忆记录
+        """
+        available = all((source := self.archive.get(self.scope, identity)) is not None and source.get("status") == "active" for identity in ids)
+        return {"schema_version": 1, "memory_id": row["id"], "id": row["id"], "kind": row["kind"],
+                "owner_user_id": row["owner_user_id"], "key": row["purpose_key"], "title": row["title"],
+                "content": row["content"], "tags": json.loads(row["tags"]), "importance": row["importance"],
+                "revision": row["revision"], "state": "active", "origin": row["origin"],
+                "source_message_ids": ids, "source_status": "available" if ids and available else "operator" if not ids and row["origin"] == "operator" else "unavailable",
+                "created_at": row["created_at"], "updated_at": row["updated_at"]}
+
     def _record(self, connection: sqlite3.Connection, row: sqlite3.Row) -> dict[str, Any]:
         """
         构造带所有权和来源状态的公共记录
@@ -98,14 +130,7 @@ class ScopedMemories:
         返回:
         - 不含内部路径或原文副本的记忆记录
         """
-        ids = [str(item[0]) for item in connection.execute("SELECT message_id FROM memory_refs WHERE scope_key=? AND memory_id=? ORDER BY message_id", (self.scope.key, row["id"]))]
-        available = all((source := self.archive.get(self.scope, identity)) is not None and source.get("status") == "active" for identity in ids)
-        return {"schema_version": 1, "memory_id": row["id"], "id": row["id"], "kind": row["kind"],
-                "owner_user_id": row["owner_user_id"], "key": row["purpose_key"], "title": row["title"],
-                "content": row["content"], "tags": json.loads(row["tags"]), "importance": row["importance"],
-                "revision": row["revision"], "state": "active", "origin": row["origin"],
-                "source_message_ids": ids, "source_status": "available" if ids and available else "operator" if not ids and row["origin"] == "operator" else "unavailable",
-                "created_at": row["created_at"], "updated_at": row["updated_at"]}
+        return self._present(row, self._source_ids(connection, row["id"]))
 
     @staticmethod
     def _revision(row: sqlite3.Row, revision: object) -> None:
@@ -155,6 +180,9 @@ class ScopedMemories:
             raise MemoryError("invalid_cursor", "分页游标无效")
         clause, arguments = self._filters(kind=kind, user_id=user_id, viewer=viewer)
         with closing(self.store._connect()) as connection:
+            # 签名, 当页正文与来源 ID 必须出自同一读事务; 来源状态在事务外按此刻的档案组装,
+            # 不能在持有读锁时经 archive.get 新开连接, 否则会被等待提交的写方挡住
+            connection.execute("BEGIN")
             if keyword:
                 rows = connection.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY {_MEMORY_ORDER}", arguments).fetchall()
                 rows = [row for row in rows if keyword.casefold() in (row["title"] + "\n" + row["content"]).casefold()]
@@ -168,7 +196,8 @@ class ScopedMemories:
             else:
                 page = connection.execute(f"SELECT * FROM memories WHERE {clause} ORDER BY {_MEMORY_ORDER} LIMIT ? OFFSET ?",
                                           (*arguments, limit, offset)).fetchall()
-            items = [self._record(connection, row) for row in page]
+            pending = [(row, self._source_ids(connection, str(row["id"]))) for row in page]
+        items = [self._present(row, ids) for row, ids in pending]
         more = offset + limit < len(rows)
         next_cursor = base64.urlsafe_b64encode(json.dumps([signature, offset + limit]).encode()).decode() if more else None
         return {"ok": True, "items": items, "has_more": more, "next_cursor": next_cursor}

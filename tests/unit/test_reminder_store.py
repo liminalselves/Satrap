@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -116,14 +117,51 @@ def test_cursor_recorded_by_full_scan_implementation_is_still_accepted(tmp_path:
     assert [item["reminder_id"] for item in page["items"]] == ordered[2:]
 
 
-def test_page_records_keeps_signature_order_and_skips_deleted_rows(tmp_path: Path) -> None:
-    """当页按主键回取时保持签名顺序, 并在签名扫描后删除的行被跳过"""
+def test_page_records_keeps_signature_order(tmp_path: Path) -> None:
+    """当页按主键回取时保持签名顺序, 与签名出自同一读事务因此不存在缺行"""
     store, _ = setup_store(tmp_path)
     identities = [create(store, f"op-{index}")["reminder_id"] for index in range(3)]
     with closing(store._connect()) as connection:
-        records = store._page_records(connection, [identities[2], "rem_缺失", identities[0]])
+        records = store._page_records(connection, [identities[2], identities[0]])
+        empty = store._page_records(connection, [])
     assert [record["reminder_id"] for record in records] == [identities[2], identities[0]]
-    assert store._page_records(connection, []) == []
+    assert empty == []
+
+
+def test_list_page_and_cursor_come_from_one_read_snapshot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """签名与当页正文出自同一读事务: 两次查询之间的并发取消不改变本页, 提交后旧游标失效"""
+    store, _ = setup_store(tmp_path)
+    reminders = [create(store, f"op-{index}") for index in range(3)]
+    before = store.list(SCOPE, limit=2)
+
+    real_offset = ReminderStore._offset
+    writer: list[threading.Thread] = []
+    errors: list[Exception] = []
+
+    def concurrent_cancel() -> None:
+        try:
+            store.change(SCOPE, reminders[0]["reminder_id"], "cancel", reminders[0]["revision"], actor="member")
+        except Exception as exc:  # 写入线程的异常必须显式带出
+            errors.append(exc)
+
+    def hooked_offset(cursor: str, signature: str) -> int:
+        offset = real_offset(cursor, signature)
+        if not writer:
+            thread = threading.Thread(target=concurrent_cancel)
+            writer.append(thread)
+            thread.start()
+            thread.join(0.5)
+        return offset
+
+    monkeypatch.setattr(ReminderStore, "_offset", staticmethod(hooked_offset))
+    raced = store.list(SCOPE, limit=2)
+    writer[0].join()
+    assert not errors
+    # 有判别力的是条目: 修复前并发取消的修订与状态会进入本页; 游标签名在写入前已算定, 两种实现下一致
+    assert json.dumps(raced["items"], ensure_ascii=False, sort_keys=True) == json.dumps(before["items"], ensure_ascii=False, sort_keys=True)
+    assert raced["next_cursor"] == before["next_cursor"] and raced["has_more"] == before["has_more"]
+    with pytest.raises(ReminderError, match="重新查询"):
+        store.list(SCOPE, limit=2, cursor=before["next_cursor"])
 
 
 def test_relative_retry_freezes_deadline_and_cannot_change_payload(tmp_path):

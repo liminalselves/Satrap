@@ -2,7 +2,9 @@
 from types import SimpleNamespace
 from pathlib import Path
 from contextlib import closing
+import json
 import sqlite3
+import threading
 
 import pytest
 
@@ -189,3 +191,46 @@ def test_list_filters_and_pagination_match_reference(memories: tuple[ScopedMemor
         if not cursor:
             break
     assert collected == [row["id"] for row in reference_rows(repository, **filters)]
+
+
+@pytest.mark.parametrize("write", ["update", "delete"])
+def test_list_page_and_cursor_come_from_one_read_snapshot(memories: tuple[ScopedMemories, list[float]], write: str,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    """签名与当页正文出自同一读事务: 两次查询之间的并发写入不改变本页, 提交后旧游标失效"""
+    repository, _ = memories
+    add_preference(repository)
+    add_preference(repository, owner="user:b", source="m3", operation="other")
+    before = repository.list(limit=1)
+    target_id = before["items"][0]["memory_id"]
+
+    real_offset = ScopedMemories._offset
+    writer: list[threading.Thread] = []
+    errors: list[Exception] = []
+
+    def concurrent_write() -> None:
+        try:
+            values: dict[str, object] = {"memory_id": target_id, "expected_revision": 1}
+            if write == "update":
+                values["content"] = "并发改写的新正文"
+            repository.mutate(write, values, actor="operator", operator=True, operation_id=f"concurrent-{write}")
+        except Exception as exc:  # 写入线程的异常必须显式带出
+            errors.append(exc)
+
+    def hooked_offset(cursor: str, signature: str) -> int:
+        offset = real_offset(cursor, signature)
+        if not writer:
+            thread = threading.Thread(target=concurrent_write)
+            writer.append(thread)
+            thread.start()
+            thread.join(0.5)
+        return offset
+
+    monkeypatch.setattr(ScopedMemories, "_offset", staticmethod(hooked_offset))
+    raced = repository.list(limit=1)
+    writer[0].join()
+    assert not errors
+    # 有判别力的是条目: 修复前并发写入的新正文或删除造成的错位会进入本页; 游标签名在写入前已算定, 两种实现下一致
+    assert json.dumps(raced["items"], ensure_ascii=False, sort_keys=True) == json.dumps(before["items"], ensure_ascii=False, sort_keys=True)
+    assert raced["next_cursor"] == before["next_cursor"] and raced["has_more"] == before["has_more"]
+    with pytest.raises(MemoryError, match="重新查询"):
+        repository.list(limit=1, cursor=before["next_cursor"])
