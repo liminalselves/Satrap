@@ -344,8 +344,12 @@ def validate_config_document(data: object) -> dict[str, Any]:
         raise ValueError("配置根节点必须是对象")
     normalized = dict(cast(dict[str, Any], data))
     normalized["platforms"] = validate_platforms(normalized.get("platforms", []))
-    from satrap.core.config.administrator_groups import normalize_administrator_groups
-    normalized["administrator_groups"] = normalize_administrator_groups(normalized.get("administrator_groups"), normalized["platforms"])
+    from satrap.core.config.administrator_groups import (migrate_legacy_scope_exclusions, normalize_administrator_overrides,
+                                                         normalize_administrator_groups)
+    groups = normalize_administrator_groups(normalized.get("administrator_groups"), normalized["platforms"])
+    overrides = normalize_administrator_overrides(normalized.get("administrator_overrides"), normalized["platforms"])
+    # 校验与预检路径与读取路径一致, 展开旧组排除后再回写, 避免存量配置被判非法
+    normalized["administrator_groups"], normalized["administrator_overrides"], _pending = migrate_legacy_scope_exclusions(groups, overrides)
     BackendConfig.from_dict(normalized)
     return normalized
 

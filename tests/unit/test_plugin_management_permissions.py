@@ -49,6 +49,48 @@ def administrators(*, excluded=()):
     return AdministratorService(lambda: [{"id": "p", "instance_id": "one"}], groups)
 
 
+def override_administrators(allow=("example",), user="carol"):
+    overrides = [{"id": "solo", "enabled": True, "protect": False, "platform_id": "p", "platform_instance_id": "one",
+                  "user_id": user, "allow": list(allow), "deny": []}]
+    return AdministratorService(lambda: [{"id": "p", "instance_id": "one"}], [], overrides)
+
+
+def _write_grant(result):
+    """取 write 权限对应的授权条目, 避免 read 的空名单允许规则干扰断言"""
+    return next(item for item in result.grants if item.permission == "write")
+
+
+def test_override_only_grant_is_labelled_as_administrator_override():
+    result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("carol"), override_administrators())
+    assert result.status == "allowed"
+    grant = _write_grant(result)
+    assert grant.source == "administrator_override" and grant.override_ids == ("solo",) and grant.group_ids == ()
+    assert evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), override_administrators()).status == "denied"
+
+
+def test_group_grant_records_group_source_and_fingerprint_distinguishes_layers():
+    group_result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), administrators())
+    override_result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("carol"), override_administrators())
+    grant = _write_grant(group_result)
+    assert grant.source == "administrator_group" and grant.group_ids == ("a",) and grant.override_ids == ()
+    assert group_result.status == override_result.status == "allowed"
+    assert group_result.permission_fingerprint != override_result.permission_fingerprint
+
+
+def test_both_layers_allow_together_reports_group_source():
+    service = AdministratorService(lambda: [{"id": "p", "instance_id": "one"}],
+        [{"id": "a", "name": "管理员", "enabled": True,
+          "members": [{"platform_id": "p", "user_id": "alice", "platform_instance_id": "one"}],
+          "plugin_scope": {"mode": "selected", "included": ["example"], "excluded": []}}],
+        [{"id": "solo", "enabled": True, "protect": False, "platform_id": "p", "platform_instance_id": "one",
+          "user_id": "alice", "allow": ["example"], "deny": []}])
+    result = evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin("alice"), service)
+    assert result.status == "allowed"
+    grant = _write_grant(result)
+    assert grant.source == "administrator_group" and grant.group_ids == ("a",)
+    assert grant.override_ids == ("solo",)   # 例外来源仍记录在归属里
+
+
 def test_legacy_and_ordinary_entries_do_not_receive_management_grants():
     assert not parse_plugin_permissions({}, {}).supports_administrators
     assert evaluate_plugin_permissions("example", spec(), "tools", "ordinary", {}, None).status == "not_applicable"
@@ -75,9 +117,9 @@ def test_exclusion_preserves_independent_local_permissions_and_revision_is_scope
     assert evaluate_plugin_permissions("example", spec(), "tools", "write", {}, origin(), service).status == "denied"
     result = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice"}, origin(), service)
     assert result.status == "allowed" and result.grants[-1].source == "local_list"
-    groups, _ = service.snapshot()
+    groups, overrides, _ = service.snapshot()
     groups[0]["name"] = "重命名"
-    service.apply(groups)
+    service.apply(groups, overrides)
     updated = evaluate_plugin_permissions("example", spec(), "tools", "write", {"writers": "alice"}, origin(), service)
     assert result.policy_revision != updated.policy_revision and result.permission_fingerprint == updated.permission_fingerprint
 

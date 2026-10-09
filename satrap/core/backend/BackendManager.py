@@ -142,6 +142,9 @@ class BackendConfig:
     platforms: List[Dict[str, Any]] = field(default_factory=list[Dict[str, Any]])
     # 平台适配器配置
     administrator_groups: list[dict[str, Any]] = field(default_factory=list)
+    # 系统管理组授权来源, 只授予插件范围
+    administrator_overrides: list[dict[str, Any]] = field(default_factory=list)
+    # 成员例外, 对个人的额外允许与否决, 优先于组授权裁决
 
     @staticmethod
     def _as_bool(value: Any) -> bool:
@@ -182,8 +185,11 @@ class BackendConfig:
                 "v2 数据布局不再支持独立数据库路径: " + ", ".join(configured_removed)
             )
         media_roots = data.get("media_allowed_roots")
-        from satrap.core.config.administrator_groups import normalize_administrator_groups
+        from satrap.core.config.administrator_groups import (normalize_administrator_overrides, migrate_legacy_scope_exclusions,
+                                                             normalize_administrator_groups)
         administrators = normalize_administrator_groups(data.get("administrator_groups"), data.get("platforms", []))
+        exceptions = normalize_administrator_overrides(data.get("administrator_overrides"), data.get("platforms", []))
+        administrators, exceptions, _pending = migrate_legacy_scope_exclusions(administrators, exceptions)
         if media_roots is not None and (
             not isinstance(media_roots, list)
             or any(not isinstance(root, str) for root in media_roots)
@@ -210,6 +216,7 @@ class BackendConfig:
             api_port=int(data.get("api", {}).get("port", data.get("api_port", 19870))),
             platforms=list(data.get("platforms", [])),
             administrator_groups=administrators,
+            administrator_overrides=exceptions,
         )
 
 
@@ -240,7 +247,8 @@ class BackendManager:
         """
         self.config = config or BackendConfig()
         from satrap.core.config.administrator_groups import AdministratorService
-        self.administrator_service = AdministratorService(lambda: self.config.platforms, self.config.administrator_groups)
+        self.administrator_service = AdministratorService(
+            lambda: self.config.platforms, self.config.administrator_groups, self.config.administrator_overrides)
         self._platform_active_configs: dict[str, dict[str, Any]] = {}
         self._platform_config_results: list[dict[str, Any]] = []
         self._platform_apply_lock = asyncio.Lock()
@@ -452,7 +460,7 @@ class BackendManager:
         返回:
         - 不含名单正文的运行时状态, 用于控制端确认应用结果
         """
-        _, revision = self.administrator_service.snapshot()
+        _, _, revision = self.administrator_service.snapshot()
         return {"ok": True, "section_revision": revision, "runtime_id": self._runtime_id, "pid": os.getpid(),
                 "config_path": str(Path(self.config.source_path).resolve()) if self.config.source_path else ""}
 
@@ -466,7 +474,8 @@ class BackendManager:
         返回:
         - 应用后的实际宿主状态; 配置或修订冲突交给 API 边界捕获
         """
-        from satrap.core.config.administrator_groups import administrator_revision, normalize_administrator_groups
+        from satrap.core.config.administrator_groups import (administrator_revision, normalize_administrator_overrides,
+                                                             migrate_legacy_scope_exclusions, normalize_administrator_groups)
         from satrap.core.config.document import ConfigRevisionConflict, load_config_document, validate_platforms
 
         if not isinstance(expected_revision, str) or not expected_revision or not self.config.source_path:
@@ -476,15 +485,18 @@ class BackendManager:
             document = load_config_document(source)
             platforms = validate_platforms(document.get("platforms", []))
             groups = normalize_administrator_groups(document.get("administrator_groups"), platforms)
-            if administrator_revision(groups) != expected_revision:
+            exceptions = normalize_administrator_overrides(document.get("administrator_overrides"), platforms)
+            groups, exceptions, _pending = migrate_legacy_scope_exclusions(groups, exceptions)
+            if administrator_revision(groups, exceptions) != expected_revision:
                 raise ConfigRevisionConflict("管理员配置已变化, 请重新读取后应用")
 
             live = {item["id"]: platform_instance_id(item) for item in self.config.platforms}
             saved = {item["id"]: platform_instance_id(item) for item in platforms}
             if live != saved:
                 raise ConfigRevisionConflict("平台实例配置已变化, 请先应用平台配置后再应用管理员设置")
-            self.administrator_service.apply(groups)
+            self.administrator_service.apply(groups, exceptions)
             self.config.administrator_groups = groups
+            self.config.administrator_overrides = exceptions
         logger.info(f"[管理员设置] 配置已应用, revision={expected_revision}, runtime={self._runtime_id}")
         return self.administrator_runtime_status()
 

@@ -146,15 +146,15 @@ tool_permissions:
 
 判定规则:
 
-- 一个入口列出多个权限时全部满足 (AND); 每个权限内部为"本地名单允许 OR 系统管理组授权"。没有 caller_list 的权限本地路径恒为拒绝, 只能由管理组授予
+- 一个入口列出多个权限时全部满足 (AND); 每个权限内部为"本地名单允许 OR 管理组与成员例外授权"。没有 caller_list 的权限本地路径恒为拒绝, 只能由管理组或成员例外授予
 - 子命令使用 `default` 与精确匹配子命令规则的并集, 子命令配置不能解除命令默认权限; 子命令名精确匹配已解析的原生命令 token, 不按前缀匹配。命令授权需要宿主识别原生命令后创建的可信作用域, 模型工具作用域不能创建
 - 未绑定管理权限的已声明入口是普通入口, 行为不变; 未知入口, 已停用入口, 管理入口缺少可信平台身份或名单结构错误一律拒绝
 - 没有声明的旧插件保持原行为。权限映射引用未声明入口 / 未定义权限, 列表为空或重复, 未知规则字段, 非法 empty_policy 或非布尔 system_admin 均视为无效 metadata: 拒绝加载该插件, 前端显示原因并记日志, 不退化成允许, 不中断目录扫描与平台进程
-- 至少一条 `system_admin: true` 的合法声明才算"已接入"管理组授权
+- 至少一条 `system_admin: true` 的合法声明才算"已接入"管理组与成员例外授权
 
 宿主接口位于权限服务, 插件只调用这两项: `authorize_plugin_entry(binding, subcommand=None)` 返回判定结果 (用于工具过滤与预览), `require_plugin_entry_permission(...)` 在 denied 时抛 `PluginPermissionDenied` (用于执行边界)。binding 由宿主创建并固定插件, 入口种类, 名称与实例, 调用身份取自可信作用域, 模型参数不能提供身份, 名单或配置版本
 
-判定结果 `AuthorizationDecision` 含 `status` (allowed / denied / not_applicable), 入口身份, `required_permissions`, 每项 `grants` (来源 local_list / local_empty_allow / administrator_group 及命中组 ID), `reason_code`, `policy_revision` 与 `permission_fingerprint` (供持久申请复核)。`reason_code` 取值: `permission_denied` (确未授权), `identity_missing`, `entry_disabled`, `stale_authorization` (检查与写入之间版本变化), `invalid_permission_config` (名单结构错误), `authorization_error` (检查本身异常, 记完整堆栈, 提示查看后端日志), `unknown_entry`
+判定结果 `AuthorizationDecision` 含 `status` (allowed / denied / not_applicable), 入口身份, `required_permissions`, 每项 `grants` (来源 local_list / local_empty_allow / administrator_group / administrator_override 及命中组或例外条目 ID), `reason_code`, `policy_revision` 与 `permission_fingerprint` (供持久申请复核)。`reason_code` 取值: `permission_denied` (确未授权), `identity_missing`, `entry_disabled`, `stale_authorization` (检查与写入之间版本变化), `invalid_permission_config` (名单结构错误), `authorization_error` (检查本身异常, 记完整堆栈, 提示查看后端日志), `unknown_entry`
 
 工具过滤结果不能作为执行凭证; 同一处理步骤内复用一份判定, 步骤结束即失效, 复制出去的上下文同样失效, 并按当前调用身份区分, 异步等待后和平台写入前重新校验
 

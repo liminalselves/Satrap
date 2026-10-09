@@ -35,6 +35,8 @@
 - [memory 插件](plugins/memory-plugin.md): 独立长期记忆, 来源, 权限与上下文注入
 - [RAG 与会话覆盖](plugins/rag-and-session-overrides.md): RAG 插件使用流程, 知识库参数与文档管理, Embedding 绑定与索引重建, 检索参数, 会话级插件配置覆盖
 - [扩展模块](plugins/extensions.md): `satrap.expend` 工具集: 搜索, 网页抓取, 代码沙箱, RAG, 长期记忆和 sub-agent
+- [管理员授权三层模型设计稿](plugins/administrator-overrides-plan.md): 待实施规格; 组只授予 / 人只负责例外, 成员例外层与账号保护开关, 存量排除迁移
+- [三层模型复审缺陷修复计划](plugins/administrator-overrides-review-fixes.md): 复审四项缺陷 (接口清空例外, 迁移启用语义, 保护泄漏, 预览否决来源) 的修法与测试清单
 
 ### execution/ 执行引擎与恢复
 

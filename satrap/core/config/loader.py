@@ -62,6 +62,7 @@ class ConfigLoader:
             },
             "platforms": list(cfg.platforms),
             "administrator_groups": list(cfg.administrator_groups),
+            "administrator_overrides": list(cfg.administrator_overrides),
         }
 
     @staticmethod

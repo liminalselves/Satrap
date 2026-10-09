@@ -241,14 +241,15 @@ export function Settings() {
           </TabsList>
 
           <TabsContent value="administrators" forceMount>
-            <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, revision, previousRevision) => {
-              setConfig(current => ({ ...current, administrator_groups: groups }));
+            <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, overrides, revision, previousRevision) => {
+              setConfig(current => ({ ...current, administrator_groups: groups, administrator_overrides: overrides }));
               setConfigRevision(current => current === previousRevision ? revision : current);
               setRawConfig(current => {
                 try {
                   const parsed = yaml.load(current, { schema: yaml.JSON_SCHEMA, json: true });
+                  // 原始配置文本必须同步两个区段, 否则切到原始配置页签保存会丢掉成员例外
                   return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-                    ? yaml.dump({ ...parsed, administrator_groups: groups }, { indent: 2 }) : current;
+                    ? yaml.dump({ ...parsed, administrator_groups: groups, administrator_overrides: overrides }, { indent: 2 }) : current;
                 } catch { return current; }
               });
             }} />

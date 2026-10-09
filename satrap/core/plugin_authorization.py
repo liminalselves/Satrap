@@ -33,6 +33,7 @@ class PermissionGrant:
     allowed: bool
     source: str = ""
     group_ids: tuple[str, ...] = ()
+    override_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -129,15 +130,19 @@ def evaluate_plugin_permissions(
             source = "local_list" if local and callers else "local_empty_allow" if local else ""
             allowed = local
             group_ids: tuple[str, ...] = ()
+            override_ids: tuple[str, ...] = ()
             if not local and rule.system_admin and admin and admin.allowed:
-                allowed, source, group_ids = True, "administrator_group", admin.group_ids
-            grants.append(PermissionGrant(permission, allowed, source, group_ids))
+                # 组允许优先标记来源组, 只由成员例外授予时标记例外条目
+                source = "administrator_group" if admin.group_ids else "administrator_override"
+                allowed = True
+                group_ids, override_ids = admin.group_ids, admin.allowed_overrides
+            grants.append(PermissionGrant(permission, allowed, source, group_ids, override_ids))
             definitions.append((permission, rule.caller_list, rule.empty_policy, rule.system_admin))
     except (KeyError, ValueError, TypeError):
         return AuthorizationDecision("denied", *identity, required, reason_code="invalid_permission_config")
     permitted = all(grant.allowed for grant in grants)
     fingerprint = hashlib.sha256(json.dumps([origin.adapter_id, origin.self_id, origin.actor_id, identity, definitions,
-        [(grant.permission, grant.allowed, grant.source, grant.group_ids) for grant in grants]], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        [(grant.permission, grant.allowed, grant.source, grant.group_ids, grant.override_ids) for grant in grants]], ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
     return AuthorizationDecision("allowed" if permitted else "denied", *identity, required, tuple(grants),
                                  "" if permitted else "permission_denied", admin.revision if admin else "", fingerprint)
 
@@ -411,5 +416,5 @@ def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: 
         logger.debug(f"[管理权限] 调用允许, 插件={binding.plugin_name}, 入口={binding.name}, "
                      f"平台={origin.adapter_id if origin else ''}, 调用者={origin.actor_id if origin else ''}, "
                      f"请求={origin.request_id if origin else ''}, "
-                     f"授权={[(item.permission, item.source, item.group_ids) for item in result.grants]}")
+                     f"授权={[(item.permission, item.source, item.group_ids, item.override_ids) for item in result.grants]}")
     return result
