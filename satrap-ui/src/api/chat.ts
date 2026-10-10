@@ -1,5 +1,6 @@
 import type { LLMConfig } from './types';
 import { getChatApiUrl } from '@/utils/constants';
+import { ensureApiSession, establishApiSession } from './auth';
 import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import type { RagResult } from './rag';
@@ -264,7 +265,9 @@ export type ChatEvent = (
 // ==================== HTTP 请求 ====================
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const send = () => fetch(`${getChatApiUrl()}${path}`, {
+  const baseUrl = getChatApiUrl();
+  await ensureApiSession(baseUrl);
+  const send = () => fetch(`${baseUrl}${path}`, {
     method,
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
@@ -272,8 +275,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   });
   let resp = await send();
   if (resp.status === 401) {
-    const { establishApiSession } = await import('@/api/auth');
-    await establishApiSession(getChatApiUrl());
+    await establishApiSession(baseUrl);
     resp = await send();
   }
   const data = (await resp.json()) as T & { error?: string };
@@ -505,12 +507,22 @@ export type ChatEventHandler = (event: ChatEvent) => void;
 
 // 订阅会话实时事件; 返回取消订阅函数
 export function subscribeChat(conversationId: string, onEvent: ChatEventHandler): () => void {
-  const wsUrl = `${getChatApiUrl().replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
+  const baseUrl = getChatApiUrl();
+  const wsUrl = `${baseUrl.replace(/^http/, 'ws')}/ws/chat?conversation=${encodeURIComponent(conversationId)}`;
   let ws: WebSocket;
   let stopped = false;
   let retry = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const connect = () => {
+  const connect = async () => {
+    if (stopped) return;
+    try { await ensureApiSession(baseUrl); }
+    catch (error) {
+      if (!stopped) {
+        console.error('[ChatWS] 认证失败:', error);
+        timer = setTimeout(() => void connect(), Math.min(1000 * 2 ** retry++, 10000));
+      }
+      return;
+    }
     if (stopped) return;
     ws = new WebSocket(wsUrl);
     const current = ws;
@@ -547,7 +559,7 @@ export function subscribeChat(conversationId: string, onEvent: ChatEventHandler)
       }
     };
   };
-  connect();
+  void connect();
   return () => {
     stopped = true;
     clearTimeout(timer);

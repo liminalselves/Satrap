@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { chatApi, type ChatPreloadSettings, type ModelConfigItem } from './chat';
+vi.mock('./auth', () => ({ ensureApiSession: vi.fn().mockResolvedValue(undefined), establishApiSession: vi.fn().mockResolvedValue(undefined) }));
 
 const SETTINGS: ChatPreloadSettings = {
   model: 'deepseek-v4-flash',

@@ -1,6 +1,6 @@
 import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { getApiBaseUrl } from '@/utils/constants';
-import { establishApiSession } from '@/api/auth';
+import { ensureApiSession, establishApiSession } from '@/api/auth';
 
 type RetriableRequestConfig = InternalAxiosRequestConfig & { _satrapAuthRetry?: boolean };
 type ErrorBody = { error?: string; reason?: string };
@@ -38,8 +38,11 @@ class ApiClient {
       },
     });
 
-    this.client.interceptors.request.use((config) => {
-      config.baseURL = getApiBaseUrl();
+    this.client.interceptors.request.use(async (config) => {
+      const retry = config as RetriableRequestConfig;
+      const baseUrl = retry._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl();
+      await ensureApiSession(baseUrl);
+      config.baseURL = baseUrl;
       return config;
     });
 
@@ -53,7 +56,7 @@ class ApiClient {
         const config = error.config as RetriableRequestConfig | undefined;
         if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
           config._satrapAuthRetry = true;
-          await establishApiSession(getApiBaseUrl());
+          await establishApiSession(config.baseURL || getApiBaseUrl());
           return this.client.request(config);
         }
         return Promise.reject(toApiError(error));

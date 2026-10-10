@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { establishApiSession } from './auth';
+import { ensureApiSession, establishApiSession } from './auth';
 import { getChatApiUrl, getControlApiUrl } from '@/utils/constants';
 import { chatApi } from './chat';
 import { controlApi } from './control';
@@ -42,6 +42,7 @@ export const ragApi = {
   upload: async (context: RagContext, kbId: string, file: File, source: string, onProgress: (percent: number) => void): Promise<Record<string, unknown>> => {
     const chat = context.platformId === 'chat' && context.via !== 'control';
     const base = chat ? getChatApiUrl() : getControlApiUrl();
+    await ensureApiSession(base);
     const path = chat ? '/api/chat/rag/upload' : '/config/rag/upload';
     const params = new URLSearchParams({ platform_id: context.platformId, session_id: context.sessionId || '', kb_id: kbId, file_name: file.name, source });
     const send = () => axios.post<Record<string, unknown>>(base + path + '?' + params, file, {

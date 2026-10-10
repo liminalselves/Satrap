@@ -1,4 +1,5 @@
 import { getApiBaseUrl } from '@/utils/constants';
+import { ensureApiSession } from './auth';
 import type { AdapterInfo } from './types';
 
 export interface LogMessage {
@@ -43,6 +44,7 @@ export class SatrapWebSocket {
   private endpoint: string;
   private isIntentionallyClosed = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private connectGeneration = 0;
 
   constructor(endpoint: WebSocketEndpoint) {
     this.endpoint = endpoint;
@@ -54,10 +56,14 @@ export class SatrapWebSocket {
     this._connect();
   }
 
-  private _connect() {
+  private async _connect() {
     if (this.isIntentionallyClosed) return;
+    const generation = ++this.connectGeneration;
     try {
-      const wsUrl = getApiBaseUrl().replace(/^http/, 'ws') + this.endpoint;
+      const baseUrl = getApiBaseUrl();
+      await ensureApiSession(baseUrl);
+      if (this.isIntentionallyClosed || generation !== this.connectGeneration) return;
+      const wsUrl = baseUrl.replace(/^http/, 'ws') + this.endpoint;
       this.ws = new WebSocket(wsUrl);
 
       this.ws.onopen = () => {
@@ -89,6 +95,7 @@ export class SatrapWebSocket {
         this.handlers.onError?.('WebSocket connection error');
       };
     } catch (e) {
+      if (this.isIntentionallyClosed || generation !== this.connectGeneration) return;
       console.error('[WebSocket] Failed to create connection:', e);
       this._scheduleReconnect();
     }
@@ -122,6 +129,7 @@ export class SatrapWebSocket {
 
   disconnect() {
     this.isIntentionallyClosed = true;
+    this.connectGeneration++;
     if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = null;
     if (this.ws) {

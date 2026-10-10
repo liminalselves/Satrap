@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SatrapWebSocket } from './websocket';
+import { ensureApiSession } from './auth';
 
 vi.mock('@/utils/constants', () => ({ getApiBaseUrl: () => 'http://localhost:19870' }));
+vi.mock('./auth', () => ({ ensureApiSession: vi.fn().mockResolvedValue(undefined) }));
 
 class TestSocket {
   static OPEN = 1;
@@ -24,21 +26,33 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('状态订阅生命周期', () => {
-  it('意外断开后重连并继续传递状态', () => {
+  it('认证完成前不连接, 取消后认证迟到不再建立订阅', async () => {
+    let resolve!: () => void;
+    vi.mocked(ensureApiSession).mockReturnValueOnce(new Promise<void>((done) => { resolve = done; }));
+    const socket = new SatrapWebSocket('/ws/status');
+    socket.connect({});
+    expect(TestSocket.instances).toHaveLength(0);
+    socket.disconnect(); resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(TestSocket.instances).toHaveLength(0);
+  });
+  it('意外断开后重连并继续传递状态', async () => {
     const onStatus = vi.fn();
     const socket = new SatrapWebSocket('/ws/status');
     socket.connect({ onStatus });
+    await vi.advanceTimersByTimeAsync(0);
     TestSocket.instances[0].close();
-    vi.advanceTimersByTime(1000);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(TestSocket.instances).toHaveLength(2);
     TestSocket.instances[1].onmessage?.({ data: JSON.stringify({ type: 'status', data: { running: true, adapters: {} } }) });
     expect(onStatus).toHaveBeenCalledWith({ running: true, adapters: {} });
     socket.disconnect();
   });
 
-  it('卸载时取消已排队的重连, 不遗留新的订阅', () => {
+  it('卸载时取消已排队的重连, 不遗留新的订阅', async () => {
     const socket = new SatrapWebSocket('/ws/status');
     socket.connect({});
+    await vi.advanceTimersByTimeAsync(0);
     TestSocket.instances[0].close();
     socket.disconnect();
     vi.advanceTimersByTime(60000);

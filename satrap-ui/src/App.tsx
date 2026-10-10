@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { RouterProvider } from 'react-router-dom';
 import { router } from './router';
 import { useBackendStatusSync } from './hooks/useBackendStatusSync';
+import { ApiSessionNotice } from '@/components/common/ApiSessionNotice';
 
 function App() {
   useBackendStatusSync();
@@ -32,6 +33,7 @@ function App() {
       </div>
       
       <RouterProvider router={router} />
+      <ApiSessionNotice />
     </>
   );
 }

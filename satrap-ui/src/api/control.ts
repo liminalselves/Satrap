@@ -4,7 +4,7 @@ import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import type { RagResult } from './rag';
 import { getControlApiUrl } from '@/utils/constants';
-import { establishApiSession } from '@/api/auth';
+import { ensureApiSession, establishApiSession } from '@/api/auth';
 import type {
   DiscoveredSessionClass,
   EdictumSessionConfig,
@@ -107,8 +107,11 @@ export const controlClient = axios.create({
   },
 });
 
-controlClient.interceptors.request.use((config) => {
-  config.baseURL = getControlApiUrl();
+controlClient.interceptors.request.use(async (config) => {
+  const retry = config as typeof config & { _satrapAuthRetry?: boolean };
+  const baseUrl = retry._satrapAuthRetry && config.baseURL ? config.baseURL : getControlApiUrl();
+  await ensureApiSession(baseUrl);
+  config.baseURL = baseUrl;
   return config;
 });
 
@@ -118,7 +121,7 @@ controlClient.interceptors.response.use(
     const config = error.config as typeof error.config & { _satrapAuthRetry?: boolean };
     if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
       config._satrapAuthRetry = true;
-      await establishApiSession(getControlApiUrl());
+      await establishApiSession(config.baseURL || getControlApiUrl());
       return controlClient.request(config);
     }
     return Promise.reject(error);
