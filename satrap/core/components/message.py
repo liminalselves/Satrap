@@ -785,6 +785,8 @@ class Node(BaseMessageComponent):
     content: list[BaseMessageComponent] = Field(default_factory=list[BaseMessageComponent])
     seq: str | list | None = ""
     time: int | None = 0
+    relay_forward: bool = False
+    require_forward: bool = False
 
     def __init__(self, content: list[BaseMessageComponent] | BaseMessageComponent, **kwargs: Any) -> None:
         """
@@ -805,6 +807,8 @@ class Node(BaseMessageComponent):
         返回:
         - dict[str, Any]: 转换为字典
         """
+        if self.id:
+            return {"type": "node", "data": {"id": str(self.id)}}
         data_content: list[dict[str, Any]] = []
         for comp in self.content:
             if isinstance(comp, (Image, Record)):

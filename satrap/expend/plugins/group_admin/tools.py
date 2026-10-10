@@ -31,15 +31,6 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "要查看的群号, 不填则查看当前群"),
         "honor_type": ("string", "荣誉类型: all 全部, talkative 龙王, performer 群聊之火, legend 群聊炽焰, strong_newbie 冒尖小春笋, emotion 快乐源泉; 不填默认 all"),
     }, [], False, True),
-    "group_admin_get_forward": ("查看群里一条合并转发消息的内容; 同时提供转发 ID 和群里包含它的消息 ID. 转发中的其他合并转发不会自动展开", {
-        "forward_id": ("string", "合并转发内容的 ID, 从包含转发的群消息中取得"),
-        "source_message_id": ("string", "群里包含这条合并转发的消息 ID, 用来确认转发属于目标群"),
-        "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
-    }, ["forward_id", "source_message_id"], False, True),
-    "group_admin_send_forward": ("把多段文字作为一条合并转发消息发到群里; 需要把长内容分段展示时使用. 发送是否成功以实际返回结果为准, 结果未知时不要重复发送", {
-        "nodes": ("array", "按显示顺序填写 1 到 30 段内容, 每项为 {content: 文字, name: 可选显示名称}; 每段文字 1 到 2000 字符"),
-        "group_id": ("string", "接收消息的群号, 不填则发送到当前群"),
-    }, ["nodes"], True, True),
     "group_admin_recall_message": ("撤回群里的一条指定消息, 需要填写该消息的 ID; 能否撤回取决于机器人权限和平台限制" + _ACTION_RESULT_DESCRIPTION, {
         "message_id": ("string", "要撤回的消息 ID, 从聊天上下文或消息查询结果中取得"), "group_id": ("string", "消息所在的群号, 不填则使用当前群"),
     }, ["message_id"], True, True),
@@ -324,15 +315,6 @@ def _dispatch_action(name: str, admin: OneBotAdmin, origin: CallOrigin, gid: str
         return submit()
     if name == "group_admin_get_honors":
         return admin.get_group_honor_info(gid, str(kwargs.get("honor_type") or "all"))
-    if name == "group_admin_get_forward":
-        source_id = str(kwargs.get("source_message_id") or "").strip()
-        if not source_id:
-            # 缺少来源消息 ID 时无法证明转发对象归属, 不提供不安全兼容放行
-            raise ValueError("必须提供 source_message_id: 该转发所在群消息的 ID")
-        return admin.get_forward_message(gid, kwargs.get("forward_id", ""), source_id)
-    if name == "group_admin_send_forward":
-        # request_id 取自调用上下文而不是模型参数: 工具发送要归并进同一请求的发送结论
-        return admin.send_group_forward(gid, kwargs.get("nodes"), origin.request_id)
     if name == "group_admin_recall_message":
         return admin.recall_message(gid, kwargs.get("message_id", ""))
     if name == "group_admin_kick":

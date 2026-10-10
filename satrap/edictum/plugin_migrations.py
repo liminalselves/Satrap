@@ -28,7 +28,7 @@ def migrate_group_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
     返回:
     - 只含新工具名称的配置副本, 权限冲突时拒绝迁移
     """
-    result = migrate_friend_tool_specs(value, catalog)
+    result = migrate_friend_tool_specs(migrate_forward_tool_specs(value, catalog), catalog)
     admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
     if admin is None or not isinstance(admin.get("capabilities"), dict):
         return result
@@ -99,6 +99,74 @@ FRIEND_MOVES = {
     "group_admin_list_friend_requests": "friend_manager_list_requests",
     "group_admin_handle_friend_request": "friend_manager_handle_request",
 }
+
+
+FORWARD_MOVES = {"group_admin_get_forward": "message_forward_read", "group_admin_send_forward": "message_forward_compose"}
+
+
+def migrate_forward_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
+    """迁移旧转发工具并清除废弃范围字段, 原消息发送与跨对话功能不自动启用"""
+    result = deepcopy(value)
+    for item in result:
+        if isinstance(item, dict) and item.get("name") == "message_forward" and isinstance(item.get("config"), dict):
+            item["config"].pop("allow_private", None)
+            item["config"].pop("allowed_groups", None)
+    admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
+    if admin is None:
+        return result
+    raw_caps = admin.get("capabilities", {})
+    raw_config = admin.get("config", {})
+    if not isinstance(raw_caps, dict) or not isinstance(raw_config, dict):
+        raise ValueError("旧转发插件配置和能力状态必须为对象")
+    tools = raw_caps.get("tools", {})
+    if not isinstance(tools, dict):
+        return result
+    explicit = any(name in tools for name in FORWARD_MOVES)
+    if not explicit:
+        return result
+    entry = catalog.get("message_forward")
+    if entry is None:
+        if explicit:
+            raise ValueError("旧转发工具迁移需要可用的 message_forward 插件")
+        return result
+    existing = next((item for item in result if isinstance(item, dict) and item.get("name") == "message_forward"), None)
+    old_entry = catalog.get("group_admin")
+    manager = PluginConfigManager()
+    old_global = manager.load_global_explicit("group_admin", old_entry.config_schema) if old_entry else {}
+    old_config = {**old_global, **raw_config}
+    moved = {}
+    for old, new in FORWARD_MOVES.items():
+        enabled = tools.pop(old, True)
+        if type(enabled) is not bool:
+            raise ValueError("旧转发工具状态必须为布尔值")
+        moved[new] = enabled and admin.get("enabled", True) is True
+    created = existing is None and "message_forward" not in result
+    if existing is None:
+        existing = {"name": "message_forward", "enabled": admin.get("enabled", True), "config": {},
+                    "capabilities": {kind: {name: False for name in names} for kind, names in entry.capabilities.items()}}
+        if created:
+            result.append(existing)
+        else:
+            existing.pop("capabilities")
+            result[result.index("message_forward")] = existing
+    config = existing.setdefault("config", {})
+    caps = existing.setdefault("capabilities", {}).setdefault("tools", {})
+    if not isinstance(config, dict) or not isinstance(caps, dict):
+        raise ValueError("转发插件配置和工具状态必须为对象")
+    merged = {**manager.load_global_explicit("message_forward", entry.config_schema), **config}
+    for old_key, new_key, empty_denies in (("allowed_callers", "write_callers", True), ("allowed_read_callers", "read_callers", False)):
+        old_ids = set(config_ids(old_config.get(old_key)))
+        new_ids = set(config_ids(merged.get(new_key)))
+        effective = old_ids if created else old_ids & new_ids if empty_denies or old_ids and new_ids else old_ids or new_ids
+        if not created and not empty_denies and old_ids and new_ids and not effective:
+            raise ValueError("转发迁移授权范围无交集, 请明确设置新插件权限")
+        config[new_key] = "\n".join(sorted(effective))
+    config["send_enabled"] = old_config.get("write_tools_enabled") is True and (created or merged.get("send_enabled") is True)
+    if created:
+        config["cross_conversation_enabled"] = False
+    for name, enabled in moved.items():
+        caps[name] = enabled if created else enabled and caps.get(name, True)
+    return result
 
 
 def migrate_friend_tool_specs(value: list[Any], catalog: Any) -> list[Any]:

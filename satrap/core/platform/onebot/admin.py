@@ -15,10 +15,7 @@ import json
 import re
 import unicodedata
 
-from satrap.core.components import BaseMessageComponent, Node, Plain
-from satrap.core.platform.event import MessageChain
 from satrap.core.platform.onebot.request_registry import flag_digest
-from satrap.core.platform.onebot.onebot_utils import forward_ids_in_message, group_session_id
 from satrap.core.log import logger
 
 from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_request_occupancy
@@ -100,8 +97,6 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "handle_friend_request": ("write", "批准或拒绝好友请求"),
     "handle_group_request": ("write", "批准或拒绝加群请求/邀请"),
     "get_message": ("read", "回源读取群消息 (get_msg)"),
-    "get_forward_message": ("read", "回源读取合并转发 (get_forward_msg)"),
-    "send_forward": ("write", "发送合并转发 (经公共发送路径)"),
     "upload_file": ("write", "上传群/私聊文件 (upload_group_file/upload_private_file)"),
 }
 """OneBot v11 标准管理动作登记表: 名称到读写属性与说明"""
@@ -131,8 +126,6 @@ _CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
     "handle_friend_request": ("set_friend_add_request",),
     "handle_group_request": ("set_group_add_request",),
     "get_message": ("get_msg",),
-    "get_forward_message": ("get_forward_msg",),
-    "send_forward": ("send_group_forward_msg", "send_private_forward_msg"),
     "upload_file": ("upload_group_file", "upload_private_file"),
 }
 """能力登记名到底层协议动作名的映射, 供按连接代次的被动能力学习查询"""
@@ -193,22 +186,6 @@ def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数"
     text = str(value).strip()
     if not text or not text.lstrip("-").isdecimal():
         raise ValueError(message)
-    return text
-
-
-def _normalize_forward_id(value: Any) -> str:
-    """
-    校验并归一化合并转发 ID
-
-    参数:
-    - value: 外部输入
-
-    返回:
-    - str: 去除首尾空白且不含控制字符的转发 ID
-    """
-    text = str(value).strip()
-    if not text or len(text) > 128 or any(unicodedata.category(ch) == "Cc" for ch in text):
-        raise ValueError("转发 ID 非法")
     return text
 
 
@@ -635,107 +612,6 @@ class OneBotAdmin:
             "sender": {key: sender_data.get(key) for key in ("user_id", "nickname", "card", "role")},
             "message": payload.get("message"),
         }
-
-    async def get_forward_message(self, group_id: Any, forward_id: Any, source_message_id: Any) -> list[dict[str, Any]]:
-        """
-        回源读取合并转发内容, 不递归展开嵌套转发, 不下载附件
-
-        参数:
-        - group_id: 转发所在群, 必须在当前实例允许范围内
-        - forward_id: OneBot 转发消息 ID
-        - source_message_id: 含该转发的来源群消息 ID, 用于证明转发对象确实来自目标群
-
-        返回:
-        - list[dict]: 节点昵称, 账号与文本摘要; 缺少归属证明或证明失效一律拒绝
-
-        读取前回源来源消息, 要求其属于目标群, 账号与请求 ID 一致, 且顶层组件确实包含请求的转发 ID;
-        回源等待后复查群范围, 账号与连接代次, 不将旧账号或旧连接的证明用于新连接
-        """
-        gid = normalize_group_id(group_id)
-        self._check_group(gid)
-        fid = _normalize_forward_id(forward_id)
-        generation, account = self._adapter.connection_generation(), self._adapter.bot_self_id
-        payload = await self._verify_forward_source(gid, source_message_id)
-        if fid not in forward_ids_in_message(payload.get("message")):
-            raise AdminActionRejected("请求的转发 ID 未出现在来源消息中, 已拒绝读取")
-        self._check_group(gid)
-        if self._adapter.connection_generation() != generation or self._adapter.bot_self_id != account:
-            raise AdminActionUnconfirmed("连接或账号已变更, 来源证明失效")
-        nodes = await self._adapter.fetch_forward_message(fid, group_session_id(gid), expect_group_id=gid)
-        if nodes is None:
-            raise AdminActionUnconfirmed("转发回源失败, 结果未知")
-        self._check_group(gid)
-        if self._adapter.connection_generation() != generation or self._adapter.bot_self_id != account:
-            raise AdminActionUnconfirmed("连接或账号已变更, 来源证明失效")
-        result: list[dict[str, Any]] = []
-        for node in nodes:
-            text = "".join(
-                component.text if isinstance(component, Plain) else f"[{component.type.value}]"
-                for component in node.content
-            )
-            if len(text) > 1000:
-                text = text[:1000] + "…"
-            result.append({"name": node.name or "", "uin": node.uin or "", "time": node.time or 0, "text": text})
-        return result
-
-    async def _verify_forward_source(self, gid: str, source_message_id: Any) -> dict[str, Any]:
-        """
-        回源来源消息并绑定目标群, 当前账号与请求消息 ID
-
-        参数:
-        - gid: 已归一化且已通过群范围检查的目标群
-        - source_message_id: 含该转发的群消息 ID
-
-        返回:
-        - dict: get_msg 响应; 归属, 账号或消息 ID 不一致时抛 AdminActionRejected
-        """
-        text = _normalize_message_id(source_message_id, "来源消息 ID 必须为整数")
-        info = await self._call("get_msg", message_id=int(text))
-        payload = cast(dict[str, Any], info) if isinstance(info, dict) else {}
-        raw_group = payload.get("group_id")
-        actual_group = str(raw_group).strip() if isinstance(raw_group, (int, str)) and not isinstance(raw_group, bool) else ""
-        if payload.get("message_type") != "group" or actual_group != gid:
-            raise AdminActionRejected("无法确认来源消息属于目标群, 已拒绝读取转发")
-        raw_self = payload.get("self_id")
-        if raw_self is not None and str(raw_self) != self._adapter.bot_self_id:
-            raise AdminActionRejected("来源消息账号与当前绑定账号不一致, 已拒绝读取转发")
-        raw_message = payload.get("message_id")
-        if raw_message is not None and str(raw_message) != text:
-            raise AdminActionRejected("来源消息回源结果与请求消息 ID 不一致, 已拒绝读取转发")
-        return payload
-
-    async def send_group_forward(self, group_id: Any, nodes: Any, request_id: str = "") -> dict[str, Any]:
-        """
-        经公共发送路径向群发送合并转发, 与 pipeline 回复共用拆分, 整轮排序与容量约束
-
-        参数:
-        - group_id: 目标群, 必须在当前实例允许范围内
-        - nodes: 节点列表, 每项 {content: 1 到 2000 字符文本, name: 可选昵称}, 1 到 30 项
-        - request_id: 发起该动作的逻辑请求标识, 由调用上下文注入 (不取模型参数);
-          发送尝试按它归并到同一请求, 模型调用期间的工具发送因此进入请求结论
-
-        返回:
-        - dict: 发送回执摘要 (status/message_ids/reason)
-        """
-        gid = normalize_group_id(group_id)
-        self._check_group(gid)
-        if not isinstance(nodes, list) or not 1 <= len(cast(list[Any], nodes)) <= 30:
-            raise ValueError("nodes 必须为 1 到 30 项的节点列表")
-        uin = str(self._adapter.bot_self_id or "")
-        if not uin.isdecimal():
-            raise AdminActionUnconfirmed("机器人账号未知, 无法构造转发节点")
-        built: list[BaseMessageComponent] = []
-        for raw in cast(list[Any], nodes):
-            if not isinstance(raw, dict):
-                raise ValueError("nodes 必须为 1 到 30 项的节点列表")
-            entry = cast(dict[str, Any], raw)
-            content = str(entry.get("content") or "")
-            if not content or len(content) > 2000:
-                raise ValueError("节点正文必须为 1 到 2000 字符")
-            name = str(entry.get("name") or "").strip()[:30] or "Satrap"
-            built.append(Node(Plain(content), name=name, uin=uin))
-        receipt = await self._adapter.send_message(group_session_id(gid), MessageChain(built), request_id=request_id)
-        return {"status": receipt.status, "message_ids": list(receipt.message_ids), "reason": receipt.reason}
 
     async def recall_message(self, group_id: Any, message_id: Any) -> None:
         """

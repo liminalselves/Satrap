@@ -57,6 +57,7 @@ from satrap.core.log import logger
 from satrap.core.call_context import CallOrigin
 from satrap.core.config.platform_messages import MessageScope, PlatformMessageStore
 from satrap.core.platform.message_archive import archive_snapshot
+from satrap.core.config.group_action_origin import current_group_action_preflight
 from satrap.core.group_chat.types import GroupChatError, MemberSnapshot, VerifiedMember, VerifiedMessage, GroupSnapshot, VerifiedGroup
 
 from satrap.core.config.group_policy import resolve_group_policy
@@ -115,7 +116,7 @@ def _turn_signature(payload: list[BaseMessageComponent]) -> tuple[str, int]:
             text = f"{component.name}|{component.file_}|{component.url}"
         elif isinstance(component, Node):
             inner = "".join(item.text for item in component.content if isinstance(item, Plain))
-            text = f"{component.name}|{inner}"
+            text = f"{component.id}|{component.relay_forward}|{component.name}|{inner}"
             chars += len(inner)
         parts.append(f"{marker}:{text}")
     digest = hashlib.sha256("\x00".join(parts).encode("utf-8")).hexdigest()[:16]
@@ -919,6 +920,32 @@ class OneBotAdapter(PlatformAdapter):
         - 不含原始 flag 的申请记录
         """
         return await self.request_flags.list_requests("friend", self_id=account, limit=limit, cursor=cursor)
+
+    def supports_message_forward(self) -> bool:
+        """提供 OneBot 群聊和私聊原消息转发"""
+        return True
+
+    def message_forward_account(self) -> str:
+        """向宿主提供当前 OneBot 账号, 不向插件暴露协议字段"""
+        return str(self.bot_self_id or "")
+
+    def message_forward_conversation_allowed(self, kind: str, identity: str) -> bool:
+        """以当前平台策略核验来源或目标对话"""
+        return self.allows_group(identity) if kind == "group" else kind == "private" and self.config.settings.get("enable_private", True) is True
+
+    async def message_forward(self, operation: str, origin: CallOrigin, params: dict[str, Any], check: Callable[[], None]) -> dict[str, Any]:
+        """按当前账号派发原消息读取, 转发或文字合集"""
+        from satrap.core.platform.onebot.forwarding import OneBotForwarding, conversation
+        service = OneBotForwarding(self, origin, check)
+        source = conversation(params.get("source"), origin)
+        target = conversation(params.get("target"), origin)
+        if operation == "read":
+            return await service.read(params["source_message_id"], source)
+        if operation == "send":
+            return await service.send(params["message_ids"], params.get("mode", "merge"), source, target)
+        if operation == "compose":
+            return await service.compose(params["nodes"], target)
+        raise ValueError("未知转发操作")
 
     async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
         """
@@ -1736,17 +1763,32 @@ class OneBotAdapter(PlatformAdapter):
         if not nodes:
             return SendReceipt("failed", reason="empty_message")
 
-        messages = [await node.to_dict() for node in nodes]
+        relay = len(nodes) == 1 and nodes[0].relay_forward
+        strict = relay or any(node.id or node.require_forward for node in nodes)
+        messages = [] if relay else [await node.to_dict() for node in nodes]
         forward_action = "send_group_forward_msg" if is_group_session(session_id) else "send_private_forward_msg"
+        if relay:
+            forward_action = "forward_group_single_msg" if is_group_session(session_id) else "forward_friend_single_msg"
         sent_self_id = self.bot_self_id
+        preflight = current_group_action_preflight()
+        if preflight is not None:
+            try:
+                preflight()
+            except Exception as error:
+                return self._failed_receipt(session_id, "forward", "preflight_rejected", error)
         try:
-            result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
+            if relay:
+                result = await self._dispatch_action(session_id, "forward_friend_single_msg", "forward_group_single_msg", message_id=str(nodes[0].id))
+            else:
+                result = await self._dispatch_action(session_id, "send_private_forward_msg", "send_group_forward_msg", messages=messages)
         except ValueError:
             return self._failed_receipt(session_id, "forward", "invalid_session")
         except _action_failures as error:
             if not is_missing_action_error(error):
                 return self._failed_receipt(session_id, "forward", "action_rejected", error)
             self.note_action_outcome(forward_action, False)
+            if strict:
+                return self._failed_receipt(session_id, "forward", "original_forward_unsupported", error)
             self._warn_limited("forward_degraded", "[OneBotAdapter] 当前实现缺少合并转发接口, 降级为分段发送", interval=600)
             return await self._send_forward_degraded(session_id, nodes, limit)
         except Exception as error:

@@ -100,9 +100,11 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_friend_add_request | friend_manager_handle_request | 写 | request_id, approve, remark ≤60 字符, flag 由宿主解析 | 动作记录 |
 | set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
 | get_msg | group_chat_get_message | 读 | message_id, 固定当前群 | 消息 ID/时间/发送者/原文, 优先档案, 回源核验当前群并遵守本地删除标记 |
-| get_forward_msg | group_admin_get_forward | 读 | forward_id, source_message_id (必填, 含该转发的群消息 ID), group_id 可选 | 至多 20 个节点 (昵称/账号/时间/≤1000 字符文本摘要) |
+| get_forward_msg | message_forward_read | 读 | source_message_id, source 可选 | 转发预览, 明确标识截断; 不用于发送 |
 
-`group_admin_get_forward` 必须提供来源消息 ID: 读取前经 `get_msg` 回源该消息, 要求它属于目标群、账号与请求消息 ID 一致, 且其顶层组件确实包含请求的转发 ID (不搜索正文, 不从嵌套节点推断); 回源等待后复查群范围、账号与连接代次, 通过后才调用 `get_forward_msg`, 回包若明确携带矛盾群号或账号则拒绝。缺少来源消息 ID 按参数错误返回, 不做不安全放行。
+`message_forward_read` 从来源消息的顶层转发组件取得转发 ID, 支持群聊和私聊, 回源核验消息归属, 账号和连接代次, 不从正文或嵌套节点推断授权
+`message_forward_send` 按原消息 ID 合并转发或原生转发已有卡片, 不使用截断预览; 原文模式接口缺失时明确失败, 不沿用普通自定义 Node 的文字降级
+`message_forward_compose` 保留机器人创建文字合集的能力, 与原文转发分开; 权限和迁移见 [原消息转发](../plugins/message-forward.md)
 
 好友/加群请求的 `flag` 来自通知事件 (见文末"通知与请求事件"), 工具只做显式审批, 不做任何自动同意或拒绝。布尔参数严格校验, 拒绝真值语义; 写操作被平台拒绝或结果未知时按 `manual` 策略交由用户确认, 不自动重放。
 

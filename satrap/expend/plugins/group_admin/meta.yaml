@@ -21,9 +21,7 @@ management_permissions:
     system_admin: true
 tool_permissions:
   group_admin_get_honors: [read]
-  group_admin_get_forward: [read]
   group_admin_list_group_requests: [read, requests]
-  group_admin_send_forward: [write]
   group_admin_recall_message: [write]
   group_admin_kick: [write]
   group_admin_ban: [write]
@@ -68,8 +66,6 @@ config_schema:
 
 tools:
   group_admin_get_honors: "查看群荣誉信息"
-  group_admin_get_forward: "查看合并转发消息的内容"
-  group_admin_send_forward: "向群发送合并转发消息"
   group_admin_recall_message: "撤回指定消息"
   group_admin_kick: "移出群成员"
   group_admin_ban: "禁言或解除禁言群成员"

@@ -609,6 +609,23 @@ class PlatformAdapter(ABC):
         from satrap.core.friends import FriendError
         raise FriendError("unsupported", "当前适配器不支持好友申请")
 
+    async def message_forward(self, operation: str, origin: CallOrigin, params: dict[str, Any], check: Callable[[], None]) -> dict[str, Any]:
+        """原消息转发平台接缝, 未实现的平台不注入工具"""
+        from satrap.core.message_forward import ForwardError
+        raise ForwardError("unsupported", "当前平台不支持原消息转发")
+
+    def supports_message_forward(self) -> bool:
+        """声明是否实现原消息转发接缝"""
+        return False
+
+    def message_forward_account(self) -> str:
+        """返回转发能力当前绑定的机器人账号, 未绑定时返回空字符串"""
+        return ""
+
+    def message_forward_conversation_allowed(self, kind: str, identity: str) -> bool:
+        """核验原消息转发的对话范围, 未实现的平台默认拒绝"""
+        return False
+
     async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
         """
         处理好友申请
