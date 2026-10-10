@@ -35,6 +35,54 @@ def test_catalog_sources_precedence_and_references_without_execution(tmp_path):
     assert result["custom"]["capabilities"]["tools"] == {"probe": "测试"}
 
 
+def test_enabled_plugin_names_unions_chat_and_named_configs(tmp_path):
+    user = tmp_path / "user"
+    for name in ["chat_on", "chat_off", "named_on", "named_off", "parent_off", "unused"]:
+        plugin = user / name
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(f"name: {name}\nversion: '1'\n", encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "builtin", user)
+    registry = ChatPluginRegistry(tmp_path / "chat.json")
+    registry.catalog = catalog
+    registry.set_enabled("chat_on", True)
+    registry.set_enabled("chat_off", True)
+    registry.set_enabled("chat_off", False)   # 已配置但停用, 不计入
+    service = PluginManagementService(catalog, {
+        "on": {"enabled": True, "plugins": ["named_on", {"name": "named_off", "enabled": False}]},
+        "off": {"enabled": False, "plugins": ["parent_off"]},   # 配置停用开关不影响, 条目启用即计入
+    }, registry)
+    assert service.enabled_plugin_names() == {"chat_on", "named_on", "parent_off"}
+
+
+def test_loaded_plugins_by_platform_follows_written_bindings(tmp_path):
+    user = tmp_path / "user"
+    for name, extra in [("plain", ""), ("entry_off", ""), ("onebot_only", "applicability:\n  platforms: [onebot]\n")]:
+        plugin = user / name
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(f"name: {name}\nversion: '1'\n{extra}", encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "builtin", user)
+    registry = ChatPluginRegistry(tmp_path / "chat.json")
+    registry.catalog = catalog
+    service = PluginManagementService(catalog, {
+        "main": {"enabled": True, "plugins": ["plain", {"name": "entry_off", "enabled": False}]},
+        "disabled_cfg": {"enabled": False, "plugins": ["plain", "onebot_only"]},   # 配置停用仍按已写入条目计入
+        "override_cfg": {"plugins": ["onebot_only"]},
+    }, registry)
+    result = service.loaded_plugins_by_platform([
+        {"id": "qq", "type": "onebot", "enable": False,   # 平台停用开关不影响, 按已写入绑定计算
+         "session_provider": "edictum", "session_type": "main",
+         "session_bindings": {"private": {"mode": "value", "provider": "edictum", "config_name": "override_cfg"},
+                              "group": {"mode": "inherit"}}},
+        {"id": "tg", "type": "misskey", "session_provider": "edictum", "session_type": "disabled_cfg"},
+        {"id": "legacy", "type": "onebot", "session_provider": "session_class", "session_type": "default"},
+        {"id": "ghost", "type": "onebot", "session_provider": "edictum", "session_type": "missing_cfg"},
+    ])
+    assert result["qq"] == {"plain", "onebot_only"}   # 默认绑定与对话类型覆盖取并集, 停用条目不计入
+    assert result["tg"] == {"plain"}   # onebot_only 声明不适用 misskey
+    assert result["legacy"] == set()   # 会话类绑定没有插件
+    assert result["ghost"] == set()    # 绑定指向不存在的命名配置
+
+
 @pytest.fixture
 def configured_service(tmp_path):
     plugin = tmp_path / "user" / "probe"

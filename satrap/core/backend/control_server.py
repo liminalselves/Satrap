@@ -1642,6 +1642,23 @@ def _administrator_runtime_request(section_revision: str, *, apply: bool = False
         return {"status": "unconfirmed", "error": str(error)}
 
 
+def _administrator_settings_snapshot(config: Mapping[str, Any]) -> dict[str, Any]:
+    """
+    构造带插件启用状态标注的管理员设置快照
+
+    参数:
+    - config: 已保存或刚写入的配置文档
+
+    返回:
+    - 设置页快照, 插件载荷附带 enabled 与 loaded_platforms 供界面隐藏未启用和平台未加载的插件
+    """
+    from satrap.core.config.administrator_settings import administrator_settings_snapshot
+
+    service = _plugin_management_service()
+    return administrator_settings_snapshot(config, enabled_plugins=service.enabled_plugin_names(),
+                                           platform_plugins=service.loaded_plugins_by_platform(validate_platforms(config.get("platforms", []))))
+
+
 async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse | None:
     """
     管理员区段的读取, 保存, 草稿预览及独立热应用
@@ -1652,14 +1669,14 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
     返回:
     - 区段与应用状态, 版本冲突 409, 非法草稿 400, 无关路径 None
     """
-    from satrap.core.config.administrator_settings import administrator_settings_snapshot, save_administrator_groups, preview_administrator_groups
-
     root = "/config/administrator-groups"
     if ctx.path not in {root, root + "/apply", root + "/preview"}:
         return None
+    from satrap.core.config.administrator_settings import administrator_settings_snapshot, save_administrator_groups, preview_administrator_groups
+
     try:
         if ctx.method == "GET" and ctx.path == root:
-            snapshot = await asyncio.to_thread(administrator_settings_snapshot, load_config_document(CONFIG_PATH))
+            snapshot = await asyncio.to_thread(_administrator_settings_snapshot, load_config_document(CONFIG_PATH))
             runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"])
             return 200, {"ok": True, **snapshot, "runtime": runtime}
         if ctx.method == "PUT" and ctx.path == root:
@@ -1675,7 +1692,7 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
                 save_administrator_groups, CONFIG_PATH, payload["groups"], overrides=payload["overrides"],
                 expected_revision=expected_revision, rebind_members=payload.get("rebind_members"),
                 rebind_overrides=payload.get("rebind_overrides"))
-            snapshot = await asyncio.to_thread(administrator_settings_snapshot, saved)
+            snapshot = await asyncio.to_thread(_administrator_settings_snapshot, saved)
             runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"], apply=True)
             return 200, {"ok": True, **snapshot, "runtime": runtime}
         if ctx.method == "POST" and ctx.path == root + "/preview":

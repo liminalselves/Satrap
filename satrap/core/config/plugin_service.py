@@ -9,11 +9,13 @@ from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager, schema_to_payload, validate_config_values
 from satrap.edictum.plugin_settings import validate_plugin_settings
 from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+from satrap.core.config.agent_routing import validate_session_bindings
 from satrap.core.config.document import ConfigRevisionConflict, config_document_revision
 from satrap.core.storage.file_lock import FileLock
 from satrap.core.config.edictum_service import EdictumConfigService
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.registry import EDICTUM_PROVIDER
 
 
 class PluginManagementService:
@@ -137,6 +139,56 @@ class PluginManagementService:
                 chat_enabled=chat_enabled,
             )
             result.append(payload)
+        return result
+
+    def enabled_plugin_names(self) -> set[str]:
+        """
+        汇总任一使用位置按书面配置启用的插件名称
+
+        返回:
+        - Chat 已配置且启用, 或任一 Edictum 命名配置中条目启用的插件名称集合; 命名配置自身的启用开关不影响
+        """
+        enabled = {item["name"] for item in self.chat.scan() if item.get("configured") and item.get("enabled")}
+        for config in self.configs.values():
+            for item in config.get("plugins", []):
+                if isinstance(item, str):
+                    enabled.add(item)
+                elif isinstance(item, dict) and isinstance(item.get("name"), str) and item.get("enabled", True):
+                    enabled.add(item["name"])
+        return enabled
+
+    def loaded_plugins_by_platform(self, platforms: list[dict[str, Any]]) -> dict[str, set[str]]:
+        """
+        按平台已写入的会话绑定汇总各平台加载的插件
+
+        参数:
+        - platforms: 规范化平台配置列表
+
+        返回:
+        - 平台 ID 到插件名称集合; 平台与命名配置的启用开关不影响结果, 只看插件条目自身启用与适用声明
+        """
+        result: dict[str, set[str]] = {}
+        for platform in platforms:
+            platform_type = str(platform.get("type", ""))
+            names: set[str] = set()
+            config_names: set[str] = set()
+            if str(platform.get("session_provider", "session_class")) == EDICTUM_PROVIDER:
+                config_names.add(str(platform.get("session_type", "")))
+            for binding in validate_session_bindings(platform.get("session_bindings")).values():
+                if binding.get("mode") == "value" and binding.get("provider") == EDICTUM_PROVIDER:
+                    config_names.add(str(binding.get("config_name", "")))
+            for config_name in config_names:
+                config = self.configs.get(config_name)
+                if config is None:
+                    continue
+                for item in config.get("plugins", []):
+                    name = item if isinstance(item, str) else item.get("name") if isinstance(item, dict) else None
+                    if not isinstance(name, str) or (isinstance(item, dict) and not item.get("enabled", True)):
+                        continue
+                    entry = self.catalog.get(name)
+                    if entry is not None and platform_type and entry.check_environment(PluginEnvironment("platform", platform_type)).allowed:
+                        names.add(name)
+            result[str(platform.get("id", ""))] = names
         return result
 
     def get_usages(self, name: str) -> dict[str, Any]:

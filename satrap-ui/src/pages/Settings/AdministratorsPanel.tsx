@@ -2,74 +2,61 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { administratorsApi, administratorError, administratorRuntimeLabel, type AdministratorGroup, type AdministratorOverride, type AdministratorOverrideRebind, type AdministratorPreview, type AdministratorRebind, type AdministratorPlugin, type AdministratorSnapshot } from '@/api/administrators';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { toast } from '@/components/ui/Toast';
 
-// 单插件立场: excluded 优先显示 (与运行时"排除优先"一致); 三态控件写回时原子更新两个名单, 矛盾状态无法从界面产生
-type PluginStance = 'neutral' | 'allow' | 'exclude';
+// 名单式插件编辑: 界面直接操作 included/excluded/allow/deny 四个名单, 添加即生效, 没有中间表态层
+const pluginBadges = (plugin: AdministratorPlugin | undefined, platformIds: string[]): string => {
+  if (!plugin) return ' · 暂不可用';
+  return [!plugin.supports_administrators ? ' · 未接入' : '', plugin.enabled === false ? ' · 未启用' : '',
+    platformIds.length > 0 && plugin.loaded_platforms && !platformIds.some(id => plugin.loaded_platforms!.includes(id)) ? ' · 平台不适用' : ''].join('');
+};
 
-// 组只授予: 指定插件模式只表达允许; 所有插件模式用排除表达减项
-const groupStanceOptions = (mode: 'selected' | 'all'): { value: PluginStance; label: string }[] =>
-  mode === 'all'
-    ? [{ value: 'neutral', label: '包含' }, { value: 'exclude', label: '排除' }]
-    : [{ value: 'neutral', label: '不表态' }, { value: 'allow', label: '允许' }];
-
-// 成员例外同时支持允许与否决, 与组的模式无关
-const overrideStanceOptions: { value: PluginStance; label: string }[] =
-  [{ value: 'neutral', label: '不表态' }, { value: 'allow', label: '允许' }, { value: 'exclude', label: '排除' }];
-
-// 侧栏插件名集合: 已接入插件并上草稿中引用的名称, 保证暂不可用的历史选择仍可编辑
-const pluginNames = (snapshot: AdministratorSnapshot | null, ...lists: string[][]): string[] =>
-  [...new Set([...(snapshot?.plugins.map(item => item.name) || []), ...lists.flat()])];
-
-function StanceControl({ label, name, options, stance, onSelect, plugin }: {
-  label: string;
-  name: string;
-  options: { value: PluginStance; label: string }[];
-  stance: PluginStance;
-  onSelect: (next: PluginStance) => void;
-  plugin?: AdministratorPlugin;
+// 一个插件名单区块: 标题, 说明, 逐行插件卡片与可选的添加选择器
+function PluginListSection({ title, hint, names, snapshot, addLabel, taken, platformIds = [], onAdd, onRemove }: {
+  title: string;
+  hint?: string;
+  names: string[];
+  snapshot: AdministratorSnapshot | null;
+  addLabel?: string;
+  taken?: string[];
+  platformIds?: string[];
+  onAdd?: (name: string) => void;
+  onRemove: (name: string) => void;
 }) {
-  return <div role="radiogroup" aria-label={label}
-    className="inline-flex divide-x divide-glass-border overflow-hidden rounded-md border border-border-glass">
-    {options.map(option => {
-      const disabled = option.value === 'allow' && !!plugin && !plugin.supports_administrators && stance !== 'allow';
-      return <label key={option.value}
-        className={`flex items-center gap-1.5 px-3 py-1.5 transition-colors ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-glass-active'} ${stance === option.value ? 'bg-glass-active font-medium' : ''}`}>
-        <input type="radio" name={name} checked={stance === option.value} disabled={disabled}
-          onChange={() => onSelect(option.value)} className="h-3.5 w-3.5 accent-accent" />
-        {option.label}
-      </label>;
+  // 选择器只提供已接入且已启用的插件; 有平台上下文时还要求在该平台实际加载
+  // 已在名单中的条目不受过滤影响, 保留显示以便移除
+  const options = (snapshot?.plugins || []).filter(item => item.supports_administrators && item.enabled !== false
+    && !(taken || names).includes(item.name)
+    && (platformIds.length === 0 || !item.loaded_platforms || item.loaded_platforms.some(id => platformIds.includes(id))));
+  return <div className="space-y-2" aria-label={title}>
+    <p className="text-sm font-medium">{title}</p>
+    {hint && <p className="text-xs text-text-secondary">{hint}</p>}
+    {names.map(name => {
+      const plugin = snapshot?.plugins.find(item => item.name === name);
+      return <div key={name} className="flex items-start gap-2 rounded-md bg-glass p-3 text-sm">
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">{name}{pluginBadges(plugin, platformIds)}</p>
+          {plugin?.supports_administrators && <ul className="text-text-secondary">
+            {Object.entries(plugin.management_permissions).filter(([, rule]) => rule.system_admin).map(([id, rule]) => <li key={id}>
+              {rule.description}
+              {!!rule.requirements?.length && <p className="mt-1 text-xs">{rule.requirements.join('；')}</p>}
+            </li>)}
+          </ul>}
+        </div>
+        <Button aria-label={`移除 ${name}`} onClick={() => onRemove(name)}>移除</Button>
+      </div>;
     })}
+    {addLabel && onAdd && <select aria-label={addLabel} className={selectClass} value=""
+      onChange={event => { if (event.target.value) onAdd(event.target.value); }}>
+      <option value="">添加插件…</option>
+      {options.map(item => <option key={item.name} value={item.name}>{item.name}</option>)}
+    </select>}
   </div>;
 }
 
-function PluginStanceList({ namePrefix, options, names, stanceOf, onStance, snapshot }: {
-  namePrefix: string;
-  options: { value: PluginStance; label: string }[];
-  names: string[];
-  stanceOf: (name: string) => PluginStance;
-  onStance: (name: string, next: PluginStance) => void;
-  snapshot: AdministratorSnapshot | null;
-}) {
-  return <div className="grid gap-3 md:grid-cols-2">{names.map(name => {
-    const plugin = snapshot?.plugins.find(item => item.name === name);
-    return <div key={name} className="space-y-2 rounded-md border border-border-glass p-3 text-sm">
-      <p className="font-medium">{name}{!plugin ? ' · 暂不可用' : !plugin.supports_administrators ? ' · 未接入' : ''}</p>
-      {plugin?.supports_administrators && <ul className="text-text-secondary">
-        {Object.entries(plugin.management_permissions).filter(([, rule]) => rule.system_admin).map(([id, rule]) => <li key={id}>
-          {rule.description}
-          {!!rule.requirements?.length && <p className="mt-1 text-xs">{rule.requirements.join('；')}</p>}
-        </li>)}
-      </ul>}
-      <div className="space-y-1">
-        <StanceControl label={`${name} 的授权立场`} name={`${namePrefix}-${name}`} options={options}
-          stance={stanceOf(name)} onSelect={next => onStance(name, next)} plugin={plugin} />
-        {stanceOf(name) === 'exclude' && <p className="text-xs text-text-secondary">否决: 覆盖此成员在其他组的允许</p>}
-      </div>
-    </div>;
-  })}</div>;
-}
+const selectClass = 'glass-input w-full';
 
 export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSaved?: (groups: AdministratorGroup[], overrides: AdministratorOverride[], revision: string, previousRevision: string) => void }) {
   const [snapshot, setSnapshot] = useState<AdministratorSnapshot | null>(null);
@@ -83,6 +70,8 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const [comparison, setComparison] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  // 卡片平铺只显示摘要, 点击后在弹窗中编辑; 新建的卡片直接打开弹窗
+  const [openCard, setOpenCard] = useState<string | null>(null);
   const dirty = snapshot !== null
     && (JSON.stringify(groups) !== JSON.stringify(snapshot.groups)
       || JSON.stringify(overrides) !== JSON.stringify(snapshot.overrides)
@@ -190,17 +179,20 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     }
   };
 
-  const selectClass = 'glass-input w-full';
   return <div className="space-y-4 pt-4" aria-label="管理员设置">
     <p className="text-sm text-text-secondary">管理员身份来自真实平台消息。授权插件后可免填该插件的调用者名单, 功能开关、操作范围和审批仍然生效。</p>
     <div className="flex flex-wrap gap-2">
       <Button disabled={busy || loading} onClick={() => void load()}>刷新目录与状态</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        setGroups(current => [...current, { id: crypto.randomUUID(), name: '', enabled: true, protect: true, members: [], plugin_scope: { mode: 'selected', included: [], excluded: [] } }]);
+        const id = crypto.randomUUID();
+        setGroups(current => [...current, { id, name: '', enabled: true, protect: true, members: [], plugin_scope: { mode: 'selected', included: [], excluded: [] } }]);
+        setOpenCard(id);
         setPreview(null);
       }}>新增管理组</Button>
       <Button disabled={!snapshot || busy} onClick={() => {
-        setOverrides(current => [...current, { id: crypto.randomUUID(), enabled: true, protect: false, platform_id: '', user_id: '', allow: [], deny: [] }]);
+        const id = crypto.randomUUID();
+        setOverrides(current => [...current, { id, enabled: true, protect: false, platform_id: '', user_id: '', allow: [], deny: [] }]);
+        setOpenCard(id);
         setPreview(null);
       }}>新增成员例外</Button>
       <Button disabled={!snapshot || busy} onClick={() => void run('preview')}>预览有效权限</Button>
@@ -231,7 +223,30 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
       {snapshot.runtime.status === 'unconfirmed' && <Button className="mt-2" disabled={busy || dirty} onClick={() => void run('apply')}>重试应用已保存配置</Button>}
     </div>}
     {snapshot && !groups.length && !overrides.length && <p className="text-text-secondary">尚未配置管理组与成员例外。各插件继续使用自己的原有名单。</p>}
-    {groups.map(group => <fieldset key={group.id} disabled={busy || loading} className="space-y-4 rounded-md border border-border-glass p-4">
+    {!!groups.length && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+    {groups.map(group => {
+      const scopeSummary = group.plugin_scope.mode === 'all'
+        ? `所有插件, 排除 ${group.plugin_scope.excluded.length} 个`
+        : `指定插件 ${group.plugin_scope.included.length} 个${group.plugin_scope.excluded.length ? ` · 旧版排除 ${group.plugin_scope.excluded.length} 个` : ''}`;
+      const groupInvalid = group.members.some(member => {
+        const platform = snapshot?.platforms.find(item => item.id === member.platform_id);
+        return member.platform_instance_id && platform?.instance_id !== member.platform_instance_id;
+      });
+      // 插件选择器按成员所在平台过滤, 取有效成员平台的并集; 无有效成员时不按平台过滤
+      const groupPlatforms = [...new Set(group.members.map(member => member.platform_id)
+        .filter(id => snapshot?.platforms.some(item => item.id === id)))];
+      return <div key={group.id} aria-label={`管理组卡片 ${group.name || '未命名'}`}
+        className="rounded-md border border-border-glass p-4">
+      <button type="button" disabled={busy || loading} onClick={() => setOpenCard(group.id)}
+        className="flex w-full flex-col items-start gap-1 text-left text-sm">
+        <span className="flex w-full items-center gap-2">
+          <span className="font-medium">{group.name || '未命名管理组'}</span>
+          <span className="ml-auto shrink-0 text-text-secondary">配置 ▸</span>
+        </span>
+        <span className="text-text-secondary">{group.enabled ? '启用' : '停用'} · {group.protect === false ? '不保护账号' : '保护账号'} · 成员 {group.members.length} 人 · {scopeSummary}{groupInvalid ? ' · 有失效身份' : ''}</span>
+      </button>
+      <Modal open={openCard === group.id} onClose={() => setOpenCard(null)} title={group.name || '管理组'} size="3xl">
+      <fieldset disabled={busy || loading} className="space-y-4">
       <div className="flex flex-wrap items-end gap-3">
         <label className="min-w-48 flex-1 text-sm">管理组名称
           <Input value={group.name} maxLength={128} placeholder="例如: 主要管理员"
@@ -249,6 +264,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
         <Button onClick={() => {
           setGroups(current => current.filter(item => item.id !== group.id));
           setRebind(current => current.filter(item => item.group_id !== group.id));
+          setOpenCard(null);
           setPreview(null);
         }}>删除管理组</Button>
       </div>
@@ -306,31 +322,61 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
           <option value="selected">指定插件</option><option value="all">所有已接入插件, 包含未来接入的插件</option>
         </select>
       </label>
-      <p className="text-sm text-text-secondary">管理组只授予插件范围, 立场仅影响系统管理员授权; 插件原名单仍可独立授权。需要否决某人时使用成员例外。</p>
-      <PluginStanceList namePrefix={`group-${group.id}`} options={groupStanceOptions(group.plugin_scope.mode)}
-        names={pluginNames(snapshot, group.plugin_scope.included, group.plugin_scope.excluded)}
-        stanceOf={name => group.plugin_scope.excluded.includes(name) ? 'exclude'
-          : group.plugin_scope.included.includes(name) ? 'allow' : 'neutral'}
-        onStance={(name, next) => change(group.id, current => {
-          const scope = current.plugin_scope;
-          const included = scope.included.filter(item => item !== name);
-          const excluded = scope.excluded.filter(item => item !== name);
-          if (next === 'allow') included.push(name);
-          if (next === 'exclude') excluded.push(name);
-          return { ...current, plugin_scope: { ...scope, included, excluded } };
-        })} snapshot={snapshot} />
-      {group.plugin_scope.mode === 'selected' && group.plugin_scope.excluded.length > 0 && <p className="text-sm text-warning">
-        此组仍带有旧版排除列表, 保存时请改用成员例外; 读取时已按当前成员自动展开。
-      </p>}
-      {group.plugin_scope.mode === 'all' && <p className="text-xs text-text-secondary">所有插件模式下的排除仍留在组内, 作用于全部成员。</p>}
-    </fieldset>)}
+      <p className="text-sm text-text-secondary">管理组只授予插件范围, 名单仅影响系统管理员授权; 插件原名单仍可独立授权。需要否决某人时使用成员例外。</p>
+      {group.plugin_scope.mode === 'selected' ? <>
+        <PluginListSection title="已允许的插件" names={group.plugin_scope.included} snapshot={snapshot}
+          addLabel="添加允许的插件" taken={[...group.plugin_scope.included, ...group.plugin_scope.excluded]} platformIds={groupPlatforms}
+          onAdd={name => change(group.id, current => ({
+            ...current,
+            plugin_scope: { ...current.plugin_scope, included: [...current.plugin_scope.included, name] },
+          }))}
+          onRemove={name => change(group.id, current => ({
+            ...current,
+            plugin_scope: { ...current.plugin_scope, included: current.plugin_scope.included.filter(item => item !== name) },
+          }))} />
+        {group.plugin_scope.excluded.length > 0 &&
+          <PluginListSection title="旧版排除" names={group.plugin_scope.excluded} snapshot={snapshot}
+            platformIds={groupPlatforms}
+            hint="旧版指定插件模式的排除仍按原规则生效, 只可移除; 新否决请使用成员例外, 读取时已按当前成员自动展开。"
+            onRemove={name => change(group.id, current => ({
+              ...current,
+              plugin_scope: { ...current.plugin_scope, excluded: current.plugin_scope.excluded.filter(item => item !== name) },
+            }))} />}
+      </> : <PluginListSection title="已排除的插件" names={group.plugin_scope.excluded} snapshot={snapshot}
+        hint="未列出的插件全部授予, 包含未来接入的插件; 排除作用于全部成员。"
+        addLabel="添加排除的插件" platformIds={groupPlatforms}
+        onAdd={name => change(group.id, current => ({
+          ...current,
+          plugin_scope: { ...current.plugin_scope, excluded: [...current.plugin_scope.excluded, name] },
+        }))}
+        onRemove={name => change(group.id, current => ({
+          ...current,
+          plugin_scope: { ...current.plugin_scope, excluded: current.plugin_scope.excluded.filter(item => item !== name) },
+        }))} />}
+      </fieldset>
+      </Modal>
+      </div>;
+    })}
+    </div>}
+    {!!overrides.length && <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
     {overrides.map(entry => {
       const platform = snapshot?.platforms.find(item => item.id === entry.platform_id);
       const invalid = entry.platform_instance_id && platform?.instance_id !== entry.platform_instance_id;
       const rebound = rebindOverrides.some(item => item.override_id === entry.id && item.platform_id === entry.platform_id && item.user_id === entry.user_id);
-      return <fieldset key={entry.id} disabled={busy || loading} className="space-y-4 rounded-md border border-border-glass p-4">
+      const entryName = entry.platform_id && entry.user_id ? `${entry.platform_id} / ${entry.user_id}` : '未填写身份';
+      return <div key={entry.id} aria-label={`成员例外卡片 ${entryName}`}
+        className="rounded-md border border-border-glass p-4">
+        <button type="button" disabled={busy || loading} onClick={() => setOpenCard(entry.id)}
+          className="flex w-full flex-col items-start gap-1 text-left text-sm">
+          <span className="flex w-full items-center gap-2">
+            <span className="font-medium">{entryName}</span>
+            <span className="ml-auto shrink-0 text-text-secondary">配置 ▸</span>
+          </span>
+          <span className="text-text-secondary">{entry.enabled ? '启用' : '停用'} · {entry.protect ? '保护账号' : '不保护账号'} · 允许 {entry.allow.length} 个 · 否决 {entry.deny.length} 个{invalid ? ' · 身份已失效' : ''}</span>
+        </button>
+        <Modal open={openCard === entry.id} onClose={() => setOpenCard(null)} title={`成员例外 ${entryName}`} size="3xl">
+        <fieldset disabled={busy || loading} className="space-y-4">
         <div className="flex flex-wrap items-end gap-3">
-          <p className="min-w-48 flex-1 text-sm font-medium">成员例外</p>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={entry.enabled}
               onChange={event => changeOverride(entry.id, current => ({ ...current, enabled: event.target.checked }))} />启用此条目
@@ -343,6 +389,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
           <Button onClick={() => {
             setOverrides(current => current.filter(item => item.id !== entry.id));
             setRebindOverrides(current => current.filter(item => item.override_id !== entry.id));
+            setOpenCard(null);
             setPreview(null);
           }}>删除例外</Button>
         </div>
@@ -367,19 +414,28 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
             setPreview(null);
           }}>绑定到当前平台</Button>}
         </div>}
-        <p className="text-sm text-text-secondary">允许为本不属于任何组的人补充授权; 否决压过所有管理组的允许, 包括其他组的允许。</p>
-        <PluginStanceList namePrefix={`override-${entry.id}`} options={overrideStanceOptions}
-          names={pluginNames(snapshot, entry.allow, entry.deny)}
-          stanceOf={name => entry.deny.includes(name) ? 'exclude' : entry.allow.includes(name) ? 'allow' : 'neutral'}
-          onStance={(name, next) => changeOverride(entry.id, current => {
-            const allow = current.allow.filter(item => item !== name);
-            const deny = current.deny.filter(item => item !== name);
-            if (next === 'allow') allow.push(name);
-            if (next === 'exclude') deny.push(name);
-            return { ...current, allow, deny };
-          })} snapshot={snapshot} />
-      </fieldset>;
+        <p className="text-sm text-text-secondary">允许为本不属于任何组的人补充授权; 否决压过所有管理组的允许, 包括其他组的允许。同一插件加入一侧名单时会自动移出另一侧。</p>
+        <PluginListSection title="额外允许的插件" names={entry.allow} snapshot={snapshot}
+          addLabel="添加允许的插件" taken={entry.allow} platformIds={platform ? [entry.platform_id] : []}
+          onAdd={name => changeOverride(entry.id, current => ({
+            ...current, allow: [...current.allow, name], deny: current.deny.filter(item => item !== name),
+          }))}
+          onRemove={name => changeOverride(entry.id, current => ({
+            ...current, allow: current.allow.filter(item => item !== name),
+          }))} />
+        <PluginListSection title="否决的插件" names={entry.deny} snapshot={snapshot}
+          hint="否决压过此人的全部允许来源。" addLabel="添加否决的插件" taken={entry.deny} platformIds={platform ? [entry.platform_id] : []}
+          onAdd={name => changeOverride(entry.id, current => ({
+            ...current, deny: [...current.deny, name], allow: current.allow.filter(item => item !== name),
+          }))}
+          onRemove={name => changeOverride(entry.id, current => ({
+            ...current, deny: current.deny.filter(item => item !== name),
+          }))} />
+        </fieldset>
+        </Modal>
+      </div>;
     })}
+    </div>}
     {preview && <div className="space-y-3 rounded-md border border-border-glass p-4" aria-label="有效权限预览">
       <p className="font-medium">草稿的有效管理员权限, 尚未保存</p>
       {preview.members.map(member => <div key={`${member.platform_id}/${member.user_id}`} className="text-sm">

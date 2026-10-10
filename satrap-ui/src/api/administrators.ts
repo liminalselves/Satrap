@@ -57,6 +57,8 @@ export interface AdministratorPlugin {
   name: string;
   description: string;
   supports_administrators: boolean;
+  enabled?: boolean;
+  loaded_platforms?: string[];
   management_permissions: Record<string, { description: string; system_admin: boolean; requirements?: string[] }>;
 }
 

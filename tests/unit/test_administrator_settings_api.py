@@ -133,6 +133,23 @@ def test_invalid_plugin_declaration_is_visible_but_other_catalog_entries_remain(
     assert snapshot["plugin_errors"][0]["name"] == "invalid"
 
 
+def test_snapshot_marks_plugin_enabled_only_when_enabled_set_given(tmp_path):
+    from satrap.edictum.plugin_catalog import PluginCatalog
+    for name in ["alpha", "beta"]:
+        folder = tmp_path / "plugins" / name
+        folder.mkdir(parents=True)
+        (folder / "meta.yaml").write_text(f"name: {name}\n", encoding="utf-8")
+    catalog = PluginCatalog(tmp_path / "plugins", tmp_path / "user")
+    plain = administrator_settings_snapshot(document(), catalog)
+    assert all("enabled" not in plugin for plugin in plain["plugins"])   # 未提供集合时不标注, 兼容其他调用方
+    marked = {plugin["name"]: plugin["enabled"] for plugin in administrator_settings_snapshot(document(), catalog, enabled_plugins={"alpha"})["plugins"]}
+    assert marked == {"alpha": True, "beta": False}
+    assert all("loaded_platforms" not in plugin for plugin in plain["plugins"])   # 未提供映射时不标注
+    loaded = {plugin["name"]: plugin["loaded_platforms"]
+              for plugin in administrator_settings_snapshot(document(), catalog, platform_plugins={"qq": {"alpha"}, "tg": {"alpha", "beta"}})["plugins"]}
+    assert loaded == {"alpha": ["qq", "tg"], "beta": ["tg"]}
+
+
 def test_migration_notice_and_invalid_override_reporting(tmp_path):
     current = document()
     current["administrator_groups"] = [{"id": "admins", "name": "管理员", "enabled": True,

@@ -23,14 +23,16 @@ try {
   let revision = 1;
   const group = { id: 'existing', name: '主要管理员', enabled: true, protect: false,
     members: [{ platform_id: 'future', platform_instance_id: 'old-instance', user_id: 'user@example.test' }],
-    plugin_scope: { mode: 'selected', included: ['group_admin', 'temporarily_missing'], excluded: [] } };
+    plugin_scope: { mode: 'selected', included: ['group_admin', 'temporarily_missing', 'disabled_plugin', 'other_platform_plugin'], excluded: [] } };
   const override = { id: 'intern', enabled: true, protect: false, platform_id: 'future',
     platform_instance_id: 'old-instance', user_id: 'intern@example.test', allow: [], deny: ['group_admin'] };
   const snapshot = { ok: true, groups: [group], overrides: [override], revision: 'v1', section_revision: 's1',
     migrated_from_legacy: true,
     platforms: [{ id: 'future', type: 'future-adapter', name: '扩展平台', instance_id: 'new-instance', enabled: true }],
-    plugins: [{ name: 'group_admin', description: '管理', supports_administrators: true, management_permissions: { write: { description: '请求群管理修改操作', system_admin: true, requirements: ['需开启管理写操作', '需要审批的动作仍须批准'] } } },
-      { name: 'ordinary_plugin', description: '普通插件', supports_administrators: false, management_permissions: {} }],
+    plugins: [{ name: 'group_admin', description: '管理', supports_administrators: true, enabled: true, loaded_platforms: ['future'], management_permissions: { write: { description: '请求群管理修改操作', system_admin: true, requirements: ['需开启管理写操作', '需要审批的动作仍须批准'] } } },
+      { name: 'ordinary_plugin', description: '普通插件', supports_administrators: false, enabled: true, loaded_platforms: ['future'], management_permissions: {} },
+      { name: 'disabled_plugin', description: '未启用插件', supports_administrators: true, enabled: false, loaded_platforms: ['future'], management_permissions: {} },
+      { name: 'other_platform_plugin', description: '其他平台插件', supports_administrators: true, enabled: true, loaded_platforms: ['elsewhere'], management_permissions: {} }],
     plugin_errors: [{ name: 'invalid_plugin', error: '权限声明引用不存在的工具' }],
     invalid_members: [{ group_id: 'existing', platform_id: 'future', user_id: 'user@example.test' }],
     invalid_overrides: [{ override_id: 'intern', platform_id: 'future', user_id: 'intern@example.test' }],
@@ -98,31 +100,64 @@ try {
   await page.goto(`${origin}/settings`);
   await page.getByRole('button', { name: '管理员', exact: true }).click();
   const panel = page.locator('[aria-label="管理员设置"]');
-  const name = panel.getByLabel('管理组名称');
   const save = panel.getByRole('button', { name: '保存并应用', exact: true });
+  // 卡片网格只显示摘要 (含失效身份标记), 详情在弹窗中编辑
+  const groupCard = panel.locator('[aria-label^="管理组卡片"]').first();
+  const overrideCard = panel.locator('[aria-label^="成员例外卡片"]').first();
+  await groupCard.getByText('成员 1 人 · 指定插件 4 个 · 有失效身份', { exact: false }).waitFor();
+  await overrideCard.getByText('允许 0 个 · 否决 1 个 · 身份已失效', { exact: false }).waitFor();
+  assert.equal(await page.getByLabel('管理组名称').count(), 0);
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  const dialog = page.getByRole('dialog');
+  const name = dialog.getByLabel('管理组名称');
   await name.waitFor();
   assert.equal(await name.inputValue(), '主要管理员');
-  const groupField = panel.locator('fieldset').first();
-  await panel.getByText('原平台已移除或重建, 此身份授权已失效', { exact: false }).waitFor();
-  await groupField.getByText('ordinary_plugin · 未接入', { exact: true }).waitFor();
-  await panel.getByText('需开启管理写操作；需要审批的动作仍须批准', { exact: true }).first().waitFor();
-  await groupField.getByText('temporarily_missing · 暂不可用', { exact: true }).waitFor();
+  await dialog.getByText('原平台已移除或重建, 此身份授权已失效', { exact: false }).waitFor();
+  // 未接入与未在此平台加载的插件都不出现在选择器中 (option 对 Playwright 恒为 hidden)
+  const allowPicker = dialog.getByLabel('添加允许的插件', { exact: true });
+  assert.equal(await allowPicker.locator('option', { hasText: 'ordinary_plugin' }).count(), 0);
+  assert.equal(await allowPicker.locator('option', { hasText: 'other_platform_plugin' }).count(), 0);
+  await dialog.getByText('需开启管理写操作；需要审批的动作仍须批准', { exact: true }).waitFor();
+  await dialog.getByText('temporarily_missing · 暂不可用', { exact: true }).waitFor();
+  // 未启用插件不出现在选择器中; 已在名单中的保留显示并带"未启用"徽章, 仍可移除
+  assert.equal(await dialog.getByLabel('添加允许的插件', { exact: true }).locator('option', { hasText: 'disabled_plugin' }).count(), 0);
+  await dialog.getByText('disabled_plugin · 未启用', { exact: true }).waitFor();
+  // 已在名单中的平台不适用条目同样保留显示并带徽章
+  await dialog.getByText('other_platform_plugin · 平台不适用', { exact: true }).waitFor();
   await panel.getByText('invalid_plugin: 权限声明引用不存在的工具', { exact: true }).waitFor();
-  // 迁移提示与例外层初始态
+  // 迁移提示与例外层初始态 (横幅在面板层, 弹窗不影响)
   await panel.getByText('已将旧版“指定插件”模式下的组排除迁移为成员例外, 保存后生效。', { exact: true }).waitFor();
   await panel.getByText('迁移按当前成员展开, 之后新加入该组的成员不会自动继承这条否决。', { exact: true }).waitFor();
   // 迁移冲突提示与"旧排除未迁移仍生效"说明
   await panel.getByText('1 个组的旧排除与现有例外的启用状态冲突, 未自动迁移; 请调整对应例外条目的启用状态后保存。', { exact: true }).waitFor();
   await panel.getByText('涉及管理组: legacy-pending。未迁移期间这些旧排除仍按原规则生效, 可原样保留。', { exact: true }).waitFor();
-  await panel.getByText('原平台已移除或重建, 此例外已失效', { exact: false }).waitFor();
-  // 组在指定插件模式下只提供 [不表态|允许], 排除只存在于成员例外
-  const groupCard = groupField.getByText('group_admin', { exact: true }).locator('..');
-  assert.equal(await groupCard.getByLabel('排除', { exact: true }).count(), 0);
-  assert.equal(await groupField.getByText('需要否决某人时使用成员例外。', { exact: false }).count(), 1);
-  await panel.getByRole('button', { name: '绑定到当前平台', exact: true }).first().click();
-  // 例外条目同样需要显式重绑, 否则保存时不会恢复其绑定
-  await panel.locator('fieldset').last().getByRole('button', { name: '绑定到当前平台', exact: true }).click();
+  // 组在指定插件模式下只有"已允许"名单, 排除只存在于成员例外
+  assert.equal(await dialog.locator('[aria-label="已排除的插件"]').count(), 0);
+  assert.equal(await dialog.locator('[aria-label="已允许的插件"]').getByText('group_admin', { exact: true }).count(), 1);
+  assert.equal(await dialog.getByText('需要否决某人时使用成员例外。', { exact: false }).count(), 1);
+  await dialog.getByRole('button', { name: '绑定到当前平台', exact: true }).click();
   await name.fill('修改后的管理员');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+  // 例外条目同样需要显式重绑, 否则保存时不会恢复其绑定
+  await overrideCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  await dialog.waitFor();
+  await dialog.getByText('原平台已移除或重建, 此例外已失效', { exact: false }).waitFor();
+  await dialog.getByRole('button', { name: '绑定到当前平台', exact: true }).click();
+  // 成员例外的双名单: 从否决侧移除, 加入允许侧, 再加入否决侧时自动移出允许侧 (以移除按钮判定名单成员, 选择器 option 含同名文本)
+  const allowList = dialog.locator('[aria-label="额外允许的插件"]');
+  const denyList = dialog.locator('[aria-label="否决的插件"]');
+  await denyList.getByRole('button', { name: '移除 group_admin', exact: true }).waitFor();
+  assert.equal(await allowList.getByRole('button', { name: '移除 group_admin', exact: true }).count(), 0);
+  await denyList.getByRole('button', { name: '移除 group_admin', exact: true }).click();
+  assert.equal(await denyList.getByRole('button', { name: '移除 group_admin', exact: true }).count(), 0);
+  await allowList.getByLabel('添加允许的插件', { exact: true }).selectOption('group_admin');
+  await allowList.getByRole('button', { name: '移除 group_admin', exact: true }).waitFor();
+  await denyList.getByLabel('添加否决的插件', { exact: true }).selectOption('group_admin');
+  await denyList.getByRole('button', { name: '移除 group_admin', exact: true }).waitFor();
+  assert.equal(await allowList.getByRole('button', { name: '移除 group_admin', exact: true }).count(), 0);
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   await panel.getByRole('button', { name: '预览有效权限', exact: true }).click();
   await panel.locator('[aria-label="有效权限预览"]').getByText('future / user@example.test', { exact: true }).waitFor();
   assert.equal(await panel.locator('[aria-label="有效权限预览"]').getByText('允许来源: group:existing', { exact: false }).count(), 1);
@@ -130,23 +165,22 @@ try {
   const previewPane = panel.locator('[aria-label="有效权限预览"]');
   assert.equal(await previewPane.getByText('无效', { exact: true }).count(), 1);
   assert.equal(await previewPane.getByText('否决来源: override:intern', { exact: false }).count(), 1);
-  // 成员例外的三态控件: 允许→排除原子互换, 不表态清空两个名单
-  const overrideField = panel.locator('fieldset').last();
-  const overrideCard = overrideField.getByText('group_admin', { exact: true }).locator('..');
-  assert.equal(await overrideCard.getByLabel('排除', { exact: true }).isChecked(), true);
-  await overrideCard.getByLabel('允许', { exact: true }).check();
-  await overrideCard.getByLabel('排除', { exact: true }).isChecked().then(value => assert.equal(value, false));
-  await overrideCard.getByLabel('不表态', { exact: true }).check();
-  assert.equal(await overrideCard.getByText('否决: 覆盖此成员在其他组的允许', { exact: true }).count(), 0);
-  await overrideCard.getByLabel('排除', { exact: true }).check();
-  await overrideCard.getByText('否决: 覆盖此成员在其他组的允许', { exact: true }).waitFor();
   conflict = true;
   await save.click();
   await panel.getByRole('alert').filter({ hasText: '配置已被其他操作修改' }).waitFor();
+  // 草稿保留在卡片与弹窗状态中, 切换页签与重新打开弹窗都不丢失
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  await dialog.waitFor();
   assert.equal(await name.inputValue(), '修改后的管理员');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   await page.getByRole('button', { name: '关于', exact: true }).click();
   await page.getByRole('button', { name: '管理员', exact: true }).click();
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  await dialog.waitFor();
   assert.equal(await name.inputValue(), '修改后的管理员');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   await panel.getByRole('button', { name: '保留草稿并读取最新版本', exact: true }).click();
   await panel.getByText('已读取最新版本, 以下显示已保存的配置。编辑区仍是你的草稿, 请比较后再保存。', { exact: true }).waitFor();
   await panel.locator('details').getByText('主要管理员 · 启用 · 不保护账号', { exact: true }).waitFor();
@@ -163,21 +197,30 @@ try {
   await panel.getByText('已保存并生效', { exact: true }).waitFor();
   // 保存后迁移提示消失, 账号保护开关与例外层落盘
   assert.equal(await panel.getByText('已将旧版“指定插件”模式下的组排除迁移为成员例外, 保存后生效。', { exact: true }).count(), 0);
+  // 新建例外直接打开弹窗
   await panel.getByRole('button', { name: '新增成员例外', exact: true }).click();
-  const newOverride = panel.locator('fieldset').last();
-  await newOverride.getByLabel('例外平台').selectOption('future');
-  await newOverride.getByLabel('平台用户识别号').fill('another@example.test');
-  await newOverride.getByText('group_admin', { exact: true }).locator('..').getByLabel('允许', { exact: true }).check();
-  const protectSwitch = panel.locator('fieldset').first().getByRole('switch');
-  await protectSwitch.click();
+  await dialog.waitFor();
+  await dialog.getByLabel('例外平台').selectOption('future');
+  await dialog.getByLabel('平台用户识别号').fill('another@example.test');
+  await dialog.locator('[aria-label="额外允许的插件"]').getByLabel('添加允许的插件', { exact: true }).selectOption('group_admin');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
+  // 账号保护开关在组的弹窗里
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  await dialog.waitFor();
+  await dialog.getByRole('switch').click();
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   await panel.getByRole('button', { name: '新增管理组', exact: true }).click();
-  const newGroup = panel.locator('fieldset').nth(1);
-  await newGroup.getByLabel('管理组名称').fill('第二管理组');
-  await newGroup.getByRole('button', { name: '添加管理员成员', exact: true }).click();
-  await newGroup.getByLabel('管理员平台').selectOption('future');
-  await newGroup.getByLabel('平台用户识别号').fill('another@example.test');
-  await newGroup.getByLabel('适用插件', { exact: true }).selectOption('all');
-  await newGroup.getByText('group_admin', { exact: true }).locator('..').getByLabel('排除').check();
+  await dialog.waitFor();
+  await dialog.getByLabel('管理组名称').fill('第二管理组');
+  await dialog.getByRole('button', { name: '添加管理员成员', exact: true }).click();
+  await dialog.getByLabel('管理员平台').selectOption('future');
+  await dialog.getByLabel('平台用户识别号').fill('another@example.test');
+  await dialog.getByLabel('适用插件', { exact: true }).selectOption('all');
+  await dialog.locator('[aria-label="已排除的插件"]').getByLabel('添加排除的插件', { exact: true }).selectOption('group_admin');
+  await page.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden' });
   runtimeStatus = 'next_start';
   await save.click();
   await panel.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
@@ -185,7 +228,7 @@ try {
   assert.equal(snapshot.groups[1].plugin_scope.mode, 'all');
   assert.deepEqual(snapshot.groups[1].plugin_scope.excluded, ['group_admin']);
   assert.deepEqual(snapshot.groups[0].plugin_scope.excluded, []);
-  assert.deepEqual([...snapshot.groups[0].plugin_scope.included].sort(), ['group_admin', 'temporarily_missing']);
+  assert.deepEqual([...snapshot.groups[0].plugin_scope.included].sort(), ['disabled_plugin', 'group_admin', 'other_platform_plugin', 'temporarily_missing']);
   assert.equal(snapshot.groups[1].members[0].user_id, 'another@example.test');
   assert.equal(snapshot.overrides.length, 2);
   assert.deepEqual(snapshot.overrides[0].deny, ['group_admin']);

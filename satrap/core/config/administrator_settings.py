@@ -129,13 +129,18 @@ def _strip_overrides(source: list[dict[str, Any]], requested: set[tuple[str, str
     return [deepcopy(item) for item in source if (item["id"], item["platform_id"], item["user_id"]) not in requested]
 
 
-def administrator_settings_snapshot(config: Mapping[str, Any], catalog: PluginCatalog | None = None) -> dict[str, Any]:
+def administrator_settings_snapshot(
+    config: Mapping[str, Any], catalog: PluginCatalog | None = None, enabled_plugins: set[str] | None = None,
+    platform_plugins: Mapping[str, set[str]] | None = None,
+) -> dict[str, Any]:
     """
     构造设置页快照, 标记旧身份的平台绑定是否仍有效
 
     参数:
     - config: 已保存配置文档
     - catalog: 可选插件目录, 默认使用宿主目录
+    - enabled_plugins: 可选的启用插件名称集合, 提供时给插件载荷标注 enabled
+    - platform_plugins: 可选的平台 ID 到加载插件集合, 提供时给插件载荷标注 loaded_platforms
 
     返回:
     - 管理组, 成员例外, 配置修订, 动态平台和插件列表及失效身份
@@ -156,6 +161,12 @@ def administrator_settings_snapshot(config: Mapping[str, Any], catalog: PluginCa
                          if available.get(item["platform_id"]) != item["platform_instance_id"]]
     directory = catalog or PluginCatalog()
     plugins = directory.list_payloads()
+    if enabled_plugins is not None:
+        for payload in plugins:
+            payload["enabled"] = payload.get("name") in enabled_plugins
+    if platform_plugins is not None:
+        for payload in plugins:
+            payload["loaded_platforms"] = sorted(pid for pid, names in platform_plugins.items() if payload.get("name") in names)
     return {"groups": groups, "overrides": overrides, "revision": config_document_revision(config),
             "section_revision": administrator_revision(groups, overrides),
             "platforms": [{"id": item["id"], "type": item["type"], "name": item.get("name", item["id"]),
