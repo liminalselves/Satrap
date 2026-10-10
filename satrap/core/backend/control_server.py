@@ -68,6 +68,7 @@ from satrap.core.framework.UserManager import UserInfoStore
 from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConfigService
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
+from satrap.core.utils.performance import PhaseTimings
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -752,20 +753,26 @@ def _edictum_config_service(catalog: PluginCatalog | None = None) -> EdictumConf
     返回:
     - EdictumConfigService: 使用当前 Edictum 配置文件的领域服务
     """
-    config_data = load_config_document(CONFIG_PATH)
+    timings = PhaseTimings()
+    with timings.phase('main_config_read_ms'):
+        config_data = load_config_document(CONFIG_PATH)
     raw_path = config_data.get("edictum_config_path")
     storage_path: Path | None = None
     if raw_path:
         storage_path = Path(str(raw_path))
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
-    registry = create_default_edictum_type_registry()
-    manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog)
-    models = _model_config_service().manager
-    return EdictumConfigService(
-        manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
-        reference_checker=lambda name: _named_group_references("edictum", name),
-    )
+    with timings.phase('edictum_read_ms'):
+        registry = create_default_edictum_type_registry()
+        manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog)
+    with timings.phase('dependencies_ms'):
+        models = _model_config_service().manager
+        service = EdictumConfigService(
+            manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
+            reference_checker=lambda name: _named_group_references("edictum", name),
+        )
+    logger.debug(f"[Edictum 配置] 服务读取完成, timings_ms={timings.to_payload()}")
+    return service
 
 
 def _configured_storage_path(config_data: dict[str, Any], key: str) -> Path | None:

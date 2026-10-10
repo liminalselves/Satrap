@@ -17,6 +17,7 @@ import time
 from satrap.core.framework.providers.base import SessionProviderDefinition
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_settings import resolve_runtime_specs
+from satrap.core.utils.performance import PhaseTimings
 from satrap.edictum.plugin_runtime import (
     PluginInstallationError,
     PluginRuntimeState,
@@ -716,21 +717,24 @@ class EdictumProvider:
         返回:
         - dict[str, Any]: 生命周期协调结果
         """
+        timings = PhaseTimings()
         state = self._get_runtime_state(session)
         if state is None:
             return {"ok": False, "error": "Edictum 运行时状态不存在"}
-        if desired_plugins is None:
-            config = self.config_manager.get_config(state.config_name)
-            if config is None:
-                desired_plugins = []
-            else:
-                desired_plugins = config.get("plugins", [])
-        desired_specs = parse_plugin_specs(
-            desired_plugins,
-            self.plugin_catalog,
-            require_available=False,
-        )
-        desired_specs = resolve_runtime_specs(session, desired_specs, self.plugin_catalog)
+        with timings.phase('config_read_ms'):
+            if desired_plugins is None:
+                config = self.config_manager.get_config(state.config_name)
+                if config is None:
+                    desired_plugins = []
+                else:
+                    desired_plugins = config.get("plugins", [])
+            catalog = self.plugin_catalog.snapshot()
+            desired_specs = parse_plugin_specs(
+                desired_plugins,
+                catalog,
+                require_available=False,
+            )
+            desired_specs = resolve_runtime_specs(session, desired_specs, catalog)
         state.desired_fingerprint = plugin_specs_fingerprint(desired_specs)
         definition = state.type_definition
         installer = definition.plugin_installer
@@ -753,6 +757,7 @@ class EdictumProvider:
         )
         state.revision += 1
         self._refresh_runtime_fingerprint(state)
+        result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload()}
         return {
             **result,
             "config_name": state.config_name,

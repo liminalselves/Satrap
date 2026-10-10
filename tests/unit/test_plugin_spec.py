@@ -187,14 +187,22 @@ async def test_runtime_reinstalls_changed_config_and_removes_plugin() -> None:
     initial = PluginSpec(name="demo", path="demo", config={"value": 1})
     states: list[PluginRuntimeState] = []
     first = await reconcile_plugin_states_async(states, [initial], install, uninstall)
+    unchanged = await reconcile_plugin_states_async(states, [initial], install, uninstall)
     changed = PluginSpec(name="demo", path="demo", config={"value": 2})
     second = await reconcile_plugin_states_async(states, [changed], install, uninstall)
     third = await reconcile_plugin_states_async(states, [], install, uninstall)
 
     assert first["ok"] is True
+    assert first['timings_ms']['install_ms'] >= 0
+    assert unchanged['ok'] is True
+    assert 'install_ms' not in unchanged['timings_ms']
+    assert 'uninstall_ms' not in unchanged['timings_ms']
     assert second["plugins"][0]["action"] == "reinstall"
     assert second["plugins"][0]["status"] == "applied"
     assert third["plugins"][0]["action"] == "remove"
+    assert second['timings_ms']['install_ms'] >= 0
+    assert second['timings_ms']['uninstall_ms'] >= 0
+    assert third['timings_ms']['uninstall_ms'] >= 0
     assert states == []
     assert installed == [{"value": 1}, {"value": 2}]
     assert uninstalled == ["demo", "demo"]
@@ -232,6 +240,8 @@ async def test_runtime_rolls_back_when_reinstall_fails() -> None:
     assert preview[0]["action"] == "reinstall"
     assert result["ok"] is False
     assert result["plugins"][0]["status"] == "rolled_back"
+    assert result['timings_ms']['install_ms'] >= 0
+    assert result['timings_ms']['uninstall_ms'] >= 0
     assert result["drift"] == 1
     assert states[0].applied_spec == previous
     assert states[0].desired_spec == desired

@@ -31,6 +31,7 @@ from satrap.core.framework.providers import (
     SessionProviderRegistry,
 )
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
+from satrap.core.utils.performance import PhaseTimings
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
@@ -1635,14 +1636,21 @@ class SessionManager:
 
         async def reconcile_one(session_id: str, entry: SessionEntry) -> dict[str, Any]:
             """协调一个活跃 Edictum 会话"""
+            timings = PhaseTimings()
+            wait_started = time.perf_counter()
+            lock_wait_ms = 0.0
+            sync_lock_wait_ms = 0.0
             try:
                 async with semaphore, entry.async_operation_lock:
+                    lock_wait_ms = (time.perf_counter() - wait_started) * 1000
                     if isinstance(entry.session, AsyncSession):
                         result = reconcile(entry.session, desired_plugins=desired_plugins)
                         if inspect.isawaitable(result):
                             result = await result
                     else:
+                        sync_wait_started = time.perf_counter()
                         with entry.sync_operation_lock:
+                            sync_lock_wait_ms = (time.perf_counter() - sync_wait_started) * 1000
                             result = reconcile(entry.session, desired_plugins=desired_plugins)
                             if inspect.isawaitable(result):
                                 result = await result
@@ -1653,14 +1661,18 @@ class SessionManager:
                 )
                 payload["session_id"] = session_id
                 payload["platform_id"] = self.platform_id
+                payload['timings_ms'] = {**payload.get('timings_ms', {}), **timings.to_payload(),
+                                         'queue_and_lock_wait_ms': round(lock_wait_ms, 3), 'sync_lock_wait_ms': round(sync_lock_wait_ms, 3)}
+                logger.debug(f"[SessionManager] 插件协调完成, 会话={session_id}, timings_ms={payload['timings_ms']}")
                 return payload
             except Exception as error:
-                logger.warning(f"[SessionManager] Edictum 插件热更新失败: {session_id}, {error}")
+                logger.error(f"[SessionManager] Edictum 插件热更新失败: {session_id}, {error}\n{traceback.format_exc()}")
                 return {
                     "ok": False,
                     "session_id": session_id,
                     "platform_id": self.platform_id,
                     "error": str(error),
+                    "timings_ms": timings.to_payload(),
                 }
 
         pending: list[Awaitable[dict[str, Any]]] = []

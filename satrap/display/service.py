@@ -24,6 +24,7 @@ import hashlib
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Coroutine, TypeVar, cast, Iterable
 import copy
+import traceback
 import json
 import time
 import uuid
@@ -35,6 +36,7 @@ from satrap.core.utils.context_policy import resolve_context_policy
 from satrap.core.memory.store import MemoryStore
 from satrap.core.memory.service import MemoryService
 from satrap.core.utils.async_worker import RAG_WORKERS
+from satrap.core.utils.performance import PhaseTimings
 from satrap.edictum.plugin_settings import (
     resolve_runtime_specs,
     validate_plugin_settings,
@@ -2317,14 +2319,20 @@ class ChatService:
         返回:
         - list[dict[str, Any]]: 逐会话同步结果
         """
+        read_started = time.perf_counter()
         desired_specs = self._plugins.resolve_specs(PluginConfigManager())
+        config_read_ms = (time.perf_counter() - read_started) * 1000
         results: list[dict[str, Any]] = []
         for conv in list(self._conversations.values()):
             if not conv.persisted:
                 conv.build_fingerprint = ""
                 continue
+            timings = PhaseTimings()
+            lock_started = time.perf_counter()
+            lock_wait_ms = 0.0
             try:
                 async with conv.plugin_lock:
+                    lock_wait_ms = (time.perf_counter() - lock_started) * 1000
                     result = await reconcile_plugin_states_async(
                         conv.plugin_states,
                         resolve_runtime_specs(conv.session, desired_specs, self._plugins.catalog),
@@ -2332,18 +2340,23 @@ class ChatService:
                         conv.session.uninstall_plugin,
                     )
                     self._coordinate_sandbox(conv.session)
+                result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload(),
+                                        'lock_wait_ms': round(lock_wait_ms, 3), 'config_read_ms': round(config_read_ms, 3)}
+                logger.debug(f"[聊天] 插件协调完成, 会话={conv.conversation_id}, timings_ms={result['timings_ms']}")
                 results.append({
                     "conversation_id": conv.conversation_id,
                     "status": "applied" if result.get("ok", False) else "error",
                     **result,
                 })
             except Exception as error:
-                logger.warning(f"[聊天] 会话 {conv.conversation_id} 插件同步失败: {error}")
+                logger.error(f"[聊天] 会话 {conv.conversation_id} 插件同步失败: {error}\n{traceback.format_exc()}")
                 results.append({
                     "conversation_id": conv.conversation_id,
                     "ok": False,
                     "status": "error",
                     "error": str(error),
+                    "timings_ms": {**timings.to_payload(), 'lock_wait_ms': round(lock_wait_ms, 3),
+                                   'config_read_ms': round(config_read_ms, 3)},
                 })
         return results
 
