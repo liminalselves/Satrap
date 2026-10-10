@@ -72,34 +72,54 @@ class SnapshotCache(Generic[_T]):
             self._pending[key] = pending
             return key, pending, True
 
-    def _finish(self, key: tuple[Hashable, Hashable, int], pending: Future[_T], fingerprint: Callable[[], Hashable], loader: Callable[[], _T]) -> None:
+    def _load(self, key: tuple[Hashable, Hashable, int], fingerprint: Callable[[], Hashable], loader: Callable[[], _T]) -> _T:
         """
-        加载并核验来源后发布, 异常传给全部等待者
+        加载并核验来源, 不在线程退出前唤醒等待者
 
         参数:
         - key: 本代缓存键
-        - pending: 共享结果
         - fingerprint: 重新读取来源指纹
         - loader: 同步快照构造器
+
+        返回:
+        - 核验通过的快照
         """
-        try:
-            value = loader()
-            current = fingerprint()
-            with self._lock:
-                if current != key[1] or self._epoch != key[2]:
-                    raise SnapshotChangedError('资源在读取期间变化, 请重试')
-                self._values[key] = value
-                self._values.move_to_end(key)
-                while len(self._values) > self._capacity:
-                    self._values.popitem(last=False)
-            pending.set_result(value)
-        except Exception as error:
-            if not isinstance(error, SnapshotChangedError):
-                logger.error(f'[资源快照] 加载失败, 类型={type(error).__name__}\n{traceback.format_exc()}')
-            pending.set_exception(error)
-        finally:
-            with self._lock:
+        value = loader()
+        current = fingerprint()
+        with self._lock:
+            if current != key[1] or self._epoch != key[2]:
+                raise SnapshotChangedError('资源在读取期间变化, 请重试')
+            self._values[key] = value
+            self._values.move_to_end(key)
+            while len(self._values) > self._capacity:
+                self._values.popitem(last=False)
+        return value
+
+    def _release(self, key: tuple[Hashable, Hashable, int], pending: Future[_T]) -> None:
+        """
+        在通知等待者之前清除本轮在途登记
+
+        参数:
+        - key: 本代缓存键
+        - pending: 当前共享结果
+        """
+        with self._lock:
+            if self._pending.get(key) is pending:
                 self._pending.pop(key, None)
+
+    def _fail(self, key: tuple[Hashable, Hashable, int], pending: Future[_T], error: Exception) -> None:
+        """
+        先清理失败登记再传播异常, 允许立即重试
+
+        参数:
+        - key: 本代缓存键
+        - pending: 当前共享结果
+        - error: 本轮加载异常
+        """
+        self._release(key, pending)
+        if not isinstance(error, SnapshotChangedError):
+            logger.error(f'[资源快照] 加载失败, 类型={type(error).__name__}\n{"".join(traceback.format_exception(error))}')
+        pending.set_exception(error)
 
     def get(self, resource: Hashable, fingerprint: Callable[[], Hashable], loader: Callable[[], _T]) -> _T:
         """
@@ -116,7 +136,13 @@ class SnapshotCache(Generic[_T]):
         for _ in range(3):
             key, pending, leader = self._begin(resource, fingerprint())
             if leader:
-                self._finish(key, pending, fingerprint, loader)
+                try:
+                    value = self._load(key, fingerprint, loader)
+                except Exception as error:
+                    self._fail(key, pending, error)
+                else:
+                    self._release(key, pending)
+                    pending.set_result(value)
             try:
                 return pending.result()
             except SnapshotChangedError:
@@ -142,19 +168,18 @@ class SnapshotCache(Generic[_T]):
             if leader:
                 async def load() -> None:
                     try:
-                        await worker.run(self._finish, key, pending, fingerprint, loader)
+                        value = await worker.run(self._load, key, fingerprint, loader)
                     except Exception as error:
-                        logger.error(f'[资源快照] 工作任务提交失败, 类型={type(error).__name__}\n{traceback.format_exc()}')
-                        pending.set_exception(error)
-                        with self._lock:
-                            self._pending.pop(key, None)
+                        self._fail(key, pending, error)
+                    else:
+                        self._release(key, pending)
+                        pending.set_result(value)
                 task = asyncio.create_task(load())
                 def completed(done: asyncio.Task[None], shared: Future[_T] = pending, cache_key: tuple[Hashable, Hashable, int] = key) -> None:
                     if done.cancelled() and not shared.done():
                         logger.warning('[资源快照] 服务退出时加载被取消')
+                        self._release(cache_key, shared)
                         shared.set_exception(RuntimeError('快照加载已取消'))
-                        with self._lock:
-                            self._pending.pop(cache_key, None)
                     elif not done.cancelled():
                         done.exception()
                 task.add_done_callback(completed)

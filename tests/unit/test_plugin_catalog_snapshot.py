@@ -9,6 +9,7 @@ import pytest
 from satrap.core.utils.async_worker import BoundedAsyncWorker, WorkerBusyError
 from satrap.core.utils.snapshot_cache import SnapshotCache
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.core.utils import snapshot_cache
 
 
 def write_meta(base: Path, name: str, version: str = '1') -> Path:
@@ -146,4 +147,26 @@ async def test_queue_full_and_parse_failure_allow_retry():
     finally:
         release.set()
         await occupied
+        worker.close()
+
+
+@pytest.mark.asyncio
+async def test_failure_notifications_follow_cleanup_and_worker_release(monkeypatch):
+    cache = SnapshotCache()
+    worker = BoundedAsyncWorker('test-snapshot', workers=1, capacity=1)
+    original = snapshot_cache.Future
+
+    class CheckedFuture(original):
+        def set_exception(self, error):
+            assert not cache._pending
+            assert worker._slots.acquire(blocking=False)
+            worker._slots.release()
+            super().set_exception(error)
+
+    monkeypatch.setattr(snapshot_cache, 'Future', CheckedFuture)
+    try:
+        with pytest.raises(ValueError):
+            await cache.get_async('resource', lambda: 1, lambda: int('bad'), worker)
+        assert await cache.get_async('resource', lambda: 1, lambda: 7, worker) == 7
+    finally:
         worker.close()
