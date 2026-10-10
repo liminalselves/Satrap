@@ -385,6 +385,8 @@ def set_llm(self: AsyncSimpleSession, llm: AsyncLLM):
         self._init_llm = llm
         return
     self._wf.llm = llm
+    if self._init_model_params:
+        llm.set_parameters(**self._init_model_params)
 
 
 def set_model_parameters(self: AsyncSimpleSession, **kwargs: Any):
@@ -394,8 +396,8 @@ def set_model_parameters(self: AsyncSimpleSession, **kwargs: Any):
     参数:
     - kwargs: 额外关键字参数
     """
+    self._init_model_params.update(kwargs)
     if self._wf is None:
-        self._init_model_params.update(kwargs)
         return
     self._wf.llm.set_parameters(**kwargs)
 

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import type { GroupChatSummary, GroupChatSummaryPage } from './types';
 import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
 import type { RagResult } from './rag';
@@ -14,6 +15,16 @@ import type {
   PlatformConfig,
   RuntimeSession,
   SessionClassConfig,
+  ConversationCatalog,
+  ConversationPlatform,
+  PlatformArchiveCatalog,
+  PlatformArchiveMessage,
+  PlatformArchiveIdentity,
+  PlatformArchiveSnapshot,
+  PlatformArchiveMutation,
+  ConversationDataSnapshot,
+  ConversationUser,
+  ConversationUserCatalog,
 } from './types';
 import type { StorageAuditResult } from './storage';
 import type {
@@ -88,7 +99,7 @@ export interface WakeDryRunResult {
 }
 
 // 后端控制 API 客户端(独立于主后端)
-const controlClient = axios.create({
+export const controlClient = axios.create({
   timeout: 30000,
   withCredentials: true,
   headers: {
@@ -132,6 +143,7 @@ export interface ControlResult {
 }
 
 export interface ConfigResult {
+  revision?: string;
   ok: boolean;
   config?: Record<string, unknown>;
   path?: string;
@@ -143,6 +155,8 @@ export interface ConfigResult {
 export interface PlatformConfigResult extends ControlResult {
   revision?: string;
   platforms?: PlatformConfig[];
+  adapter_types?: import('./types').AdapterDeclaration[];
+  default_session_type?: string;
   exists?: boolean;
 }
 
@@ -239,12 +253,46 @@ export function parseEdictumConfigs(data: unknown): Record<string, EdictumSessio
 }
 
 export const controlApi = {
+  listStickers: async (options: { keyword?: string; cursor?: string; limit?: number } = {}): Promise<import('./types').GroupChatStickerPage> => (await controlClient.get('/api/group-chat/stickers', { params: options })).data,
+  uploadSticker: async (file: File, metadata: { name: string; tags: string[]; collection: string; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('name', metadata.name);
+    form.append('tags', JSON.stringify(metadata.tags));
+    form.append('collection', metadata.collection);
+    form.append('idempotency_key', metadata.idempotency_key);
+    return (await controlClient.post('/api/group-chat/stickers/upload', form, { headers: { 'Content-Type': undefined }, timeout: 60000 })).data;
+  },
+  nativeStickerCatalog: async (platformId: string): Promise<{ adapter_type: string; items: Array<{ key: string; name: string }> }> => (await controlClient.get('/api/group-chat/native-stickers', { params: { platform_id: platformId } })).data,
+  addNativeSticker: async (payload: { platform_id: string; native_key: string; name: string; tags: string[]; collection: string; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => (await controlClient.post('/api/group-chat/stickers/native', payload)).data,
+  stickerPreview: async (id: string): Promise<{ preview: string | null; name?: string }> => (await controlClient.get(`/api/group-chat/stickers/${encodeURIComponent(id)}/preview`)).data,
+  updateSticker: async (id: string, payload: { name: string; tags: string[]; collection: string; enabled: boolean; expected_revision: number; idempotency_key: string }): Promise<{ ok: boolean; sticker: import('./types').GroupChatSticker }> => (await controlClient.patch(`/api/group-chat/stickers/${encodeURIComponent(id)}`, payload)).data,
+  deleteSticker: async (id: string, revision: number, key: string): Promise<{ ok: boolean; deleted: boolean }> => (await controlClient.delete(`/api/group-chat/stickers/${encodeURIComponent(id)}`, { data: { expected_revision: revision, idempotency_key: key } })).data,
+  groupStickerSettings: async (record: PlatformArchiveIdentity): Promise<import('./types').GroupChatStickerSettings> => (await controlClient.get(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/sticker-settings`, { params: { self_id: record.self_id, chat_id: record.chat_id, conversation_kind: record.conversation_kind } })).data,
+  saveGroupStickerSettings: async (record: PlatformArchiveIdentity, collections: string[], revision: number, key: string): Promise<import('./types').GroupChatStickerSettings> => (await controlClient.put(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/sticker-settings`, { collections, expected_revision: revision, idempotency_key: key }, { params: { self_id: record.self_id, chat_id: record.chat_id, conversation_kind: record.conversation_kind } })).data,
+  listConversationUsers: async (platformId: string, query = '', offset = 0, type = ''): Promise<ConversationUserCatalog> => (await controlClient.get<ConversationUserCatalog>('/config/conversations/users', { params: { platform_id: platformId || undefined, platform_type: type || undefined, q: query, offset, limit: 40 } })).data,
+  getConversationUser: async (platformId: string, userId: string): Promise<{ user: ConversationUser | null }> => (await controlClient.get<{ user: ConversationUser | null }>('/config/conversations/users', { params: { platform_id: platformId, user_id: userId } })).data,
+  mutateConversationUser: async (platformId: string, userId: string, data: Record<string, unknown>): Promise<{ ok: boolean; user: ConversationUser | null }> => {
+    const result = (await controlClient.post<{ ok: boolean; user: ConversationUser | null; error?: string }>('/config/conversations/users', { ...data, platform_id: platformId, user_id: userId })).data;
+    if (!result.ok) throw new Error(result.error || '用户资料修改失败');
+    return result;
+  },
+  listConversationPlatforms: async (): Promise<{ platforms: string[]; items?: ConversationPlatform[] }> => (await controlClient.get<{ platforms: string[]; items?: ConversationPlatform[] }>('/config/conversations/platforms')).data,
+  listPlatformArchives: async (query: Record<string, string | number> = {}): Promise<PlatformArchiveCatalog> => (await controlClient.get<PlatformArchiveCatalog>('/config/conversations/archive', { params: query })).data,
+  listGroupSummaries: async (record: PlatformArchiveIdentity, query: Record<string, unknown> = {}): Promise<GroupChatSummaryPage> => (await controlClient.get<GroupChatSummaryPage>(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/summaries`, { params: { self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, ...query }, timeout: 20000 })).data,
+  groupSummary: async (record: PlatformArchiveIdentity, summaryId: string): Promise<{ ok: boolean; summary: GroupChatSummary }> => (await controlClient.get<{ ok: boolean; summary: GroupChatSummary }>(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/summaries/${encodeURIComponent(summaryId)}`, { params: { self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id }, timeout: 20000 })).data,
+  deleteGroupSummary: async (record: PlatformArchiveIdentity, summary: GroupChatSummary, idempotencyKey: string): Promise<{ ok: boolean }> => (await controlClient.delete<{ ok: boolean }>(`/api/platforms/${encodeURIComponent(record.platform_id)}/group-chat/summaries/${encodeURIComponent(summary.summary_id)}`, { params: { self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id }, data: { expected_revision: summary.revision, idempotency_key: idempotencyKey }, timeout: 20000 })).data,
+  platformArchiveData: async (record: PlatformArchiveIdentity, query: Record<string, unknown> = {}): Promise<PlatformArchiveSnapshot> => (await controlClient.post<PlatformArchiveSnapshot>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action: 'read', ...query }, { timeout: 20000 })).data,
+  platformArchiveMessage: async (record: PlatformArchiveIdentity, messageId: string): Promise<{ ok: boolean; item: PlatformArchiveMessage }> => (await controlClient.post<{ ok: boolean; item: PlatformArchiveMessage }>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action: 'message', message_id: messageId }, { timeout: 20000 })).data,
+  mutatePlatformArchive: async (record: PlatformArchiveIdentity, action: 'delete' | 'clear' | 'restore', revision: number, options: { message_ids?: string[]; backup_id?: string; delete_memories?: boolean; cancel_reminders?: boolean } = {}): Promise<PlatformArchiveMutation> => (await controlClient.post<PlatformArchiveMutation>('/config/conversations/archive/data', { platform_id: record.platform_id, self_id: record.self_id, conversation_kind: record.conversation_kind, chat_id: record.chat_id, action, expected_revision: revision, ...options }, { timeout: 20000 })).data,
+  listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string> } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
+  conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,
   refreshChatHistoryStorage: async () => (await controlClient.post<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('/chat/history/storage', {}, { timeout: 300000 })).data,
   ragList: async (platformId: string, sessionId: string, kbId: string) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId } })).data,
   ragAction: async (platformId: string, sessionId: string, payload: Record<string, unknown>) => (await controlClient.post<Record<string, unknown>>('/config/rag', payload, { params: { platform_id: platformId, session_id: sessionId }, timeout: 300000 })).data,
   pluginModelOptions: async () => (await controlClient.get<{ options: ModelOptions }>('/config/plugin-model-options')).data,
   getSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string) => (await controlClient.get<SessionPluginSettings>('/config/session-plugin-config', { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
-  saveSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string, overrides: Record<string, unknown>, revision: number) => (await controlClient.put<SessionPluginSettings>('/config/session-plugin-config', { overrides, expected_revision: revision }, { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
+  saveSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => (await controlClient.put<SessionPluginSettings>('/config/session-plugin-config', { overrides, expected_revision: revision, ...tools }, { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
   // 获取后端状态
   status: async (): Promise<BackendStatus> => {
     const response = await controlClient.get<BackendStatus>('/status');
@@ -276,8 +324,8 @@ export const controlApi = {
   },
 
   // 保存配置文件
-  saveConfig: async (config: Record<string, unknown>): Promise<ConfigResult> => {
-    const response = await controlClient.put<ConfigResult>('/config', config);
+  saveConfig: async (config: Record<string, unknown>, revision?: string): Promise<ConfigResult> => {
+    const response = await controlClient.put<ConfigResult>('/config', config, { params: { expected_revision: revision } });
     return response.data;
   },
 
@@ -477,6 +525,49 @@ export const controlApi = {
   listEdictumTypes: async (): Promise<EdictumTypeDefinition[]> => {
     const response = await controlClient.get<unknown>('/config/edictum/types');
     return parseEdictumTypes(response.data);
+  },
+
+  listPlugins: async (): Promise<import('./types').ManagedPlugin[]> => {
+    const response = await controlClient.get<{ plugins: import('./types').ManagedPlugin[] }>('/config/plugins');
+    return response.data.plugins;
+  },
+
+  previewPluginInstall: async (file: File): Promise<import('./types').PluginInstallPreview> => {
+    const response = await controlClient.post<import('./types').PluginInstallPreview>('/config/plugins/preview', file, { headers: { 'Content-Type': 'application/zip' }, timeout: 120000 });
+    return response.data;
+  },
+
+  installPlugin: async (token: string): Promise<{ ok: boolean; plugin: EdictumAvailablePlugin }> => {
+    const response = await controlClient.post<{ ok: boolean; plugin: EdictumAvailablePlugin }>('/config/plugins/install', { token });
+    return response.data;
+  },
+
+  discardPluginPreview: async (token: string): Promise<void> => {
+    await controlClient.post('/config/plugins/discard', { token });
+  },
+
+  getGlobalPluginConfig: async (name: string): Promise<import('./types').GlobalPluginConfig> => {
+    return (await controlClient.get<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`)).data;
+  },
+
+  saveGlobalPluginConfig: async (name: string, config: Record<string, unknown>, revision: string): Promise<import('./types').GlobalPluginConfig> => {
+    return (await controlClient.put<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { config, expected_revision: revision }, { timeout: 120000 })).data;
+  },
+
+  reconcilePlugins: async (): Promise<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }> => {
+    return (await controlClient.post<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }>('/config/plugins/reconcile', {}, { timeout: 120000 })).data;
+  },
+
+  getPluginUsages: async (name: string): Promise<import('./types').PluginUsagesResult> => {
+    return (await controlClient.get<import('./types').PluginUsagesResult>(`/config/plugins/${encodeURIComponent(name)}/usages`)).data;
+  },
+
+  savePluginUsage: async (name: string, location: import('./types').PluginLocation, state: import('./types').PluginLocationState): Promise<import('./types').PluginUsagesResult> => {
+    return (await controlClient.put<import('./types').PluginUsagesResult>(`/config/plugins/${encodeURIComponent(name)}/usages`, { kind: location.kind, location_id: location.id, state, expected_revision: location.revision }, { timeout: 120000 })).data;
+  },
+
+  getPluginRuntime: async (name: string): Promise<import('./types').PluginRuntimeSnapshot> => {
+    return (await controlClient.get<import('./types').PluginRuntimeSnapshot>(`/config/plugins/${encodeURIComponent(name)}/runtime`)).data;
   },
 
   listEdictumPlugins: async (): Promise<EdictumAvailablePlugin[]> => {

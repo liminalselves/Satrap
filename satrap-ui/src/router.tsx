@@ -1,17 +1,46 @@
 import { lazy, Suspense, type ReactElement } from 'react';
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate, useLocation } from 'react-router-dom';
 import { AppLayout } from '@/components/layout/AppLayout';
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then((module) => ({ default: module.Dashboard })));
 const Models = lazy(() => import('@/pages/Models').then((module) => ({ default: module.Models })));
 const Rag = lazy(() => import('@/pages/Rag').then((module) => ({ default: module.Rag })));
+const Plugins = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.Plugins })));
+const PluginDetail = lazy(() => import('@/pages/Plugins').then((module) => ({ default: module.PluginDetail })));
 const Sessions = lazy(() => import('@/pages/Sessions').then((module) => ({ default: module.Sessions })));
 const Platforms = lazy(() => import('@/pages/Platforms').then((module) => ({ default: module.Platforms })));
+const Friends = lazy(() => import('@/pages/Friends').then((module) => ({ default: module.Friends })));
+const Groups = lazy(() => import('@/pages/Groups').then((module) => ({ default: module.Groups })));
+const GroupLayout = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupLayout })));
+const GroupDefault = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupDefault })));
+const GroupManage = lazy(() => import('@/pages/Groups/GroupManage').then((module) => ({ default: module.GroupManage })));
+const GroupActions = lazy(() => import('@/pages/Groups/GroupActions').then((module) => ({ default: module.GroupActions })));
+const GroupMembers = lazy(() => import('@/pages/Groups/GroupMembers').then((module) => ({ default: module.GroupMembers })));
+const GroupEvents = lazy(() => import('@/pages/Groups/GroupEvents').then((module) => ({ default: module.GroupEvents })));
+const GroupInvalidSection = lazy(() => import('@/pages/Groups/GroupLayout').then((module) => ({ default: module.GroupInvalidSection })));
+const GroupOverview = lazy(() => import('@/pages/Groups/GroupOverview').then((module) => ({ default: module.GroupOverview })));
+const GroupPolicy = lazy(() => import('@/pages/Groups/GroupPolicy').then((module) => ({ default: module.GroupPolicy })));
+const GroupSession = lazy(() => import('@/pages/Groups/GroupSession').then((module) => ({ default: module.GroupSession })));
 const Logs = lazy(() => import('@/pages/Logs').then((module) => ({ default: module.Logs })));
 const Checkpoints = lazy(() => import('@/pages/Checkpoints').then((module) => ({ default: module.Checkpoints })));
-const Users = lazy(() => import('@/pages/Users').then((module) => ({ default: module.Users })));
+const Conversations = lazy(() => import('@/pages/Conversations').then((module) => ({ default: module.Conversations })));
 const Settings = lazy(() => import('@/pages/Settings').then((module) => ({ default: module.Settings })));
 const Chat = lazy(() => import('@/pages/Chat').then((module) => ({ default: module.Chat })));
+
+function LegacyAdminRoute({ destination }: { destination: string }) {
+  const location = useLocation();
+  const target = destination === '/agents' && new URLSearchParams(location.search).has('groupAdapter') ? '/conversations/instances' : destination;
+  return <Navigate replace to={`${target}${location.search}${location.hash}`} />;
+}
+
+function LegacyUsersRoute() {
+  const location = useLocation();
+  const query = new URLSearchParams(location.search);
+  query.set('view', 'users');
+  if (query.has('platform_id')) { query.set('platform', query.get('platform_id')!); query.delete('platform_id'); }
+  if (query.has('user_id')) { query.set('user', query.get('user_id')!); query.delete('user_id'); }
+  return <Navigate replace to={`/conversations?${query}${location.hash}`} />;
+}
 
 function lazyRoute(element: ReactElement) {
   return (
@@ -31,14 +60,33 @@ export const router = createBrowserRouter([
       { index: true, element: lazyRoute(<Dashboard />) },
       { path: 'models', element: lazyRoute(<Models />) },
       { path: 'rag', element: lazyRoute(<Rag />) },
-      { path: 'sessions', element: lazyRoute(<Sessions />) },
+      { path: 'plugins', element: lazyRoute(<Plugins />) },
+      { path: 'plugins/:name', element: lazyRoute(<PluginDetail />) },
+      { path: 'agents', element: lazyRoute(<Sessions />) },
+      { path: 'conversations', element: lazyRoute(<Conversations />) },
+      { path: 'conversations/instances', element: lazyRoute(<Sessions view="instances" />) },
+      { path: 'conversations/versions', element: lazyRoute(<Checkpoints />) },
+      { path: 'sessions', element: <LegacyAdminRoute destination="/agents" /> },
       { path: 'platforms', element: lazyRoute(<Platforms />) },
+      { path: 'platforms/:adapterId/friends', element: lazyRoute(<Friends />) },
+      { path: 'platforms/:adapterId/groups', element: lazyRoute(<Groups />) },
+      { path: 'platforms/:adapterId/groups/:groupId', element: lazyRoute(<GroupLayout />), children: [
+        { index: true, element: lazyRoute(<GroupDefault />) },
+        { path: 'overview', element: lazyRoute(<GroupOverview />) },
+        { path: 'policy', element: lazyRoute(<GroupPolicy />) },
+        { path: 'session', element: lazyRoute(<GroupSession />) },
+        { path: 'members', element: lazyRoute(<GroupMembers />) },
+        { path: 'manage', element: lazyRoute(<GroupManage />) },
+        { path: 'events', element: lazyRoute(<GroupEvents />) },
+        { path: 'actions', element: lazyRoute(<GroupActions />) },
+        { path: ':section', element: lazyRoute(<GroupInvalidSection />) },
+      ] },
       { path: 'logs', element: lazyRoute(<Logs />) },
-      { path: 'checkpoints', element: lazyRoute(<Checkpoints />) },
-      { path: 'users', element: lazyRoute(<Users />) },
+      { path: 'checkpoints', element: <LegacyAdminRoute destination="/conversations/versions" /> },
+      { path: 'users', element: <LegacyUsersRoute /> },
       { path: 'settings', element: lazyRoute(<Settings />) },
     ],
   },
-  // 未匹配路径保持与旧结构一致的空渲染, 不进入管理布局
-  { path: '*', element: null },
+  // 未匹配路径重定向到首页
+  { path: '*', element: <Navigate to="/" replace /> },
 ]);

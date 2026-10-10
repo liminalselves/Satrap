@@ -3,12 +3,12 @@ import {
   LayoutDashboard,
   Cpu,
   Database,
-  MessageSquare,
+  Bot,
   Globe,
   ScrollText,
-  GitBranch,
-  Users,
+  History,
   Settings,
+  Puzzle,
 } from 'lucide-react';
 import { cn } from '@/utils/cn';
 import { useGlassReflect } from '@/hooks/useGlassReflect';
@@ -18,16 +18,16 @@ const navItems = [
   { path: '/', icon: LayoutDashboard, label: '仪表盘', color: 'accent' },
   { path: '/models', icon: Cpu, label: '模型配置', color: 'purple' },
   { path: '/rag', icon: Database, label: '知识库', color: 'teal' },
-  { path: '/sessions', icon: MessageSquare, label: '会话管理', color: 'teal' },
+  { path: '/plugins', icon: Puzzle, label: '插件管理', color: 'purple' },
+  { path: '/agents', icon: Bot, label: 'Agent 配置', color: 'teal' },
   { path: '/platforms', icon: Globe, label: '平台状态', color: 'pink' },
   { path: '/logs', icon: ScrollText, label: '日志监控', color: 'orange' },
-  { path: '/checkpoints', icon: GitBranch, label: '检查点', color: 'green' },
-  { path: '/users', icon: Users, label: '用户管理', color: 'accent' },
+  { path: '/conversations', icon: History, label: '对话记录', color: 'green' },
   { path: '/settings', icon: Settings, label: '系统设置', color: 'purple' },
 ] as const;
 
 // 导航项组件 - 每个项向全局管理器注册反射
-function NavItem({ item }: { item: typeof navItems[number] }) {
+function NavItem({ item, onNavigate }: { item: typeof navItems[number]; onNavigate?: () => void }) {
   const reflectRef = useGlassReflect<HTMLAnchorElement>({
     reflectRange: 100,
   });
@@ -36,6 +36,7 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
     <NavLink
       ref={reflectRef}
       to={item.path}
+      onClick={onNavigate}
       className={({ isActive }) =>
         cn(
           'glass-nav-item',
@@ -50,13 +51,13 @@ function NavItem({ item }: { item: typeof navItems[number] }) {
   );
 }
 
-export function Sidebar() {
+export function Sidebar({ className, onNavigate }: { className?: string; onNavigate?: () => void }) {
   const sidebarRef = useGlassReflect<HTMLElement>({
     reflectRange: 150,
   });
 
   return (
-    <aside ref={sidebarRef} className="w-64 sticky top-2 glass-sidebar flex flex-col">
+    <aside ref={sidebarRef} className={cn('w-64 shrink-0 sticky top-2 glass-sidebar flex flex-col', className)}>
       <div className="p-4 border-b border-glass-border">
         <h1 className="text-lg font-semibold text-text-primary flex items-center gap-2">
           <div className="w-8 h-8 rounded-md bg-accent flex items-center justify-center shadow-glow-accent">
@@ -68,7 +69,7 @@ export function Sidebar() {
 
       <nav className="flex-1 py-2 overflow-y-auto custom-scrollbar">
         {navItems.map((item) => (
-          <NavItem key={item.path} item={item} />
+          <NavItem key={item.path} item={item} onNavigate={onNavigate} />
         ))}
       </nav>
 

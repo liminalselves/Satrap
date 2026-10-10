@@ -13,6 +13,8 @@
 - DisplayRecorder 内部 RLock + 独立连接, 多会话并发安全
 """
 from __future__ import annotations
+import mimetypes, base64
+
 from satrap.edictum.plugin_compatibility import PluginEnvironment
 
 from dataclasses import asdict, dataclass, field, replace as dataclass_replace
@@ -30,7 +32,8 @@ from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.storage.session_fork import fork_session_settings
 from satrap.core.utils.context_policy import resolve_context_policy
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.core.memory.store import MemoryStore
+from satrap.core.memory.service import MemoryService
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.edictum.plugin_settings import (
     resolve_runtime_specs,
@@ -79,6 +82,12 @@ MSG_ASK_USER = "ask_user"
 MSG_ASK_USER_END = "ask_user_end"
 MSG_TURN_DONE = "turn_done"
 MSG_ERROR = "error"
+
+from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
+from satrap.core.framework.Base.execution.engine import configuration
+from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
+from satrap.core.config.conversation_data import ConversationDataConflict
+from satrap.core.config.conversation_runtime import perform_data_operation
 
 
 def build_llm(cfg: LLMConfig) -> AsyncLLM:
@@ -197,7 +206,8 @@ def _exclusive_conversation_operation(method: _OperationMethod) -> _OperationMet
     @wraps(method)
     async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
         conv = self._conversations.get(conversation_id)
-        if conversation_id in self._operations or (conv and conv.task is not None and not conv.task.done()):
+        data_editing = any(operation.state == "data_edit" and (identity.startswith(conversation_id + "_") or conversation_id.startswith(identity + "_")) for identity, operation in self._operations.items())
+        if conversation_id in self._operations or data_editing or (conv and conv.task is not None and not conv.task.done()):
             return {"ok": False, "error": "上一轮仍在进行, 请等待完成"}
         current = asyncio.current_task()
         if current is None:
@@ -223,6 +233,8 @@ def _shared_runtime_creation(method: _CreationMethod) -> _CreationMethod:
     """按会话 ID 共享创建任务, 防止预加载和发送构造两个运行时"""
     @wraps(method)
     async def wrapped(self: ChatService, conversation_id: str, *args: Any, **kwargs: Any) -> _Conversation:
+        if any(operation.state == "data_edit" and (identity == conversation_id or identity.startswith(conversation_id + "_")) for identity, operation in self._operations.items()):
+            raise ValueError("对话数据正在编辑, 请稍后再激活")
         existing = self._conversations.get(conversation_id)
         if existing is not None:
             return existing
@@ -1645,15 +1657,12 @@ class ChatService:
         conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
         if conv is None:
             return {"ok": False, "error": "会话不存在"}
-        from satrap.edictum.simple_session.recovery import store_for_session
 
         return {"ok": True, **store_for_session(conv.session).summaries(limit, cursor, unfinished)}
 
     @_exclusive_conversation_operation
     async def manage_run(self, conversation_id: str, run_id: str, action: str, step_id: str = "") -> dict[str, Any]:
         """恢复和取消均复用现有会话占用及插件互斥"""
-        from satrap.edictum.simple_session.recovery import store_for_session, prepare_session_recovery
-        from satrap.core.framework.Base.execution.engine import configuration
 
         conv = self._conversations.get(conversation_id) or await self._resume_conversation(conversation_id)
         if conv is None:
@@ -1997,8 +2006,8 @@ class ChatService:
         setattr(session, "coding_artifacts_root", str(session_root / "artifacts"))
         setattr(session, "coding_indexes_root", str(session_root / "indexes"))
         setattr(session, "coding_cache_root", str(session_root / "cache"))
-        setattr(session, "coding_memory_db", str(self._storage.platform_db(self._platform_id)))
-        setattr(session, "coding_memory_scope", f"session:{session.session_id}")
+        setattr(session, "memory_db", str(self._storage.platform_db(self._platform_id)))
+        setattr(session, "memory_scope", f"session:{session.session_id}")
 
     def create_project(self, name: str, root_path: str) -> dict[str, object]:
         """
@@ -2203,8 +2212,6 @@ class ChatService:
         返回:
         - 图片和视频本地路径列表, 无效类型, 越界路径或未启用视觉时抛出 ValueError
         """
-        import mimetypes
-        from satrap.core.utils.media import visual_enabled, MAX_MEDIA_ITEMS
 
         images: list[str] = []
         videos: list[str] = []
@@ -2243,8 +2250,6 @@ class ChatService:
         返回:
         - 包含 Data URL 的字典, 越界路径, 非媒体和超限文件抛出 ValueError
         """
-        import mimetypes
-        import base64
 
         root = self._storage.session_uploads(self._platform_id, conversation_id).resolve()
         path = Path(source).resolve()
@@ -2285,7 +2290,6 @@ class ChatService:
         unique_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
         fpath = upload_dir / unique_name
         fpath.write_bytes(file_data)
-        import mimetypes
 
         file_type = mimetypes.guess_type(safe_name)[0] or "application/octet-stream"
         return {
@@ -2342,6 +2346,79 @@ class ChatService:
                     "error": str(error),
                 })
         return results
+
+    async def reconcile_plugins(self) -> dict[str, Any]:
+        """
+        读取最新冷配置并协调全部 Chat 插件实例
+
+        返回:
+        - 配置应用状态及逐会话协调结果
+        """
+        self._plugins.refresh()
+        return self._plugin_update_result(await self._reconcile_chat_plugins())
+
+    async def manage_conversation_data(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        查找上下文所属对话, 保留现有 Chat 操作互斥规则
+
+        参数:
+        - payload: 对话数据读取或编辑参数
+
+        返回:
+        - 数据快照, 不激活尚未加载的历史对话
+        """
+
+        conversation = payload.get("conversation_id", "")
+        layer = str(payload.get("layer", "context"))
+        if not isinstance(conversation, str) or not conversation:
+            raise ValueError("缺少对话 ID")
+        if any(conversation == identity or conversation.startswith(identity + "_") for identity in {*self._creation_tasks, *self._resume_tasks}):
+            raise ConversationDataConflict("此对话正在激活, 请等待完成后重新读取")
+        owner = next((conv.conversation_id for conv in self._conversations.values()
+                      if conv.conversation_id == conversation or conversation.startswith(conv.conversation_id + "_") or any(context.conversation_id == conversation for context in conv.session._all_contexts().values())), None)
+        if owner is None:
+            return await self._manage_conversation_data_reserved(conversation, conversation, layer, payload)
+        return await self._manage_conversation_data_reserved(owner, conversation, layer, payload)
+
+    @_exclusive_conversation_operation
+    async def _manage_conversation_data_reserved(self, owner: str, conversation: str, layer: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """
+        在 Chat 对话预留和插件锁内编辑, 提交后通知订阅页面重新同步
+
+        参数:
+        - owner: 活动 Chat 对话 ID
+        - conversation: 上下文或展示历史 ID
+        - layer: 数据层
+        - payload: 操作参数
+
+        返回:
+        - 最新快照和保存结果
+        """
+
+        conv = self._conversations.get(owner)
+        self._operations[owner].state = "data_edit"
+        if conv is None:
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            return await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload)
+        async with conv.plugin_lock:
+            context = next((context for context in conv.session._all_contexts().values() if context.conversation_id == conversation), None)
+            database = self._chat_db_path if layer == "context" else self._display_db_path
+            result = await RAG_WORKERS.run(perform_data_operation, database, conversation, layer, payload, context)
+            if result.get("saved"):
+                conv.recorder._next_turn_index = conv.recorder._load_max_turn_index() + 1
+                self._broadcast(conv, {"type": "resync_required"})
+            return result
+
+    def plugin_runtime_snapshot(self) -> dict[str, Any]:
+        """
+        读取正式 Chat 会话的插件实际状态, 不触发安装或模型请求
+
+        返回:
+        - 逐会话运行快照, 预加载临时会话不计入使用位置
+        """
+        return {"ok": True, "sessions": [{"conversation_id": conv.conversation_id, "platform_id": "chat", "config_name": "chat",
+                                          "plugins": [state.to_payload() for state in conv.plugin_states]}
+                                         for conv in self._conversations.values() if conv.persisted]}
 
     @staticmethod
     def _plugin_update_result(results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2436,10 +2513,15 @@ class ChatService:
         if entry is None:
             raise ValueError("插件不存在")
         service = PluginSettingsService(self._storage.platform_db(self._platform_id))
-        return {"ok": True, **service.get(conversation_id, name, entry.config_schema), "model_options": model_options(self._model_cfg)}
+        tool_settings = {}
+        if name == "friend_manager":
+            spec = next(item for item in self._plugins.resolve_specs() if item.name == name)
+            tool_settings = service.tool_settings(conversation_id, spec, entry)
+        return {"ok": True, **service.get(conversation_id, name, entry.config_schema), **tool_settings, "model_options": model_options(self._model_cfg)}
 
     async def save_session_plugin_config(
         self, conversation_id: str, name: str, values: dict[str, Any], expected_revision: int,
+        *, tool_overrides: dict[str, bool] | None = None, expected_tool_revision: int | None = None,
     ) -> dict[str, Any]:
         """保存会话显式参数, 本轮执行中时留到下一轮安全应用"""
         self.session_plugin_config(conversation_id, name)
@@ -2448,7 +2530,8 @@ class ChatService:
             raise ValueError("插件不存在")
         validate_model_values(self._model_cfg, entry.config_schema, values)
         service = PluginSettingsService(self._storage.platform_db(self._platform_id), models=self._model_cfg, rag=RagService(self._storage, self._model_cfg, self._platform_id, conversation_id))
-        await RAG_WORKERS.run(service.save, conversation_id, name, entry.config_schema, values, expected_revision=expected_revision)
+        await RAG_WORKERS.run(service.save, conversation_id, name, entry.config_schema, values, expected_revision=expected_revision,
+                              tool_overrides=tool_overrides, expected_tool_revision=expected_tool_revision)
         conv = self._conversations.get(conversation_id)
         result = {"status": "next_activation"}
         if conv is not None:
@@ -2508,8 +2591,9 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        return {"ok": True, "memories": store.list_all()}
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        result = store.execute("list_all")
+        return result if isinstance(result, dict) else {"ok": True, "memories": result}
 
     def add_memory(self, title: str, content: str, *, tags: str = "", importance: int = 1, scope: str) -> dict[str, Any]:
         """
@@ -2527,9 +2611,9 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
         tag_list = [t.strip() for t in tags.split(",") if t.strip()] if tags else None
-        record = store.add(title=title, content=content, tags=tag_list, importance=importance)
+        record = store.execute("add", title=title, content=content, tags=tag_list, importance=importance)
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "添加失败")}
         return {"ok": True, "memory": record}
@@ -2548,8 +2632,8 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        record = store.update(memory_id, **fields)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        record = store.execute("update", memory_id, **fields)
         if not record.get("ok"):
             return {"ok": False, "error": record.get("error", "更新失败")}
         return {"ok": True, "memory": record}
@@ -2567,8 +2651,8 @@ class ChatService:
         """
         if not scope.startswith("session:") or not scope.removeprefix("session:").strip():
             return {"ok": False, "error": "记忆 scope 必须绑定到具体会话"}
-        store = MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope)
-        result = store.delete(memory_id)
+        store = MemoryService(MemoryStore(db_path=self._storage.platform_db(self._platform_id), scope=scope))
+        result = store.execute("delete", memory_id)
         if not result.get("ok"):
             return {"ok": False, "error": result.get("error", "删除失败")}
         return {"ok": True}

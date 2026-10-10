@@ -64,16 +64,17 @@ async def test_shell_must_not_write_in_plan_mode(shell_env, asynchronous, comman
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-async def test_shell_must_not_read_protected_token(shell_env, asynchronous):
+@pytest.mark.parametrize("token_path", [".satrap/api-token", ".satrap/credentials/api-token"])
+async def test_shell_must_not_read_protected_token(shell_env, asynchronous, token_path):
     root, _, session = shell_env
-    (root / ".satrap").mkdir()
+    (root / token_path).parent.mkdir(parents=True)
     token = "audit-fake-token-does-not-authorize-anything"
-    (root / ".satrap" / "api-token").write_text(token, encoding="utf-8")
+    (root / token_path).write_text(token, encoding="utf-8")
     reader = coding.ReadFileTool()
     reader._bind(cast(Any, session))
-    if "拒绝读取" not in reader.execute(".satrap/api-token"):
+    if "拒绝读取" not in reader.execute(token_path):
         raise RuntimeError("复现前置条件失败: 文件工具未拒绝受保护路径")
-    output = await execute_shell(shell_env, asynchronous, "Get-Content .satrap/api-token")
+    output = await execute_shell(shell_env, asynchronous, "Get-Content " + token_path)
     assert token not in output, "Shell 输出了文件工具拒绝读取的伪造令牌"
 
 

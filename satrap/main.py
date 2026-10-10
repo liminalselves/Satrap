@@ -15,6 +15,8 @@ _proj_root = str(Path(__file__).resolve().parent.parent)
 if _proj_root not in sys.path:
     sys.path.insert(0, _proj_root)
 
+import traceback
+
 from satrap.cli import output
 from satrap.cli.cmd_checkpoint import dispatch as dispatch_checkpoint
 from satrap.cli.cmd_config import dispatch as dispatch_config
@@ -27,6 +29,8 @@ from satrap.cli.cmd_reload import cmd_reload
 from satrap.cli.cmd_run import cmd_run
 from satrap.cli.cmd_session import dispatch as dispatch_session
 from satrap.cli.cmd_user import dispatch as dispatch_user
+
+from satrap.core.log import logger
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -343,6 +347,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main():
     """运行 Satrap 命令行入口"""
+
+    logger.set_service("cli")
     argv = sys.argv[1:]
     # --json 可放在任意位置: 预剥离后再交给 argparse, 避免逐个子解析器重复声明
     json_requested = "--json" in argv
@@ -362,8 +368,6 @@ def main():
         except KeyboardInterrupt:
             pass
         except Exception as error:
-            import traceback
-            from satrap.core.log import logger
             logger.error(f"[main] 后端运行异常退出: {type(error).__name__}: {error}\n{traceback.format_exc()}")
             sys.exit(1)
         return

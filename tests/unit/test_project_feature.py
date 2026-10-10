@@ -17,8 +17,8 @@ import pytest
 from typing import Any, cast
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.expend.plugins.base_take.tools import AddMemoryTool
-from satrap.expend.tools.memory_store import MemoryStore
+from satrap.expend.plugins.memory.tools import AddMemoryTool
+from satrap.core.memory.store import MemoryStore
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM
 from satrap.display.recorder import (
     DisplayRecorder,

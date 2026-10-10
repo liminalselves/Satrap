@@ -18,6 +18,8 @@ TYPE_MAP = {
 }
 CLS_MAP = MODEL_CONFIG_CLASSES
 
+from satrap.core.storage import default_storage_layout
+
 
 def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
     """
@@ -31,7 +33,6 @@ def _init_mgr(args: argparse.Namespace) -> ModelConfigManager:
 
     def _checker(config_name: str) -> list[dict[str, str]]:
         from satrap.core.config.asr_references import list_asr_config_references
-        from satrap.core.storage import default_storage_layout
 
         return list_asr_config_references(config_name, platforms=list(config.platforms), layout=default_storage_layout)
 

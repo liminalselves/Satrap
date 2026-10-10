@@ -7,6 +7,8 @@
 ### getting-started/ 入门
 
 - [快速开始](getting-started/quick-start.md): 安装, 文本与图片调用, 流式输出, 一个最小工具
+- [日志保留](getting-started/logging.md): 每日轮转, 自动清理, 活动文件保护与独立策略
+- [发行包](getting-started/release.md): Windows 便携包使用, 升级, 构建与自动发布
 - [配置说明](getting-started/configuration.md): `config.yaml`, 模型配置, Session 类配置和环境变量
 - [常见问题](getting-started/faq.md): 常见报错, 配置排查, 图片与上下文问题
 
@@ -28,10 +30,13 @@
 
 ### plugins/ 内置插件与扩展
 
-- [satrap_coding 插件](plugins/satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / 沙箱 / 记忆 / 子代理 / 目标与计划模式
-- [base_take 插件](plugins/base-take-plugin.md): 长期记忆插件, 全局 / 项目分层与注入机制
+- [satrap_coding 插件](plugins/satrap-coding-plugin.md): 简易 Coding Agent, 文件工具 / shell / 子代理 / 目标与计划模式
+- [base_take 插件](plugins/base-take-plugin.md): 网页搜索与抓取, 代码沙箱和文档解析
+- [memory 插件](plugins/memory-plugin.md): 独立长期记忆, 来源, 权限与上下文注入
 - [RAG 与会话覆盖](plugins/rag-and-session-overrides.md): RAG 插件使用流程, 知识库参数与文档管理, Embedding 绑定与索引重建, 检索参数, 会话级插件配置覆盖
 - [扩展模块](plugins/extensions.md): `satrap.expend` 工具集: 搜索, 网页抓取, 代码沙箱, RAG, 长期记忆和 sub-agent
+- [管理员授权三层模型设计稿](plugins/administrator-overrides-plan.md): 待实施规格; 组只授予 / 人只负责例外, 成员例外层与账号保护开关, 存量排除迁移
+- [三层模型复审缺陷修复计划](plugins/administrator-overrides-review-fixes.md): 复审四项缺陷 (接口清空例外, 迁移启用语义, 保护泄漏, 预览否决来源) 的修法与测试清单
 
 ### execution/ 执行引擎与恢复
 
@@ -41,21 +46,24 @@
 ### platform/ 平台接入
 
 - [平台接入](platform/platforms.md): Misskey, OneBot / aiocqhttp, 多平台路由和适配器扩展
+- [OneBot 群管理](platform/groups.md): 群目录、逐群响应与会话覆盖、审批、事件、迁移和 HTTP API
 
 ### ui/ 展示层与前端
 
 - [聊天展示层](ui/chat-display.md): 面向前端聊天页的独立实时服务 (录制 / 会话编排 / WebSocket / HTTP API)
+- [Agent 配置与对话记录](ui/conversation-management.md): 配置与实例入口, 分别维护模型上下文和 Chat 展示历史, 修改备份与恢复
 - [UI 设计系统](ui/ui-design-system.md): 前端设计规范与组件约定
 
 ### development/ 开发规范
 
 - [开发规范](development/development-guidelines.md): 注释规范, 静态类型检查规范与门禁
 - [测试说明](development/testing.md): 测试目录, 离线测试, 集成测试和手动 Demo
-- [安全审查报告](development/security-review-issue-12.md): issue #12 / PR #15 的审查范围、修复契约与验证缺口
+- [对话目录与旧上下文清理](development/conversation-catalog.md): 对话目录字段, 临时子 Agent 与旧上下文清理命令
+- [开发过程记录摘要](development/history.md): 安全审查, main 合并, 群聊两期, 系统管理员等计划与验收的结论和遗留问题
 
 ### archive/ 过程记录 (本地留档, 不入库)
 
-实施 / 迁移 / 清理 / 优化的过程记录留在本地工作区 `docs/archive/`, 只反映当时状态, 不作为现行参考: RAG 实施记录, 恢复机制验收与存储优化记录, 向量存储迁移, 前端迁移, 死代码清理。Issue #10 的计划、进度、联调记录、规模统计和各轮审计报告统一归档到 `docs/archive/issue-10/`; 当前平台能力与配置以 [平台接入](platform/platforms.md) 为准。
+实施 / 迁移 / 清理 / 优化的过程记录留在本地工作区 `docs/archive/`, 只反映当时状态, 不作为现行参考: RAG 实施记录, 恢复机制验收与存储优化记录, 向量存储迁移, 前端迁移, 死代码清理。Issue #1 分支上的安全审查, main 合并, 群聊两期, 文案审阅, 插件权限与系统管理员的计划 / 验收原文在 `docs/archive/development/`, 结论见 [开发过程记录摘要](development/history.md)。Issue #10 的计划、进度、联调记录、规模统计和各轮审计报告统一归档到 `docs/archive/issue-10/`; 当前平台能力与配置以 [平台接入](platform/platforms.md) 为准。
 
 `docs/archive/` 在根 `.gitignore` 中被忽略且已从索引移除, 因此不随仓库分发: 新克隆的工作区没有这些文件, 其他文档只在正文里按路径引用它们。归档时用文件系统移动保留本地文件, 提交原路径的删除和相关索引调整; 不使用 `git mv` 把归档目标重新加入索引, 不强制添加被忽略的归档文件。新写的本地过程稿直接放入归档目录。
 

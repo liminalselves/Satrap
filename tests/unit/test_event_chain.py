@@ -31,7 +31,7 @@ class _RecorderAdapter(PlatformAdapter):
     """记录 send_message 调用的测试适配器"""
 
     def __init__(self, adapter_id: str = "rec1"):
-        self.config = PlatformConfig(id=adapter_id, type="rec")
+        super().__init__(PlatformConfig(id=adapter_id, type="rec"))
         self.sent: list[tuple[str, MessageChain]] = []
 
     async def run(self) -> None:
@@ -104,12 +104,11 @@ def test_message_chain_operations():
 
 
 def test_message_chain_to_dict_list():
-    """消息链转为字典列表 (type 为小写字符串)"""
+    """消息链转为组件协议字典列表, 纯文本使用 text 类型"""
     chain = MessageChain.from_text("你好")
     items = chain.to_dict_list()
     assert isinstance(items, list)
-    assert items[0]["type"] == PlatformComponentType.Plain.value.lower()
-    assert items[0]["data"]["text"] == "你好"
+    assert items == [{"type": "text", "data": {"text": "你好"}}]
 
 
 # ================= MessageEventResult 测试 =================

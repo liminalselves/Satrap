@@ -473,6 +473,8 @@ async def test_scheduler_routes_group_members_without_changing_actor(tmp_path):
 
     class RecordingManager:
         class_cfg_mgr = scm
+        # 事件绑定 dummy 会话类: 直接用真实注册表判定, 保持与生产同一状态源
+        provider_registry = sm.provider_registry
 
         async def handle_call_async(self, call):
             calls.append(call)

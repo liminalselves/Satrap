@@ -1,14 +1,15 @@
 """React 管理面板运行时服务地址配置"""
 from __future__ import annotations
+import os
 
 
 def build_ui_config(
     *,
     backend_host: str = "127.0.0.1",
     backend_port: int = 19870,
-    control_api: str = "http://127.0.0.1:19871",
+    control_api: str | None = None,
     chat_host: str = "127.0.0.1",
-    chat_port: int = 19872,
+    chat_port: int | None = None,
 ) -> dict[str, str]:
     """
     构建前端运行时使用的服务地址
@@ -24,9 +25,9 @@ def build_ui_config(
     - dict[str, str]: 前端服务地址
     """
     return {
-        "control_api": control_api.rstrip("/"),
+        "control_api": (control_api or f"http://127.0.0.1:{os.getenv('SATRAP_CONTROL_PORT', '19871')}").rstrip("/"),
         "backend_api": f"http://{_client_host(backend_host)}:{int(backend_port)}",
-        "chat_api": f"http://{_client_host(chat_host)}:{int(chat_port)}",
+        "chat_api": f"http://{_client_host(chat_host)}:{int(chat_port if chat_port is not None else os.getenv('SATRAP_CHAT_PORT', '19872'))}",
     }
 
 

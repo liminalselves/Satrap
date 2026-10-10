@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 class _ContextCore:
     db_path: str
     conversation_id: str
+    persistent: bool
     keep_in_memory: bool
     auto_checkpoint: bool
     state_store: StateStore | None

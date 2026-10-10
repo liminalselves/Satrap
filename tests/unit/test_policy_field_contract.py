@@ -30,7 +30,7 @@ from satrap.core.config.platform_policy import (
 from satrap.core.config.wake_overrides import AUTOMATIC_KEYS, GROUP_KEYS
 from satrap.core.pipeline.input_projection import project_input
 from satrap.core.pipeline.wake_dry_run import dry_run_wake
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.platform import PlatformConfig
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.platform.onebot.adapter import OneBotAdapter
@@ -47,6 +47,8 @@ FROZEN_HOT_KEYS = frozenset({
     "wake_words", "group_whitelist", "context_scope", "enable_group", "enable_private",
     "input_text_limit", "input_media_limit", "message_text_limit", "asr_model", "voice_transcribe",
     "attachment_extract", "media_trusted_hosts", "media_insecure_tls", "media_plaintext_http",
+    # 命令入口的 operator 名单属平台级热更新字段: 登记后无需重启即可生效
+    "command_operators",
 })
 """迁移前的 BackendManager 手写 hot_keys"""
 
@@ -119,14 +121,14 @@ class _CountingAdapter(OneBotAdapter):
 
 class TestFrozenSets:
     def test_hot_keys_match_frozen(self):
-        assert hot_reload_keys() == FROZEN_HOT_KEYS
+        assert hot_reload_keys() == FROZEN_HOT_KEYS | {"message_archive_retention_days"}
 
     def test_override_scope_keys_match_frozen(self):
         assert AUTOMATIC_KEYS == FROZEN_AUTOMATIC_KEYS
         assert GROUP_KEYS == FROZEN_GROUP_KEYS
 
     def test_policy_defaults_match_frozen(self):
-        assert POLICY_DEFAULTS == FROZEN_DEFAULTS
+        assert POLICY_DEFAULTS == {**FROZEN_DEFAULTS, "message_archive_retention_days": 30}
 
     def test_contract_covers_union_of_known_keys(self):
         # 表覆盖校验字段, 覆盖范围, 默认值, 热更新与前端编辑字段的并集, 不局限于热更新键
@@ -178,9 +180,18 @@ class TestGeneratedContract:
 
     def test_generated_json_excludes_backend_only_message(self):
         payload = json.loads(GENERATED.read_text(encoding="utf-8"))
-        assert payload["version"] == 1
+        assert payload["version"] == 2
         for entry in payload["fields"]:
             assert "message" not in entry
+
+    def test_generated_json_carries_command_operators(self):
+        # 命令入口的操作员名单必须进入生成契约, 前端编辑器与表单字段由它构建
+        payload = json.loads(GENERATED.read_text(encoding="utf-8"))
+        entry = next(field for field in payload["fields"] if field["key"] == "command_operators")
+        assert entry == {
+            "key": "command_operators", "kind": "list", "scope": "platform",
+            "hot_reload": True, "display_in_preview": False, "max_items": 32, "max_length": 64,
+        }
 
 
 class TestSharedCases:
@@ -274,8 +285,8 @@ class TestPolicyDefaultSingleSource:
         adapter = OneBotAdapter(PlatformConfig(id="bot", type="onebot", settings={"wake_mode": "frequency"}))
         window = WakeWindow()
         event = await _event(adapter)
-        snapshot: tuple[PendingText, ...] = (
-            PendingText(request_id="r1", actor_id="30", message_id="1", text="正文", received_at=0.0),
+        snapshot: tuple[PendingMessage, ...] = (
+            PendingMessage(request_id="r1", actor_id="30", message_id="1", text="正文", received_at=0.0),
         )
         monkeypatch.setitem(POLICY_DEFAULTS, "wake_max_wait", 0)
         assert window.decide(event, snapshot, 10, deadline=True).rule != "max_wait"
@@ -306,7 +317,7 @@ class TestPolicyDefaultSingleSource:
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10)
         assert len(project_input(event, "none").message) <= 10
         monkeypatch.setitem(POLICY_DEFAULTS, "input_text_limit", 10000)
-        assert len(project_input(event, "none").message) == 200
+        assert project_input(event, "none").message == "[用户 30, 消息 1] " + "x" * 200
 
     @pytest.mark.asyncio
     async def test_wake_mode_default_in_dry_run(self, monkeypatch: pytest.MonkeyPatch):

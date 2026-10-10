@@ -1,39 +1,71 @@
 name: group_admin
-version: 0.1.0
+permission_schema_version: 1
+management_permissions:
+  read:
+    description: 查询群荣誉和转发内容
+    requirements: [仍受平台和插件的群范围限制, 转发内容必须核验来源归属]
+    caller_list: allowed_read_callers
+    empty_policy: allow
+    system_admin: true
+  write:
+    description: 请求群管理修改和发送操作
+    requirements: [需开启管理写操作, 需机器人具备相应平台权限, 需要审批的动作仍须批准]
+    caller_list: allowed_callers
+    empty_policy: deny
+    system_admin: true
+  requests:
+    description: 查询和处理入群申请与邀请
+    requirements: [查询还需读取授权, 处理还需写授权及管理写操作开关, 仍核验申请归属与有效期]
+    caller_list: request_managers
+    empty_policy: deny
+    system_admin: true
+tool_permissions:
+  group_admin_get_honors: [read]
+  group_admin_list_group_requests: [read, requests]
+  group_admin_recall_message: [write]
+  group_admin_kick: [write]
+  group_admin_ban: [write]
+  group_admin_whole_ban: [write]
+  group_admin_ban_anonymous: [write]
+  group_admin_set_admin: [write]
+  group_admin_set_anonymous: [write]
+  group_admin_set_group_nickname: [write]
+  group_admin_set_name: [write]
+  group_admin_set_title: [write]
+  group_admin_leave: [write]
+  group_admin_handle_group_request: [write, requests]
+version: 0.4.0
 author: Satrap Team
-description: "OneBot 群信息查询, 群成员管理, 请求审批与消息撤回工具; 写操作默认关闭, 由用户显式开启"
+description: "管理 OneBot 群的禁言, 群昵称, 群名和入群请求, 查询荣誉与合并转发; 修改和发送操作默认关闭"
 
 config_schema:
   write_tools_enabled:
     type: bool
     default: false
-    description: "允许执行踢人, 禁言, 管理员, 名片, 群名, 头衔, 退群与请求审批等写操作; 默认关闭"
-  high_risk_approval:
-    type: bool
-    default: false
-    description: "开启后踢人, 禁言, 全员禁言, 管理员设置, 改群名, 退群与请求审批等高危动作每次执行前需人工批准; 无审批通道的会话直接拒绝"
+    description: "允许模型执行踢人, 禁言, 修改群昵称等管理操作及发送合并转发; 默认关闭, 需要审批的群管理动作仍须批准"
   allowed_callers:
     type: textarea
     default: ""
-    description: "允许触发管理写操作的成员 QQ, 每行一个; 写操作要求此项非空, 留空时拒绝所有写操作"
+    description: "允许请求群管理修改和发送合并转发的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 还须开启管理写操作, 需要审批的动作须人工批准"
   allowed_read_callers:
     type: textarea
     default: ""
-    description: "允许调用只读工具的成员 QQ, 每行一个; 留空不限制"
+    description: "允许使用本插件查询工具的成员 ID, 每行一个; 留空不额外限制. 已获本插件授权的系统管理员无需重复填写; 不影响 group_chat 的查询工具"
+  high_risk_approval:
+    type: bool
+    default: false
+    description: "踢人, 禁言, 设置管理员, 改群名, 退群及处理加群请求等高危模型操作必须在群管理页面批准; 关闭此项仍遵守宿主审批策略"
   allowed_groups:
     type: textarea
     default: ""
-    description: "允许执行管理动作的群号, 每行一个; 留空不额外限制, 平台实例群白名单始终生效"
+    description: "这些工具可以在哪些群使用, 填写群号, 每行一个; 留空不额外限制群, 仍遵守平台设置的可管理范围"
+  request_managers:
+    type: textarea
+    default: ""
+    description: "允许查看和处理入群申请与邀请的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 查询还需读取授权, 处理还需写授权和管理写操作开关"
 
 tools:
-  group_admin_list_groups: "列出机器人所在群"
-  group_admin_get_group_info: "查看群信息"
-  group_admin_list_members: "列出群成员"
-  group_admin_get_member: "查看群成员信息"
   group_admin_get_honors: "查看群荣誉信息"
-  group_admin_get_message: "回源读取群消息原文"
-  group_admin_get_forward: "回源读取合并转发内容"
-  group_admin_send_forward: "向群发送合并转发消息"
   group_admin_recall_message: "撤回指定消息"
   group_admin_kick: "移出群成员"
   group_admin_ban: "禁言或解除禁言群成员"
@@ -41,12 +73,12 @@ tools:
   group_admin_ban_anonymous: "禁言匿名成员"
   group_admin_set_admin: "设置或取消群管理员"
   group_admin_set_anonymous: "开启或关闭群匿名"
-  group_admin_set_card: "设置群成员名片"
+  group_admin_set_group_nickname: "修改或清空目标成员的群昵称"
   group_admin_set_name: "修改群名"
-  group_admin_set_title: "设置群成员专属头衔"
+  group_admin_set_title: "设置或清除成员的专属头衔"
   group_admin_leave: "退出或解散群"
-  group_admin_handle_friend_request: "批准或拒绝好友添加请求"
   group_admin_handle_group_request: "批准或拒绝加群请求或邀请"
+  group_admin_list_group_requests: "查询指定群待处理的加群申请和邀请"
 
 compatibility:
   satrap: ">=0.1,<0.2"

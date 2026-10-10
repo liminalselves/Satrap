@@ -9,7 +9,7 @@ from satrap.core.framework.Base import AsyncSession, Session as FrameworkSession
 from satrap.core.framework.SessionManager import SessionManager
 from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.utils.TCBuilder.async_tool import AsyncTool
-from satrap.core.call_context import CallOrigin, bind_call_origin, current_call_origin, require_call_origin
+from satrap.core.call_context import CallOrigin, bind_call_origin, current_call_origin, require_call_origin, is_group_origin, is_private_origin
 from satrap.core.type import UserCall
 
 
@@ -126,3 +126,31 @@ async def test_sync_worker_keeps_per_call_identity_without_persisting_it():
         assert await worker.run(current_call_origin) is None
     finally:
         worker.close()
+
+
+def kind_origin(chat_type: str, conversation_kind: str) -> CallOrigin:
+    """构造指定消息类型与会话类型的来源"""
+    return CallOrigin("bot", "10", chat_type, "20", "actor", "message", "request", conversation_kind=conversation_kind)
+
+
+@pytest.mark.parametrize(("chat_type", "conversation_kind", "group", "private"), [
+    ("GroupMessage", "group", True, False),
+    ("FriendMessage", "private", False, True),
+    ("GroupMessage", "", True, False),
+    ("FriendMessage", "", False, True),
+    ("GroupMessage", "private", False, True),
+    ("FriendMessage", "group", True, False),
+    ("GroupMessage", "channel", False, False),
+    ("FriendMessage", "channel", False, False),
+    ("group_message", "", False, False),
+])
+def test_origin_kind_prefers_conversation_kind_and_falls_back_only_when_empty(
+        chat_type: str, conversation_kind: str, group: bool, private: bool) -> None:
+    origin_value = kind_origin(chat_type, conversation_kind)
+    assert is_group_origin(origin_value) is group
+    assert is_private_origin(origin_value) is private
+
+
+def test_missing_origin_is_neither_group_nor_private() -> None:
+    assert is_group_origin(None) is False
+    assert is_private_origin(None) is False

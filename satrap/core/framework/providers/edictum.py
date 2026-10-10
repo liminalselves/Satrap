@@ -35,6 +35,7 @@ from satrap.edictum.registry import (
     EdictumTypeRegistry,
 )
 from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.settings import normalize_session_settings
 from satrap.core.type import SessionConfig
 
 from satrap.core.log import logger
@@ -237,7 +238,9 @@ class EdictumProvider:
         signature = inspect.signature(factory)
         parameters = signature.parameters
         has_var_kw = any(item.kind == inspect.Parameter.VAR_KEYWORD for item in parameters.values())
-        payload = dict(session_config.session_config or {})
+        payload = {**definition.params, **(session_config.session_config or {})}
+        if type_name in {"simple", "async_simple"}:
+            payload = normalize_session_settings(payload)
         payload.pop("model_name", None)
         payload.pop("plugins", None)
         payload.pop("plugin_environment", None)
@@ -376,7 +379,9 @@ class EdictumProvider:
         if models is not None:
             models.reload()
         if not any(item.status == "pending" for item in state.plugins):
-            result = await self.reconcile_session_plugins_async(session)
+            result = await self.reconcile_session_plugins_async(
+                session, desired_plugins=getattr(session, "_satrap_group_plugins", None),
+            )
             if not result.get("ok", False):
                 raise RuntimeError("会话插件配置更新失败, 请检查插件运行状态")
             return
@@ -463,32 +468,7 @@ class EdictumProvider:
             state.config_status = "restart_pending"
         elif not config_drift and state.config_status != "error":
             state.config_status = "applied"
-        plugins: list[dict[str, object]] = [
-            {
-                "name": item.name,
-                "enabled": item.enabled,
-                "status": item.status,
-                "error": item.error,
-                "last_error": item.last_error,
-                "last_operation_status": item.last_operation_status,
-                "revision": item.revision,
-                "capabilities": {
-                    "applied": (
-                        item.applied_spec.capabilities
-                        if item.applied_spec is not None
-                        else {}
-                    ),
-                    "desired": (
-                        item.desired_spec.capabilities
-                        if item.desired_spec is not None
-                        else {}
-                    ),
-                },
-                "drift": item.drift,
-                "restart_required": item.restart_required,
-            }
-            for item in state.plugins
-        ]
+        plugins = [item.to_payload() for item in state.plugins]
         return {
             "plugins": plugins,
             "plugin_summary": {

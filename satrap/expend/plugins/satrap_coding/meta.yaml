@@ -35,7 +35,7 @@ config_schema:
     description: "shell 子进程显式放行的环境变量名 (逗号分隔); 其余密钥类变量 (如 *_API_KEY, *_TOKEN) 默认剥离"
 
 # 能力组成描述 (可选, 名字 -> 描述; 仅作展示补充, 自动扫描为注册真相源)
-# 注: search/fetch_page/memory 已移交 base_take 插件
+# 注: search/fetch_page 由 base_take 提供, memory 由独立记忆插件提供
 tools:
   ask_user: 向用户提问并等待回复, 用于获取缺失信息或确认意图; 需要宿主通过 session.user_input_provider 特殊适配提问展示和回答回填
   shell: 在本机执行 shell 命令 (PowerShell/cmd), 每次执行需明确批准, 计划模式禁用

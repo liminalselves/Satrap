@@ -13,9 +13,10 @@ from typing import (
     Awaitable,
 )
 
-from .base import _CommandRegistry
+from .base import DEFAULT_COMMAND_PARAM_SPLIT, DEFAULT_COMMAND_PREFIX, _CommandRegistry
 
 from satrap.core.log import logger
+from satrap.core.plugin_authorization import bind_native_command, require_plugin_entry_permission, PluginPermissionDenied
 
 
 class AsyncCommandHandler(_CommandRegistry):
@@ -24,14 +25,14 @@ class AsyncCommandHandler(_CommandRegistry):
     def __init__(
         self,
         output_callback: Optional[Callable[[str], Awaitable[None]]] = None,
-        cmd_prefix: str = "/",
-        param_split: str = " ",
+        cmd_prefix: str = DEFAULT_COMMAND_PREFIX,
+        param_split: str = DEFAULT_COMMAND_PARAM_SPLIT,
     ):
         """
         参数:
         - output_callback: 异步输出命令执行结果的回调函数
-        - cmd_prefix: 命令前缀, 默认为 "/"
-        - param_split: 参数分割符, 默认为 " "
+        - cmd_prefix: 命令前缀, 默认为 DEFAULT_COMMAND_PREFIX
+        - param_split: 参数分割符, 默认为 DEFAULT_COMMAND_PARAM_SPLIT
         """
         self.output_callback = output_callback
         self.commands: Dict[str, Any] = {}  # 命令名 -> 异步处理函数
@@ -57,12 +58,19 @@ class AsyncCommandHandler(_CommandRegistry):
         try:
             if cmd in self.commands and cmd not in self._disabled_commands:
                 handler = self.commands[cmd]
+                binding = getattr(self, "_permission_bindings", {}).get(cmd)
+                if binding is not None:
+                    with bind_native_command(binding):
+                        require_plugin_entry_permission(binding, subcommand=args[0] if args else None)
+                        return await handler(*args)
                 # 直接异步调用, handler 必须为异步函数
                 return await handler(*args)
             else:
                 logger.warning(f"未注册命令: {cmd}")
                 return None
 
+        except PluginPermissionDenied as error:
+            return str(error)
         except Exception as e:
             logger.error(f"命令执行错误: {cmd}, {e}")
             return None

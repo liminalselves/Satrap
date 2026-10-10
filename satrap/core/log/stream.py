@@ -12,6 +12,29 @@ import re
 
 _ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _KNOWN_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
+_LEVEL_PATTERN = "|".join(_KNOWN_LEVELS)
+_LOG_HEADER = re.compile(
+    r"^(?:\[\d{4}-\d{2}-\d{2}[ \t]+\d{2}:\d{2}:\d{2}(?:[.,]\d+)?\][ \t]+)?"
+    rf"(?:\[(?P<bracketed>{_LEVEL_PATTERN})\][ \t]*:"
+    rf"|(?P<plain>{_LEVEL_PATTERN})[ \t]+in[ \t]+[^:\r\n]+:)"
+)
+
+
+def _parse_log_level(content: str, default_level: str) -> str:
+    """
+    从行首日志头解析级别, 无法识别时使用标准流默认级别
+
+    参数:
+    - content: 已去除 ANSI 颜色的日志文本
+    - default_level: 未识别日志头时的回退级别
+
+    返回:
+    - str: 日志头级别或回退级别
+    """
+    match = _LOG_HEADER.match(content)
+    if match is None:
+        return default_level
+    return match.group("bracketed") or match.group("plain")
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,10 +251,7 @@ class StandardStreamCapture:
         content = _ANSI_ESCAPE.sub("", line)
         if not content:
             return
-        level = next(
-            (item for item in _KNOWN_LEVELS if f"[{item}]" in content),
-            self._default_level,
-        )
+        level = _parse_log_level(content, self._default_level)
         self._stream.publish(content, level)
 
 

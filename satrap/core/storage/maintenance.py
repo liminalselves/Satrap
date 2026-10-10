@@ -11,9 +11,12 @@ from typing import Any, Iterable, cast
 import json
 import time
 
+import traceback
+
 from satrap.core.storage.file_lock import session_storage_lock
 from satrap.core.storage.database import delete_session_domain_rows, restore_session_domain, snapshot_session_domain
 from satrap.core.storage.layout import StorageLayout
+from satrap.core.log import logger
 
 
 @dataclass(frozen=True)
@@ -48,6 +51,81 @@ class StorageMaintenanceService:
         - layout: v2 数据布局
         """
         self.layout = layout
+
+    def expire_platform_messages(self, retention_days: dict[str, int]) -> dict[str, Any]:
+        """
+        清理各平台档案过期正文和备份, 单个平台失败不影响其它平台
+
+        参数:
+        - retention_days: 已配置平台的生效保留期; 移除的平台读取数据库内最后策略
+
+        返回:
+        - 每个平台的清理计数或显式错误, 不创建没有消息的数据库
+        """
+        from satrap.core.config.platform_messages import PlatformMessageStore
+
+        policies: dict[str, int | None] = dict(retention_days)
+        results: list[dict[str, Any]] = []
+        root = self.layout.platforms_root
+        if root.exists():
+            for platform_root in root.iterdir():
+                try:
+                    manifest = platform_root / "platform.json"
+                    if not platform_root.is_dir() or platform_root.is_symlink() or manifest.is_symlink():
+                        logger.warning(f"[消息档案] 自动维护跳过不安全的平台目录: {platform_root.name}")
+                        continue
+                    if not manifest.is_file():
+                        continue
+                    if manifest.stat().st_size > 65536:
+                        raise ValueError("平台清单超过大小限制")
+                    metadata = json.loads(manifest.read_text(encoding="utf-8"))
+                    platform_id = metadata.get("platform_id") if isinstance(metadata, dict) else None
+                    if not isinstance(platform_id, str) or not platform_id.strip():
+                        raise ValueError("平台清单缺少有效身份")
+                    if self.layout.platform_root(platform_id).resolve() != platform_root.resolve():
+                        raise ValueError("平台清单身份与目录不一致")
+                    policies.setdefault(platform_id, None)
+                except Exception as exc:
+                    logger.error(f"[消息档案] 自动维护读取清单失败, 目录={platform_root.name}, 原因={type(exc).__name__}: {exc}")
+                    results.append({"platform_id": "", "ok": False, "error": "invalid_manifest"})
+        for platform_id, days in policies.items():
+            try:
+                database = self.layout.platform_db(platform_id)
+                if database.is_symlink() or self.layout.platform_root(platform_id).is_symlink():
+                    raise ValueError("平台档案路径是符号链接")
+                if not database.is_file():
+                    continue
+                store = PlatformMessageStore(database, platform_id)
+                if days is None:
+                    days = store.saved_retention_days() or 30
+                store = PlatformMessageStore(database, platform_id, retention_days=days)
+                counts = store.purge()
+                from satrap.core.group_chat.assets import AssetStore
+
+                AssetStore(store).purge()
+                results.append({"platform_id": platform_id, "ok": True, **counts})
+            except Exception:
+
+                logger.error(f"[消息档案] 自动维护失败, 平台={platform_id}: {traceback.format_exc()}")
+                results.append({"platform_id": platform_id, "ok": False, "error": "archive_unavailable"})
+        from satrap.core.group_chat.stickers import StickerStore
+
+        try:
+            if (self.layout.root / "group-chat" / "catalog.db").is_file():
+                StickerStore(self.layout).purge()
+        except Exception:
+
+            logger.error(f"[群表情] 自动维护失败: {traceback.format_exc()}")
+        from satrap.core.platform.request_inbox import RequestInbox
+
+        try:
+            path = self.layout.root / "requests" / "inbox.db"
+            if path.is_file():
+                RequestInbox(path, 600).purge(time.time())
+        except Exception:
+
+            logger.error(f"[申请收件箱] 自动维护失败: {traceback.format_exc()}")
+        return {"items": results}
 
     @staticmethod
     def _item_id(*parts: str) -> str:

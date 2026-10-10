@@ -13,7 +13,6 @@ from typing import Any, Callable, Dict, Literal, TypeVar, cast
 import json
 import os
 
-from satrap.core.utils.paths import get_data_dir
 from satrap.core.type import ASRConfig, EmbeddingConfig, LLMConfig, ReRankConfig
 
 from satrap.core.log import logger
@@ -22,6 +21,8 @@ from satrap.core.log import logger
 ConfigTarget = Literal["llm", "embedding", "rerank", "asr"]
 ResetTarget = Literal["llm", "embedding", "rerank", "asr", "all"]
 TConfig = TypeVar("TConfig", LLMConfig, EmbeddingConfig, ReRankConfig, ASRConfig)
+
+from satrap.core.config_paths import get_config_path
 
 
 class ConfigInUseError(ValueError):
@@ -66,6 +67,7 @@ class ModelConfigManager:
         storage_path: str | Path | None = None,
         auto_create: bool = True,
         asr_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
+        llm_in_use_checker: Callable[[str], list[dict[str, str]]] | None = None,
     ):
         """
         初始化 ModelConfigManager
@@ -78,6 +80,7 @@ class ModelConfigManager:
         self._lock = threading.RLock()
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
         self._asr_in_use_checker = asr_in_use_checker
+        self._llm_in_use_checker = llm_in_use_checker
 
         self._llm_configs: Dict[str, LLMConfig] = {
             self.DEFAULT_NAME: LLMConfig(name=self.DEFAULT_NAME)
@@ -107,7 +110,8 @@ class ModelConfigManager:
         env_path = os.getenv("SATRAP_MODEL_CONFIG_PATH")
         if env_path:
             return Path(env_path)
-        return get_data_dir() / "model_config.json"
+
+        return get_config_path("model_config.json")
 
     @staticmethod
     def _safe_key(api_key: str | None) -> str | None:
@@ -366,6 +370,13 @@ class ModelConfigManager:
             self._save_locked()
 
     def remove_llm_config(self, name: str) -> bool:
+        """在引用扫描锁内删除未被群配置引用的模型"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            return self._remove_llm_config_locked(name)
+
+    def _remove_llm_config_locked(self, name: str) -> bool:
         """
         删除 LLM 配置
 
@@ -379,12 +390,25 @@ class ModelConfigManager:
             key = self._normalize_name(name)
             if key not in self._llm_configs:
                 return False
+            references = self._check_llm_in_use(key)
+            if references:
+                raise ConfigInUseError("llm", key, references)
             if len(self._llm_configs) <= 1:
                 self._llm_configs[key] = LLMConfig(name=key)
             else:
                 self._llm_configs.pop(key, None)
             self._save_locked()
             return True
+
+    def _check_llm_in_use(self, name: str) -> list[dict[str, str]]:
+        """模型删除或重命名前执行严格群引用扫描"""
+        checker = self._llm_in_use_checker
+        if checker is None:
+            return []
+        try:
+            return checker(name)
+        except Exception as error:
+            raise ConfigReferenceScanError("llm", name, f"{type(error).__name__}: {error}") from error
 
     # ---------- Embedding 配置 ----------
     def get_embedding_config(self, name: str = DEFAULT_NAME) -> EmbeddingConfig:
@@ -658,6 +682,15 @@ class ModelConfigManager:
         *,
         new_name: str | None = None,
     ) -> None:
+        """在引用扫描锁内更新命名配置"""
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+
+        with REFERENCE_SCAN_LOCK:
+            self._update_named_config_locked(target, name, changes, new_name=new_name)
+
+    def _update_named_config_locked(
+        self, target: ConfigTarget, name: str, changes: dict[str, Any], *, new_name: str | None = None,
+    ) -> None:
         """
         原子更新配置字段并按需重命名
 
@@ -679,6 +712,10 @@ class ModelConfigManager:
                 references = self._check_asr_in_use(current_key)
                 if references:
                     raise ConfigInUseError("asr", current_key, references)
+            if target == "llm" and target_key != current_key:
+                references = self._check_llm_in_use(current_key)
+                if references:
+                    raise ConfigInUseError("llm", current_key, references)
 
             payload = asdict(store[current_key])
             payload.update(changes)

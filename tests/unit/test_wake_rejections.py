@@ -13,6 +13,21 @@ from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.pipeline.request_diagnostics import REJECTION_STAGES, RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapterManager, PlatformConfig
 from satrap.core.platform.onebot.adapter import OneBotAdapter
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def _rejection(adapter: str, reason: str, at: float, request_id: str = "r") -> RequestDiagnostic:
@@ -27,6 +42,7 @@ def runtime(settings: dict[str, object]) -> tuple[BackendManager, OneBotAdapter,
     backend = BackendManager()
     backend._running = True
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     scheduler = PipelineScheduler(manager)
     backend._scheduler = scheduler

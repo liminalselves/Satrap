@@ -10,12 +10,15 @@ from typing import Any, cast
 import json
 import os
 import re
+import uuid
+from satrap.core.config.platform_identity import platform_instance_id
 
 from satrap.core.config.platform_policy import validate_wake_policy, validate_context_scope, normalize_group_whitelist, normalize_wake_words, validate_event_limits
 from satrap.core.backend.BackendManager import BackendConfig
 from satrap.core.config.loader import ConfigLoader
 from satrap.core.config._yaml import safe_yaml_dump, safe_yaml_load
 from satrap.core.storage.file_lock import FileLock
+from satrap.core.config.agent_routing import validate_session_bindings
 
 
 MASKED_SECRET = "********"
@@ -296,18 +299,28 @@ def validate_platforms(platforms: object) -> list[dict[str, Any]]:
         seen.add(platform_id)
         if "enable" in item and not isinstance(item["enable"], bool):
             raise ValueError("平台 enable 必须是布尔值")
+        if "instance_id" in item and (not isinstance(item["instance_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", item["instance_id"])):
+            raise ValueError("平台 instance_id 必须是持久实例标识")
         normalized = dict(item)
         normalized["enable"] = item.get("enable", True)
         normalized["id"] = platform_id
         normalized["type"] = platform_type
+        normalized["instance_id"] = platform_instance_id(item)
         normalized["session_provider"] = session_provider
         if session_type:
             normalized["session_type"] = session_type
         else:
             normalized.pop("session_type", None)
         normalized["settings"] = dict(cast(dict[str, Any], settings))
+        if "session_bindings" in normalized:
+            normalized["session_bindings"] = validate_session_bindings(normalized["session_bindings"])
         validate_event_limits(normalized["settings"])
         if platform_type in {"onebot", "aiocqhttp"}:
+            if "group_management_version" in normalized["settings"] and (
+                type(normalized["settings"]["group_management_version"]) is not int
+                or normalized["settings"]["group_management_version"] != 1
+            ):
+                raise ValueError("group_management_version 仅支持版本 1")
             validate_wake_policy(normalized["settings"])
             validate_context_scope(normalized["settings"].get("context_scope", "legacy_user"))
             for key, validator in (("group_whitelist", normalize_group_whitelist), ("wake_words", normalize_wake_words), ("wake_aliases", normalize_wake_words)):
@@ -331,6 +344,12 @@ def validate_config_document(data: object) -> dict[str, Any]:
         raise ValueError("配置根节点必须是对象")
     normalized = dict(cast(dict[str, Any], data))
     normalized["platforms"] = validate_platforms(normalized.get("platforms", []))
+    from satrap.core.config.administrator_groups import (migrate_legacy_scope_exclusions, normalize_administrator_overrides,
+                                                         normalize_administrator_groups)
+    groups = normalize_administrator_groups(normalized.get("administrator_groups"), normalized["platforms"])
+    overrides = normalize_administrator_overrides(normalized.get("administrator_overrides"), normalized["platforms"])
+    # 校验与预检路径与读取路径一致, 展开旧组排除后再回写, 避免存量配置被判非法
+    normalized["administrator_groups"], normalized["administrator_overrides"], _pending = migrate_legacy_scope_exclusions(groups, overrides)
     BackendConfig.from_dict(normalized)
     return normalized
 
@@ -478,8 +497,13 @@ def upsert_platform(
     if old_id and target_index is None:
         raise ValueError(f"平台不存在: {old_id}")
     if target_index is None:
+        candidate["instance_id"] = uuid.uuid4().hex
+        if candidate["type"] in {"onebot", "aiocqhttp"}:
+            candidate["settings"].setdefault("group_management_version", 1)
+            # 新建平台明确采用逐群管理格式, 默认 selected 且不响应任何群
         current.append(candidate)
     else:
+        candidate["instance_id"] = platform_instance_id(current[target_index])
         current[target_index] = candidate
     return validate_platforms(current)
 

@@ -30,7 +30,8 @@ def packaged_modules() -> set[str]:
     ("satrap.expend.tools.agent", ["SubAgent", "AsyncSubAgent", "SubAgentModel", "AsyncSubAgentModel"]),
     ("satrap.expend.tools.search", ["SearchTool", "AsyncSearchTool", "FetchPageTool", "AsyncFetchPageTool"]),
     ("satrap.expend.tools.sandbox_tools", ["CodeSandboxTool", "AsyncCodeSandboxTool"]),
-    ("satrap.expend.plugins.base_take.tools", ["get_tools", "ReadDocumentTool", "AsyncReadDocumentTool", "AddMemoryTool", "AsyncAddMemoryTool"]),
+    ("satrap.expend.plugins.base_take.tools", ["get_tools", "ReadDocumentTool", "AsyncReadDocumentTool"]),
+    ("satrap.expend.plugins.memory.tools", ["get_tools", "AddMemoryTool", "AsyncAddMemoryTool", "GetMemoryTool", "AsyncGetMemoryTool"]),
     ("satrap.expend.plugins.satrap_coding.tools", ["get_tools", "ReadFileTool", "AsyncReadFileTool", "WriteFileTool", "AsyncWriteFileTool"]),
 ])
 def test_legacy_imports_and_package_discovery(module: str, names: list[str], packaged_modules: set[str]):

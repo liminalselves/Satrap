@@ -4,8 +4,10 @@ from pathlib import Path
 import pytest
 from typing import Any, cast
 from types import TracebackType
+import threading
 import json
 
+from satrap.core.platform.misskey import client as client_module
 from satrap.core.platform.misskey.client import (
     APIError,
     APIRateLimitError,
@@ -31,6 +33,37 @@ class FakeResponse:
 
     async def text(self):
         return self._text
+
+
+class AsyncBodyRecorder:
+    """异步收集 multipart 请求体, 用于核对实际上传内容"""
+
+    def __init__(self) -> None:
+        self.chunks: list[bytes] = []
+
+    async def write(self, data: bytes) -> None:
+        """
+        记录一段请求体
+
+        参数:
+        - data: 序列化后的字节
+        """
+        self.chunks.append(bytes(data))
+
+
+async def multipart_body(form: Any) -> bytes:
+    """
+    序列化 FormData 为请求体字节
+
+    参数:
+    - form: aiohttp FormData
+
+    返回:
+    - 完整 multipart 请求体
+    """
+    recorder = AsyncBodyRecorder()
+    await form().write(recorder)
+    return b"".join(recorder.chunks)
 
 
 class FakePostContext:
@@ -114,7 +147,81 @@ async def test_upload_file_uses_drive_create(tmp_path: Path, monkeypatch: pytest
 
     assert result["id"] == "file-1"
     assert fake_session.calls[0][0] == "https://misskey.example/api/drive/files/create"
-    assert "data" in fake_session.calls[0][1]
+    body = await multipart_body(fake_session.calls[0][1]["data"])
+    assert b'filename="demo.txt"' in body
+    assert b"Content-Type: text/plain" in body
+    assert b"\r\nhello\r\n" in body
+
+
+@pytest.mark.asyncio
+async def test_upload_file_reads_disk_outside_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """磁盘读取在工作线程执行, 事件循环线程不读盘"""
+    path = tmp_path / "demo.txt"
+    path.write_text("hello", encoding="utf-8")
+    api = MisskeyAPI("https://misskey.example", "token")
+    monkeypatch.setattr(api, "_session", FakeSession())
+    threads: list[threading.Thread] = []
+    real_read = client_module._read_file_bytes
+
+    def recording_read(file_path: str) -> bytes:
+        """
+        记录读取发生的线程
+
+        参数:
+        - file_path: 本地文件路径
+
+        返回:
+        - 文件内容
+        """
+        threads.append(threading.current_thread())
+        return real_read(file_path)
+
+    monkeypatch.setattr(client_module, "_read_file_bytes", recording_read)
+
+    assert (await api.upload_file(str(path)))["id"] == "file-1"
+    assert threads and threads[0] is not threading.main_thread()
+
+
+@pytest.mark.asyncio
+async def test_upload_file_missing_path_reports_api_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """文件缺失仍映射为 APIError, 不泄漏 FileNotFoundError"""
+    api = MisskeyAPI("https://misskey.example", "token")
+    monkeypatch.setattr(api, "_session", FakeSession())
+    with pytest.raises(APIError, match="File not found"):
+        await api.upload_file(str(tmp_path / "missing.txt"))
+    with pytest.raises(APIError, match="No file path"):
+        await api.upload_file("")
+
+
+@pytest.mark.asyncio
+async def test_upload_and_find_file_uploads_downloaded_bytes_without_temp_file(monkeypatch: pytest.MonkeyPatch):
+    """下载内容直接上传: 不再落临时文件, Drive 文件名取自 URL"""
+    api = MisskeyAPI("https://misskey.example", "token")
+    fake_session = FakeSession()
+    monkeypatch.setattr(api, "_session", fake_session)
+
+    async def fake_download(url: str, ssl_verify: bool = True) -> bytes:
+        """
+        模拟下载成功
+
+        参数:
+        - url: 下载地址
+        - ssl_verify: 是否验证 TLS 证书
+
+        返回:
+        - 固定内容
+        """
+        return b"image-bytes"
+
+    monkeypatch.setattr(api, "_download_bytes", fake_download)
+
+    result = await api.upload_and_find_file("https://cdn.example/files/photo.png?token=1")
+
+    assert result is not None and result["id"] == "file-1"
+    body = await multipart_body(fake_session.calls[0][1]["data"])
+    assert b'filename="photo.png"' in body
+    assert b"Content-Type: image/png" in body
+    assert b"image-bytes" in body
 
 
 @pytest.mark.asyncio

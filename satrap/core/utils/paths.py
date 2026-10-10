@@ -10,6 +10,7 @@ from urllib.parse import unquote, urlsplit
 from functools import lru_cache
 from pathlib import Path
 import os
+import re
 
 
 def get_project_root() -> Path:
@@ -208,12 +209,15 @@ def _under_media_subdir(resolved: Path) -> bool:
     - resolved: 已解析的真实绝对路径
 
     返回:
-    - bool: 仅平台 cache 或会话 uploads, artifacts, sandbox, cache 内的路径为 True
+    - bool: 平台和会话媒体目录, 或共享表情库的内容摘要文件为 True
     """
     root = get_media_storage_root()
     if not resolved.is_relative_to(root):
         return False
     parts = resolved.relative_to(root).parts
+    if len(parts) == 3 and parts[:2] == ("group-chat", "stickers"):
+        return re.fullmatch(r"[0-9a-f]{64}", parts[2]) is not None
+        # 表情库只授权受管理的摘要文件, 不授权相邻数据库或任意文件名
     if len(parts) < 4 or parts[0] != "platforms":
         return False
     if parts[2] == "cache":

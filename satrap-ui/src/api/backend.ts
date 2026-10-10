@@ -108,7 +108,16 @@ export interface ConfigReloadResult {
   edictum_sessions: EdictumPluginReloadSessionResult[];
 }
 
+export interface ConnectionProbeResult {
+  ok: boolean;
+  detail: string;
+  elapsed_ms: number;
+}
+
 export const backendApi = {
+  checkPlatformConnection: (platformId: string) =>
+    apiClient.post<ConnectionProbeResult>(`/api/platforms/${encodeURIComponent(platformId)}/connection-test`, {}),
+
   wakePlatform: (payload: { adapter_id: string; group_id: string; user_id: string; request_id: string; prompt?: string; message_id?: string }) =>
     apiClient.post<{ status: 'accepted' | 'already_pending' | 'no_pending' | 'rejected'; reason?: string; state?: string }>('/api/platforms/wake', payload),
 

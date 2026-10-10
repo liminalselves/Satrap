@@ -289,9 +289,14 @@ try {
   const overriddenTalkHint = await talkField.getAttribute('placeholder');
   assert.doesNotMatch(overriddenTalkHint, /被显式阈值覆盖|关闭自动参与/);
   await talkField.fill('0');
+  // 命令操作员名单: 每行一项, 保存为字符串列表; 提示写明只有名单内的成员能执行受保护命令
+  const operators = dialog.getByLabel('命令操作员名单', { exact: false });
+  assert.match(await operators.getAttribute('placeholder'), /只有名单内的成员能执行/);
+  await operators.fill(' 10001 \n\n10002 ');
   await dialog.getByRole('button', { name: '保存修改' }).click();
   await dialog.waitFor({ state: 'hidden' });
   assert.equal(writes.at(-1).id, 'legacy-bot');
+  assert.deepEqual(writes.at(-1).settings.command_operators, ['10001', '10002']);
   assert.equal(writes.at(-1).settings.input_text_limit, 500);
   assert.equal(writes.at(-1).settings.input_media_limit, 4);
   // 0 按数字保存, 不能被当作空值丢弃
@@ -301,6 +306,8 @@ try {
   await legacyRow.getByTitle('编辑', { exact: true }).click();
   assert.equal(await dialog.getByLabel('单条消息输入文本预算', { exact: false }).inputValue(), '500');
   assert.equal(await dialog.getByLabel('单条消息输入媒体上限', { exact: false }).inputValue(), '4');
+  // 列表往返: 保存的数组在表单里还原成每行一项的文本
+  assert.equal(await dialog.getByLabel('命令操作员名单', { exact: false }).inputValue(), '10001\n10002');
   const reopenedTalk = dialog.getByLabel('发言频率偏好 talk_value', { exact: false });
   assert.equal(await reopenedTalk.inputValue(), '0');
   // 清空表示未设置: 保存后该键被删除, 其余字段不受影响
@@ -393,7 +400,7 @@ try {
   let navConfirmCount = 0;
   const navHandler = (nativeDialog) => { navConfirmCount += 1; void nativeDialog[navAction](); };
   page.on('dialog', navHandler);
-  const sessionsLink = page.getByRole('link', { name: '会话管理' });
+  const sessionsLink = page.getByRole('link', { name: 'Agent 配置' });
   const linkBox = await sessionsLink.boundingBox();
   const linkCenter = { x: linkBox.x + linkBox.width / 2, y: linkBox.y + linkBox.height / 2 };
   await page.mouse.click(linkCenter.x, linkCenter.y);
@@ -408,7 +415,7 @@ try {
   assert.equal(navConfirmCount, 2);
   assert.ok(page.url().endsWith('/platforms'));
   await sessionsLink.click();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   page.off('dialog', navHandler);
 
   // ── 批次8 (B8): 草稿行由表单持有, 校验只报错不删行 ──
@@ -597,7 +604,7 @@ try {
   assert.ok(page.url().endsWith('/platforms'));
   backAction = 'accept';
   await historyBack();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   assert.equal(backConfirmCount, 3);
   page.off('dialog', backHandler);
   // 非脏状态下的前进/后退不拦截
@@ -608,15 +615,15 @@ try {
   await historyBack();
   await page.waitForURL('**/platforms');
   await historyForward();
-  await page.waitForURL('**/sessions');
+  await page.waitForURL('**/agents');
   page.off('dialog', quietHandler);
   assert.equal(unexpectedConfirm, 0);
   // /chat 独立页直达与管理页直达仍按原路由装配渲染
   await page.goto(`${origin}/chat`);
   await page.getByTitle('返回管理面板').waitFor();
-  assert.equal(await page.getByRole('link', { name: '会话管理' }).count(), 0);
+  assert.equal(await page.getByRole('link', { name: 'Agent 配置' }).count(), 0);
   await page.goto(`${origin}/platforms`);
-  await page.getByRole('link', { name: '会话管理' }).waitFor();
+  await page.getByRole('link', { name: 'Agent 配置' }).waitFor();
   await page.getByRole('heading', { name: '请求阶段诊断' }).waitFor();
 
   assert.deepEqual(errors, []);

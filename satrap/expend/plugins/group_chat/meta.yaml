@@ -1,0 +1,165 @@
+name: group_chat
+permission_schema_version: 1
+management_permissions:
+  group_list:
+    description: 在私聊中查询机器人可访问的群列表
+    requirements: [仅限私聊, 只返回平台和插件允许访问的群]
+    caller_list: cross_group_query_callers
+    empty_policy: deny
+    system_admin: true
+  self_nickname:
+    description: 请求修改机器人自己的本群昵称
+    requirements: [需开启机器人自身群昵称修改, 只能修改机器人自己, 仍遵守宿主审批策略]
+    caller_list: nickname_allowed_callers
+    empty_policy: allow
+    system_admin: true
+tool_permissions:
+  group_chat_list_groups: [group_list]
+  group_chat_set_group_nickname: [self_nickname]
+version: 0.4.0
+author: Satrap Team
+description: "查询群资料, 成员和记录, 写带出处的摘要, 组合引用, @, 图片和表情回复, 可选修改机器人自己的群昵称"
+config_schema:
+  reminders_enabled:
+    type: bool
+    default: false
+    description: "允许创建一次性群提醒并在到期后发送, 停用后任务暂停, 再启用需要明确恢复"
+  reminder_catchup_seconds:
+    type: number
+    default: 600
+    minimum: 0
+    maximum: 3600
+    integer: true
+    description: "到期离线时最多等待多少秒, 超过后记为错过; 已提交但结果未知的消息不会自动重发"
+  active_reminders_per_member:
+    type: number
+    default: 20
+    minimum: 1
+    maximum: 100
+    integer: true
+    description: "每位成员最多保留多少个活动提醒, 暂停的任务也占用额度"
+  active_reminders_per_group:
+    type: number
+    default: 200
+    minimum: 1
+    maximum: 1000
+    integer: true
+    description: "每个群最多保留多少个活动提醒"
+  allowed_groups:
+    type: textarea
+    default: ""
+    description: "允许使用群聊工具的群 ID, 每行一个; 留空不额外限制, 仍遵守平台范围"
+  cross_group_query_callers:
+    type: textarea
+    default: ""
+    description: "允许在私聊中查询机器人群列表的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 此项不授予跨群读取正文的权限"
+  self_nickname_enabled:
+    type: bool
+    default: false
+    description: "允许修改机器人自己在当前群的群昵称, 默认关闭; 仍遵守宿主审批策略"
+  nickname_allowed_callers:
+    type: textarea
+    default: ""
+    description: "允许请求修改机器人自身群昵称的成员 ID, 每行一个; 留空不额外限制调用者. 已获本插件授权的系统管理员无需重复填写"
+  media_reply_enabled:
+    type: bool
+    default: true
+    description: "允许从当前群消息取图, 使用已授权表情并附在回复中"
+  max_reply_images:
+    type: number
+    default: 4
+    minimum: 0
+    maximum: 8
+    integer: true
+    description: "一条回复最多发送多少张图片, 平台限制更小时以平台为准"
+  max_reply_stickers:
+    type: number
+    default: 4
+    minimum: 0
+    maximum: 8
+    integer: true
+    description: "一条回复最多发送多少个表情, 图片表情还受平台附件上限限制"
+  summary_enabled:
+    type: bool
+    default: true
+    description: "允许按明确时间范围生成和查询群摘要"
+  summary_message_limit:
+    type: number
+    default: 500
+    minimum: 1
+    maximum: 2000
+    integer: true
+    description: "一份摘要最多读取多少条消息, 超出时明确显示部分记录"
+  summary_text_budget:
+    type: number
+    default: 60000
+    minimum: 1000
+    maximum: 200000
+    integer: true
+    description: "一份摘要最多读取多少个正文字符, 同时受模型剩余上下文限制"
+  summary_retention_days:
+    type: number
+    default: 30
+    minimum: 1
+    maximum: 3650
+    integer: true
+    description: "摘要最多保留多少天, 来源提前过期时摘要也失效"
+  message_limit:
+    type: number
+    default: 100
+    minimum: 1
+    maximum: 100
+    integer: true
+    description: "每次最多返回多少条聊天记录; 工具不指定数量时请求 20 条"
+  member_limit:
+    type: number
+    default: 50
+    minimum: 1
+    maximum: 50
+    integer: true
+    description: "每次最多返回多少位成员; 工具不指定数量时请求 10 位"
+  text_budget:
+    type: number
+    default: 12000
+    minimum: 128
+    maximum: 100000
+    integer: true
+    description: "每次查询最多返回多少个正文字符; 超出的内容会省略, 并标明结果不完整"
+  member_cache_ttl:
+    type: number
+    default: 60
+    minimum: 0
+    maximum: 300
+    integer: true
+    description: "成员查询结果缓存多久, 单位为秒; 0 表示每次新查询都刷新, 翻页仍沿用短期缓存"
+tools:
+  group_chat_create_reminder: 创建当前群的一次性提醒
+  group_chat_list_reminders: 查看本人创建的提醒
+  group_chat_get_reminder: 查看本人提醒的执行状态
+  group_chat_cancel_reminder: 取消尚未开始发送的本人提醒
+  group_chat_list_groups: "在管理者私聊查看机器人所在群"
+  group_chat_get_group_info: "查看当前群的群名与人数"
+  group_chat_list_members: "分页查看当前群成员与角色"
+  group_chat_set_group_nickname: "修改或清空机器人自己的群昵称"
+  group_chat_get_message_assets: "取出当前群消息中的可用图片"
+  group_chat_list_stickers: "查找当前群已启用的表情"
+  group_chat_prepare_summary: "读取指定时段的摘要来源"
+  group_chat_read_summary_sources: "继续读取本次摘要来源"
+  group_chat_save_summary: "保存带原文出处的群摘要"
+  group_chat_get_summary: "查看已保存摘要及来源状态"
+  group_chat_list_summaries: "查找当前群已保存摘要"
+  group_chat_reply: "回复群消息, 支持引用和 @ 多人"
+  group_chat_find_members: "按账号昵称或本群昵称查找成员"
+  group_chat_get_member: "查看指定成员的昵称, 群昵称和角色"
+  group_chat_get_message: "查看一条消息的原文和发送者"
+  group_chat_recent_messages: "查看最近的聊天记录"
+  group_chat_search_messages: "按关键词, 成员和时间搜索聊天记录"
+handlers:
+  group_chat.environment: "告诉模型当前群, 发言者, 机器人身份和可用功能"
+skills:
+  group_chat: "指导模型查记录, 找人, 引用消息和 @ 对方"
+compatibility:
+  satrap: ">=0.1,<0.2"
+applicability:
+  session_types: [platform]
+  platforms: "*"

@@ -24,6 +24,9 @@ from .utils import _WorkflowT
 from .base import _WorkflowCore
 from .utils import _new_async_context
 
+from .execution.engine import run_async
+from .execution.errors import ModelCallError
+
 
 class AsyncModelWorkflowFramework(_WorkflowCore):
     """异步版模型工作流框架"""
@@ -49,8 +52,9 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         return_thinking: bool = False,
         thinking_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         *,
-        db_path: str = get_db_path(),
+        db_path: str | None = None,
         recoverable: bool = False,
+        persist_context: bool = True,
     ):
         """
         异步模型工作流框架, 负责管理异步模型调用和工作流执行
@@ -78,6 +82,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - thinking_callback: 思考内容回调函数; 未设置时复用 content_callback
         - db_path: 上下文与执行记录数据库路径, 默认使用 get_db_path() 返回的路径
         - recoverable: 是否启用可恢复 Agent 执行, 默认 False; 为 True 时将模型与工具步骤持久化到 db_path
+        - persist_context: 是否保存消息和运行状态, 子代理使用 False
 
         恢复边界:
         - full_agent 和 stream_full_agent 共用执行循环, recoverable 仅控制步骤记录与恢复
@@ -86,10 +91,13 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         - 中断后可按任务 ID 恢复并复用已完成步骤, 工具结果未知时按恢复策略重试或等待人工确认
         - 恢复时会检查会话历史及模型和工具配置, 不匹配时拒绝继续原任务
         """
+        if recoverable and not persist_context:
+            logger.warning("纯内存工作流不能启用持久化执行恢复")
+            raise ValueError("纯内存工作流不能启用持久化执行恢复")
         self.recoverable = recoverable
         self.last_run_id: str | None = None
         self.llm = llm
-        self.ctx = _new_async_context(context_id, db_path=db_path)
+        self.ctx = _new_async_context(context_id, db_path=db_path or get_db_path(), persistent=persist_context)
         self.tools_manager = tools_manager if tools_manager else AsyncToolsManager()
         # 如果未提供工具管理器, 则创建一个空的工具管理器实例
 
@@ -105,7 +113,7 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         if self._initialized:
             return
         await self.ctx.initialize()
-        if self.system_prompt:
+        if self.system_prompt is not None:
             await self.ctx.reset_system_prompt(self.system_prompt)
         self._initialized = True
 
@@ -184,7 +192,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 当前上下文和成功标志, 执行异常返回 False, 取消信号继续向外传播
         """
-        from .execution.engine import run_async
 
         try:
             await run_async(
@@ -243,7 +250,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        from .execution.engine import run_async
 
         return await run_async(
             self, user_input=user_input, callback=callback,
@@ -324,7 +330,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         返回:
         - 最终模型回答, 模型或工具执行失败时抛出异常, 不提交半轮消息
         """
-        from .execution.engine import run_async
 
         return await run_async(
             self, user_input=user_input, callback=callback,
@@ -357,8 +362,6 @@ class AsyncModelWorkflowFramework(_WorkflowCore):
         self.reset_context_stats()
         await self._restore_context_keep_system(system_messages)
 
-        from .execution.engine import run_async
-        from .execution.errors import ModelCallError
 
         try:
             return await run_async(

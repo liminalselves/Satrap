@@ -9,6 +9,7 @@ from satrap.core.config.platform_policy import validate_wake_policy
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform import PlatformConfig
+from satrap.core.framework.providers import BindingState, BindingStatus
 
 
 async def make_event(settings: dict[str, object], segments: list[dict[str, object]]):
@@ -20,6 +21,20 @@ async def make_event(settings: dict[str, object], segments: list[dict[str, objec
         "message_type": "group", "message": segments,
     })
     return adapter, adapter._event_queue.get_nowait()
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 class TestProjectionBudget:
@@ -182,11 +197,12 @@ class TestWindowBlockBudget:
         from typing import cast
 
         manager = AsyncMock()
+        manager.provider_registry = _RunnableRegistry()
         manager.handle_call_async.return_value = ""
         scheduler = PipelineScheduler(cast(SessionManager, manager))
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
             "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 5, "wake_cooldown": 0,
-            "input_text_limit": 60,
+            "input_text_limit": 100,
         }))
         adapter.started = True
         adapter._bot = AsyncMock()
@@ -202,8 +218,8 @@ class TestWindowBlockBudget:
         await scheduler.execute(event)
         manager.handle_call_async.assert_awaited_once()
         user_call = manager.handle_call_async.await_args.args[0]
-        assert len(user_call.message) <= 60
-        assert user_call.message.startswith("@10" + "正" * 40)
+        assert len(user_call.message) <= 100
+        assert user_call.message.startswith("[用户 30, 消息 2] @10" + "正" * 40)
         assert "[先前窗口消息" in user_call.message
         projected = event.get_extra("input_projection")
         assert "window_budget_truncated" in projected.notes
@@ -214,6 +230,7 @@ class TestWindowBlockBudget:
         from typing import cast
 
         manager = AsyncMock()
+        manager.provider_registry = _RunnableRegistry()
         manager.handle_call_async.return_value = ""
         scheduler = PipelineScheduler(cast(SessionManager, manager))
         adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={

@@ -6,6 +6,7 @@ import pytest
 
 from satrap.core.utils.skills.tool import SkillTool
 from satrap.expend.plugins.base_take import tools as base_tools
+from satrap.expend.plugins.memory import tools as memory_tools
 from satrap.expend.plugins.satrap_coding import tools as coding_tools
 from satrap.expend.plugins.rag import tools as rag_tools
 from satrap.expend.tools import search, sandbox_tools, agent
@@ -16,8 +17,9 @@ from satrap.core.APICall.LLMCall import AsyncLLM
 @pytest.mark.parametrize("module,names,policy", [
     (coding_tools, ("ReadFileTool", "ListDirTool", "GlobFilesTool", "GrepFilesTool"), "retry"),
     (coding_tools, ("WriteFileTool", "EditFileTool", "SearchReplaceTool", "TodoWriteTool", "AskUserTool", "ShellTool", "SubAgentTool"), "manual"),
-    (base_tools, ("ReadDocumentTool", "ListMemoriesTool"), "retry"),
-    (base_tools, ("AddMemoryTool", "UpdateMemoryTool", "DeleteMemoryTool"), "manual"),
+    (base_tools, ("ReadDocumentTool",), "retry"),
+    (memory_tools, ("ListMemoriesTool", "GetMemoryTool"), "retry"),
+    (memory_tools, ("AddMemoryTool", "UpdateMemoryTool", "DeleteMemoryTool"), "manual"),
     (search, ("SearchTool",), "retry"),
     (search, ("FetchPageTool",), "manual"),
     (sandbox_tools, ("CodeSandboxTool",), "manual"),

@@ -39,6 +39,7 @@ class SubAgentModel(ModelWorkflowFramework):
             context_id=f"sub_agent_{context_id}",
             tools_manager=tools_manager,
             system_prompt=SUB_AGENT_SYSTEM_PROMPT,
+            persist_context=False,
         )
 
     def forward(self, task: str):

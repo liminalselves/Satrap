@@ -21,22 +21,39 @@ from typing import (
 )
 
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.providers import BindingState
 from satrap.core.config.platform_policy import normalize_group_whitelist, policy_default
 from satrap.core.config.wake_overrides import resolve_wake_settings
 from satrap.core.framework.UserManager import UserManager
+from satrap.core.pipeline.command_entry import (
+    OPERATOR_REQUIRED_FEEDBACK,
+    command_name_from_text,
+    extract_command_candidate,
+    is_operator_only_command,
+)
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.platform.event import MessageChain, MessageEvent
 from satrap.core.components import PlatformComponentType
 from satrap.core.conversation import ConversationRoute
 from satrap.core.pipeline.wake_policy import WakeDecision, evaluate_wake
-from satrap.core.pipeline.wake_window import PendingText, WakeWindow
+from satrap.core.pipeline.wake_window import PendingMessage, WakeWindow
 from satrap.core.pipeline.wake_timers import WakeTimers
 from satrap.core.pipeline.attachments import AsrResolver, resolve_attachments
-from satrap.core.pipeline.input_projection import media_sources, project_input, resolve_forwards, resolve_quotes
+from satrap.core.pipeline.input_projection import (
+    MEDIA_FAILED_FEEDBACK,
+    media_sources,
+    project_input,
+    resolve_forwards,
+    resolve_quotes,
+    select_media,
+    select_window_media,
+)
+from satrap.core.pipeline.media_resolve import resolve_media
 from satrap.core.pipeline.manual_wake import ManualWakeRequests, ManualWakeTicket
 from satrap.core.pipeline.manual_wake_store import ManualWakeStore, ManualWakeStoreError, SendAttemptRecord
 from satrap.core.pipeline.request_diagnostics import RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.platform import PlatformAdapter
+from satrap.core.group_chat.reply import bind_reply_turn
 from satrap.core.type import UserCall, safe_getattr, safe_getattr_str
 
 from satrap.core.log import logger
@@ -49,6 +66,8 @@ _SETTLEMENT_WAIT_SECONDS = 1.5
 """发送收尾等待上限: 超时先按当时证据归并, 记录保持未确认可被后续确认精化"""
 _SETTLEMENT_POLL_SECONDS = 0.05
 """发送收尾等待轮询间隔"""
+
+from satrap.core.platform.onebot.adapter import OneBotAdapter
 
 
 class PipelineScheduler:
@@ -357,6 +376,13 @@ class PipelineScheduler:
             turn_id=self._request_turn_ids(event),
         )
 
+    def _record_command(self, event: MessageEvent) -> None:
+        """平台命令入口命中: 只记既有投影阶段, 命令不产生附件与窗口产物"""
+        self._record_diagnostic(
+            event, "projection", "ok", reason_code="command_candidate",
+            reason="平台命令入口已冻结正文, 跳过上下文补全", turn_id=self._request_turn_ids(event),
+        )
+
     async def _await_send_settlement(self, store: ManualWakeStore, request_id: str, adapter_id: str) -> dict[str, Any] | None:
         """
         有界等待发送尝试收尾后再归并, 收尾超时仍返回当时证据
@@ -444,17 +470,50 @@ class PipelineScheduler:
             if not self._allows_source(event) or not await self._check_permission(event):
                 return
 
+            # Step.1.5 会话绑定闸门: 定义被禁用或失效时在入窗与排程前拒绝,
+            # 否则禁用期间的消息会被窗口或定时器留存, 恢复后补进模型; 也不消耗额度与媒体解析
+            if event.session_type:
+                binding = session_manager.provider_registry.binding_status(event.session_type, event.session_provider)
+                if binding.state is not BindingState.RUNNABLE:
+                    disabled = binding.state is BindingState.DISABLED
+                    # 定义被禁用属于正常配置状态, 逐条 DEBUG; 绑定失效属于配置错误, 必须对运维可见
+                    if disabled:
+                        logger.debug(
+                            f"[PipelineScheduler] 会话定义已禁用, 消息丢弃 adapter={source_platform_id} "
+                            f"provider={event.session_provider} type={event.session_type}"
+                        )
+                    else:
+                        logger.warning(
+                            f"[PipelineScheduler] 会话绑定不可用, 消息丢弃 adapter={source_platform_id} "
+                            f"provider={event.session_provider} type={event.session_type}: {binding.reason}"
+                        )
+                    reason_code = "binding_disabled" if disabled else "binding_invalid"
+                    self._record_rejection(event, "projection", binding.reason, reason_code=reason_code)
+                    manual_detail = reason_code
+                    return
+
             # Step.2 评估独立唤醒规则并记录命中原因
             self._apply_wake_policy(event)
             if not event.is_private_chat() and not event.is_wake_up() and event.policy_settings.get("wake_on_quote_self") is True:
                 await self._apply_quote_wake(event)
+            # Step.2.1 平台命令入口: 在唤醒窗口与输入投影之前冻结纯命令正文, 合成事件不参与判定
+            command_text = (
+                extract_command_candidate(event)
+                if manual_ticket is None and deadline_ticket is None
+                else None
+            )
             pending = manual_ticket.snapshot if manual_ticket is not None else ()
+            automatic_eligible = (
+                not event.is_private_chat()
+                and event.policy_settings.get("wake_mode", policy_default("wake_mode")) in {"frequency", "necessity"}
+                and self._automatic_policy_current(event)
+            )
             automatic = False
             if manual_ticket is not None:
                 event.is_wake = True
-            elif not event.is_private_chat() and event.policy_settings.get("wake_mode", policy_default("wake_mode")) in {"frequency", "necessity"} and self._automatic_policy_current(event):
+            elif not event.is_private_chat() and command_text is None:
                 pending = deadline_ticket.snapshot if deadline_ticket is not None else self.wake_window.observe(event)
-                if not event.is_wake_up():
+                if automatic_eligible and not event.is_wake_up():
                     decision = self.wake_window.decide(event, pending, deadline=deadline_ticket is not None)
                     event.set_extra("wake_decision", decision)
                     if decision.triggered:
@@ -484,7 +543,8 @@ class PipelineScheduler:
                 c.type in {PlatformComponentType.Reply, PlatformComponentType.Forward, PlatformComponentType.Record, PlatformComponentType.File}
                 for c in top_components
             )
-            if not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
+            # 命令候选的正文由组件渲染得到, 不依赖平台侧渲染文本, 因此不受该空值判定约束
+            if command_text is None and not pending and not message and not has_context and not media_sources(top_components, "image") and not media_sources(top_components, "video"):
                 return
 
             # Step.3 只有已唤醒且允许处理的请求消耗模型额度
@@ -506,12 +566,27 @@ class PipelineScheduler:
                     manual_detail = "rate_limited"
                     return
 
+            # Step.3.1 受保护命令要求已授权操作员: 判定晚于限流, 拒绝同样受同一限流约束
+            if command_text is not None and not self._operator_allowed(event, command_text):
+                if self.error_feedback:
+                    await self._send_feedback(event, OPERATOR_REQUIRED_FEEDBACK)
+                receipt = event.last_send_receipt
+                self._record_rejection(
+                    event, "projection", "受保护命令仅允许已授权操作员执行", reason_code="operator_required",
+                    send_status=receipt.status if receipt is not None else "",
+                )
+                manual_detail = "operator_required"
+                return
+
             # Step.5 通过 UserManager 解析目标会话 (路由不依赖投影, 仍在会话锁外)
             session_id = event.session_id
             route: ConversationRoute | None = None
             settings = event.policy_settings
             scope = str(settings.get("context_scope", "legacy_user")) if not event.is_private_chat() else "legacy_user"
-            if scope != "legacy_user" and (not user_manager or not event.session_type):
+            if event.agent_route_generation:
+                scope = event.agent_context_scope
+            generation = event.group_route_generation if not event.is_private_chat() else 0
+            if (scope != "legacy_user" or generation > 0 or event.agent_route_generation) and (not user_manager or not event.session_type):
                 raise ValueError("隔离上下文需要 UserManager 和命名会话配置")
             if user_manager and event.session_type:
                 platform_id, extra_params = self._resolve_route_adapter(event)
@@ -519,8 +594,11 @@ class PipelineScheduler:
                     user_id=event.get_sender_id(), platform=platform_id,
                     session_type=event.session_type, provider=event.session_provider,
                     scope=scope, self_id=event.get_self_id(), group_id=event.get_group_id(),
+                    generation=generation,
+                    conversation_kind=event.conversation_kind, conversation_id=event.conversation_id,
+                    binding_generation=event.agent_route_generation,
                 )
-                route_args = {"route": route} if scope != "legacy_user" else {}
+                route_args = {"route": route} if scope != "legacy_user" or generation > 0 else {}
                 resolved = user_manager.resolve_session(
                     user_id=event.get_sender_id(),
                     platform=platform_id,
@@ -536,6 +614,13 @@ class PipelineScheduler:
                 session_id = resolved
 
             async with self._session_turn(session_manager, session_id):
+                if not event.agent_route_is_current():
+                    logger.debug(f"[PipelineScheduler] 丢弃旧 Agent 路由事件: {event.session_id}")
+                    return
+
+                if (not event.is_private_chat() and isinstance(event.adapter, OneBotAdapter)
+                        and event.adapter.group_route(event.get_group_id())[1] != event.group_route_generation):
+                    return
                 if event.is_stopped() or not event.call_llm or not self._allows_source(event) or not await self._check_permission(event):
                     return
                 if automatic and not self._automatic_policy_current(event):
@@ -544,7 +629,7 @@ class PipelineScheduler:
                     return
                 if manual_ticket is not None and manual_ticket.cancelled:
                     return
-                batch: tuple[PendingText, ...] = ()
+                batch: tuple[PendingMessage, ...] = ()
                 if pending:
                     batch = self.wake_window.claim(event, pending, automatic, deadline=deadline_ticket is not None)
                     if automatic and not batch:
@@ -553,17 +638,43 @@ class PipelineScheduler:
                         return
                     if batch:
                         self.wake_timers.cancel_route(event)
-                # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
-                quote_status = await resolve_quotes(event)
-                forward_status = await resolve_forwards(event)
-                attachments = await resolve_attachments(event, self.asr_resolver)
-                projected = project_input(event, quote_status, forward_status, attachments)
-                event.set_extra("input_projection", projected)
-                self._record_projection(event, quote_status, forward_status, attachments, projected)
-                message, images, videos = projected.message, list(projected.images), list(projected.videos)
-                if not message and not images and not videos:
-                    manual_detail = "empty_message"
-                    return
+                images: list[str] = []
+                videos: list[str] = []
+                if command_text is not None:
+                    # Step.4 命令候选: 冻结正文即唯一输入, 跳过引用/转发/附件/媒体与投影, 不产生无用下载
+                    message = command_text
+                    self._record_command(event)
+                else:
+                    # Step.4 认领成功后才按预算补全引用/转发/附件并投影, 未认领批次不浪费下载与转写
+                    window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
+                    quote_status = "none" if window_synthetic else await resolve_quotes(event)
+                    forward_status = "none" if window_synthetic else await resolve_forwards(event)
+                    attachments = () if window_synthetic else await resolve_attachments(event, self.asr_resolver)
+                    # 媒体选中与投影共用同一份, 保证下载集合与实际进入模型的集合一致
+                    selection = select_media(event, quote_status)
+                    if isinstance(event.adapter, OneBotAdapter):
+                        identity = await event.adapter.resolve_self_identity(event.get_self_id(), event.get_group_id())
+                        selection = replace(selection, self_identity=identity)
+                        event.set_extra("bot_identity", identity)
+                    window_batch = batch if window_synthetic else tuple(item for item in batch if item.request_id != event.call_origin.request_id)
+                    selection = select_window_media(event, selection, window_batch, quote_status, forward_status, attachments, window_synthetic)
+                    media_results = await resolve_media(event, selection)
+                    event.set_extra("media_resolution", media_results)
+                    projected = project_input(event, quote_status, forward_status, attachments, selection)
+                    event.set_extra("input_projection", projected)
+                    # 只把失败的媒体送进诊断通道: 解析成功的条目不需要诊断码
+                    diagnostic_items = [*(item for item in media_results if item.status != "resolved"), *attachments]
+                    self._record_projection(event, quote_status, forward_status, diagnostic_items, projected)
+                    message, images, videos = projected.message, list(projected.images), list(projected.videos)
+                    if projected.media_only_unavailable:
+                        # 纯媒体消息的媒体全部解析失败: 确定性反馈后结束, 不调用模型
+                        if self.error_feedback:
+                            await self._send_feedback(event, MEDIA_FAILED_FEEDBACK)
+                        manual_detail = "media_unavailable"
+                        return
+                    if not message and not images and not videos:
+                        manual_detail = "empty_message"
+                        return
                 user_call = UserCall(
                     session_id=session_id,
                     session_provider=event.session_provider,
@@ -573,67 +684,51 @@ class PipelineScheduler:
                     video_urls=videos,
                     route=route,
                     origin=event.call_origin,
+                    group_session_overrides=event.group_session_overrides if not event.is_private_chat() else None,
+                    group_config_revision=event.group_config_revision if not event.is_private_chat() else None,
+                    group_route_generation=event.group_route_generation if not event.is_private_chat() else None,
                 )
-                if batch:
-                    window_synthetic = deadline_ticket is not None or (manual_ticket is not None and bool(manual_ticket.snapshot))
-                    text_limit = int(event.policy_settings.get("input_text_limit", policy_default("input_text_limit")))
-                    window_note: str | None = None
-                    if window_synthetic:
-                        # 窗口类合成事件 (待处理手动唤醒/定时补偿): projected 正文来自快照拼接或陈旧副本,
-                        # 以实际成功 claim 的内容为唯一输入, 不叠加 projected 避免重复整段窗口
-                        user_call.message = "\n".join(f"[用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in batch)
-                        if len(user_call.message) > text_limit:
-                            user_call.message = user_call.message[: text_limit - 1] + "…"
-                            window_note = "window_budget_truncated"
-                    else:
-                        # 真实当前消息: 保留引用/转发/附件补全投影, 批次剔除自身后作为先前窗口上下文追加
-                        current_request_id = event.call_origin.request_id
-                        others = tuple(item for item in batch if item.request_id != current_request_id)
-                        if others:
-                            lines = "\n".join(f"- [用户 {item.actor_id}, 消息 {item.message_id}] {item.text}" for item in others)
-                            window_block = f"[先前窗口消息 {len(others)} 条:\n{lines}]"
-                            # 窗口块消耗投影剩余额度, 分隔符与截断提示计入总量
-                            remaining = text_limit - len(user_call.message) - 1 if user_call.message else text_limit
-                            if remaining >= 2:
-                                if len(window_block) > remaining:
-                                    window_block = window_block[: remaining - 1] + "…"
-                                    window_note = "window_budget_truncated"
-                                user_call.message = f"{user_call.message}\n{window_block}" if user_call.message else window_block
-                            else:
-                                window_note = "window_budget_dropped"
-                    if window_note is not None:
-                        event.set_extra("input_projection", replace(projected, notes=(*projected.notes, window_note)))
                 # Step.6 执行会话并限制等待时间
                 if manual_ticket is not None:
                     # 已受理请求要求发送证据: 记录不可用时工具与回复不得冒充可恢复
                     event.set_extra("require_send_tracking", True)
                     await self._update_manual_request(event, manual_ticket, "executing", "")
-                try:
-                    response = await asyncio.wait_for(
-                        session_manager.handle_call_async(user_call),
-                        timeout=self.llm_timeout,
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
-                    self._record_diagnostic(
-                        event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
-                        turn_id=self._request_turn_ids(event),
-                    )
-                    if self.error_feedback:
-                        await self._send_feedback(event, "请求超时, 请稍后重试")
-                    manual_detail = "llm_timeout"
-                    return
-                self._record_diagnostic(
-                    event, "model", "ok", reason_code="completed",
-                    reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
-                    turn_id=self._request_turn_ids(event),
-                )
+                with bind_reply_turn(event) as reply_turn:
+                    try:
+                        response = await asyncio.wait_for(
+                            session_manager.handle_call_async(user_call),
+                            timeout=self.llm_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"[PipelineScheduler] LLM 调用超时: {event.session_id}")
+                        self._record_diagnostic(
+                            event, "model", "unknown", reason_code="llm_timeout", reason="模型调用超时",
+                            turn_id=self._request_turn_ids(event),
+                        )
+                        if self.error_feedback:
+                            await self._send_feedback(event, "请求超时, 请稍后重试")
+                        manual_detail = "llm_timeout"
+                        return
+                    if reply_turn.failed:
+                        if command_text is None:
+                            self._record_diagnostic(event, "model", "failed", reason_code="session_execution_failed",
+                                                    reason="会话执行失败, 已撤销本轮回复草稿", turn_id=self._request_turn_ids(event))
+                        manual_detail = "session_execution_failed"
+                        return
+                    if command_text is None:
+                        self._record_diagnostic(
+                            event, "model", "ok", reason_code="completed",
+                            reason=f"模型输出 {len(response)} 字符" if response else "模型无输出",
+                            turn_id=self._request_turn_ids(event),
+                        )
+                    # 命令未调用模型: 不为它写 model 阶段记录, 其结论由 projection 阶段的原因码与发送阶段给出
 
-                if response and not event.has_send_operation():
-                    await event.send(MessageChain.from_text(response))
-                # ---------- 后处理: 兜底发送回复 ----------
-                # 如果 Session 内部已通过 content_callback 发送过消息
-                # event.has_send_operation() 返回 True, 避免重复发送
+                    handled = await reply_turn.commit(response)
+                    if not handled and response and not event.has_send_operation():
+                        await event.send(MessageChain.from_text(response))
+                    # ---------- 后处理: 兜底发送回复 ----------
+                    # 如果 Session 内部已通过 content_callback 发送过消息
+                    # event.has_send_operation() 返回 True, 避免重复发送
 
         except asyncio.CancelledError:
             # 取消与超时都可能在发送已经发生之后到达, 记原因后交给 finally 归并真实副作用
@@ -707,11 +802,17 @@ class PipelineScheduler:
             return True
         if not adapter.config.enable:
             return False
+        if not event.agent_route_is_current():
+            logger.debug(f"[PipelineScheduler] Agent 路由已变化: {event.session_id}")
+            return False
         settings = adapter.config.settings
         if adapter.config.type not in {"onebot", "aiocqhttp"}:
             return True
         if event.is_private_chat():
             return bool(settings.get("enable_private", True))
+
+        if isinstance(adapter, OneBotAdapter):
+            return adapter.allows_group(event.get_group_id())
         groups = normalize_group_whitelist(settings.get("group_whitelist", []))
         return bool(settings.get("enable_group", True)) and (not groups or event.get_group_id() in groups)
 
@@ -728,9 +829,41 @@ class PipelineScheduler:
         """
         if not isinstance(event.adapter, PlatformAdapter):
             return False
-        current = resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
+
+        current = (
+            event.adapter.resolve_policy_settings(event.call_origin.chat_id)
+            if isinstance(event.adapter, OneBotAdapter) and not event.is_private_chat()
+            else resolve_wake_settings(event.adapter.config.settings, event.call_origin.chat_id if not event.is_private_chat() else "")
+        )
         keys = {key for key in set(current) | set(event.policy_settings) if key.startswith("wake_") or key == "context_scope"}
+        if event.agent_route_generation:
+            if not event.agent_route_is_current():
+                return False
+            current["context_scope"] = event.agent_context_scope
         return all(current.get(key) == event.policy_settings.get(key) for key in keys)
+
+    @staticmethod
+    def _operator_allowed(event: MessageEvent, command_text: str) -> bool:
+        """
+        判定受保护命令的发起者是否为已授权操作员
+
+        参数:
+        - event: 当前事件
+        - command_text: 平台入口冻结的命令正文
+
+        返回:
+        - bool: 非受保护命令或非平台来源为 True; 名单缺失/为空/不匹配一律为 False
+        """
+        if not is_operator_only_command(command_name_from_text(command_text)):
+            return True
+        origin = event.call_origin
+        # 管理面与库内直调已过管理面认证, 不继承为平台操作员
+        if origin.actor_kind != "platform_user":
+            return True
+        operators = event.policy_settings.get("command_operators")
+        if not origin.actor_id or not isinstance(operators, list):
+            return False
+        return any(isinstance(item, str) and item.strip() == origin.actor_id for item in operators)
 
     @staticmethod
     async def _apply_quote_wake(event: MessageEvent) -> None:

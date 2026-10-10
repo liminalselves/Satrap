@@ -1,5 +1,7 @@
 # 平台接入
 
+OneBot 的群目录、逐群配置、审批和迁移详见 [OneBot 群管理](groups.md)
+
 Satrap 用统一的 `PlatformAdapter` 把不同聊天平台接入后端。平台消息会被转换成统一事件, 交给 `PipelineScheduler`, 再路由到对应 Session。
 
 ## 平台配置结构
@@ -71,14 +73,17 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 
 内置 `group_admin` 插件把动作暴露为模型工具 (仅 `session_type: platform` 会话)。执行时按入站 `CallOrigin` 解析来源实例与调用者身份, 私聊上下文必须显式指定 `group_id`, 群聊默认当前群。权限门槛: 写操作要求插件配置 `write_tools_enabled: true` (默认关闭); `allowed_callers` 逐行列出允许触发写操作的 QQ, 留空不限制; `allowed_groups` 逐行收窄可用群, 平台实例群白名单始终生效。工具不缓存适配器引用, 实例重载后按来源 ID 重新解析。读工具 `recovery_policy` 为 `retry` (可安全重试), 写工具为 `manual` (结果未知时不自动重试, 避免重复踢人/审批)。
 
+群资料, 成员和消息查询统一由独立的 `group_chat` 插件提供, 详见 [群聊插件](../plugins/group-chat-plugin.md)
+两个插件的写开关和调用者范围独立, 通过宿主共用审批服务; 自身群昵称修改不需要安装管理插件
+
 能力矩阵 (全部为 OneBot v11 标准动作):
 
 | OneBot 动作 | 工具名 | 读写 | 主要参数 | 响应收窄 |
 | --- | --- | --- | --- | --- |
-| get_group_list | group_admin_list_groups | 读 | 无 | 至多 512 条, 群号/群名/人数 |
-| get_group_info | group_admin_get_group_info | 读 | group_id 可选 | 群号/群名/人数/创建时间/等级 |
-| get_group_member_list | group_admin_list_members | 读 | group_id 可选 | 至多 2048 条, QQ/昵称/名片/角色/入群时间等 |
-| get_group_member_info | group_admin_get_member | 读 | user_id, group_id 可选 | QQ/昵称/名片/角色/禁言时间等 |
+| get_group_list | group_chat_list_groups | 读 | 无, 仅已配置管理者的私聊 | 至多 512 条且受预算限制, 群号/群名/人数, 仅允许群范围 |
+| get_group_info | group_chat_get_group_info | 读 | 无, 固定当前群 | 群号/群名/人数 |
+| get_group_member_list | group_chat_list_members | 读 | limit ≤50, cursor, 固定当前群 | 分页返回成员 ID/账号昵称/群昵称/角色 |
+| get_group_member_info | group_chat_get_member | 读 | user_id, 固定当前群 | 成员 ID/账号昵称/群昵称/角色 |
 | get_group_honor_info | group_admin_get_honors | 读 | group_id 可选, honor_type | 实现返回的荣誉数据 |
 | delete_msg | group_admin_recall_message | 写 | group_id (默认当前群, 受实例白名单与插件 allowed_groups 限制), message_id | 无返回 |
 | set_group_kick | group_admin_kick | 写 | user_id, reject_add_request, group_id 可选 | 无返回 |
@@ -87,16 +92,19 @@ OneBot 实例持有 `OneBotAdmin` 动作集 (`adapter.admin`), 通过同一 aioc
 | set_group_anonymous_ban | group_admin_ban_anonymous | 写 | flag, duration, group_id 可选 | 无返回 |
 | set_group_admin | group_admin_set_admin | 写 | user_id, enable, group_id 可选 | 无返回 |
 | set_group_anonymous | group_admin_set_anonymous | 写 | enable, group_id 可选 | 无返回 |
-| set_group_card | group_admin_set_card | 写 | user_id, card ≤60 字符, group_id 可选 | 无返回 |
+| set_group_card | group_admin_set_group_nickname | 写 | user_id, nickname ≤60 字符, group_id 可选 | 宿主审批/执行状态 |
+| set_group_card | group_chat_set_group_nickname | 写 | nickname ≤60 字符, 固定当前群及机器人自身 | 独立默认关闭, 宿主审批/执行状态 |
 | set_group_name | group_admin_set_name | 写 | name 1-60 字符, group_id 可选 | 无返回 |
 | set_group_special_title | group_admin_set_title | 写 | user_id, title ≤18 字符, group_id 可选 | 无返回 |
 | set_group_leave | group_admin_leave | 写 | group_id 可选, dismiss | 无返回 |
-| set_friend_add_request | group_admin_handle_friend_request | 写 | flag, approve, remark ≤60 字符 | 无返回 |
+| set_friend_add_request | friend_manager_handle_request | 写 | request_id, approve, remark ≤60 字符, flag 由宿主解析 | 动作记录 |
 | set_group_add_request | group_admin_handle_group_request | 写 | group_id (默认当前群, 受群范围限制), flag, sub_type add/invite, approve, reason ≤120 字符 | 无返回 |
-| get_msg | group_admin_get_message | 读 | message_id, group_id 可选 | 消息 ID/时间/发送者/原文, 回源后核验属于目标群 |
-| get_forward_msg | group_admin_get_forward | 读 | forward_id, source_message_id (必填, 含该转发的群消息 ID), group_id 可选 | 至多 20 个节点 (昵称/账号/时间/≤1000 字符文本摘要) |
+| get_msg | group_chat_get_message | 读 | message_id, 固定当前群 | 消息 ID/时间/发送者/原文, 优先档案, 回源核验当前群并遵守本地删除标记 |
+| get_forward_msg | message_forward_read | 读 | source_message_id, source 可选 | 转发预览, 明确标识截断; 不用于发送 |
 
-`group_admin_get_forward` 必须提供来源消息 ID: 读取前经 `get_msg` 回源该消息, 要求它属于目标群、账号与请求消息 ID 一致, 且其顶层组件确实包含请求的转发 ID (不搜索正文, 不从嵌套节点推断); 回源等待后复查群范围、账号与连接代次, 通过后才调用 `get_forward_msg`, 回包若明确携带矛盾群号或账号则拒绝。缺少来源消息 ID 按参数错误返回, 不做不安全放行。
+`message_forward_read` 从来源消息的顶层转发组件取得转发 ID, 支持群聊和私聊, 回源核验消息归属, 账号和连接代次, 不从正文或嵌套节点推断授权
+`message_forward_send` 按原消息 ID 合并转发或原生转发已有卡片, 不使用截断预览; 原文模式接口缺失时明确失败, 不沿用普通自定义 Node 的文字降级
+`message_forward_compose` 保留机器人创建文字合集的能力, 与原文转发分开; 权限和迁移见 [原消息转发](../plugins/message-forward.md)
 
 好友/加群请求的 `flag` 来自通知事件 (见文末"通知与请求事件"), 工具只做显式审批, 不做任何自动同意或拒绝。布尔参数严格校验, 拒绝真值语义; 写操作被平台拒绝或结果未知时按 `manual` 策略交由用户确认, 不自动重放。
 
@@ -183,6 +191,42 @@ platforms:
 
 后端会根据平台实例, `session_type` 和用户来源构建会话 ID。不同平台实例上的同一用户会进入不同上下文, 避免消息串线。平台管理页可直接从已注册且启用的会话类中选择 `session_type`。
 
+### 按对话类型绑定 Agent
+
+平台编辑页的“Agent 路由”按适配器声明生成私聊, 群聊及其他类型的选择器, 后端停止时也能配置
+每类可继承平台默认或指定完整 Provider/配置名; 群详情展示平台默认 → 群聊类型 → 本群覆盖的实际继承链
+缺少或停用的配置保留可见值并要求重新选择, 不默默替换; 切换适配器类型也不会自动删除旧绑定
+保存与运行时应用分别展示状态, 应用失败可以重试; 并发保存冲突保留当前草稿
+被平台默认, 对话类型或单群绑定引用的配置禁止删除或重命名, 控制服务与后端返回 409 `config_in_use` 并列出引用
+引用扫描失败返回 503 `agent_reference_scan_failed`, 离线 CLI 同样拒绝变更; 更换绑定后再删除配置
+
+`session_provider` 与 `session_type` 作为平台默认, 可用 `session_bindings` 分别绑定私聊和群聊:
+
+```yaml
+session_provider: edictum
+session_type: general-agent
+session_bindings:
+  private:
+    mode: value
+    provider: edictum
+    config_name: private-agent
+  group:
+    mode: value
+    provider: edictum
+    config_name: group-agent
+```
+
+每个显式绑定必须同时提供 Provider 和命名配置, `mode: inherit` 只继承平台默认, 不携带值
+优先级为单群显式绑定 > 对话类型绑定 > 平台默认; 群内模型, 提示词和插件覆盖作用于最终绑定
+对话类型由适配器声明, OneBot 支持 private/group, Misskey 另外区分 discussion 帖子讨论, 新适配器可声明自己的类型
+启用平台时显式对话类型绑定必须可用, 不存在或已禁用的显式 Agent 不会静默回退
+
+首次启用该字段后使用版本化的对话路由, 私聊和不同群各自隔离; 原 legacy_user 群范围升级为按群内成员隔离
+即使选择相同 Agent, 私聊和群聊也不会共用上下文; 指定群共享范围时, 同一群的成员共享上下文
+已启用新路由的对话在恢复平台继承后继续隔离, 不回到旧用户共享命名空间
+更换有效绑定或范围时持久推进代次, 没有新消息的连续切换也会生效; 旧排队事件与执行中回复不能向新路由发送
+已有对话保留可查看, 不自动把旧上下文拼接到新 Agent; 路由代次保存在原平台数据库, 不新增配置 JSON
+
 手动创建 Session 时可以通过 `adapter_id` 写入会话初始化参数, 供会话类或插件使用; 它不会改变平台入站路由, 入站会话类由平台的 `session_type` 决定:
 
 ```bash
@@ -200,7 +244,7 @@ satrap platform remove misskey1
 satrap platform wake qq_bot --group 20000 --user 30000 --prompt "请总结刚才的讨论"
 ```
 
-`platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内的待处理正文; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
+`platform wake` 向运行中的后端提交 OneBot 群手动唤醒, 与控制面板会话页的手动唤醒弹窗共用 `POST /api/platforms/wake` 契约: `--prompt` 与 `--message-id` 互斥, 均省略时处理该群与成员范围内待处理的文字和图片; `--request-id` 省略时自动生成, 重复提交同一 ID 只入队一次。操作者身份固定为服务端已认证的管理主体, 不从命令行参数读取。返回 `accepted`/`already_pending`/`no_pending`, 被拒绝时以非零退出并给出原因。
 
 被拒绝时响应体为 `{"status": "rejected", "request_id": ..., "reason": <稳定原因码>}`: 参数类原因 (`invalid_request_id`, `invalid_prompt`, `invalid_message_id_or_conflicting_prompt`, `explicit_group_and_route_user_required`) 返回 400, 其余 (`queue_full`, `request_capacity`, `store_unavailable`, `request_id_conflict`, `adapter_changed`, `adapter_unavailable`, `backend_unavailable`, `source_unavailable`, `message_lookup_failed_or_scope_mismatch`, `message_convert_failed`, `invalid_fields_or_operator`) 返回 409; 状态查询接口沿用 404 `not_found` 与 503 `store_unavailable`/`store_degraded`。存储锁等待超时或锁文件不可用按 `store_unavailable` 上报, 不退化成通用 500。控制面板把原因码翻成可操作文案, 未知码回显原始码; CLI 的 HTTP 错误在响应只有 `reason` 时同样给出该码。
 
@@ -255,10 +299,33 @@ class MyPlatformAdapter(PlatformAdapter):
 
 当前支持 OneBot 策略在线应用, 事件持有接收时的策略副本; 群范围在执行/发送前仍检查当前权限。文件读取或校验失败保留旧生效值, 返回 `failed`。连接、会话绑定、容量以及新增/删除/停用实例通过定向生命周期协调应用, 不打断其他平台工作器。新实例确认就绪后才更新生效版本, 失败时恢复旧实例; 如果旧实例也恢复失败, 生效版本返回空且状态为 failed。后端未运行或没有分发器时保留 pending_restart。
 
+会话绑定的可用性只在平台进入启用状态时强制校验。`enable: false` 的平台不建立连接也不接收消息, 因此它的 `session_type` 与 `session_provider` 允许缺失或不可用: 配置保存与重载都会成功, 实例保持惰性 (不产生分发工作器), 页面显示为已生效但未启用, 也不会为此解析会话定义。`enable: true` 的平台按绑定状态分三种处理: 绑定可执行时照常连接与收发; 绑定的**会话定义存在但被禁用**时平台照常建立连接并启动, 因此 OneBot 的 notice、群管理与群目录以及绑定到其他有效定义的其他群都不受影响, 但该绑定的入站消息在唤醒判定与窗口之前被静默丢弃 —— 不进入唤醒窗口或定时队列, 不消耗限流额度, 不做媒体解析, 也不创建会话, 所以重新启用后不会把禁用期间的消息补进模型; 定义不存在或 `session_provider` 本身不存在时按既有的失效语义拒绝应用 (`status: failed`, `old_runtime_preserved: true`), 不创建实例, 也不回退到 `default_session_type`。
+
+判定只读会话定义注册表且逐事件重新读取, 因此重新启用定义后下一条消息即恢复, 不需要重建平台或重启后端。被拒消息不向发送者外发反馈, 但会在请求诊断的 `projection` 阶段留下 `binding_disabled` 或 `binding_invalid` 原因码: 前者属正常配置状态只记 DEBUG, 后者属配置错误记 WARNING 并带原始原因 (`未知会话 Provider` / `会话定义不可用` / `名称存在歧义`)。群级绑定与平台绑定各自独立判定, 只影响被判定的那个绑定。保存阶段的配置校验只看 `id`、`type`、`settings` 与 `enable`, 不检查绑定是否存在, 因此这类配置可以正常保存。
+
 OneBot 就绪探针核验当前实例的独立本地 HTTP 标识, 不将端口被其他服务占用当成启动成功。该检查仅验证 Satrap 监听服务, 不表示 SnowLuma 或 QQ 已连通。
 # 自动参与的群与时段覆盖
 
-OneBot 默认使用 `wake_mode: explicit`, 只处理明确唤醒。可选 `frequency` 按正文数量触发, 或 `necessity` 按本地必要性评分触发。`wake_message_threshold` 默认 3, `wake_cooldown` 默认 30 秒, `wake_score_threshold` 默认 0.65。单独附件和 @全体不计数。
+OneBot 默认使用 `wake_mode: explicit`, 只在明确唤醒后调用会话。可选 `frequency` 按窗口消息数量触发, 或 `necessity` 按本地必要性评分触发。`wake_message_threshold` 默认 3, `wake_cooldown` 默认 30 秒, `wake_score_threshold` 默认 0.65。含正文或图片的消息计数; 只有 @全体、语音或文件的消息不计数。
+
+### 未唤醒消息的短期上下文
+
+三种唤醒模式都收集通过来源、权限和会话绑定检查的群消息, 唤醒策略只决定何时调用会话。窗口记录顶层文字、图片的原始 `file`/`url` 和接收时的昵称, 收集时不下载图片。`context_scope: group` 共享本群成员的窗口; `group_member` 与 `legacy_user` 只读取当前成员的窗口。平台实例、机器人账号、群、Provider、会话类型和群路由代次均隔离。
+
+- 每个窗口最多保留 32 条消息、8192 个文字字符、32 个图片引用, 单条最多 8 个图片引用; 最多 512 个窗口, 消息在 120 秒后过期。超过窗口容量时淘汰最早消息, 单条超额图片保留省略说明。图片引用字段超过 4096 字符时不保留其来源
+- 例如先发送未带 @ 的图片, 随后 `@机器人 这张图是什么`, 会将仍在窗口里的图片与当前提问一并处理。单独 `@机器人` 也可处理已有窗口; 尚未提交的窗口可由管理端手动唤醒, 自动参与模式还可由最长等待触发
+- 当前消息的文字及补全内容优先占用 `input_text_limit`; 余量给最近的窗口消息, 最终窗口按接收顺序呈现。来源标记、图片占位和分隔符均计入预算, 没有文字额度显示来源的历史图片不会下载
+- 图片与当前消息、引用、转发共用 `input_media_limit`: 当前媒体优先, 其次引用与转发, 最后最近的窗口图片。同来源图片只解析一次; 窗口图片以 `[图片 N]` 对应本轮图片输入顺序, 超出预算或无来源时标记 `[图片未纳入本次输入]`, 下载失败时标记 `[图片读取失败]`
+- 消息来源显示为 `[用户 小明 (ID 123), 消息 789]`, 昵称缺失时依次使用本群昵称、用户 ID。显示字段移除控制字符并折叠换行, 当前消息的昵称标记仅使用正文和补全内容之外的剩余额度; 权限和路由仍使用真实 ID。窗口保留接收时昵称, 后续改名不修改旧消息的来源
+- 限流前已收集的内容仍留在窗口, 成功认领后只提交一次。认领后失败不会自动重放; 图片临时文件归属于实际处理事件并在该事件结束时清理。该窗口用于尚未提交的短期消息, 不作为长期媒体缓存
+
+### 机器人自身昵称与本群昵称
+
+OneBot 普通消息通过唤醒、权限和限流检查后, 通过 `get_login_info` 获取机器人账号昵称; 群聊另通过 `get_group_member_info` 查询机器人自己的本群昵称。模型输入以 `[你当前的平台机器人身份: 账号 ID 10, 账号昵称 机器人乙, 本群昵称 本群助手]` 标明当前账号身份, 与发言者昵称、会话人设名称和配置中的唤醒别名区分。私聊只带账号昵称, 普通、定时和手动唤醒共用此流程; 命令不查询或附加身份资料。
+
+资料按平台实例、账号、连接和群隔离, 成功及失败结果最多缓存 60 秒, 重连后立即失效。每次动作最多等待 1 秒, 含并发等待的身份补全总上限为 3 秒; 查询失败或返回的账号、群不匹配时不使用该结果, 仍继续处理原请求。账号昵称查询失败时可使用已核验的群成员昵称; 本群昵称查询失败时仍保留已确认的账号昵称。
+
+身份标记计入 `input_text_limit`, 优先保留当前问题, 剩余额度先预留身份资料再分配历史窗口。没有足够额度时省略身份标记, 不截掉当前问题; 资料字段移除控制字符、折叠换行且最多保留 128 字符。纯媒体读取失败仍走原有失败反馈, 身份资料不会单独触发模型调用。
 
 以下示例在本机时间 23:00 至次日 07:00 停止自动参与, 但群 123 使用独立的评分策略。显式 @机器人不受自动参与时段和冷却阻挡。
 
@@ -303,7 +370,7 @@ wake_group_overrides:
 | `wake_score_threshold` 与权重字段 | 0–1 |
 | `wake_talk_value` | 0–1, 接受显式 null (未设置) |
 | `message_text_limit` / `input_text_limit` / `input_media_limit` | 分别为 64–32000 / 1–200000 / 1–32 的整数 |
-| 文本长度 (`asr_model` ≤ 128, `media_trusted_hosts` 每项 ≤ 253) | 按 Unicode 码点计, 与后端 `len()` 同口径; 非 BMP 字符 (emoji, 扩展区汉字) 按 1 个码点计, 前端不以 UTF-16 码元判断 |
+| 文本长度 (`asr_model` ≤ 128, `media_trusted_hosts` 每项 ≤ 253, `command_operators` 每项 ≤ 64) | 按 Unicode 码点计, 与后端 `len()` 同口径; 非 BMP 字符 (emoji, 扩展区汉字) 按 1 个码点计, 前端不以 UTF-16 码元判断 |
 
 缺失与默认值的区别: 字段缺失表示继承或未设置, 校验与前端编辑都不会向配置注入默认值; `0`, `false` 与 `[]` 都是显式取值。显式 `null` 只在可空字段上合法 (如 `wake_talk_value` 与 `notice_types`)。
 
@@ -320,6 +387,27 @@ python scripts/sync_wake_policy_contract.py --check  # 只校验生成物是否�
 
 生成物按 UTF-8, LF, 字段排序与末尾换行固定并已入库; `.gitattributes` 对该文件与共享样例固定 `eol=lf`, 避免换行差异污染逐字节比对。pytest 断言"契约表序列化结果与库内文件逐字节一致", 漂移即失败。前端构建只读取该 JSON, 不要求后端在线。共享样例 `tests/fixtures/wake_policy_cases.json` 按平台/群/时段上下文列出合法, 非法与边界取值, 由 pytest 跑后端真实校验入口, 由 vitest 跑前端严格校验与实际行转换入口。
 
+## 平台命令入口
+
+命令仍由会话层识别与执行, 但输入必须在进入唤醒窗口与输入投影之前冻结成纯命令正文: 平台渲染的 `@机器人` 形如 `@3588795965`, 按原样送去会让 `strip()` 后的首字符不是 `/`, 命令名与参数也会被窗口上下文追尾污染。调度器因此在唤醒评估之后立即调用 `satrap/core/pipeline/command_entry.py` 的 `extract_command_candidate(event)`, 命中时以冻结正文作为唯一输入, 并跳过引用回源, 转发补全, 附件转写, 媒体下载与输入投影 (这些产物会被冻结正文取代)。
+
+候选判定只读顶层结构化组件, 不做字符串搜索:
+
+- 从组件头部跳过寻址段: 指向机器人自身的 `At` (不含 `@全体成员`), 全空白文本, 以及位于组件列表最前的一个引用标记
+- 群聊要求寻址段里至少有一个指向机器人自身的 `At`; 私聊不要求, 但寻址段里的提及同样被剥离
+- 正文由剩余组件渲染 (`Plain` 取文本, `At` 取 `@昵称或 ID`, `AtAll` 取 `@全体成员`); 出现图片, 语音, 表情等非文本组件时按普通消息处理
+- 正文 `strip()` 后以默认命令前缀 (`satrap/core/framework/command/base.py` 的 `DEFAULT_COMMAND_PREFIX`) 开头才算候选
+
+剥离范围仅限正文之前。`@bot /plan x @bot` 的尾随提及不被剥离: 群聊下它不构成"前置于正文的显式 @bot", 因此不是命令; 私聊下它留在命令参数里。平台侧只用默认前缀与默认参数分隔符做语法级判定, 会话若用自定义 `cmd_prefix` 构造, 平台层不跟随, 该会话的命令不会被平台入口识别; 命令是否注册, 是否被 `disable_command` 停用仍由会话层唯一决定, 未知 `/foo` 照旧落到模型。由此未知命令会失去窗口上下文 (它的正文已被冻结为候选), 这是本轮接受的可见行为变化。
+
+命令不读取也不写入唤醒窗口: 所有唤醒模式下命令都不发生 `observe`, 既不把自身存进窗口, 也不消费既有待处理文字或图片。命令也不引入唤醒旁路 —— 群内 `@bot` 本来就命中提及规则, 而由唤醒词, 引用机器人或必要性阈值唤醒的 `/xxx` 只是普通消息。群内不带 `@bot` 的裸 `/help` 不会执行也不会有提示 (提示等于绕开唤醒门主动外发), 可发现性由文档与 `/help` 自身承担。
+
+### 高权限命令的操作员名单
+
+`/approve` 与 `/plan` 修改的是同一个工具权限引擎的安全状态 (`/plan off` 会放宽写操作限制), 因此两者都要求发起者在平台设置 `command_operators` (kind `list`, 每项为平台用户 ID) 内。名单缺失, 为空或取值非法时一律拒绝, 不存在"空名单表示不限制"的语义 (与 `group_admin.allowed_callers` 相反)。判定只认这份名单, 不认平台管理员身份或 QQ 群管理员角色: 管理面板手动唤醒等管理面来源已过管理面认证, 不进入该判定。
+
+拒绝发生在限流之后, 因此拒绝本身受同一限流约束; 拒绝时回复固定文案 `该命令仅允许已授权操作员执行。`, 不调用模型也不进入会话, 并记入诊断 (`projection` 阶段, 原因码 `operator_required`)。名集当前只含 `/approve` 与 `/plan`, 属过渡手段: 后续会迁移到命令注册 metadata 的权限级别, `/goal` 与 `/memory` 本轮不受该名单限制。
+
 
 ## 通知与请求事件
 
@@ -335,14 +423,27 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 
 请求审批的身份由跨重启的审批账本 `.satrap/data/request_ledger.json` 决定 (见 [运行数据布局](../core/data-layout.md)):
 
-- 入站 request 事件按平台实例、已绑定账号、类别 (`group`/`friend`) 与 flag 摘要登记, 归属与首次接收时间在登记后不再变化; 重复入站不新增条目, 不改写状态, 也不刷新可审批时限 (默认 600 秒, 到期记为 `expired` 墓碑而不是删除身份)
-- 审批动作在文件锁内原子占用 `available → executing → completed/unknown`, 落盘成功后才发出网络动作; 动作超时、取消或传输异常记为 `unknown` 并保持不可重放, 同一 flag 永远不会回到可审批
+- 入站 request 事件按平台实例、已绑定账号与类别 (`group`/`friend`) 隔离, 群申请沿用 flag 摘要; 好友申请额外使用平台原始事件时间区分可复用的处理 flag, 缺少时间时保守沿用旧身份规则
+- 同一次申请的归属与首次接收时间固定, 重复入站不改写状态或期限 (默认 600 秒, 到期移入归档); 同一好友凭据的更晚事件生成新的 request_id, 旧可处理申请记为 `superseded` 并禁止再次执行
+- 审批动作在文件锁内原子占用 `available → executing → completed/unknown`, 落盘成功后才发出网络动作; 动作超时、取消或传输异常记为 `unknown` 并保持不可重放, 同一次申请不会恢复可审批; 好友处理在协议发送前复核是否已出现更新申请, 终态回写仅作用于实际占用的记录
 - 重启后无法确认的占用保守记为 `unknown`; 台账容量达限 (每"实例+账号"4096, 全表 16384) 拒绝新登记, 不淘汰旧身份
-- 进程内的近期 flag 缓存只用于跳过重复入站的磁盘访问, 不作为审批资格依据; 缓存淘汰不影响账本身份
+- 进程内的近期 flag 缓存仅用于诊断, 不作为审批资格或跳过登记的依据; 缓存淘汰不影响账本身份
 - 审批动作的审计日志 (`[OneBotAdmin] 写动作已执行`) 只记 `adapter`, `self_id`, 群或成员 ID 与 flag 摘要 (与账本同域, 前 8 位), 不回显原始 flag, 备注, 拒绝理由或消息正文: 原始 flag 是可重放标识, 摘要可与账本条目对照而不泄露
 - 账本损坏或降级时审批直接拒绝执行, 需显式恢复并校验通过后才继续, 不提供"清空账本后继续"
 - 声明"处理了某个 flag"的调用必须与登记事件的账号和群一致, 归属不符按拒绝处理, 不落任何网络动作
 
+
+## 入站图片与视频
+
+已唤醒且通过限流的消息中, 最终会进入模型的图片与视频由 `pipeline/media_resolve.py` 与引用/转发补全、附件处理在同一阶段解析, 只处理按 `input_media_limit` 实际选中并会提交给模型的那部分媒体; 本轮只对 OneBot 适配器启用, Misskey 等其他适配器继续由模型层直连获取。
+
+- 解析顺序: ① 直连上报的 `url`; ② 图片在直连失败时经实现动作 `get_image` 取回重新解析后的地址再下载一次, 请求键优先用入站 `image` 段保留下来的原始 `file` 标识, 该标识取不回地址时才退回上报的 `url`; ③ 两者都不可用时该媒体标记失败并降级。视频没有对应的实现动作, 只做直连, 不假设实现提供视频回源
+- 解析成功的媒体落地为临时文件 (登记到事件, 事件结束自动删除), 路径写入组件的 `resolved_path`; 该字段只由解析阶段写入, 不参与组件序列化, 模型输入与出站发送都优先使用它。上报的 `file` 与 `url` 一律保留原值, 不再互相覆盖, 因此出站转发时不会把不可发送的原始标识当作来源
+- 预算: 单条媒体下载 20 秒超时, 每事件 60 秒总预算, 单条不超过 32 MiB; 超出预算的媒体直接降级, 不为最终会被裁掉的媒体做无用下载
+- `get_image` 只能取回实现仍在其缓存中的图片: 图片已被实现淘汰时该动作失败, 此时无法恢复。这项限制无法由 Satrap 侧绕过; SnowLuma 的图片缓存对 `file`, `fileName` 与 `url` 建别名, 但按 `url` 别名查找属实现特定行为, 因此只作为原始标识失效后的兜底
+- 失败占位: 解析失败的图片把正文中的 `[图片]` 覆盖为 `[图片读取失败]` (视频为 `[视频读取失败]`), 占位不并存; 混合正文继续正常调用模型, 模型因此不会误以为自己已拿到该媒体。若消息除失败媒体外没有任何可读正文, 不调用模型, 直接回复 `图片读取失败，暂时无法处理该图片。`
+- 失败原因码进入补全阶段诊断, 形如 `image:failed:image_url_refreshed`; 平台页与手动唤醒弹窗按图片/视频给出中文标签
+- 未唤醒窗口中的图片在本轮认领后通过同一解析流程处理, 包括原始 `file` 刷新, 失败降级和临时文件清理; 窗口过期或平台缓存已淘汰的图片无法恢复
 
 ## 语音转写与文件正文
 
@@ -354,6 +455,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 …]`。群文件上传 notice 生成的 File 附件同样只在其被明确转为会话消息时才会下载
 - 下载使用出站防护 `safe_async_get`: 只接受 http/https, 私网地址默认拒绝, 需要访问 SnowLuma 内网下载地址时在 `settings.media_trusted_hosts` 登记主机名; 默认校验 TLS 证书且重定向限制在同源, 自签证书的内网 https 需显式开启 `settings.media_insecure_tls: true` (仅对 `media_trusted_hosts` 登记的主机生效, 公网下载始终校验证书); 公网地址默认要求 https, 明文 http 公网下载需显式开启 `settings.media_plaintext_http: true` (平台设置界面有对应开关, 明文传输可被窃听篡改, `media_trusted_hosts` 登记主机不受此限); 不把平台上报的本地路径当作 Satrap 主机上的可信文件
 - 失败降级: 未配置 ASR、格式不支持、下载/转写/提取失败均保留可识别标记 (`[语音: 未启用转写]`、`[文件 x: 不支持的格式]`、`[…: 获取或处理失败]`) 并继续处理当前问题, 不把未知二进制送入文本模型; `input_projection` extra 的 `attachment_status` 为 resolved/partial/failed, notes 记录各项原因
+- 已知限制 (兼容性债务): 入站 `record` 段的 `file` 与 `url` 现在都保留原值, 但 `_resolve_record` 仍可能把 `url` 交给 `get_record`。SnowLuma/NapCat 的媒体缓存支持 URL 别名, 因此当前可用; 这不等于语音的原始标识问题已彻底解决
 
 上述内容作为用户提供的资料进入模型输入, 不提升为系统指令, 不参与唤醒判定或命令解析。
 
@@ -365,6 +467,7 @@ OneBot 的 notice/request 不进入消息管线, 由适配器归一为 `Platform
 - 补全阶段的附件失败与最终发送结果分开成条: 附件失败后模型仍可执行, 不把阶段失败压成整条请求失败
 - 发送阶段只读发送证据: 有已确认前缀且其余未尝试为 `partial`, 有未确认段为 `unknown`, 全段确认为 `sent`, 没有业务尝试也没有业务回执为 `skipped`
 - 未被唤醒的事件不产生发送阶段记录, 决策阶段的记录即为完整结论
+- 平台命令入口在 `projection` 阶段记录冻结命中 (`command_candidate`); 命令未调用模型, 因此不为它写 `model` 阶段记录, 也不出现"模型输出 N 字符"; 非操作员执行受保护命令记 `operator_required` (同样落在 `projection` 阶段, 故"仅看拒绝"预设不会列出它, 在近期请求里按该原因码查看)
 
 查询接口 (沿用既有管理认证通路):
 

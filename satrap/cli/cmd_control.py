@@ -13,7 +13,7 @@ import os
 from satrap.cli.cmd_run import cmd_run, load_run_config
 from satrap.cli.common import control_client_from_args, daemon_client_from_args
 from satrap.cli.output import CliError, dispatch_action, info, ok
-from satrap.core.utils.paths import get_data_dir
+from satrap.core.runtime_paths import get_runtime_path
 
 
 def cmd_status(args: argparse.Namespace):
@@ -99,7 +99,7 @@ def _spawn_backend(args: argparse.Namespace):
         raise CliError(f"后端启动失败: {e}") from e
 
     # 与控制服务 backend.pid 同构, 便于控制服务/面板接管该进程
-    pid_file = get_data_dir() / "backend.pid"
+    pid_file = get_runtime_path("backend.pid")
     try:
         pid_file.parent.mkdir(parents=True, exist_ok=True)
         pid_file.write_text(

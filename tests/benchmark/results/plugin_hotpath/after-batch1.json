@@ -1,0 +1,497 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-06T19:03:49.178552+00:00",
+  "benchmark": "plugin_hotpath",
+  "repeats": 7,
+  "environment": {
+    "python": "3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:37:03) [MSC v.1929 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 204 Stepping 2, GenuineIntel",
+    "cpu_count": 16,
+    "sqlite": "3.45.3",
+    "psutil": "5.9.0",
+    "git_head": "76e3540ebe2e997030a76197fe1cb6dca6a32d67",
+    "satrap_dirty": true,
+    "source_sha256": {
+      "satrap/core/plugin_authorization.py": "a7be554ca8950e8bbcf5246abf1d3144406fa37075c086971c9e0e108f22f0df",
+      "satrap/core/model_tool_authorization.py": "missing",
+      "satrap/core/config/administrator_groups.py": "f8d3e09e6ec9a0298c8335c8905e3d4d424adaacffc46dd5151dd3b83e242b78",
+      "satrap/core/utils/TCBuilder/manager_base.py": "6c9e9e396d2ab38129bda740e2da317e1c59608708c6ebbbf7dd807b0f75428c",
+      "satrap/expend/plugins/group_admin/tools.py": "3059a5349b6215f75b50075675c5e17dadc99c2bcaceda7f5aff8a4bae6db53c",
+      "satrap/core/memory/store.py": "5ef8136db43049566683aa6fe4fdb7f0c566d872a56578dd6d2b3ac3ff25053e",
+      "satrap/core/memory/scoped.py": "428a4edd41d23a5f2f61d4947ed7ef0bc8226953b2194d11943143dddba189c6",
+      "satrap/core/memory/service.py": "4f5f2c66484bca1446769ca56d4c4d534733250986a82e71ce01ca7812ff9c50",
+      "satrap/core/group_chat/reminders.py": "030426a8cbd782c0fb432fb1be478731fd34837748d09313f2c32e11e35f1804"
+    },
+    "benchmark_sha256": "7510410750497481a4dec1c3a8a8cd63d09c789b7ed0988ac584d9356fdba804",
+    "harness_sha256": "894b484e656e579e09d2a3d395517c03a787a1251b00815861939854cff73734"
+  },
+  "scenarios": {
+    "tool_defs_step": {
+      "admin_groups_1": {
+        "elapsed_ms": {
+          "samples": [
+            0.3024,
+            0.3141,
+            0.3132,
+            0.3356,
+            0.4241,
+            0.301,
+            0.5488
+          ],
+          "median": 0.3141,
+          "p95": 0.5488,
+          "min": 0.301,
+          "max": 0.5488
+        },
+        "python_peak_bytes": 5985,
+        "rss_delta_bytes": 28672,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\tests\\benchmark\\_harness.py:192 720B",
+          "F:\\conda\\Lib\\json\\decoder.py:361 488B",
+          "\\satrap\\core\\plugin_authorization.py:280 216B",
+          "\\satrap\\core\\plugin_authorization.py:135 200B",
+          "\\satrap\\core\\plugin_authorization.py:136 168B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 6,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 6,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 6,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 0,
+          "rows": 0,
+          "connections": 0
+        },
+        "result_hash": "9cb37e3ad2b440014c693f513532365b4e2d8306b191386a62a519c2addb3eb1"
+      },
+      "admin_groups_20": {
+        "elapsed_ms": {
+          "samples": [
+            0.5911,
+            0.6527,
+            0.4701,
+            0.497,
+            0.5559,
+            0.8693,
+            0.671
+          ],
+          "median": 0.5911,
+          "p95": 0.8693,
+          "min": 0.4701,
+          "max": 0.8693
+        },
+        "python_peak_bytes": 27499,
+        "rss_delta_bytes": 8192,
+        "handle_delta": 0,
+        "top_allocations": [
+          "F:\\conda\\Lib\\json\\decoder.py:361 14168B",
+          "\\tests\\benchmark\\_harness.py:192 720B",
+          "\\satrap\\core\\plugin_authorization.py:280 216B",
+          "\\satrap\\core\\plugin_authorization.py:135 200B",
+          "\\satrap\\core\\plugin_authorization.py:136 168B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 6,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 6,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 6,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 0,
+          "rows": 0,
+          "connections": 0
+        },
+        "result_hash": "9cb37e3ad2b440014c693f513532365b4e2d8306b191386a62a519c2addb3eb1"
+      },
+      "admin_groups_200": {
+        "elapsed_ms": {
+          "samples": [
+            2.2981,
+            2.1437,
+            2.6201,
+            2.0816,
+            3.0993,
+            2.1911,
+            2.3913
+          ],
+          "median": 2.2981,
+          "p95": 3.0993,
+          "min": 2.0816,
+          "max": 3.0993
+        },
+        "python_peak_bytes": 231862,
+        "rss_delta_bytes": 167936,
+        "handle_delta": 0,
+        "top_allocations": [
+          "F:\\conda\\Lib\\json\\decoder.py:361 18664B",
+          "\\satrap\\core\\plugin_authorization.py:135 200B",
+          "\\satrap\\core\\plugin_authorization.py:136 168B",
+          "\\satrap\\core\\plugin_authorization.py:130 144B",
+          "<string>:11 120B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 6,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 6,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 6,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 0,
+          "rows": 0,
+          "connections": 0
+        },
+        "result_hash": "9cb37e3ad2b440014c693f513532365b4e2d8306b191386a62a519c2addb3eb1"
+      }
+    },
+    "tool_execute_auth": {
+      "admin_groups_20": {
+        "elapsed_ms": {
+          "samples": [
+            0.345,
+            0.4288,
+            0.3979,
+            0.3892,
+            0.4535,
+            0.4851,
+            0.3855
+          ],
+          "median": 0.3979,
+          "p95": 0.4851,
+          "min": 0.345,
+          "max": 0.4851
+        },
+        "python_peak_bytes": 26787,
+        "rss_delta_bytes": 0,
+        "handle_delta": 0,
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 1,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 1,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 1,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "result_hash": "e0a11b950ddc450877f6daa86fd72222da5e71ad2ac6f2804e03c4198c51b0a9"
+      }
+    },
+    "factory_bind": {
+      "group_admin": {
+        "elapsed_ms": {
+          "samples": [
+            6.133,
+            6.4167,
+            4.7989,
+            6.2261,
+            5.1163,
+            4.7239,
+            5.4625
+          ],
+          "median": 5.4625,
+          "p95": 6.4167,
+          "min": 4.7239,
+          "max": 6.4167
+        },
+        "python_peak_bytes": 153813,
+        "rss_delta_bytes": 4096,
+        "handle_delta": 0,
+        "top_allocations": [
+          "F:\\conda\\Lib\\site-packages\\yaml\\composer.py:135 4816B",
+          "F:\\conda\\Lib\\site-packages\\yaml\\scanner.py:286 2184B",
+          "F:\\conda\\Lib\\site-packages\\yaml\\constructor.py:414 1440B",
+          "F:\\conda\\Lib\\site-packages\\yaml\\constructor.py:411 960B",
+          "\\satrap\\edictum\\plugin_permissions.py:145 680B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 1
+        },
+        "sql": {
+          "queries": 0,
+          "rows": 0,
+          "connections": 0
+        },
+        "result_hash": "a7874c52eed5caefc76d6a9977a4c043fedae23145ba21dd3d4bee1342b3cce8"
+      }
+    },
+    "memory_inject_turn": {
+      "memories_100": {
+        "elapsed_ms": {
+          "samples": [
+            1.8051,
+            1.6745,
+            1.7635,
+            1.4542,
+            1.8583,
+            1.6119,
+            1.7026
+          ],
+          "median": 1.7026,
+          "p95": 1.8583,
+          "min": 1.4542,
+          "max": 1.8583
+        },
+        "python_peak_bytes": 114965,
+        "rss_delta_bytes": 0,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\memory\\store.py:304 14400B",
+          "\\satrap\\core\\memory\\store.py:401 5056B",
+          "\\satrap\\core\\memory\\store.py:406 4312B",
+          "\\satrap\\core\\memory\\store.py:352 3098B",
+          "\\satrap\\core\\memory\\store.py:301 1576B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 2,
+          "rows": 100,
+          "connections": 1
+        },
+        "result_hash": "04d77ba9c70c2361e51531ece67eecb1783a515502ac063bc2528438e7aca345"
+      },
+      "memories_1000": {
+        "elapsed_ms": {
+          "samples": [
+            5.3656,
+            6.3076,
+            5.8769,
+            7.9218,
+            6.7157,
+            5.502,
+            6.4934
+          ],
+          "median": 6.3076,
+          "p95": 7.9218,
+          "min": 5.3656,
+          "max": 7.9218
+        },
+        "python_peak_bytes": 1120837,
+        "rss_delta_bytes": 700416,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\memory\\store.py:304 144000B",
+          "\\satrap\\core\\memory\\store.py:401 5056B",
+          "\\satrap\\core\\memory\\store.py:406 4312B",
+          "\\satrap\\core\\memory\\store.py:352 3674B",
+          "\\satrap\\core\\memory\\store.py:301 1576B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 2,
+          "rows": 1000,
+          "connections": 1
+        },
+        "result_hash": "f8e2fafc968ed13c6ebd5bc5cd0bb84c5dc3db55d6a4125390654ebbf21399b1"
+      },
+      "memories_10000": {
+        "elapsed_ms": {
+          "samples": [
+            56.9528,
+            59.9236,
+            62.3379,
+            63.2793,
+            61.5031,
+            59.8907,
+            56.6505
+          ],
+          "median": 59.9236,
+          "p95": 63.2793,
+          "min": 56.6505,
+          "max": 63.2793
+        },
+        "python_peak_bytes": 11335477,
+        "rss_delta_bytes": -557056,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\memory\\store.py:304 288000B",
+          "\\satrap\\core\\memory\\store.py:401 5056B",
+          "\\satrap\\core\\memory\\store.py:406 4312B",
+          "\\satrap\\core\\memory\\store.py:352 4214B",
+          "\\satrap\\core\\memory\\store.py:301 1432B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 2,
+          "rows": 10000,
+          "connections": 1
+        },
+        "result_hash": "4eac6c499a6be915faa17aa9c7a785490961732a4dc2ed06e22166694f23351a"
+      }
+    },
+    "memory_handle_leak": {
+      "calls_1000": {
+        "handle_delta_without_gc": 1000,
+        "handle_delta_after_gc": 0
+      }
+    },
+    "scoped_list_page": {
+      "first_page_10000": {
+        "elapsed_ms": {
+          "samples": [
+            54.0872,
+            50.0045,
+            53.7459,
+            53.7647,
+            51.8564,
+            57.2861,
+            54.7894
+          ],
+          "median": 53.7647,
+          "p95": 57.2861,
+          "min": 50.0045,
+          "max": 57.2861
+        },
+        "python_peak_bytes": 9121860,
+        "rss_delta_bytes": -2756608,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\memory\\scoped.py:154 314548B",
+          "\\satrap\\core\\memory\\scoped.py:158 111832B",
+          "\\satrap\\core\\memory\\scoped.py:100 23256B",
+          "\\satrap\\core\\memory\\scoped.py:98 2896B",
+          "F:\\conda\\Lib\\json\\decoder.py:361 2856B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 52,
+          "rows": 10000,
+          "connections": 1
+        },
+        "result_hash": "89cf8b0f884d41f2187274708cf11ef13765403c4e7f5d583e31244de746bb5b"
+      },
+      "walk_all_pages_10000": {
+        "elapsed_ms": {
+          "samples": [
+            12020.8918,
+            12268.222,
+            13139.128
+          ],
+          "median": 12268.222,
+          "p95": 13139.128,
+          "min": 12020.8918,
+          "max": 13139.128
+        },
+        "python_peak_bytes": 9241882,
+        "rss_delta_bytes": 458752,
+        "handle_delta": -8,
+        "top_allocations": [
+          "\\satrap\\core\\memory\\scoped.py:154 294096B",
+          "\\satrap\\core\\memory\\scoped.py:158 111832B",
+          "\\satrap\\core\\memory\\scoped.py:100 5344B",
+          "F:\\conda\\Lib\\json\\decoder.py:361 2248B",
+          "\\satrap\\core\\memory\\scoped.py:98 2216B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 10400,
+          "rows": 2000000,
+          "connections": 200
+        },
+        "result_hash": "07a8f234cffe3fd93876a0d8e224d9e0d2d5a36ecab6d559ed74f5047ac33046"
+      }
+    },
+    "reminder_page": {
+      "first_page_10000": {
+        "elapsed_ms": {
+          "samples": [
+            55.0584,
+            55.9018,
+            54.6446,
+            54.626,
+            56.4822,
+            55.4946,
+            57.3214
+          ],
+          "median": 55.4946,
+          "p95": 57.3214,
+          "min": 54.626,
+          "max": 57.3214
+        },
+        "python_peak_bytes": 9778111,
+        "rss_delta_bytes": -1064960,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\group_chat\\reminders.py:227 403534B",
+          "\\satrap\\core\\group_chat\\reminders.py:228 111832B",
+          "\\satrap\\core\\group_chat\\reminders.py:86 38400B",
+          "F:\\conda\\Lib\\json\\decoder.py:361 34456B",
+          "\\satrap\\core\\group_chat\\reminders.py:90 7950B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 1,
+          "rows": 10000,
+          "connections": 1
+        },
+        "result_hash": "5592e1b9c6e7c7de3ba32d0f7d5ff29f48a61d08b358b1ba19391c6ea2ccabbc"
+      },
+      "walk_all_pages_10000": {
+        "elapsed_ms": {
+          "samples": [
+            12732.4296,
+            12469.9807,
+            12307.2893
+          ],
+          "median": 12469.9807,
+          "p95": 12732.4296,
+          "min": 12307.2893,
+          "max": 12732.4296
+        },
+        "python_peak_bytes": 10023001,
+        "rss_delta_bytes": -3743744,
+        "handle_delta": 0,
+        "top_allocations": [
+          "\\satrap\\core\\group_chat\\reminders.py:227 391232B",
+          "\\satrap\\core\\group_chat\\reminders.py:228 111832B",
+          "\\satrap\\core\\group_chat\\reminders.py:90 23950B",
+          "F:\\conda\\Lib\\json\\decoder.py:361 17016B",
+          "\\satrap\\core\\group_chat\\reminders.py:226 1824B"
+        ],
+        "calls": {
+          "satrap.core.config.administrator_groups:AdministratorService.snapshot": 0,
+          "satrap.core.config.administrator_groups:AdministratorService.resolve": 0,
+          "satrap.core.plugin_authorization:evaluate_plugin_permissions": 0,
+          "satrap.edictum.plugin:load_plugin_meta": 0
+        },
+        "sql": {
+          "queries": 200,
+          "rows": 2000000,
+          "connections": 200
+        },
+        "result_hash": "a08240e19bd0fae5c19d2a07ffce14fa1dfdda4623d500bb11cba754be06cfcb"
+      }
+    }
+  }
+}

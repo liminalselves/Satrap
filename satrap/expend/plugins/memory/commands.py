@@ -1,0 +1,152 @@
+"""
+memory 插件命令: /memory (同步 + 异步)
+
+约定:
+- build_commands(session) 工厂返回 (同步命令映射, 异步命令映射)
+- 命令共享插件状态 (state.py), 与记忆工具/注入处理器使用同一份 MemoryStore
+"""
+from __future__ import annotations
+
+from typing import Any, Callable
+
+import json
+
+from satrap.expend.plugins.memory.state import get_plugin_state
+from satrap.core.memory.service import MemoryService
+from satrap.expend.plugins.memory.runtime import active_config, group_call, wait_host
+from satrap.core.call_context import current_call_origin
+from satrap.edictum import AsyncSimpleSession, SimpleSession
+
+_MEMORY_MODES = ("disabled", "base", "full")
+
+
+def _parse_args(args: list[str], default: str = "") -> str:
+    """
+    命令参数列表 -> 单字符串 (保留空格)
+
+    参数:
+    - args: 额外位置参数
+    - default: 默认值
+
+    返回:
+    - str: 命令参数列表 -> 单字符串 (保留空格)
+    """
+    if not args:
+        return default
+    return " ".join(str(a) for a in args).strip()
+
+
+SessionType = SimpleSession | AsyncSimpleSession
+"""插件支持的会话类型"""
+
+
+def _cmd_memory_impl(state: dict[str, Any], args: list[str]) -> str:
+    """
+    记忆命令: list / add / del / clear / mode
+
+    参数:
+    - state: 状态
+    - args: 额外位置参数
+
+    返回:
+    - str: 记忆命令: list / add / del / clear / mode
+    """
+    store = state["service"]
+    assert isinstance(store, MemoryService)
+    sub = args[0] if args else "list"
+    if group_call():
+        origin = current_call_origin()
+        assert origin is not None
+        access = lambda: active_config(store.session, state["config"], "commands", "memory")
+        if sub in {"mode", "模式", "clear", "清空"}:
+            return "群内不能通过命令更改记忆权限或批量删除; 请在管理界面操作, 或明确删除自己的某条偏好"
+        if sub in {"list", "查看"}:
+            result = wait_host(store.group_operation("list", {}, access=access, principal="command"))
+        elif sub in {"add", "添加"}:
+            rest = _parse_args(args[1:]).split(" ", 1)
+            if len(rest) != 2:
+                return "用法: /memory add <标题> <内容>; 群内命令只保存本人的偏好"
+            result = wait_host(store.group_operation("create", {"kind": "member_preference", "key": rest[0], "title": rest[0], "content": rest[1],
+                                                   "source_message_ids": [origin.source_message_id]}, access=access, principal="command"))
+        elif sub in {"del", "delete", "删除"} and len(args) == 2:
+            detail = wait_host(store.group_operation("get", {"memory_id": args[1]}, access=access, principal="command"))
+            if not detail.get("ok"):
+                return str(detail.get("error", "读取失败"))
+            result = wait_host(store.group_operation("delete", {"memory_id": args[1], "expected_revision": detail["memory"]["revision"],
+                                                   "request_message_id": origin.source_message_id}, access=access, principal="command"))
+        else:
+            return "用法: /memory list | add <标题> <内容> | del <完整记忆 ID>"
+        return json.dumps(result, ensure_ascii=False)
+    if sub in ("list", "查看"):
+        memories = store.execute("list_all")
+        if isinstance(memories, dict):
+            return str(memories.get("error", "读取失败"))
+        if not memories:
+            return "当前没有长期记忆"
+        lines = [f"共 {len(memories)} 条记忆:"]
+        for m in memories:
+            tags = f" [{', '.join(m['tags'])}]" if m["tags"] else ""
+            lines.append(f"- {m['id']} [{m['title']}] {m['content']}{tags} (重要度 {m['importance']})")
+        return "\n".join(lines)
+    if sub in ("add", "添加"):
+        rest = _parse_args(args[1:])
+        if not rest:
+            return "用法: /memory add <标题> <内容>"
+        parts = rest.split(" ", 1)
+        result = store.execute("add", parts[0], parts[1] if len(parts) > 1 else "")
+        return f"记忆已添加: [{result['title']}] {result['content']}" if result.get("ok") else f"添加失败: {result.get('error')}"
+    if sub in ("del", "delete", "删除"):
+        if len(args) < 2:
+            return "用法: /memory del <记忆 ID>"
+        result = store.execute("delete", args[1])
+        return f"记忆已删除: {args[1]}" if result.get("ok") else f"删除失败: {result.get('error')}"
+    if sub in ("clear", "清空"):
+        if not store.store.can_write():
+            return store.store.write_denied_reason("清空")
+        result = store.execute("clear")
+        return str(result.get("error")) if isinstance(result, dict) else f"已清空 {result} 条记忆"
+    if sub in ("mode", "模式"):
+        if len(args) < 2 or args[1] not in _MEMORY_MODES:
+            return f"用法: /memory mode <{'|'.join(_MEMORY_MODES)}>"
+        result = store.execute("set_mode", args[1])
+        if isinstance(result, dict):
+            return str(result.get("error"))
+        return f"记忆模式已切换: {args[1]}"
+    return "用法: /memory list | add <标题> <内容> | del <ID> | clear | mode <disabled|base|full>"
+
+
+def build_commands(session: SessionType, config: dict[str, Any] | None = None) -> tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:
+    """
+    构建插件命令: 返回 (同步命令, 异步命令) 映射
+
+    参数:
+    - session: 会话
+    - config: 已解析的插件配置
+
+    返回:
+    - tuple[dict[str, Callable[..., Any]], dict[str, Callable[..., Any]]]:  (同步命令, 异步命令) 映射
+    """
+    state = get_plugin_state(session, config)
+
+    def cmd_memory(*args: str) -> str:
+        """
+        管理长期记忆 (list/add/del/clear/mode)
+
+        参数:
+        - args: 额外位置参数
+
+        返回:
+        - str: 管理长期记忆 (list/add/del/clear/mode)
+        """
+        return _cmd_memory_impl(state, list(args))
+
+    async def cmd_memory_async(*args: str) -> str:
+        return _cmd_memory_impl(state, list(args))
+
+    sync_map: dict[str, Callable[..., Any]] = {
+        "memory": cmd_memory,
+    }
+    async_map: dict[str, Callable[..., Any]] = {
+        "memory": cmd_memory_async,
+    }
+    return sync_map, async_map

@@ -248,7 +248,7 @@ MCP 接入 (`MCPClient` / `MCPToolAdapter` / `MCPServerExporter`) 和技能机�
 
 ## 长期记忆存储 (MemoryStore)
 
-`satrap.expend.tools.memory_store.MemoryStore` 是公共的 SQLite 长期记忆存储, 供 base_take / satrap_coding 等插件共用。平台运行时使用所属平台的 `platform.db`, 默认按会话 scope 隔离。
+`satrap.core.memory.store.MemoryStore` 是公共的 SQLite 长期记忆存储, 供 独立 memory 插件和后端管理界面共用。平台运行时使用所属平台的 `platform.db`, 默认按会话 scope 隔离。
 
 ```python
 from satrap.expend.tools import MemoryStore
@@ -265,16 +265,16 @@ memories = store.list_all()
 插件经 meta.yaml 的 `config_schema` 声明可配置项, 按四级合并:
 
 ```text
-schema 默认 < 全局配置 (.satrap/plugin_config/<name>.json, PluginConfigManager 管理)
+schema 默认 < 全局配置 (.satrap/config/plugins/<name>.json, PluginConfigManager 管理)
            < Edictum 命名配置 (session_class_config) < 当前会话覆盖
 ```
 
 - **会话覆盖**: 代码内经 `install_plugin(path, config={...})` 传入; Chat / 前端另有 `session-plugin-config` 接口按字段整体覆盖, 删除键表示恢复继承, 覆盖记录存平台库 `session_config_overrides` 表并随会话进入归档 / 恢复生命周期, 详见 [RAG 与会话覆盖](rag-and-session-overrides.md)。
-- 配置在 `collect_tools` 工厂调用时注入, 工厂签名按 `(session, config, resources)` → `(session, config)` → `(session)` → `()` 自适应绑定。
+- 配置在 `collect_tools` 工厂调用时注入。官方插件的工厂统一为 `get_tools(session, config=None, resources=None)`, `config` 缺省按空配置处理, `resources` 为插件资源对象 (插件不使用时可忽略); 旧式第三方工厂仍按 `(session, config)` → `(session)` → `()` 自适应绑定。
 
 支持的字段类型: `string` / `path` / `textarea` / `number` / `bool` / `select` (带 options), 以及模型与资源选择器 `llm` / `embed` / `rerank` / `knowledge_base` / `knowledge_bases`。
 
 官方插件:
-- [base_take](base-take-plugin.md): 基础能力集 (搜索 / 沙箱 / 文档解析 / 长期记忆)
+- [base_take](base-take-plugin.md): 基础能力集 (搜索 / 沙箱 / 文档解析)
 - [satrap_coding](satrap-coding-plugin.md): Coding Agent (文件读写 / shell / 子代理 / 目标与计划)
 - [rag](rag-and-session-overrides.md): 分层知识库检索与文档导入 (`rag_search` / `rag_list` / `rag_ingest`), 结果由当前会话模型组织回答

@@ -3,6 +3,8 @@ from typing import Any
 import io
 import math
 import struct
+import sys
+from array import array
 
 import pytest
 
@@ -12,7 +14,10 @@ from satrap.core.pipeline.audio_convert import AudioConvertError, AudioTooLong, 
 
 def _wav_bytes(seconds: float = 0.5, rate: int = 8000) -> bytes:
     frames = int(seconds * rate)
-    pcm = b"".join(struct.pack("<h", int(12000 * math.sin(2 * math.pi * 440 * i / rate))) for i in range(frames))
+    samples = array("h", (int(12000 * math.sin(2 * math.pi * 440 * i / rate)) for i in range(frames)))
+    if sys.byteorder != "little":
+        samples.byteswap()
+    pcm = samples.tobytes()   # 连续缓冲区避免为长语音创建数百万个临时字节对象
     header = b"RIFF" + struct.pack("<I", 36 + len(pcm)) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, rate * 2, 2, 16)
     return header + b"data" + struct.pack("<I", len(pcm)) + pcm
 

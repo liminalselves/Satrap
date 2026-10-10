@@ -14,8 +14,9 @@ import re
 
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.platform.event import MessageChain
-from satrap.core.components import File, Plain
+from satrap.core.components import File, Image, Plain
 from satrap.core.platform import PlatformConfig
+from satrap.core.config.group_directory import GroupDirectoryStore
 
 
 DRIVER = r'''
@@ -32,7 +33,7 @@ const ctx = {
   api: {isAcceptingActions: true, async processStreamRequest(text, send) {
     const request = JSON.parse(text);
     const params = request.params || {};
-    if (params.group_id !== undefined && params.group_id !== 20000) throw new Error('unexpected group');
+    if (params.group_id !== undefined && ![20000, 20001].includes(params.group_id)) throw new Error('unexpected group');
     if (request.action === 'send_group_msg') {
       const first = params.message[0];
       if (first.type === 'file') {
@@ -152,12 +153,19 @@ async def probe(installation: Path) -> dict[str, object]:
     token = secrets.token_urlsafe(32)
     adapter = OneBotAdapter(PlatformConfig(id="snowluma-probe", type="onebot", settings={
         "host": "127.0.0.1", "port": port, "access_token": token,
+        "group_management_version": 1,
     }))
     process = None
     with tempfile.TemporaryDirectory(prefix="satrap-snowluma-") as temporary:
         root = Path(temporary)
         (root / "network.mjs").write_text(module, encoding="utf-8")
         (root / "driver.mjs").write_text(DRIVER, encoding="utf-8")
+        group_store = GroupDirectoryStore(root / "platform.db")
+        group_store.adopt_legacy("10000", {"group_management_version": 1})
+        group_store.patch_group("10000", "20000", "policy", {
+            "enabled": {"mode": "value", "value": True},
+        }, expected_revision=0)
+        adapter.set_group_access_store(group_store)
         try:
             await adapter.start()
             await adapter.wait_ready()
@@ -199,6 +207,45 @@ async def probe(installation: Path) -> dict[str, object]:
                 assert all(response.status == "success" for response in responses)
                 assert [response.message_ids for response in responses] == [("101",), ("102",)]
                 adapter._event_queue.task_done()
+
+            assert adapter.allows_group("20000") and not adapter.allows_group("20001")
+            await command({"type": "event", "event": {"time": 1, "self_id": 10000, "post_type": "message",
+                "message_type": "group", "sub_type": "normal", "group_id": 20001, "user_id": 30000,
+                "message_id": 3, "sender": {"user_id": 30000, "nickname": "probe"},
+                "message": [{"type": "text", "data": {"text": "未启用的群"}}]}})
+            try:
+                unexpected = await asyncio.wait_for(adapter._event_queue.get(), 0.5)
+            except asyncio.TimeoutError:
+                unexpected = None
+            assert unexpected is None, "未启用的群消息不得进入业务队列"
+            group_store.patch_group("10000", "20001", "policy", {
+                "enabled": {"mode": "value", "value": True},
+            }, expected_revision=0)
+            await adapter.refresh_group_access("10000")
+            assert adapter.allows_group("20000") and adapter.allows_group("20001")
+            await command({"type": "event", "event": {"time": 1, "self_id": 10000, "post_type": "message",
+                "message_type": "group", "sub_type": "normal", "group_id": 20001, "user_id": 30000,
+                "message_id": 4, "sender": {"user_id": 30000, "nickname": "probe"},
+                "message": [{"type": "text", "data": {"text": "第二群"}}]}})
+            second_group = await asyncio.wait_for(adapter._event_queue.get(), 5)
+            assert second_group.get_group_id() == "20001" and second_group.get_message_str() == "第二群"
+            adapter._event_queue.task_done()
+
+            # 入站图片: SnowLuma 上报形态为 {url, file: fileId, sub_type, summary},
+            # 两个标识都必须保留, 否则后续无法经 get_image 刷新过期的 url
+            await command({"type": "event", "event": {"time": 1, "self_id": 10000, "post_type": "message",
+                "message_type": "group", "sub_type": "normal", "group_id": 20000, "user_id": 30000,
+                "message_id": 5, "sender": {"user_id": 30000, "nickname": "probe"},
+                "message": [{"type": "image", "data": {
+                    "url": "https://multimedia.example.invalid/download?rkey=probe",
+                    "file": "probe-image.image", "sub_type": 0, "summary": "[图片]"}}]}})
+            image_event = await asyncio.wait_for(adapter._event_queue.get(), 5)
+            images = [item for item in image_event.get_messages() if isinstance(item, Image)]
+            assert len(images) == 1, images
+            assert images[0].file == "probe-image.image", images[0].file
+            assert images[0].url == "https://multimedia.example.invalid/download?rkey=probe", images[0].url
+            assert "[图片]" in image_event.get_message_str()
+            adapter._event_queue.task_done()
 
             # 混合链分流: Plain/File/Plain 按原序经真实网络层到达模拟 QQ 动作
             await command({"type": "dump_actions"})
@@ -256,8 +303,9 @@ async def probe(installation: Path) -> dict[str, object]:
             await command({"type": "close"})
             assert await asyncio.wait_for(process.wait(), 5) == 0
             return {"version": json.loads((installation / "package.json").read_text(encoding="utf-8"))["version"],
-                    "bundle_sha256": digest, "event_roundtrips": 2, "correlated_actions": 4, "reconnect": "passed", "wrong_token": "rejected",
+                    "bundle_sha256": digest, "event_roundtrips": 3, "group_isolation": "selected_then_enabled", "correlated_actions": 4, "reconnect": "passed", "wrong_token": "rejected",
                     "mixed_chain": "ordered_upload_split", "partial": "confirmed_prefix", "drop": "unknown", "file_fallback": "unknown:file_delivery_unconfirmed",
+                    "inbound_image": "file_and_url_preserved",
                     "transport": "installed WsClientAdapter and native websocket", "qq": "simulated"}
         finally:
             if process is not None and process.returncode is None:

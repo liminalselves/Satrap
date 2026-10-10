@@ -300,7 +300,7 @@ export const chatApi = {
   ragAction: (sessionId: string, payload: Record<string, unknown>) => request<Record<string, unknown>>('POST', `/api/chat/rag?${new URLSearchParams({ session_id: sessionId })}`, payload),
   pluginModelOptions: () => request<{ options: ModelOptions }>('GET', '/api/chat/plugin-model-options'),
   getSessionPluginConfig: (conversationId: string, plugin: string) => request<SessionPluginSettings>('GET', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`),
-  saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision }),
+  saveSessionPluginConfig: (conversationId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => request<SessionPluginSettings>('PUT', `/api/chat/session-plugin-config?${new URLSearchParams({ conversation_id: conversationId, plugin })}`, { overrides, expected_revision: revision, ...tools }),
   health: () => request<{ ok: boolean; conversations: number; preloaded: number }>('GET', '/api/chat/health'),
 
   listModels: () => request<{ models: string[] }>('GET', '/api/chat/models'),

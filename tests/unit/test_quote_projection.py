@@ -12,6 +12,21 @@ from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.components import Reply
 from satrap.core.platform import PlatformConfig
+from satrap.core.framework.providers import BindingState, BindingStatus
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 def quoted(message_id: int = 5, group_id: int = 456, sender: int = 321, text: str = "原文", **extra: object) -> dict[str, object]:
@@ -43,7 +58,7 @@ async def test_quote_is_resolved_into_reply_fields_and_projected_with_marker():
     reply = event.get_messages()[0]
     assert isinstance(reply, Reply) and reply.message_str == "原文" and reply.sender_nickname == "小明" and reply.sender_id == "321"
     projected = project_input(event, status)
-    assert projected.message == "[引用 小明 的消息: 原文]\n@10000 这个对吗"
+    assert projected.message == "[引用 小明 的消息: 原文]\n[用户 123, 消息 77] @10000 这个对吗"
     adapter._bot.get_msg.assert_awaited_once_with(message_id=5)
 
 
@@ -52,6 +67,7 @@ async def test_scheduler_passes_quote_to_session_and_quote_alone_reaches_model()
     adapter, event = await make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "at", "data": {"qq": "10000"}}])
     adapter._bot.get_msg.return_value = quoted(text="帮我看这个")
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = "好的"
     await PipelineScheduler(manager).execute(event)
     call = manager.handle_call_async.call_args.args[0]
@@ -63,6 +79,7 @@ async def test_scheduler_passes_quote_to_session_and_quote_alone_reaches_model()
 async def test_quote_lookup_happens_after_wake_and_not_for_unwoken_messages():
     adapter, event = await make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "没叫机器人"}}])
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     adapter._bot.get_msg.assert_not_awaited()
     manager.handle_call_async.assert_not_awaited()
@@ -75,7 +92,7 @@ async def test_unavailable_quote_keeps_current_message_and_marks_status():
     status = await resolve_quotes(event)
     projected = project_input(event, status)
     assert status == "unavailable"
-    assert projected.message == "[引用了一条无法获取原文的消息]\n@10000 这个对吗"
+    assert projected.message == "[引用了一条无法获取原文的消息]\n[用户 123, 消息 77] @10000 这个对吗"
     assert "quote_unavailable" in projected.notes
 
 
@@ -167,6 +184,7 @@ async def test_quote_of_bot_message_is_labelled_and_not_treated_as_wake():
     adapter, event = await make_event(segments=[{"type": "reply", "data": {"id": "5"}}, {"type": "text", "data": {"text": "继续"}}])
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     manager.handle_call_async.assert_not_awaited()
     projected = project_input(event, await resolve_quotes(event))
@@ -185,6 +203,7 @@ async def test_quote_self_wake_is_opt_in_and_uses_single_lookup():
     adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     manager.handle_call_async.return_value = ""
     await PipelineScheduler(manager).execute(event)
     assert manager.handle_call_async.await_count == 1
@@ -199,6 +218,7 @@ async def test_quote_of_other_user_or_failed_lookup_does_not_wake():
     adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
     adapter._bot.get_msg.return_value = quoted(sender=321)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     manager.handle_call_async.assert_not_awaited()
     adapter, event = await make_event(settings={"wake_on_quote_self": True}, segments=segments)
@@ -215,6 +235,7 @@ async def test_quote_self_wake_respects_whitelist_and_does_not_lookup_when_disab
     adapter.config.settings["group_whitelist"] = ["789"]
     adapter._bot.get_msg.return_value = quoted(sender=10000)
     manager = AsyncMock()
+    manager.provider_registry = _RunnableRegistry()
     await PipelineScheduler(manager).execute(event)
     adapter._bot.get_msg.assert_not_awaited()
     manager.handle_call_async.assert_not_awaited()

@@ -42,10 +42,9 @@ class SkillsManager:
         roots.extend(Path(root).resolve() for root in (trusted_code_roots or ()))
         self._trusted_code_roots = tuple(dict.fromkeys(roots))
         self.skills: Dict[str, Skill] = {}
-        self._active: Dict[int, str] = {}  # workflow id -> skill name, 防止重复注入
-        self._active_mcp: Dict[int, List[Any]] = (
-            {}
-        )  # workflow id -> 已连接的 MCP 客户端
+        self._active: Dict[int, Dict[str, Skill]] = {}   # workflow id -> 独立激活的技能
+        self._active_mcp: Dict[int, Dict[str, List[tuple[Any, List[str]]]]] = {}
+        self._owned_tools: Dict[int, set[str]] = {}   # 工作流中由技能注册的工具
 
     @staticmethod
     def _is_preset(skill: Skill) -> bool:
@@ -295,6 +294,52 @@ class SkillsManager:
         return await activation.deactivate_async(self, skill_name, workflow)
 
     # ================= 内部方法 =================
+
+    def compose_system_prompt(self, prompt: str, workflow: SkillWorkflowProtocol) -> str:
+        """
+        合成基础提示词和当前已激活技能的指令
+
+        参数:
+        - prompt: 新的基础提示词
+        - workflow: 指令所属工作流
+
+        返回:
+        - str: 按激活顺序包含各技能指令一次的提示词
+        """
+        parts = [prompt] if prompt else []
+        parts.extend(skill.to_text() for skill in self._active.get(id(workflow), {}).values())
+        return "\n\n".join(parts)
+
+    def _release_skill_tools(self, skill: Skill, workflow: SkillWorkflowProtocol) -> None:
+        """
+        回收技能独占工具并保留其他技能仍引用的工具
+
+        参数:
+        - skill: 已取消激活的技能
+        - workflow: 工具所属工作流
+        """
+        manager = workflow.tools_manager
+        if manager is None:
+            return
+        wf_id = id(workflow)
+        needed = {
+            name for active in self._active.get(wf_id, {}).values()
+            for name in [*active.tool_names, *(tool.get_tool_name() for tool in active.tools)]
+        }
+        for clients in self._active_mcp.get(wf_id, {}).values():
+            for _, names in clients:
+                needed.update(names)
+        owned = self._owned_tools.get(wf_id, set())
+        names = set(skill.tool_names) | {tool.get_tool_name() for tool in skill.tools} | (owned - needed)
+        for name in names - needed:
+            if name in owned:
+                manager.unregister_tool(name)
+                owned.discard(name)
+            else:
+                if name in manager.tools:
+                    manager.disable_tool(name)
+        if not owned:
+            self._owned_tools.pop(wf_id, None)
 
     def _register_bundled_tools(
         self, workflow: SkillWorkflowProtocol, skill: Skill

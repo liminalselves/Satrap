@@ -20,7 +20,6 @@ from .utils import (
     content_to_text,
     _input_schema_of,
     _params_from_schema,
-    _mcp_error,
     _consume,
     MCPSessionProtocol,
 )

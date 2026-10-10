@@ -7,9 +7,13 @@ import { toast } from '@/components/ui/Toast';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { controlApi } from '@/api/control';
 import { PageHeader, AlertCard } from '@/components/common';
-import { Save, RotateCcw, Power, Play, RefreshCw, FileText, AlertCircle } from 'lucide-react';
+import { Save, RefreshCw, FileText, AlertCircle } from 'lucide-react';
+import { BackendControls, backendStateLabel } from '@/components/common/BackendControls';
 import * as yaml from 'js-yaml';
 import { DataMaintenancePanel } from './DataMaintenancePanel';
+import { LogRetentionPanel } from './LogRetentionPanel';
+import { AdministratorsPanel } from './AdministratorsPanel';
+import { administratorError } from '@/api/administrators';
 
 interface ConfigData {
   api?: {
@@ -27,14 +31,17 @@ interface ConfigData {
 }
 
 export function Settings() {
-  const { health, isRunning, reloadConfig, shutdown, refreshAll } = useBackendStore();
+  const backend = useBackendStore();
+  const { health, isRunning, controlBackend } = backend;
   const [config, setConfig] = useState<ConfigData>({});
   const [rawConfig, setRawConfig] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [configPath, setConfigPath] = useState('');
   const [configExists, setConfigExists] = useState(false);
+  const [configRevision, setConfigRevision] = useState<string | undefined>();
   const [controlAvailable, setControlAvailable] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('general');
 
   // 从控制服务加载配置
   const loadConfig = useCallback(async () => {
@@ -43,6 +50,7 @@ export function Settings() {
       const result = await controlApi.getConfig();
       if (result.ok && result.config) {
         setConfig(result.config);
+        setConfigRevision(result.revision);
         setRawConfig(yaml.dump(result.config, { indent: 2 }));
         setConfigPath(result.path || '');
         setConfigExists(result.exists !== false);
@@ -64,18 +72,18 @@ export function Settings() {
   const persistConfig = useCallback(async (data: ConfigData) => {
     setSaving(true);
     try {
-      const result = await controlApi.saveConfig(data);
+      const result = await controlApi.saveConfig(data, configRevision);
       if (result.ok) {
-        setConfig(data);
-        setRawConfig(yaml.dump(data, { indent: 2 }));
+        setConfig(result.config || data);
+        setConfigRevision(result.revision);
+        setRawConfig(yaml.dump(result.config || data, { indent: 2 }));
         setConfigExists(true);
         if (isRunning) {
-          const restarted = await controlApi.restart();
+          const restarted = await controlBackend('restart');
           toast(
             restarted.ok ? 'success' : 'warning',
-            restarted.ok ? '配置已保存, 后端正在重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
+            restarted.ok ? '配置已保存, 后端已重启' : `配置已保存, 但重启失败: ${restarted.error || '未知错误'}`,
           );
-          await refreshAll();
         } else {
           toast('success', '配置已保存');
         }
@@ -83,11 +91,11 @@ export function Settings() {
         toast('error', result.error || '保存失败');
       }
     } catch (e) {
-      toast('error', '保存失败: ' + (e instanceof Error ? e.message : '控制服务未运行'));
+      toast('error', '保存失败: ' + administratorError(e));
     } finally {
       setSaving(false);
     }
-  }, [isRunning, refreshAll]);
+  }, [isRunning, controlBackend, configRevision]);
 
   // 保存配置
   const handleSave = useCallback(async () => {
@@ -137,39 +145,6 @@ export function Settings() {
     }
   }, []);
 
-  // 重载配置
-  const handleReload = useCallback(async () => {
-    const ok = await reloadConfig();
-    toast(ok ? 'success' : 'error', ok ? '配置已重载' : '重载失败');
-  }, [reloadConfig]);
-
-  // 停止后端
-  const handleShutdown = useCallback(async () => {
-    if (!confirm('确定要停止后端吗？')) return;
-    const ok = await shutdown();
-    toast(ok ? 'success' : 'error', ok ? '后端已停止' : '停止失败');
-  }, [shutdown]);
-
-  // 启动后端
-  const handleStart = useCallback(async () => {
-    try {
-      const result = await controlApi.start();
-      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端启动中') : (result.error || '启动失败'));
-    } catch {
-      toast('error', '控制服务未运行');
-    }
-  }, []);
-
-  const handleRestart = useCallback(async () => {
-    try {
-      const result = await controlApi.restart();
-      toast(result.ok ? 'success' : 'error', result.ok ? (result.message || '后端重启中') : (result.error || '重启失败'));
-      await refreshAll();
-    } catch {
-      toast('error', '控制服务未运行');
-    }
-  }, [refreshAll]);
-
   // 更新配置字段
   const updateConfig = useCallback((key: string, value: unknown) => {
     setConfig((prev) => ({ ...prev, [key]: value }));
@@ -214,37 +189,15 @@ export function Settings() {
         <h3 className="text-lg font-semibold text-text-primary mb-4">后端控制</h3>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className={`w-3 h-3 rounded-full ${health?.running ? 'bg-success' : 'bg-error'}`} />
+            <div className={`w-3 h-3 rounded-full ${backend.runState === 'unknown' || backend.operation ? 'bg-warning' : isRunning ? 'bg-success' : 'bg-text-tertiary'}`} />
             <span className="text-text-primary">
-              {health?.running ? '后端运行中' : '后端未运行'}
+              {backendStateLabel(backend)}
             </span>
             {backendUrl && (
               <span className="text-text-secondary text-sm">{backendUrl}</span>
             )}
           </div>
-          <div className="flex gap-2">
-            {isRunning ? (
-              <>
-                <Button variant="default" onClick={handleReload}>
-                  <RotateCcw className="h-4 w-4 mr-2" />
-                  重载配置
-                </Button>
-                <Button variant="primary" onClick={handleRestart}>
-                  <RefreshCw className="h-4 w-4 mr-2" />
-                  重启后端
-                </Button>
-                <Button variant="danger" onClick={handleShutdown}>
-                  <Power className="h-4 w-4 mr-2" />
-                  停止后端
-                </Button>
-              </>
-            ) : (
-              <Button variant="primary" onClick={handleStart} disabled={!controlAvailable}>
-                <Play className="h-4 w-4 mr-2" />
-                启动后端
-              </Button>
-            )}
-          </div>
+          <BackendControls />
         </div>
       </Card>
 
@@ -277,13 +230,34 @@ export function Settings() {
           </div>
         )}
 
-        <Tabs defaultValue="general">
+        <Tabs defaultValue="general" onValueChange={setSettingsTab}>
           <TabsList>
             <TabsTrigger value="general">常用配置</TabsTrigger>
+            <TabsTrigger value="administrators">管理员</TabsTrigger>
             <TabsTrigger value="raw">原始配置</TabsTrigger>
             <TabsTrigger value="data">数据维护</TabsTrigger>
+            <TabsTrigger value="logging">日志保留</TabsTrigger>
             <TabsTrigger value="about">关于</TabsTrigger>
           </TabsList>
+
+          <TabsContent value="administrators" forceMount>
+            <AdministratorsPanel active={settingsTab === 'administrators'} onSaved={(groups, overrides, revision, previousRevision) => {
+              setConfig(current => ({ ...current, administrator_groups: groups, administrator_overrides: overrides }));
+              setConfigRevision(current => current === previousRevision ? revision : current);
+              setRawConfig(current => {
+                try {
+                  const parsed = yaml.load(current, { schema: yaml.JSON_SCHEMA, json: true });
+                  // 原始配置文本必须同步两个区段, 否则切到原始配置页签保存会丢掉成员例外
+                  return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                    ? yaml.dump({ ...parsed, administrator_groups: groups, administrator_overrides: overrides }, { indent: 2 }) : current;
+                } catch { return current; }
+              });
+            }} />
+          </TabsContent>
+
+          <TabsContent value="logging" forceMount>
+            <LogRetentionPanel active={settingsTab === 'logging'} />
+          </TabsContent>
 
           <TabsContent value="general">
             <div className="grid grid-cols-2 gap-6">
@@ -378,7 +352,7 @@ export function Settings() {
             <div className="flex gap-3 mt-6 pt-6 border-t border-border-glass">
               <Button variant="primary" onClick={handleSave} disabled={!controlAvailable || !configExists || saving}>
                 <Save className="h-4 w-4 mr-2" />
-                {saving ? '保存中...' : '保存配置'}
+                {saving ? '保存中…' : '保存配置'}
               </Button>
             </div>
           </TabsContent>
@@ -400,7 +374,7 @@ export function Settings() {
               <div className="flex gap-3">
                 <Button variant="primary" onClick={handleSaveRaw} disabled={!controlAvailable || !configExists || saving}>
                   <Save className="h-4 w-4 mr-2" />
-                  {saving ? '保存中...' : '保存原始配置'}
+                  {saving ? '保存中…' : '保存原始配置'}
                 </Button>
               </div>
             </div>

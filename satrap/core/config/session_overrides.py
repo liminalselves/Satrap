@@ -10,11 +10,12 @@ from copy import deepcopy
 import json
 import time
 
+from satrap.core.config.platform_schema import ensure_platform_tables
 from satrap.core.storage.file_lock import database_session_lock
 
 
 OVERRIDE_SCHEMA_VERSION = 1
-"""覆盖表结构版本, 写入平台库的 user_version; 0 表示建表版本未知的旧库"""
+"""覆盖表最早出现的结构版本, 供只读引用扫描识别旧库"""
 
 
 class OverrideConflictError(ValueError):
@@ -22,18 +23,8 @@ class OverrideConflictError(ValueError):
 
 
 def ensure_override_tables(connection: sqlite3.Connection) -> None:
-    """创建覆盖记录表并在同一事务中向上写结构版本, 供引用扫描判断缺表是否属于旧库"""
-    connection.execute(
-        "CREATE TABLE IF NOT EXISTS session_config_overrides ("
-        "session_id TEXT NOT NULL, namespace TEXT NOT NULL, "
-        "config_json TEXT NOT NULL DEFAULT '{}', schema_version INTEGER NOT NULL DEFAULT 1, "
-        "revision INTEGER NOT NULL DEFAULT 1, updated_at REAL NOT NULL, "
-        "PRIMARY KEY (session_id, namespace))"
-    )
-    current = int(connection.execute("PRAGMA user_version").fetchone()[0])
-    if current < OVERRIDE_SCHEMA_VERSION:
-        # 只向上写: 更高版本由更新的代码负责, 不覆盖也不回退
-        connection.execute(f"PRAGMA user_version = {OVERRIDE_SCHEMA_VERSION}")
+    """通过统一平台迁移入口确保覆盖表和群管理表存在"""
+    ensure_platform_tables(connection)
 
 
 class SessionOverrideStore:
@@ -111,6 +102,35 @@ class SessionOverrideStore:
                 (session_id, namespace, encoded, revision, updated_at),
             )
         return {"overrides": json.loads(encoded), "revision": revision, "schema_version": 1, "updated_at": updated_at}
+
+    def replace_many(self, session_id: str, updates: Mapping[str, tuple[Mapping[str, Any], int]]) -> None:
+        """
+        在同一事务中保存关联配置域, 任一修订冲突时整体回滚
+
+        参数:
+        - session_id: 当前会话 ID
+        - updates: 配置域到显式值与预期修订号的映射
+        """
+        encoded: dict[str, tuple[str, int, bool]] = {}
+        for namespace, (values, revision) in updates.items():
+            self._validate_identity(session_id, namespace)
+            if type(revision) is not int or revision < 0 or not isinstance(values, Mapping) or any(not isinstance(key, str) for key in values):
+                raise ValueError("覆盖配置或预期修订号无效")
+            encoded[namespace] = (json.dumps(dict(values), ensure_ascii=False, allow_nan=False), revision, bool(values))
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+        with REFERENCE_SCAN_LOCK, database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for namespace, (_, expected, _) in encoded.items():
+                row = connection.execute("SELECT revision FROM session_config_overrides WHERE session_id=? AND namespace=?", (session_id, namespace)).fetchone()
+                if (int(row[0]) if row else 0) != expected:
+                    raise OverrideConflictError("会话配置已更新, 请刷新后重试")
+            now = time.time()
+            for namespace, (values, revision, nonempty) in encoded.items():
+                if revision == 0 and not nonempty:
+                    continue
+                connection.execute("INSERT INTO session_config_overrides(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) "
+                                   "ON CONFLICT(session_id,namespace) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
+                                   (session_id, namespace, values, revision + 1, now))
 
 
 class SessionOverrideService:

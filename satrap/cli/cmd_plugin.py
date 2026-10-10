@@ -2,7 +2,7 @@
 聊天插件管理 CLI: list / show / enable / disable / capability / config
 
 Chat 服务在线时写操作走 HTTP (对活动会话即时 install/uninstall),
-离线时直接操作 .satrap/chat_plugins.json 与全局插件配置 (下次启动生效)
+离线时直接操作 .satrap/config/chat_plugins.json 与全局插件配置 (下次启动生效)
 """
 from __future__ import annotations
 

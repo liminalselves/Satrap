@@ -11,6 +11,7 @@ export interface PlatformConfigApplication {
 
 export interface BackendHealth {
   running: boolean;
+  runtime_id?: string;
   adapters?: Record<string, AdapterInfo>;
   platform_config?: PlatformConfigApplication[];
   error?: string;
@@ -24,6 +25,21 @@ export interface AdapterInfo {
   session_type?: string;
   type?: string;
   last_error?: string;
+  client_self_id?: string;
+  conversation_kinds?: Record<string, string>;
+  session_bindings?: Record<string, AgentBinding>;
+}
+
+export type AgentBinding = { mode: 'inherit' } | {
+  mode: 'value'; provider: 'session_class' | 'edictum'; config_name: string;
+};
+
+export interface AdapterDeclaration {
+  type: string;
+  display_name: string;
+  conversation_kinds: Record<string, string>;
+  status: 'available' | 'unavailable';
+  error?: string;
 }
 
 export interface LLMConfig {
@@ -106,6 +122,8 @@ export interface EdictumTypeDefinition {
 
 export interface EdictumPluginConfig {
   name: string;
+  config_version?: number;
+  migration_state?: Record<string, unknown>;
   enabled?: boolean;
   config?: Record<string, unknown>;
   capabilities?: Record<string, Record<string, boolean>>;
@@ -127,11 +145,83 @@ export interface EdictumPluginConfigField {
 
 export interface EdictumAvailablePlugin {
   name: string;
+  config_version?: number;
   version: string;
   author: string;
   description: string;
   config_schema: Record<string, EdictumPluginConfigField>;
   capabilities: Record<string, Record<string, string>>;
+  compatibility?: { satrap?: string };
+  applicability?: { session_types?: string[]; platforms?: string[] | '*' };
+}
+
+export interface ManagedPlugin extends EdictumAvailablePlugin {
+  source: 'builtin' | 'user';
+  usage_count: number;
+  edictum_configs: string[];
+  chat_enabled: boolean;
+}
+
+export interface PluginInstallPreview {
+  token: string;
+  plugin: EdictumAvailablePlugin;
+  expires_in: number;
+  expanded_bytes: number;
+  file_count: number;
+}
+
+export interface PluginRuntimeResult {
+  target: string;
+  status: 'applied' | 'next_activation' | 'error';
+  error?: string;
+  sessions: Array<Record<string, unknown>>;
+}
+
+export interface GlobalPluginConfig {
+  ok: boolean;
+  schema: Record<string, EdictumPluginConfigField>;
+  config: Record<string, unknown>;
+  overrides: Record<string, unknown>;
+  revision: string;
+  saved?: boolean;
+  runtime?: PluginRuntimeResult[];
+}
+
+export interface PluginLocationState {
+  present: boolean;
+  enabled: boolean;
+  capabilities: Record<string, Record<string, boolean>>;
+}
+
+export interface PluginLocation extends PluginLocationState {
+  kind: 'chat' | 'edictum';
+  id: string;
+  label: string;
+  revision: string;
+  parent_enabled: boolean;
+  availability: { allowed: boolean; message?: string; warnings?: string[] };
+}
+
+export interface PluginUsagesResult {
+  ok: boolean;
+  locations: PluginLocation[];
+  saved?: boolean;
+  runtime?: PluginRuntimeResult[];
+}
+
+export interface PluginRuntimeSnapshot {
+  ok: boolean;
+  services: Array<{
+    target: string;
+    status: 'available' | 'stopped' | 'error';
+    error?: string;
+    instances: Array<{
+      platform_id: string;
+      session_id: string;
+      location_id: string;
+      plugin: { name: string; status: string; enabled: boolean; error?: string; drift?: boolean; restart_required?: boolean; capabilities: { applied: Record<string, Record<string, boolean>>; desired: Record<string, Record<string, boolean>>; loaded: Record<string, Record<string, boolean>>; loaded_known?: boolean } };
+    }>;
+  }>;
 }
 
 export interface EdictumSessionConfig {
@@ -211,6 +301,7 @@ export interface PlatformConfig {
   type: string;
   session_provider?: string;
   session_type?: string;
+  session_bindings?: Record<string, AgentBinding>;
   settings: Record<string, unknown>;
 }
 
@@ -230,6 +321,156 @@ export interface Checkpoint {
   source: string;
   reason?: string;
   created_at: number;
+}
+
+export interface ConversationRecord {
+  conversation_id: string;
+  title: string;
+  message_count: number;
+  history_count: number;
+  context_ids: string[];
+  platform_id?: string;
+  platform_type?: string;
+  supports_history?: boolean;
+  facets?: Record<string, string[]>;
+  facet_labels?: Record<string, string>;
+  facet_names?: Record<string, string>;
+  tags?: string[];
+  last_activity_at?: number | null;
+  contexts?: { id: string; kind: string; name?: string | null }[];
+}
+
+export interface ConversationPlatform {
+  id: string;
+  type: string;
+  label: string;
+  type_label: string;
+  supports_history: boolean;
+}
+
+export interface PlatformArchiveRecord {
+  adapter_id: string;
+  platform_id: string;
+  platform_type: string;
+  type_label: string;
+  self_id: string;
+  conversation_kind: string;
+  conversation_kind_label: string;
+  chat_id: string;
+  label: string;
+  revision: number;
+  message_count: number;
+  last_message_at: number | null;
+}
+
+export interface PlatformArchiveCatalog {
+  items: PlatformArchiveRecord[];
+  total: number;
+  conversation_kinds: Array<{ value: string; label: string }>;
+  self_ids: string[];
+  warnings: Array<{ platform_id: string; error: string }>;
+}
+
+export type PlatformArchiveIdentity = Pick<PlatformArchiveRecord, 'platform_id' | 'self_id' | 'conversation_kind' | 'chat_id'>;
+
+export interface PlatformArchiveMessage {
+  message_id: string;
+  sender_id: string;
+  nickname: string;
+  card: string;
+  message_time: number;
+  received_at: number;
+  time_source: 'platform' | 'local';
+  direction: 'inbound' | 'outbound';
+  text: string;
+  components: Array<Record<string, unknown>>;
+  reply_to_message_id: string | null;
+  mentions: string[];
+  media: Array<Record<string, unknown>>;
+  status: 'active' | 'deleted' | 'recalled' | 'expired';
+  source: string;
+  verified: boolean;
+  truncated: boolean;
+}
+
+export interface PlatformArchiveSnapshot {
+  ok: boolean;
+  items: PlatformArchiveMessage[];
+  revision: number;
+  scope: Pick<PlatformArchiveRecord, 'adapter_id' | 'self_id' | 'conversation_kind' | 'chat_id' | 'label'>;
+  retention_days: number;
+  backups: Array<{ backup_id: string; action: 'delete' | 'clear'; created_at: number; expires_at: number }>;
+  coverage: { archived_from: number | null; archived_to: number | null; complete: boolean; retention_days: number };
+  has_more: boolean;
+  next_cursor: string | null;
+  truncated: boolean;
+}
+
+export interface PlatformArchiveMutation {
+  ok: boolean;
+  revision: number;
+  backup_id?: string;
+  expires_at?: number;
+  deleted_count?: number;
+  restored_count?: number;
+  skipped_count?: number;
+  deleted_memory_count?: number;
+  cleared_memory_proposal_count?: number;
+  cancelled_reminder_count?: number;
+  sending_reminder_count?: number;
+}
+
+export interface ConversationCatalog {
+  items: ConversationRecord[];
+  total: number;
+  facets?: Record<string, { value: string; label: string }[]>;
+  warnings?: string[];
+  facet_names?: Record<string, string>;
+}
+
+export interface ConversationDataItem {
+  index: number;
+  role?: string;
+  content?: unknown;
+  reasoning_content?: string | null;
+  tool_calls?: unknown;
+  tool_call_id?: string;
+  user_input?: string;
+  answer?: string;
+  thinking?: string | null;
+  created_at?: number;
+  [key: string]: unknown;
+}
+
+export interface ConversationDataSnapshot {
+  ok: boolean;
+  conversation_id: string;
+  layer: 'context' | 'history';
+  revision: string;
+  total: number;
+  items: ConversationDataItem[];
+  source: 'memory' | 'storage';
+  backups: Array<{ id: string; layer: string; reason: string; created_at: number }>;
+  saved?: boolean;
+  backup_id?: string;
+}
+
+export interface ConversationUser extends UserInfo {
+  platform_id: string;
+  platform_label: string;
+  platform_type: string;
+  has_profile: boolean;
+  revision: string;
+  conversation_count: number;
+  warning?: string;
+  conversations: { conversation_id: string; title: string; exists: boolean; manual: boolean; routed: boolean; last_activity_at: number | null }[];
+}
+
+export interface ConversationUserCatalog {
+  items: ConversationUser[];
+  total: number;
+  warnings?: string[];
+  new_revision: string;
 }
 
 export interface UserInfo {
@@ -256,4 +497,52 @@ export interface BackendConfig {
     session_class_config_path?: string;
     edictum_config_path?: string;
   session_scan_paths?: string[];
+}
+export interface GroupChatSummary {
+  schema_version: 1;
+  summary_id: string;
+  title: string;
+  revision: number;
+  state: 'active' | 'source_unavailable';
+  created_at: number;
+  expires_at: number;
+  points: { text: string; source_message_ids: string[] }[];
+  resolved_range: { start_time: string; end_time: string };
+  selection: { selected_count: number; all_local_matches_selected: boolean; truncated: boolean; reasons: string[] };
+  archive_coverage: { platform_history_complete: boolean; archived_from: number | null; archived_to: number | null; retention_days: number };
+}
+
+export interface GroupChatSummaryPage {
+  ok: boolean;
+  items: GroupChatSummary[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+export interface GroupChatSticker {
+  sticker_id: string;
+  name: string;
+  tags: string[];
+  collection: string;
+  kind: 'image' | 'native';
+  content_revision: number;
+  enabled: boolean;
+  adapter_type: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface GroupChatStickerPage {
+  ok: boolean;
+  items: GroupChatSticker[];
+  has_more: boolean;
+  next_cursor: string | null;
+}
+
+export interface GroupChatStickerSettings {
+  ok: boolean;
+  collections: string[];
+  available_collections: string[];
+  revision: number;
 }

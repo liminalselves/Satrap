@@ -1,17 +1,10 @@
-"""base_take 异步工具入口, 复用文档读取及记忆操作核心"""
+"""base_take 异步工具入口, 复用文档读取核心"""
 from __future__ import annotations
 from typing import Any
 import asyncio
 from satrap.core.utils.TCBuilder import AsyncTool
 from satrap.edictum import AsyncSimpleSession
-from .base import (
-    _DocumentCore,
-    _MemoryBinding,
-    _AddMemoryToolCore,
-    _UpdateMemoryToolCore,
-    _DeleteMemoryToolCore,
-    _ListMemoriesToolCore,
-)
+from .base import _DocumentCore
 
 
 class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
@@ -45,37 +38,3 @@ class AsyncReadDocumentTool(_DocumentCore, AsyncTool):
         - 文本或可持久化的媒体结果, 读取失败时返回错误文本
         """
         return await asyncio.to_thread(self._read_document, path, max_length, mode, start_page, page_count)
-
-
-class _AsyncMemoryToolBase(_MemoryBinding, AsyncTool):
-    """异步记忆工具基类"""
-
-
-class AsyncAddMemoryTool(_AddMemoryToolCore, _AsyncMemoryToolBase):
-    async def execute(
-        self,
-        title: str,
-        content: str,
-        tags: list[str] | None = None,
-        importance: int = 1,
-    ) -> str:
-        """执行共用记忆操作"""
-        return self._execute(title, content, tags, importance)
-
-
-class AsyncUpdateMemoryTool(_UpdateMemoryToolCore, _AsyncMemoryToolBase):
-    async def execute(self, memory_id: str, content: str = "", title: str = "") -> str:
-        """执行共用记忆操作"""
-        return self._execute(memory_id, content, title)
-
-
-class AsyncDeleteMemoryTool(_DeleteMemoryToolCore, _AsyncMemoryToolBase):
-    async def execute(self, memory_id: str) -> str:
-        """执行共用记忆操作"""
-        return self._execute(memory_id)
-
-
-class AsyncListMemoriesTool(_ListMemoriesToolCore, _AsyncMemoryToolBase):
-    async def execute(self) -> str:
-        """执行共用记忆操作"""
-        return self._execute()

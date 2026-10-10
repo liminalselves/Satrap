@@ -18,22 +18,40 @@ class ConversationRoute:
     scope: str = "legacy_user"
     self_id: str = ""
     group_id: str = ""
+    generation: int = 0
+    conversation_kind: str = ""
+    conversation_id: str = ""
+    binding_generation: int = 0
 
     def __post_init__(self) -> None:
         """拒绝未知范围及缺少账号或群身份的隔离路由"""
-        if self.scope not in {"legacy_user", "group_member", "group"}:
-            raise ValueError("context_scope 必须为 legacy_user, group_member 或 group")
-        if self.scope != "legacy_user" and (not self.self_id or not self.group_id):
+        if self.scope not in {"legacy_user", "group_member", "group", "private", "conversation"}:
+            raise ValueError("context_scope 无效")
+        if self.binding_generation > 0 and (not self.self_id or not self.conversation_kind or not self.conversation_id):
+            raise ValueError("隔离路由需要账号, 对话类型和对话 ID")
+        if not self.binding_generation and (self.scope != "legacy_user" or self.generation > 0) and (not self.self_id or not self.group_id):
             raise ValueError("群上下文隔离需要机器人账号和群 ID")
+        if self.generation < 0 or self.binding_generation < 0:
+            raise ValueError("路由代次不能为负数")
+        if self.scope in {"private", "conversation"} and not self.binding_generation:
+            raise ValueError("对话范围需要版本化的隔离路由")
 
     @cached_property
     def key(self) -> str | None:
         """返回独立命名空间的上下文键, 旧范围返回 None 以保留旧键; 路由不可变, 结果按实例缓存"""
-        if self.scope == "legacy_user":
+        if self.scope == "legacy_user" and self.generation == 0 and not self.binding_generation:
             return None
+        parts: list[object] = [
+            self.platform, self.provider, self.session_type, self.scope, self.self_id,
+            self.group_id, self.user_id if self.scope not in {"group", "conversation"} else "",
+        ]
+        if self.binding_generation:
+            parts.extend([self.generation, self.conversation_kind, self.conversation_id, self.binding_generation])
+            return "scoped:v2:" + json.dumps(parts, ensure_ascii=True, separators=(",", ":"))
+        if self.generation:
+            parts.append(self.generation)
         return "scoped:v1:" + json.dumps(
-            [self.platform, self.provider, self.session_type, self.scope, self.self_id,
-             self.group_id, self.user_id if self.scope == "group_member" else ""],
+            parts,
             ensure_ascii=True, separators=(",", ":"),
         )
 
@@ -46,4 +64,4 @@ class ConversationRoute:
     @property
     def owner(self) -> str:
         """返回存储归属, 共享群留空而不绑定首位发言者"""
-        return "" if self.scope == "group" else self.user_id
+        return "" if self.scope in {"group", "conversation"} else self.user_id

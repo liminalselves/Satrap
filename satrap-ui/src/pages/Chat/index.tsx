@@ -7,11 +7,17 @@ import type { ConfigOption } from '@/components/common/PluginConfigFields';
 import { PluginConfigFields, type ModelOptions } from '@/components/common/PluginConfigFields';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
 import { lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { PluginCapabilities } from '@/components/common/PluginCapabilities';
+import { controlApi } from '@/api/control';
+import type { GlobalPluginConfig, PluginRuntimeResult } from '@/api/types';
+import { PluginRuntimeStatus } from '@/pages/Plugins/GlobalPluginSettings';
+import { pluginError } from '@/pages/Plugins/InstallPluginModal';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
+import { Toggle } from '@/components/ui/Toggle';
 import { toast } from '@/components/ui/Toast';
 import { CopyButton } from '@/components/ui/CopyButton';
 import { cn } from '@/utils/cn';
@@ -41,7 +47,6 @@ import {
   type DirEntry,
   type MemoryRecord,
   type ModelConfigItem,
-  type PluginConfigResponse,
   type ProjectItem,
   type ToolCall,
 } from '@/api/chat';
@@ -120,15 +125,6 @@ function loadPersistedThink(): string {
     return DEFAULT_SETTINGS.think;
   }
 }
-
-// 能力类别中文名
-const CAPABILITY_LABELS: Record<CapabilityKind, string> = {
-  tools: '工具',
-  skills: '技能',
-  mcp: 'MCP',
-  handlers: '处理器',
-  commands: '命令',
-};
 
 // 会话列表多色循环(参考侧栏导航多色方案)
 type GlassColor = 'accent' | 'purple' | 'teal' | 'pink' | 'orange' | 'green';
@@ -2150,28 +2146,6 @@ function DirectoryPicker({
   );
 }
 
-// 精致拨杆开关
-function Toggle({ checked, onChange, title, disabled = false }: { checked: boolean; onChange: (v: boolean) => void; title?: string; disabled?: boolean }) {
-  return (
-    <button
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'w-9 h-5 rounded-full relative transition-colors shrink-0 border disabled:opacity-40 disabled:cursor-not-allowed',
-        checked ? 'bg-accent border-accent' : 'bg-glass-active border-glass-border'
-      )}
-      title={title}
-    >
-      <span
-        className={cn(
-          'absolute top-1/2 -translate-y-1/2 left-0.5 w-3.5 h-3.5 rounded-full bg-white shadow transition-transform',
-          checked && 'translate-x-4'
-        )}
-      />
-    </button>
-  );
-}
-
 // 折叠选项面板(紧凑自适应宽度 + 独立反光)
 function OptionsPanel({
   think,
@@ -2536,7 +2510,8 @@ function PluginCapabilitiesModal({
   onToggleCapability: (pluginName: string, kind: CapabilityKind, capName: string, enabled: boolean) => void;
 }) {
   if (!plugin) return null;
-  const kinds = Object.keys(CAPABILITY_LABELS) as CapabilityKind[];
+  const descriptions = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.description]))]));
+  const values = Object.fromEntries(Object.entries(plugin.capabilities).map(([kind, items]) => [kind, Object.fromEntries(items.map((item) => [item.name, item.enabled]))]));
 
   return (
     <Modal open={plugin !== null} onClose={onClose} title={`${plugin.name} 能力`} size="md">
@@ -2550,49 +2525,9 @@ function PluginCapabilitiesModal({
           </span>
         </div>
 
-        {kinds.map((kind) => {
-          const list = plugin.capabilities[kind];
-          if (list.length === 0) return null;
-          return (
-            <div key={kind}>
-              <div className="text-sm font-medium text-text-primary mb-2">
-                {CAPABILITY_LABELS[kind]}
-                <span className="text-xs text-text-tertiary font-normal ml-2">{list.length}</span>
-              </div>
-              <div className="space-y-1.5">
-                {list.map((cap) => {
-                  // 独立启用位; 实效还需插件聚合启用
-                  const effective = plugin.enabled && cap.enabled;
-                  return (
-                    <div
-                      key={cap.name}
-                      className="glass-card rounded-lg px-3 py-2 flex items-center justify-between gap-3"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className={cn('text-sm truncate', effective ? 'text-text-primary' : 'text-text-tertiary')}>
-                            {cap.name}
-                          </span>
-                          {cap.enabled && !plugin.enabled && (
-                            <span className="text-xs text-text-tertiary shrink-0">(插件停用中)</span>
-                          )}
-                        </div>
-                        {cap.description && (
-                          <p className="text-xs text-text-tertiary mt-0.5 line-clamp-2">{cap.description}</p>
-                        )}
-                      </div>
-                      <Toggle
-                        checked={cap.enabled}
-                        onChange={(v) => onToggleCapability(plugin.name, kind, cap.name, v)}
-                        title={cap.enabled ? `停用${CAPABILITY_LABELS[kind]}` : `启用${CAPABILITY_LABELS[kind]}`}
-                      />
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          );
-        })}
+        <Link className="text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(plugin.name)}`}>打开插件详情</Link>
+        <PluginCapabilities capabilities={descriptions} values={values} active={plugin.enabled}
+          onChange={(kind, name, enabled) => onToggleCapability(plugin.name, kind as CapabilityKind, name, enabled)} />
 
         <div className="flex justify-end pt-1">
           <Button variant="primary" onClick={onClose}>完成</Button>
@@ -2614,7 +2549,8 @@ function PluginConfigModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [data, setData] = useState<PluginConfigResponse | null>(null);
+  const [data, setData] = useState<GlobalPluginConfig | null>(null);
+  const [runtime, setRuntime] = useState<PluginRuntimeResult[]>([]);
   const [form, setForm] = useState<Record<string, unknown>>({});
   const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
   const [modelOptions, setModelOptions] = useState<ModelOptions>({});
@@ -2625,17 +2561,19 @@ function PluginConfigModal({
   useEffect(() => {
     if (!pluginName) { setData(null); return; }
     let cancelled = false;
+    setData(null); setForm({}); setRuntime([]); setError('');
     (async () => {
       try {
-        const [resp, options] = await Promise.all([chatApi.getPluginConfig(pluginName), chatApi.pluginModelOptions()]);
+        const [resp, options] = await Promise.all([controlApi.getGlobalPluginConfig(pluginName), controlApi.pluginModelOptions()]);
         if (!cancelled) setModelOptions(options.options);
         if (Object.values(resp.schema).some((field) => field.type.startsWith('knowledge_base'))) {
-          const libraries = await ragApi.list({ platformId: 'chat' });
+          const libraries = await ragApi.list({ platformId: 'local', via: 'control' });
           if (!cancelled) setKnowledgeBases(libraries.knowledge_bases.filter((item) => item.scope === 'global').map((item) => ({ value: item.id, label: item.name, scope: item.scope })));
         }
         if (!cancelled) {
           setData(resp);
-          setForm({ ...resp.config });
+          setForm({ ...resp.overrides });
+          setRuntime([]);
           setError('');
         }
       } catch (err) {
@@ -2654,11 +2592,15 @@ function PluginConfigModal({
     setSaving(true);
     setError('');
     try {
-      await chatApi.savePluginConfig(pluginName, form);
+      if (!data) return;
+      const result = await controlApi.saveGlobalPluginConfig(pluginName, form, data.revision);
+      setData(result);
+      setRuntime(result.runtime || []);
       onSaved();
-      onClose();
+      if (result.runtime?.some((item) => item.status === 'error')) setError('全局参数已保存，部分运行实例应用失败');
+      else onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(pluginError(err));
     } finally {
       setSaving(false);
     }
@@ -2671,11 +2613,17 @@ function PluginConfigModal({
         {keys.length === 0 && !data && <p className="text-sm text-text-tertiary">加载中...</p>}
         {keys.length === 0 && data && <p className="text-sm text-text-tertiary">该插件无可配置项</p>}
         {onSessionConfig && <Button variant="subtle" onClick={onSessionConfig}>配置当前会话参数</Button>}
+        <Link className="block text-sm text-accent" target="_blank" rel="noopener noreferrer" to={`/plugins/${encodeURIComponent(pluginName)}?tab=config`}>打开全局参数管理</Link>
         <PluginConfigFields schema={schema} values={form} modelOptions={modelOptions} knowledgeBases={knowledgeBases} disabled={saving}
           onChange={(key, value) => setForm((prev) => ({ ...prev, [key]: value }))} />
+        {runtime.length > 0 && <PluginRuntimeStatus results={runtime} busy={saving} onRetry={() => {
+          setSaving(true);
+          controlApi.reconcilePlugins().then((result) => { setRuntime(result.runtime); setError(result.runtime.some((item) => item.status === 'error') ? '部分运行实例应用失败' : ''); })
+            .catch((err) => setError(pluginError(err))).finally(() => setSaving(false));
+        }} />}
         <div className="flex justify-end gap-2 pt-1">
           <Button variant="ghost" onClick={onClose}>取消</Button>
-          <Button variant="primary" onClick={handleSave} disabled={saving}>
+          <Button variant="primary" onClick={handleSave} disabled={saving || !data}>
             {saving ? '保存中...' : '保存'}
           </Button>
         </div>

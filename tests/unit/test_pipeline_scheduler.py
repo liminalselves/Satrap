@@ -11,15 +11,18 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 import pytest
-from typing import Any, cast
+from types import SimpleNamespace
+from typing import Any, NamedTuple, cast
 import time
 
 from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.providers import BindingState, BindingStatus, SessionProviderRegistry
 from satrap.core.pipeline.rate_limiter import RateLimiter
 from satrap.core.pipeline.scheduler import PipelineScheduler
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.platform import PlatformAdapter, PlatformConfig
-from satrap.core.type import MessageMember, PlatformMessage, PlatformMessageType
+from satrap.core.components import Plain
+from satrap.core.type import Group, MessageMember, PlatformMessage, PlatformMessageType
 
 
 def _as_session_manager(fake: Any) -> SessionManager:
@@ -27,11 +30,63 @@ def _as_session_manager(fake: Any) -> SessionManager:
     return cast(SessionManager, fake)
 
 
+class _FakeProviderRegistry:
+    """会话定义注册表替身: 按登记表答复三态并记录判定调用"""
+
+    def __init__(self, definitions: dict[str, bool] | None = None) -> None:
+        self.definitions = {"dummy": True} if definitions is None else definitions
+        self.calls: list[tuple[str, str | None]] = []
+
+    def binding_status(self, definition_name: str, provider_name: str | None = None) -> BindingStatus:
+        """
+        记录判定调用并按登记表答复三态
+
+        参数:
+        - definition_name: 会话定义名称
+        - provider_name: 会话 Provider 名称
+
+        返回:
+        - BindingStatus: 未登记的定义按失效处理, 登记为禁用时按禁用处理
+        """
+        self.calls.append((definition_name, provider_name))
+        location = f"provider={provider_name or ''}, name={definition_name}"
+        if definition_name not in self.definitions:
+            return BindingStatus(BindingState.INVALID, f"会话定义不可用 {location}")
+        if not self.definitions[definition_name]:
+            return BindingStatus(BindingState.DISABLED, f"会话定义已禁用: {location}")
+        return BindingStatus(BindingState.RUNNABLE)
+
+
+def _constant_runnable(*_args: object) -> BindingStatus:
+    """
+    恒定答复可运行的绑定判定
+
+    返回:
+    - BindingStatus: 可运行
+    """
+    return BindingStatus(BindingState.RUNNABLE)
+
+
+def _runnable_async_session_manager() -> Any:
+    """
+    构造只记录 handle_call_async 的会话管理器替身
+
+    返回:
+    - Any: 绑定判定恒为可运行, 避免既有用例受管线闸门影响
+    """
+    from unittest.mock import AsyncMock
+
+    manager = AsyncMock()
+    manager.handle_call_async.return_value = ""
+    manager.provider_registry = SimpleNamespace(binding_status=_constant_runnable)
+    return manager
+
+
 class _RecorderAdapter(PlatformAdapter):
     """记录 send_message 调用的测试适配器"""
 
     def __init__(self, adapter_id: str = "rec1"):
-        self.config = PlatformConfig(id=adapter_id, type="rec")
+        super().__init__(PlatformConfig(id=adapter_id, type="rec"))
         self.sent: list[tuple[str, MessageChain]] = []
 
     async def run(self) -> None:
@@ -56,6 +111,8 @@ class _FakeSessionManager:
         self.delay = delay
         self.calls: list[Any] = []
         self.class_cfg_mgr = class_cfg_mgr
+        # 既有用例只读 binding_status, 共享状态源用例会整体替换为真实注册表
+        self.provider_registry: Any = _FakeProviderRegistry()
 
     async def handle_call_async(self, user_call: Any) -> str:
         self.calls.append(user_call)
@@ -68,6 +125,7 @@ class _BoomSessionManager:
     """handle_call_async 抛异常的假 SessionManager"""
 
     class_cfg_mgr = None
+    provider_registry = _FakeProviderRegistry()
 
     async def handle_call_async(self, user_call: Any) -> str:
         raise RuntimeError("boom")
@@ -633,8 +691,7 @@ async def test_unclaimed_automatic_batch_skips_resolution(monkeypatch: pytest.Mo
     from unittest.mock import AsyncMock
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _runnable_async_session_manager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
         "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
@@ -663,8 +720,7 @@ async def test_real_message_merges_window_without_losing_projection():
     from unittest.mock import AsyncMock
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _runnable_async_session_manager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
         "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 5, "wake_cooldown": 0}))
@@ -696,11 +752,10 @@ async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.Mo
     """无 prompt 待处理手动唤醒: 输入仅为实际认领批次, 不叠加合成事件正文"""
     from unittest.mock import AsyncMock
     from satrap.core.pipeline.manual_wake import ManualWakeTicket
-    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.pipeline.wake_window import PendingMessage
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _runnable_async_session_manager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={"self_id": "10"}))
     adapter.started = True
@@ -708,10 +763,10 @@ async def test_manual_window_wake_uses_claimed_batch_only(monkeypatch: pytest.Mo
     await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
         "message_type": "group", "message": [{"type": "text", "data": {"text": "窗口甲\n窗口乙"}}]})
     event = adapter._event_queue.get_nowait()
-    snapshot = (PendingText("r1", "30", "1", "窗口甲", 0.0), PendingText("r2", "30", "2", "窗口乙", 0.0))
+    snapshot = (PendingMessage("r1", "30", "1", "窗口甲", 0.0), PendingMessage("r2", "30", "2", "窗口乙", 0.0))
     scheduler.manual_wakes.tickets[event] = ManualWakeTicket("req-1", snapshot)
 
-    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingMessage, ...]:
         return snapshot
 
     monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
@@ -726,11 +781,10 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     """定时补偿唤醒: 以到期实际认领为准, 定时器保存的陈旧正文副本不进入输入"""
     from unittest.mock import AsyncMock
     from satrap.core.pipeline.wake_timers import DeadlineTicket
-    from satrap.core.pipeline.wake_window import PendingText
+    from satrap.core.pipeline.wake_window import PendingMessage
     from satrap.core.platform.onebot.adapter import OneBotAdapter
 
-    manager = AsyncMock()
-    manager.handle_call_async.return_value = ""
+    manager = _runnable_async_session_manager()
     scheduler = PipelineScheduler(_as_session_manager(manager))
     adapter = OneBotAdapter(PlatformConfig(id="ob", type="onebot", settings={
         "self_id": "10", "wake_mode": "frequency", "wake_message_threshold": 1, "wake_cooldown": 0}))
@@ -739,10 +793,10 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     await adapter._handle_group_message({"self_id": 10, "group_id": 20, "user_id": 30, "message_id": 9,
         "message_type": "group", "message": [{"type": "text", "data": {"text": "旧副本"}}]})
     event = adapter._event_queue.get_nowait()
-    snapshot = (PendingText("r1", "30", "1", "实际认领", 0.0),)
+    snapshot = (PendingMessage("r1", "30", "1", "实际认领", 0.0),)
     scheduler.wake_timers.tickets[event] = DeadlineTicket(snapshot=snapshot)
 
-    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingText, ...]:
+    def claimed(*args: Any, **kwargs: Any) -> tuple[PendingMessage, ...]:
         return snapshot
 
     monkeypatch.setattr(scheduler.wake_window, "claim", claimed)
@@ -751,3 +805,370 @@ async def test_deadline_wake_uses_claimed_batch_only(monkeypatch: pytest.MonkeyP
     user_call = manager.handle_call_async.await_args.args[0]
     assert user_call.message == "[用户 30, 消息 1] 实际认领"
     assert "旧副本" not in user_call.message
+
+
+# ================= 会话绑定闸门测试 =================
+
+
+class _GroupBindingAdapter(_RecorderAdapter):
+    """携带群路由绑定的测试适配器"""
+
+    def __init__(self, binding: dict[str, str] | None = None, adapter_id: str = "rec1") -> None:
+        super().__init__(adapter_id)
+        self.binding = binding
+
+    def group_route(self, group_id: str) -> tuple[dict[str, Any], int]:
+        """
+        返回群路由快照
+
+        参数:
+        - group_id: 群号
+
+        返回:
+        - tuple[dict[str, Any], int]: 路由设置与代次, 未登记绑定时为空设置
+        """
+        if self.binding is None:
+            return ({}, 1)
+        return ({"binding": {"mode": "value", "value": self.binding}}, 1)
+
+
+class _RecordingUserManager:
+    """记录会话解析调用的假 UserManager"""
+
+    def __init__(self) -> None:
+        self.resolved: list[str] = []
+
+    def resolve_session(self, user_id: str, platform: str, session_type: str, **kwargs: Any) -> str:
+        """
+        记录解析入参并返回稳定会话 ID
+
+        参数:
+        - user_id: 发送者 ID
+        - platform: 平台实例 ID
+        - session_type: 会话类型名称
+        - kwargs: 其余路由参数
+
+        返回:
+        - str: 供管线继续执行的会话 ID
+        """
+        self.resolved.append(session_type)
+        return f"{platform}:{user_id}:sid"
+
+
+class _GateHarness(NamedTuple):
+    """绑定闸门用例的装配件"""
+
+    scheduler: PipelineScheduler
+    manager: _FakeSessionManager
+    users: _RecordingUserManager
+    adapter: _RecorderAdapter
+    registry: _FakeProviderRegistry
+
+
+def _gate_harness(
+    definitions: dict[str, bool], *, adapter: _RecorderAdapter | None = None, rate_limiter: RateLimiter | None = None,
+) -> _GateHarness:
+    """
+    装配绑定闸门用例: 注册表替身按定义表答复三态, 会话与用户管理器记录调用
+
+    参数:
+    - definitions: 会话定义名到是否启用的映射
+    - adapter: 可选的事件来源适配器
+    - rate_limiter: 可选的限流器, 用于断言闸门命中不消耗额度
+
+    返回:
+    - _GateHarness: 调度器与全部替身
+    """
+    registry = _FakeProviderRegistry(definitions)
+    manager = _FakeSessionManager()
+    manager.provider_registry = registry
+    users = _RecordingUserManager()
+    scheduler = PipelineScheduler(
+        _as_session_manager(manager), rate_limiter=rate_limiter, user_manager=cast(Any, users),
+    )
+    return _GateHarness(scheduler, manager, users, adapter or _RecorderAdapter(), registry)
+
+
+def _group_event(adapter: _RecorderAdapter, *, message_str: str = "hello", group_id: str = "g1") -> MessageEvent:
+    """
+    构造带群号的群消息事件, 使群路由绑定参与最终绑定解析
+
+    参数:
+    - adapter: 事件来源适配器
+    - message_str: 正文
+    - group_id: 群号
+
+    返回:
+    - MessageEvent: 群消息事件
+    """
+    message = PlatformMessage()
+    message.type = PlatformMessageType.GROUP_MESSAGE
+    message.self_id = "bot"
+    message.session_id = "s1"
+    message.message_id = "msg-1"
+    message.sender = MessageMember(user_id="user-1", nickname="User")
+    message.group = Group(group_id=group_id, group_name=group_id)
+    message.message = [Plain(text=message_str)]
+    message.message_str = message_str
+    return MessageEvent(
+        message_str=message_str, platform_message=message,
+        platform_meta=PlatformMetadata(name=adapter.config.id, id=adapter.config.id),
+        session_id="s1", adapter=adapter, session_type="dummy",
+    )
+
+
+def _spy_window_paths(scheduler: PipelineScheduler, monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], list[str]]:
+    """
+    记录入窗与排程调用并转发真实实现
+
+    参数:
+    - scheduler: 待观测的调度器
+    - monkeypatch: pytest 补丁器
+
+    返回:
+    - tuple[list[str], list[str]]: 入窗与排程的会话 ID 记录
+
+    转发真实实现才能同时断言"未被调用"与"调用结果与既有行为一致"
+    """
+    observes: list[str] = []
+    schedules: list[str] = []
+    original_observe = scheduler.wake_window.observe
+    original_schedule = scheduler.wake_timers.schedule
+
+    def spy_observe(current: MessageEvent) -> tuple[Any, ...]:
+        observes.append(current.session_id)
+        return original_observe(current)
+
+    def spy_schedule(current: MessageEvent, **kwargs: Any) -> None:
+        schedules.append(current.session_id)
+        original_schedule(current, **kwargs)
+
+    monkeypatch.setattr(scheduler.wake_window, "observe", spy_observe)
+    monkeypatch.setattr(scheduler.wake_timers, "schedule", spy_schedule)
+    return observes, schedules
+
+
+def _diagnostic_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[dict[str, Any]]:
+    """
+    取事件对应的诊断阶段记录
+
+    参数:
+    - scheduler: 采集诊断的调度器
+    - event: 目标事件
+
+    返回:
+    - list[dict[str, Any]]: 阶段记录列表
+    """
+    detail = scheduler.request_diagnostics.get_request(event.call_origin.request_id)
+    if detail is None:
+        raise AssertionError("缺少诊断记录")
+    return cast(list[dict[str, Any]], detail["records"])
+
+
+def _projection_rows(scheduler: PipelineScheduler, event: MessageEvent) -> list[tuple[Any, Any]]:
+    """
+    取事件的投影阶段结论
+
+    参数:
+    - scheduler: 采集诊断的调度器
+    - event: 目标事件
+
+    返回:
+    - list[tuple[Any, Any]]: (判定, 原因码) 列表, 收尾的发送阶段结论不计入
+    """
+    return [
+        (row["decision"], row["reason_code"]) for row in _diagnostic_rows(scheduler, event)
+        if row["stage"] == "projection"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_disabled_binding_rejects_before_window_and_timers(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """定义被禁用: 消息在入窗与排程前被拒, 不建会话不调模型, 日志止于 DEBUG"""
+    import logging
+
+    harness = _gate_harness({"dummy": False})
+    harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
+    observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
+    event = _group_event(harness.adapter)
+    with caplog.at_level(logging.DEBUG):
+        await harness.scheduler.execute(event)
+
+    assert harness.manager.calls == [] and harness.users.resolved == []
+    assert observes == [] and schedules == []
+    assert event.get_extra("input_projection") is None
+    # 被拒正文不得进入窗口, 重新启用后不会被补进模型
+    assert harness.scheduler.wake_window.peek(event) == ()
+    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_disabled")]
+    assert any(record.levelno == logging.DEBUG and "会话定义已禁用" in record.getMessage() for record in caplog.records)
+    # 定义被禁用是正常配置状态: 不得逐条 WARNING
+    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.asyncio
+async def test_invalid_binding_rejects_with_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+):
+    """绑定失效: 消息被拒且不落回默认会话类, 配置错误以 WARNING 暴露原始原因"""
+    import logging
+
+    harness = _gate_harness({})
+    harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
+    observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
+    event = _group_event(harness.adapter)
+    with caplog.at_level(logging.WARNING):
+        await harness.scheduler.execute(event)
+
+    assert harness.manager.calls == [] and harness.users.resolved == []
+    assert observes == [] and schedules == []
+    assert harness.scheduler.wake_window.peek(event) == ()
+    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
+    assert "会话定义不可用 provider=session_class, name=dummy" in str(_diagnostic_rows(harness.scheduler, event)[0]["reason"])
+    assert any(
+        record.levelno == logging.WARNING and "会话绑定不可用" in record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.asyncio
+async def test_binding_gate_judges_group_override_binding():
+    """闸门判定的是群级覆盖后的绑定: 该群被拒不影响平台绑定自身有效"""
+    adapter = _GroupBindingAdapter({"provider": "session_class", "config_name": "group-session"})
+    harness = _gate_harness({"dummy": True, "group-session": False}, adapter=adapter)
+    overridden = _group_event(adapter)
+    overridden.is_wake = True
+    assert (overridden.session_provider, overridden.session_type) == ("session_class", "group-session")
+    await harness.scheduler.execute(overridden)
+    assert harness.manager.calls == []
+    assert _projection_rows(harness.scheduler, overridden) == [("dropped", "binding_disabled")]
+
+    # 反向: 平台绑定失效但该群绑定有效, 只拒被判定的那个绑定
+    harness.registry.definitions["dummy"] = False
+    harness.registry.definitions["group-session"] = True
+    allowed = _group_event(adapter)
+    allowed.is_wake = True
+    await harness.scheduler.execute(allowed)
+    assert [call.session_type for call in harness.manager.calls] == ["group-session"]
+
+
+@pytest.mark.asyncio
+async def test_rejected_message_does_not_consume_rate_limit_and_recovers_without_rebuild():
+    """闸门命中不消耗额度; 定义恢复后同一调度器与适配器立即恢复, 无需重建平台"""
+    harness = _gate_harness({"dummy": False}, rate_limiter=RateLimiter(rate=1.0, burst=1))
+    rejected = _group_event(harness.adapter, message_str="禁用期消息")
+    rejected.is_wake = True
+    await harness.scheduler.execute(rejected)
+    assert harness.manager.calls == []
+
+    harness.registry.definitions["dummy"] = True
+    accepted = _group_event(harness.adapter, message_str="恢复后消息")
+    accepted.is_wake = True
+    await harness.scheduler.execute(accepted)
+    assert [call.message for call in harness.manager.calls] == ["[用户 User (ID user-1), 消息 msg-1] 恢复后消息"]
+    # 恢复后仍走完整管线: 回复经同一适配器外发
+    assert [getattr(chain.components[0], "text", "") for _, chain in harness.adapter.sent] == ["回复"]
+
+
+@pytest.mark.asyncio
+async def test_manual_and_deadline_sources_are_rejected_when_binding_disabled():
+    """手动唤醒与定时补偿来源同样在闸门被拒, 快照不进入会话"""
+    from satrap.core.pipeline.manual_wake import ManualWakeTicket
+    from satrap.core.pipeline.wake_timers import DeadlineTicket
+    from satrap.core.pipeline.wake_window import PendingMessage
+
+    harness = _gate_harness({"dummy": False})
+    snapshot = (PendingMessage("r1", "user-1", "1", "禁用期窗口正文", 0.0),)
+    manual = _group_event(harness.adapter, message_str="手动唤醒")
+    harness.scheduler.manual_wakes.tickets[manual] = ManualWakeTicket("req-manual", snapshot)
+    deadline = _group_event(harness.adapter, message_str="定时补偿")
+    harness.scheduler.wake_timers.tickets[deadline] = DeadlineTicket(snapshot=snapshot)
+
+    for event in (manual, deadline):
+        await harness.scheduler.execute(event)
+
+    assert harness.manager.calls == [] and harness.users.resolved == []
+    assert [_projection_rows(harness.scheduler, event) for event in (manual, deadline)] == [
+        [("dropped", "binding_disabled")], [("dropped", "binding_disabled")],
+    ]
+
+
+@pytest.mark.asyncio
+async def test_binding_gate_reads_shared_registry_judgment(monkeypatch: pytest.MonkeyPatch):
+    """闸门读取注册表的共享判定: 判定恒失效时即使定义存在也拒绝"""
+    harness = _gate_harness({"dummy": True})
+    harness.manager.provider_registry = SessionProviderRegistry()
+    calls: list[tuple[str, str | None]] = []
+
+    def spy(self: SessionProviderRegistry, definition_name: str, provider_name: str | None = None) -> BindingStatus:
+        calls.append((definition_name, provider_name))
+        return BindingStatus(BindingState.INVALID, "共享判定失效")
+
+    monkeypatch.setattr(SessionProviderRegistry, "binding_status", spy)
+    event = _group_event(harness.adapter)
+    await harness.scheduler.execute(event)
+
+    assert calls == [("dummy", "session_class")]
+    assert harness.manager.calls == [] and harness.users.resolved == []
+    assert _projection_rows(harness.scheduler, event) == [("dropped", "binding_invalid")]
+
+
+@pytest.mark.asyncio
+async def test_gate_uses_real_registry_disabled_definition(tmp_path: Path):
+    """端到端: 真实 SessionManager 与 SessionClassProvider 下, 定义禁用即拒收, 重新启用即恢复"""
+    from satrap.core.framework.Base import Session
+    from satrap.core.framework.SessionClassManager import SessionClassConfigManager
+
+    class _EchoSession(Session):
+        """最小同步会话: 原样回显输入"""
+
+        def run(self, message: str) -> str:
+            return message
+
+    class _RecordingManager(SessionManager):
+        """真实会话绑定的注册表之上记录模型调用"""
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.calls: list[Any] = []
+
+        async def handle_call_async(self, user_call: Any) -> str:
+            self.calls.append(user_call)
+            return "回复"
+
+    class_cfg = SessionClassConfigManager(storage_path=tmp_path / "session_classes.json")
+    class_cfg.register("dummy", _EchoSession)
+    manager = _RecordingManager(default_session_type="dummy", db_path=tmp_path / "sessions.db")
+    manager.register_session_type("dummy", _EchoSession)
+    manager.class_cfg_mgr = class_cfg
+    users = _RecordingUserManager()
+    scheduler = PipelineScheduler(_as_session_manager(manager), user_manager=cast(Any, users))
+    adapter = _RecorderAdapter()
+
+    class_cfg.update_entry("dummy", enabled=False)
+    rejected = _group_event(adapter, message_str="禁用期消息")
+    rejected.is_wake = True
+    await scheduler.execute(rejected)
+    assert manager.calls == [] and users.resolved == []
+    assert _projection_rows(scheduler, rejected) == [("dropped", "binding_disabled")]
+
+    # 重新启用定义即可恢复: 平台与调度器实例不变
+    class_cfg.update_entry("dummy", enabled=True)
+    accepted = _group_event(adapter, message_str="恢复后消息")
+    accepted.is_wake = True
+    await scheduler.execute(accepted)
+    assert [call.message for call in manager.calls] == ["[用户 User (ID user-1), 消息 msg-1] 恢复后消息"]
+
+
+@pytest.mark.asyncio
+async def test_runnable_binding_keeps_wake_window_behavior(monkeypatch: pytest.MonkeyPatch):
+    """可运行绑定下的入窗与排程行为不变 (与拒绝用例同型装配)"""
+    harness = _gate_harness({"dummy": True})
+    harness.adapter.config.settings.update({"wake_mode": "frequency", "wake_message_threshold": 5})
+    observes, schedules = _spy_window_paths(harness.scheduler, monkeypatch)
+    event = _group_event(harness.adapter)
+    await harness.scheduler.execute(event)
+
+    assert observes == ["s1"] and schedules == ["s1"]
+    assert [item.text for item in harness.scheduler.wake_window.peek(event)] == ["hello"]
+    assert harness.manager.calls == []

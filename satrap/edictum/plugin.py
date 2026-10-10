@@ -5,7 +5,7 @@ edictum 目录插件: 工具 + skill + MCP + 命令 + 处理脚本的组合包
     插件名/
     |-- meta.yaml     # name(必填) / version / author / repo / description
     |                 # 及可选能力组成描述: tools/skills/handlers/commands/mcp (名字 -> 描述)
-    |-- tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools(session) 工厂
+    |-- tools.py      # 可选: Tool 子类 (同步版) / AsyncTool 子类 (异步版), 或 get_tools 工厂
     |-- skills.py     # 可选: 导出 skills: list[Skill]; 或 skills/ 子目录 (skill.md 文件夹式)
     |-- mcp.py        # 可选: 导出 clients: dict[str, MCPClient] 或 build_clients() (同步/异步均支持)
     |-- commands.py   # 可选: 导出 commands (同步) / async_commands (异步) 字典, 或 cmd_* / cmd_*_async 约定
@@ -21,7 +21,8 @@ meta.yaml 能力声明:
 - 用户插件目录 .satrap/plugins (用户自添加, 同名冲突时官方优先)
 
 tools.py 工厂约定 (解决会话依赖注入):
-- 优先 get_tools(session) (带会话实例), 签名不匹配时降级 get_tools()
+- 统一签名 get_tools(session, config=None, resources=None); 会话和配置都可为空
+- 兼容旧签名: 按签名自适应降级 get_tools(session, config) -> get_tools(session) -> get_tools()
 - 无 get_tools 时收集模块内定义的 base 子类 (无参构造)
 
 双层状态模型:
@@ -50,6 +51,7 @@ import yaml
 import sys
 
 from satrap.core.utils.skills import Skill
+from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions
 from satrap.core.type import (
     safe_getattr_callable,
     safe_getattr_str,
@@ -217,18 +219,19 @@ def parse_capability_descriptions(meta: dict[str, Any]) -> dict[str, dict[str, s
     return descriptions
 
 
-def _load_module(path: Path, module_name: str) -> ModuleType | None:
+def _load_module(path: Path, module_name: str, *, fresh: bool = False) -> ModuleType | None:
     """
     动态加载插件模块或同名包 (入口不存在返回 None)
 
     参数:
     - path: 路径
     - module_name: module名称
+    - fresh: 是否重新实例化模块, 默认 False 复用已加载模块
 
     返回:
     - 已加载模块; 文件不存在时返回 None
 
-    若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
+    fresh 为 False 时, 若模块名已在 sys.modules 且来源路径一致 (如官方插件在包内), 复用已加载模块,
     避免同一文件被加载两次导致模块级状态 (如工具引用的 WORKSPACE_ROOT) 分裂
     """
     if not path.is_file() and path.suffix == ".py":
@@ -240,11 +243,11 @@ def _load_module(path: Path, module_name: str) -> ModuleType | None:
         _refresh_module_index()
 
         existing = _module_index_by_name.get(module_name)
-        if existing is not None and existing.resolved_path == resolved_path:
+        if not fresh and existing is not None and existing.resolved_path == resolved_path:
             return existing.module
 
         indexed_module = _module_index_by_path.get(resolved_path)
-        if indexed_module is not None:
+        if not fresh and indexed_module is not None:
             return indexed_module
 
         spec = importlib.util.spec_from_file_location(module_name, str(path))
@@ -355,8 +358,8 @@ def collect_tools(
     - session: 会话
     - config: 配置信息
 
-    优先 get_tools 工厂 (解决会话/配置依赖注入), 按签名自适应降级:
-    get_tools(session, config) -> get_tools(session) -> get_tools();
+    优先 get_tools 工厂 (解决会话/配置依赖注入), 统一签名为 get_tools(session, config, resources);
+    旧签名按适应性降级: get_tools(session, config) -> get_tools(session) -> get_tools();
     无工厂时收集模块内定义的 base 子类实例 (无参构造, 排除基类本身)
 
     返回:
@@ -567,7 +570,8 @@ def collect_skills(plugin_dir: Path, module_name: str) -> list[Skill]:
             md = entry / "skill.md"
             if md.is_file():
                 found.append(Skill.from_file(str(md), default_name=entry.name))
-    mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills")
+    mod = _load_module(plugin_dir / "skills.py", f"{module_name}.skills", fresh=True)
+    # 技能含工具和连接实例, 每次安装独立创建, 避免旧会话清理新会话的资源
     if mod is not None:
         declared = safe_getattr_list(mod, "skills")
         if declared:
@@ -669,6 +673,8 @@ class Plugin:
     capability_descriptions: dict[str, dict[str, str]] = field(default_factory=dict[str, dict[str, str]])
     """五类能力描述 (meta.yaml 声明): kind(tools/skills/handlers/commands/mcp) -> {能力名: 描述}"""
     config_schema: dict[str, dict[str, Any]] = field(default_factory=dict[str, dict[str, Any]])
+    permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
+    effective_config: dict[str, Any] = field(default_factory=dict, repr=False)
     resources: Any = field(default=None, repr=False)
     recovery_fingerprint: str = ""
     """配置项声明 (meta.yaml config_schema): 键 -> {type/default/description/options}, 供前端渲染表单"""

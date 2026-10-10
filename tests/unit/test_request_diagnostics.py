@@ -25,9 +25,24 @@ from satrap.core.platform.event import PlatformMessage
 from satrap.core.platform.onebot.adapter import OneBotAdapter
 from satrap.core.pipeline.request_diagnostics import REQUEST_CAPACITY, RequestDiagnostic, RequestDiagnosticLog
 from satrap.core.type import MessageMember, PlatformMessageType
+from satrap.core.framework.providers import BindingState, BindingStatus
 
 _NOW = 1_760_000_000.0
 """测试基准时间: 需要真实量级的墙钟时间, 0 附近的秒数在 Windows 上无法格式化"""
+
+
+class _RunnableRegistry:
+    """绑定判定恒为可运行的会话定义注册表替身"""
+
+    @staticmethod
+    def binding_status(*_args: object) -> BindingStatus:
+        """
+        恒定答复可运行
+
+        返回:
+        - BindingStatus: 可运行
+        """
+        return BindingStatus(BindingState.RUNNABLE)
 
 
 class _StubAdapter(OneBotAdapter):
@@ -66,6 +81,7 @@ def _scheduler(
 ) -> tuple[PipelineScheduler, Any, OneBotAdapter]:
     manager = Mock()
     manager.handle_call_async = AsyncMock(return_value=response)
+    manager.provider_registry = _RunnableRegistry()
     scheduler = PipelineScheduler(cast(Any, manager))
     instance = adapter if adapter is not None else _StubAdapter()
     scheduler.manual_wake_store = store if store is not None else ManualWakeStore(tmp_path / "wake.json")
@@ -290,6 +306,7 @@ class TestDiagnosticRoutes:
         backend._running = True
         manager = Mock()
         manager.handle_call_async = AsyncMock(return_value="")
+        manager.provider_registry = _RunnableRegistry()
         scheduler = PipelineScheduler(cast(Any, manager))
         scheduler.manual_wake_store = ManualWakeStore(tmp_path / "wake.json")
         backend._scheduler = scheduler

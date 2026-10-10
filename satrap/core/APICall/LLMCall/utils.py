@@ -9,6 +9,8 @@ from typing import Any, Dict, List, Optional, Iterable, cast
 from openai import APIError
 import json
 
+from types import SimpleNamespace
+
 from satrap.core.type import safe_getattr
 
 _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
@@ -17,6 +19,8 @@ _THINKING_FIELD_MAP: Dict[str, tuple[Any, Any]] = {
     "enable_thinking": (False, True),
     "thinking_level": ("none", None),
 }
+
+from satrap.core.utils.media import user_media_content, project_messages, expand_tool_media
 
 
 def _as_message_params(
@@ -189,8 +193,6 @@ def prepare_call_messages(
     返回:
     - 可发送给模型的消息, 工具媒体只在此处展开; 未启用视觉时拒绝媒体
     """
-    from types import SimpleNamespace
-    from satrap.core.utils.media import user_media_content, project_messages, expand_tool_media
 
     prepared = project_messages(_rename_thinking_field(messages, thinking_field_name), True)
     if img_urls or video_urls:

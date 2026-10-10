@@ -571,6 +571,41 @@
       "value": {
         "wake_talk_value": 0
       }
+    },
+    {
+      "context": "platform",
+      "field": "command_operators",
+      "id": "platform-command-operators-empty",
+      "valid": true,
+      "value": {"command_operators": []}
+    },
+    {
+      "context": "platform",
+      "field": "command_operators",
+      "id": "platform-command-operators-valid",
+      "valid": true,
+      "value": {"command_operators": ["2410323775", "owner"]}
+    },
+    {
+      "context": "platform",
+      "field": "command_operators",
+      "id": "platform-command-operators-blank-item",
+      "valid": false,
+      "value": {"command_operators": [" "]}
+    },
+    {
+      "context": "platform",
+      "field": "command_operators",
+      "id": "platform-command-operators-not-list",
+      "valid": false,
+      "value": {"command_operators": "2410323775"}
+    },
+    {
+      "context": "platform",
+      "field": "command_operators",
+      "id": "platform-command-operators-over-cap",
+      "valid": false,
+      "value": {"command_operators": ["u01", "u02", "u03", "u04", "u05", "u06", "u07", "u08", "u09", "u10", "u11", "u12", "u13", "u14", "u15", "u16", "u17", "u18", "u19", "u20", "u21", "u22", "u23", "u24", "u25", "u26", "u27", "u28", "u29", "u30", "u31", "u32", "u33"]}
     }
   ],
   "version": 1

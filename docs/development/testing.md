@@ -54,3 +54,5 @@ python tests/agent_demo.py --help
 - **浏览器 e2e**: `satrap-ui/e2e/` 下的脚本经 Playwright (Chromium headless) 驱动真实 React 页面, HTTP / WebSocket 使用受控数据或临时后端: `chat-reconnect.mjs` (WS 重连 / 快照恢复 / 序号去重), `model-dimensions.mjs`, `form-required.mjs` (共用表单必填约束: 模型配置名称, 用户 ID, 绑定 Session ID, 检查点分支名为空时不发写请求且弹窗保留, `npm run test:e2e:forms`), `rag-settings.mjs`, `rag-upload.mjs` (真实 HTTP 上传 + 文档解析 + SQLite / FAISS 检索全链路, 自带临时后端 `rag-upload-backend.py`)。`npm run test:e2e` 目前只跑 `chat-reconnect.mjs`, 其余用 `node e2e/<脚本名>.mjs` 单独运行 (`platform-policy.mjs` / `manual-wake.mjs` / `asr-models.mjs` / `form-required.mjs` 另有 `test:e2e:*` 别名)。
 
 两套测试都会自行拉起临时 Vite 服务, 无需预先启动前端或后端。
+
+对话维护的浏览器回归使用 `npm run test:e2e:conversations`, 覆盖上下文与展示历史分别编辑、深链与旧路由、保存失败保留草稿、离开确认、删除与备份恢复、清空保留提示词及手机布局。后端对应的隔离测试位于 `tests/unit/test_conversation_data.py`, HTTP 和活动 Chat 路径分别由路由与展示服务测试覆盖, 不修改用户的真实对话数据。

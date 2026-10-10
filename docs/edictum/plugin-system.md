@@ -95,6 +95,69 @@ config_schema:
 - 模型与资源选择器: `llm` / `embed` / `rerank` (引用后端模型配置名) 与 `knowledge_base` / `knowledge_bases` (引用 RAG 知识库), 前端以下拉选项渲染, 模型引用的运行时注入与校验见 [RAG 与会话覆盖](../plugins/rag-and-session-overrides.md);
 - 配置值按四级合并后注入工具工厂 (见下"插件配置与会话级覆盖"), schema 不提供校验之外的安装行为变化。
 
+### 管理权限声明 (可选)
+
+插件通过 meta.yaml 显式声明哪些工具 / 命令属于管理入口, 由宿主统一授权; 不按工具名, 配置字段名或描述猜测。用户侧的管理组配置见 [系统管理员](../plugins/system-administrators.md)
+
+| 字段 | 契约 |
+| --- | --- |
+| `permission_schema_version` | 填 1; 不支持的版本拒绝加载 |
+| `management_permissions` | 权限 ID -> 规则, ID 只在当前插件内有效 |
+| `tool_permissions` | 已声明工具名 -> 所需权限 ID 列表 |
+| `command_permissions` | 已声明命令名 -> `{default?, subcommands?}` |
+
+每条规则的字段:
+
+| 字段 | 要求 | 含义 |
+| --- | --- | --- |
+| `description` | 必填非空字符串 | 前端显示的权限用途 |
+| `requirements` | 可选, 最多 32 项非空字符串 | 展示仍需满足的开关 / 范围 / 审批, 只作说明不参与判断 |
+| `caller_list` | 可选, config_schema 中的 ID 名单字段 | 以插件实际安装配置中的名单作为本地授权来源 |
+| `empty_policy` | caller_list 存在时必填, `allow` / `deny`; 否则不得出现 | 名单为空时的本地判断 |
+| `system_admin` | 必填布尔 | true 时允许管理组授予; false 只认本地名单 |
+
+```yaml
+permission_schema_version: 1
+tools:
+  group_admin_list_group_requests: 查询申请
+  group_admin_handle_group_request: 处理申请
+config_schema:
+  allowed_read_callers:
+    type: textarea
+  request_managers:
+    type: textarea
+management_permissions:
+  read:
+    description: 使用群管理查询工具
+    caller_list: allowed_read_callers
+    empty_policy: allow
+    system_admin: true
+  requests:
+    description: 查询和处理入群申请与邀请
+    caller_list: request_managers
+    empty_policy: deny
+    system_admin: true
+tool_permissions:
+  group_admin_list_group_requests: [read, requests]
+  group_admin_handle_group_request: [requests]
+```
+
+命令写法为 `command_permissions: {<命令名>: {default: [...], subcommands: {<子命令>: [...]}}}`, 命令须列入 `commands`, 子命令须在命令注册信息中声明
+
+判定规则:
+
+- 一个入口列出多个权限时全部满足 (AND); 每个权限内部为"本地名单允许 OR 管理组与成员例外授权"。没有 caller_list 的权限本地路径恒为拒绝, 只能由管理组或成员例外授予
+- 子命令使用 `default` 与精确匹配子命令规则的并集, 子命令配置不能解除命令默认权限; 子命令名精确匹配已解析的原生命令 token, 不按前缀匹配。命令授权需要宿主识别原生命令后创建的可信作用域, 模型工具作用域不能创建
+- 未绑定管理权限的已声明入口是普通入口, 行为不变; 未知入口, 已停用入口, 管理入口缺少可信平台身份或名单结构错误一律拒绝
+- 没有声明的旧插件保持原行为。权限映射引用未声明入口 / 未定义权限, 列表为空或重复, 未知规则字段, 非法 empty_policy 或非布尔 system_admin 均视为无效 metadata: 拒绝加载该插件, 前端显示原因并记日志, 不退化成允许, 不中断目录扫描与平台进程
+- 至少一条 `system_admin: true` 的合法声明才算"已接入"管理组与成员例外授权
+
+宿主接口位于权限服务, 插件只调用这两项: `authorize_plugin_entry(binding, subcommand=None)` 返回判定结果 (用于工具过滤与预览), `require_plugin_entry_permission(...)` 在 denied 时抛 `PluginPermissionDenied` (用于执行边界)。binding 由宿主创建并固定插件, 入口种类, 名称与实例, 调用身份取自可信作用域, 模型参数不能提供身份, 名单或配置版本
+
+判定结果 `AuthorizationDecision` 含 `status` (allowed / denied / not_applicable), 入口身份, `required_permissions`, 每项 `grants` (来源 local_list / local_empty_allow / administrator_group / administrator_override 及命中组或例外条目 ID), `reason_code`, `policy_revision` 与 `permission_fingerprint` (供持久申请复核)。`reason_code` 取值: `permission_denied` (确未授权), `identity_missing`, `entry_disabled`, `stale_authorization` (检查与写入之间版本变化), `invalid_permission_config` (名单结构错误), `authorization_error` (检查本身异常, 记完整堆栈, 提示查看后端日志), `unknown_entry`
+
+工具过滤结果不能作为执行凭证; 同一处理步骤内复用一份判定, 步骤结束即失效, 复制出去的上下文同样失效, 并按当前调用身份区分, 异步等待后和平台写入前重新校验
+
 ## 安装 / 启停 / 卸载
 
 ```python
@@ -138,14 +201,14 @@ plugin.list_capabilities()        # 展示插件内每项能力的实效状态 (
 
 > 注意: 插件内能力的独立启停建议走插件实例接口, 会话全局接口 (`session.disable_tool`) 不维护插件状态; 插件停用期间对名下能力的操作以恢复时的独立状态为准。
 >
-> 工具与处理器采用**执行路径合成**: 插件停用后, 即使 `enable_tool` / `enable_all_tools` / `enable_handler` 更新了独立位, 执行时仍按「独立位 ∧ 插件聚合开关」过滤 (`execute_tool` 返回 disabled 错误, 处理器不执行); 工具定义列表 (`get_tools_definitions`) 按独立位展示, 与执行路径解耦。
+> 工具定义与执行均按「独立位 ∧ 插件聚合开关」过滤: 插件停用后, 即使 `enable_tool` / `enable_all_tools` 更新了独立位, 工具也不会出现在模型收到的 `get_tools_definitions()` 中, 直接执行仍返回 disabled 错误. 当前调用不可用的工具也会从模型定义中隐藏. 处理器同样按独立位与插件聚合开关过滤; 停用期间修改独立状态不会绕过插件开关, 重新启用插件后按独立状态恢复
 
 ## 插件配置与会话级覆盖
 
 声明了 `config_schema` 的插件支持运行时配置, 按**四级合并** (后者覆盖前者):
 
 ```text
-schema 默认 < 全局插件配置 (.satrap/plugin_config/<name>.json) < Edictum 命名配置 (session_class_config) < 当前会话覆盖
+schema 默认 < 全局插件配置 (.satrap/config/plugins/<name>.json) < Edictum 命名配置 (session_class_config) < 当前会话覆盖
 ```
 
 - **会话级覆盖**存平台库 `session_config_overrides` 表, 按会话与配置域隔离; 空值按 schema 校验, **删除键表示恢复继承**, 不保存合并结果, 对象和数组按字段整体替换;

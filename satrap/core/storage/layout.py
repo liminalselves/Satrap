@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import hashlib
 from pathlib import Path
 import shutil
@@ -10,6 +11,8 @@ import time
 import re
 
 from satrap.core.utils.paths import get_data_dir
+
+from satrap.core.log import logger
 
 
 CHAT_PLATFORM_ID = "chat"
@@ -59,9 +62,10 @@ class StorageLayout:
         初始化数据布局
 
         参数:
-        - root: 可选数据根目录, 默认 `.satrap/data`
+        - root: 可选数据根目录, 未提供时读取 SATRAP_DATA_ROOT, 再回退到 `.satrap/data`
         """
-        self.root = Path(root).resolve() if root is not None else (get_data_dir() / "data").resolve()
+        configured_root = root if root is not None else os.getenv("SATRAP_DATA_ROOT") or get_data_dir() / "data"
+        self.root = Path(configured_root).resolve()
 
     @property
     def platforms_root(self) -> Path:
@@ -198,12 +202,13 @@ class StorageLayout:
         )
         return root
 
-    def ensure_platform(self, platform_id: str) -> Path:
+    def ensure_platform(self, platform_id: str, *, platform_type: str | None = None) -> Path:
         """
         创建平台基础目录并写入身份清单
 
         参数:
         - platform_id: 平台实例 ID
+        - platform_type: 可选的平台类型, 未提供时保留清单中已有类型
 
         返回:
         - Path: 平台实例数据目录
@@ -226,6 +231,15 @@ class StorageLayout:
             "platform_id": clean_platform_id,
             "storage_key": root.name,
         }
+        if platform_type:
+            payload["platform_type"] = platform_type
+        elif manifest.is_file():
+            try:
+                previous = json.loads(manifest.read_text(encoding="utf-8"))
+                if isinstance(previous.get("platform_type"), str):
+                    payload["platform_type"] = previous["platform_type"]
+            except (OSError, ValueError, AttributeError) as error:
+                logger.warning(f"[存储布局] 旧平台清单无法读取: {clean_platform_id}, {error}")
         manifest.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",

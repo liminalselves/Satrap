@@ -56,6 +56,7 @@ class _CodingSubAgent(_SubAgentCore):
             context_id=self.context_id,
             tools_manager=self.tools_manager,
             system_prompt=self.system_prompt,
+            persist_context=False,
         )
         return sub.tools_agent(task, max_iterations=max_turns)
 
@@ -79,5 +80,6 @@ class _AsyncCodingSubAgent(_SubAgentCore):
             context_id=self.context_id,
             tools_manager=self.tools_manager,
             system_prompt=self.system_prompt,
+            persist_context=False,
         )
         return await sub.tools_agent(task, max_iterations=max_turns)

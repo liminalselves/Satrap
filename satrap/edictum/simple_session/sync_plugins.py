@@ -1,13 +1,18 @@
 """同步目录插件的安装, 失败回滚与能力卸载"""
 
 from __future__ import annotations
+import traceback
+import weakref
 from pathlib import Path
 from .recovery import plugin_fingerprint
 from satrap.edictum.plugin_compatibility import check_plugin_compatibility
+from satrap.edictum.plugin_permissions import parse_plugin_permissions, validate_permission_install
+from satrap.core.plugin_authorization import PluginEntryBinding, bind_plugin_tool
 from typing import Any
 from satrap.edictum.plugin_config import parse_config_schema, schema_to_payload
 from satrap.edictum.plugin_settings import (
     EffectivePluginConfig,
+    PluginInstallConfig,
     resolve_session_plugin_config,
 )
 from satrap.edictum.plugin_resources import PluginResources, MODEL_TYPES
@@ -70,6 +75,9 @@ def install_plugin(
     mcp_states: dict[str, bool] = {}
     mcp_clients: dict[str, tuple[Any, list[Any]]] = {}
     resources = None
+    installed_plugin: Plugin | None = None
+    name = ""
+    previous_tools = [(tool, tool.is_enabled()) for tool in self._wf.tools_manager.tools.values()]
     cleanup = None
     try:
         name = str(meta.get("name") or "").strip()
@@ -80,6 +88,7 @@ def install_plugin(
                 raise ValueError(f"插件 {name} 已安装")
 
         config_schema = parse_config_schema(meta)
+        permissions = parse_plugin_permissions(meta, config_schema)
         # 合成插件配置: schema.default < 全局 json < 会话覆盖
         if isinstance(config, EffectivePluginConfig):
             plugin_config = dict(config)
@@ -105,6 +114,7 @@ def install_plugin(
             if tname in self._wf.tools_manager.tools or tname in tool_states:
                 raise ValueError(f"插件 {name} 的工具 {tname} 与已注册工具冲突")
             t.owner_plugin = name
+            bind_plugin_tool(t, name, permissions, getattr(t, "config", plugin_config), self)
             self._wf.tools_manager.register_tool(t)
             tool_states[tname] = True
 
@@ -114,7 +124,7 @@ def install_plugin(
             if key in mgr.skills or key in skill_states:
                 raise ValueError(f"插件 {name} 的技能 {key} 与已加载技能冲突")
             mgr._register_skill(s)
-            skill_states[key] = True
+            skill_states[key] = config.initial_skills.get(key, True) if isinstance(config, PluginInstallConfig) else True
 
         for h in collect_handlers(
             plugin_dir, name, self, SessionHandler, plugin_config, resources
@@ -139,7 +149,9 @@ def install_plugin(
             if cname in self.cmd_handler.commands or cname in command_states:
                 raise ValueError(f"插件 {name} 的命令 {cname} 与已注册命令冲突")
             self.cmd_handler.register_command(
-                cname, chandler, intro=_command_intro(chandler)
+                cname, chandler, intro=_command_intro(chandler),
+                permission_binding=PluginEntryBinding(name, "commands", cname, permissions, plugin_config, weakref.ref(chandler), weakref.ref(self))
+                if cname in permissions.commands else None,
             )
             command_states[cname] = True
 
@@ -156,7 +168,7 @@ def install_plugin(
                     try:
                         close()
                     except Exception:
-                        pass
+                        logger.error(f"[edictum] 插件 {name} 的 MCP {mcp_name} 回滚关闭失败\n{traceback.format_exc()}")
                 raise
             mcp_clients[mcp_name] = (client, list(adapters))
             mcp_states[mcp_name] = True
@@ -171,6 +183,9 @@ def install_plugin(
             path=str(plugin_dir),
         )
         plugin.resources = resources
+        plugin.permissions = permissions
+        plugin.effective_config = plugin_config
+        validate_permission_install(permissions, tool_states, sync_commands)
         plugin._session = self
         plugin._cleanup = cleanup
         plugin.tools = tool_states
@@ -195,6 +210,12 @@ def install_plugin(
         )
         with self._registry_lock:
             self._plugins[name] = plugin
+            installed_plugin = plugin
+        for key, enabled in skill_states.items():
+            if not enabled:
+                mgr.deactivate(key, self._wf)
+            elif not mgr.activate(key, self._wf):
+                raise RuntimeError(f"插件 {name} 的技能 {key} 激活失败")
         logger.info(f"[edictum] 插件 {name} 已安装")
         return plugin
     except Exception:
@@ -206,7 +227,11 @@ def install_plugin(
         mgr = self._skills_manager
         if mgr is not None:
             for key in skill_states:
+                mgr.deactivate(key, self._wf)
                 mgr.unregister_skill(key)
+        if installed_plugin is not None:
+            with self._registry_lock:
+                self._plugins.pop(name, None)
         for hname in handler_states:
             with self._registry_lock:
                 handler = self._take_handler_locked(hname)
@@ -222,12 +247,14 @@ def install_plugin(
                 try:
                     close()
                 except Exception:
-                    pass
+                    logger.error(f"[edictum] 插件 {name} 的 MCP {mcp_name} 回滚关闭失败\n{traceback.format_exc()}")
+        for tool, was_enabled in previous_tools:
+            tool.enable() if was_enabled else tool.disable()   # 安装回滚后保留已有工具的启用状态
         if cleanup is not None:
             try:
                 cleanup(self)
-            except Exception as error:
-                logger.warning(f"[edictum] 插件安装回滚清理失败: {error}")
+            except Exception:
+                logger.error(f"[edictum] 插件 {name} 安装回滚清理失败\n{traceback.format_exc()}")
         raise
 
 

@@ -57,6 +57,10 @@ class PolicyField(PolicyFieldRequired, total=False):
 
 
 POLICY_FIELD_CONTRACT: dict[str, PolicyField] = {
+    "message_archive_retention_days": {
+        "kind": "int", "scope": "platform", "hot_reload": True, "display_in_preview": False,
+        "min": 1, "max": 3650, "integer": True, "default": 30,
+    },
     "message_text_limit": {
         "kind": "int", "scope": "platform", "hot_reload": True, "display_in_preview": False,
         "min": 64, "max": 32000, "integer": True, "default": 2000,
@@ -172,6 +176,10 @@ POLICY_FIELD_CONTRACT: dict[str, PolicyField] = {
         "kind": "list", "scope": "platform", "hot_reload": True, "display_in_preview": False,
         "max_items": 32, "max_length": 253,
     },
+    "command_operators": {
+        "kind": "list", "scope": "platform", "hot_reload": True, "display_in_preview": False,
+        "max_items": 32, "max_length": 64,
+    },
     "notice_types": {
         "kind": "notice_types", "scope": "platform", "hot_reload": False, "display_in_preview": False,
         "max_items": 64, "nullable": True,
@@ -261,6 +269,10 @@ def validate_event_limits(settings: Mapping[str, object]) -> None:
         value = settings["event_queue_ttl"]
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
             raise ValueError("event_queue_ttl 必须是有限的正数")
+    if "message_archive_retention_days" in settings:
+        value = settings["message_archive_retention_days"]
+        if type(value) is not int or not 1 <= value <= 3650:
+            raise ValueError("message_archive_retention_days 必须是 1 到 3650 的整数")
 
 
 _SCALAR_KINDS = frozenset({"int", "number", "bool", "enum", "text", "list"})

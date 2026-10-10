@@ -7,6 +7,9 @@ import random
 from typing import Any, cast
 import os
 import re
+from time import time
+
+import traceback
 
 from satrap.core.platform.misskey.misskey_utils import (
     add_at_mention_if_needed,
@@ -27,7 +30,8 @@ from satrap.core.platform.misskey.misskey_utils import (
     serialize_message_chain,
     upload_local_with_retries,
 )
-from satrap.core.platform.misskey.client import MisskeyAPI, StreamingClient
+from satrap.core.platform.misskey.client import AuthenticationError, MisskeyAPI, StreamingClient
+from satrap.core.platform.connection import ConnectionProbeError
 from satrap.core.platform.event import MessageChain, MessageEvent, PlatformMetadata
 from satrap.core.components import File, Image, PlatformComponentType, Record, Video
 from satrap.core.components import Plain
@@ -38,6 +42,7 @@ from satrap.core.platform import (
     register_platform_adapter,
 )
 from satrap.core.type import PlatformMessage, safe_getattr, safe_getattr_str
+from satrap.core.config.platform_messages import ArchiveMessage, MessageScope, archive_time
 
 from satrap.core.log import logger
 
@@ -47,12 +52,55 @@ MAX_FILE_UPLOAD_COUNT = 16
 DEFAULT_UPLOAD_CONCURRENCY = 3
 """Misskey 默认上传并发数"""
 
+from satrap.core.group_chat.types import GroupChatError
+from satrap.core.platform.receipt import SendReceipt
+from satrap.core.call_context import current_call_origin
+
 
 @register_platform_adapter("misskey")
 class MisskeyAdapter(PlatformAdapter):
     """Misskey 平台适配器"""
 
     adapter_type = "misskey"
+    conversation_kinds = {"private": "私聊", "group": "房间群聊", "discussion": "帖子讨论"}
+
+    def group_chat_capabilities(self) -> dict[str, dict[str, str]]:
+        """按房间消息的实际发送能力声明, 引用与原生表情保持不支持"""
+        capabilities = super().group_chat_capabilities()
+        connected = self._client is not None and self._running and self.enable_room
+        for name in ("text", "image"):
+            enabled = name == "text" or self.enable_file_upload
+            capabilities[name] = {"state": "supported" if connected and enabled else "unavailable" if enabled else "unsupported",
+                                  "reason": "room_message" if connected and enabled else "upload_disabled" if not enabled else "platform_disconnected"}
+        return capabilities
+
+    def group_chat_media_limits(self) -> dict[str, int]:
+        """房间原生消息只支持一个 fileId, 图片和图片表情共用此限制"""
+        return {"max_images": 1, "max_stickers": 1, "max_attachments": 1, "max_bytes": 10 * 1024 * 1024,
+                "max_text": self.max_message_length}
+
+    def group_chat_media_formats(self) -> tuple[str, ...]:
+        """Misskey Drive 可上传的宿主已验证格式"""
+        return ("image/png", "image/jpeg", "image/webp", "image/gif")
+
+    def conversation_kind(self, message: PlatformMessage) -> str:
+        """
+        按 Misskey 原始对话载体区分私聊, 房间和帖子
+
+        参数:
+        - message: 已归一的平台消息
+
+        返回:
+        - private, group, discussion 或未识别的 other
+        """
+        session_id = str(getattr(message, "session_id", ""))
+        if is_valid_chat_session_id(session_id):
+            return "private"
+        if is_valid_room_session_id(session_id):
+            return "group"
+        if is_valid_note_session_id(session_id):
+            return "discussion"
+        return super().conversation_kind(message)
 
     def __init__(
         self,
@@ -92,9 +140,27 @@ class MisskeyAdapter(PlatformAdapter):
 
         self._client: MisskeyAPI | None = None
         self._running = False
+        self._media_send_tasks: set[asyncio.Task[Any]] = set()
         self.bot_self_id = ""
         self._bot_username = ""
         self._user_cache: dict[str, dict[str, Any]] = {}
+
+    async def check_connection(self) -> None:
+        """通过当前 Misskey API 读取账号信息, 认证或响应异常时抛出错误"""
+        client = self._client
+        account = self.bot_self_id
+        if client is None or not self._running:
+            raise ConnectionProbeError("Misskey API 客户端尚未启动")
+        try:
+            user = await client.get_current_user()
+        except AuthenticationError as error:
+            raise ConnectionProbeError("Misskey 认证失败, 请检查令牌和账号读取权限") from error
+        if self._client is not client or self.bot_self_id != account or not self._running:
+            raise ConnectionProbeError("检查期间 Misskey 连接已变化, 请重试")
+        if not isinstance(user, dict) or not isinstance(user.get("id"), str) or not user["id"]:
+            raise ConnectionProbeError("Misskey 返回了无效的账号信息")
+        if account and user["id"] != account:
+            raise ConnectionProbeError("Misskey 返回的账号与当前连接不一致")
 
     def meta(self) -> PlatformMetadata:
         """
@@ -193,6 +259,8 @@ class MisskeyAdapter(PlatformAdapter):
         - data: 通知数据
         """
         try:
+            if not self.config.enable:
+                return
             notification_type = data.get("type")
             if notification_type not in ("mention", "reply", "quote"):
                 return
@@ -200,6 +268,9 @@ class MisskeyAdapter(PlatformAdapter):
             if not isinstance(note, dict) or not self._is_bot_mentioned(note):
                 return
             message = await self.convert_message(note)
+            await self.archive_message(message, direction="outbound" if message.sender.user_id == self.bot_self_id else "inbound")
+            if message.sender.user_id == self.bot_self_id:
+                return
             self._commit_platform_message(message)
         except Exception as e:
             logger.error(f"[MisskeyAdapter] 处理通知失败: {e}")
@@ -212,15 +283,20 @@ class MisskeyAdapter(PlatformAdapter):
         - data: 聊天消息数据
         """
         try:
-            sender_id = str(data.get("fromUserId") or data.get("fromUser", {}).get("id", ""))
-            if sender_id == self.bot_self_id:
+            if not self.config.enable:
                 return
+            sender_id = str(data.get("fromUserId") or data.get("fromUser", {}).get("id", ""))
             if data.get("toRoomId"):
                 if not self.enable_room:
                     return
                 message = await self.convert_room_message(data)
             else:
+                if not self.enable_chat or sender_id == self.bot_self_id:
+                    return
                 message = await self.convert_chat_message(data)
+            await self.archive_message(message, direction="outbound" if sender_id == self.bot_self_id else "inbound")
+            if sender_id == self.bot_self_id:
+                return
             self._commit_platform_message(message)
         except Exception as e:
             logger.error(f"[MisskeyAdapter] 处理聊天消息失败: {e}")
@@ -479,7 +555,17 @@ class MisskeyAdapter(PlatformAdapter):
             components = components[:MAX_FILE_UPLOAD_COUNT]
         concurrency = max(1, min(int(self.upload_concurrency), 10))
         sem = asyncio.Semaphore(concurrency)
-        results = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components))
+        try:
+            results = await asyncio.gather(*(self._upload_component(comp, sem) for comp in components))
+        except Exception as exc:
+            if not any(getattr(comp, "asset_lease", None) is not None for comp in components):
+                raise
+
+            logger.error(f"[MisskeyAdapter] 必需图片上传异常: {traceback.format_exc()}")
+            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败") from exc
+        if any(getattr(comp, "asset_lease", None) is not None and not result for comp, result in zip(components, results)):
+
+            raise GroupChatError("media_upload_failed", "结构化回复的必需图片上传失败")
         return [file_id for file_id in results if file_id]
 
     async def send_text(self, session_id: str, text: str) -> Any:
@@ -496,6 +582,77 @@ class MisskeyAdapter(PlatformAdapter):
         return await self.send_message(session_id, MessageChain.from_text(text))
 
     async def send_message(
+        self, session_id: str, message: MessageChain, *, request_id: str = "",
+        purpose: str = "business", require_tracking: bool = False,
+    ) -> Any:
+        """
+        持有受控图片至发送任务实际结束, 调用方取消不会提前释放文件
+
+        参数:
+        - session_id: 目标会话
+        - message: 完整消息链
+        - request_id: 逻辑请求标识
+        - purpose: 发送用途
+        - require_tracking: 是否要求持久发送跟踪
+
+        返回:
+        - 原生结果或结构化媒体的明确发送回执
+        """
+        from satrap.core.group_chat.assets import fork_message_leases
+
+        leases = fork_message_leases(message)
+        if not leases:
+            return await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
+        if len(self._media_send_tasks) >= 64:
+            for lease in leases:
+                lease.release()
+            logger.warning("[MisskeyAdapter] 结构化媒体发送队列已满")
+            return SendReceipt("failed", reason="send_queue_unavailable")
+        async def send() -> SendReceipt:
+            """实际提交媒体, 缺少平台消息 ID 时不冒充成功"""
+            try:
+                result = await self._send_message(session_id, message, request_id=request_id, purpose=purpose, require_tracking=require_tracking)
+                if isinstance(result, dict) and isinstance(result.get("id"), str) and result["id"]:
+                    if is_valid_room_session_id(session_id) and (result.get("toRoomId") is not None and result["toRoomId"] != extract_room_id_from_session_id(session_id)
+                            or result.get("fromUserId") is not None and result["fromUserId"] != self.bot_self_id):
+                        logger.warning("[MisskeyAdapter] 结构化媒体确认身份不符")
+                        return SendReceipt("unknown", reason="unverified_confirmation")
+                    return SendReceipt("success", (result["id"],))
+                return SendReceipt("unknown", reason="missing_confirmation")
+            except asyncio.CancelledError:
+                raise
+            except GroupChatError as exc:
+                logger.warning(f"[MisskeyAdapter] 结构化媒体发送拒绝, 原因={exc.code}")
+                return SendReceipt("failed", reason=exc.code)
+            except Exception:
+
+                logger.error(f"[MisskeyAdapter] 结构化媒体发送失败: {traceback.format_exc()}")
+                return SendReceipt("unknown", reason="media_send_error")
+            finally:
+                for lease in leases:
+                    lease.release()
+        task = asyncio.create_task(send())
+        self._media_send_tasks.add(task)
+        def settle(finished: asyncio.Task[SendReceipt]) -> None:
+            """
+            无论任务是否进入协程正文都释放引用, 并取走终态异常
+
+            参数:
+            - finished: 实际发送任务
+            """
+            for lease in leases:
+                lease.release()
+            self._media_send_tasks.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+        task.add_done_callback(settle)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+
+    async def _send_message(
         self, session_id: str, message: MessageChain, *, request_id: str = "",
         purpose: str = "business", require_tracking: bool = False,
     ) -> Any:
@@ -517,9 +674,20 @@ class MisskeyAdapter(PlatformAdapter):
             return None
 
         text, has_at_user = serialize_message_chain(message)
+        if any(getattr(comp, "asset_lease", None) is not None for comp in message) and (not self.enable_file_upload or len(text) > self.max_message_length):
+
+            raise GroupChatError("media_upload_failed", "图片上传已停用或正文超过平台上限")
         if len(text) > self.max_message_length:
             text = text[: self.max_message_length] + "..."
         file_ids = await self._collect_file_ids(message)
+        if any(getattr(comp, "asset_lease", None) is not None for comp in message):
+
+            origin = current_call_origin()
+            if origin is None:
+                raise PermissionError("图片发送轮次已经结束")
+            await self.group_chat_scope(origin)
+        if is_valid_room_session_id(session_id) and any(getattr(comp, "asset_lease", None) is not None for comp in message) and len(file_ids) > 1:
+            raise ValueError("Misskey 房间单条消息最多附带一张图片")
         if not text.strip() and not file_ids:
             logger.warning("[MisskeyAdapter] 消息为空且无文件, 跳过发送")
             return None
@@ -528,13 +696,19 @@ class MisskeyAdapter(PlatformAdapter):
             payload: dict[str, Any] = {"toRoomId": extract_room_id_from_session_id(session_id), "text": text}
             if file_ids:
                 payload["fileId"] = file_ids[0]
-            return await self._client.send_room_message(payload)
+            sent_self_id = self.bot_self_id
+            result = await self._client.send_room_message(payload)
+            self._archive_sent_message(session_id, sent_self_id, result, text, file_ids[:1])
+            return result
 
         if is_valid_chat_session_id(session_id):
             payload = {"toUserId": extract_user_id_from_session_id(session_id), "text": text}
             if file_ids:
                 payload["fileId"] = file_ids[0]
-            return await self._client.send_message(payload)
+            sent_self_id = self.bot_self_id
+            result = await self._client.send_message(payload)
+            self._archive_sent_message(session_id, sent_self_id, result, text, file_ids[:1])
+            return result
 
         user_id = extract_user_id_from_session_id(session_id)
         user_info = self._user_cache.get(user_id)
@@ -546,7 +720,8 @@ class MisskeyAdapter(PlatformAdapter):
             default_visibility=self.default_visibility,
         )
         fields = self._extract_additional_fields(session_id, message)
-        return await self._client.create_note(
+        sent_self_id = self.bot_self_id
+        result = await self._client.create_note(
             text=text,
             visibility=visibility,
             visible_user_ids=visible_user_ids,
@@ -558,6 +733,69 @@ class MisskeyAdapter(PlatformAdapter):
             renote_id=fields.get("renote_id"),
             channel_id=fields.get("channel_id"),
         )
+        self._archive_sent_message(session_id, sent_self_id, result, text, file_ids,
+                                   reply_id=fields.get("reply_id"), renote_id=fields.get("renote_id"))
+        return result
+
+    def _archive_sent_message(self, session_id: str, self_id: str, result: Any, text: str,
+                              file_ids: list[str], *, reply_id: str | None = None,
+                              renote_id: str | None = None) -> None:
+        """
+        依据创建消息回包采集实际发送内容, 不使用上传回包或原始草稿
+
+        参数:
+        - session_id: 实际提交的目标会话
+        - self_id: 提交平台动作之前冻结的机器人账号
+        - result: 原生创建消息或帖子回包
+        - text: 已截断并补充提及的实际正文
+        - file_ids: 此次动作实际附带的文件 ID
+        - reply_id: 此次帖子动作使用的引用 ID
+        - renote_id: 此次帖子动作使用的转发 ID
+        """
+        if self.message_archive is None:
+            return
+        try:
+            if is_valid_room_session_id(session_id):
+                kind, chat_id, target_field = "group", extract_room_id_from_session_id(session_id), "toRoomId"
+            elif is_valid_chat_session_id(session_id):
+                kind, chat_id, target_field = "private", extract_user_id_from_session_id(session_id), "toUserId"
+            else:
+                kind, chat_id, target_field = "discussion", session_id, ""
+                result = result.get("createdNote") if isinstance(result, dict) else None
+            if not isinstance(result, dict):
+                logger.warning(f"[消息档案] Misskey 发送未返回确认消息, 平台={self.config.id}")
+                return
+            message_id = result.get("id")
+            if not isinstance(message_id, str) or not message_id.strip():
+                logger.warning(f"[消息档案] Misskey 发送未返回有效消息 ID, 平台={self.config.id}")
+                return
+            if target_field and result.get(target_field) is not None and result[target_field] != chat_id:
+                raise ValueError("平台确认的接收目标与发送目标不一致")
+            sender_field = "userId" if kind == "discussion" else "fromUserId"
+            if result.get(sender_field) is not None and result[sender_field] != self_id:
+                raise ValueError("平台确认的发送账号与提交账号不一致")
+            message_time = time()
+            time_source = "local"
+            if result.get("createdAt") is not None:
+                try:
+                    parsed_time = archive_time(result["createdAt"])
+                    if parsed_time is not None:
+                        message_time, time_source = parsed_time, "platform"
+                except (TypeError, ValueError, OverflowError) as exc:
+                    logger.warning(f"[消息档案] Misskey 确认时间无效, 使用确认时间, 原因={type(exc).__name__}")
+            components: list[dict[str, object]] = [{"type": "Plain"}] if text else []
+            if reply_id:
+                components.append({"type": "Reply", "message_id": reply_id})
+            if renote_id:
+                components.append({"type": "Forward", "id": renote_id})
+            media = [{"type": "File", "native_id": file_id} for file_id in file_ids]
+            components.extend({"type": "File", "native_id": file_id} for file_id in file_ids)
+            snapshot = ArchiveMessage(message_id, self_id, message_time, text, direction="outbound",
+                                      components=components, media=media, reply_to_message_id=reply_id,
+                                      source="confirmed_send", time_source=time_source)
+            self.queue_confirmed_message(MessageScope(self.config.id, self_id, kind, chat_id), snapshot)
+        except Exception as exc:
+            logger.error(f"[消息档案] Misskey 发送确认转换失败, 平台={self.config.id}, 原因={type(exc).__name__}: {exc}")
 
     async def send_stream(
         self,
@@ -612,6 +850,13 @@ class MisskeyAdapter(PlatformAdapter):
     async def terminate(self) -> None:
         """终止 Misskey 适配器并释放资源"""
         self._running = False
+        tasks = tuple(self._media_send_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=5)
+            if pending:
+                logger.warning(f"[MisskeyAdapter] 停止时仍有 {len(pending)} 个媒体任务收尾, 文件继续持有")
         await super().terminate()
         if self._client:
             await self._client.close()
