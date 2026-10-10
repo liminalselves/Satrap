@@ -115,7 +115,7 @@ async def test_first_model_request_has_skill_tools_environment_and_no_early_outp
     assert instance._wf.content_callback is output
     first, args = script.requests[0]
     assert first[0]["content"].startswith("基础提示词") and "<skill:group_chat>" in first[0]["content"]
-    assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]) - {"group_chat_list_groups", "group_chat_set_group_nickname", "group_chat_create_reminder"})
+    assert {tool["function"]["name"] for tool in args["tools"] if tool["function"]["name"].startswith("group_chat_")} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]))
     assert '"speaker_id": "123"' in str(first) and '"source_message_id": "77"' in str(first)
     assert '"nickname": "机器人"' in str(first)
     send_mock(adapter).assert_awaited_once()
@@ -135,7 +135,7 @@ async def test_failed_model_after_prepared_draft_never_sends(tmp_path, asynchron
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("asynchronous", [False, True])
-async def test_plugin_disable_enable_and_private_tool_filter(tmp_path, asynchronous):
+async def test_plugin_disable_enable_preserves_definitions_in_private_chat(tmp_path, asynchronous):
     adapter, event, _ = setup(tmp_path)
     script = Script([LLMCallResponse("message", "普通最终文本") for _ in range(3)])
     instance = await session(tmp_path, script, asynchronous, True)
@@ -156,7 +156,7 @@ async def test_plugin_disable_enable_and_private_tool_filter(tmp_path, asynchron
     assert script.requests[1][0][0]["content"].count("<skill:group_chat>") == 1
     adapter, private, _ = setup(tmp_path, private=True)
     await PipelineScheduler(cast(SessionManager, Invoker(instance, asynchronous))).execute(private)
-    assert not script.requests[2][1]["tools"]
+    assert script.requests[2][1]["tools"] == script.requests[1][1]["tools"]
     assert "群聊环境资料" not in script.requests[2][0][-1]["content"]
     send_mock(adapter).assert_awaited_once()
 
@@ -211,7 +211,7 @@ async def test_named_backend_agent_first_load_restart_and_plugin_disable(tmp_pat
     send_mock(adapter).assert_awaited_once()
     first, args = script.requests[0]
     assert first[0]["content"].count("<skill:group_chat>") == 1
-    assert {tool["function"]["name"] for tool in args["tools"]} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]) - {"group_chat_list_groups", "group_chat_set_group_nickname", "group_chat_create_reminder"})
+    assert {tool["function"]["name"] for tool in args["tools"]} == (set(yaml.safe_load((PLUGIN / "meta.yaml").read_text(encoding="utf-8"))["tools"]))
     assert any(message["role"] == "tool" and '"message_id": "77"' in message["content"] for message in script.requests[1][0])
     await manager.unload_session_async(event.session_id)
     send_mock(adapter).reset_mock()

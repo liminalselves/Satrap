@@ -419,7 +419,7 @@ class _AuthorizedTool(Tool):
         return "ok"
 
 
-def test_definition_filter_evaluates_authorization_once_per_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_definition_list_is_stable_and_does_not_evaluate_caller_authorization(monkeypatch: pytest.MonkeyPatch) -> None:
     evaluations = counted_evaluations(monkeypatch)
     seen: list[AuthorizationDecision] = []
     manager = ToolsManager()
@@ -427,8 +427,9 @@ def test_definition_filter_evaluates_authorization_once_per_tool(monkeypatch: py
     with bind_call_origin(origin()):
         definitions = manager.get_tools_definitions()
     assert [item["function"]["name"] for item in definitions] == ["query"]
-    assert evaluations == [("query", None)]
-    assert seen[0].status == "allowed"
+    with bind_call_origin(origin("bob")):
+        assert manager.get_tools_definitions() == definitions
+    assert evaluations == [] and seen == []
 
 
 def test_execution_shares_one_authorization_decision_within_each_step(monkeypatch: pytest.MonkeyPatch) -> None:

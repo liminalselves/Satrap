@@ -1,12 +1,12 @@
 """
-工具注册与逐轮定义过滤
+工具注册, 稳定声明与逐次执行核验
 
-统一管理工具开关, 插件有效状态和当前请求来源限制,
-在定义展示和实际执行边界使用一致的可用性判断
+声明只取决于工具和插件开关, 不随调用者权限变化;
+实际执行仍核验当前请求身份, 对话能力和管理权限
 """
 from typing import Dict, Any, Callable, cast
 from satrap.core.log import logger
-from satrap.core.plugin_authorization import (authorize_plugin_entry, bind_authorization_step,
+from satrap.core.plugin_authorization import (bind_authorization_step,
                                               require_plugin_entry_permission, PluginPermissionDenied)
 from .utils import tool_error, _safe_json_dumps
 from typing import Generic, TypeVar
@@ -24,15 +24,13 @@ class _ToolsRegistry(Generic[_ToolT]):
         返回:
         - 一个列表, 每个元素为所有已注册工具的 OpenAI 格式定义
         """
-        # 声明过滤在一次构建内共用同一份授权判定, 不跨步保留
+        # Step.1 只依据安装开关构建声明, 调用者权限和对话能力在执行时检查
         with bind_authorization_step():
             return [
                 tool.get_tool_defined()
                 for tool in self.tools.values()
-                if tool.assert_tool() and tool.is_enabled() and tool.is_available_for_call()
+                if tool.assert_tool() and tool.is_enabled()
                 and (self.effectiveness_guard is None or self.effectiveness_guard(tool.get_tool_name()))
-                and ((binding := getattr(tool, "_plugin_entry_binding", None)) is None
-                     or authorize_plugin_entry(binding).status != "denied")
             ]
 
     def is_tool_enabled(self, tool_name: str) -> bool:

@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from contextlib import contextmanager
 from contextvars import ContextVar
 from collections.abc import Iterator
@@ -393,18 +393,19 @@ def _evaluate_plugin_entry(binding: PluginEntryBinding, subcommand: str | None) 
         return AuthorizationDecision("denied", *identity, reason_code="authorization_error")
 
 
-def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: str | None = None) -> AuthorizationDecision:
+def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: str | None = None, refresh: bool = False) -> AuthorizationDecision:
     """
     在实际执行入口拒绝未授权管理调用
 
     参数:
     - binding: 已绑定的插件入口
     - subcommand: 已解析的原生子命令
+    - refresh: 等待后重新核验当前配置, 不复用处理步骤中的旧决定
 
     返回:
     - 通过或无需管理授权的结果; 拒绝时记录日志并抛出 PluginPermissionDenied
     """
-    result = authorize_plugin_entry(binding, subcommand=subcommand)
+    result = _evaluate_plugin_entry(binding, subcommand) if refresh else authorize_plugin_entry(binding, subcommand=subcommand)
     if result.status == "denied":
         origin = current_call_origin()
         logger.warning(f"[管理权限] 调用拒绝, 插件={binding.plugin_name}, 入口={binding.name}, "
@@ -418,3 +419,20 @@ def require_plugin_entry_permission(binding: PluginEntryBinding, *, subcommand: 
                      f"请求={origin.request_id if origin else ''}, "
                      f"授权={[(item.permission, item.source, item.group_ids, item.override_ids) for item in result.grants]}")
     return result
+
+
+def authorize_management_permissions(binding: PluginEntryBinding, required: tuple[str, ...]) -> AuthorizationDecision:
+    """
+    对当前工具的业务分支核验额外管理权限, 每次读取当前可信来源
+
+    参数:
+    - binding: 实际工具入口, 仍检查安装和会话存活
+    - required: 宿主代码指定的权限名称, 不接受模型参数
+
+    返回:
+    - 当前管理权限结果, 未声明的权限或非工具入口按拒绝处理
+    """
+    if binding.kind != "tools" or any(name not in binding.permissions.rules for name in required):
+        return AuthorizationDecision("denied", binding.plugin_name, binding.kind, binding.name, reason_code="unknown_permission")
+    spec = replace(binding.permissions, tools={**binding.permissions.tools, binding.name: required})
+    return _evaluate_plugin_entry(replace(binding, permissions=spec), None)
