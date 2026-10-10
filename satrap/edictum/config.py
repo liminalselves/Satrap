@@ -18,11 +18,14 @@ from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
 from satrap.edictum.registry import EDICTUM_PROVIDER, EdictumTypeRegistry
 from satrap.edictum.settings import normalize_session_settings
+from satrap.core.utils.snapshot_cache import SnapshotCache
 
 from satrap.core.log import logger
 from satrap.core.storage.file_lock import FileLock
 
 from satrap.core.config_paths import get_config_path
+
+_CONFIG_SNAPSHOTS: SnapshotCache[dict[str, dict[str, Any]]] = SnapshotCache()
 
 
 class EdictumConfigManager:
@@ -52,7 +55,7 @@ class EdictumConfigManager:
         self._lock = threading.RLock()
         if auto_create:
             self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.reload()
+        self.reload(cached=True)
 
     @staticmethod
     def _default_storage_path() -> Path:
@@ -144,27 +147,59 @@ class EdictumConfigManager:
             json.dump(self._configs, file, ensure_ascii=False, indent=2)
             file.write("\n")
         temporary_path.replace(self.storage_path)
+        _CONFIG_SNAPSHOTS.invalidate()
 
-    def reload(self) -> None:
-        """从磁盘重新加载冷配置"""
+    def reload(self, *, cached: bool = False) -> None:
+        """
+        从磁盘重新加载冷配置, 写事务与显式重载始终读原文
+
+        参数:
+        - cached: 仅构造读取服务时复用已核验快照, 默认不使用缓存
+        """
         with self._lock, FileLock(self.storage_path.with_name(f".{self.storage_path.name}.lock")):
             if not self.storage_path.exists():
                 self._configs = {}
                 self._save_locked()
                 return
             try:
-                with self.storage_path.open("r", encoding="utf-8") as file:
-                    payload: object = json.load(file)
-                if not isinstance(payload, dict):
-                    raise ValueError("Edictum 配置文件根节点必须是对象")
-                loaded: dict[str, dict[str, Any]] = {}
                 catalog = self.plugin_catalog.snapshot()
-                for raw_name, raw_entry in cast(dict[str, object], payload).items():
-                    name = self._normalize_name(raw_name)
-                    loaded[name] = self._normalize_entry(raw_entry, catalog)
-                self._configs = loaded
-                if loaded != payload:
-                    self._save_locked()
+                type_names = tuple(item['name'] for item in self.type_registry.list_types())
+
+                def fingerprint() -> tuple[object, ...]:
+                    """
+                    取得文件来源与本轮类型及目录代次
+
+                    返回:
+                    - 已归一化内容的全部来源指纹
+                    """
+                    info = self.storage_path.stat()
+                    return (info.st_mtime_ns, info.st_ctime_ns, info.st_size, info.st_ino, type_names, catalog.snapshot_token())
+
+                def load() -> dict[str, dict[str, Any]]:
+                    """
+                    读取与归一化命名配置, 保留原迁移写入行为
+
+                    返回:
+                    - 本轮完整命名配置
+                    """
+                    with self.storage_path.open('r', encoding='utf-8') as file:
+                        payload: object = json.load(file)
+                    if not isinstance(payload, dict):
+                        raise ValueError('Edictum 配置文件根节点必须是对象')
+                    loaded: dict[str, dict[str, Any]] = {}
+                    for raw_name, raw_entry in cast(dict[str, object], payload).items():
+                        name = self._normalize_name(raw_name)
+                        loaded[name] = self._normalize_entry(raw_entry, catalog)
+                    self._configs = loaded
+                    if loaded != payload:
+                        self._save_locked()
+                    return loaded
+
+                if cached:
+                    resource = os.path.normcase(str(self.storage_path.resolve()))
+                    self._configs = deepcopy(_CONFIG_SNAPSHOTS.get(resource, fingerprint, load))
+                else:
+                    self._configs = load()
             except Exception as error:
                 logger.error(f"[EdictumConfigManager] 读取配置失败: {error}\n{traceback.format_exc()}")
                 raise

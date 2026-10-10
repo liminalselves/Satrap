@@ -170,3 +170,29 @@ async def test_failure_notifications_follow_cleanup_and_worker_release(monkeypat
         assert await cache.get_async('resource', lambda: 1, lambda: 7, worker) == 7
     finally:
         worker.close()
+
+
+@pytest.mark.asyncio
+async def test_slow_source_probe_does_not_block_event_loop():
+    cache = SnapshotCache()
+    worker = BoundedAsyncWorker('test-snapshot', workers=1, capacity=1)
+    entered, release = threading.Event(), threading.Event()
+
+    def fingerprint():
+        entered.set()
+        assert release.wait(2)
+        return 1
+
+    request = asyncio.create_task(cache.get_async('key', fingerprint, lambda: 42, worker))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        started = time.perf_counter()
+        await asyncio.sleep(.01)
+        assert time.perf_counter() - started < .1
+        assert not request.done()
+        release.set()
+        assert await request == 42
+    finally:
+        release.set()
+        await request
+        worker.close()

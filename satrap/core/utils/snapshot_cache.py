@@ -19,6 +19,7 @@ from satrap.core.utils.async_worker import BoundedAsyncWorker
 from satrap.core.log import logger
 
 _T = TypeVar('_T')
+_PROBE_WORKERS = BoundedAsyncWorker('satrap-snapshot-probe', workers=2, capacity=32)
 
 
 class SnapshotChangedError(RuntimeError):
@@ -152,7 +153,7 @@ class SnapshotCache(Generic[_T]):
 
     async def get_async(self, resource: Hashable, fingerprint: Callable[[], Hashable], loader: Callable[[], _T], worker: BoundedAsyncWorker) -> _T:
         """
-        异步取得快照, 只有领头调用提交有界工作任务
+        异步取得快照, 指纹在独立有界池读取且仅领头构造快照
 
         参数:
         - resource: 资源标识
@@ -164,9 +165,15 @@ class SnapshotCache(Generic[_T]):
         - 私有快照; 队列满, 持续变化或加载失败时抛出异常
         """
         for _ in range(3):
-            key, pending, leader = self._begin(resource, fingerprint())
+            try:
+                current = await _PROBE_WORKERS.run(fingerprint)
+            except Exception as error:
+                logger.error(f'[资源快照] 来源探测失败, 类型={type(error).__name__}\n{traceback.format_exc()}')
+                raise
+            key, pending, leader = self._begin(resource, current)
             if leader:
                 async def load() -> None:
+                    """领头请求完成工作线程退出后通知等待者"""
                     try:
                         value = await worker.run(self._load, key, fingerprint, loader)
                     except Exception as error:
@@ -176,6 +183,14 @@ class SnapshotCache(Generic[_T]):
                         pending.set_result(value)
                 task = asyncio.create_task(load())
                 def completed(done: asyncio.Task[None], shared: Future[_T] = pending, cache_key: tuple[Hashable, Hashable, int] = key) -> None:
+                    """
+                    接收后台任务异常并清理退出时的在途记录
+
+                    参数:
+                    - done: 已结束的加载任务
+                    - shared: 本轮共享结果
+                    - cache_key: 本轮登记键
+                    """
                     if done.cancelled() and not shared.done():
                         logger.warning('[资源快照] 服务退出时加载被取消')
                         self._release(cache_key, shared)

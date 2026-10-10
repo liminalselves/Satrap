@@ -8,6 +8,7 @@ import os
 import time
 import yaml
 import json
+import hashlib
 
 from satrap.edictum.plugin_compatibility import PluginEnvironment, check_plugin_compatibility, parse_compatibility
 from satrap.edictum.plugin_permissions import EMPTY_PERMISSIONS, PluginPermissions, parse_plugin_permissions
@@ -70,6 +71,7 @@ class _CatalogSnapshot:
 
     entries: dict[str, PluginCatalogEntry]
     errors: list[dict[str, str]]
+    fingerprint: tuple[object, ...]
 
 
 _SNAPSHOTS: SnapshotCache[_CatalogSnapshot] = SnapshotCache()
@@ -135,6 +137,15 @@ class PluginCatalog:
         fixed._fixed = self._read_snapshot()
         fixed.scan_errors = deepcopy(fixed._fixed.errors)
         return fixed
+
+    def snapshot_token(self) -> str:
+        """
+        获取已解析快照的版本标识, 固定目录不跟随外部编辑
+
+        返回:
+        - 不包含目录路径的快照摘要
+        """
+        return hashlib.sha256(repr(self._read_snapshot().fingerprint).encode('utf-8')).hexdigest()
 
     async def snapshot_async(self) -> PluginCatalog:
         """
@@ -229,6 +240,7 @@ class PluginCatalog:
         - 去重后的私有插件索引与错误列表
         """
         started = time.perf_counter()
+        source_fingerprint = self.fingerprint()
         found: dict[str, PluginCatalogEntry] = {}
         failures: list[dict[str, str]] = []
         for base in (self.preset_dir, self.user_dir):
@@ -247,7 +259,7 @@ class PluginCatalog:
                 if entry.name not in found:   # 官方目录先扫描, 同名用户插件不覆盖
                     found[entry.name] = entry
         logger.debug(f"[插件目录] 快照加载完成, 插件={len(found)}, 失败={len(failures)}, elapsed_ms={(time.perf_counter() - started) * 1000:.2f}")
-        return _CatalogSnapshot(dict(sorted(found.items())), failures)
+        return _CatalogSnapshot(dict(sorted(found.items())), failures, source_fingerprint)
 
     def scan(self) -> list[PluginCatalogEntry]:
         """
