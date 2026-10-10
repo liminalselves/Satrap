@@ -40,6 +40,10 @@ try {
   await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/config/versions') {
+      const names = (new URL(route.request().url()).searchParams.get('resources') || '').split(',');
+      return route.fulfill({ json: { ok: true, resources: Object.fromEntries(names.map((name) => [name, { state: 'available', change_token: JSON.stringify(plugins) }])) }, headers: cors });
+    }
     if (pathname === '/config/plugins/builtin_probe/usages') {
       if (route.request().method() === 'PUT') {
         const body = route.request().postDataJSON();

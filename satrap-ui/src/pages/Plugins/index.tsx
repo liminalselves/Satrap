@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { RefreshCw } from 'lucide-react';
-import { controlApi } from '@/api/control';
+import { pluginCatalogRead } from '@/api/pluginReads';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 import type { ManagedPlugin } from '@/api/types';
 import { PageHeader } from '@/components/common/PageHeader';
 import { Button } from '@/components/ui/Button';
@@ -26,13 +27,17 @@ function usePluginCatalog() {
   const [revision, setRevision] = useState(0);
   const refresh = useCallback(() => setRevision((value) => value + 1), []);
   useEffect(() => {
-    let disposed = false;
     setLoading(true);
     setError('');
-    controlApi.listPlugins().then((data) => { if (!disposed) setPlugins(data); })
-      .catch((err: unknown) => { if (!disposed) setError(err instanceof Error ? err.message : '读取插件失败'); })
-      .finally(() => { if (!disposed) setLoading(false); });
-    return () => { disposed = true; };
+    let force = revision > 0;
+    const poll = startVisiblePoll(async (signal) => {
+      const forced = force; force = false;
+      try {
+        const data = await pluginCatalogRead.read({ force: forced, signal });
+        if (!signal.aborted) { setPlugins(data); setError(''); }
+      } finally { if (!signal.aborted) setLoading(false); }
+    }, { interval: 30000, onError: (error: unknown) => setError(error instanceof Error ? error.message : '读取插件失败') });
+    return () => poll.stop();
   }, [revision]);
   return { plugins, loading, error, refresh };
 }

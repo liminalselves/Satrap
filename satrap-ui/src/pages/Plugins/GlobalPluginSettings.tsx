@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { controlApi } from '@/api/control';
-import { ragApi } from '@/api/rag';
+import { globalPluginRead } from '@/api/pluginReads';
+import { usePluginConfigOptions } from '@/hooks/usePluginConfigOptions';
 import type { GlobalPluginConfig, PluginRuntimeResult } from '@/api/types';
-import { PluginConfigFields, type ConfigOption, type ModelOptions } from '@/components/common/PluginConfigFields';
+import { PluginConfigFields } from '@/components/common/PluginConfigFields';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { confirmDiscard } from '@/hooks/useDirtyGuard';
@@ -22,8 +23,7 @@ export function PluginRuntimeStatus({ results, onRetry, busy }: { results: Plugi
 export function GlobalPluginSettings({ name, onDirty }: { name: string; onDirty: (dirty: boolean) => void }) {
   const [data, setData] = useState<GlobalPluginConfig>();
   const [draft, setDraft] = useState<Record<string, unknown>>({});
-  const [models, setModels] = useState<ModelOptions>({});
-  const [bases, setBases] = useState<ConfigOption[]>([]);
+  const options = usePluginConfigOptions(data?.schema, true);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -33,15 +33,15 @@ export function GlobalPluginSettings({ name, onDirty }: { name: string; onDirty:
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
   useEffect(() => {
     let disposed = false;
+    const controller = new AbortController();
     setData(undefined);
     setError('');
     setSaved(false);
-    Promise.all([controlApi.getGlobalPluginConfig(name), controlApi.pluginModelOptions(), ragApi.list({ platformId: 'local', via: 'control' })]).then(([config, options, knowledge]) => {
+    globalPluginRead(name).read({ signal: controller.signal }).then((config) => {
       if (disposed) return;
-      setData(config); setDraft(config.overrides); setModels(options.options);
-      setBases(knowledge.knowledge_bases.filter((base) => base.scope === 'global').map((base) => ({ value: base.id, label: base.name, scope: base.scope })));
+      setData(config); setDraft(config.overrides);
     }).catch((err) => { if (!disposed) setError(pluginError(err)); });
-    return () => { disposed = true; };
+    return () => { disposed = true; controller.abort(); };
   }, [name, refresh]);
   const retry = useCallback(async () => {
     setBusy(true); setError('');
@@ -54,6 +54,7 @@ export function GlobalPluginSettings({ name, onDirty }: { name: string; onDirty:
     setBusy(true); setError(''); setSaved(false);
     try {
       const result = await controlApi.saveGlobalPluginConfig(name, draft, data.revision);
+      globalPluginRead(name).invalidate();
       setData(result); setDraft(result.overrides); setRuntime(result.runtime || []); setSaved(true);
     } catch (err) { setError(pluginError(err)); }
     finally { setBusy(false); }
@@ -62,8 +63,10 @@ export function GlobalPluginSettings({ name, onDirty }: { name: string; onDirty:
     <p className="text-sm text-text-secondary">全局参数供各使用位置继承。命名配置和会话自定义值会覆盖对应字段。</p>
     {error && <p role="alert" className="text-error">{error}</p>}
     {saved && <p role="status" className="text-success">全局参数已保存</p>}
+    {options.modelError && <p role="alert" className="text-error">模型选项读取失败: {options.modelError}</p>}
+    {options.knowledgeError && <p role="alert" className="text-error">知识库选项读取失败: {options.knowledgeError}</p>}
     {data ? <>
-      {Object.keys(data.schema).length ? <PluginConfigFields schema={data.schema} values={draft} modelOptions={models} knowledgeBases={bases} disabled={busy} onChange={(key, value) => { setSaved(false); setDraft((previous) => ({ ...previous, [key]: value })); }} /> : <p className="text-text-tertiary">此插件没有可配置的全局参数</p>}
+      {Object.keys(data.schema).length ? <PluginConfigFields schema={data.schema} values={draft} modelOptions={options.models} knowledgeBases={options.bases} modelState={options.modelState} knowledgeState={options.knowledgeState} disabled={busy} onChange={(key, value) => { setSaved(false); setDraft((previous) => ({ ...previous, [key]: value })); }} /> : <p className="text-text-tertiary">此插件没有可配置的全局参数</p>}
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? '处理中…' : '保存全局参数'}</Button>
         <Button disabled={busy || !Object.keys(draft).length} onClick={() => { setDraft({}); setSaved(false); }}>恢复默认值</Button>

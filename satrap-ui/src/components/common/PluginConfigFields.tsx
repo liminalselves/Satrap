@@ -11,6 +11,8 @@ interface Props {
   sources?: Record<string, string>;
   modelOptions?: ModelOptions;
   knowledgeBases?: ConfigOption[];
+  modelState?: 'loading' | 'error' | 'ready';
+  knowledgeState?: 'loading' | 'error' | 'ready';
   sessionMode?: boolean;
   namedMode?: boolean;
   disabled?: boolean;
@@ -18,7 +20,7 @@ interface Props {
   onReset?: (key: string) => void;
 }
 
-export function PluginConfigFields({ schema, values, inherited = {}, sources = {}, modelOptions = {}, knowledgeBases = [], sessionMode = false, namedMode = false, disabled = false, onChange, onReset }: Props) {
+export function PluginConfigFields({ schema, values, inherited = {}, sources = {}, modelOptions = {}, knowledgeBases = [], modelState = 'ready', knowledgeState = 'ready', sessionMode = false, namedMode = false, disabled = false, onChange, onReset }: Props) {
   const prefix = useId();
   return <div className="space-y-4">{Object.entries(schema).map(([key, field]) => {
     const fieldId = `${prefix}-${key}`;
@@ -28,6 +30,9 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
     const locked = disabled || (sessionMode && field.session_overridable === false);
     const modelField = ['llm', 'embed', 'rerank', 'asr'].includes(field.type);
     const knowledgeField = ['knowledge_base', 'knowledge_bases'].includes(field.type);
+    const optionState = modelField ? modelState : knowledgeField ? knowledgeState : 'ready';
+    const optionLocked = locked || optionState !== 'ready';
+    const missingLabel = optionState === 'loading' ? '正在读取选项' : optionState === 'error' ? '选项读取失败' : '引用失效';
     const options = modelField ? modelOptions[field.type] || [] : knowledgeField
       ? knowledgeBases.filter((item) => !field.scope || item.scope === field.scope)
       : (field.options || []).map((item) => ({ value: item, label: item }));
@@ -47,14 +52,14 @@ export function PluginConfigFields({ schema, values, inherited = {}, sources = {
       </label>}
       {field.type === 'bool' ? <input id={fieldId} type="checkbox" disabled={locked || nullSelected} checked={Boolean(value)} onChange={(event) => onChange(key, event.target.checked)} />
         : field.type === 'knowledge_bases' ? <div className="space-y-1 rounded border border-glass-border p-2">
-          {options.length === 0 && <p className="text-xs text-text-tertiary">没有可选择的知识库</p>}
-          {[...options, ...missing.map((item) => ({ value: item, label: `${item} (引用失效)` }))].map((item) => <label key={item.value} className="flex items-center gap-2 text-sm">
-            <input type="checkbox" disabled={locked || nullSelected} checked={selections.includes(item.value)} onChange={(event) => onChange(key, event.target.checked ? [...selections, item.value] : selections.filter((selection) => selection !== item.value))} />{item.label}
+          {options.length === 0 && <p className="text-xs text-text-tertiary">{optionState === 'loading' ? '正在读取知识库选项…' : optionState === 'error' ? '知识库选项读取失败' : '没有可选择的知识库'}</p>}
+          {[...options, ...missing.map((item) => ({ value: item, label: `${item} (${missingLabel})` }))].map((item) => <label key={item.value} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" disabled={optionLocked || nullSelected} checked={selections.includes(item.value)} onChange={(event) => onChange(key, event.target.checked ? [...selections, item.value] : selections.filter((selection) => selection !== item.value))} />{item.label}
           </label>)}
         </div>
-          : modelField || knowledgeField || field.type === 'select' ? <select id={fieldId} className="glass-input w-full text-sm" disabled={locked || nullSelected} value={String(value ?? '')} onChange={(event) => onChange(key, event.target.value)}>
-            <option value="">{field.required ? '请选择' : '不使用 / 未选择'}</option>
-            {missing.map((item) => <option key={item} value={item}>{item} (引用失效)</option>)}
+          : modelField || knowledgeField || field.type === 'select' ? <select id={fieldId} className="glass-input w-full text-sm" disabled={optionLocked || nullSelected} value={String(value ?? '')} onChange={(event) => onChange(key, event.target.value)}>
+            <option value="">{optionState === 'loading' ? '正在读取选项…' : optionState === 'error' ? '选项读取失败' : field.required ? '请选择' : '不使用 / 未选择'}</option>
+            {missing.map((item) => <option key={item} value={item}>{item} ({missingLabel})</option>)}
             {options.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
             : field.type === 'textarea' ? <textarea id={fieldId} disabled={locked || nullSelected} className="glass-input w-full text-sm" rows={4} value={String(value ?? '')} onChange={(event) => onChange(key, event.target.value)} />

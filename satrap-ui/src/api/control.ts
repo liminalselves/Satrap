@@ -288,9 +288,9 @@ export const controlApi = {
   listConversationRecords: async (platformId: string, query = '', offset = 0, options: { type?: string; filters?: Record<string, string> } = {}): Promise<ConversationCatalog> => (await controlClient.get<ConversationCatalog>('/config/conversations', { params: { platform_id: platformId || undefined, scope: platformId ? undefined : 'all', platform_type: options.type || undefined, q: query, offset, limit: 40, ...Object.fromEntries(Object.entries(options.filters || {}).map(([key, value]) => [`filter.${key}`, value])) } })).data,
   conversationData: async (platformId: string, conversationId: string, layer: 'context' | 'history', data: Record<string, unknown> = {}): Promise<ConversationDataSnapshot> => (await controlClient.post<ConversationDataSnapshot>('/config/conversations/data', { platform_id: platformId, conversation_id: conversationId, layer, ...data }, { timeout: 20000 })).data,
   refreshChatHistoryStorage: async () => (await controlClient.post<{ storage_size_bytes: number | null; storage_size_updated_at: number | null }>('/chat/history/storage', {}, { timeout: 300000 })).data,
-  ragList: async (platformId: string, sessionId: string, kbId: string) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId } })).data,
+  ragList: async (platformId: string, sessionId: string, kbId: string, signal?: AbortSignal) => (await controlClient.get<RagResult>('/config/rag', { params: { platform_id: platformId, session_id: sessionId, kb_id: kbId }, signal })).data,
   ragAction: async (platformId: string, sessionId: string, payload: Record<string, unknown>) => (await controlClient.post<Record<string, unknown>>('/config/rag', payload, { params: { platform_id: platformId, session_id: sessionId }, timeout: 300000 })).data,
-  pluginModelOptions: async () => (await controlClient.get<{ options: ModelOptions }>('/config/plugin-model-options')).data,
+  pluginModelOptions: async (signal?: AbortSignal) => (await controlClient.get<{ options: ModelOptions }>('/config/plugin-model-options', { signal })).data,
   getSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string) => (await controlClient.get<SessionPluginSettings>('/config/session-plugin-config', { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
   saveSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => (await controlClient.put<SessionPluginSettings>('/config/session-plugin-config', { overrides, expected_revision: revision, ...tools }, { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
   // 获取后端状态
@@ -527,8 +527,8 @@ export const controlApi = {
     return parseEdictumTypes(response.data);
   },
 
-  listPlugins: async (): Promise<import('./types').ManagedPlugin[]> => {
-    const response = await controlClient.get<{ plugins: import('./types').ManagedPlugin[] }>('/config/plugins');
+  listPlugins: async (signal?: AbortSignal): Promise<import('./types').ManagedPlugin[]> => {
+    const response = await controlClient.get<{ plugins: import('./types').ManagedPlugin[] }>('/config/plugins', { signal });
     return response.data.plugins;
   },
 
@@ -546,8 +546,8 @@ export const controlApi = {
     await controlClient.post('/config/plugins/discard', { token });
   },
 
-  getGlobalPluginConfig: async (name: string): Promise<import('./types').GlobalPluginConfig> => {
-    return (await controlClient.get<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`)).data;
+  getGlobalPluginConfig: async (name: string, signal?: AbortSignal): Promise<import('./types').GlobalPluginConfig> => {
+    return (await controlClient.get<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { signal })).data;
   },
 
   saveGlobalPluginConfig: async (name: string, config: Record<string, unknown>, revision: string): Promise<import('./types').GlobalPluginConfig> => {

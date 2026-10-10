@@ -1,6 +1,7 @@
-import { PluginConfigFields, type ModelOptions, type ConfigOption } from '@/components/common/PluginConfigFields';
-import { ragApi } from '@/api/rag';
-import { controlApi } from '@/api/control';
+import { PluginConfigFields } from '@/components/common/PluginConfigFields';
+import { globalPluginRead } from '@/api/pluginReads';
+import { usePluginConfigOptions } from '@/hooks/usePluginConfigOptions';
+import { errorText } from '@/utils/errorText';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Plus, Puzzle, Trash2 } from 'lucide-react';
 
@@ -76,31 +77,8 @@ export function EdictumPluginManager({
   const [states, setStates] = useState<Record<string, ManagedPluginState>>({});
   const draftConfigName = useRef<string | null>(null);
   const [selected, setSelected] = useState('');
-  const [modelOptions, setModelOptions] = useState<ModelOptions>({});
-  const [knowledgeBases, setKnowledgeBases] = useState<ConfigOption[]>([]);
-  const [modelError, setModelError] = useState('');
   const [globalConfigs, setGlobalConfigs] = useState<Record<string, GlobalPluginConfig>>({});
   const [globalErrors, setGlobalErrors] = useState<Record<string, string>>({});
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    setGlobalConfigs({}); setGlobalErrors({});
-    availablePlugins.filter((plugin) => Object.keys(plugin.config_schema).length).forEach((plugin) => {
-      controlApi.getGlobalPluginConfig(plugin.name).then((result) => { if (!cancelled) setGlobalConfigs((previous) => ({ ...previous, [plugin.name]: result })); })
-        .catch((error) => { if (!cancelled) setGlobalErrors((previous) => ({ ...previous, [plugin.name]: error.response?.data?.error || error.message })); });
-    });
-    return () => { cancelled = true; };
-  }, [open, availablePlugins]);
-  useEffect(() => {
-    if (!open) return;
-    let cancelled = false;
-    controlApi.pluginModelOptions().then((result) => { if (!cancelled) { setModelOptions(result.options); setModelError(''); } })
-      .catch((error) => { if (!cancelled) setModelError(error.message); });
-    ragApi.list({ platformId: 'local', via: 'control' }).then((result) => {
-      if (!cancelled) setKnowledgeBases(result.knowledge_bases.filter((item) => item.scope === 'global').map((item) => ({ value: item.id, label: item.name, scope: item.scope })));
-    }).catch((error) => { if (!cancelled) setModelError(error.message); });
-    return () => { cancelled = true; };
-  }, [open]);
 
   useEffect(() => {
     if (!open) {
@@ -232,6 +210,22 @@ export function EdictumPluginManager({
   const selectedState = selected ? states[selected] : undefined;
   const selectedUnknown = !!selected && unknownPluginNames.includes(selected);
   const selectedPresent = selectedState?.present === true;
+  const options = usePluginConfigOptions(selectedPlugin?.config_schema, open && selectedPresent);
+  const selectedName = selectedPlugin?.name;
+  const selectedSchema = selectedPlugin?.config_schema;
+  useEffect(() => {
+    if (!open) { setGlobalConfigs({}); setGlobalErrors({}); return; }
+    if (!selectedName || !selectedPresent || !selectedSchema || !Object.keys(selectedSchema).length) return;
+    const controller = new AbortController();
+    setGlobalConfigs((previous) => { const next = { ...previous }; delete next[selectedName]; return next; });
+    setGlobalErrors((previous) => ({ ...previous, [selectedName]: '' }));
+    globalPluginRead(selectedName).read({ signal: controller.signal }).then((result) => {
+      if (!controller.signal.aborted) setGlobalConfigs((previous) => ({ ...previous, [selectedName]: result }));
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) setGlobalErrors((previous) => ({ ...previous, [selectedName]: errorText(error) }));
+    });
+    return () => controller.abort();
+  }, [open, selectedName, selectedSchema, selectedPresent]);
 
   return (
     <Modal
@@ -326,11 +320,13 @@ export function EdictumPluginManager({
 
               {selectedPresent && Object.keys(selectedPlugin.config_schema).length > 0 && (
                 <div className="grid gap-3 border-t border-glass-border pt-4 md:grid-cols-2">
-                  {modelError && <p role="alert" className="text-sm text-error">{modelError}</p>}
+                  {options.modelError && <p role="alert" className="text-sm text-error">模型选项读取失败: {options.modelError}</p>}
+                  {options.knowledgeError && <p role="alert" className="text-sm text-error">知识库选项读取失败: {options.knowledgeError}</p>}
                   {globalErrors[selectedPlugin.name] && <p role="alert" className="text-sm text-error">读取继承参数失败: {globalErrors[selectedPlugin.name]}</p>}
+                  {!globalConfigs[selectedPlugin.name] && !globalErrors[selectedPlugin.name] && <p role="status" className="text-sm text-text-tertiary">正在读取继承参数…</p>}
                   <PluginConfigFields schema={selectedPlugin.config_schema} values={selectedState?.config || {}} inherited={globalConfigs[selectedPlugin.name]?.config} namedMode
                     sources={Object.fromEntries(Object.keys(globalConfigs[selectedPlugin.name]?.overrides || {}).map((key) => [key, 'global']))}
-                    modelOptions={modelOptions} knowledgeBases={knowledgeBases} disabled={saving || !globalConfigs[selectedPlugin.name]}
+                    modelOptions={options.models} knowledgeBases={options.bases} modelState={options.modelState} knowledgeState={options.knowledgeState} disabled={saving || !globalConfigs[selectedPlugin.name]}
                     onChange={(key, value) => setConfigValue(selectedPlugin.name, key, value)} onReset={(key) => {
                       setStates((current) => {
                         const config = { ...current[selectedPlugin.name].config };
