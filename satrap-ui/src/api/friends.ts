@@ -6,8 +6,9 @@ export interface FriendRequest {
   revision: number; archived: boolean; archived_at: number | null; platform_state: string; execution_state: string;
   last_checked_at: number | null; decision: string | null; can_handle: boolean; requires_confirmation: boolean;
   handling_reason: string; verification?: string; platform_query_supported?: boolean;
+  request_category?: 'normal' | 'suspicious'; nickname?: string; request_source?: string; suspicious_reason?: string; requested_at?: number | null;
 }
-export interface FriendPage<T> { items: T[]; has_more: boolean; next_cursor: string | null; coverage?: { complete: boolean }; unavailable_count?: number }
+export interface FriendPage<T> { items: T[]; has_more: boolean; next_cursor: string | null; coverage?: { complete: boolean; suspicious?: { state: string; reason?: string; truncated?: boolean; unavailable_count?: number; unavailable_reasons?: { code: string; message: string; count: number }[] } }; unavailable_count?: number }
 export interface FriendPolicy { protected_friend_ids: string[]; manager_ids: string[] }
 export interface RequestPolicy { credential_days: number; history_days: number }
 export interface FriendInfo extends FriendPolicy { current_account: string; capabilities: Record<string, { state: string; reason: string }> }
@@ -23,8 +24,8 @@ export const friendApi = {
   info: (adapter: string): Promise<FriendInfo> => apiClient.get(`${root(adapter)}/info`),
   list: (adapter: string, account: string, q: string, cursor?: string): Promise<FriendPage<Friend>> =>
     apiClient.get(root(adapter), { account, q, limit: 20, cursor }),
-  requests: (adapter: string, account: string, cursor?: string, view: 'active' | 'archived' = 'active'): Promise<FriendPage<FriendRequest>> =>
-    apiClient.get(`${root(adapter)}/requests`, { account, limit: 20, cursor, view }),
+  requests: (adapter: string, account: string, cursor?: string, view: 'active' | 'archived' | 'all' = 'active', requestCategory: 'all' | 'normal' | 'suspicious' = 'all'): Promise<FriendPage<FriendRequest>> =>
+    apiClient.get(`${root(adapter)}/requests`, { account, limit: 20, cursor, view, request_category: requestCategory }),
   recheckRequest: (adapter: string, account: string, id: string): Promise<FriendRequest> =>
     apiClient.post(`${root(adapter)}/requests/${encodeURIComponent(id)}/recheck`, { expected_self_id: account }),
   deleteRequest: (adapter: string, account: string, id: string, revision: number): Promise<{ status: string }> =>

@@ -18,8 +18,9 @@ try {
   let account = 'bot@example.test';
   let protectedIds = [];
   let supported = true;
+  let unreadableSuspicious = true;
   let friends = [{ user_id: 'alice', nickname: '同名', remark: '甲' }, { user_id: 'bob', nickname: '同名', remark: '乙' }, { user_id: 'manager', nickname: '管理者', remark: '' }];
-  const requestFields = { revision: 1, archived: false, archived_at: null, platform_state: 'unknown', execution_state: 'not_started', last_checked_at: null, decision: null, can_handle: true, requires_confirmation: false, handling_reason: '可处理' };
+  const requestFields = { request_category: 'normal', revision: 1, archived: false, archived_at: null, platform_state: 'unknown', execution_state: 'not_started', last_checked_at: null, decision: null, can_handle: true, requires_confirmation: false, handling_reason: '可处理' };
   let requests = [{ ...requestFields, request_id: 'rq_1', user_id: 'charlie', comment: '请添加我, 这是验证信息', received_at: Date.now() / 1000 - 20, expires_at: Date.now() / 1000 + 600 },
     { ...requestFields, request_id: 'rq_2', user_id: 'archived-user', comment: '本地到期但仍有凭据', revision: 2, archived: true, archived_at: Date.now() / 1000 - 100, requires_confirmation: true, received_at: Date.now() / 1000 - 1000, expires_at: Date.now() / 1000 - 400 }];
   let requestPolicy = { credential_days: 30, history_days: 90 };
@@ -44,7 +45,17 @@ try {
         const items = friends.filter((row) => [row.user_id, row.nickname, row.remark].some((value) => value.includes(q)));
         return route.fulfill({ headers: cors, json: { items, next_cursor: null, has_more: false, coverage: { complete: true } } });
       }
-      if (tail === '/requests') return route.fulfill({ headers: cors, json: { items: requests.filter((row) => row.archived === (url.searchParams.get('view') === 'archived')), next_cursor: null, has_more: false } });
+      if (tail === '/requests') {
+        const view = url.searchParams.get('view');
+        const category = url.searchParams.get('request_category');
+        assert.ok(['all', 'normal', 'suspicious'].includes(category));
+        const source = category === 'normal' ? { state: 'not_queried', complete: false } : {
+          state: 'queried', complete: false, reason: '查询覆盖范围未确认: 平台接口未提供总数或分页证据, 不能证明已覆盖全部申请',
+          unavailable_count: unreadableSuspicious ? 1 : 0,
+          unavailable_reasons: unreadableSuspicious ? [{ code: 'invalid_credential', message: '平台返回的申请缺少有效处理凭据, 无法登记或处理', count: 1 }] : [],
+        };
+        return route.fulfill({ headers: cors, json: { items: requests.filter((row) => (view === 'all' || row.archived === (view === 'archived')) && (category === 'all' || row.request_category === category)), next_cursor: null, has_more: false, coverage: { complete: false, suspicious: source } } });
+      }
       if (tail === '/request-policy') {
         if (method === 'PATCH') requestPolicy = { credential_days: body.credential_days, history_days: body.history_days };
         return route.fulfill({ headers: cors, json: requestPolicy });
@@ -72,6 +83,7 @@ try {
           assert.equal(body.params.expected_revision, row.revision);
           assert.equal(body.params.approve, true);
           if (row.request_id === 'rq_1') assert.equal(body.params.remark, '测试备注');
+          if (row.request_category === 'suspicious') assert.equal(body.params.remark, '');
           Object.assign(row, { archived: true, archived_at: Date.now() / 1000, can_handle: false, execution_state: 'succeeded', platform_state: 'processed', revision: row.revision + 1 });
         }
         const record = { action_id: body.action_id, self_id: account, action_type: body.action_type, params: body.params, target, actor_kind: 'panel', state: 'succeeded', created_at: Date.now() / 1000, expires_at: Date.now() / 1000 + 600, result: { message: body.action_type === 'send_request' ? '好友申请已提交, 不代表已成为好友' : '平台返回成功', verification: body.action_type === 'delete_friend' ? 'confirmed' : 'not_verified' } };
@@ -109,15 +121,32 @@ try {
   assert.ok(await page.getByRole('button', { name: '确认删除', exact: true }).isDisabled());
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.getByRole('button', { name: '好友申请', exact: true }).click();
-  await page.getByText('申请人 ID: charlie', { exact: true }).waitFor();
+  const unreadableMessage = page.getByText('有 1 条可疑申请未能读取: 平台返回的申请缺少有效处理凭据, 无法登记或处理', { exact: true });
+  await unreadableMessage.waitFor();
+  await page.getByText('可疑申请查询: 查询覆盖范围未确认: 平台接口未提供总数或分页证据, 不能证明已覆盖全部申请', { exact: true }).waitFor();
+  unreadableSuspicious = false;
+  await page.getByRole('button', { name: '刷新', exact: true }).click();
+  await unreadableMessage.waitFor({ state: 'hidden' });
+  await page.getByText('可疑申请查询: 查询覆盖范围未确认: 平台接口未提供总数或分页证据, 不能证明已覆盖全部申请', { exact: true }).waitFor();
+  await page.getByText('申请人: 昵称未提供 · ID: charlie', { exact: true }).waitFor();
   await page.getByRole('button', { name: '同意', exact: true }).click();
   await page.getByLabel('好友备注', { exact: true }).fill('测试备注');
   await page.getByRole('button', { name: '确认同意', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '平台返回成功' }).waitFor();
   await page.getByRole('button', { name: '关闭', exact: true }).click();
-  await page.getByText('没有待处理好友申请', { exact: true }).waitFor();
+  await page.getByText('当前筛选下没有可展示的申请记录', { exact: true }).waitFor();
+  requests.push({ ...requestFields, request_category: 'suspicious', request_id: 'rq_doubt', user_id: 'doubt-user', nickname: '可疑昵称', comment: '可疑验证信息', suspicious_reason: '平台风险提示', request_source: '账号查找', requested_at: Date.now() / 1000 - 40, received_at: Date.now() / 1000, expires_at: Date.now() / 1000 + 600 });
+  await page.getByRole('button', { name: '可疑申请', exact: true }).click();
+  await page.getByText('平台标记为可疑 · 原因: 平台风险提示', { exact: true }).waitFor();
+  await page.getByText('申请来源: 账号查找', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '同意', exact: true }).click();
+  assert.equal(await page.getByLabel('好友备注').count(), 0);
+  await page.getByRole('button', { name: '确认同意', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: '平台返回成功' }).waitFor();
+  await page.getByRole('button', { name: '关闭', exact: true }).click();
+  await page.getByRole('button', { name: '普通申请', exact: true }).click();
   await page.getByRole('button', { name: '已归档', exact: true }).click();
-  const archivedRow = page.getByText('申请人 ID: archived-user', { exact: true }).locator('..');
+  const archivedRow = page.getByText('申请人: 昵称未提供 · ID: archived-user', { exact: true }).locator('..');
   await archivedRow.getByRole('button', { name: '重新核验', exact: true }).click();
   await page.getByText('仅完成本地核验, 当前平台无法查询申请是否仍有效', { exact: true }).waitFor();
   await archivedRow.getByRole('button', { name: '同意', exact: true }).click();
@@ -126,7 +155,7 @@ try {
   await page.getByRole('status').filter({ hasText: '平台返回成功' }).waitFor();
   await page.getByRole('button', { name: '关闭', exact: true }).click();
   await page.waitForFunction(() => Array.from(document.querySelectorAll('button')).filter((button) => button.textContent === '同意').every((button) => button.disabled));
-  assert.equal(writes.filter((record) => record.action_type === 'handle_request').length, 2);
+  assert.equal(writes.filter((record) => record.action_type === 'handle_request').length, 3);
   await page.getByText('申请保留设置', { exact: true }).click();
   await page.getByLabel('申请凭据保留天数').fill('10');
   await page.getByLabel('申请历史保留天数').fill('60');
@@ -135,7 +164,7 @@ try {
   assert.deepEqual(requestPolicy, { credential_days: 10, history_days: 60 });
   page.once('dialog', (dialog) => { assert.ok(dialog.message().includes('不删除防重复执行记录')); dialog.accept(); });
   await archivedRow.getByRole('button', { name: '删除历史', exact: true }).click();
-  await page.waitForFunction(() => !document.body.textContent.includes('申请人 ID: archived-user'));
+  await page.waitForFunction(() => !document.body.textContent.includes('ID: archived-user'));
   await page.getByRole('button', { name: '操作记录与审批', exact: true }).click();
   await page.getByRole('button', { name: '批准删除', exact: true }).waitFor();
   page.once('dialog', (dialog) => { assert.ok(dialog.message().includes('bob')); assert.ok(dialog.message().includes('乙')); dialog.accept(); });

@@ -19,6 +19,8 @@ import { PluginCapabilities } from '@/components/common/PluginCapabilities';
 import { cn } from '@/utils/cn';
 
 interface ManagedPluginState {
+  config_version?: number;
+  migration_state?: Record<string, unknown>;
   present: boolean;
   enabled: boolean;
   config: Record<string, unknown>;
@@ -47,6 +49,8 @@ function normalizeConfiguredPlugins(
     normalized[item.name] = {
       present: true,
       enabled: item.enabled !== false,
+      config_version: item.config_version,
+      migration_state: item.migration_state,
       config: { ...(item.config || {}) },
       capabilities: Object.fromEntries(
         Object.entries(item.capabilities || {}).map(([kind, values]) => [kind, { ...values }]),
@@ -140,6 +144,8 @@ export function EdictumPluginManager({
       [name]: {
         present: true,
         enabled: true,
+        config_version: current[name]?.config_version ?? availablePlugins.find((plugin) => plugin.name === name)?.config_version,
+        migration_state: current[name]?.migration_state,
         config: current[name]?.config || {},
         capabilities: current[name]?.capabilities || {},
       },
@@ -199,6 +205,8 @@ export function EdictumPluginManager({
       .map(([name, state]) => ({
         name,
         enabled: state.enabled,
+        config_version: state.config_version,
+        migration_state: state.migration_state,
         config: state.config,
         capabilities: state.capabilities,
       }));

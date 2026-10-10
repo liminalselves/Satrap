@@ -44,7 +44,7 @@ try {
       '/config/platforms': { platforms: [] },
       '/api/sessions': { sessions: [] },
       '/config/edictum/types': { types: [{ name: 'async_simple', is_async: true, description: '', config_schema: {}, capabilities: { plugins: true, mcp: true, stream: true } }] },
-      '/config/edictum/plugins': { plugins: [{ name: 'probe_plugin', description: '', version: '1', config_schema: { note: { type: 'str', default: '' } }, capabilities: { tools: { probe_tool: '测试工具' } } }] },
+      '/config/edictum/plugins': { plugins: [{ name: 'probe_plugin', config_version: 1, description: '', version: '1', config_schema: { note: { type: 'str', default: '' } }, capabilities: { tools: { probe_tool: '测试工具' } } }] },
       '/config/plugins/probe_plugin/config': { ok: true, schema: { note: { type: 'string', default: '' } }, config: { note: '全局继承' }, overrides: { note: '全局继承' }, revision: 'first' },
       '/config/plugin-model-options': { options: {} },
       '/config/rag': { knowledge_bases: [] },
@@ -78,6 +78,7 @@ try {
   await page.getByText(/插件配置保存失败/).waitFor();
   assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '保留草稿');
   assert.equal(writes.at(-1).plugins[0].capabilities.tools.probe_tool, false);
+  assert.equal(writes.at(-1).plugins[0].config_version, 1);
   await dialog.getByRole('button', { name: '恢复继承', exact: true }).click();
   assert.equal(await dialog.getByLabel('note', { exact: true }).inputValue(), '全局继承');
   await dialog.getByRole('button', { name: '取消', exact: true }).click();

@@ -292,7 +292,7 @@ export const controlApi = {
   ragAction: async (platformId: string, sessionId: string, payload: Record<string, unknown>) => (await controlClient.post<Record<string, unknown>>('/config/rag', payload, { params: { platform_id: platformId, session_id: sessionId }, timeout: 300000 })).data,
   pluginModelOptions: async () => (await controlClient.get<{ options: ModelOptions }>('/config/plugin-model-options')).data,
   getSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string) => (await controlClient.get<SessionPluginSettings>('/config/session-plugin-config', { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
-  saveSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string, overrides: Record<string, unknown>, revision: number) => (await controlClient.put<SessionPluginSettings>('/config/session-plugin-config', { overrides, expected_revision: revision }, { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
+  saveSessionPluginConfig: async (platformId: string, sessionId: string, plugin: string, overrides: Record<string, unknown>, revision: number, tools?: import('./pluginSettings').SessionToolOverrides) => (await controlClient.put<SessionPluginSettings>('/config/session-plugin-config', { overrides, expected_revision: revision, ...tools }, { params: { platform_id: platformId, session_id: sessionId, plugin } })).data,
   // 获取后端状态
   status: async (): Promise<BackendStatus> => {
     const response = await controlClient.get<BackendStatus>('/status');

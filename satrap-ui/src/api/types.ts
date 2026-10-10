@@ -122,6 +122,8 @@ export interface EdictumTypeDefinition {
 
 export interface EdictumPluginConfig {
   name: string;
+  config_version?: number;
+  migration_state?: Record<string, unknown>;
   enabled?: boolean;
   config?: Record<string, unknown>;
   capabilities?: Record<string, Record<string, boolean>>;
@@ -143,6 +145,7 @@ export interface EdictumPluginConfigField {
 
 export interface EdictumAvailablePlugin {
   name: string;
+  config_version?: number;
   version: string;
   author: string;
   description: string;

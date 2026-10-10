@@ -26,7 +26,10 @@ export function Friends() {
   const [search, setSearch] = useState('');
   const [friends, setFriends] = useState<Friend[]>([]);
   const [requests, setRequests] = useState<FriendRequest[]>([]);
-  const [requestView, setRequestView] = useState<'active' | 'archived'>('active');
+  const [requestView, setRequestView] = useState<'active' | 'archived' | 'all'>('active');
+  const [requestCategory, setRequestCategory] = useState<'all' | 'normal' | 'suspicious'>('all');
+  const [requestCoverage, setRequestCoverage] = useState('');
+  const [requestUnavailableReasons, setRequestUnavailableReasons] = useState<string[]>([]);
   const [requestPolicy, setRequestPolicy] = useState<RequestPolicy | null>(null);
   const [actions, setActions] = useState<FriendAction[]>([]);
   const [cursors, setCursors] = useState<string[]>([]);
@@ -60,6 +63,7 @@ export function Friends() {
   useEffect(() => {
     let live = true;
     setInfo(null); setSelected(null); setFriends([]); setRequests([]); setActions([]); setCursors([]); setPage(1); setError('');
+    setRequestCoverage(''); setRequestUnavailableReasons([]); setUnavailableCount(0);
     friendApi.info(adapterId).then((value) => { if (live) { setInfo(value); setProtectedText(value.protected_friend_ids.join('\n')); } })
       .catch((caught) => { if (live) setError(errorText(caught)); });
     return () => { live = false; };
@@ -68,7 +72,8 @@ export function Friends() {
   const refreshInfo = useCallback(async () => {
     const value = await friendApi.info(adapterId);
     if (scopeRef.current !== scope) return;
-    if (value.current_account !== account) { setSelected(null); setFriends([]); setRequests([]); setActions([]); setCursors([]); setPage(1); }
+    if (value.current_account !== account) { setSelected(null); setFriends([]); setRequests([]); setActions([]); setCursors([]); setPage(1);
+      setRequestCoverage(''); setRequestUnavailableReasons([]); setUnavailableCount(0); }
     setInfo(value); setProtectedText(value.protected_friend_ids.join('\n'));
   }, [adapterId, account, scope]);
 
@@ -87,16 +92,19 @@ export function Friends() {
     if (capability && !['supported', 'unknown'].includes(info?.capabilities[capability]?.state || '')) return;
     let live = true;
     setLoading(true); setError('');
+    if (tab === 'requests') { setRequestCoverage(''); setRequestUnavailableReasons([]); setUnavailableCount(0); }
     const request = tab === 'friends' ? friendApi.list(adapterId, account, search, currentCursor)
-      : tab === 'requests' ? friendApi.requests(adapterId, account, currentCursor, requestView) : friendApi.actions(adapterId, account, page);
+      : tab === 'requests' ? friendApi.requests(adapterId, account, currentCursor, requestView, requestCategory) : friendApi.actions(adapterId, account, page);
     request.then((value) => {
       if (!live) return;
       if (tab === 'friends') { const data = value as Awaited<ReturnType<typeof friendApi.list>>; setFriends(data.items); setNext(data.next_cursor); setIncomplete(data.coverage?.complete === false); }
-      if (tab === 'requests') { const data = value as Awaited<ReturnType<typeof friendApi.requests>>; setRequests(data.items); setNext(data.next_cursor); setUnavailableCount(data.unavailable_count || 0); }
+      if (tab === 'requests') { const data = value as Awaited<ReturnType<typeof friendApi.requests>>; setRequests(data.items); setNext(data.next_cursor); setUnavailableCount(data.unavailable_count || 0);
+        const source = data.coverage?.suspicious; setRequestCoverage(source?.reason || (source?.truncated ? '平台可疑申请查询达到数量上限, 结果不完整' : ''));
+        setRequestUnavailableReasons((source?.unavailable_reasons || []).map((item) => `有 ${item.count} 条可疑申请未能读取: ${item.message}`)); }
       if (tab === 'actions') { const data = value as Awaited<ReturnType<typeof friendApi.actions>>; setActions(data.items); setMoreActions(data.has_more); }
     }).catch((caught) => { if (live) setError(errorText(caught)); }).finally(() => { if (live) setLoading(false); });
     return () => { live = false; };
-  }, [adapterId, account, tab, search, currentCursor, page, refresh, requestView, info?.capabilities]);
+  }, [adapterId, account, tab, search, currentCursor, page, refresh, requestView, requestCategory, info?.capabilities]);
 
   const open = (selection: Selection) => {
     setSelected(selection); setRemark(''); setSubmitted(false); setResult(null); setOperationId(crypto.randomUUID()); setError('');
@@ -110,7 +118,7 @@ export function Friends() {
         ? await friendApi.submit(adapterId, account, operationId, 'delete_friend', { user_id: selected.friend.user_id })
         : selected.kind === 'send'
           ? await friendApi.submit(adapterId, account, operationId, 'send_request', { user_id: requestTarget.trim(), message: requestMessage })
-          : await friendApi.submit(adapterId, account, operationId, 'handle_request', { request_id: selected.request.request_id, approve: selected.approve, remark: selected.approve ? remark : '', expected_revision: selected.request.revision });
+          : await friendApi.submit(adapterId, account, operationId, 'handle_request', { request_id: selected.request.request_id, approve: selected.approve, remark: selected.approve && selected.request.request_category !== 'suspicious' ? remark : '', expected_revision: selected.request.revision });
       if (scopeRef.current !== requestScope) return;
       setResult(data); setRefresh((value) => value + 1);
       await refreshInfo();
@@ -143,7 +151,8 @@ export function Friends() {
       if (remove) await friendApi.deleteRequest(adapterId, account, request.request_id, request.revision);
       else {
         const data = await friendApi.recheckRequest(adapterId, account, request.request_id);
-        if (scopeRef.current === scope) toast('info', data.platform_query_supported ? '平台状态已核验' : '仅完成本地核验, 当前平台无法查询申请是否仍有效');
+        if (scopeRef.current === scope) toast('info', data.verification === 'platform_pending' ? '平台查询确认这条可疑申请仍在待处理列表中'
+          : data.platform_query_supported ? '本次平台查询未确认申请仍待处理, 不能据此判定已处理或失效' : '仅完成本地核验, 当前平台无法查询申请是否仍有效');
       }
       if (scopeRef.current === scope) setRefresh((value) => value + 1);
     } catch (caught) { if (scopeRef.current === scope) setError(errorText(caught)); }
@@ -183,9 +192,12 @@ export function Friends() {
       </>}
     </Card>}
     {tab === 'requests' && <Card>
-      <div className="flex gap-2 mb-3">{([['active', '待处理'], ['archived', '已归档']] as const).map(([value, label]) =>
+      <div className="flex gap-2 mb-3">{([['active', '待处理'], ['archived', '已归档'], ['all', '全部记录']] as const).map(([value, label]) =>
         <Button key={value} disabled={busy} variant={requestView === value ? 'primary' : 'default'} onClick={() => { setRequests([]); setRequestView(value); setCursors([]); setNext(null); }}>{label}</Button>)}</div>
-      <p className="mb-3 text-sm text-gray-500">仅显示后端曾接收的申请. 本地到期会归档, 不代表平台申请失效; 保留凭据的归档申请仍可确认尝试处理</p>
+      <div className="flex gap-2 mb-3" aria-label="好友申请类别">{([['all', '全部类型'], ['normal', '普通申请'], ['suspicious', '可疑申请']] as const).map(([value, label]) =>
+        <Button key={value} disabled={busy} variant={requestCategory === value ? 'primary' : 'default'} onClick={() => { setRequests([]); setRequestCategory(value); setRequestCoverage(''); setCursors([]); setNext(null); }}>{label}</Button>)}</div>
+      <p className="mb-3 text-sm text-gray-500">普通申请来自后端接收记录, 可疑申请会向平台补取. 本地归档不代表平台申请失效; 保留凭据的归档申请仍可确认尝试处理</p>
+      {requestCoverage && <p role="status" className="mb-3">可疑申请查询: {requestCoverage}</p>}
       {requestPolicy && <details className="mb-3"><summary>申请保留设置</summary><div className="flex flex-wrap gap-3 my-3">
         <label>未处理凭据保留天数<input type="number" min={1} max={3650} aria-label="申请凭据保留天数" className="glass-input block" value={requestPolicy.credential_days} onChange={(event) => setRequestPolicy({ ...requestPolicy, credential_days: Number(event.target.value) })} /></label>
         <label>历史记录保留天数<input type="number" min={requestPolicy.credential_days} max={3650} aria-label="申请历史保留天数" className="glass-input block" value={requestPolicy.history_days} onChange={(event) => setRequestPolicy({ ...requestPolicy, history_days: Number(event.target.value) })} /></label>
@@ -193,8 +205,12 @@ export function Friends() {
         <p className="text-sm">历史期限不能短于凭据期限. 已清除的凭据不会因延长期限恢复, 已处理的申请会立即清除凭据</p></details>}
       {!available('list_requests') && <p>{cap('list_requests')?.reason || '当前平台不支持好友申请'}</p>}
       {unavailableCount > 0 && <p>有 {unavailableCount} 条历史申请缺少详情, 无法查询或处理. 刷新不会自动恢复, 平台重新上报未处理申请时可补回详情</p>}
+      {requestUnavailableReasons.map((message) => <p key={message} role="status" className="text-amber-600">{message}</p>)}
       {loading && <p role="status">正在读取申请…</p>}
-      {requests.map((request) => <div key={request.request_id} className="border-b py-3 space-y-2"><p>申请人 ID: {request.user_id}</p><p className="whitespace-pre-wrap break-words">验证信息: {request.comment || '无'}</p>
+      {requests.map((request) => <div key={request.request_id} className="border-b py-3 space-y-2"><p>申请人: {request.nickname || '昵称未提供'} · ID: {request.user_id || '平台未确认'}</p><p className="whitespace-pre-wrap break-words">验证信息: {request.comment || '无'}</p>
+        {request.request_category === 'suspicious' && <p>平台标记为可疑 · 原因: {request.suspicious_reason || '未提供'}</p>}
+        {request.request_source && <p>申请来源: {request.request_source}</p>}
+        {request.requested_at && <p>原始申请时间: {formatTime(request.requested_at)}</p>}
         <p className="text-sm">收到: {formatTime(request.received_at)} · 本地核验期限: {formatTime(request.expires_at)} · 修订号: {request.revision}</p>
         <p>平台状态: {({ pending: '待处理', processed: '已处理', invalid: '已失效', unknown: '待确认' } as Record<string, string>)[request.platform_state] || '待确认'} · 执行状态: {states[request.execution_state] || (request.execution_state === 'not_started' ? '未执行' : request.execution_state)}</p>
         <p>{request.handling_reason}</p><div className="flex flex-wrap gap-2">
@@ -202,7 +218,7 @@ export function Friends() {
           <Button size="sm" disabled={busy || !available('handle_request') || request.can_handle === false} onClick={() => open({ kind: 'request', request, approve: false })}>拒绝</Button>
           <Button size="sm" disabled={busy} onClick={() => requestOperation(request, false)}>重新核验</Button>
           {request.archived && <Button size="sm" disabled={busy} onClick={() => requestOperation(request, true)}>删除历史</Button>}</div></div>)}
-      {!loading && !error && available('list_requests') && requests.length === 0 && <p>{requestView === 'active' ? '没有待处理好友申请' : '没有归档好友申请'}</p>}
+      {!loading && !error && available('list_requests') && requests.length === 0 && <p>当前筛选下没有可展示的申请记录</p>}
       {!available('handle_request') && <p>{cap('handle_request')?.reason || '当前平台不支持处理申请'}</p>}
     </Card>}
     {tab === 'actions' && <Card>
@@ -235,7 +251,8 @@ export function Friends() {
           <p>提交成功表示申请已发出, 不代表对方已同意或已经成为好友</p>
         </> : <><p>申请人 ID: {selected.request.user_id}</p><p className="whitespace-pre-wrap break-words">验证信息: {selected.request.comment || '无'}</p>
           {selected.request.archived && <p role="status">此申请已在本地归档, 平台状态可能未确认. 点击确认后只尝试处理一次, 结果未知时请核查操作记录</p>}
-          {selected.approve && <label className="block">好友备注 (可选)<input className="glass-input w-full" aria-label="好友备注" maxLength={60} disabled={submitted} value={remark} onChange={(event) => setRemark(event.target.value)} /></label>}</>}
+          {selected.request.request_category === 'suspicious' && <p>平台标记为可疑 · 原因: {selected.request.suspicious_reason || '未提供'}; 此申请不支持填写好友备注</p>}
+          {selected.approve && selected.request.request_category !== 'suspicious' && <label className="block">好友备注 (可选)<input className="glass-input w-full" aria-label="好友备注" maxLength={60} disabled={submitted} value={remark} onChange={(event) => setRemark(event.target.value)} /></label>}</>}
         {result && <div role="status">{outcome(result)}</div>}
         {submitted && !result && !busy && <Button onClick={() => friendApi.action(adapterId, account, operationId).then((value) => { if (scopeRef.current === scope) setResult(value); }).catch((caught) => setError(errorText(caught)))}>核查此动作</Button>}
         <div className="flex justify-end gap-2"><Button disabled={busy} onClick={() => setSelected(null)}>{submitted ? '关闭' : '取消'}</Button>
