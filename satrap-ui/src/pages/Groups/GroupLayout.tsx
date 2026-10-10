@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, NavLink, Outlet, useLocation, useOutletContext, useParams, useSearchParams } from 'react-router-dom';
 import { groupApi, type GroupConfigResult } from '@/api/groups';
 import { PageHeader } from '@/components/common/PageHeader';
@@ -7,6 +7,9 @@ import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { errorText } from '@/utils/errorText';
+import { VersionedConfigRead } from '@/api/configVersions';
+import { startVisiblePoll } from '@/utils/visiblePoll';
+import { getApiBaseUrl, getControlApiUrl } from '@/utils/constants';
 
 const sections = [
   ['overview', '概览'], ['policy', '响应策略'], ['session', '会话配置'],
@@ -52,28 +55,41 @@ export function GroupLayout() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const request = useRef(0);
+  const configRead = useMemo(() => new VersionedConfigRead([], (signal) =>
+    groupApi.config(adapterId, groupId, account, isRunning, signal), isRunning ? getApiBaseUrl : getControlApiUrl), [adapterId, groupId, account, isRunning]);
+  const currentRead = useRef(configRead);
+  currentRead.current = configRead;
   const historical = !!config && account !== config.current_account;
   const listPath = `/platforms/${encodeURIComponent(adapterId)}/groups?account=${encodeURIComponent(account)}`;
 
-  const reload = useCallback(async () => {
-    if (!account) return;
+  const reload = useCallback(async (signal?: AbortSignal) => {
+    if (!account || configRead !== currentRead.current) return;
     const current = ++request.current;
     try {
-      const result = await groupApi.config(adapterId, groupId, account, isRunning);
-      if (current !== request.current) return;
+      const result = await configRead.read({ signal });
+      if (current !== request.current || signal?.aborted) return;
       setConfig(result);
       setError('');
     } catch (caught) {
-      if (current === request.current) setError(errorText(caught));
+      if (current === request.current && !signal?.aborted) { setError(errorText(caught)); throw caught; }
     } finally {
       if (current === request.current) setLoading(false);
     }
-  }, [adapterId, groupId, account, isRunning]);
+  }, [account, configRead]);
+
+  const acceptConfig = useCallback((value: GroupConfigResult) => {
+    if (configRead !== currentRead.current) return;
+    request.current++; configRead.invalidate();
+    setConfig(value); setLoading(false);
+  }, [configRead]);
+  const reloadConfig = useCallback(() => reload().catch(() => undefined), [reload]);
 
   useEffect(() => {
-    if (account) { setLoading(true); reload(); }
+    const controller = new AbortController();
+    if (account) { setLoading(true); void reload(controller.signal).catch(() => undefined); }
     else {
-      groupApi.accounts(adapterId, isRunning).then((result) => {
+      groupApi.accounts(adapterId, isRunning, controller.signal).then((result) => {
+        if (controller.signal.aborted) return;
         if (result.current_account) {
           // 函数式更新保留其它查询参数, 避免把 params 拉进依赖导致每次 URL 变化都重读
           setParams((previous) => {
@@ -82,16 +98,14 @@ export function GroupLayout() {
             return next;
           }, { replace: true });
         } else setLoading(false);
-      }).catch((caught) => { setError(errorText(caught)); setLoading(false); });
+      }).catch((caught) => { if (!controller.signal.aborted) { setError(errorText(caught)); setLoading(false); } });
     }
-    return () => { request.current += 1; };
+    return () => { request.current += 1; controller.abort(); };
   }, [account, adapterId, isRunning, reload, setParams]);
   useEffect(() => {
     if (!account || !isRunning) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') void reload();
-    }, 5_000);
-    return () => window.clearInterval(interval);
+    const poll = startVisiblePoll(reload, { interval: 5000, immediate: false });
+    return () => { request.current++; poll.stop(); };
   }, [account, isRunning, reload]);
 
   if (!account && !loading) return <Card>等待机器人确认账号。<Link className="text-accent" to={listPath}>返回群列表</Link></Card>;
@@ -108,7 +122,7 @@ export function GroupLayout() {
     <div className="space-y-5">
       <PageHeader title={title} description={`平台 ${adapterId} / 机器人 ${account} / 群 ${groupId}`}
         actions={<Link className="glass-button px-3 py-2 text-sm" to={listPath}>返回群列表</Link>} />
-      {error && <Card role="alert" className="border border-error text-error">{error} <Button size="sm" onClick={reload}>重试读取</Button></Card>}
+      {error && <Card role="alert" className="border border-error text-error">{error} <Button size="sm" onClick={() => void reload().catch(() => undefined)}>重试读取</Button></Card>}
       <Card className="space-y-3">
         <div className="flex flex-wrap items-center gap-2 text-sm" aria-live="polite">
           <Badge variant={group.membership === 'joined' ? 'success' : 'default'}>{membership}</Badge>
@@ -130,7 +144,7 @@ export function GroupLayout() {
           ))}
         </nav>
       </Card>
-      <Outlet context={{ adapterId, groupId, account, isRunning, historical, config, setConfig, reload } satisfies GroupContext} />
+      <Outlet context={{ adapterId, groupId, account, isRunning, historical, config, setConfig: acceptConfig, reload: reloadConfig } satisfies GroupContext} />
     </div>
   );
 }

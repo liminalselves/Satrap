@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { ApiError } from '@/api/client';
 import { groupApi, type GroupDiagnostic, type GroupEvent, type GroupPolicyValue } from '@/api/groups';
@@ -9,6 +9,9 @@ import { reasonLabel, stageLabel, statusLabel } from '@/components/diagnostics/R
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { useGroupContext } from './GroupLayout';
+import { VersionedConfigRead } from '@/api/configVersions';
+import { getApiBaseUrl } from '@/utils/constants';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 
 const labels: Record<string, string> = {
   group_increase: '成员入群', group_decrease: '成员退群', group_recall: '消息撤回',
@@ -39,29 +42,33 @@ export function GroupEvents() {
   const [conflict, setConflict] = useState(false);
   const dirty = JSON.stringify(draft) !== baseline;
   useDirtyGuard(dirty);
+  const eventRead = useMemo(() => new VersionedConfigRead([], async (signal) => {
+    const [eventResult, diagnosticResult] = await Promise.allSettled([
+      groupApi.events(adapterId, groupId, account, eventLimit, signal),
+      groupApi.diagnostics(adapterId, groupId, account, stage, requestId, signal),
+    ]);
+    if (eventResult.status === 'rejected') throw eventResult.reason;
+    if (diagnosticResult.status === 'rejected') throw diagnosticResult.reason;
+    return { events: eventResult.value.items, diagnostics: diagnosticResult.value.records };
+  }, getApiBaseUrl), [adapterId, groupId, account, eventLimit, stage, requestId]);
   useEffect(() => {
     if (dirty) return;
     const fresh = fromConfig(); setDraft(fresh); setBaseline(JSON.stringify(fresh));
   }, [config.revision, config.account, dirty, fromConfig]);
   useEffect(() => {
     if (!isRunning || !account) return;
-    let live = true;
-    Promise.all([
-      groupApi.events(adapterId, groupId, account, eventLimit),
-      groupApi.diagnostics(adapterId, groupId, account, stage, requestId),
-    ]).then(([eventResult, diagnosticResult]) => {
-      if (!live) return;
-      setEvents(eventResult.items); setDiagnostics(diagnosticResult.records); setError('');
-    }).catch((caught) => { if (live) setError(errorText(caught)); });
-    return () => { live = false; };
-  }, [adapterId, groupId, account, isRunning, eventLimit, stage, requestId, refreshKey]);
-  useEffect(() => {
-    if (!isRunning || error) return;
-    const interval = window.setInterval(() => {
-      if (document.visibilityState === 'visible') setRefreshKey((value) => value + 1);
-    }, 5_000);
-    return () => window.clearInterval(interval);
-  }, [isRunning, error]);
+    const poll = startVisiblePoll(async (signal) => {
+      try {
+        const result = await eventRead.read({ signal });
+        if (signal.aborted) return;
+        setEvents(result.events); setDiagnostics(result.diagnostics); setError('');
+      } catch (caught) {
+        if (signal.aborted) return;
+        setError(errorText(caught)); throw caught;
+      }
+    }, { interval: 5000 });
+    return () => poll.stop();
+  }, [account, isRunning, eventRead, refreshKey]);
   const changeParam = (key: string, value: string) => {
     const next = new URLSearchParams(params);
     if (value) next.set(key, value); else next.delete(key);

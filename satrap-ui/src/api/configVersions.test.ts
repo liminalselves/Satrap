@@ -103,6 +103,24 @@ describe('配置版本读取', () => {
     expect(await resource.read()).toBe('b-data');
   });
 
+  it('无版本的后端状态读取合并在途请求, 地址变化拒收旧数据且不缓存正文', async () => {
+    let backend = 'http://backend-a';
+    const old = deferred<string>();
+    const loader = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValueOnce('fresh').mockResolvedValueOnce('latest');
+    const resource = new VersionedConfigRead([], loader, () => backend);
+    const first = resource.read();
+    const joined = resource.read();
+    await vi.waitFor(() => expect(loader).toHaveBeenCalledTimes(1));
+    backend = 'http://backend-b';
+    expect(await resource.read()).toBe('fresh');
+    old.resolve('obsolete');
+    await expect(first).rejects.toThrow('地址已改变');
+    await expect(joined).rejects.toThrow('地址已改变');
+    expect(await resource.read()).toBe('latest');
+    expect(loader).toHaveBeenCalledTimes(3);
+    expect(controlClient.get).not.toHaveBeenCalled();
+  });
+
   it('人工刷新强制核验并重读, 连续变化有界失败后可恢复', async () => {
     const loader = vi.fn().mockResolvedValue('good');
     const resource = new VersionedConfigRead(['models'], loader);

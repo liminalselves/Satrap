@@ -6,6 +6,24 @@ beforeEach(() => { vi.useFakeTimers(); page = Object.assign(new EventTarget(), {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('可见性轮询', () => {
+  it('可延后首轮, 保留执行截止条件且恢复可见不重启已结束轮询', async () => {
+    const startedAt = Date.now();
+    const task = vi.fn(async () => undefined);
+    const poll = startVisiblePoll(task, { interval: 2000, immediate: false,
+      shouldContinue: () => Date.now() - startedAt < 60000 });
+    expect(task).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(task).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(task).toHaveBeenCalledTimes(1);
+    page.hidden = true; page.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(60000);
+    page.hidden = false; page.dispatchEvent(new Event('visibilitychange'));
+    await vi.advanceTimersByTimeAsync(60000);
+    expect(task).toHaveBeenCalledTimes(1);
+    poll.stop();
+  });
+
   it('隐藏后停止定时读取, 恢复只补查一次, 停止时撤销读取', async () => {
     const task = vi.fn(async (_signal: AbortSignal) => undefined);
     const poll = startVisiblePoll(task, { interval: 5000 });

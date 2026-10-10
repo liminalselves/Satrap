@@ -2,6 +2,8 @@ interface PollOptions {
   interval: number | (() => number);
   onError?: (error: unknown) => void;
   maxBackoff?: number;
+  immediate?: boolean;
+  shouldContinue?: () => boolean;
 }
 
 export function startVisiblePoll(task: (signal: AbortSignal) => Promise<unknown>, options: PollOptions) {
@@ -12,7 +14,7 @@ export function startVisiblePoll(task: (signal: AbortSignal) => Promise<unknown>
   let timer: ReturnType<typeof setTimeout> | undefined;
   const controller = new AbortController();
   const request = async (afterRunning = false) => {
-    if (!active || document.hidden) return;
+    if (!active || document.hidden || options.shouldContinue?.() === false) return;
     if (running) { followup ||= afterRunning; return; }
     if (timer) clearTimeout(timer);
     timer = undefined;
@@ -21,7 +23,7 @@ export function startVisiblePoll(task: (signal: AbortSignal) => Promise<unknown>
     catch (error) { if (active && !controller.signal.aborted) { failures++; options.onError?.(error); } }
     finally {
       running = false;
-      if (active && !document.hidden) {
+      if (active && !document.hidden && options.shouldContinue?.() !== false) {
         const interval = typeof options.interval === 'function' ? options.interval() : options.interval;
         const delay = followup ? 0 : Math.min(options.maxBackoff || 60000, interval * 2 ** Math.min(failures, 4));
         followup = false;
@@ -34,7 +36,11 @@ export function startVisiblePoll(task: (signal: AbortSignal) => Promise<unknown>
     else void request(true);
   };
   document.addEventListener('visibilitychange', visibility);
-  void request();
+  if (options.immediate !== false) void request();
+  else if (!document.hidden) {
+    const interval = typeof options.interval === 'function' ? options.interval() : options.interval;
+    timer = setTimeout(() => void request(), interval);
+  }
   return {
     request: () => void request(),
     stop: () => {

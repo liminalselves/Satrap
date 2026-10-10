@@ -15,6 +15,7 @@ import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
 import { groupActionLabels } from './groupActionLabels';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 
 const MEMBERSHIPS = [
   ['joined', '已加入'], ['all', '全部'], ['left', '已离开'],
@@ -252,26 +253,24 @@ export function Groups() {
     } catch (caught) { setError(errorText(caught)); }
   }, [account, historical, isRunning, adapterId, loadList]);
 
-  // 同步进度轮询: 每个 syncId 只建一个 interval, 轮数用闭包计数 (避免靠 state 重建定时器);
-  // 超过上限仍未完成则停止轮询并解除按钮禁用, 状态以下次手动同步为准
   useEffect(() => {
-    if (!syncId) return;
+    if (!syncId || !isRunning || historical) return;
     let ticks = 0;
-    const timer = window.setInterval(async () => {
-      if (document.hidden) return;
+    const poll = startVisiblePoll(async (signal) => {
       ticks += 1;
       try {
-        const status = await groupApi.syncStatus(adapterId, account, syncId);
+        const status = await groupApi.syncStatus(adapterId, account, syncId, signal);
+        if (signal.aborted) return;
         if (status.status !== 'running') {
           setSyncId('');
           await loadList();
         } else if (ticks >= SYNC_POLL_MAX_TICKS) {
           setSyncId('');
         }
-      } catch (caught) { setError(errorText(caught)); setSyncId(''); }
-    }, SYNC_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [adapterId, account, syncId, loadList]);
+      } catch (caught) { if (!signal.aborted) { setError(errorText(caught)); setSyncId(''); } }
+    }, { interval: SYNC_POLL_INTERVAL_MS, immediate: false, shouldContinue: () => ticks < SYNC_POLL_MAX_TICKS });
+    return () => poll.stop();
+  }, [adapterId, account, syncId, isRunning, historical, loadList]);
 
   const sync = visibleListing?.sync;
   const totalPages = Math.max(1, Math.ceil((visibleListing?.total || 0) / pageSize));

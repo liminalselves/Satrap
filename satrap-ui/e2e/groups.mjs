@@ -84,6 +84,11 @@ try {
       'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET, POST, PATCH, PUT, DELETE, OPTIONS' };
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers });
     const reply = (json, status = 200) => route.fulfill({ status, json, headers });
+    if (pathname === '/config/versions') {
+      const resources = (url.searchParams.get('resources') || '').split(',');
+      const token = JSON.stringify({ modelConfigs, edictumConfigs, platforms, platformRevision });
+      return reply({ ok: true, resources: Object.fromEntries(resources.map((name) => [name, { state: 'available', change_token: token }])) });
+    }
     if (pathname === '/config/models') return reply(url.searchParams.get('type') === 'llm' ? modelConfigs : {});
     if (pathname === '/config/models/llm/base' && request.method() === 'POST') {
       assert.deepEqual(Object.keys(modelConfigs), []);
@@ -213,6 +218,7 @@ try {
       actionReads += 1;
       const filter = url.searchParams.get('state') || 'pending';
       if (filter === 'pending' && holdPendingActions) await new Promise((resolve) => { releasePendingActions = resolve; });
+      if (request.failure()) return;
       if (filter === 'failed') return reply({ items: [
         { action_id: 'action-card-failed', self_id: '100', group_id: '456', action_type: 'set_group_card',
           params: { user_id: '100', card: '' }, actor_kind: 'model', state: 'failed',
@@ -473,11 +479,11 @@ try {
   ]);
   await page.getByRole('link', { name: '事件与诊断' }).click();
   await page.getByText('近期没有可见事件').waitFor();
-  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
   const hiddenReads = eventReads;
   await page.waitForTimeout(5_300);
   assert.equal(eventReads, hiddenReads);
-  await page.evaluate(() => { delete document.visibilityState; });
+  await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
   await page.waitForTimeout(5_300);
   assert.equal(eventReads > hiddenReads, true);
   await page.getByRole('link', { name: '会话配置' }).click();
@@ -573,22 +579,21 @@ try {
       && request.url().includes('state=pending')),
     page.locator('select').first().selectOption('pending'),
   ]);
+  const canceledAction = page.waitForEvent('requestfailed', { predicate: (request) => request.url().includes('/groups/456/actions?') && request.url().includes('state=pending') });
   await page.locator('select').first().selectOption('succeeded');
   await page.getByText('action-succeeded').waitFor();
-  const staleActionResponse = page.waitForResponse((response) => response.url().includes('/groups/456/actions?')
-    && response.url().includes('state=pending'));
+  await canceledAction;
   holdPendingActions = false;
   releasePendingActions();
-  await staleActionResponse;
   await page.waitForTimeout(100);
   assert.equal(await page.getByText('action-123456').count(), 0);
   await page.locator('select').first().selectOption('all');
   await page.getByText('action-123456').waitFor();
-  await page.evaluate(() => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' }));
+  await page.evaluate(() => { Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }); document.dispatchEvent(new Event('visibilitychange')); });
   const hiddenActionReads = actionReads;
   await page.waitForTimeout(10_300);
   assert.equal(actionReads, hiddenActionReads);
-  await page.evaluate(() => { delete document.visibilityState; });
+  await page.evaluate(() => { delete document.hidden; document.dispatchEvent(new Event('visibilitychange')); });
   await page.waitForTimeout(10_300);
   assert.equal(actionReads > hiddenActionReads, true);
   await page.getByRole('link', { name: '群管理' }).click();

@@ -112,9 +112,9 @@ export interface GroupConfigResult {
 
 const path = (adapterId: string) => `/platforms/${encodeURIComponent(adapterId)}/groups`;
 
-async function controlGet<T>(url: string, params?: Record<string, unknown>): Promise<T> {
+async function controlGet<T>(url: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
   try {
-    const response = await controlClient.get<T>(url, { params });
+    const response = await controlClient.get<T>(url, { params, signal });
     return response.data;
   } catch (error) {
     if (isAxiosError(error)) throw toApiError(error);
@@ -133,10 +133,10 @@ async function controlPatch<T>(url: string, data: unknown): Promise<T> {
 }
 
 export const groupApi = {
-  accounts: (adapterId: string, running: boolean): Promise<GroupAccountsResult> => (
+  accounts: (adapterId: string, running: boolean, signal?: AbortSignal): Promise<GroupAccountsResult> => (
     running
-      ? apiClient.get<GroupAccountsResult>(`/api${path(adapterId)}/accounts`)
-      : controlGet<GroupAccountsResult>(`${path(adapterId)}/accounts`)
+      ? apiClient.get<GroupAccountsResult>(`/api${path(adapterId)}/accounts`, undefined, signal)
+      : controlGet<GroupAccountsResult>(`${path(adapterId)}/accounts`, undefined, signal)
   ),
   list: (adapterId: string, query: GroupListQuery, running: boolean): Promise<GroupListResult> => (
     running
@@ -164,14 +164,14 @@ export const groupApi = {
   sync: (adapterId: string, account: string): Promise<{ sync_id: string; status: string; reused: boolean }> => (
     apiClient.post(`/api${path(adapterId)}/sync`, { expected_self_id: account })
   ),
-  syncStatus: (adapterId: string, account: string, syncId: string): Promise<GroupSyncStatus> => (
-    apiClient.get(`/api${path(adapterId)}/sync/${encodeURIComponent(syncId)}`, { account })
+  syncStatus: (adapterId: string, account: string, syncId: string, signal?: AbortSignal): Promise<GroupSyncStatus> => (
+    apiClient.get(`/api${path(adapterId)}/sync/${encodeURIComponent(syncId)}`, { account }, signal)
   ),
-  config: (adapterId: string, groupId: string, account: string, running: boolean): Promise<GroupConfigResult> => {
+  config: (adapterId: string, groupId: string, account: string, running: boolean, signal?: AbortSignal): Promise<GroupConfigResult> => {
     const url = `${path(adapterId)}/${encodeURIComponent(groupId)}/config`;
     return running
-      ? apiClient.get<GroupConfigResult>(`/api${url}`, { account })
-      : controlGet<GroupConfigResult>(url, { account });
+      ? apiClient.get<GroupConfigResult>(`/api${url}`, { account }, signal)
+      : controlGet<GroupConfigResult>(url, { account }, signal);
   },
   saveConfig: (adapterId: string, groupId: string, data: {
     expected_self_id: string; expected_revision: number; base_revision: string;
@@ -215,13 +215,13 @@ export const groupApi = {
   info: (adapterId: string, groupId: string, account: string): Promise<Record<string, unknown>> => (
     apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/info`, { account })
   ),
-  events: (adapterId: string, groupId: string, account: string, limit: 50 | 100): Promise<{
+  events: (adapterId: string, groupId: string, account: string, limit: 50 | 100, signal?: AbortSignal): Promise<{
     items: GroupEvent[]; volatile: boolean; capacity: number; truncated: boolean;
-  }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/events`, { account, limit }),
-  diagnostics: (adapterId: string, groupId: string, account: string, stage = '', requestId = ''): Promise<{
+  }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/events`, { account, limit }, signal),
+  diagnostics: (adapterId: string, groupId: string, account: string, stage = '', requestId = '', signal?: AbortSignal): Promise<{
     records: GroupDiagnostic[]; available: boolean; capacity?: number;
   }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/diagnostics`,
-    { account, stage, request_id: requestId, limit: 50 }),
+    { account, stage, request_id: requestId, limit: 50 }, signal),
   diagnostic: (adapterId: string, groupId: string, account: string, requestId: string): Promise<{
     records: Array<Record<string, unknown>>; truncated: boolean;
   }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/diagnostics/${encodeURIComponent(requestId)}`,
@@ -238,9 +238,9 @@ export const groupApi = {
     status: string; reason?: string; detail?: string; request_id: string;
   }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/wake/${encodeURIComponent(requestId)}`,
     { account }),
-  actions: (adapterId: string, groupId: string, account: string, state: string, page = 1): Promise<{
+  actions: (adapterId: string, groupId: string, account: string, state: string, page = 1, signal?: AbortSignal): Promise<{
     items: GroupAction[]; total: number; page: number; page_size: number;
-  }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/actions`, { account, state, page }),
+  }> => apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/actions`, { account, state, page }, signal),
   action: (adapterId: string, groupId: string, account: string, actionId: string): Promise<GroupAction> => (
     apiClient.get(`/api${path(adapterId)}/${encodeURIComponent(groupId)}/actions/${encodeURIComponent(actionId)}`, { account })
   ),

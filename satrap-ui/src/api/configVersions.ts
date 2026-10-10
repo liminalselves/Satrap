@@ -37,7 +37,7 @@ export class VersionedConfigRead<T> {
   private cached?: { scope: string; versions: ConfigVersions; data: T };
   private flight?: Flight<T>;
 
-  constructor(private resources: readonly ConfigResource[], private loader: (signal: AbortSignal) => Promise<T>) {}
+  constructor(private resources: readonly ConfigResource[], private loader: (signal: AbortSignal) => Promise<T>, private scope = getControlApiUrl) {}
 
   invalidate() {
     this.epoch++;
@@ -48,7 +48,7 @@ export class VersionedConfigRead<T> {
   read({ force = false, signal, versions }: ConfigReadOptions = {}): Promise<T> {
     if (signal?.aborted) return Promise.reject(new DOMException('读取已取消', 'AbortError'));
     if (force) this.invalidate();
-    const scope = getControlApiUrl();
+    const scope = this.scope();
     let flight = this.flight;
     if (!flight || flight.scope !== scope || flight.controller.signal.aborted) {
       const controller = new AbortController();
@@ -68,18 +68,18 @@ export class VersionedConfigRead<T> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const before = attempt === 0 && hint !== undefined && !force ? hint : await getConfigVersions(this.resources, force && attempt === 0, signal);
-        if (flight.scope !== getControlApiUrl()) throw new Error('控制服务地址已改变, 已丢弃旧读取结果');
+        if (flight.scope !== this.scope()) throw new Error('服务地址已改变, 已丢弃旧读取结果');
         if (signal.aborted) throw new DOMException('读取已取消', 'AbortError');
         const cached = this.cached;
         if (cached?.scope === flight.scope && sameConfigVersions(cached.versions, before, this.resources)) return cached.data;
         const data = await this.loader(signal);
-        if (flight.scope !== getControlApiUrl()) throw new Error('控制服务地址已改变, 已丢弃旧读取结果');
+        if (flight.scope !== this.scope()) throw new Error('服务地址已改变, 已丢弃旧读取结果');
         if (signal.aborted) throw new DOMException('读取已取消', 'AbortError');
         if (before === null) return data;
         const after = await getConfigVersions(this.resources, false, signal);
-        if (flight.scope !== getControlApiUrl()) throw new Error('控制服务地址已改变, 已丢弃旧读取结果');
+        if (flight.scope !== this.scope()) throw new Error('服务地址已改变, 已丢弃旧读取结果');
         if (!sameConfigVersions(before, after, this.resources)) continue;
-        if (flight.epoch === this.epoch && flight.scope === getControlApiUrl() && !signal.aborted && after) this.cached = { scope: flight.scope, versions: after, data };
+        if (flight.epoch === this.epoch && flight.scope === this.scope() && !signal.aborted && after) this.cached = { scope: flight.scope, versions: after, data };
         return data;
       } catch (error) {
         if (axios.isAxiosError(error) && error.response?.status === 409 && error.response.data?.code === 'config_version_changed') continue;
