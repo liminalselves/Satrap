@@ -32,6 +32,7 @@ import { createAnimationFrameLimiter, MAX_UI_FRAME_RATE } from '@/utils/frameLim
 import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { useTheme } from '@/hooks/useTheme';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   chatApi,
   subscribeChat,
@@ -3361,7 +3362,7 @@ function ModelEditModal({
 }) {
   const isNew = modelName === '';
   const existing = modelName ? modelsDetail[modelName] : undefined;
-  const { isRunning, reloadConfig } = useBackendStore();
+  const { isRunning, reloadConfig } = useBackendStore(useShallow((state) => ({ isRunning: state.isRunning, reloadConfig: state.reloadConfig })));
 
   const [name, setName] = useState('');
   const [model, setModel] = useState('');

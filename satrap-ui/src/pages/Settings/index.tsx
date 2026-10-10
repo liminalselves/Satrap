@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
@@ -31,7 +32,8 @@ interface ConfigData {
 }
 
 export function Settings() {
-  const backend = useBackendStore();
+  const backend = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning,
+    controlBackend: state.controlBackend, runState: state.runState, operation: state.operation })));
   const { health, isRunning, controlBackend } = backend;
   const [config, setConfig] = useState<ConfigData>({});
   const [rawConfig, setRawConfig] = useState('');

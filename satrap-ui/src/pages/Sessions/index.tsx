@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { groupApi } from '@/api/groups';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Button } from '@/components/ui/Button';
@@ -53,8 +54,9 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
     return () => { cancelled = true; };
   }, [overrideSession]);
 
-  const { sessionClasses, llmConfigs, fetchSessionClasses } = useConfigStore();
-  const { health, isRunning } = useBackendStore();
+  const { sessionClasses, llmConfigs, fetchSessionClasses } = useConfigStore(useShallow((state) => ({
+    sessionClasses: state.sessionClasses, llmConfigs: state.llmConfigs, fetchSessionClasses: state.fetchSessionClasses })));
+  const { health, isRunning } = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning })));
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);

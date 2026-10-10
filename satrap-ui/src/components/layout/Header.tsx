@@ -1,5 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useShallow } from 'zustand/react/shallow';
 import { backendStateLabel } from '@/components/common/BackendControls';
 import { Badge } from '@/components/ui/Badge';
 import { Sun, Moon, MessageSquare, Menu } from 'lucide-react';
@@ -8,7 +9,7 @@ import { useGlassReflect } from '@/hooks/useGlassReflect';
 import { cn } from '@/utils/cn';
 
 export function Header({ onOpenMenu }: { onOpenMenu?: () => void }) {
-  const backend = useBackendStore();
+  const backend = useBackendStore(useShallow((state) => ({ runState: state.runState, operation: state.operation, isRunning: state.isRunning })));
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const location = useLocation();

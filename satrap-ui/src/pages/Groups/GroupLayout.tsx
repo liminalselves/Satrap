@@ -47,7 +47,7 @@ export function GroupLayout() {
   const section = lastSegment === groupId ? 'overview' : lastSegment;
   const [params, setParams] = useSearchParams();
   const account = params.get('account') || '';
-  const { isRunning } = useBackendStore();
+  const isRunning = useBackendStore((state) => state.isRunning);
   const [config, setConfig] = useState<GroupConfigResult | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);

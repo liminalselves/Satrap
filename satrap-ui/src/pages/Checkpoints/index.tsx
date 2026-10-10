@@ -17,7 +17,7 @@ import type { Checkpoint } from '@/api/types';
 
 export function Checkpoints() {
   const [search] = useSearchParams();
-  const { health } = useBackendStore();
+  const health = useBackendStore((state) => state.health);
   const [platformId, setPlatformId] = useState(search.get('platform') || 'local');
   const [conversationId, setConversationId] = useState(search.get('conversation') || '');
   const [loading, setLoading] = useState(false);

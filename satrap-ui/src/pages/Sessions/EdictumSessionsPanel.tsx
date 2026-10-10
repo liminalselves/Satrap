@@ -8,6 +8,7 @@ import { controlApi } from '@/api/control';
 import type { ConfigReloadResult } from '@/api/backend';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import type {
   EdictumAvailablePlugin,
@@ -60,10 +61,11 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
   const [searchParams] = useSearchParams();
   const linkedName = searchParams.get('edictum');
   const openedLink = useRef<string | null>(null);
-  const { isRunning, reloadConfig } = useBackendStore();
+  const { isRunning, reloadConfig } = useBackendStore(useShallow((state) => ({ isRunning: state.isRunning, reloadConfig: state.reloadConfig })));
   const [types, setTypes] = useState<EdictumTypeDefinition[]>([]);
   const [availablePlugins, setAvailablePlugins] = useState<EdictumAvailablePlugin[]>([]);
-  const { edictumConfigs: configs, fetchEdictumConfigs, llmConfigs } = useConfigStore();
+  const { edictumConfigs: configs, fetchEdictumConfigs, llmConfigs } = useConfigStore(useShallow((state) => ({
+    edictumConfigs: state.edictumConfigs, fetchEdictumConfigs: state.fetchEdictumConfigs, llmConfigs: state.llmConfigs })));
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);

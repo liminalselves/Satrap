@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { useBackendStore } from '@/stores/useBackendStore';
+import { useShallow } from 'zustand/react/shallow';
 import { confirmDiscard, useDirtyGuard } from '@/hooks/useDirtyGuard';
 import { errorText } from '@/utils/errorText';
 import { formatTime } from '@/utils/format';
@@ -54,7 +55,7 @@ function GroupItem({ item, destination }: { item: GroupRow; destination: string 
 export function Groups() {
   const { adapterId = '' } = useParams();
   const [params, setParams] = useSearchParams();
-  const { isRunning, refreshAll } = useBackendStore();
+  const { isRunning, refreshAll } = useBackendStore(useShallow((state) => ({ isRunning: state.isRunning, refreshAll: state.refreshAll })));
   const account = params.get('account') || '';
   const q = params.get('q') || '';
   const membership = params.get('membership') || 'joined';

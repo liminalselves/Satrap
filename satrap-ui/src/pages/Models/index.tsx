@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Card } from '@/components/ui/Card';
@@ -109,7 +110,8 @@ export function Models() {
     createModel,
     updateModel,
     deleteModel,
-  } = useConfigStore();
+  } = useConfigStore(useShallow((state) => ({ llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs,
+    rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs, createModel: state.createModel, updateModel: state.updateModel, deleteModel: state.deleteModel })));
 
   const [activeTab, setActiveTab] = useState<ModelType>('llm');
   const [showModal, setShowModal] = useState(false);

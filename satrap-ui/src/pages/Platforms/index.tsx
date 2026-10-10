@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { Link } from 'react-router-dom';
 import { isAxiosError } from 'axios';
@@ -29,8 +30,10 @@ import type { AdapterDeclaration, AgentBinding, PlatformConfig } from '@/api/typ
 
 export function Platforms() {
   useConfigWatch(['sessions', 'edictum', 'asr']);
-  const { health, isRunning, refreshHealth } = useBackendStore();
-  const { sessionClasses, fetchSessionClasses, asrConfigs, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore();
+  const { health, isRunning, refreshHealth } = useBackendStore(useShallow((state) => ({ health: state.health, isRunning: state.isRunning, refreshHealth: state.refreshHealth })));
+  const { sessionClasses, fetchSessionClasses, asrConfigs, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore(useShallow((state) => ({
+    sessionClasses: state.sessionClasses, fetchSessionClasses: state.fetchSessionClasses, asrConfigs: state.asrConfigs,
+    edictumConfigs: state.edictumConfigs, fetchEdictumConfigs: state.fetchEdictumConfigs })));
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);

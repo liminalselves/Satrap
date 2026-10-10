@@ -1,4 +1,5 @@
 import { useMemo } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { useConfigWatch } from '@/hooks/useConfigWatch';
@@ -19,8 +20,10 @@ import {
 
 export function Dashboard() {
   useConfigWatch(['llm', 'embedding', 'rerank', 'asr', 'sessions']);
-  const { health, isRunning, runState, controlStatus, statusConnected } = useBackendStore();
-  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses } = useConfigStore();
+  const { health, isRunning, runState, controlStatus, statusConnected } = useBackendStore(useShallow((state) => ({
+    health: state.health, isRunning: state.isRunning, runState: state.runState, controlStatus: state.controlStatus, statusConnected: state.statusConnected })));
+  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses } = useConfigStore(useShallow((state) => ({
+    llmConfigs: state.llmConfigs, embeddingConfigs: state.embeddingConfigs, rerankConfigs: state.rerankConfigs, asrConfigs: state.asrConfigs, sessionClasses: state.sessionClasses })));
 
   // 统计数据
   const stats = useMemo(() => ({
