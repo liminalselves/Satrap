@@ -18,7 +18,7 @@ import unicodedata
 from satrap.core.platform.onebot.request_registry import flag_digest
 from satrap.core.log import logger
 
-from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_request_occupancy
+from satrap.core.config.group_action_origin import current_group_action_preflight, bind_group_action_preflight, bind_group_request_occupancy
 
 
 class PlatformAdminError(Exception):
@@ -187,6 +187,8 @@ def _normalize_message_id(value: Any, message: str = "消息 ID 必须为整数"
     if not text or not text.lstrip("-").isdecimal():
         raise ValueError(message)
     return text
+
+
 
 
 def _normalize_duration(value: Any, message: str, *, allow_minus_one: bool = False) -> int:
@@ -613,6 +615,9 @@ class OneBotAdmin:
             "message": payload.get("message"),
         }
 
+
+
+
     async def recall_message(self, group_id: Any, message_id: Any) -> None:
         """
         撤回一条群消息
@@ -777,7 +782,8 @@ class OneBotAdmin:
             raise ValueError("dismiss 必须为布尔值")
         await self._call("set_group_leave", group_id=int(gid), is_dismiss=dismiss)
 
-    async def _settle_request_flag(self, kind: str, flag: str, self_id: str, state: str) -> None:
+    async def _settle_request_flag(self, kind: str, flag: str, self_id: str, state: str,
+                                   decision: str | None = None, *, identity_digest: str | None = None) -> None:
         """
         回写审批 flag 终态, 落盘失败只告警
 
@@ -786,16 +792,19 @@ class OneBotAdmin:
         - flag: 已占用的请求标识
         - self_id: 已绑定机器人账号
         - state: completed 或 unknown
+        - decision: 成功发送的审批决定, 失败时为 None
+        - identity_digest: 实际占用的申请身份, None 沿用旧版凭据身份
 
         写失败时标识保持 executing: 不可重放优先于终态精确
         """
         try:
-            await self._adapter.request_flags.settle(kind, flag, self_id=self_id, state=state)
+            await self._adapter.request_flags.settle(kind, flag, self_id=self_id, state=state, decision=decision,
+                                                     identity_digest=identity_digest)
         except Exception as error:
             logger.error(f"[OneBotAdmin] 审批终态写入失败 kind={kind} state={state}: {type(error).__name__}: {error}")
 
     async def _execute_request_decision(
-        self, kind: str, flag: str, self_id: str, action: str, params: dict[str, Any],
+        self, kind: str, flag: str, self_id: str, action: str, params: dict[str, Any], *, identity_digest: str | None = None,
     ) -> None:
         """
         执行审批动作并按异常分类结算 flag 终态
@@ -806,25 +815,42 @@ class OneBotAdmin:
         - self_id: 已绑定机器人账号
         - action: 审批动作名
         - params: 动作参数, 经 _call 原样交给平台实现
+        - identity_digest: 固定的一次好友申请身份, 不作为平台参数发送
 
         超时或取消记 unknown, 平台给出明确结果记 completed; 终态写失败时标识保持
         executing, 不可重放优先于终态精确
         """
         try:
-            await self._call(action, **params)
+            if kind == "friend" and identity_digest is not None:
+                previous = current_group_action_preflight()
+
+                def verify_request() -> None:
+                    """保留宿主权限复核, 并拒绝排队期间被新申请替代的旧申请"""
+                    if previous is not None:
+                        previous()
+                    self._adapter.request_flags.ledger.verify_occupied_friend(
+                        self._adapter.config.id, self_id, flag, identity_digest,
+                    )
+
+                with bind_group_action_preflight(verify_request):
+                    await self._call(action, **params)
+            else:
+                await self._call(action, **params)
         except AdminActionUnconfirmed:
-            await self._settle_request_flag(kind, flag, self_id, "unknown")
+            await self._settle_request_flag(kind, flag, self_id, "unknown", identity_digest=identity_digest)
             raise
         except Exception:
-            await self._settle_request_flag(kind, flag, self_id, "completed")
+            await self._settle_request_flag(kind, flag, self_id, "completed", identity_digest=identity_digest)
             raise
         except BaseException:
             # 取消等 BaseException 路径保守结束为 unknown, 不遗漏
-            await self._settle_request_flag(kind, flag, self_id, "unknown")
+            await self._settle_request_flag(kind, flag, self_id, "unknown", identity_digest=identity_digest)
             raise
-        await self._settle_request_flag(kind, flag, self_id, "completed")
+        await self._settle_request_flag(kind, flag, self_id, "completed", "accepted" if params.get("approve") else "rejected",
+                                        identity_digest=identity_digest)
 
-    async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "") -> None:
+    async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "", *, allow_archived: bool = False,
+                                    identity_digest: str | None = None) -> None:
         """
         处理好友添加请求
 
@@ -832,9 +858,11 @@ class OneBotAdmin:
         - flag: request 事件上报的标识, 必须已在好友请求账本中且未被占用
         - approve: 是否同意
         - remark: 同意后的好友备注
+        - allow_archived: 是否已取得归档申请的人工确认
+        - identity_digest: 宿主收件箱固定的一次申请身份, None 仅处理旧版申请
 
         flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
-        不自动重试, 同一 flag 不可重放
+        不自动重试, 同一次申请不可重放
         """
         if not isinstance(approve, bool):
             raise ValueError("approve 必须为布尔值")
@@ -845,15 +873,17 @@ class OneBotAdmin:
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
         try:
-            await registry.occupy("friend", normalized, self_id=self_id)
+            await registry.occupy("friend", normalized, self_id=self_id, allow_archived=allow_archived, identity_digest=identity_digest)
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None
         await self._execute_request_decision(
             "friend", normalized, self_id,
             "set_friend_add_request", {"flag": normalized, "approve": approve, "remark": text},
+            identity_digest=identity_digest,
         )
 
-    async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "") -> None:
+    async def handle_group_request(self, group_id: Any, flag: Any, sub_type: Any, approve: Any, reason: Any = "", *,
+                                   request_id: str | None = None, expected_revision: int | None = None, allow_archived: bool = False) -> None:
         """
         处理加群请求或邀请
 
@@ -878,9 +908,15 @@ class OneBotAdmin:
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
+        if request_id is not None:
+            row = await registry.resolve_request("group", request_id, self_id=self_id,
+                                                 expected_revision=expected_revision, allow_archived=allow_archived)
+            if row["flag"] != normalized or row["group_id"] != gid or row["sub_type"] != sub_type:
+                raise AdminActionRejected("群请求与固定申请身份不符")
         try:
             occupied = await registry.occupy(
                 "group", normalized, self_id=self_id, group_id=gid, sub_type=cast(str, sub_type),
+                allow_archived=allow_archived,
             )
         except LookupError as error:
             raise AdminActionRejected(str(error)) from None

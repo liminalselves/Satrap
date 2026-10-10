@@ -103,7 +103,8 @@ class OneBotFriends:
         await self.protocol(self.adapter.admin._call("delete_friend", user_id=int(uid)))
         self.check(account, generation)
 
-    async def handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
+    async def handle(self, account: str, request_id: str, approve: bool, remark: str, *,
+                     expected_revision: int | None = None, allow_archived: bool = False) -> None:
         """
         用宿主申请 ID 定位凭据并沿用不可重放账本
 
@@ -114,7 +115,9 @@ class OneBotFriends:
         - remark: 同意后的备注
         """
         generation = self.adapter.connection_generation()
-        row = await self.adapter.request_flags.resolve_request("friend", request_id, self_id=account)
+        row = await self.adapter.request_flags.resolve_request("friend", request_id, self_id=account,
+                                                              expected_revision=expected_revision, allow_archived=allow_archived)
         self.check(account, generation)
-        await self.protocol(self.adapter.admin.handle_friend_request(row["flag"], approve, remark))
+        await self.protocol(self.adapter.admin.handle_friend_request(row["flag"], approve, remark,
+                                                                    allow_archived=allow_archived, identity_digest=row["digest"]))
         self.check(account, generation)

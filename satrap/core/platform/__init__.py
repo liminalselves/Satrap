@@ -579,7 +579,7 @@ class PlatformAdapter(ABC):
     def friend_capabilities(self) -> dict[str, dict[str, str]]:
         """返回好友能力状态, 未实现的平台不提供操作"""
         return {name: {"state": "unsupported", "reason": "当前适配器未实现好友操作"}
-                for name in ("list_friends", "list_requests", "handle_request", "delete_friend")}
+                for name in ("list_friends", "list_requests", "handle_request", "delete_friend", "send_request")}
 
     async def friend_list(self, account: str) -> dict[str, Any]:
         """
@@ -594,7 +594,7 @@ class PlatformAdapter(ABC):
         from satrap.core.friends import FriendError
         raise FriendError("unsupported", "当前适配器不支持好友列表")
 
-    async def friend_requests(self, account: str, limit: int, cursor: str | None) -> dict[str, Any]:
+    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
         """
         查询宿主收到的好友申请
 
@@ -608,6 +608,36 @@ class PlatformAdapter(ABC):
         """
         from satrap.core.friends import FriendError
         raise FriendError("unsupported", "当前适配器不支持好友申请")
+
+    async def friend_send_request(self, account: str, user_id: str, message: str) -> dict[str, Any]:
+        """
+        主动发出好友申请, 未实现的平台明确拒绝
+
+        参数:
+        - account: 固定机器人账号
+        - user_id: 已确认目标账号
+        - message: 好友申请验证文字
+
+        返回:
+        - 平台确认的提交状态, 不等同于已成为好友
+        """
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持主动好友申请")
+
+    async def friend_recheck_request(self, account: str, request_id: str) -> dict[str, Any]:
+        """查询申请状态, 未实现的平台明确拒绝"""
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持重新核验申请")
+
+    async def friend_delete_request(self, account: str, request_id: str, expected_revision: int) -> None:
+        """删除本地归档记录, 未实现的平台明确拒绝"""
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持删除申请历史")
+
+    async def friend_request_policy(self, account: str, values: dict[str, Any] | None = None) -> dict[str, int]:
+        """申请归档保留策略接缝"""
+        from satrap.core.friends import FriendError
+        raise FriendError("unsupported", "当前适配器不支持申请保留设置")
 
     async def message_forward(self, operation: str, origin: CallOrigin, params: dict[str, Any], check: Callable[[], None]) -> dict[str, Any]:
         """原消息转发平台接缝, 未实现的平台不注入工具"""
@@ -626,7 +656,8 @@ class PlatformAdapter(ABC):
         """核验原消息转发的对话范围, 未实现的平台默认拒绝"""
         return False
 
-    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
+    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str, *,
+                            expected_revision: int | None = None, allow_archived: bool = False) -> None:
         """
         处理好友申请
 

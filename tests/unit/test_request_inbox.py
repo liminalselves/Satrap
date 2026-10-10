@@ -81,18 +81,24 @@ async def test_inbound_query_and_friend_decision_without_raw_flag_and_no_replay(
 
 
 @pytest.mark.asyncio
-async def test_request_permissions_private_visibility_account_change_and_invalid_scope():
+async def test_request_tools_support_groups_self_service_and_reject_wrong_account():
     adapter = _setup_adapter()
     await incoming(adapter)
+    adapter.client_self_id = adapter.bot_self_id
     query = tool("friend_manager_list_requests", write=False)
-    for origin in [_origin(), _origin(chat_type="FriendMessage", actor="999"), replace(_origin(chat_type="FriendMessage"), self_id="other")]:
+    for origin in [_origin(), _origin(chat_type="FriendMessage", actor="999")]:
+        with bind_call_origin(origin):
+            assert query.is_available_for_call()
+            assert (await query.execute())["ok"]
+    for origin in [replace(_origin(chat_type="FriendMessage"), self_id="other")]:
         with bind_call_origin(origin):
             assert not query.is_available_for_call()
             assert not (await query.execute())["ok"]
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
         disabled = tool("friend_manager_list_requests", request_managers="")
-        assert not disabled.is_available_for_call()
-        assert not (await disabled.execute())["ok"]
+        assert disabled.is_available_for_call()
+        own = await disabled.execute()
+        assert own["ok"] and own["data"]["scope"] == "self" and own["data"]["items"] == []
         assert query.is_available_for_call()
         assert not (await query.execute(self_id="other"))["ok"]
         assert not (await query.execute(limit=True))["ok"]
@@ -100,7 +106,7 @@ async def test_request_permissions_private_visibility_account_change_and_invalid
 
 @pytest.mark.asyncio
 async def test_entry_permission_is_rechecked_after_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
-    """等待期间管理入口权限被撤销时仍会被拒绝, 等待之前不再重复判定"""
+    """等待期间全量查询权限被撤销时拒绝返回已获得的数据"""
     adapter = _setup_adapter()
     await incoming(adapter)
     stages: list[str] = []
@@ -110,16 +116,19 @@ async def test_entry_permission_is_rechecked_after_waiting(monkeypatch: pytest.M
         stages.append("host")
         return await original(account, limit, cursor)
 
-    def revoked(binding: Any) -> Any:
+    original_check = friend_tools_module.require_plugin_entry_permission
+    def revoked(binding: Any, **kwargs: Any) -> Any:
         stages.append("check")
-        raise PermissionError("权限已撤销")
+        if "host" in stages:
+            raise PermissionError("权限已撤销")
+        return original_check(binding, **kwargs)
 
     query = tool("friend_manager_list_requests", write=False)
     monkeypatch.setattr(adapter, "friend_requests", listing)
     monkeypatch.setattr(friend_tools_module, "require_plugin_entry_permission", revoked)
     with bind_call_origin(_origin(chat_type="FriendMessage", chat_id="123")):
         result = await query.execute()
-    assert stages == ["host", "check"]
+    assert stages == ["check", "host", "check"]
     assert result == {"ok": False, "error": {"code": "permission_denied", "message": "当前操作未获授权或权限已变化", "retryable": False}}
 
 
@@ -161,7 +170,8 @@ async def test_expiration_missing_legacy_payload_and_corrupt_inbox_fail_closed(t
         await registry.resolve_request("friend", request_id, self_id="10000")
     assert registry.inbox.path is not None
     with sqlite3.connect(registry.inbox.path) as db:
-        assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 0
+        row = db.execute("SELECT flag,archived_at FROM requests").fetchone()
+        assert row[0] == "fresh" and row[1] is not None
     registry.inbox.path.write_bytes(b"broken")
     with pytest.raises(sqlite3.DatabaseError):
         await registry.list_requests("friend", self_id="10000")

@@ -1498,30 +1498,39 @@ class BackendManager:
             raise PermissionError("模型动作来源管理插件或工具已停用")
         config = spec.config
         catalog_entry = provider.plugin_catalog.get(plugin_name)
-        if catalog_entry is None or tool_name not in catalog_entry.permissions.tools:
+        if catalog_entry is None or tool_name not in catalog_entry.permissions.declared_tools:
             raise PermissionError("模型管理入口的权限声明已失效")
+        permission_spec = catalog_entry.permissions
+        if friend_action and identity.get("friend_scope") == "all":
+            permission_spec = replace(permission_spec, tools={**permission_spec.tools, tool_name: ("access", "write")})
         decision = evaluate_plugin_permissions(
-            plugin_name, catalog_entry.permissions, "tools", tool_name, config,
+            plugin_name, permission_spec, "tools", tool_name, config,
             CallOrigin(adapter_id, self_id, identity["chat_type"], identity["chat_id"], identity["actor_id"], "", ""),
             getattr(self, "administrator_service", None),
         )
-        if decision.status != "allowed":
+        if decision.status != "allowed" and not (friend_action and decision.status == "not_applicable" and identity.get("friend_scope") == "self"):
             raise PluginPermissionDenied(decision)
         if friend_action:
             platform = next((item for item in self.config.platforms if item.get("id") == adapter_id), None)
             if (platform is None or not platform.get("enable", True)
-                    or not platform.get("settings", {}).get("enable_private", True)):
-                raise PermissionError("好友管理来源私聊已停用")
-            binding, _ = resolve_agent_binding(platform, "private")
-            if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
-                raise PermissionError("好友管理来源 Agent 路由已变化")
+                    or not platform.get("settings", {}).get("enable_group" if identity["chat_type"] == "GroupMessage" else "enable_private", True)):
+                raise PermissionError("好友管理来源对话已停用")
+            if identity["chat_type"] == "GroupMessage":
+                binding = route
+            else:
+                binding, _ = resolve_agent_binding(platform, "private")
+                if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
+                    raise PermissionError("好友管理来源 Agent 路由已变化")
             managers = sorted(set(_lines(config.get("managers"))))
-            switch = "delete_friend_enabled" if tool_name == "friend_manager_delete_friend" else "request_handling_enabled"
+            switch = {"friend_manager_delete_friend": "delete_friend_enabled", "friend_manager_send_request": "send_request_enabled",
+                      "friend_manager_handle_request": "request_handling_enabled"}.get(tool_name)
+            if switch is None:
+                raise PermissionError("未知好友写操作")
             if config.get(switch) is not True:
                 raise PermissionError("好友模型写操作授权已撤销")
             if tool_name == "friend_manager_delete_friend" and target_group in managers + list(_lines(config.get("protected_friend_ids"))):
                 raise PermissionError("目标好友受保护")
-            payload = [session_id, tool_name, decision.permission_fingerprint, config.get(switch), binding, target_group,
+            payload = [session_id, tool_name, identity.get("friend_scope"), identity["actor_id"], decision.permission_fingerprint, config.get(switch), binding, target_group,
                        managers,
                        sorted(set(_lines(config.get("protected_friend_ids"))))]
             return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()
@@ -1571,18 +1580,27 @@ class BackendManager:
             adapter_id, self_id, group_id, action_type,
         )
         request_deadline = None
+        archived_request = False
         if action_type == "handle_group_request":
             if secret_flag is None:
                 raise ValueError("群请求缺少 flag")
             entry = adapter.request_flags.ledger.lookup(adapter_id, self_id, "group", secret_flag)
-            if (entry is None or entry["state"] != "available" or entry["group_id"] != group_id
+            if "request_id" in normalized:
+                row = await adapter.request_flags.resolve_request("group", str(normalized["request_id"]), self_id=self_id,
+                    expected_revision=normalized.get("expected_revision"), allow_archived=True)
+                if row["flag"] != secret_flag or row["group_id"] != group_id or row["sub_type"] != normalized["sub_type"]:
+                    raise PermissionError("群请求与固定申请身份不符")
+                archived_request = row["expires_at"] <= time.time()
+                request_deadline = row["credential_expires_at"]
+            elif (entry is None or entry["state"] != "available" or entry["group_id"] != group_id
                     or entry["sub_type"] != normalized["sub_type"]
                     or time.time() - entry["received_at"] >= adapter.request_flags.ledger.ttl):
                 raise PermissionError("群请求 flag 未登记、已过期或归属不符")
-            request_deadline = entry["received_at"] + adapter.request_flags.ledger.ttl
+            else:
+                request_deadline = entry["received_at"] + adapter.request_flags.ledger.ttl
         if authorization is not None and self._model_source_permission_fingerprint(authorization, group_id) != source_fingerprint:
             raise PermissionError("模型动作来源授权已变化")
-        requires_approval = mode == "approval_required" or (authorization is not None and authorization.approval_required)
+        requires_approval = mode == "approval_required" or (authorization is not None and (authorization.approval_required or archived_request))
         record, created = await asyncio.to_thread(
             store.submit, action_id, self_id, group_id, action_type, normalized,
             actor_kind, version, approval_required=requires_approval, model_origin=model_origin, deadline=request_deadline,
@@ -1690,6 +1708,8 @@ class BackendManager:
                     raise AdminActionRejected("请求 flag 已失效, 需要重新提交")
                 params["flag"] = flag
             method = getattr(adapter.admin, action)
+            if action == "handle_group_request" and "request_id" in params:
+                params["allow_archived"] = True
             started = True
             if preflight is None:
                 await method(group_id, **params)

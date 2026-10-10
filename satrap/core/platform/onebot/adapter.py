@@ -892,6 +892,7 @@ class OneBotAdapter(PlatformAdapter):
                 state = "supported"
             result[name] = {"state": state, "reason": {"unsupported": "当前实现不支持此接口", "unavailable": "平台未连接",
                             "unknown": "扩展接口尚未验证, 可在确认目标后尝试", "supported": "适配器已实现"}[state]}
+        result["send_request"] = {"state": "unsupported", "reason": "当前 OneBot 适配器尚无已确认的主动好友申请接口"}
         return result
 
     async def friend_list(self, account: str) -> dict[str, Any]:
@@ -907,7 +908,7 @@ class OneBotAdapter(PlatformAdapter):
         from satrap.core.platform.onebot.friends import OneBotFriends
         return await OneBotFriends(self).list(account)
 
-    async def friend_requests(self, account: str, limit: int, cursor: str | None) -> dict[str, Any]:
+    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
         """
         查询好友申请
 
@@ -919,7 +920,13 @@ class OneBotAdapter(PlatformAdapter):
         返回:
         - 不含原始 flag 的申请记录
         """
-        return await self.request_flags.list_requests("friend", self_id=account, limit=limit, cursor=cursor)
+        return await self.request_flags.list_requests("friend", self_id=account, limit=limit, cursor=cursor, view=view, owner_user_id=owner_user_id)
+
+    async def friend_recheck_request(self, account: str, request_id: str) -> dict[str, Any]:
+        """核验归档申请, 无平台查询能力时明确返回本地核验结果"""
+        if self.bot_self_id != account:
+            raise PermissionError("申请所属账号已变化")
+        return await self.request_flags.recheck_request("friend", request_id, self_id=account)
 
     def supports_message_forward(self) -> bool:
         """提供 OneBot 群聊和私聊原消息转发"""
@@ -947,7 +954,20 @@ class OneBotAdapter(PlatformAdapter):
             return await service.compose(params["nodes"], target)
         raise ValueError("未知转发操作")
 
-    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str) -> None:
+    async def friend_delete_request(self, account: str, request_id: str, expected_revision: int) -> None:
+        """删除当前账号归档申请的展示记录"""
+        if self.bot_self_id != account:
+            raise PermissionError("申请所属账号已变化")
+        await self.request_flags.delete_request("friend", request_id, self_id=account, expected_revision=expected_revision)
+
+    async def friend_request_policy(self, account: str, values: dict[str, Any] | None = None) -> dict[str, int]:
+        """持久保存当前账号申请的独立保留期限"""
+        if self.bot_self_id != account:
+            raise PermissionError("申请所属账号已变化")
+        return await asyncio.to_thread(self.request_flags.inbox.policy, self.config.id, account, values)
+
+    async def friend_handle(self, account: str, request_id: str, approve: bool, remark: str, *,
+                            expected_revision: int | None = None, allow_archived: bool = False) -> None:
         """
         处理账号好友申请
 
@@ -958,7 +978,8 @@ class OneBotAdapter(PlatformAdapter):
         - remark: 同意后的备注
         """
         from satrap.core.platform.onebot.friends import OneBotFriends
-        await OneBotFriends(self).handle(account, request_id, approve, remark)
+        await OneBotFriends(self).handle(account, request_id, approve, remark,
+                                         expected_revision=expected_revision, allow_archived=allow_archived)
 
     async def friend_delete(self, account: str, user_id: str) -> None:
         """
@@ -1362,9 +1383,11 @@ class OneBotAdapter(PlatformAdapter):
         incoming_self = str(event.get("self_id") or "")
         if not incoming_self or (self.bot_self_id and incoming_self != self.bot_self_id):
             self._ingress_rejections["account"] += 1
+            logger.warning(f"[OneBotAdapter] request 未登记, 账号身份不符 adapter={self.config.id}")
             return
         flag = str(event.get("flag") or "").strip()
         if not flag:
+            logger.warning(f"[OneBotAdapter] request 未登记, 缺少处理凭据 adapter={self.config.id}")
             return
         request_type = str(event.get("request_type") or "")
         user_id = str(event.get("user_id") or "")
@@ -1379,8 +1402,12 @@ class OneBotAdapter(PlatformAdapter):
                     comment=str(event.get("comment") or "")[:2000],
                 )
             elif request_type == "friend":
+                event_time = event.get("time")
+                if type(event_time) is not int or event_time <= 0:
+                    event_time = None
+                    logger.warning(f"[OneBotAdapter] 好友申请缺少有效原始时间, 沿用保守去重 adapter={self.config.id} user_id={user_id}")
                 await self.request_flags.register("friend", flag, self_id=incoming_self, user_id=user_id,
-                                                  comment=str(event.get("comment") or "")[:2000])
+                                                  comment=str(event.get("comment") or "")[:2000], event_time=event_time)
         except Exception:
             # 登记失败的 flag 无法被审批, 保守行为是拒绝执行而不是放行
             logger.error(f"[OneBotAdapter] request 登记失败: {traceback.format_exc()}")

@@ -71,13 +71,15 @@ _DEFINITIONS: dict[str, tuple[str, dict[str, tuple[str, str]], list[str], bool, 
         "group_id": ("string", "机器人要退出或解散的群号, 不填则使用当前群"),
         "dismiss": ("boolean", "false 只退出群聊, true 解散整个群; 不填默认 false"),
     }, [], True, True),
-    "group_admin_list_group_requests": ("查看当前群尚可处理的加群申请或邀请, 返回申请 ID, 申请人, 验证信息和有效期限; 管理者私聊查询时需指定群号", {
+    "group_admin_list_group_requests": ("查看后端收到的加群申请或邀请; view=archived 查看归档历史, 本地归档不代表平台申请失效. 返回申请 ID, revision 和 can_handle; 管理者私聊查询时需指定群号", {
         "group_id": ("string", "申请所属群号, 群聊中不填则查询当前群"),
         "limit": ("integer", "最多查看多少条, 不填默认 20, 最大 100"),
         "cursor": ("string", "继续查看时填写上次返回的 next_cursor, 沿用相同群号"),
+        "view": ("string", "active 待处理, archived 归档历史, all 全部; 默认 active"),
     }, [], False, True),
     "group_admin_handle_group_request": ("同意或拒绝查询结果中的加群申请或入群邀请; 类型和目标群由原申请确定, 不需要填写平台 flag" + _ACTION_RESULT_DESCRIPTION, {
         "request_id": ("string", "加群申请查询返回的申请 ID"),
+        "expected_revision": ("integer", "当前申请的 revision; 处理归档申请必须填写, 并等待人工批准"),
         "approve": ("boolean", "true 同意该申请或邀请, false 拒绝"), "reason": ("string", "拒绝时填写的理由, 可不填"),
         "group_id": ("string", "申请或邀请对应的群号; 不填时从原请求记录中确定"),
     }, ["request_id", "approve"], True, True),
@@ -239,7 +241,7 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
                 if gid and not adapter.allows_group(gid):
                     raise PermissionError("申请目标群不在平台可管理范围内")
                 result = await adapter.request_flags.list_requests("group", self_id=origin.self_id, group_id=gid,
-                                                                  limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"))
+                                                                  limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"), view=kwargs.get("view", "active"))
                 _request_access(source_tool, origin, adapter)
                 if gid:
                     _, _, current_groups = _resolve(source_tool, False)
@@ -247,9 +249,13 @@ def _build_call(name: str, admin: OneBotAdmin, origin: CallOrigin, allowed: list
                     if not adapter.allows_group(gid):
                         raise PermissionError("申请目标群不在平台可管理范围内")
                 return result
-            row = await adapter.request_flags.resolve_request("group", kwargs["request_id"], self_id=origin.self_id)
+            revision = kwargs.get("expected_revision")
+            row = await adapter.request_flags.resolve_request("group", kwargs["request_id"], self_id=origin.self_id,
+                                                              allow_archived=revision is not None, expected_revision=revision)
             _request_access(source_tool, origin, adapter)
             values = {key: value for key, value in kwargs.items() if key != "request_id"}
+            if revision is not None:
+                values["request_id"] = kwargs["request_id"]
             values["flag"] = row["flag"]
             if kwargs.get("group_id") and str(kwargs["group_id"]) != row["group_id"]:
                 raise PermissionError("目标群与原申请不符")

@@ -29,7 +29,7 @@ def restore_manager():
     set_current_adapter_manager(previous)
 
 
-def test_all_seven_gates_use_admin_grants_and_preserve_local_empty_rules(tmp_path):
+def test_management_gates_use_admin_grants_and_preserve_local_empty_rules(tmp_path):
     platform = {"id": "ob", "instance_id": "original"}
     service = AdministratorService(lambda: [platform], groups(platform, ["group_admin", "group_chat", "friend_manager"]))
     catalog = PluginCatalog(user_dir=tmp_path / "plugins")
@@ -38,15 +38,12 @@ def test_all_seven_gates_use_admin_grants_and_preserve_local_empty_rules(tmp_pat
              ("group_admin", "group_admin_list_group_requests", "request_managers", False),
              ("group_chat", "group_chat_list_groups", "cross_group_query_callers", False),
              ("group_chat", "group_chat_set_group_nickname", "nickname_allowed_callers", True),
-             ("friend_manager", "friend_manager_list_friends", "managers", False),
-             ("friend_manager", "friend_manager_delete_friend", "write_callers", False)]
+             ("friend_manager", "friend_manager_list_friends", "managers", False)]
     for name, tool, field, empty_allow in cases:
         entry = catalog.get(name)
         assert entry and entry.permissions.supports_administrators
         config = {field: ""}
         assert evaluate_plugin_permissions(name, entry.permissions, "tools", tool, config, _origin(), service).status == "allowed"
-        if tool == "friend_manager_delete_friend":
-            config["managers"] = "123"
         decision = evaluate_plugin_permissions(name, entry.permissions, "tools", tool, config, _origin())
         assert (decision.status == "allowed") == empty_allow
         assert config[field] == ""
@@ -160,10 +157,34 @@ async def test_friend_admin_empty_lists_preserve_pending_and_recheck_revocation(
         adapter._bot.delete_friend.assert_not_awaited()
         backend.administrator_service.apply([])
         with bind_call_origin(private):
-            assert not query.is_available_for_call() and not (await query.execute())["ok"]
+            assert query.is_available_for_call() and not (await query.execute())["ok"]
         action = pending["data"]["action_id"]
         record = await adapter.friend_host.decide("10000", action, True)
         assert record["state"] == "failed"
         adapter._bot.delete_friend.assert_not_awaited()
+    finally:
+        await provider.release_session_async(session)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("chat_type", ["GroupMessage", "FriendMessage"])
+async def test_real_agent_self_deletion_approval_uses_current_group_or_private_route(tmp_path, asynchronous, chat_type):
+    import asyncio
+    backend, adapter, origin, session, provider, _ = await runtime(
+        tmp_path, asynchronous, "friend_manager", {"delete_friend_enabled": True},
+    )
+    try:
+        adapter.friend_host = backend.friend_service("ob")
+        adapter._bot.get_friend_list.return_value = [{"user_id": 321, "nickname": "本人"}]
+        own = replace(origin, chat_type=chat_type, chat_id="456" if chat_type == "GroupMessage" else "321", actor_id="321")
+        deletion = cast(Any, session)._wf.tools_manager.tools["friend_manager_delete_friend"]
+        with bind_call_origin(own):
+            result = await deletion.execute() if asynchronous else await asyncio.to_thread(deletion.execute)
+        assert result["ok"] and result["data"]["state"] == "pending"
+        adapter._bot.delete_friend.assert_not_awaited()
+        approved = await adapter.friend_host.decide("10000", result["data"]["action_id"], True)
+        assert approved["state"] == "succeeded", approved
+        adapter._bot.delete_friend.assert_awaited_once_with(user_id=321)
     finally:
         await provider.release_session_async(session)

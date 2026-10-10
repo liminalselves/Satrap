@@ -261,8 +261,8 @@ class TestConversationKind:
         request_id = cast(dict[str, Any], listing["items"][0])["request_id"]
         original = adapter.request_flags.resolve_request
 
-        async def mutate(kind: str, value: str, *, self_id: str) -> dict[str, Any]:
-            row = await original(kind, value, self_id=self_id)
+        async def mutate(kind: str, value: str, *, self_id: str, **options: Any) -> dict[str, Any]:
+            row = await original(kind, value, self_id=self_id, **options)
             adapter.bot_self_id = "99999"
             return row
 

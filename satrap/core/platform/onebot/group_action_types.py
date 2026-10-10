@@ -22,7 +22,8 @@ ACTION_FIELDS: dict[str, dict[str, str]] = {
     "set_group_name": {"name": "name"},
     "set_group_special_title": {"user_id": "user_id", "title": "title"},
     "leave_group": {"dismiss": "bool"},
-    "handle_group_request": {"flag": "flag", "sub_type": "sub_type", "approve": "bool", "reason": "reason"},
+    "handle_group_request": {"flag": "flag", "sub_type": "sub_type", "approve": "bool", "reason": "reason",
+                             "request_id": "request_id", "expected_revision": "revision"},
 }
 """服务端动作参数结构, 前端成员页和群管理页共同读取"""
 
@@ -71,6 +72,10 @@ def normalize_action_params(action: str, raw: dict[str, object], self_id: str) -
         elif kind == "bool":
             if type(value) is not bool:
                 raise ValueError(f"{key} 必须为布尔值")
+            normalized[key] = value
+        elif kind == "revision":
+            if type(value) is not int or value < 1:
+                raise ValueError("申请修订号必须为正整数")
             normalized[key] = value
         elif kind == "flag":
             secret_flag = normalize_flag(value)

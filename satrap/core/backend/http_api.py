@@ -481,7 +481,10 @@ class BackendHTTPServer(MiniHTTPServer):
                     return 200, await host.list_friends(account, actor="panel", query=query.get("q", [""])[0],
                                                        limit=int(query.get("limit", ["20"])[0]), cursor=query.get("cursor", [None])[0])
                 if tail == ["requests"]:
-                    return 200, await host.requests(account, int(query.get("limit", ["20"])[0]), query.get("cursor", [None])[0])
+                    return 200, await host.requests(account, int(query.get("limit", ["20"])[0]), query.get("cursor", [None])[0],
+                                                     view=query.get("view", ["active"])[0])
+                if tail == ["request-policy"]:
+                    return 200, await host.request_policy(account)
                 if tail == ["actions"]:
                     return 200, await host.actions(account, int(query.get("page", ["1"])[0]), int(query.get("limit", ["20"])[0]))
                 if len(tail) == 2 and tail[0] == "actions":
@@ -493,6 +496,17 @@ class BackendHTTPServer(MiniHTTPServer):
             if method in {"POST", "PATCH"}:
                 payload = _parse_json_object(body)
                 account = text_id(payload.get("expected_self_id"), "机器人账号")
+                if method == "PATCH" and tail == ["request-policy"]:
+                    if set(payload) != {"expected_self_id", "credential_days", "history_days"}:
+                        raise ValueError("申请保留设置参数无效")
+                    return 200, await host.request_policy(account, {key: payload[key] for key in ("credential_days", "history_days")})
+                if method == "POST" and len(tail) == 3 and tail[0] == "requests" and tail[2] in {"recheck", "delete"}:
+                    required = {"expected_self_id"} if tail[2] == "recheck" else {"expected_self_id", "expected_revision"}
+                    if set(payload) != required:
+                        raise ValueError("申请操作参数无效")
+                    if tail[2] == "recheck":
+                        return 200, await host.recheck_request(account, unquote(tail[1]))
+                    return 200, await host.delete_request(account, unquote(tail[1]), payload["expected_revision"])
                 if method == "POST" and tail == ["actions"]:
                     if set(payload) != {"expected_self_id", "action_id", "action_type", "params"}:
                         raise ValueError("好友动作参数无效")

@@ -245,7 +245,8 @@ class FriendService:
                 "snapshot_at": snapshot["time"], "coverage": {"complete": snapshot["complete"]},
                 "ambiguous": bool(query) and len(snapshot["items"]) > 1}
 
-    async def requests(self, account: str, limit: int = 20, cursor: str | None = None, *, actor: str = "panel") -> dict[str, Any]:
+    async def requests(self, account: str, limit: int = 20, cursor: str | None = None, *, actor: str = "panel",
+                       view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
         """
         获取当前账号待处理好友申请
 
@@ -254,6 +255,8 @@ class FriendService:
         - limit: 每页条数
         - cursor: 收件箱分页位置
         - actor: 宿主提供的真实调用者
+        - view: active, archived 或 all
+        - owner_user_id: 本人范围的宿主身份, 空字符串为管理员全量范围
 
         返回:
         - 待处理申请
@@ -261,7 +264,9 @@ class FriendService:
         page_limit(limit)
         adapter = self.context(account, "list_requests")
         generation = adapter.friend_generation()
-        scope = (account, actor, id(adapter), generation)
+        if view not in {"active", "archived", "all"}:
+            raise FriendError("invalid_parameters", "申请列表范围必须为 active, archived 或 all")
+        scope = (account, actor, id(adapter), generation, view, owner_user_id)
         self._request_cursors = {key: value for key, value in self._request_cursors.items() if value[2] > time.time()}
         raw_cursor = None
         if cursor is not None:
@@ -270,7 +275,12 @@ class FriendService:
                 raise FriendError("cursor_expired", "申请翻页位置已失效或不属于当前调用者")
             raw_cursor = entry[1]
         try:
-            result = await adapter.friend_requests(account, limit, raw_cursor)
+            if owner_user_id:
+                result = await adapter.friend_requests(account, limit, raw_cursor, view=view, owner_user_id=text_id(owner_user_id))
+                if any(row.get("user_id") != owner_user_id for row in result.get("items", [])) or result.get("scope") != "self":
+                    raise FriendError("invalid_response", "适配器未正确隔离本人申请")
+            else:
+                result = await adapter.friend_requests(account, limit, raw_cursor) if view == "active" else await adapter.friend_requests(account, limit, raw_cursor, view=view)
         except ValueError as error:
             raise FriendError("cursor_expired", "申请列表已变化, 请重新查询") from error
         self.check_connection(account, adapter, generation)
@@ -283,6 +293,37 @@ class FriendService:
             result = {**result, "next_cursor": token}
         return result
 
+    async def recheck_request(self, account: str, request_id: str, *, owner_user_id: str = "") -> dict[str, Any]:
+        """复核当前账号申请, 返回平台查询范围与处理资格"""
+        text_id(request_id, "申请 ID")
+        adapter = self.context(account, "list_requests")
+        generation = adapter.friend_generation()
+        result = await adapter.friend_recheck_request(account, request_id)
+        self.check_connection(account, adapter, generation)
+        if owner_user_id and result.get("user_id") != owner_user_id:
+            raise FriendError("permission_denied", "只能核验或处理本人好友申请")
+        result = {**result, "scope": "self" if owner_user_id else "all"}
+        return result
+
+    async def delete_request(self, account: str, request_id: str, expected_revision: int) -> dict[str, Any]:
+        """人工删除归档历史, 不删除平台申请或执行账本"""
+        text_id(request_id, "申请 ID")
+        if type(expected_revision) is not int or expected_revision < 1:
+            raise FriendError("invalid_parameters", "申请修订号必须为正整数")
+        adapter = self.context(account, "list_requests")
+        generation = adapter.friend_generation()
+        await adapter.friend_delete_request(account, request_id, expected_revision)
+        self.check_connection(account, adapter, generation)
+        return {"status": "deleted", "request_id": request_id}
+
+    async def request_policy(self, account: str, values: dict[str, Any] | None = None) -> dict[str, int]:
+        """读取或配置当前账号申请保留期限"""
+        adapter = self.context(account, "list_requests")
+        generation = adapter.friend_generation()
+        result = await adapter.friend_request_policy(account, values)
+        self.check_connection(account, adapter, generation)
+        return result
+
     async def submit(self, account: str, action_id: str, action: str, params: dict[str, Any], *, actor: str,
                      source: ModelActionAuthorization | None = None) -> dict[str, Any]:
         """
@@ -291,7 +332,7 @@ class FriendService:
         参数:
         - account: 固定账号
         - action_id: 幂等动作 ID
-        - action: delete_friend 或 handle_request
+        - action: delete_friend, handle_request 或 send_request
         - params: 工具契约中的参数
         - actor: panel 或 model
         - source: 模型写工具的可信授权
@@ -300,22 +341,34 @@ class FriendService:
         - 持久动作记录, pending 不表示已执行
         """
         text_id(action_id, "动作 ID")
-        if actor not in {"panel", "model"} or not isinstance(action, str) or action not in {"delete_friend", "handle_request"}:
+        if actor not in {"panel", "model"} or not isinstance(action, str) or action not in {"delete_friend", "handle_request", "send_request"}:
             raise FriendError("invalid_parameters", "好友动作类型无效")
         if not isinstance(params, dict):
             raise FriendError("invalid_parameters", "动作参数必须为对象")
-        if action == "delete_friend":
+        if action == "send_request":
+            if set(params) - {"user_id", "message"} or "user_id" not in params:
+                raise FriendError("invalid_parameters", "好友申请只接受 user_id 和 message")
+            target = text_id(params["user_id"], "目标账号")
+            message = params.get("message", "")
+            if not isinstance(message, str) or len(message) > 200:
+                raise FriendError("invalid_parameters", "好友申请验证文字最多 200 字符")
+            if target == account:
+                raise FriendError("invalid_parameters", "不能向机器人自身发出好友申请")
+            params = {**params, "message": message}
+        elif action == "delete_friend":
             if set(params) != {"user_id"}:
                 raise FriendError("invalid_parameters", "删除好友只接受 user_id")
             target = text_id(params["user_id"], "好友 ID")
         else:
-            if set(params) - {"request_id", "approve", "remark"} or not {"request_id", "approve"} <= params.keys():
+            if set(params) - {"request_id", "approve", "remark", "expected_revision"} or not {"request_id", "approve"} <= params.keys():
                 raise FriendError("invalid_parameters", "申请参数无效")
             target = text_id(params["request_id"], "申请 ID")
             remark = params.get("remark", "")
             if type(params["approve"]) is not bool or not isinstance(remark, str) or len(remark) > 60 or not params["approve"] and remark:
                 raise FriendError("invalid_parameters", "approve 必须为布尔值, remark 最长 60 字符且仅用于同意申请")
             params = {**params, "remark": remark}
+            if "expected_revision" in params and (type(params["expected_revision"]) is not int or params["expected_revision"] < 1):
+                raise FriendError("invalid_parameters", "申请修订号必须为正整数")
         adapter = self.context(account, action)
         generation = adapter.friend_generation()
         fingerprint = ""
@@ -325,6 +378,11 @@ class FriendService:
                 raise FriendError("permission_denied", "模型写操作缺少可信来源")
             fingerprint = self.source_check(source, target)
             actor_id = source.identity.get("actor_id", "model")
+            if source.identity.get("friend_scope") == "self":
+                if action == "handle_request":
+                    await self.recheck_request(account, target, owner_user_id=actor_id)
+                elif target != actor_id:
+                    raise FriendError("permission_denied", "普通用户只能管理本人的好友关系")
         store = await self.store()
         try:
             existing = await asyncio.to_thread(store.get, account, action_id)
@@ -336,14 +394,25 @@ class FriendService:
                 raise FriendError("action_conflict", "相同动作 ID 已用于不同操作")
             return existing
         target_info = await self.check_delete(account, target) if action == "delete_friend" else None
+        if action == "send_request":
+            directory = await self.directory(account)
+            target_info = next((row for row in directory["items"] if row["user_id"] == target), None)
         self.check_connection(account, adapter, generation)
         if source is not None:
             self.source_check(source, target)
-        record, created = await asyncio.to_thread(store.register, account, action_id, action, params, actor, target_info, actor_id)
+        requires_approval = False
+        if action == "handle_request" and "expected_revision" in params:
+            request = await adapter.friend_recheck_request(account, target)
+            if request["revision"] != params["expected_revision"]:
+                raise FriendError("action_conflict", "申请记录已变化, 请刷新后处理")
+            requires_approval = request.get("requires_confirmation", False)
+        record, created = await asyncio.to_thread(store.register, account, action_id, action, params, actor, target_info, actor_id,
+                                                  requires_approval=requires_approval)
         if not created:
             return record
         if record["state"] == "pending":
-            assert source is not None
+            if source is None:
+                raise FriendError("permission_denied", "模型申请缺少可信授权来源")
             self._sources[(account, action_id)] = (source, fingerprint, adapter, generation, record["expires_at"])
             return record
         return await self.execute(account, action_id, "ready", adapter, generation, source, fingerprint)
@@ -429,8 +498,11 @@ class FriendService:
             if record["action_type"] == "delete_friend" and (target in self.protected_provider() or target in store.policy(account)):
                 raise FriendError("protected_friend", "目标好友已受保护")
         occupied = False
+        sent: dict[str, Any] = {}
         try:
             preflight()
+            if source is not None and source.identity.get("friend_scope") == "self" and record["action_type"] == "handle_request":
+                await self.recheck_request(account, target, owner_user_id=source.identity["actor_id"])
             if record["action_type"] == "delete_friend":
                 await self.check_delete(account, target)
             preflight()
@@ -440,9 +512,19 @@ class FriendService:
             with bind_group_action_preflight(preflight):
                 if record["action_type"] == "delete_friend":
                     await adapter.friend_delete(account, target)
+                elif record["action_type"] == "handle_request":
+                    options = {"expected_revision": params["expected_revision"],
+                               "allow_archived": record["actor_kind"] == "panel" or expected == "pending"} if "expected_revision" in params else {}
+                    await adapter.friend_handle(account, target, params["approve"], params.get("remark", ""), **options)
                 else:
-                    await adapter.friend_handle(account, target, params["approve"], params.get("remark", ""))
+                    sent = {"status": "already_friends"} if record["target"] is not None else await adapter.friend_send_request(account, target, params.get("message", ""))
+                    self.check_connection(account, adapter, generation)
+                    if not isinstance(sent, dict) or sent.get("status") not in {"submitted", "already_friends"}:
+                        raise FriendError("unconfirmed", "平台没有确认好友申请提交状态")
             result: dict[str, Any] = {"message": "平台返回成功", "verification": "not_verified"}
+            if record["action_type"] == "send_request":
+                result.update(sent)
+                result["message"] = "好友申请已提交, 不代表已成为好友" if sent["status"] == "submitted" else "目标已经是好友"
             if record["action_type"] == "delete_friend":
                 self._snapshots.clear()
                 self._cursors.clear()

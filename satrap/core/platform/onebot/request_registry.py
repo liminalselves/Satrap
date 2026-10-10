@@ -1,8 +1,10 @@
 """request 事件 flag 的审批身份账本与近期操作缓存
 
 群请求与好友请求分域登记; 审批占用在持久事务中原子完成, 落盘成功才允许发网络动作;
-已消费, 未知与过期身份不因重复入站, 容量轮转或进程重启回到可审批状态;
-近期缓存只用于跳过同进程内重复入站的磁盘访问, 不作为审批资格依据
+已消费与未知身份不因重复入站, 容量轮转或进程重启回到可审批状态;
+本地到期身份只可在归档确认路径直接占用, 不恢复为近期可审批状态;
+好友请求按原始事件时间区分同一处理凭据的新申请, 旧申请不能处理新一轮请求;
+近期缓存仅用于诊断, 不作为审批资格依据
 """
 from __future__ import annotations
 
@@ -11,9 +13,10 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, NotRequired, TypedDict, cast
 from time import time
 import asyncio
+import hashlib
 import json
 import threading
 import traceback
@@ -40,7 +43,7 @@ LEDGER_INSTANCE_CAPACITY = 4096
 """每个 (适配器, 已绑定账号) 的账本上限, 达限拒绝新登记而不是淘汰旧身份"""
 LEDGER_TOTAL_CAPACITY = 16384
 """账本文件总上限, 防止多实例累计无界增长"""
-LEDGER_STATES = frozenset({"available", "executing", "completed", "unknown", "expired"})
+LEDGER_STATES = frozenset({"available", "executing", "completed", "unknown", "expired", "superseded"})
 LEDGER_SETTLE_STATES = frozenset({"completed", "unknown"})
 """审批动作的明确终态; 到期墓碑与它并列但不可由 settle 写入"""
 LEDGER_RESTART_STATE = "unknown"
@@ -92,6 +95,8 @@ class LedgerEntry(TypedDict):
     received_at: float
     updated_at: float
     state: str
+    credential_digest: NotRequired[str]
+    event_time: NotRequired[int]
 
 
 @dataclass
@@ -107,8 +112,29 @@ class RequestFlagEntry:
 
 
 def _entry_key(adapter_id: str, self_id: str, kind: str, digest: str) -> str:
-    """账本键: 适配器 ID, 已绑定账号, 请求类别与 flag 摘要"""
+    """账本键: 适配器 ID, 已绑定账号, 请求类别与申请身份摘要"""
     return f"{adapter_id}\n{self_id}\n{kind}\n{digest}"
+
+
+def request_digest(kind: str, self_id: str, flag: str, event_time: int | None = None) -> str:
+    """
+    将好友申请事件身份与可复用的平台处理凭据分开
+
+    参数:
+    - kind: friend 或 group
+    - self_id: 已绑定机器人账号
+    - flag: 平台处理凭据, 不记录原值
+    - event_time: 平台原始好友申请时间, None 保留旧版身份规则
+
+    返回:
+    - 一次申请的稳定摘要, 同一事件重放仍得到同一身份
+    """
+    credential = flag_digest(kind, self_id, flag)
+    if event_time is None:
+        return credential
+    if kind != "friend" or type(event_time) is not int or event_time <= 0:
+        raise ValueError("好友申请原始事件时间必须为正整数")
+    return hashlib.sha256(f"friend-event\x00{credential}\x00{event_time}".encode("utf-8")).hexdigest()[:32]
 
 
 def _validate_entry(item: object, key: str, source: str) -> LedgerEntry:
@@ -132,6 +158,16 @@ def _validate_entry(item: object, key: str, source: str) -> LedgerEntry:
         "group_id": raw["group_id"], "sub_type": raw["sub_type"], "user_id": raw["user_id"],
         "received_at": float(raw["received_at"]), "updated_at": float(raw["updated_at"]), "state": raw["state"],
     }
+    if "event_time" in raw or "credential_digest" in raw:
+        if (raw["kind"] != "friend" or type(raw.get("event_time")) is not int or raw["event_time"] <= 0
+                or not isinstance(raw.get("credential_digest"), str) or len(raw["credential_digest"]) != 32
+                or any(ch not in "0123456789abcdef" for ch in raw["credential_digest"])):
+            raise ValueError(f"{source} 申请事件身份非法")
+        entry["event_time"] = raw["event_time"]
+        entry["credential_digest"] = raw["credential_digest"]
+        expected_digest = hashlib.sha256(f"friend-event\x00{entry['credential_digest']}\x00{entry['event_time']}".encode("utf-8")).hexdigest()[:32]
+        if entry["digest"] != expected_digest:
+            raise ValueError(f"{source} 申请事件摘要不一致")
     if key != _entry_key(entry["adapter_id"], entry["self_id"], entry["kind"], entry["digest"]):
         raise ValueError(f"{source} 账本记录身份与键不一致")
     return entry
@@ -474,7 +510,7 @@ class RequestApprovalLedger:
 
     def _register_sync(
         self, adapter_id: str, self_id: str, kind: str, flag: str,
-        *, group_id: str, sub_type: str, user_id: str, now: float,
+        *, group_id: str, sub_type: str, user_id: str, now: float, event_time: int | None = None,
     ) -> str:
         """同步登记实现, 调用方已通过 to_thread 移出事件循环"""
         if not self_id or not adapter_id:
@@ -485,7 +521,8 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 return "degraded"
-            digest = flag_digest(kind, self_id, flag)
+            credential = flag_digest(kind, self_id, flag)
+            digest = request_digest(kind, self_id, flag, event_time)
             key = _entry_key(adapter_id, self_id, kind, digest)
             existing = self._entries.get(key)
             if existing is not None:
@@ -501,6 +538,16 @@ class RequestApprovalLedger:
                     existing["updated_at"] = now
                     self._save_locked()
                 return "duplicate"
+            family = [entry for entry in self._entries.values()
+                      if entry["adapter_id"] == adapter_id and entry["self_id"] == self_id and entry["kind"] == kind
+                      and entry.get("credential_digest", entry["digest"]) == credential]
+            if event_time is not None and family:
+                if any((entry["group_id"], entry["sub_type"], entry["user_id"]) != (group_id, sub_type, user_id) for entry in family):
+                    return "conflict"
+                if event_time <= max(entry.get("event_time", entry["received_at"]) for entry in family):
+                    return "stale_event"
+            elif family and any("event_time" in entry for entry in family):
+                return "missing_event_identity"
             if self._instance_count(adapter_id, self_id) >= self._instance_capacity:
                 logger.error(
                     f"[RequestLedger] 账本容量已满 adapter={adapter_id} self_id={self_id} "
@@ -515,12 +562,19 @@ class RequestApprovalLedger:
                 "digest": digest, "group_id": group_id, "sub_type": sub_type,
                 "user_id": user_id, "received_at": now, "updated_at": now, "state": "available",
             }
+            if event_time is not None:
+                self._entries[key]["credential_digest"] = credential
+                self._entries[key]["event_time"] = event_time
+                for prior in family:
+                    if prior["state"] in {"available", "expired"}:
+                        prior["state"] = "superseded"
+                        prior["updated_at"] = now
             self._save_locked()
             return "registered"
 
     def _occupy_sync(
         self, adapter_id: str, self_id: str, kind: str, flag: str,
-        *, group_id: str, sub_type: str, now: float,
+        *, group_id: str, sub_type: str, now: float, allow_archived: bool = False, identity_digest: str | None = None,
     ) -> LedgerEntry:
         """同步占用实现, 取消调用方不会撤销已经落盘的占用"""
         with self._mutex, self._transaction():
@@ -529,15 +583,19 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 raise LookupError("审批账本不可用, 拒绝执行")
-            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, identity_digest or flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
             if entry is None:
                 raise LookupError("请求标识未登记或已过期, 无法确认归属")
             if entry["group_id"] != group_id or entry["sub_type"] != sub_type:
                 raise LookupError("请求标识归属与参数不符")
-            if entry["state"] != "available":
+            if entry.get("credential_digest", entry["digest"]) != flag_digest(kind, self_id, flag):
+                raise LookupError("申请身份与平台处理凭据不符")
+            if entry["state"] == "superseded":
+                raise LookupError("该申请已有更新记录, 旧申请不能处理新申请")
+            if entry["state"] != "available" and not (allow_archived and entry["state"] == "expired"):
                 raise LookupError("请求标识已被处理或结果未知, 拒绝重复执行")
-            if now - entry["received_at"] >= self._ttl:
+            if now - entry["received_at"] >= self._ttl and not allow_archived:
                 entry["state"] = "expired"
                 entry["updated_at"] = now
                 self._save_locked()
@@ -547,7 +605,7 @@ class RequestApprovalLedger:
             self._save_locked()
             return cast(LedgerEntry, dict(entry))
 
-    def _settle_sync(self, adapter_id: str, self_id: str, kind: str, flag: str, state: str) -> bool:
+    def _settle_sync(self, adapter_id: str, self_id: str, kind: str, flag: str, state: str, identity_digest: str | None = None) -> bool:
         """同步终态实现, 只允许 executing 迁入明确终态"""
         with self._mutex, self._transaction():
             if self.degraded:
@@ -555,9 +613,10 @@ class RequestApprovalLedger:
             self._reload_locked()
             if self.degraded:
                 return False
-            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, identity_digest or flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
-            if entry is None or entry["state"] != "executing":
+            if (entry is None or entry["state"] != "executing"
+                    or entry.get("credential_digest", entry["digest"]) != flag_digest(kind, self_id, flag)):
                 return False
             entry["state"] = state
             entry["updated_at"] = time()
@@ -566,7 +625,7 @@ class RequestApprovalLedger:
 
     async def register(
         self, adapter_id: str, self_id: str, kind: str, flag: str,
-        *, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None,
+        *, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None, event_time: int | None = None,
     ) -> str:
         """
         登记入站 request 事件: 首次登记固定归属与首次接收时间, 重复入站不改写状态
@@ -580,19 +639,20 @@ class RequestApprovalLedger:
         - sub_type: 群请求的 add/invite
         - user_id: 请求来源用户
         - now: 墙钟时间, 默认读取当前时间
+        - event_time: 好友请求原始事件时间, None 沿用旧标识规则
 
         返回:
-        - str: registered/duplicate/conflict/capacity/degraded/unknown_account
+        - str: 登记, 重复或明确拒绝原因, 新一轮好友申请不会复活旧身份
         """
         moment = time() if now is None else now
         return await asyncio.to_thread(
             self._register_sync, adapter_id, self_id, kind, flag,
-            group_id=group_id, sub_type=sub_type, user_id=user_id, now=moment,
+            group_id=group_id, sub_type=sub_type, user_id=user_id, now=moment, event_time=event_time,
         )
 
     async def occupy(
         self, adapter_id: str, self_id: str, kind: str, flag: str,
-        *, group_id: str = "", sub_type: str = "", now: float | None = None,
+        *, group_id: str = "", sub_type: str = "", now: float | None = None, allow_archived: bool = False, identity_digest: str | None = None,
     ) -> LedgerEntry:
         """
         在持久事务中原子占用登记, 落盘成功才返回; 并发至多一个成功
@@ -605,6 +665,8 @@ class RequestApprovalLedger:
         - group_id: 调用方声明的群号, 必须与登记一致
         - sub_type: 调用方声明的子类型, 必须与登记一致
         - now: 墙钟时间
+        - allow_archived: 是否已经明确确认归档处理
+        - identity_digest: 收件箱固定的一次申请身份, None 仅允许旧版身份
 
         返回:
         - LedgerEntry: 已占用的登记项
@@ -615,10 +677,10 @@ class RequestApprovalLedger:
         moment = time() if now is None else now
         return await asyncio.to_thread(
             self._occupy_sync, adapter_id, self_id, kind, flag,
-            group_id=group_id, sub_type=sub_type, now=moment,
+            group_id=group_id, sub_type=sub_type, now=moment, allow_archived=allow_archived, identity_digest=identity_digest,
         )
 
-    async def settle(self, adapter_id: str, self_id: str, kind: str, flag: str, state: str) -> bool:
+    async def settle(self, adapter_id: str, self_id: str, kind: str, flag: str, state: str, *, identity_digest: str | None = None) -> bool:
         """
         把已占用的登记迁入明确终态
 
@@ -628,24 +690,50 @@ class RequestApprovalLedger:
         - kind: group 或 friend
         - flag: 待迁移标识
         - state: completed (动作已有明确结果) 或 unknown (超时/取消/传输异常, 不可重试)
+        - identity_digest: 被占用的一次申请身份, 不根据复用凭据选择新申请
 
         返回:
         - bool: 迁移并落盘成功为 True
         """
         if state not in LEDGER_SETTLE_STATES:
             raise ValueError("终态必须为 completed 或 unknown")
-        return await asyncio.to_thread(self._settle_sync, adapter_id, self_id, kind, flag, state)
+        return await asyncio.to_thread(self._settle_sync, adapter_id, self_id, kind, flag, state, identity_digest)
 
-    def lookup(self, adapter_id: str, self_id: str, kind: str, flag: str) -> LedgerEntry | None:
+    def lookup(self, adapter_id: str, self_id: str, kind: str, flag: str, *, identity_digest: str | None = None) -> LedgerEntry | None:
         """查询登记项副本, 供诊断与测试观察"""
         with self._mutex:
             if self.degraded:
                 return None
-            key = _entry_key(adapter_id, self_id, kind, flag_digest(kind, self_id, flag))
+            key = _entry_key(adapter_id, self_id, kind, identity_digest or flag_digest(kind, self_id, flag))
             entry = self._entries.get(key)
             return cast(LedgerEntry, dict(entry)) if entry is not None else None
 
-    def available_entries(self, adapter_id: str, self_id: str, kind: str, now: float) -> dict[str, LedgerEntry]:
+    def verify_occupied_friend(self, adapter_id: str, self_id: str, flag: str, identity_digest: str) -> None:
+        """
+        在实际协议发送前拒绝已被新申请替代的旧占用
+
+        参数:
+        - adapter_id: 固定平台实例
+        - self_id: 固定机器人账号
+        - flag: 平台处理凭据
+        - identity_digest: 当前动作已占用的申请身份
+        """
+        with self._mutex, self._transaction():
+            self._reload_locked()
+            entry = self._entries.get(_entry_key(adapter_id, self_id, "friend", identity_digest))
+            if self.degraded or entry is None or entry["state"] != "executing":
+                raise PermissionError("好友申请占用已失效")
+            credential = flag_digest("friend", self_id, flag)
+            if entry.get("credential_digest", entry["digest"]) != credential:
+                raise PermissionError("好友申请处理凭据不匹配")
+            if any(other["adapter_id"] == adapter_id and other["self_id"] == self_id and other["kind"] == "friend"
+                   and other.get("credential_digest", other["digest"]) == credential
+                   and other.get("event_time", other["received_at"]) > entry.get("event_time", entry["received_at"])
+                   for other in self._entries.values()):
+                raise PermissionError("该好友申请已有更新记录, 请处理新申请")
+
+    def available_entries(self, adapter_id: str, self_id: str, kind: str, now: float,
+                          *, include_history: bool = False) -> dict[str, LedgerEntry]:
         """
         从当前持久账本读取仍可执行的申请身份
 
@@ -664,7 +752,7 @@ class RequestApprovalLedger:
                 raise LookupError("审批账本不可用, 拒绝查询申请")
             return {entry["digest"]: cast(LedgerEntry, dict(entry)) for entry in self._entries.values()
                     if entry["adapter_id"] == adapter_id and entry["self_id"] == self_id and entry["kind"] == kind
-                    and entry["state"] == "available" and now < entry["received_at"] + self.ttl}
+                    and (include_history or entry["state"] == "available" and now < entry["received_at"] + self.ttl)}
 
     def pending_counts(self) -> dict[str, Any]:
         """账本状态与占用计数, 供健康检查与测试观察"""
@@ -712,13 +800,6 @@ class RequestFlagRegistry:
         self.inbox.close()
         self.inbox = RequestInbox(ledger.inbox_path, ledger.ttl)
 
-    def _cached(self, kind: str, flag: str, now: float) -> RequestFlagEntry | None:
-        """读取未过期的近期缓存, 只用于跳过重复入站的磁盘访问"""
-        entry = self._tables[kind].get(flag)
-        if entry is None or now - entry.received_at >= self.ttl:
-            return None
-        return entry
-
     def _remember(self, kind: str, flag: str, entry: RequestFlagEntry) -> None:
         """写入近期缓存并按容量淘汰最旧"""
         table = self._tables[kind]
@@ -729,7 +810,7 @@ class RequestFlagRegistry:
 
     async def register(
         self, kind: str, flag: str, *,
-        self_id: str, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None, comment: str = "",
+        self_id: str, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None, comment: str = "", event_time: int | None = None,
     ) -> bool:
         """
         登记入站 request 事件; 重复入站不改写身份, 过期时间或消费状态
@@ -743,37 +824,56 @@ class RequestFlagRegistry:
         - user_id: 请求来源用户
         - now: 墙钟时间, 默认读取当前时间
         - comment: 平台申请验证信息, 保存在私有收件箱
+        - event_time: 平台好友申请原始事件时间, 不使用本地接收时间代替
 
         返回:
         - bool: 账本新增登记为 True; 重复, 冲突, 容量或降级时为 False
         """
         moment = time() if now is None else now
-        cached = self._cached(kind, flag, moment)
-        if (cached is not None and cached.self_id == self_id and cached.group_id == group_id
-                and cached.sub_type == sub_type and cached.user_id == user_id):
-            # 同进程内已登记且归属一致: 无需落盘, 状态保持不变
-            return False
         result = await self.ledger.register(
             self.adapter_id, self_id, kind, flag,
-            group_id=group_id, sub_type=sub_type, user_id=user_id, now=moment,
+            group_id=group_id, sub_type=sub_type, user_id=user_id, now=moment, event_time=event_time,
         )
+        restored = False
         if result in {"registered", "duplicate"}:
-            entry = await asyncio.to_thread(self.ledger.lookup, self.adapter_id, self_id, kind, flag)
-            if entry is not None and entry["state"] == "available" and moment < entry["received_at"] + self.ledger.ttl:
-                await asyncio.to_thread(self.inbox.register, self.adapter_id, self_id, kind, flag,
+            identity = request_digest(kind, self_id, flag, event_time)
+            entry = await asyncio.to_thread(self.ledger.lookup, self.adapter_id, self_id, kind, flag, identity_digest=identity)
+            if entry is not None and entry["state"] in {"available", "expired"}:
+                restored = await asyncio.to_thread(self.inbox.register, self.adapter_id, self_id, kind, flag,
                                         group_id=entry["group_id"], sub_type=entry["sub_type"], user_id=entry["user_id"],
-                                        comment=comment, received_at=entry["received_at"], now=moment)
+                                        comment=comment, received_at=entry["received_at"], now=moment, identity_digest=identity)
+        log = logger.info if result == "registered" or restored else logger.debug
+        log(f"[RequestFlagRegistry] 申请登记 adapter={self.adapter_id} kind={kind} user_id={user_id} result={result} event_time={event_time} details_restored={restored}")
         if result == "registered":
             self._remember(kind, flag, RequestFlagEntry(group_id=group_id, sub_type=sub_type, user_id=user_id,
                                                        received_at=moment, self_id=self_id))
             return True
-        if result in {"capacity", "degraded"}:
+        if result not in {"registered", "duplicate"}:
             logger.warning(f"[RequestFlagRegistry] 登记未生效 result={result} adapter={self.adapter_id} kind={kind}")
         return False
 
-    async def list_requests(self, kind: str, *, self_id: str, group_id: str = "", limit: int = 20, cursor: str | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _public_request(row: dict[str, Any], entry: LedgerEntry | None, now: float) -> dict[str, Any]:
+        """生成不含凭据的申请详情, 归档位置与执行资格分别计算"""
+        keys = ("request_id", "kind", "user_id", "group_id", "sub_type", "comment", "received_at", "expires_at",
+                "revision", "archived_at", "platform_state", "execution_state", "last_checked_at", "decision")
+        state = entry["state"] if entry else "unknown"
+        item = {key: row[key] for key in keys}
+        item["archived"] = row["archived_at"] is not None or state != "available"
+        item["remaining_seconds"] = max(0, int(row["expires_at"] - now))
+        item["can_handle"] = bool(row["flag"]) and state in {"available", "expired"} and row["execution_state"] == "not_started" and row["platform_state"] not in {"processed", "invalid"}
+        item["requires_confirmation"] = item["archived"] and item["can_handle"]
+        item["handling_reason"] = "归档申请需重新核验或由管理员确认尝试" if item["requires_confirmation"] else "可处理" if item["can_handle"] else "凭据缺失, 已处理或执行结果未知"
+        if state == "superseded":
+            item["handling_reason"] = "同一处理凭据已有更新申请, 旧申请不能再处理"
+        if state in {"executing", "unknown"}:
+            item["execution_state"] = state
+        return item
+
+    async def list_requests(self, kind: str, *, self_id: str, group_id: str = "", limit: int = 20,
+                            cursor: str | None = None, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
         """
-        返回当前账号可执行的申请, 原始 flag 不进入结果
+        返回当前账号近期或归档申请, 执行资格单独声明, 原始 flag 不进入结果
 
         参数:
         - kind: friend 或 group
@@ -785,7 +885,7 @@ class RequestFlagRegistry:
         返回:
         - 不透明 ID, 申请人, 验证信息和期限, 没有下一页时 has_more 为 False
         """
-        if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100:
+        if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100 or view not in {"active", "archived", "all"}:
             raise ValueError("申请类别或查询条数无效")
         def read() -> dict[str, Any]:
             """
@@ -796,16 +896,26 @@ class RequestFlagRegistry:
             """
             now = time()
             rows = self.inbox.rows(self.adapter_id, self_id, kind, now)
-            available = self.ledger.available_entries(self.adapter_id, self_id, kind, now)
-            self.inbox.discard([row["request_id"] for row in rows if row["digest"] not in available])
-            keys = ("request_id", "kind", "user_id", "group_id", "sub_type", "comment", "received_at", "expires_at")
-            items = [{key: row[key] for key in keys} for row in rows if row["digest"] in available
-                     and (not group_id or row["group_id"] == group_id)]
-            for item in items:
-                item["remaining_seconds"] = max(0, int(item["expires_at"] - now))
+            entries = self.ledger.available_entries(self.adapter_id, self_id, kind, now, include_history=True)
+            items = []
+            for row in rows:
+                if group_id and row["group_id"] != group_id:
+                    continue
+                if owner_user_id and row["user_id"] != owner_user_id:
+                    continue
+                entry = entries.get(row["digest"])
+                if entry is not None and entry["state"] != "available":
+                    self.inbox.archive(row["request_id"], now, clear_credential=entry["state"] in {"completed", "unknown", "superseded"})
+                    row = self.inbox.resolve(self.adapter_id, self_id, kind, row["request_id"], now)
+                item = self._public_request(row, entry, now)
+                if view == "active" and item["archived"] or view == "archived" and not item["archived"]:
+                    continue
+                items.append(item)
             present = {row["digest"] for row in rows}
-            missing = sum(1 for digest, entry in available.items() if digest not in present
-                          and (not group_id or entry["group_id"] == group_id))
+            missing = sum(1 for digest, entry in entries.items() if digest not in present and entry["state"] in {"available", "expired"}
+                          and (not group_id or entry["group_id"] == group_id)
+                          and (not owner_user_id or entry["user_id"] == owner_user_id)
+                          and (view == "all" or (entry["state"] == "available" and now < entry["received_at"] + self.ledger.ttl) == (view == "active")))
             total = len(items)
             if missing:
                 logger.warning(f"[RequestInbox] 部分申请缺少原值, 不可处理 adapter={self.adapter_id} kind={kind} count={missing}")
@@ -816,10 +926,13 @@ class RequestFlagRegistry:
                 items = items[offset:]
             more = len(items) > limit
             return {"items": items[:limit], "has_more": more, "total": total, "unavailable_count": missing,
+                    "scope": "self" if owner_user_id else "all",
+                    "unavailable_reason": "历史申请详情缺失, 刷新不会自动恢复" if missing else None,
                     "next_cursor": items[limit - 1]["request_id"] if more else None}
         return await asyncio.to_thread(read)
 
-    async def resolve_request(self, kind: str, request_id: str, *, self_id: str) -> dict[str, Any]:
+    async def resolve_request(self, kind: str, request_id: str, *, self_id: str, allow_archived: bool = False,
+                              expected_revision: int | None = None) -> dict[str, Any]:
         """
         在宿主中把当前账号申请 ID 换成平台原值, 再次核验执行资格
 
@@ -841,16 +954,39 @@ class RequestFlagRegistry:
             - 通过账本复核的宿主内部申请参数
             """
             now = time()
-            row = self.inbox.resolve(self.adapter_id, self_id, kind, request_id, now)
-            available = self.ledger.available_entries(self.adapter_id, self_id, kind, now)
-            if row["digest"] not in available:
-                self.inbox.discard([request_id])
+            row = self.inbox.resolve(self.adapter_id, self_id, kind, request_id, now, expected_revision)
+            entries = self.ledger.available_entries(self.adapter_id, self_id, kind, now, include_history=True)
+            entry = entries.get(row["digest"])
+            if entry is not None and entry["state"] == "superseded":
+                raise LookupError("该申请已有更新记录, 旧申请不能处理新申请")
+            if entry is None or entry["state"] not in {"available", "expired"} or row["execution_state"] != "not_started":
                 raise LookupError("申请已处理或结果未知, 不能重复执行")
+            if not row["flag"] or row["platform_state"] in {"processed", "invalid"}:
+                raise LookupError("申请凭据缺失或平台申请已失效")
+            if row["expires_at"] <= now and (not allow_archived or expected_revision is None):
+                raise LookupError("申请已归档, 请查询当前修订号并由管理员确认处理")
             return row
         return await asyncio.to_thread(resolve)
 
+    async def recheck_request(self, kind: str, request_id: str, *, self_id: str) -> dict[str, Any]:
+        """复核本地资格, 不把缺少平台查询接口解释为仍然有效"""
+        now = time()
+        row = await asyncio.to_thread(self.inbox.resolve, self.adapter_id, self_id, kind, request_id, now)
+        entries = await asyncio.to_thread(self.ledger.available_entries, self.adapter_id, self_id, kind, now, include_history=True)
+        entry = entries.get(row["digest"])
+        state = "processed" if entry and entry["state"] == "completed" and row["decision"] else row["platform_state"]
+        await asyncio.to_thread(self.inbox.annotate, request_id, platform_state=state, now=now)
+        row = await asyncio.to_thread(self.inbox.resolve, self.adapter_id, self_id, kind, request_id, now)
+        item = self._public_request(row, entry, now)
+        return {**item, "verification": "local_only", "platform_query_supported": False}
+
+    async def delete_request(self, kind: str, request_id: str, *, self_id: str, expected_revision: int) -> None:
+        """删除归档展示记录, 保留不可重放账本"""
+        await asyncio.to_thread(self.inbox.delete, self.adapter_id, self_id, kind, request_id, expected_revision, time())
+
     async def occupy(
         self, kind: str, flag: str, *, self_id: str, group_id: str = "", sub_type: str = "", now: float | None = None,
+        allow_archived: bool = False, identity_digest: str | None = None,
     ) -> RequestFlagEntry:
         """
         在持久账本中原子占用, 缓存不作为资格依据
@@ -862,6 +998,8 @@ class RequestFlagRegistry:
         - group_id: 调用方声明的群号, 必须与登记一致
         - sub_type: 调用方声明的子类型, 必须与登记一致
         - now: 墙钟时间
+        - allow_archived: 已明确确认归档处理
+        - identity_digest: 收件箱固定的一次申请身份, None 沿用旧版规则
 
         返回:
         - RequestFlagEntry: 已占用的登记项
@@ -871,7 +1009,7 @@ class RequestFlagRegistry:
         """
         moment = time() if now is None else now
         entry = await self.ledger.occupy(
-            self.adapter_id, self_id, kind, flag, group_id=group_id, sub_type=sub_type, now=moment,
+            self.adapter_id, self_id, kind, flag, group_id=group_id, sub_type=sub_type, now=moment, allow_archived=allow_archived, identity_digest=identity_digest,
         )
         self._remember(kind, flag, RequestFlagEntry(
             group_id=entry["group_id"], sub_type=entry["sub_type"], user_id=entry["user_id"],
@@ -879,7 +1017,7 @@ class RequestFlagRegistry:
         ))
         return self._tables[kind][flag]
 
-    async def settle(self, kind: str, flag: str, *, self_id: str, state: str) -> None:
+    async def settle(self, kind: str, flag: str, *, self_id: str, state: str, decision: str | None = None, identity_digest: str | None = None) -> None:
         """
         把已占用的登记迁入终态
 
@@ -888,16 +1026,18 @@ class RequestFlagRegistry:
         - flag: 待迁移标识
         - self_id: 已绑定机器人账号
         - state: completed 或 unknown
+        - decision: 实际动作结果, None 表示未确认同意或拒绝
+        - identity_digest: 实际被占用的申请身份, 不根据凭据选择新记录
         """
         if state not in LEDGER_SETTLE_STATES:
             raise ValueError("终态必须为 completed 或 unknown")
-        settled = await self.ledger.settle(self.adapter_id, self_id, kind, flag, state)
+        settled = await self.ledger.settle(self.adapter_id, self_id, kind, flag, state, identity_digest=identity_digest)
         entry = self._tables[kind].get(flag)
         if entry is not None and entry.self_id == self_id and settled:
             entry.state = state
         if settled:
             try:
-                await asyncio.to_thread(self.inbox.forget, self.adapter_id, self_id, kind, flag)
+                await asyncio.to_thread(self.inbox.forget, self.adapter_id, self_id, kind, flag, state=state, decision=decision, now=time(), identity_digest=identity_digest)
             except Exception:
                 logger.error(f"[RequestInbox] 终态原值清理失败 adapter={self.adapter_id} kind={kind}: {traceback.format_exc()}")
         if not settled:

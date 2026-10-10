@@ -68,7 +68,8 @@ class FriendStore:
         return result
 
     def register(self, account: str, action_id: str, action: str, params: dict[str, Any], actor: str,
-                 target: dict[str, Any] | None = None, actor_id: str = "panel") -> tuple[dict[str, Any], bool]:
+                 target: dict[str, Any] | None = None, actor_id: str = "panel", *,
+                 requires_approval: bool = False) -> tuple[dict[str, Any], bool]:
         """
         幂等登记人工或模型动作
 
@@ -98,7 +99,13 @@ class FriendStore:
                                         "AND state IN ('pending','ready','executing','unknown')", (account, action)).fetchall()
                 if any(json.loads(row[0]).get("user_id") == params["user_id"] for row in previous):
                     raise FriendError("unresolved_action", "此好友已有待处理或结果未知的删除动作, 请先核查原动作")
-            state = "pending" if actor == "model" and action == "delete_friend" else "ready"
+            if action == "send_request":
+                previous = conn.execute("SELECT params_json FROM friend_actions WHERE self_id=? AND action_type=? "
+                                        "AND (state IN ('pending','ready','executing','unknown') OR (state='succeeded' AND created_at>?))",
+                                        (account, action, now - 600)).fetchall()
+                if any(json.loads(row[0]).get("user_id") == params["user_id"] for row in previous):
+                    raise FriendError("unresolved_action", "此账号已有刚提交或结果未知的好友申请, 请先核查原动作")
+            state = "pending" if actor == "model" and (action == "delete_friend" or requires_approval) else "ready"
             conn.execute("INSERT INTO friend_actions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          (account, action_id, action, encoded, actor, state, now, now + 600, None, None, None,
                           json.dumps(target, ensure_ascii=False) if target else None, actor_id))

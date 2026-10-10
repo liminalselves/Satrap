@@ -2,13 +2,13 @@ name: friend_manager
 permission_schema_version: 1
 management_permissions:
   access:
-    description: 在私聊中查询和管理机器人的好友
-    requirements: [仅限管理者私聊, 来源机器人账号与平台好友能力必须有效]
+    description: 查询完整好友目录和全部好友申请
+    requirements: [来源发送者和机器人账号必须有效, 普通用户的本人服务由宿主单独核验]
     caller_list: managers
     empty_policy: deny
     system_admin: true
   write:
-    description: 处理好友申请和提交删除好友请求
+    description: 处理好友申请, 申请删除好友或主动发送好友申请
     requirements: [需开启对应好友写功能, 删除好友固定需要人工批准, 受保护账号不能删除]
     caller_list: write_callers
     empty_policy: deny
@@ -16,9 +16,6 @@ management_permissions:
 tool_permissions:
   friend_manager_list_friends: [access]
   friend_manager_find_friends: [access]
-  friend_manager_list_requests: [access]
-  friend_manager_handle_request: [access, write]
-  friend_manager_delete_friend: [access, write]
 version: 0.1.0
 author: Satrap Team
 description: "查询机器人好友, 查找昵称或备注, 处理好友申请; 删除好友须人工批准"
@@ -26,19 +23,23 @@ config_schema:
   managers:
     type: textarea
     default: ""
-    description: "允许在私聊中查询和管理机器人好友的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 处理和删除另需写授权, 名单账号禁止被模型删除"
+    description: "允许查看完整好友目录和全部申请的成员 ID, 每行一个; 留空不授予名单权限. 普通用户仍可管理本人申请和好友关系; 系统管理员无需重复填写, 名单账号禁止被模型删除"
   write_callers:
     type: textarea
     default: ""
-    description: "允许处理好友申请和请求删除好友的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 还需好友访问授权和对应功能开关, 删除仍须人工批准"
+    description: "允许处理好友申请, 请求删除好友和主动发送好友申请的成员账号 ID, 每行一个; 留空不授予名单权限. 已获本插件授权的系统管理员无需重复填写; 还需好友访问授权和对应功能开关, 删除仍须人工批准"
   request_handling_enabled:
     type: bool
     default: false
-    description: "允许管理者让模型同意或拒绝好友申请; 不影响后台人工操作"
+    description: "允许模型同意或拒绝好友申请; 普通用户只可处理本人申请, 管理员处理他人须写授权; 不影响后台人工操作"
   delete_friend_enabled:
     type: bool
     default: false
-    description: "允许管理者让模型申请删除好友; 必须在后台人工批准后执行"
+    description: "允许模型申请删除好友; 普通用户只可删除本人, 管理员删除他人须写授权; 必须在后台人工批准后执行"
+  send_request_enabled:
+    type: bool
+    default: false
+    description: "允许模型发送好友申请; 普通用户只能添加本人, 管理员指定其他人需要访问和写权限, 平台须支持主动申请"
   protected_friend_ids:
     type: textarea
     default: ""
@@ -47,8 +48,10 @@ tools:
   friend_manager_list_friends: "查看机器人好友列表"
   friend_manager_find_friends: "按 ID, 昵称或备注查找好友"
   friend_manager_list_requests: "查看待处理好友申请"
+  friend_manager_recheck_request: "重新核验好友申请"
   friend_manager_handle_request: "同意或拒绝好友申请"
   friend_manager_delete_friend: "申请删除好友, 等待人工批准"
+  friend_manager_send_request: "主动发送好友申请"
 skills:
   friend_manager: "指导模型确认好友身份, 处理申请与区分执行结果"
 compatibility:
