@@ -34,6 +34,7 @@ class EdictumConfigManager:
         storage_path: str | Path | None = None,
         *,
         auto_create: bool = True,
+        plugin_catalog: PluginCatalog | None = None,
     ) -> None:
         """
         初始化 Edictum 冷配置管理器
@@ -42,10 +43,11 @@ class EdictumConfigManager:
         - type_registry: 用于校验 edictum_type 的类型注册表
         - storage_path: 配置文件路径
         - auto_create: 是否自动创建父目录和空配置文件
+        - plugin_catalog: 可选的已加载目录快照, 用于单次请求内一致读取
         """
         self.type_registry = type_registry
         self.storage_path = Path(storage_path) if storage_path else self._default_storage_path()
-        self.plugin_catalog = PluginCatalog()
+        self.plugin_catalog = plugin_catalog or PluginCatalog()
         self._configs: dict[str, dict[str, Any]] = {}
         self._lock = threading.RLock()
         if auto_create:
@@ -82,12 +84,13 @@ class EdictumConfigManager:
             raise ValueError("Edictum 配置名称不能包含路径分隔符")
         return name
 
-    def _normalize_plugins(self, value: object) -> list[dict[str, Any]]:
+    def _normalize_plugins(self, value: object, catalog: PluginCatalog | None = None) -> list[dict[str, Any]]:
         """
         校验插件配置列表并复制为 JSON 安全结构
 
         参数:
         - value: 插件名称或插件配置对象列表
+        - catalog: 本轮读取固定的插件目录, 默认读取最新目录
 
         返回:
         - list[dict[str, Any]]: 标准插件配置对象列表
@@ -96,17 +99,18 @@ class EdictumConfigManager:
             spec.to_config()
             for spec in parse_plugin_specs(
                 value,
-                self.plugin_catalog,
+                catalog or self.plugin_catalog,
                 require_available=False,
             )
         ]
 
-    def _normalize_entry(self, entry: object) -> dict[str, Any]:
+    def _normalize_entry(self, entry: object, catalog: PluginCatalog | None = None) -> dict[str, Any]:
         """
         校验并规范化单个配置条目
 
         参数:
         - entry: 原始配置对象
+        - catalog: 本轮读取固定的插件目录, 默认读取最新目录
 
         返回:
         - dict[str, Any]: 规范化配置条目
@@ -129,7 +133,7 @@ class EdictumConfigManager:
             "description": str(raw.get("description", "")),
             "model_name": model_name,
             "params": dict(cast(dict[str, Any], params)),
-            "plugins": self._normalize_plugins(raw.get("plugins", [])),
+            "plugins": self._normalize_plugins(raw.get("plugins", []), catalog),
         }
 
     def _save_locked(self) -> None:
@@ -154,9 +158,10 @@ class EdictumConfigManager:
                 if not isinstance(payload, dict):
                     raise ValueError("Edictum 配置文件根节点必须是对象")
                 loaded: dict[str, dict[str, Any]] = {}
+                catalog = self.plugin_catalog.snapshot()
                 for raw_name, raw_entry in cast(dict[str, object], payload).items():
                     name = self._normalize_name(raw_name)
-                    loaded[name] = self._normalize_entry(raw_entry)
+                    loaded[name] = self._normalize_entry(raw_entry, catalog)
                 self._configs = loaded
                 if loaded != payload:
                     self._save_locked()

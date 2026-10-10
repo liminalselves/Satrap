@@ -15,6 +15,7 @@ import sqlite3
 from pathlib import Path
 import pytest
 from typing import Any, cast
+from types import SimpleNamespace
 import json
 import time
 
@@ -99,6 +100,32 @@ def _json_body(response: bytes) -> dict[str, Any]:
     payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
     assert isinstance(payload, dict)
     return payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('path', ['/config/plugins', '/config/plugins/friend_manager/config', '/config/plugins/friend_manager/usages'])
+async def test_slow_plugin_service_preparation_does_not_block_loop(monkeypatch, path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    def prepare(*args):
+        entered.set()
+        if not release.wait(2):
+            raise RuntimeError('测试没有释放构造任务')
+        return SimpleNamespace(list_plugins=lambda: [], get_config=lambda name: {'config': {}}, get_usages=lambda name: {'usages': []})
+
+    monkeypatch.setattr(control_server, '_plugin_management_service', prepare)
+    request = asyncio.create_task(_request(path))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        started = time.perf_counter()
+        await asyncio.sleep(.01)
+        assert time.perf_counter() - started < .1
+        assert not request.done()
+    finally:
+        release.set()
+    response = await request
+    assert response.startswith(b'HTTP/1.1 200')
 
 
 def _use_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -698,7 +725,7 @@ async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, mo
     (plugin / "meta.yaml").write_text("name: probe\nconfig_schema:\n  note:\n    default: old", encoding="utf-8")
     catalog = PluginCatalog(tmp_path / "builtin", tmp_path / "plugins")
     service = PluginManagementService(catalog, {}, ChatPluginRegistry(tmp_path / "chat.json"), manager=PluginConfigManager(tmp_path / "config"))
-    monkeypatch.setattr(control_server, "_plugin_management_service", lambda: service)
+    monkeypatch.setattr(control_server, "_plugin_management_service", lambda *args: service)
     applied = []
     async def apply_runtime():
         applied.append(True)

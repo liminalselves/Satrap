@@ -235,6 +235,7 @@ class PluginArchiveInstaller:
                     raise ValueError("预览元数据已变化, 请重新上传")
                 _move_no_replace(preview.plugin_dir, self.catalog.user_dir / preview.name)
                 # 临时目录与目标目录位于同一文件系统, 不暴露半解压状态
+                self.catalog.invalidate()
                 return {"ok": True, "plugin": {**entry.to_payload(), "source": "user"}}
             finally:
                 preview.temporary.cleanup()

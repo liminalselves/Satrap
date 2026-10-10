@@ -742,9 +742,12 @@ def _session_class_config_service() -> SessionClassConfigService:
     )
 
 
-def _edictum_config_service() -> EdictumConfigService:
+def _edictum_config_service(catalog: PluginCatalog | None = None) -> EdictumConfigService:
     """
     根据当前后端配置创建共享 Edictum 冷配置服务
+
+    参数:
+    - catalog: 可选的已加载目录快照
 
     返回:
     - EdictumConfigService: 使用当前 Edictum 配置文件的领域服务
@@ -757,7 +760,7 @@ def _edictum_config_service() -> EdictumConfigService:
         if not storage_path.is_absolute():
             storage_path = PROJECT_ROOT / storage_path
     registry = create_default_edictum_type_registry()
-    manager = EdictumConfigManager(registry, storage_path=storage_path)
+    manager = EdictumConfigManager(registry, storage_path=storage_path, plugin_catalog=catalog)
     models = _model_config_service().manager
     return EdictumConfigService(
         manager, registry, models=models, rag=RagService(_configured_storage_layout(), models, "local"),
@@ -2524,16 +2527,20 @@ async def _route_conversation_data(ctx: _RouteContext) -> ControlResponse | None
         return 500, {"error": "对话数据操作失败, 请查看控制服务日志"}
 
 
-def _plugin_management_service() -> PluginManagementService:
+def _plugin_management_service(catalog: PluginCatalog | None = None) -> PluginManagementService:
     """
     创建复用冷配置与引用校验的插件管理服务
+
+    参数:
+    - catalog: 可选的已加载目录快照
 
     返回:
     - 共享目录、全局参数与使用配置的领域服务
     """
-    service = _edictum_config_service()
+    catalog = catalog or PluginCatalog().snapshot()
+    service = _edictum_config_service(catalog)
     models = _model_config_service().manager
-    return PluginManagementService(service.plugin_catalog, service.list_configs(), ChatPluginRegistry(),
+    return PluginManagementService(catalog, service.list_configs(), ChatPluginRegistry(),
                                    manager=PluginConfigManager(), models=models,
                                    rag=RagService(_configured_storage_layout(), models, "local"), edictum=service)
 
@@ -2633,7 +2640,8 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
         return None
     name = urllib.parse.unquote(ctx.path[len(prefix):-len(action)-1])
     try:
-        service = _plugin_management_service()
+        catalog = await PluginCatalog().snapshot_async()
+        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         if action == "runtime" and ctx.method == "GET":
             if service.catalog.get(name) is None:
                 raise KeyError("插件不存在")
@@ -2681,7 +2689,8 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
         return None
     name = urllib.parse.unquote(ctx.path[len(prefix):-len("/config")])
     try:
-        service = _plugin_management_service()
+        catalog = await PluginCatalog().snapshot_async()
+        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         if ctx.method == "GET":
             return 200, await RAG_WORKERS.run(service.get_config, name)
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
@@ -2743,25 +2752,40 @@ async def _route_edictum_metadata(ctx: _RouteContext) -> ControlResponse | None:
     """
     if ctx.method == "GET" and ctx.path == "/config/plugins":
         try:
-            return 200, {"plugins": _plugin_management_service().list_plugins()}
+            catalog = await PluginCatalog().snapshot_async()
+            return 200, {"plugins": await RAG_WORKERS.run(lambda: _plugin_management_service(catalog).list_plugins())}
+        except WorkerBusyError as e:
+            logger.warning(f"[插件目录] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/types":
         try:
-            return 200, {"types": _edictum_config_service().list_types()}
+            return 200, {"types": await RAG_WORKERS.run(lambda: create_default_edictum_type_registry().list_types())}
+        except WorkerBusyError as e:
+            logger.warning(f"[Edictum 类型] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/plugins":
         try:
-            return 200, {"plugins": _edictum_config_service().list_plugins()}
+            catalog = await PluginCatalog().snapshot_async()
+            return 200, {"plugins": await RAG_WORKERS.run(catalog.list_payloads)}
+        except WorkerBusyError as e:
+            logger.warning(f"[Edictum 插件] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
     if ctx.method == "GET" and ctx.path == "/config/edictum/sessions":
         try:
-            return 200, _edictum_config_service().list_configs()
+            catalog = await PluginCatalog().snapshot_async()
+            return 200, await RAG_WORKERS.run(lambda: _edictum_config_service(catalog).list_configs())
+        except WorkerBusyError as e:
+            logger.warning(f"[Edictum 配置] 工作队列已满: {e}")
+            return 503, {"error": str(e)}
         except (OSError, TypeError, ValueError) as e:
             return 400, {"error": str(e)}
 
