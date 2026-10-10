@@ -54,6 +54,10 @@ try {
     const pathname = url.pathname;
     if (pathname === '/ui-config.json') return reply({ backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' });
     if (pathname === '/api/auth/session') return reply({ ok: true });
+    if (pathname === '/config/versions') return reply({ ok: true, resources: Object.fromEntries(
+      (url.searchParams.get('resources') || '').split(',').map((name) => [name, { state: 'available',
+        change_token: name === 'session_classes' ? JSON.stringify(sessions) : name === 'edictum_configs' ? JSON.stringify(edictum) : 'fixed' }]),
+    ) });
     if (state.sourcesDown && ['/api/health', '/status'].includes(pathname)) return route.abort('connectionfailed');
     if (pathname === '/api/health') return reply(health());
     if (pathname === '/status') return reply({ running: state.running, managed: state.running });

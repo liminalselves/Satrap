@@ -1,6 +1,7 @@
-import { useEffect, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { Card } from '@/components/ui/Card';
 import { Badge } from '@/components/ui/Badge';
 import { BackendControls } from '@/components/common/BackendControls';
@@ -17,13 +18,9 @@ import {
 } from 'lucide-react';
 
 export function Dashboard() {
+  useConfigWatch(['llm', 'embedding', 'rerank', 'asr', 'sessions']);
   const { health, isRunning, runState, controlStatus, statusConnected } = useBackendStore();
-  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses, fetchAllModels, fetchSessionClasses } = useConfigStore();
-
-  useEffect(() => {
-    void fetchAllModels();
-    void fetchSessionClasses();
-  }, [fetchAllModels, fetchSessionClasses]);
+  const { llmConfigs, embeddingConfigs, rerankConfigs, asrConfigs, sessionClasses } = useConfigStore();
 
   // 统计数据
   const stats = useMemo(() => ({

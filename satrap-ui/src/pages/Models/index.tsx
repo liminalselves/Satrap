@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
@@ -99,12 +100,12 @@ const FIELD_META: Record<ModelType, FormField[]> = {
 };
 
 export function Models() {
+  useConfigWatch(['llm', 'embedding', 'rerank', 'asr']);
   const {
     llmConfigs,
     embeddingConfigs,
     rerankConfigs,
     asrConfigs,
-    fetchAllModels,
     createModel,
     updateModel,
     deleteModel,
@@ -116,10 +117,6 @@ export function Models() {
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
   const [formData, setFormData] = useState<ModelFormData>({ name: '' });
   const [asrTestName, setAsrTestName] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchAllModels();
-  }, [fetchAllModels]);
 
   // 获取当前类型的配置
   const configs = useMemo(() => {

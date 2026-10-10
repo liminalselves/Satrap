@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { Link } from 'react-router-dom';
 import { isAxiosError } from 'axios';
 import { useBackendStore } from '@/stores/useBackendStore';
@@ -27,8 +28,9 @@ import type { GroupOverrideRow, RowIssue, TimeRuleRow } from '@/utils/wakeOverri
 import type { AdapterDeclaration, AgentBinding, PlatformConfig } from '@/api/types';
 
 export function Platforms() {
+  useConfigWatch(['sessions', 'edictum', 'asr']);
   const { health, isRunning, refreshHealth } = useBackendStore();
-  const { sessionClasses, fetchSessionClasses, asrConfigs, fetchModels, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore();
+  const { sessionClasses, fetchSessionClasses, asrConfigs, edictumConfigs, fetchEdictumConfigs: loadEdictumConfigs } = useConfigStore();
   const [revision, setRevision] = useState('');
   const [draftRevision, setDraftRevision] = useState('');
   const [platforms, setPlatforms] = useState<PlatformConfig[]>([]);
@@ -91,11 +93,8 @@ export function Platforms() {
 
   useEffect(() => {
     loadPlatforms();
-    loadEdictumConfigs();
-    fetchSessionClasses();
-    fetchModels('asr').catch(() => undefined);
     refreshHealth();
-  }, [fetchModels, fetchSessionClasses, loadEdictumConfigs, loadPlatforms, refreshHealth]);
+  }, [loadPlatforms, refreshHealth]);
 
   const handleAdd = useCallback(() => {
     const initial = { enable: true, id: '', type: 'misskey', session_provider: 'session_class', session_type: '', session_bindings: {} as Record<string, AgentBinding>, settings: {} as Record<string, unknown> };

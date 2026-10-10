@@ -1,6 +1,7 @@
 import { Badge } from '@/components/ui/Badge';
 import type { AdapterInfo, PlatformConfigApplication } from '@/api/types';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 
 const STATUS_LABELS: Record<string, string> = {
   applied: '配置已应用',
@@ -14,6 +15,7 @@ function statusLabel(status: string): string {
 }
 
 export function AdapterStatus({ info, application }: { info: AdapterInfo; application?: PlatformConfigApplication }) {
+  useConfigWatch([info.session_provider === 'edictum' ? 'edictum' : 'sessions']);
   const { sessionClasses, edictumConfigs } = useConfigStore();
   const sessionEnabled = (info.session_provider === 'edictum' ? edictumConfigs : sessionClasses)[info.session_type || '']?.enabled;
   return <div className="flex flex-wrap items-center gap-2">

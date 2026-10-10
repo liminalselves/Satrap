@@ -7,7 +7,7 @@ export const edictumApi = {
 
   listPlugins: () => controlApi.listEdictumPlugins(),
 
-  list: () => controlApi.listEdictumSessions(),
+  list: (signal?: AbortSignal) => controlApi.listEdictumSessions(signal),
 
   get: (name: string) => controlApi.getEdictumSession(name),
 

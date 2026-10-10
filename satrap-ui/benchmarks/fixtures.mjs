@@ -101,6 +101,9 @@ export function responseFor(request, fixture) {
     };
   }
   if (path === '/status') return { running: true, managed: true };
+  if (path === '/config/versions') return { ok: true, resources: Object.fromEntries(
+    (new URL(request.url()).searchParams.get('resources') || '').split(',').map((name) => [name, { change_token: 'fixture-v1', state: 'available' }]),
+  ) };
   if (path === '/config/models/options') return { llm: ['benchmark-model'], embedding: [], rerank: [], asr: [] };
   if (path === '/config/models' && method === 'GET') return {};
   if (/^\/config\/models\/(llm|embedding|rerank|asr)$/.test(path)) return {};

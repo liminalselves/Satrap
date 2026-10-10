@@ -378,9 +378,9 @@ export const controlApi = {
     return response.data;
   },
 
-  listModels: async (type: ModelType): Promise<Record<string, ModelConfig>> => {
+  listModels: async (type: ModelType, signal?: AbortSignal): Promise<Record<string, ModelConfig>> => {
     const response = await controlClient.get<unknown>('/config/models', {
-      params: { type },
+      params: { type }, signal,
     });
     return parseModelConfigs(response.data);
   },
@@ -428,8 +428,8 @@ export const controlApi = {
     }
   },
 
-  listSessionClasses: async (): Promise<Record<string, SessionClassConfig>> => {
-    const response = await controlClient.get<unknown>('/config/session-classes');
+  listSessionClasses: async (signal?: AbortSignal): Promise<Record<string, SessionClassConfig>> => {
+    const response = await controlClient.get<unknown>('/config/session-classes', { signal });
     return parseSessionClassConfigs(response.data);
   },
 
@@ -577,8 +577,8 @@ export const controlApi = {
     return response.data.plugins;
   },
 
-  listEdictumSessions: async (): Promise<Record<string, EdictumSessionConfig>> => {
-    const response = await controlClient.get<unknown>('/config/edictum/sessions');
+  listEdictumSessions: async (signal?: AbortSignal): Promise<Record<string, EdictumSessionConfig>> => {
+    const response = await controlClient.get<unknown>('/config/edictum/sessions', { signal });
     return parseEdictumConfigs(response.data);
   },
 

@@ -6,6 +6,7 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { groupApi } from '@/api/groups';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -34,6 +35,7 @@ const runtimeKey = (session: Pick<RuntimeSession, 'platform_id' | 'session_id'>)
 const PLATFORM_SESSION_EXCLUDED_IDS = new Set(['chat']);
 
 export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' }) {
+  useConfigWatch(['sessions', 'llm']);
   const [searchParams] = useSearchParams();
   const groupAdapter = searchParams.get('groupAdapter') || '';
   const groupAccount = searchParams.get('groupAccount') || '';
@@ -51,7 +53,7 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
     return () => { cancelled = true; };
   }, [overrideSession]);
 
-  const { sessionClasses, llmConfigs, fetchSessionClasses, fetchModels } = useConfigStore();
+  const { sessionClasses, llmConfigs, fetchSessionClasses } = useConfigStore();
   const { health, isRunning } = useBackendStore();
   const [showRegisterModal, setShowRegisterModal] = useState(false);
   const [showEditModal, setShowEditModal] = useState(false);
@@ -135,10 +137,8 @@ export function Sessions({ view = 'agents' }: { view?: 'agents' | 'instances' })
   }, [fetchRuntimeSessions]);
 
   useEffect(() => {
-    fetchSessionClasses();
-    fetchModels('llm');
     if (view === 'instances') void fetchRuntimeSessions();
-  }, [fetchModels, fetchRuntimeSessions, fetchSessionClasses, view]);
+  }, [fetchRuntimeSessions, view]);
 
   const tableData: SessionClassItem[] = useMemo(
     () => Object.entries(sessionClasses).map(([name, config]) => ({ name, config })),

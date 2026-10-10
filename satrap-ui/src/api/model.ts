@@ -4,8 +4,8 @@ import type { ModelConfig, ModelType } from './types';
 
 export const modelApi = {
   // 列出模型配置
-  list: (type: ModelType) =>
-    controlApi.listModels(type),
+  list: (type: ModelType, signal?: AbortSignal) =>
+    controlApi.listModels(type, signal),
 
   // 创建模型配置
   create: (type: ModelType, name: string, config: Partial<ModelConfig>) =>

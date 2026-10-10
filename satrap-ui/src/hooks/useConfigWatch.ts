@@ -1,0 +1,17 @@
+import { useEffect } from 'react';
+import { useConfigStore, type WatchedConfig } from '@/stores/useConfigStore';
+import { toast } from '@/components/ui/Toast';
+
+export function useConfigWatch(names: readonly WatchedConfig[]) {
+  const key = [...new Set(names)].sort().join(',');
+  useEffect(() => {
+    const names = key.split(',').filter(Boolean) as WatchedConfig[];
+    const store = useConfigStore.getState();
+    const unwatch = store.watchConfigs(names);
+    const controller = new AbortController();
+    Promise.all(names.map((name) => name === 'sessions' ? store.fetchSessionClasses({ signal: controller.signal })
+      : name === 'edictum' ? store.fetchEdictumConfigs({ signal: controller.signal }) : store.fetchModels(name, { signal: controller.signal })))
+      .catch((error: unknown) => { if (!controller.signal.aborted) toast('error', '读取配置失败: ' + (error instanceof Error ? error.message : String(error))); });
+    return () => { unwatch(); controller.abort(); };
+  }, [key]);
+}

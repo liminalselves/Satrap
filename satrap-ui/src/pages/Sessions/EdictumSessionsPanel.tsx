@@ -8,6 +8,7 @@ import { controlApi } from '@/api/control';
 import type { ConfigReloadResult } from '@/api/backend';
 import { useBackendStore } from '@/stores/useBackendStore';
 import { useConfigStore } from '@/stores/useConfigStore';
+import { useConfigWatch } from '@/hooks/useConfigWatch';
 import type {
   EdictumAvailablePlugin,
   EdictumSessionConfig,
@@ -55,6 +56,7 @@ function parsePlugins(value: string): EdictumSessionConfig['plugins'] {
 }
 
 export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSessionsPanelProps) {
+  useConfigWatch(['edictum']);
   const [searchParams] = useSearchParams();
   const linkedName = searchParams.get('edictum');
   const openedLink = useRef<string | null>(null);
