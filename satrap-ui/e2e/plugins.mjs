@@ -35,9 +35,12 @@ try {
   let failUsageSave = false;
   let runtimeFailed = true;
   let runtimeReads = 0;
+  let holdRuntime = false;
+  let releaseRuntime;
+  let runtimeHeld;
   page.on('pageerror', (error) => errors.push(error.message));
   await page.route(origin + '/ui-config.json', (route) => route.fulfill({ json: { backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' } }));
-  await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, (route) => {
+  await page.route(/^http:\/\/127\.0\.0\.1:1987[012]\//, async (route) => {
     if (route.request().method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/config/versions') {
@@ -59,7 +62,13 @@ try {
     }
     if (pathname === '/config/plugins/builtin_probe/runtime') {
       runtimeReads++;
-      return route.fulfill({ json: { ok: true, services: [{ target: 'Chat', status: 'stopped', instances: [] }, { target: 'Edictum', status: 'available', instances: [{ platform_id: 'onebot', session_id: 'group-1', location_id: 'assistant', plugin: { name: 'builtin_probe', status: runtimeFailed ? 'error' : 'loaded', enabled: true, error: runtimeFailed ? '加载测试失败' : '', drift: runtimeFailed, capabilities: { applied: caps, desired: caps, loaded: runtimeFailed ? { skills: { probe_skill: true } } : caps } } }] }] }, headers: cors });
+      const failed = runtimeFailed;
+      if (holdRuntime) {
+        holdRuntime = false;
+        await new Promise((resolve) => { releaseRuntime = resolve; runtimeHeld(); });
+      }
+      if (route.request().failure()) return;
+      return route.fulfill({ json: { ok: true, services: [{ target: 'Chat', status: 'stopped', instances: [] }, { target: 'Edictum', status: 'available', instances: [{ platform_id: 'onebot', session_id: 'group-1', location_id: 'assistant', plugin: { name: 'builtin_probe', status: failed ? 'error' : 'loaded', enabled: true, error: failed ? '加载测试失败' : '', drift: failed, capabilities: { applied: caps, desired: caps, loaded: failed ? { skills: { probe_skill: true } } : caps } } }] }] }, headers: cors });
     }
     if (pathname === '/config/plugins/builtin_probe/config') {
       if (route.request().method() === 'PUT') {
@@ -203,9 +212,21 @@ try {
   await page.getByText('使用配置已保存', { exact: true }).waitFor();
   assert.equal(locations[0].enabled, false);
   assert.equal(locations[0].capabilities.tools.probe_tool, false);
+  const heldRuntimeStarted = new Promise((resolve) => { runtimeHeld = resolve; });
+  holdRuntime = true;
+  const beforeHeldPoll = runtimeReads;
+  await heldRuntimeStarted;
+  assert.equal(runtimeReads, beforeHeldPoll + 1);
+  assert.equal(typeof releaseRuntime, 'function');
   await page.getByRole('button', { name: '重试实例应用', exact: true }).click();
   await page.getByText('已加载并启用', { exact: true }).waitFor();
   assert.equal(runtimeRetries, 2);
+  assert.equal(runtimeReads, beforeHeldPoll + 2);
+  const obsoleteRuntime = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/plugins/builtin_probe/runtime');
+  releaseRuntime();
+  await obsoleteRuntime;
+  await page.getByText('已加载并启用', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '重试实例应用', exact: true }).count(), 0);
   await page.getByRole('button', { name: '移除', exact: true }).click();
   await page.getByRole('button', { name: '保存使用配置', exact: true }).click();
   await page.getByText('使用配置已保存', { exact: true }).waitFor();
@@ -242,6 +263,7 @@ try {
   console.log('PASS: ZIP 上传预览、取消清理、显式安装、打开详情及刷新列表');
   console.log('PASS: 全局参数草稿跨刷新、离开确认、失败保留、零值保存、恢复默认及应用重试');
   console.log('PASS: 使用位置添加、五类能力编辑、轮询保留草稿、失败保留、停用保留独立开关、移除及实际加载状态');
+  console.log('PASS: 在途旧运行状态读取不复用于应用后刷新, 迟到响应不能覆盖应用后的新状态');
   console.log('PASS: 命名配置深链、全局继承与恢复、Chat 快捷配置统一保存并重试 Edictum 应用');
 } finally {
   if (browser) await browser.close();

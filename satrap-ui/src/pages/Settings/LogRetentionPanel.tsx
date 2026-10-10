@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { RefreshCw, Save, Trash2 } from 'lucide-react';
 import { loggingApi, loggingError, type LogPolicySnapshot } from '@/api/logging';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { toast } from '@/components/ui/Toast';
 import { formatTime } from '@/utils/format';
+import { VersionedConfigRead } from '@/api/configVersions';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 
 export function LogRetentionPanel({ active }: { active: boolean }) {
   const [snapshot, setSnapshot] = useState<LogPolicySnapshot | null>(null);
@@ -20,6 +22,7 @@ export function LogRetentionPanel({ active }: { active: boolean }) {
   const dirtyRef = useRef(dirty);
   const requestId = useRef(0);
   const busyRef = useRef(false);
+  const statusRead = useMemo(() => new VersionedConfigRead([], (signal) => loggingApi.read(signal)), []);
   dirtyRef.current = dirty;
   busyRef.current = saving || cleaning;
   const validDays = /^\d+$/.test(days) && Number(days) >= 1 && Number(days) <= 3650;
@@ -31,28 +34,31 @@ export function LogRetentionPanel({ active }: { active: boolean }) {
     dirtyRef.current = false;
   }, []);
 
-  const load = useCallback(async () => {
-    if (busyRef.current) return;
+  const load = useCallback(async (signal?: AbortSignal) => {
+    if (busyRef.current || !active) return true;
     const id = ++requestId.current;
     setLoading(true);
     try {
-      const value = await loggingApi.read();
-      if (id !== requestId.current) return;
+      const value = await statusRead.read({ signal });
+      if (id !== requestId.current || signal?.aborted) return true;
       setSnapshot(value);
       if (!dirtyRef.current) apply(value);
       setLoadError('');
+      return true;
     } catch (cause) {
-      if (id === requestId.current) setLoadError(loggingError(cause));
+      if (id === requestId.current && !signal?.aborted) setLoadError(loggingError(cause));
+      return false;
     } finally {
       if (id === requestId.current) setLoading(false);
     }
-  }, [apply]);
+  }, [active, apply, statusRead]);
 
   useEffect(() => {
-    if (!active) return;
-    void load();
-    const timer = window.setInterval(() => { void load(); }, 10000);
-    return () => { window.clearInterval(timer); };
+    if (!active) { setLoading(false); return; }
+    const poll = startVisiblePoll(async (signal) => {
+      if (!await load(signal)) throw new Error('日志状态读取失败');
+    }, { interval: 10000 });
+    return () => { requestId.current++; poll.stop(); };
   }, [active, load]);
 
   useEffect(() => () => { requestId.current++; }, []);

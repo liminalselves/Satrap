@@ -569,8 +569,8 @@ export const controlApi = {
     return (await controlClient.put<import('./types').PluginUsagesResult>(`/config/plugins/${encodeURIComponent(name)}/usages`, { kind: location.kind, location_id: location.id, state, expected_revision: location.revision }, { timeout: 120000 })).data;
   },
 
-  getPluginRuntime: async (name: string): Promise<import('./types').PluginRuntimeSnapshot> => {
-    return (await controlClient.get<import('./types').PluginRuntimeSnapshot>(`/config/plugins/${encodeURIComponent(name)}/runtime`)).data;
+  getPluginRuntime: async (name: string, signal?: AbortSignal): Promise<import('./types').PluginRuntimeSnapshot> => {
+    return (await controlClient.get<import('./types').PluginRuntimeSnapshot>(`/config/plugins/${encodeURIComponent(name)}/runtime`, { signal })).data;
   },
 
   listEdictumPlugins: async (): Promise<EdictumAvailablePlugin[]> => {

@@ -33,7 +33,7 @@ export function loggingError(error: unknown): string {
 }
 
 export const loggingApi = {
-  read: async (): Promise<LogPolicySnapshot> => (await controlClient.get<LogPolicySnapshot>('/config/logging')).data,
+  read: async (signal?: AbortSignal): Promise<LogPolicySnapshot> => (await controlClient.get<LogPolicySnapshot>('/config/logging', { signal })).data,
   save: async (policy: LogPolicy, revision: string): Promise<LogPolicySnapshot> => (await controlClient.put<LogPolicySnapshot>('/config/logging', { policy, expected_revision: revision })).data,
   cleanup: async (revision: string): Promise<{ ok: boolean; result: LogCleanupResult }> => (await controlClient.post<{ ok: boolean; result: LogCleanupResult }>('/config/logging/cleanup', { expected_revision: revision }, { timeout: 60000 })).data,
 };

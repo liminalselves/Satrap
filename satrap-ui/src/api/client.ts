@@ -64,8 +64,8 @@ class ApiClient {
     );
   }
 
-  async get<T>(url: string, params?: Record<string, unknown>): Promise<T> {
-    return this.client.get(url, { params }) as Promise<T>;
+  async get<T>(url: string, params?: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
+    return this.client.get(url, { params, signal }) as Promise<T>;
   }
 
   async post<T>(url: string, data?: unknown, timeout?: number): Promise<T> {

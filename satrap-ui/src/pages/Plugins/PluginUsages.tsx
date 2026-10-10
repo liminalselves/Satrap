@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { controlApi } from '@/api/control';
+import { VersionedConfigRead } from '@/api/configVersions';
+import { startVisiblePoll } from '@/utils/visiblePoll';
 import type { ManagedPlugin, PluginLocation, PluginLocationState, PluginRuntimeResult, PluginRuntimeSnapshot, PluginUsagesResult } from '@/api/types';
 import { PluginCapabilities, PLUGIN_CAPABILITY_LABELS } from '@/components/common/PluginCapabilities';
 import { SessionPluginSettingsModal } from '@/components/common/SessionPluginSettingsModal';
@@ -30,6 +32,8 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
   const [snapshot, setSnapshot] = useState<PluginRuntimeSnapshot>();
   const [runtimeError, setRuntimeError] = useState('');
   const [runtime, setRuntime] = useState<PluginRuntimeResult[]>([]);
+  const runtimeRead = useMemo(() => new VersionedConfigRead([], (signal) => controlApi.getPluginRuntime(plugin.name, signal)), [plugin.name]);
+  const runtimeRequest = useRef(0);
   const [sessionContext, setSessionContext] = useState<PluginSettingsContext | null>(null);
   const location = data?.locations.find((item) => locationKey(item) === selected);
   const dirty = !!location && !!draft && JSON.stringify(locationState(location)) !== JSON.stringify(draft);
@@ -46,29 +50,28 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
     return () => { disposed = true; };
   }, [plugin.name, refresh]);
   // 显式重新读取才替换草稿, 运行状态轮询不参与配置初始化
-  const readRuntime = useCallback(async () => {
-    const result = await controlApi.getPluginRuntime(plugin.name);
-    setSnapshot(result); setRuntimeError('');
-  }, [plugin.name]);
+  const readRuntime = useCallback(async (signal?: AbortSignal) => {
+    const current = ++runtimeRequest.current;
+    try {
+      const result = await runtimeRead.read({ signal });
+      if (current === runtimeRequest.current && !signal?.aborted) { setSnapshot(result); setRuntimeError(''); }
+    } catch (error) {
+      if (current !== runtimeRequest.current || signal?.aborted) return;
+      setRuntimeError(pluginError(error));
+      throw error;
+    }
+  }, [runtimeRead]);
   useEffect(() => {
-    let disposed = false;
-    let pending = false;
-    const poll = async () => {
-      if (pending) return;
-      pending = true;
-      try {
-        const result = await controlApi.getPluginRuntime(plugin.name);
-        if (!disposed) { setSnapshot(result); setRuntimeError(''); }
-      } catch (err) { if (!disposed) setRuntimeError(pluginError(err)); }
-      finally { pending = false; }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 5000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, [plugin.name]);
+    const poll = startVisiblePoll(readRuntime, { interval: 5000 });
+    return () => { runtimeRequest.current++; poll.stop(); };
+  }, [readRuntime]);
   const retry = async () => {
     setBusy(true); setError('');
-    try { setRuntime((await controlApi.reconcilePlugins()).runtime); await readRuntime(); }
+    try {
+      setRuntime((await controlApi.reconcilePlugins()).runtime);
+      runtimeRequest.current++; runtimeRead.invalidate();
+      await readRuntime();
+    }
     catch (err) { setError(pluginError(err)); }
     finally { setBusy(false); }
   };
@@ -77,6 +80,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
     setBusy(true); setError(''); setSaved(false);
     try {
       const result = await controlApi.savePluginUsage(plugin.name, location, draft);
+      runtimeRequest.current++; runtimeRead.invalidate();
       setData(result);
       const updated = result.locations.find((item) => locationKey(item) === selected);
       if (updated) setDraft(locationState(updated));

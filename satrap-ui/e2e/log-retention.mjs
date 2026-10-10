@@ -13,6 +13,7 @@ try {
   const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage({ viewport: { width: 1280, height: 1100 } });
+  await page.clock.install();
   page.setDefaultTimeout(10000);
   const errors = [];
   const writes = [];
@@ -22,6 +23,9 @@ try {
   let failCleanup = false;
   let running = true;
   let revision = 1;
+  let loggingReads = 0;
+  let holdRead = false;
+  let readRelease;
   const snapshot = { ok: true, policy: { enabled: true, retention_days: 30 }, revision: 'v1', directory: 'F:/隔离测试/logs', config_path: 'F:/隔离测试/logging.json', last_cleanup: null, maintenance_error: null, status_error: null };
   const cors = { 'Access-Control-Allow-Origin': origin, 'Access-Control-Allow-Credentials': 'true', 'Access-Control-Allow-Headers': 'Content-Type', 'Access-Control-Allow-Methods': 'GET,POST,PUT,OPTIONS' };
   await page.route('**/*', async (route) => {
@@ -32,7 +36,13 @@ try {
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (request.method() !== 'GET' && url.pathname !== '/auth/session') writes.push({ path: url.pathname, payload: request.postDataJSON() });
     if (url.pathname === '/config/logging') {
-      if (request.method() === 'GET') return route.fulfill({ json: snapshot, headers: cors });
+      if (request.method() === 'GET') {
+        loggingReads++;
+        const captured = structuredClone(snapshot);
+        if (holdRead) await new Promise((done) => { readRelease = done; });
+        if (request.failure()) return;
+        return route.fulfill({ json: captured, headers: cors });
+      }
       const payload = request.postDataJSON();
       if (failSave || payload.expected_revision !== snapshot.revision) return route.fulfill({ status: 409, json: { error: '日志策略版本冲突, 保存失败' }, headers: cors });
       snapshot.policy = payload.policy;
@@ -59,6 +69,42 @@ try {
   await panel.getByText('F:/隔离测试/logs', { exact: false }).waitFor();
   assert.equal(await days.inputValue(), '30');
   assert.equal(await checkbox.isChecked(), true);
+  await days.fill('60');
+  holdRead = true;
+  const beforeSlowRead = loggingReads;
+  await page.clock.fastForward(11000);
+  await page.waitForFunction(() => document.querySelector('section[aria-label="日志保留设置"] button')?.disabled);
+  assert.equal(loggingReads, beforeSlowRead + 1);
+  await page.clock.fastForward(15000);
+  assert.equal(loggingReads, beforeSlowRead + 1);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  const slowCompleted = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/logging');
+  holdRead = false; readRelease(); await slowCompleted;
+  await page.clock.fastForward(60000);
+  assert.equal(loggingReads, beforeSlowRead + 1);
+  const resumed = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/logging');
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await resumed;
+  assert.equal(loggingReads, beforeSlowRead + 2);
+  assert.equal(await days.inputValue(), '60');
+  holdRead = true;
+  await page.clock.fastForward(11000);
+  const cancelled = page.waitForEvent('requestfailed', { predicate: (request) => new URL(request.url()).pathname === '/config/logging' });
+  await page.getByRole('button', { name: '关于', exact: true }).click();
+  await cancelled;
+  holdRead = false; readRelease();
+  const whileInactive = loggingReads;
+  await page.clock.fastForward(40000);
+  assert.equal(loggingReads, whileInactive);
+  await page.getByRole('button', { name: '日志保留', exact: true }).click();
+  await panel.getByRole('button', { name: '刷新日志状态', exact: true }).waitFor();
+  assert.equal(await days.inputValue(), '60');
   await days.fill('0');
   assert.equal(await save.isDisabled(), true);
   await panel.getByText('请输入 1 至 3650 的整数', { exact: true }).waitFor();
@@ -116,6 +162,7 @@ try {
   await mkdir(path.join(root, 'test-results', 'log-retention'), { recursive: true });
   await page.screenshot({ path: path.join(root, 'test-results', 'log-retention', 'settings.png'), fullPage: true });
   console.log('Log retention settings: validation, draft preservation, conflict, hot save, manual cleanup, partial failure and no restart passed');
+  console.log('PASS: 慢轮询不重叠, 隐藏停止/恢复单次补查, 离开标签取消只读请求并保留草稿');
 } finally {
   if (browser) await browser.close();
   await server.close();
