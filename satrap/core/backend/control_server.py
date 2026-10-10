@@ -2790,8 +2790,10 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
         if entry is None:
             raise ValueError("插件不存在")
         named: dict[str, Any] = {}
+        plugin_specs: list[Any] = []
         if instance.provider_name == "edictum" and instance.session_type_name:
             definition = edictum.manager.get_config(instance.session_type_name) or {}
+            plugin_specs = (instance.session_config or {}).get("plugins", definition.get("plugins", []))
             for item in definition.get("plugins", []):
                 if isinstance(item, dict):
                     item = cast(dict[str, Any], item)
@@ -2799,6 +2801,15 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
                         named = item.get("config", {})
         models = _model_config_service().manager
         service = PluginSettingsService(instances.storage_layout.platform_db(platform_id), models=models, rag=RagService(instances.storage_layout, models, platform_id, session_id))
+        tool_settings: dict[str, Any] = {}
+        spec = None
+        if name == "friend_manager":
+            from satrap.edictum.plugin_spec import parse_plugin_specs
+            spec = next((item for item in parse_plugin_specs(plugin_specs, edictum.plugin_catalog) if item.name == name), None)
+            if spec is None:
+                spec = parse_plugin_specs([{"name": name, "config_version": entry.config_version}], edictum.plugin_catalog)[0]
+            named = spec.config
+            tool_settings = service.tool_settings(session_id, spec, entry)
         if ctx.method == "PUT":
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
             values = payload.get("overrides", {})
@@ -2806,9 +2817,13 @@ async def _route_session_plugin_config(ctx: _RouteContext) -> ControlResponse | 
                 raise ValueError("overrides 必须是对象")
             values = cast(dict[str, Any], values)
             validate_model_values(models, entry.config_schema, values)
-            await RAG_WORKERS.run(service.save, session_id, name, entry.config_schema, values, expected_revision=payload.get("expected_revision"), named=named)
+            await RAG_WORKERS.run(service.save, session_id, name, entry.config_schema, values, expected_revision=payload.get("expected_revision"), named=named,
+                                  tool_overrides=payload.get("tool_overrides"), expected_tool_revision=payload.get("expected_tool_revision"))
+            if spec is not None:
+                tool_settings = service.tool_settings(session_id, spec, entry)
         return 200, {
             "ok": True, **service.get(session_id, name, entry.config_schema, named),
+            **tool_settings,
             "model_options": model_options(models), "runtime": {"status": "next_turn"},
         }
     except OverrideConflictError as error:

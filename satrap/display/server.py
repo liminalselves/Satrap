@@ -259,6 +259,7 @@ class ChatHTTPServer(MiniHTTPServer):
                     raise ValueError("expected_revision 必须是非负整数")
                 return 200, await svc.save_session_plugin_config(
                     conversation_id, name, payload.get("overrides", {}), revision,
+                    tool_overrides=payload.get("tool_overrides"), expected_tool_revision=payload.get("expected_tool_revision"),
                 )
             except OverrideConflictError as error:
                 return 409, {"error": str(error)}

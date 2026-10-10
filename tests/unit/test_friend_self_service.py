@@ -103,10 +103,11 @@ async def test_own_deletion_cannot_bypass_protection_or_revoked_switch():
     adapter._bot.get_friend_list.return_value = [{"user_id": 321, "nickname": "本人", "remark": ""}]
     with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
         result = await delete.execute()
-        delete.config["delete_friend_enabled"] = False
+        delete.disable()
     approved = await adapter.friend_host.decide("10000", result["data"]["action_id"], True)
     assert approved["state"] == "failed"
-    delete.config.update(delete_friend_enabled=True, protected_friend_ids="321")
+    delete.enable()
+    delete.config.update(protected_friend_ids="321")
     with bind_call_origin(_origin(chat_type="FriendMessage", actor="321")):
         assert not (await delete.execute())["ok"]
     adapter._bot.delete_friend.assert_not_awaited()

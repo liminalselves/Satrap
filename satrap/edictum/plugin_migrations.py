@@ -17,18 +17,19 @@ QUERY_MOVES = {
 }
 
 
-def migrate_group_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
+def migrate_group_tool_specs(value: list[Any], catalog: Any, migration_manager: Any = None) -> list[Any]:
     """
     迁移旧群工具开关, 不意外启用新能力或丢弃群范围
 
     参数:
     - value: 命名或实例配置中的插件列表
     - catalog: 当前实际插件目录
+    - migration_manager: 好友迁移使用的全局配置管理器, 默认项目目录
 
     返回:
     - 只含新工具名称的配置副本, 权限冲突时拒绝迁移
     """
-    result = migrate_friend_tool_specs(migrate_forward_tool_specs(value, catalog), catalog)
+    result = migrate_friend_tool_specs(migrate_forward_tool_specs(value, catalog), catalog, migration_manager)
     admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
     if admin is None or not isinstance(admin.get("capabilities"), dict):
         return result
@@ -169,18 +170,20 @@ def migrate_forward_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
     return result
 
 
-def migrate_friend_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
+def migrate_friend_tool_specs(value: list[Any], catalog: Any, migration_manager: Any = None) -> list[Any]:
     """
     迁移旧好友申请工具, 不启用新增查询或删除能力
 
     参数:
     - value: 原始插件列表
     - catalog: 可用插件目录
+    - migration_manager: 可选全局配置迁移管理器
 
     返回:
     - 不含旧好友工具名的副本, 授权冲突时明确拒绝
     """
-    result = deepcopy(value)
+    from satrap.edictum.friend_migration import migrate_friend_switch_specs
+    result = migrate_friend_switch_specs(value, migration_manager or PluginConfigManager())
     admin = next((item for item in result if isinstance(item, dict) and item.get("name") == "group_admin"), None)
     if admin is None:
         if "group_admin" not in result:
@@ -216,7 +219,7 @@ def migrate_friend_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
             existing = {"name": "friend_manager"}
             result[result.index("friend_manager")] = existing
         else:
-            existing = {"name": "friend_manager", "enabled": admin.get("enabled", True), "config": {},
+            existing = {"name": "friend_manager", "config_version": 1, "enabled": admin.get("enabled", True), "config": {},
                         "capabilities": {kind: {name: False for name in names} for kind, names in entry.capabilities.items()}}
             result.append(existing)
     new_config = existing.setdefault("config", {})
@@ -234,12 +237,11 @@ def migrate_friend_tool_specs(value: list[Any], catalog: Any) -> list[Any]:
         writers = sorted(set(writers) & set(config_ids(merged.get("write_callers"))))
     new_config["managers"] = "\n".join(managers)
     new_config["write_callers"] = "\n".join(writers)
-    new_config["request_handling_enabled"] = (old_config.get("write_tools_enabled") is True
-                                              and bool(writers) and (not has_existing or merged.get("request_handling_enabled") is True))
+    handle_enabled = old_config.get("write_tools_enabled") is True and bool(writers)
     if not has_existing:
-        new_config["delete_friend_enabled"] = False
         for kind, names in entry.capabilities.items():
             existing.setdefault("capabilities", {}).setdefault(kind, {}).update({name: False for name in names})
     for name, state in moved.items():
         new_caps[name] = state and (new_caps.get(name, True) if has_existing else True)
+    new_caps["friend_manager_handle_request"] = new_caps["friend_manager_handle_request"] and handle_enabled
     return result

@@ -34,6 +34,7 @@ class PluginCatalogEntry:
     compatibility: dict[str, Any] = field(default_factory=dict[str, Any])
     applicability: dict[str, Any] = field(default_factory=dict[str, Any])
     permissions: PluginPermissions = field(default_factory=lambda: EMPTY_PERMISSIONS)
+    config_version: int = 0
 
     def check_environment(self, environment: PluginEnvironment):
         """根据指定环境计算适用性"""
@@ -44,6 +45,7 @@ class PluginCatalogEntry:
         return {
             **self.permissions.to_payload(),
             "name": self.name,
+            "config_version": self.config_version,
             "version": self.version,
             "compatibility": dict(self.compatibility),
             "applicability": dict(self.applicability),
@@ -95,8 +97,12 @@ class PluginCatalog:
         descriptions = parse_capability_descriptions(meta)
         config_schema = parse_config_schema(meta)
         permissions = parse_plugin_permissions(meta, config_schema)
+        config_version = meta.get("config_version", 0)
+        if type(config_version) is not int or config_version < 0:
+            raise ValueError("插件配置版本必须为非负整数")
         return PluginCatalogEntry(
             name=name,
+            config_version=config_version,
             path=plugin_dir,
             compatibility=compatibility,
             applicability=applicability,

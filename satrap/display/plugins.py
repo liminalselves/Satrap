@@ -111,6 +111,8 @@ class ChatPluginRegistry:
                             self._states[str(name)] = {
                                 "enabled": bool(st_dict.get("enabled", False)),
                                 "capabilities": self._normalize_caps(st_dict.get("capabilities")),
+                                **({"config_version": st_dict["config_version"]} if "config_version" in st_dict else {}),
+                                **({"migration_state": st_dict["migration_state"]} if "migration_state" in st_dict else {}),
                             }
             except (OSError, ValueError) as e:
                 if strict:
@@ -167,6 +169,9 @@ class ChatPluginRegistry:
             for entry in self.catalog.scan():
                 name = entry.name
                 state = self._states.get(name, {"enabled": False, "capabilities": {}})
+                if name == "friend_manager" and name in self._states:
+                    from satrap.edictum.friend_migration import migrate_friend_switch_specs
+                    state = migrate_friend_switch_specs([{"name": name, **state}], PluginConfigManager())[0]
                 cap_states = state.get("capabilities", {})
                 capabilities: dict[str, list[dict[str, Any]]] = {}
                 for kind in CAPABILITY_KINDS:
@@ -213,7 +218,9 @@ class ChatPluginRegistry:
             if state is None:
                 self._states.pop(name, None)
             else:
-                self._states[name] = {"enabled": state["enabled"], "capabilities": self._normalize_caps(state.get("capabilities"))}
+                entry = self.catalog.get(name)
+                self._states[name] = {"enabled": state["enabled"], "capabilities": self._normalize_caps(state.get("capabilities")),
+                                      **({"config_version": entry.config_version} if entry is not None and entry.config_version else {})}
             self._save()
 
     def get_plugin_dir(self, name: str) -> Path | None:
@@ -249,6 +256,8 @@ class ChatPluginRegistry:
                 name: {
                     "enabled": bool(state.get("enabled", False)),
                     "capabilities": self._normalize_caps(state.get("capabilities")),
+                    **({"config_version": state["config_version"]} if "config_version" in state else {}),
+                    **({"migration_state": state["migration_state"]} if "migration_state" in state else {}),
                 }
                 for name, state in self._states.items()
             }
@@ -261,11 +270,14 @@ class ChatPluginRegistry:
                 "name": entry.name,
                 "enabled": state["enabled"] and entry.check_environment(PluginEnvironment("chat")).allowed,
                 "capabilities": state["capabilities"],
+                "config_version": state.get("config_version", entry.config_version if entry.name not in states else 0),
+                **({"migration_state": state["migration_state"]} if "migration_state" in state else {}),
             })
         return parse_plugin_specs(
             raw_items,
             self.catalog,
             require_available=True,
+            migration_manager=manager,
             config_resolver=lambda entry, _config: manager.load_global(
                 entry.name,
                 entry.config_schema,

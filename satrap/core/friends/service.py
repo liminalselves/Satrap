@@ -67,7 +67,7 @@ class FriendService:
         self._store_lock = asyncio.Lock()
         self._snapshots: dict[str, dict[str, Any]] = {}
         self._cursors: dict[str, tuple[str, int]] = {}
-        self._request_cursors: dict[str, tuple[tuple[object, ...], str, float]] = {}
+        self._request_cursors: dict[str, tuple[tuple[object, ...], str, float, dict[str, Any] | None]] = {}
         self._sources: dict[tuple[str, str], tuple[ModelActionAuthorization, str, Any, object, float]] = {}
 
     async def store(self) -> FriendStore:
@@ -246,7 +246,7 @@ class FriendService:
                 "ambiguous": bool(query) and len(snapshot["items"]) > 1}
 
     async def requests(self, account: str, limit: int = 20, cursor: str | None = None, *, actor: str = "panel",
-                       view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
+                       view: str = "active", owner_user_id: str = "", request_category: str = "all") -> dict[str, Any]:
         """
         获取当前账号待处理好友申请
 
@@ -257,6 +257,7 @@ class FriendService:
         - actor: 宿主提供的真实调用者
         - view: active, archived 或 all
         - owner_user_id: 本人范围的宿主身份, 空字符串为管理员全量范围
+        - request_category: all, normal 或 suspicious, 与归档范围独立
 
         返回:
         - 待处理申请
@@ -266,30 +267,38 @@ class FriendService:
         generation = adapter.friend_generation()
         if view not in {"active", "archived", "all"}:
             raise FriendError("invalid_parameters", "申请列表范围必须为 active, archived 或 all")
-        scope = (account, actor, id(adapter), generation, view, owner_user_id)
+        if request_category not in {"all", "normal", "suspicious"}:
+            raise FriendError("invalid_parameters", "申请类别必须为 all, normal 或 suspicious")
+        scope = (account, actor, id(adapter), generation, view, owner_user_id, request_category)
         self._request_cursors = {key: value for key, value in self._request_cursors.items() if value[2] > time.time()}
         raw_cursor = None
+        coverage = None
         if cursor is not None:
             entry = self._request_cursors.get(cursor) if isinstance(cursor, str) else None
             if entry is None or entry[0] != scope:
                 raise FriendError("cursor_expired", "申请翻页位置已失效或不属于当前调用者")
             raw_cursor = entry[1]
+            coverage = entry[3]
         try:
             if owner_user_id:
-                result = await adapter.friend_requests(account, limit, raw_cursor, view=view, owner_user_id=text_id(owner_user_id))
+                options = {"request_category": request_category} if request_category != "all" else {}
+                result = await adapter.friend_requests(account, limit, raw_cursor, view=view, owner_user_id=text_id(owner_user_id), **options)
                 if any(row.get("user_id") != owner_user_id for row in result.get("items", [])) or result.get("scope") != "self":
                     raise FriendError("invalid_response", "适配器未正确隔离本人申请")
             else:
-                result = await adapter.friend_requests(account, limit, raw_cursor) if view == "active" else await adapter.friend_requests(account, limit, raw_cursor, view=view)
+                options = {"request_category": request_category} if request_category != "all" else {}
+                result = await adapter.friend_requests(account, limit, raw_cursor, **options) if view == "active" else await adapter.friend_requests(account, limit, raw_cursor, view=view, **options)
         except ValueError as error:
             raise FriendError("cursor_expired", "申请列表已变化, 请重新查询") from error
         self.check_connection(account, adapter, generation)
+        if coverage is not None:
+            result = {**result, "coverage": coverage}
         next_cursor = result.get("next_cursor")
         if next_cursor:
             if len(self._request_cursors) >= 256:
                 raise FriendError("busy", "申请查询数量已达上限, 请稍后查询")
             token = secrets.token_urlsafe(24)
-            self._request_cursors[token] = (scope, next_cursor, time.time() + 120)
+            self._request_cursors[token] = (scope, next_cursor, time.time() + 120, result.get("coverage"))
             result = {**result, "next_cursor": token}
         return result
 
@@ -302,6 +311,10 @@ class FriendService:
         self.check_connection(account, adapter, generation)
         if owner_user_id and result.get("user_id") != owner_user_id:
             raise FriendError("permission_denied", "只能核验或处理本人好友申请")
+        if owner_user_id and isinstance(result.get("coverage"), dict):
+            result = {**result, "coverage": {key: value for key, value in result["coverage"].items()
+                                            if key not in {"unavailable_count", "unavailable_reasons"}}}
+            # 本人核验不公开平台全量查询中其他申请的失败统计
         result = {**result, "scope": "self" if owner_user_id else "all"}
         return result
 

@@ -25,15 +25,16 @@ DEFINITIONS: dict[str, tuple[str, dict[str, Any], list[str]]] = {
     "friend_manager_list_friends": ("查看机器人的好友列表, 返回好友 ID, 昵称和备注; 列表较长时可继续翻页", PAGING, []),
     "friend_manager_find_friends": ("按好友 ID, 昵称或备注查找好友; 重名时返回全部候选, 先确认目标 ID 再操作", {
         **PAGING, "query": {"type": "string", "minLength": 1, "maxLength": 256, "description": "要查找的好友 ID, 昵称或备注, 可以填写昵称或备注的一部分"}}, ["query"]),
-    "friend_manager_list_requests": ("查看好友申请; 普通用户只返回本人申请, 管理员返回全部, 范围由后端确定. 默认查待处理, view=archived 查归档历史; 本地归档不代表平台失效", {
-        **PAGING, "view": {"type": "string", "enum": ["active", "archived", "all"], "description": "active 待处理, archived 归档历史, all 全部本地记录; 默认 active"}}, []),
+    "friend_manager_list_requests": ("查看普通和平台标记的可疑好友申请, 返回申请 ID, 申请人和验证信息; 普通用户只返回本人申请, 管理员返回全部. 默认查待处理, view=archived 查归档历史; 本地归档不代表平台失效. coverage 不完整只说明无法确认查全, 不代表有申请读取失败; unavailable_reasons 才是本次条目读取失败的原因及条数", {
+        **PAGING, "view": {"type": "string", "enum": ["active", "archived", "all"], "description": "active 待处理, archived 归档历史, all 全部本地记录; 默认 active"},
+        "request_category": {"type": "string", "enum": ["all", "normal", "suspicious"], "description": "all 普通和可疑申请, normal 普通申请, suspicious 平台标记的可疑申请; 默认 all"}}, []),
     "friend_manager_recheck_request": ("核验好友申请; 普通用户只能核验本人申请, 管理员可核验全部. verification=local_only 表示只核验本地记录, 不能证明平台申请仍有效", {
         "request_id": {"type": "string", "description": "申请列表返回的 request_id"}}, ["request_id"]),
-    "friend_manager_handle_request": ("同意或拒绝好友申请; 普通用户只能处理本人申请, 获写授权的管理员可处理全部. 使用查询返回的 ID; 归档申请须填写当前 revision 并等待人工批准, 不要重复执行未知结果", {
+    "friend_manager_handle_request": ("同意或拒绝普通或可疑好友申请, 后端自动选择对应处理接口; 普通用户只能处理本人申请, 获写授权的管理员可处理全部. 使用查询返回的 ID; 归档申请须填写当前 revision 并等待人工批准, 不要重复执行未知结果", {
         "request_id": {"type": "string", "description": "申请查询返回的 request_id, 不能用用户 ID 代替"},
         "approve": {"type": "boolean", "description": "true 同意, false 拒绝"},
         "expected_revision": {"type": "integer", "minimum": 1, "description": "申请查询或核验返回的 revision; 归档申请必须填写. pending 表示等待人工批准, 不是已处理"},
-        "remark": {"type": "string", "maxLength": 60, "description": "同意后的好友备注, 可不填; 拒绝时不填写"}}, ["request_id", "approve"]),
+        "remark": {"type": "string", "maxLength": 60, "description": "普通申请同意后的好友备注, 可不填; 拒绝或可疑申请时不填写"}}, ["request_id", "approve"]),
     "friend_manager_delete_friend": ("申请删除好友; 省略 user_id 时删除当前请求者本人. 普通用户只能删除本人, 管理员可指定已确认目标; 必须人工批准, pending 不代表已删除", {
         "user_id": {"type": "string", "minLength": 1, "maxLength": 256, "description": "目标好友 ID, 省略为当前发送者; 普通用户只能指定本人"}}, []),
     "friend_manager_send_request": ("主动发送好友申请; 省略 user_id 时申请添加当前发送者. 普通用户只能添加本人, 获写授权的管理员可指定他人; submitted 仅表示申请已提交, 不代表已成为好友", {
@@ -59,15 +60,16 @@ def _failure_result(error: Exception) -> dict[str, Any]:
 class _FriendMixin:
     """声明保持稳定, 执行时核验可信平台来源和本人范围"""
     tool_name: str | None
+    tool_enabled: bool
     config: dict[str, Any]
     _plugin_entry_binding: PluginEntryBinding
 
     def _resolve(self, *, preview: bool = False) -> tuple[Any, Any]:
         """
-        核验来源账号, 群聊或私聊及功能开关
+        核验来源账号, 群聊或私聊及当前工具状态
 
         参数:
-        - preview: 检查能否进入执行路径时跳过权限和写开关, 执行时每次复核
+        - preview: 检查入口时跳过权限和工具状态, 执行时每次复核
 
         返回:
         - 当前适配器和可信调用来源
@@ -83,11 +85,8 @@ class _FriendMixin:
             raise FriendError("stale_account", "来源账号或好友宿主不可用")
         if not adapter.config.enable or not adapter.config.settings.get("enable_private" if is_private_origin(origin) else "enable_group", True):
             raise FriendError("permission_denied", "来源平台对话已停用")
-        name = str(self.tool_name)
-        if not preview and name in {"friend_manager_handle_request", "friend_manager_delete_friend", "friend_manager_send_request"}:
-            switch = {"friend_manager_handle_request": "request_handling_enabled", "friend_manager_delete_friend": "delete_friend_enabled", "friend_manager_send_request": "send_request_enabled"}[name]
-            if self.config.get(switch) is not True:
-                raise FriendError("feature_disabled", "对应好友写功能未开启")
+        if not preview and not self.tool_enabled:
+            raise FriendError("feature_disabled", "此好友工具已停用")
         return adapter, origin
 
     def _scope(self, *, write: bool = False) -> str:
@@ -161,7 +160,7 @@ class _FriendMixin:
                                                 limit=kwargs.get("limit", 20), cursor=kwargs.get("cursor"))
             elif name == "friend_manager_list_requests":
                 result = await host.requests(origin.self_id, kwargs.get("limit", 20), kwargs.get("cursor"), actor=origin.actor_id,
-                                             view=kwargs.get("view", "active"), owner_user_id=owner)
+                                             view=kwargs.get("view", "active"), owner_user_id=owner, request_category=kwargs.get("request_category", "all"))
             elif name == "friend_manager_recheck_request":
                 result = await host.recheck_request(origin.self_id, kwargs["request_id"], owner_user_id=owner)
             else:

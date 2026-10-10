@@ -12,6 +12,7 @@ from typing import Any, cast
 from copy import deepcopy
 import json
 import os
+import traceback
 
 from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_spec import parse_plugin_specs
@@ -157,8 +158,10 @@ class EdictumConfigManager:
                     name = self._normalize_name(raw_name)
                     loaded[name] = self._normalize_entry(raw_entry)
                 self._configs = loaded
+                if loaded != payload:
+                    self._save_locked()
             except Exception as error:
-                logger.error(f"[EdictumConfigManager] 读取配置失败: {error}")
+                logger.error(f"[EdictumConfigManager] 读取配置失败: {error}\n{traceback.format_exc()}")
                 raise
 
     def list_configs(self) -> dict[str, dict[str, Any]]:

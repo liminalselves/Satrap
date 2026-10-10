@@ -482,7 +482,7 @@ class BackendHTTPServer(MiniHTTPServer):
                                                        limit=int(query.get("limit", ["20"])[0]), cursor=query.get("cursor", [None])[0])
                 if tail == ["requests"]:
                     return 200, await host.requests(account, int(query.get("limit", ["20"])[0]), query.get("cursor", [None])[0],
-                                                     view=query.get("view", ["active"])[0])
+                                                     view=query.get("view", ["active"])[0], request_category=query.get("request_category", ["all"])[0])
                 if tail == ["request-policy"]:
                     return 200, await host.request_policy(account)
                 if tail == ["actions"]:

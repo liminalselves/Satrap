@@ -235,6 +235,9 @@ class PluginConfigManager:
         - dict[str, Any]: 读全局 json 并按 schema 校验 + 补默认 (无文件时全默认)
         """
         merged = {key: fld.default for key, fld in schema.items()}
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
@@ -251,6 +254,8 @@ class PluginConfigManager:
             logger.warning(f"[插件配置] {name} 全局配置应为字典, 已忽略")
             return merged
         for key, value in cast(dict[str, Any], raw).items():
+            if name == "friend_manager" and key == "__capability_migration":
+                continue
             fld = schema.get(key)
             if fld is None:
                 logger.warning(f"[插件配置] {name} 配置键 {key} 未在 schema 声明, 忽略")
@@ -260,6 +265,9 @@ class PluginConfigManager:
 
     def load_global_explicit(self, name: str, schema: dict[str, ConfigField]) -> dict[str, Any]:
         """仅读取全局显式字段, 用于区分默认值和全局值来源"""
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
         if name in {"base_take", "memory"}:
             from satrap.edictum.memory_migration import migrate_memory_globals
             migrate_memory_globals(self)
@@ -284,6 +292,9 @@ class PluginConfigManager:
         - dict[str, Any]: 合成后的生效配置
         """
         self._dir.mkdir(parents=True, exist_ok=True)
+        if name == "friend_manager":
+            from satrap.edictum.friend_migration import migrate_friend_globals
+            migrate_friend_globals(self)
         cleaned: dict[str, Any] = {}
         for key, value in config.items():
             fld = schema.get(key)
@@ -299,6 +310,10 @@ class PluginConfigManager:
         try:
 
             with REFERENCE_SCAN_LOCK, FileLock(path.with_name(f".{path.name}.lock")):
+                if name == "friend_manager" and path.is_file():
+                    previous = json.loads(path.read_text(encoding="utf-8"))
+                    if isinstance(previous, dict) and "__capability_migration" in previous:
+                        cleaned["__capability_migration"] = previous["__capability_migration"]
                 with tempfile.NamedTemporaryFile(mode="w", dir=self._dir, suffix=".tmp", encoding="utf-8", delete=False) as file:
                     temporary = Path(file.name)
                     json.dump(cleaned, file, ensure_ascii=False, indent=2, allow_nan=False)

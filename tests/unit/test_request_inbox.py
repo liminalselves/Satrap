@@ -32,9 +32,11 @@ def tool(name, *, write=True, **extra):
     if name.startswith("friend_manager_"):
         adapter = current_adapter_manager().get_adapter("ob")
         attach_friend_host(adapter)
-        config = {"managers": extra.pop("request_managers", "123"), "write_callers": "123", "request_handling_enabled": write, **extra}
+        config = {"managers": extra.pop("request_managers", "123"), "write_callers": "123", **extra}
         item = AsyncFriendTool(name, "好友工具", {})
         item.config = config
+        if name in {"friend_manager_handle_request", "friend_manager_delete_friend", "friend_manager_send_request"}:
+            item.tool_enabled = write
         bind_plugin_factory_tools([item], str(Path(__file__).resolve().parents[2] / "satrap/expend/plugins/friend_manager/tools.py"))
         return item
     return next(t for t in _async_tools({"request_managers": "123", "allowed_callers": "123", "write_tools_enabled": write, **extra}) if t.tool_name == name)

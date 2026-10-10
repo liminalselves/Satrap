@@ -3,12 +3,14 @@ from __future__ import annotations
 from satrap.edictum.plugin_compatibility import CompatibilityResult
 
 from dataclasses import dataclass, field, replace
+from copy import deepcopy
 import hashlib
 from typing import Any, Callable, cast
 import json
 
 from satrap.edictum.plugin_catalog import PluginCatalog, PluginCatalogEntry
 from satrap.edictum.plugin import CAPABILITY_KINDS
+from satrap.edictum.plugin_config import PluginConfigManager
 
 
 PluginConfigResolver = Callable[[PluginCatalogEntry, dict[str, Any]], dict[str, Any]]
@@ -28,6 +30,8 @@ class PluginSpec:
     resources_revision: str = ""
     config_resolved: bool = False
     availability: CompatibilityResult | None = None
+    config_version: int = 0
+    migration_state: dict[str, Any] = field(default_factory=dict[str, Any])
 
     def to_config(self) -> dict[str, Any]:
         """
@@ -37,6 +41,8 @@ class PluginSpec:
         - dict[str, Any]: 标准插件配置对象
         """
         return {
+            **({"config_version": self.config_version} if self.config_version else {}),
+            **({"migration_state": deepcopy(self.migration_state)} if self.migration_state else {}),
             "name": self.name,
             "enabled": self.enabled,
             "config": dict(self.config),
@@ -109,6 +115,7 @@ def parse_plugin_specs(
     *,
     require_available: bool = False,
     config_resolver: PluginConfigResolver | None = None,
+    migration_manager: PluginConfigManager | None = None,
 ) -> list[PluginSpec]:
     """
     把字符串或对象插件列表解析为统一运行规格
@@ -118,6 +125,7 @@ def parse_plugin_specs(
     - catalog: 插件目录
     - require_available: 是否拒绝目录中不存在的插件
     - config_resolver: 可选安装配置解析器
+    - migration_manager: 可选迁移使用的全局配置管理器, 默认项目配置目录
 
     返回:
     - list[PluginSpec]: 标准插件运行规格
@@ -128,7 +136,7 @@ def parse_plugin_specs(
         raise ValueError("plugins 必须是数组")
     from satrap.edictum.plugin_migrations import migrate_group_tool_specs
     from satrap.edictum.memory_migration import migrate_memory_specs
-    value = migrate_memory_specs(migrate_group_tool_specs(value, catalog), catalog)
+    value = migrate_memory_specs(migrate_group_tool_specs(value, catalog, migration_manager), catalog)
     specs: list[PluginSpec] = []
     names: set[str] = set()
     for raw_item in cast(list[object], value):
@@ -138,7 +146,7 @@ def parse_plugin_specs(
             item = dict(cast(dict[str, Any], raw_item))
         else:
             raise ValueError("plugins 项必须是名称或对象")
-        unknown_fields = set(item) - {"name", "enabled", "config", "capabilities"}
+        unknown_fields = set(item) - {"name", "enabled", "config", "capabilities", "config_version", "migration_state"}
         if unknown_fields:
             raise ValueError(f"未知插件配置字段: {', '.join(sorted(unknown_fields))}")
         name = str(item.get("name") or "").strip()
@@ -148,6 +156,15 @@ def parse_plugin_specs(
             raise ValueError(f"插件配置重复: {name}")
         names.add(name)
         entry = catalog.get(name)
+        config_version = item.get("config_version", 0)
+        migration_state = item.get("migration_state", {})
+        if type(config_version) is not int or config_version < 0 or not isinstance(migration_state, dict):
+            raise ValueError("插件配置版本或迁移记录无效")
+        if migration_state:
+            from satrap.edictum.friend_migration import FRIEND_SWITCHES
+            originals = migration_state.get("friend_tools")
+            if name != "friend_manager" or set(migration_state) != {"friend_tools"} or not isinstance(originals, dict) or set(originals) != set(FRIEND_SWITCHES.values()) or any(type(state) is not bool for state in originals.values()):
+                raise ValueError("插件配置迁移记录无效")
         if entry is None and require_available:
             raise ValueError(f"插件不存在: {name}")
         enabled = item.get("enabled", True)
@@ -170,6 +187,8 @@ def parse_plugin_specs(
         specs.append(
             PluginSpec(
                 name=name,
+                config_version=config_version,
+                migration_state=deepcopy(migration_state),
                 enabled=enabled,
                 config=config,
                 capabilities=_normalize_capabilities(item.get("capabilities"), entry),

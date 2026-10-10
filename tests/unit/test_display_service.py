@@ -379,6 +379,35 @@ async def test_chat_override_api_defers_busy_session_and_fork_inherits_parameter
         await svc.close()
 
 
+@pytest.mark.asyncio
+async def test_chat_friend_instance_tools_api_preserves_revision_and_restores_inheritance(tmp_path, monkeypatch):
+    """Chat 复用同一好友工具覆盖协议, 不允许旧版本覆盖新配置"""
+    svc = _make_service(tmp_path, monkeypatch)
+    models = ModelConfigManager(tmp_path / "models.json")
+    models.set_llm_config(LLMConfig(model="test", api_key="secret-test-key"), "default")
+    svc._model_cfg = models
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.display.plugins.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    cid = await svc.create_conversation()
+    server = ChatHTTPServer(svc)
+    url = f"/api/chat/session-plugin-config?conversation_id={cid}&plugin=friend_manager"
+    try:
+        status, initial = await server._route("GET", url, b"")
+        assert status == 200 and len(initial["tool_descriptions"]) == 3
+        payload = {"overrides": {}, "expected_revision": initial["revision"],
+                   "tool_overrides": {"friend_manager_send_request": False}, "expected_tool_revision": initial["tool_revision"]}
+        status, saved = await server._route("PUT", url, json.dumps(payload).encode("utf-8"))
+        assert status == 200 and not saved["tool_overrides"]["friend_manager_send_request"]
+        status, _ = await server._route("PUT", url, json.dumps(payload).encode("utf-8"))
+        assert status == 409
+        status, reset = await server._route("PUT", url, json.dumps({"overrides": {}, "expected_revision": saved["revision"],
+                                                                  "tool_overrides": {}, "expected_tool_revision": saved["tool_revision"]}).encode("utf-8"))
+        assert status == 200 and reset["tool_overrides"] == {}
+    finally:
+        await svc.close()
+
+
 @pytest.mark.parametrize("failure", ["cancel", "error"])
 async def test_retry_preparation_reserves_and_restores_context(tmp_path: Path, monkeypatch: Any, failure: str):
     svc = _make_service(tmp_path, monkeypatch)

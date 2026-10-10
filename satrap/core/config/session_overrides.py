@@ -103,6 +103,35 @@ class SessionOverrideStore:
             )
         return {"overrides": json.loads(encoded), "revision": revision, "schema_version": 1, "updated_at": updated_at}
 
+    def replace_many(self, session_id: str, updates: Mapping[str, tuple[Mapping[str, Any], int]]) -> None:
+        """
+        在同一事务中保存关联配置域, 任一修订冲突时整体回滚
+
+        参数:
+        - session_id: 当前会话 ID
+        - updates: 配置域到显式值与预期修订号的映射
+        """
+        encoded: dict[str, tuple[str, int, bool]] = {}
+        for namespace, (values, revision) in updates.items():
+            self._validate_identity(session_id, namespace)
+            if type(revision) is not int or revision < 0 or not isinstance(values, Mapping) or any(not isinstance(key, str) for key in values):
+                raise ValueError("覆盖配置或预期修订号无效")
+            encoded[namespace] = (json.dumps(dict(values), ensure_ascii=False, allow_nan=False), revision, bool(values))
+        from satrap.core.config.asr_references import REFERENCE_SCAN_LOCK
+        with REFERENCE_SCAN_LOCK, database_session_lock(self.database, session_id), closing(self._connect()) as connection, connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for namespace, (_, expected, _) in encoded.items():
+                row = connection.execute("SELECT revision FROM session_config_overrides WHERE session_id=? AND namespace=?", (session_id, namespace)).fetchone()
+                if (int(row[0]) if row else 0) != expected:
+                    raise OverrideConflictError("会话配置已更新, 请刷新后重试")
+            now = time.time()
+            for namespace, (values, revision, nonempty) in encoded.items():
+                if revision == 0 and not nonempty:
+                    continue
+                connection.execute("INSERT INTO session_config_overrides(session_id,namespace,config_json,schema_version,revision,updated_at) VALUES(?,?,?,1,?,?) "
+                                   "ON CONFLICT(session_id,namespace) DO UPDATE SET config_json=excluded.config_json,revision=excluded.revision,updated_at=excluded.updated_at",
+                                   (session_id, namespace, values, revision + 1, now))
+
 
 class SessionOverrideService:
     """可复用的配置域模板, 验证器只接收显式覆盖, 解析结果携带字段来源"""

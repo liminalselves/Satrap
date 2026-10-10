@@ -893,6 +893,11 @@ class OneBotAdapter(PlatformAdapter):
             result[name] = {"state": state, "reason": {"unsupported": "当前实现不支持此接口", "unavailable": "平台未连接",
                             "unknown": "扩展接口尚未验证, 可在确认目标后尝试", "supported": "适配器已实现"}[state]}
         result["send_request"] = {"state": "unsupported", "reason": "当前 OneBot 适配器尚无已确认的主动好友申请接口"}
+        if result["list_requests"]["state"] == "unsupported":
+            result["list_requests"] = {"state": "supported", "reason": "本地申请记录可查询; 可疑申请按平台实际能力补取"}
+        if result["handle_request"]["state"] == "unsupported":
+            doubt_state = states.get("handle_suspicious_friend_request", "unknown")
+            result["handle_request"] = {"state": doubt_state, "reason": "普通申请接口不支持; 可疑申请接口将单独核验"}
         return result
 
     async def friend_list(self, account: str) -> dict[str, Any]:
@@ -908,7 +913,7 @@ class OneBotAdapter(PlatformAdapter):
         from satrap.core.platform.onebot.friends import OneBotFriends
         return await OneBotFriends(self).list(account)
 
-    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
+    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "", request_category: str = "all") -> dict[str, Any]:
         """
         查询好友申请
 
@@ -916,17 +921,22 @@ class OneBotAdapter(PlatformAdapter):
         - account: 固定账号
         - limit: 返回数量
         - cursor: 分页位置
+        - view: active, archived 或 all, 默认 active
+        - owner_user_id: 宿主指定的本人范围, 默认空值为管理范围
+        - request_category: all, normal 或 suspicious, 默认 all
 
         返回:
         - 不含原始 flag 的申请记录
         """
-        return await self.request_flags.list_requests("friend", self_id=account, limit=limit, cursor=cursor, view=view, owner_user_id=owner_user_id)
+        from satrap.core.platform.onebot.friends import OneBotFriends
+        return await OneBotFriends(self).requests(account, limit, cursor, view=view, owner_user_id=owner_user_id, request_category=request_category)
 
     async def friend_recheck_request(self, account: str, request_id: str) -> dict[str, Any]:
         """核验归档申请, 无平台查询能力时明确返回本地核验结果"""
         if self.bot_self_id != account:
             raise PermissionError("申请所属账号已变化")
-        return await self.request_flags.recheck_request("friend", request_id, self_id=account)
+        from satrap.core.platform.onebot.friends import OneBotFriends
+        return await OneBotFriends(self).recheck(account, request_id)
 
     def supports_message_forward(self) -> bool:
         """提供 OneBot 群聊和私聊原消息转发"""

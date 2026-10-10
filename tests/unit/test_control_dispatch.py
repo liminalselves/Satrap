@@ -158,6 +158,29 @@ async def test_control_rag_and_session_overrides_share_scope_and_revision(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_control_friend_instance_tool_overrides_share_atomic_revisions(tmp_path, monkeypatch):
+    """好友实例工具覆盖可通过控制接口修改, 冲突时不写入部分参数"""
+    _use_config(monkeypatch, tmp_path)
+    monkeypatch.setattr("satrap.edictum.plugin_settings.PluginConfigManager", lambda: PluginConfigManager(tmp_path / "plugin-config"))
+    instances = control_server._session_instance_config_service("local")
+    instances.store.upsert(SessionConfig(session_id="one", session_type_name="example"))
+    url = "/config/session-plugin-config?platform_id=local&session_id=one&plugin=friend_manager"
+    async def action(payload=None):
+        return await _request(url, "GET" if payload is None else "PUT", json.dumps(payload).encode("utf-8") if payload is not None else b"")
+    initial = _json_body(await action())
+    assert initial["tool_revision"] == 0 and initial["inherited_tools"]["friend_manager_handle_request"]
+    changed = {"overrides": {"managers": "123"}, "expected_revision": initial["revision"],
+               "tool_overrides": {"friend_manager_handle_request": False}, "expected_tool_revision": 0}
+    saved = _json_body(await action(changed))
+    assert saved["tool_revision"] == 1 and not saved["tool_overrides"]["friend_manager_handle_request"]
+    conflict = await action({**changed, "overrides": {"managers": "456"}, "expected_revision": saved["revision"]})
+    assert b"409" in conflict.split(b"\r\n", 1)[0]
+    assert _json_body(await action())["overrides"] == {"managers": "123"}
+    reset = _json_body(await action({"overrides": {}, "expected_revision": saved["revision"], "tool_overrides": {}, "expected_tool_revision": 1}))
+    assert reset["tool_overrides"] == {} and reset["overrides"] == {}
+
+
+@pytest.mark.asyncio
 async def test_conversation_user_directory_dynamic_platforms_cold_reads_and_conflicts(tmp_path, monkeypatch):
     from satrap.core.framework.UserManager import UserInfoStore
     from satrap.core.type import UserInfo

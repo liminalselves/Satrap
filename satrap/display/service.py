@@ -2513,10 +2513,15 @@ class ChatService:
         if entry is None:
             raise ValueError("插件不存在")
         service = PluginSettingsService(self._storage.platform_db(self._platform_id))
-        return {"ok": True, **service.get(conversation_id, name, entry.config_schema), "model_options": model_options(self._model_cfg)}
+        tool_settings = {}
+        if name == "friend_manager":
+            spec = next(item for item in self._plugins.resolve_specs() if item.name == name)
+            tool_settings = service.tool_settings(conversation_id, spec, entry)
+        return {"ok": True, **service.get(conversation_id, name, entry.config_schema), **tool_settings, "model_options": model_options(self._model_cfg)}
 
     async def save_session_plugin_config(
         self, conversation_id: str, name: str, values: dict[str, Any], expected_revision: int,
+        *, tool_overrides: dict[str, bool] | None = None, expected_tool_revision: int | None = None,
     ) -> dict[str, Any]:
         """保存会话显式参数, 本轮执行中时留到下一轮安全应用"""
         self.session_plugin_config(conversation_id, name)
@@ -2525,7 +2530,8 @@ class ChatService:
             raise ValueError("插件不存在")
         validate_model_values(self._model_cfg, entry.config_schema, values)
         service = PluginSettingsService(self._storage.platform_db(self._platform_id), models=self._model_cfg, rag=RagService(self._storage, self._model_cfg, self._platform_id, conversation_id))
-        await RAG_WORKERS.run(service.save, conversation_id, name, entry.config_schema, values, expected_revision=expected_revision)
+        await RAG_WORKERS.run(service.save, conversation_id, name, entry.config_schema, values, expected_revision=expected_revision,
+                              tool_overrides=tool_overrides, expected_tool_revision=expected_tool_revision)
         conv = self._conversations.get(conversation_id)
         result = {"status": "next_activation"}
         if conv is not None:

@@ -811,6 +811,7 @@ class RequestFlagRegistry:
     async def register(
         self, kind: str, flag: str, *,
         self_id: str, group_id: str = "", sub_type: str = "", user_id: str = "", now: float | None = None, comment: str = "", event_time: int | None = None,
+        details: dict[str, Any] | None = None,
     ) -> bool:
         """
         登记入站 request 事件; 重复入站不改写身份, 过期时间或消费状态
@@ -825,6 +826,7 @@ class RequestFlagRegistry:
         - now: 墙钟时间, 默认读取当前时间
         - comment: 平台申请验证信息, 保存在私有收件箱
         - event_time: 平台好友申请原始事件时间, 不使用本地接收时间代替
+        - details: 平台提供的申请类别和展示详情
 
         返回:
         - bool: 账本新增登记为 True; 重复, 冲突, 容量或降级时为 False
@@ -838,10 +840,12 @@ class RequestFlagRegistry:
         if result in {"registered", "duplicate"}:
             identity = request_digest(kind, self_id, flag, event_time)
             entry = await asyncio.to_thread(self.ledger.lookup, self.adapter_id, self_id, kind, flag, identity_digest=identity)
-            if entry is not None and entry["state"] in {"available", "expired"}:
+            if entry is not None:
                 restored = await asyncio.to_thread(self.inbox.register, self.adapter_id, self_id, kind, flag,
                                         group_id=entry["group_id"], sub_type=entry["sub_type"], user_id=entry["user_id"],
-                                        comment=comment, received_at=entry["received_at"], now=moment, identity_digest=identity)
+                                        comment=comment, received_at=entry["received_at"], now=moment, identity_digest=identity,
+                                        details={"requested_at": event_time, **(details or {})},
+                                        restore_missing=entry["state"] in {"available", "expired"})
         log = logger.info if result == "registered" or restored else logger.debug
         log(f"[RequestFlagRegistry] 申请登记 adapter={self.adapter_id} kind={kind} user_id={user_id} result={result} event_time={event_time} details_restored={restored}")
         if result == "registered":
@@ -856,7 +860,8 @@ class RequestFlagRegistry:
     def _public_request(row: dict[str, Any], entry: LedgerEntry | None, now: float) -> dict[str, Any]:
         """生成不含凭据的申请详情, 归档位置与执行资格分别计算"""
         keys = ("request_id", "kind", "user_id", "group_id", "sub_type", "comment", "received_at", "expires_at",
-                "revision", "archived_at", "platform_state", "execution_state", "last_checked_at", "decision")
+                "revision", "archived_at", "platform_state", "execution_state", "last_checked_at", "decision",
+                "request_category", "nickname", "request_source", "suspicious_reason", "requested_at")
         state = entry["state"] if entry else "unknown"
         item = {key: row[key] for key in keys}
         item["archived"] = row["archived_at"] is not None or state != "available"
@@ -871,7 +876,7 @@ class RequestFlagRegistry:
         return item
 
     async def list_requests(self, kind: str, *, self_id: str, group_id: str = "", limit: int = 20,
-                            cursor: str | None = None, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
+                            cursor: str | None = None, view: str = "active", owner_user_id: str = "", request_category: str = "all") -> dict[str, Any]:
         """
         返回当前账号近期或归档申请, 执行资格单独声明, 原始 flag 不进入结果
 
@@ -881,11 +886,14 @@ class RequestFlagRegistry:
         - group_id: 群申请限定目标, 好友申请留空
         - limit: 最多返回 1 到 100 条
         - cursor: 上次返回的下一页位置, 必须属于当前查询范围
+        - view: active, archived 或 all, 默认 active
+        - owner_user_id: 宿主指定的本人范围, 默认空值为管理范围
+        - request_category: all, normal 或 suspicious, 默认 all
 
         返回:
         - 不透明 ID, 申请人, 验证信息和期限, 没有下一页时 has_more 为 False
         """
-        if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100 or view not in {"active", "archived", "all"}:
+        if kind not in {"friend", "group"} or type(limit) is not int or not 1 <= limit <= 100 or view not in {"active", "archived", "all"} or request_category not in {"all", "normal", "suspicious"}:
             raise ValueError("申请类别或查询条数无效")
         def read() -> dict[str, Any]:
             """
@@ -902,6 +910,8 @@ class RequestFlagRegistry:
                 if group_id and row["group_id"] != group_id:
                     continue
                 if owner_user_id and row["user_id"] != owner_user_id:
+                    continue
+                if request_category != "all" and row["request_category"] != request_category:
                     continue
                 entry = entries.get(row["digest"])
                 if entry is not None and entry["state"] != "available":
@@ -925,7 +935,8 @@ class RequestFlagRegistry:
                     raise ValueError("申请翻页位置已失效或不属于当前范围, 请重新查询")
                 items = items[offset:]
             more = len(items) > limit
-            return {"items": items[:limit], "has_more": more, "total": total, "unavailable_count": missing,
+            return {"items": items[:limit], "has_more": more, "total": total, "unavailable_count": missing if request_category == "all" else 0,
+                    "unclassified_unavailable_count": missing if request_category != "all" else 0,
                     "scope": "self" if owner_user_id else "all",
                     "unavailable_reason": "历史申请详情缺失, 刷新不会自动恢复" if missing else None,
                     "next_cursor": items[limit - 1]["request_id"] if more else None}

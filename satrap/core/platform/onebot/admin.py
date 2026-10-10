@@ -62,12 +62,13 @@ GROUP_DIRECTORY_BYTES = 4 * 1024 * 1024
 WRITE_ACTIONS = frozenset({
     "delete_msg", "set_group_kick", "set_group_ban", "set_group_whole_ban", "set_group_anonymous_ban", "set_group_admin",
     "set_group_anonymous", "set_group_card", "set_group_name", "set_group_special_title", "set_group_leave",
-    "set_friend_add_request", "set_group_add_request", "delete_friend",
+    "set_friend_add_request", "set_doubt_friends_add_request", "set_group_add_request", "delete_friend",
 })
 """会改变平台状态的 OneBot 动作名, 执行成功记审计日志"""
 
 APPROVAL_FLAG_KINDS: dict[str, str] = {
     "set_friend_add_request": "friend",
+    "set_doubt_friends_add_request": "friend",
     "set_group_add_request": "group",
 }
 """审批动作到账本 flag 域的映射, 供审计日志用同域摘要替代原始标识"""
@@ -95,6 +96,8 @@ ADMIN_CAPABILITIES: dict[str, tuple[str, str]] = {
     "set_group_special_title": ("write", "设置专属头衔"),
     "leave_group": ("write", "退出或解散群"),
     "handle_friend_request": ("write", "批准或拒绝好友请求"),
+    "list_suspicious_friend_requests": ("read", "获取平台可疑好友申请"),
+    "handle_suspicious_friend_request": ("write", "同意或拒绝平台可疑好友申请"),
     "handle_group_request": ("write", "批准或拒绝加群请求/邀请"),
     "get_message": ("read", "回源读取群消息 (get_msg)"),
     "upload_file": ("write", "上传群/私聊文件 (upload_group_file/upload_private_file)"),
@@ -124,6 +127,8 @@ _CAPABILITY_ACTIONS: dict[str, tuple[str, ...]] = {
     "set_group_special_title": ("set_group_special_title",),
     "leave_group": ("set_group_leave",),
     "handle_friend_request": ("set_friend_add_request",),
+    "list_suspicious_friend_requests": ("get_doubt_friends_add_request",),
+    "handle_suspicious_friend_request": ("set_doubt_friends_add_request",),
     "handle_group_request": ("set_group_add_request",),
     "get_message": ("get_msg",),
     "upload_file": ("upload_group_file", "upload_private_file"),
@@ -850,7 +855,7 @@ class OneBotAdmin:
                                         identity_digest=identity_digest)
 
     async def handle_friend_request(self, flag: Any, approve: Any, remark: Any = "", *, allow_archived: bool = False,
-                                    identity_digest: str | None = None) -> None:
+                                    identity_digest: str | None = None, suspicious: bool = False) -> None:
         """
         处理好友添加请求
 
@@ -860,6 +865,7 @@ class OneBotAdmin:
         - remark: 同意后的好友备注
         - allow_archived: 是否已取得归档申请的人工确认
         - identity_digest: 宿主收件箱固定的一次申请身份, None 仅处理旧版申请
+        - suspicious: 宿主记录确认的可疑类别, 不接受模型直接提供
 
         flag 校验与持久占用在首次网络等待前完成; 动作超时, 取消或传输异常记 unknown,
         不自动重试, 同一次申请不可重放
@@ -869,6 +875,8 @@ class OneBotAdmin:
         text = str(remark)
         if len(text) > 60:
             raise ValueError("备注长度不能超过 60 字符")
+        if type(suspicious) is not bool or suspicious and text:
+            raise ValueError("可疑申请不支持备注或类别无效")
         normalized = normalize_flag(flag)
         registry = self._adapter.request_flags
         self_id = self._adapter.bot_self_id
@@ -878,7 +886,8 @@ class OneBotAdmin:
             raise AdminActionRejected(str(error)) from None
         await self._execute_request_decision(
             "friend", normalized, self_id,
-            "set_friend_add_request", {"flag": normalized, "approve": approve, "remark": text},
+            "set_doubt_friends_add_request" if suspicious else "set_friend_add_request",
+            {"flag": normalized, "approve": approve, **({} if suspicious else {"remark": text})},
             identity_digest=identity_digest,
         )
 

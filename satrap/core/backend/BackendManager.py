@@ -1522,15 +1522,11 @@ class BackendManager:
                 if binding.get("provider") != "edictum" or binding.get("config_name") != session_cfg.session_type_name:
                     raise PermissionError("好友管理来源 Agent 路由已变化")
             managers = sorted(set(_lines(config.get("managers"))))
-            switch = {"friend_manager_delete_friend": "delete_friend_enabled", "friend_manager_send_request": "send_request_enabled",
-                      "friend_manager_handle_request": "request_handling_enabled"}.get(tool_name)
-            if switch is None:
+            if tool_name not in {"friend_manager_delete_friend", "friend_manager_send_request", "friend_manager_handle_request"}:
                 raise PermissionError("未知好友写操作")
-            if config.get(switch) is not True:
-                raise PermissionError("好友模型写操作授权已撤销")
             if tool_name == "friend_manager_delete_friend" and target_group in managers + list(_lines(config.get("protected_friend_ids"))):
                 raise PermissionError("目标好友受保护")
-            payload = [session_id, tool_name, identity.get("friend_scope"), identity["actor_id"], decision.permission_fingerprint, config.get(switch), binding, target_group,
+            payload = [session_id, tool_name, identity.get("friend_scope"), identity["actor_id"], decision.permission_fingerprint, True, binding, target_group,
                        managers,
                        sorted(set(_lines(config.get("protected_friend_ids"))))]
             return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True).encode("utf-8")).hexdigest()

@@ -594,7 +594,7 @@ class PlatformAdapter(ABC):
         from satrap.core.friends import FriendError
         raise FriendError("unsupported", "当前适配器不支持好友列表")
 
-    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "") -> dict[str, Any]:
+    async def friend_requests(self, account: str, limit: int, cursor: str | None, *, view: str = "active", owner_user_id: str = "", request_category: str = "all") -> dict[str, Any]:
         """
         查询宿主收到的好友申请
 
@@ -602,6 +602,9 @@ class PlatformAdapter(ABC):
         - account: 固定账号
         - limit: 查询数量
         - cursor: 继续查询的位置
+        - view: active, archived 或 all, 默认 active
+        - owner_user_id: 宿主指定的本人范围, 默认空值为管理范围
+        - request_category: all, normal 或 suspicious, 默认 all
 
         返回:
         - 不含平台凭据的申请列表

@@ -239,7 +239,8 @@ class PluginManagementService:
             raise KeyError(f"插件不存在: {name}")
         if set(state) - {"present", "enabled", "capabilities"} or not isinstance(state.get("present"), bool) or not isinstance(state.get("enabled"), bool):
             raise ValueError("使用位置配置必须包含布尔值 present 和 enabled")
-        spec = parse_plugin_specs([{"name": name, "enabled": state["enabled"], "capabilities": state.get("capabilities", {})}], self.catalog, require_available=True)[0]
+        spec = parse_plugin_specs([{"name": name, "enabled": state["enabled"], "capabilities": state.get("capabilities", {}),
+                                   "config_version": entry.config_version}], self.catalog, require_available=True)[0]
         if kind == "chat" and location_id == "chat":
             if state["present"] and spec.enabled:
                 entry.check_environment(PluginEnvironment("chat")).require()
@@ -251,7 +252,8 @@ class PluginManagementService:
             if config_document_revision(current) != expected_revision:
                 raise ConfigRevisionConflict("Edictum 配置已被修改, 请重新读取后合并")
             existing = next((item for item in current.get("plugins", []) if (item if isinstance(item, str) else item.get("name")) == name), None)
-            replacement = {**(existing if isinstance(existing, dict) else {}), "name": name, "enabled": spec.enabled, "capabilities": spec.capabilities}
+            replacement = {**(existing if isinstance(existing, dict) else {}), "name": name, "enabled": spec.enabled, "capabilities": spec.capabilities,
+                           **({"config_version": spec.config_version} if spec.config_version else {})}
             if state["present"] and spec.enabled:
                 definition = next(item for item in self.edictum.list_types() if item["name"] == current["edictum_type"])
                 if not definition["capabilities"]["plugins"]:

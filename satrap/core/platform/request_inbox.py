@@ -90,6 +90,9 @@ class RequestInbox:
                         "platform_state": "TEXT NOT NULL DEFAULT 'unknown'",
                         "execution_state": "TEXT NOT NULL DEFAULT 'not_started'", "last_checked_at": "REAL",
                         "decision": "TEXT", "credential_expires_at": "REAL NOT NULL DEFAULT 0",
+                        "request_category": "TEXT NOT NULL DEFAULT 'normal'", "nickname": "TEXT NOT NULL DEFAULT ''",
+                        "request_source": "TEXT NOT NULL DEFAULT ''", "suspicious_reason": "TEXT NOT NULL DEFAULT ''",
+                        "requested_at": "INTEGER",
                     }.items():
                         if name not in columns:
                             connection.execute(f"ALTER TABLE requests ADD COLUMN {name} {declaration}")
@@ -104,7 +107,8 @@ class RequestInbox:
                     connection.close()
 
     def register(self, adapter_id: str, self_id: str, kind: str, flag: str, *, group_id: str,
-                 sub_type: str, user_id: str, comment: str, received_at: float, now: float, identity_digest: str | None = None) -> bool:
+                 sub_type: str, user_id: str, comment: str, received_at: float, now: float, identity_digest: str | None = None,
+                 details: dict[str, Any] | None = None, restore_missing: bool = True) -> bool:
         """
         为已经在账本登记的申请保存原值, 重复事件不延长有效期
 
@@ -120,16 +124,35 @@ class RequestInbox:
         - received_at: 账本固定的首次接收时间
         - now: 当前时间, 用于清理过期原值
         - identity_digest: 账本的一次申请身份, None 沿用旧版凭据摘要
+        - details: 平台确认的申请类别和展示字段, 不包含模型推断
+        - restore_missing: 是否允许补回缺失详情, 已占用或终态只更新已有展示字段
 
         返回:
         - 是否新增且保留了详情, 已有记录不更新身份或凭据期限
         """
         if not isinstance(kind, str) or not kind or len(kind) > 64 or not flag or len(flag) > 4096 or not isinstance(comment, str):
             raise ValueError("申请原值或类别无效")
+        metadata = dict(details or {})
+        allowed = {"request_category", "nickname", "request_source", "suspicious_reason", "requested_at"}
+        if set(metadata) - allowed or metadata.get("request_category", "normal") not in {"normal", "suspicious"}:
+            raise ValueError("申请详情字段或类别无效")
+        if any(not isinstance(metadata[key], str) or len(metadata[key]) > 2000 for key in metadata.keys() & (allowed - {"requested_at"})):
+            raise ValueError("申请展示字段无效")
+        stamp = metadata.get("requested_at")
+        if stamp is not None and (type(stamp) is not int or stamp <= 0):
+            raise ValueError("申请原始时间无效")
         with self._transaction() as connection:
             self._maintain(connection, now)
             identity = (adapter_id, self_id, kind, identity_digest or flag_digest(kind, self_id, flag))
-            if connection.execute("SELECT 1 FROM requests WHERE adapter_id=? AND self_id=? AND kind=? AND digest=?", identity).fetchone():
+            existing = connection.execute("SELECT * FROM requests WHERE adapter_id=? AND self_id=? AND kind=? AND digest=?", identity).fetchone()
+            if existing:
+                changed = {key: value for key, value in metadata.items() if existing[key] != value}
+                if changed:
+                    assignments = ",".join(f"{key}=?" for key in sorted(changed))
+                    connection.execute(f"UPDATE requests SET {assignments},revision=revision+1 WHERE request_id=?",
+                                       (*[changed[key] for key in sorted(changed)], existing["request_id"]))
+                return False
+            if not restore_missing:
                 return False
             if connection.execute("SELECT COUNT(*) FROM requests").fetchone()[0] >= 16384:
                 raise ValueError("申请收件箱容量已满")
@@ -140,6 +163,10 @@ class RequestInbox:
                                "comment,received_at,expires_at,credential_expires_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                ("rq_" + uuid.uuid4().hex, *identity, flag, group_id, sub_type, user_id,
                                 comment[:2000], received_at, received_at + self.ttl, received_at + credential_days * 86400))
+            if metadata:
+                assignments = ",".join(f"{key}=?" for key in sorted(metadata))
+                connection.execute(f"UPDATE requests SET {assignments} WHERE adapter_id=? AND self_id=? AND kind=? AND digest=?",
+                                   (*[metadata[key] for key in sorted(metadata)], *identity))
             self._maintain(connection, now)
             return connection.execute("SELECT 1 FROM requests WHERE adapter_id=? AND self_id=? AND kind=? AND digest=?", identity).fetchone() is not None
 

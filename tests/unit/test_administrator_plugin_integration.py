@@ -188,3 +188,37 @@ async def test_real_agent_self_deletion_approval_uses_current_group_or_private_r
         adapter._bot.delete_friend.assert_awaited_once_with(user_id=321)
     finally:
         await provider.release_session_async(session)
+
+
+@pytest.mark.asyncio
+async def test_pending_friend_deletion_rechecks_instance_tool_switch(tmp_path):
+    """实例工具关闭后, 已提交的删除申请不能继续执行"""
+    from satrap.edictum.plugin_settings import PluginSettingsService
+    from satrap.edictum.plugin_spec import parse_plugin_specs
+    from satrap.core.config.session_overrides import SessionOverrideStore
+
+    backend, adapter, origin, session, provider, configs = await runtime(
+        tmp_path, True, "friend_manager", {"delete_friend_enabled": True},
+    )
+    try:
+        session.plugin_override_store = SessionOverrideStore(backend.platform_db_path("ob"))
+        adapter.friend_host = backend.friend_service("ob")
+        adapter._bot.get_friend_list.return_value = [{"user_id": 321, "nickname": "本人"}]
+        own = replace(origin, chat_type="FriendMessage", chat_id="321", actor_id="321")
+        deletion = session._wf.tools_manager.tools["friend_manager_delete_friend"]
+        with bind_call_origin(own):
+            pending = await deletion.execute()
+        assert pending["ok"] and pending["data"]["state"] == "pending"
+        settings = PluginSettingsService(backend.platform_db_path("ob"))
+        spec = parse_plugin_specs(configs.get_config("assistant")["plugins"], provider.plugin_catalog)[0]
+        entry = provider.plugin_catalog.get("friend_manager")
+        metadata = settings.tool_settings(session.session_id, spec, entry)
+        record = settings.get(session.session_id, spec.name, entry.config_schema, spec.config)
+        settings.save(session.session_id, spec.name, entry.config_schema, record["overrides"],
+                      expected_revision=record["revision"], named=spec.config,
+                      tool_overrides={"friend_manager_delete_friend": False}, expected_tool_revision=metadata["tool_revision"])
+        approved = await adapter.friend_host.decide("10000", pending["data"]["action_id"], True)
+        assert approved["state"] == "failed", approved
+        adapter._bot.delete_friend.assert_not_awaited()
+    finally:
+        await provider.release_session_async(session)

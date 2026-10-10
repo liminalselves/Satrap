@@ -243,7 +243,7 @@ def test_migration_conservative_idempotent_and_removes_old_entries(tmp_path, mon
     assert not friend.capabilities["tools"]["friend_manager_list_friends"]
     assert not friend.capabilities["tools"]["friend_manager_find_friends"]
     assert not friend.capabilities["tools"]["friend_manager_delete_friend"]
-    assert friend.config["request_handling_enabled"] == (write and callers == "manager")
+    assert "request_handling_enabled" not in friend.config
     canonical = [spec.to_config() for spec in specs.values()]
     assert [spec.to_config() for spec in parse_plugin_specs(canonical, catalog)] == canonical
 
@@ -272,7 +272,7 @@ def test_migration_preserves_existing_empty_manager_deny_and_new_tool_switches(t
                "capabilities": {"tools": {"friend_manager_delete_friend": False}}}]
     specs = {spec.name: spec for spec in parse_plugin_specs(source, catalog)}
     assert specs["friend_manager"].config["managers"] == ""
-    assert not specs["friend_manager"].config["request_handling_enabled"]
+    assert not specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
     assert not specs["friend_manager"].capabilities["tools"]["friend_manager_delete_friend"]
 
 
@@ -284,7 +284,7 @@ def test_implicit_legacy_request_defaults_migrate_global_permissions(tmp_path, m
     specs = {spec.name: spec for spec in parse_plugin_specs(["group_admin"], catalog)}
     assert specs["friend_manager"].config["managers"] == "manager"
     assert specs["friend_manager"].config["write_callers"] == "manager"
-    assert specs["friend_manager"].config["request_handling_enabled"]
+    assert specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
     assert specs["friend_manager"].capabilities["tools"]["friend_manager_handle_request"]
     assert not specs["friend_manager"].capabilities["tools"]["friend_manager_delete_friend"]
 
