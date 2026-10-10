@@ -103,6 +103,51 @@ def _json_body(response: bytes) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
+async def test_config_versions_auth_subset_and_parameter_validation(monkeypatch, tmp_path):
+    main = tmp_path / 'main.yaml'
+    main.write_text('api_key: secret-private\n', encoding='utf-8')
+    monkeypatch.setattr(control_server, 'CONFIG_PATH', main)
+    monkeypatch.setattr(control_server, 'PROJECT_ROOT', tmp_path)
+    monkeypatch.setenv('SATRAP_CONFIG_ROOT', str(tmp_path / 'config'))
+    monkeypatch.setattr(control_server, '_CONFIG_VERSION_SERVICES', {})
+    unauthorized = await _request('/config/versions', authorized=False)
+    assert unauthorized.startswith(b'HTTP/1.1 401')
+    response = await _request('/config/versions?resources=main_config')
+    payload = _json_body(response)
+    assert response.startswith(b'HTTP/1.1 200')
+    assert set(payload['resources']) == {'main_config'}
+    assert payload['resources']['main_config']['state'] == 'available'
+    assert b'secret-private' not in response
+    assert str(tmp_path) not in response.decode()
+    for query in ('resources=unknown', 'force=yes', 'unrecognized=true'):
+        assert (await _request('/config/versions?' + query)).startswith(b'HTTP/1.1 400')
+
+
+@pytest.mark.asyncio
+async def test_config_version_probe_runs_off_event_loop_and_contains_failures(monkeypatch):
+    loop_thread = threading.get_ident()
+    calls = []
+    def probe(resources, force):
+        calls.append((resources, force, threading.get_ident()))
+        if resources == ('fail',):
+            raise OSError('private-path')
+        if resources == ('changed',):
+            raise RuntimeError('changed')
+        return {'ok': True, 'resources': {}}
+    monkeypatch.setattr(control_server, '_config_versions', probe)
+    response = await _request('/config/versions?resources=models,session_classes&force=true')
+    assert response.startswith(b'HTTP/1.1 200')
+    assert calls[0][:2] == (('models', 'session_classes'), True)
+    assert calls[0][2] != loop_thread
+    failed = await _request('/config/versions?resources=fail')
+    assert failed.startswith(b'HTTP/1.1 500')
+    assert b'private-path' not in failed
+    changed = await _request('/config/versions?resources=changed')
+    assert changed.startswith(b'HTTP/1.1 409')
+    assert _json_body(changed)['code'] == 'config_version_changed'
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('path', ['/config/plugins', '/config/plugins/friend_manager/usages'])
 async def test_slow_plugin_service_preparation_does_not_block_loop(monkeypatch, path):
     entered = threading.Event()

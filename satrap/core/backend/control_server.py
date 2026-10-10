@@ -17,6 +17,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 import dataclasses
+import threading
 import subprocess
 import traceback
 import argparse
@@ -69,6 +70,7 @@ from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConf
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
+from satrap.core.config.versions import ConfigVersionService
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
@@ -1735,6 +1737,40 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
         return 500, {"ok": False, "error": "管理员设置请求失败, 请查看后端日志"}
 
 
+_CONFIG_VERSION_SERVICES: dict[tuple[str, str], ConfigVersionService] = {}
+_CONFIG_VERSION_LOCK = threading.Lock()
+
+
+def _invalidate_config_reads() -> None:
+    """内容核验发现变化或人工刷新时撤销进程内读取快照"""
+    PluginCatalog().invalidate()
+    EdictumConfigManager.invalidate_read_snapshots()
+
+
+def _config_versions(resources: tuple[str, ...] | None, force: bool) -> dict[str, object]:
+    """
+    在线程中复用来源探测器, 路径切换不共享旧主文档
+
+    参数:
+    - resources: 可选资源名集合, None 表示全部
+    - force: 强制核验内容并使读取快照失效
+
+    返回:
+    - 仅包含变化标识与可用状态的响应
+    """
+    key = (os.path.abspath(CONFIG_PATH), os.path.abspath(PROJECT_ROOT))
+    with _CONFIG_VERSION_LOCK:
+        service = _CONFIG_VERSION_SERVICES.get(key)
+        if service is None:
+            service = ConfigVersionService(CONFIG_PATH, PROJECT_ROOT, on_content_change=_invalidate_config_reads)
+            if len(_CONFIG_VERSION_SERVICES) >= 16:
+                _CONFIG_VERSION_SERVICES.pop(next(iter(_CONFIG_VERSION_SERVICES)))
+            _CONFIG_VERSION_SERVICES[key] = service
+    if force:
+        _invalidate_config_reads()
+    return service.get(force=force) if resources is None else service.get(resources, force=force)
+
+
 async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     """
     配置文档与平台区段: /config, /config/default, /config/validate, /config/platforms
@@ -1745,6 +1781,26 @@ async def _route_config_document(ctx: _RouteContext) -> ControlResponse | None:
     返回:
     - ControlResponse | None: 路径不属于本区段时返回 None
     """
+    if ctx.method == 'GET' and ctx.path == '/config/versions':
+        try:
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(ctx.raw_path).query)
+            if set(query) - {'resources', 'force'} or query.get('force', ['false']) not in (['false'], ['true']):
+                raise ValueError('配置版本探测参数无效')
+            resources = tuple(name for value in query.get('resources', []) for name in value.split(',')) or None
+            return 200, await RAG_WORKERS.run(_config_versions, resources, query.get('force') == ['true'])
+        except WorkerBusyError as error:
+            logger.warning(f'[配置版本] 工作队列已满: {error}')
+            return 503, {'ok': False, 'error': str(error)}
+        except ValueError as error:
+            logger.warning(f'[配置版本] 参数无效: {error}')
+            return 400, {'ok': False, 'error': str(error)}
+        except RuntimeError as error:
+            logger.warning(f'[配置版本] 来源变化: {error}')
+            return 409, {'ok': False, 'error': '配置来源在读取期间变化, 请重试', 'code': 'config_version_changed'}
+        except Exception:
+            logger.error(f'[配置版本] 探测失败\n{traceback.format_exc()}')
+            return 500, {'ok': False, 'error': '无法探测配置版本, 请查看控制服务日志'}
+
     if ctx.method == "GET" and ctx.path == "/config":
         try:
             config_data = load_config_document(CONFIG_PATH)

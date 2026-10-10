@@ -58,6 +58,11 @@ class EdictumConfigManager:
         self.reload(cached=True)
 
     @staticmethod
+    def invalidate_read_snapshots() -> None:
+        """强制刷新只读快照, 不影响保存事务和调用授权"""
+        _CONFIG_SNAPSHOTS.invalidate()
+
+    @staticmethod
     def _default_storage_path() -> Path:
         """
         获取默认配置文件路径
