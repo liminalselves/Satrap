@@ -2552,6 +2552,20 @@ def _plugin_management_service(catalog: PluginCatalog | None = None) -> PluginMa
                                    rag=RagService(_configured_storage_layout(), models, "local"), edictum=service)
 
 
+def _read_plugin_global_config(name: str, catalog: PluginCatalog) -> dict[str, Any]:
+    """
+    单插件参数读取不构造命名配置, 模型与知识库服务
+
+    参数:
+    - name: 插件名称
+    - catalog: 当前请求固定的元数据目录
+
+    返回:
+    - 沿用全局参数与内容 revision 的读取快照
+    """
+    return PluginManagementService(catalog, {}, ChatPluginRegistry(), manager=PluginConfigManager()).get_config(name)
+
+
 def _plugin_runtime_request(target: str, url: str) -> dict[str, Any]:
     """
     请求运行服务重新加载插件配置, 保留失败与未运行的区别
@@ -2648,9 +2662,8 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
     name = urllib.parse.unquote(ctx.path[len(prefix):-len(action)-1])
     try:
         catalog = await PluginCatalog().snapshot_async()
-        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         if action == "runtime" and ctx.method == "GET":
-            if service.catalog.get(name) is None:
+            if catalog.get(name) is None:
                 raise KeyError("插件不存在")
             host, port = _configured_backend_address()
             host = _connect_host(host)
@@ -2661,6 +2674,7 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
             return 200, {"ok": True, "services": [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "instances": []} for index, result in enumerate(results)]}
         if action != "usages":
             return None
+        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         if ctx.method == "GET":
             return 200, await RAG_WORKERS.run(service.get_usages, name)
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
@@ -2697,9 +2711,9 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
     name = urllib.parse.unquote(ctx.path[len(prefix):-len("/config")])
     try:
         catalog = await PluginCatalog().snapshot_async()
-        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         if ctx.method == "GET":
-            return 200, await RAG_WORKERS.run(service.get_config, name)
+            return 200, await RAG_WORKERS.run(_read_plugin_global_config, name, catalog)
+        service = await RAG_WORKERS.run(_plugin_management_service, catalog)
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
         values = payload.get("config")
         revision = payload.get("expected_revision")

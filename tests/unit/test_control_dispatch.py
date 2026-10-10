@@ -103,7 +103,7 @@ def _json_body(response: bytes) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('path', ['/config/plugins', '/config/plugins/friend_manager/config', '/config/plugins/friend_manager/usages'])
+@pytest.mark.parametrize('path', ['/config/plugins', '/config/plugins/friend_manager/usages'])
 async def test_slow_plugin_service_preparation_does_not_block_loop(monkeypatch, path):
     entered = threading.Event()
     release = threading.Event()
@@ -126,6 +126,22 @@ async def test_slow_plugin_service_preparation_does_not_block_loop(monkeypatch, 
         release.set()
     response = await request
     assert response.startswith(b'HTTP/1.1 200')
+
+
+@pytest.mark.asyncio
+async def test_single_plugin_read_does_not_construct_unrelated_services(monkeypatch, tmp_path):
+    def forbidden(*args):
+        raise AssertionError('单插件读取不应构造命名配置或模型服务')
+
+    monkeypatch.setattr(control_server, '_plugin_management_service', forbidden)
+    monkeypatch.setattr(control_server, '_edictum_config_service', forbidden)
+    monkeypatch.setattr(control_server, '_model_config_service', forbidden)
+    monkeypatch.setattr(control_server, 'PluginConfigManager', lambda: PluginConfigManager(tmp_path / 'plugin-config'))
+    response = await _request('/config/plugins/friend_manager/config')
+    assert response.startswith(b'HTTP/1.1 200')
+    body = _json_body(response)
+    assert body['revision'] == 'missing'
+    assert body['schema']
 
 
 def _use_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -725,7 +741,9 @@ async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, mo
     (plugin / "meta.yaml").write_text("name: probe\nconfig_schema:\n  note:\n    default: old", encoding="utf-8")
     catalog = PluginCatalog(tmp_path / "builtin", tmp_path / "plugins")
     service = PluginManagementService(catalog, {}, ChatPluginRegistry(tmp_path / "chat.json"), manager=PluginConfigManager(tmp_path / "config"))
+    monkeypatch.setattr(control_server, 'PluginCatalog', lambda: catalog)
     monkeypatch.setattr(control_server, "_plugin_management_service", lambda *args: service)
+    monkeypatch.setattr(control_server, '_read_plugin_global_config', lambda name, catalog: service.get_config(name))
     applied = []
     async def apply_runtime():
         applied.append(True)
