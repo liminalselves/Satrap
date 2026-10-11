@@ -19,6 +19,7 @@ import time
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.SessionManager import SessionConfig, SessionManager
 from satrap.core.framework.Base import Session
+from satrap.core.type import LLMConfig
 
 
 class _EchoSession(Session):
@@ -294,7 +295,7 @@ def test_reload_model_configs_refreshes_active_sessions(tmp_path: Path, monkeypa
     fake_entry.session = fake_session
 
     mgr = MagicMock()
-    mgr.get_llm_config.return_value = SimpleNamespace(
+    mgr.get_llm_config.return_value = LLMConfig(
         api_key="key", base_url="https://x", model="m",
         temperature=0.5, max_tokens=1024,
     )

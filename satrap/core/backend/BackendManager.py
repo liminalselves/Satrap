@@ -2552,6 +2552,7 @@ class BackendManager:
         manager = self.edictum_config_manager
         apply_snapshot = None if manager is None else await asyncio.to_thread(
             EdictumPluginApplySnapshot.capture, manager, names, desired_config=desired_config,
+            model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
         )
         pending: list[Awaitable[list[dict[str, Any]]]] = []
         for platform_id, session_manager in selected_managers:

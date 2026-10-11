@@ -57,6 +57,7 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
                                          plugin_catalog=PluginCatalog(tmp_path / "builtin", tmp_path / "user"))
     backend._model_cfg = SimpleNamespace(reload=unrelated_reload)
     runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile, reconcile_edictum_runtime_async=reconcile,
+                              model_config_manager=None,
                               edictum_plugin_apply_scope=lambda **kwargs: {"assistant": False},
                               edictum_runtime_apply_targets=lambda **kwargs: [("one", None, "assistant", "generation")])
     backend._platform_runtimes = {"ob": (runtime, None), "other": (runtime, None)}

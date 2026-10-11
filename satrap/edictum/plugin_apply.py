@@ -12,9 +12,11 @@ from satrap.edictum.plugin_catalog import PluginCatalog
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.log import logger
 from satrap.edictum.plugin_spec import PluginSpec, parse_plugin_specs
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
 
 if TYPE_CHECKING:
     from satrap.edictum.config import EdictumConfigManager
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
 
 
 def _file_state(path: Path) -> tuple[int, int, int, int] | None:
@@ -145,7 +147,7 @@ class EdictumPluginApplySnapshot:
     """平台同次应用共享的命名规格与全局参数, 不包含实例覆盖或授权"""
 
     def __init__(self, sources: PluginApplySnapshot, specs: dict[str, list[PluginSpec]], read_ms: float,
-                 configs: dict[str, dict[str, Any] | None]) -> None:
+                 configs: dict[str, dict[str, Any] | None], models: dict[Path, ModelConfigSnapshot]) -> None:
         """
         保存独立命名规格及来源核验器
 
@@ -154,16 +156,19 @@ class EdictumPluginApplySnapshot:
         - specs: 本次选定命名配置的规格
         - read_ms: 实际捕获耗时
         - configs: 对应完整命名配置, 已删除配置保存为 None
+        - models: 完整应用的只读模型来源, 仅插件应用不捕获
         """
         self.sources = sources
         self._specs = deepcopy(specs)
         self.read_ms = read_ms
         self._configs = deepcopy(configs)
+        self._models = dict(models)
 
     @classmethod
     def capture(cls, manager: EdictumConfigManager, config_names: set[str], *, desired_plugins: object | None = None,
                 global_manager: PluginConfigManager | None = None, plugin_name: str | None = None,
-                retained_config_names: set[str] | None = None, desired_config: dict[str, Any] | None = None) -> EdictumPluginApplySnapshot:
+                retained_config_names: set[str] | None = None, desired_config: dict[str, Any] | None = None,
+                model_managers: tuple[ModelConfigManager, ...] = ()) -> EdictumPluginApplySnapshot:
         """
         在线程中统一刷新命名配置并捕获所需插件参数
 
@@ -175,6 +180,7 @@ class EdictumPluginApplySnapshot:
         - plugin_name: 可选插件引用过滤, 在新命名内容中判断
         - retained_config_names: 已运行该插件的配置名称, 移除旧引用仍需协调
         - desired_config: 可选完整临时运行目标, 校验后仅用于本次应用
+        - model_managers: 完整运行应用的模型文件来源, 同一路径只解析一次
 
         返回:
         - 同一代来源; 持续变化或读取失败时记录堆栈并抛出
@@ -201,10 +207,15 @@ class EdictumPluginApplySnapshot:
                 names = {spec.name for items in specs.values() for spec in items}
                 if "base_take" in names:
                     names.add("memory")   # 实例旧记忆覆盖可能在运行目标合成时迁移为独立插件
-                sources = PluginApplySnapshot.capture(manager.plugin_catalog, globals_, additional_sources=(manager.storage_path,), plugin_names=names)
+                needs_models = any(configs.get(name) is not None and configs[name].get("enabled", True) for name in specs)
+                model_sources = {item.storage_path.absolute(): item for item in model_managers} if needs_models else {}
+                model_versions = {path: plugin_source_version(path) for path in model_sources}
+                models = {path: ModelConfigSnapshot.read(item) for path, item in model_sources.items()}
+                sources = PluginApplySnapshot.capture(manager.plugin_catalog, globals_, additional_sources=(manager.storage_path, *model_sources), plugin_names=names)
                 if (before == plugin_source_version(manager.storage_path) and sources.is_current()
-                        and catalog.snapshot_token() == sources.catalog.snapshot_token()):
-                    return cls(sources, specs, (time.perf_counter() - started) * 1000, {name: configs.get(name) for name in specs})
+                        and catalog.snapshot_token() == sources.catalog.snapshot_token()
+                        and model_versions == {path: plugin_source_version(path) for path in model_sources}):
+                    return cls(sources, specs, (time.perf_counter() - started) * 1000, {name: configs.get(name) for name in specs}, models)
             raise RuntimeError("Edictum 插件配置在捕获期间持续变化, 请重试应用")
         except Exception as error:
             logger.error(f"[插件应用] 捕获 Edictum 命名配置失败: {error}\n{traceback.format_exc()}")
@@ -245,3 +256,20 @@ class EdictumPluginApplySnapshot:
         - 独立配置副本, 已删除时为 None; 未捕获名称明确失败
         """
         return deepcopy(self._configs[config_name])
+
+    def models_for(self, manager: ModelConfigManager | None) -> ModelConfigSnapshot | None:
+        """
+        选择本次捕获的模型来源, 不回退未捕获的实时文件
+
+        参数:
+        - manager: 实例所属模型管理器, 没有管理器时不提供模型服务
+
+        返回:
+        - 对应只读模型来源; 来源未捕获时明确失败
+        """
+        return self._models[manager.storage_path.absolute()] if manager is not None else None
+
+    @property
+    def has_model_sources(self) -> bool:
+        """本次是否捕获模型来源, 仅插件入口保持原资源读取路径"""
+        return bool(self._models)

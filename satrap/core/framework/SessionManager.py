@@ -31,6 +31,8 @@ from satrap.core.framework.providers import (
     SessionProvider,
     SessionProviderRegistry,
 )
+from satrap.core.framework.providers.base import SessionProviderDefinition
+from satrap.core.config.model_snapshot import llm_config_fingerprint
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
@@ -1944,7 +1946,8 @@ class SessionManager:
         capture = safe_getattr_callable(provider, "capture_plugin_application")
         if apply_snapshot is None and capture is not None:
             scope = {name: False for _sid, _entry, name, _generation in targets}
-            apply_snapshot = await asyncio.to_thread(capture, scope, desired_config=desired_config)
+            apply_snapshot = await asyncio.to_thread(capture, scope, desired_config=desired_config,
+                                                     model_managers=(self._model_cfg_mgr,) if targets and self._model_cfg_mgr is not None else ())
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def reconcile_one(session_id: str, entry: SessionEntry, planned_name: str, generation: str) -> dict[str, Any]:
@@ -1982,6 +1985,15 @@ class SessionManager:
                 )
                 if not plan.get("ok", True):
                     return {**plan, "session_id": session_id, "platform_id": self.platform_id}
+                if apply_snapshot is not None and plan.get("action") != "unload" and self._model_cfg_mgr is not None and stored is not None:
+                    getter = safe_getattr_callable(provider, "get_definition")
+                    definition = getter(planned_name, apply_snapshot=apply_snapshot) if getter is not None else None
+                    if definition is None:
+                        raise RuntimeError("Agent 定义在模型核验时不存在")
+                    llm_config = self._model_config_for(stored, definition, apply_snapshot=apply_snapshot)
+                    if llm_config is not None and safe_getattr(entry.session, "_satrap_model_config_fingerprint") != llm_config_fingerprint(llm_config):
+                        plan["action"] = "restart"
+                        plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
                 if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在目标核验期间已变化, 请重试应用")
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
@@ -2384,21 +2396,14 @@ class SessionManager:
             llm_instance = None
             llm_cfg = None
             if model_cfg_mgr:
-                cfg_params = session_cfg.session_config or {}
-                model_name_key = definition.model_key or "model_name"
-                model_name = cfg_params.get(model_name_key)
-                if not model_name:
-                    model_name = definition.params.get(model_name_key)
-                if not model_name:
-                    model_name = "default"
-                llm_cfg = model_cfg_mgr.get_llm_config(name=model_name)
+                llm_cfg = self._model_config_for(session_cfg, definition, apply_snapshot=apply_snapshot)
                 if llm_cfg and llm_cfg.api_key:
                     llm_instance = build_llm_from_config(
                         llm_cfg, async_=definition.is_async
                     )
                 else:
                     logger.warning(
-                        f"[SessionManager] LLM 配置 '{model_name}' 不存在或缺少 api_key, "
+                        f"[SessionManager] LLM 配置 '{llm_cfg.name if llm_cfg is not None else 'default'}' 不存在或缺少 api_key, "
                         f"请先通过 'satrap model set' 配置"
                     )
             snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
@@ -2406,6 +2411,7 @@ class SessionManager:
             setattr(session, "plugin_environment", self.plugin_environment)
             if llm_cfg is not None:
                 self._apply_session_context_config(session, llm_cfg)
+                setattr(session, "_satrap_model_config_fingerprint", llm_config_fingerprint(llm_cfg))
             self._apply_storage_scope(session, session_id)
             try:
                 setattr(session, "_satrap_provider_name", provider.provider_name)
@@ -2463,6 +2469,26 @@ class SessionManager:
             logger.error(f"[SessionManager] 创建会话条目失败：session_id={session_id}")
             return None
         return entry
+
+    def _model_config_for(self, session_cfg: SessionConfig, definition: SessionProviderDefinition, *,
+                          apply_snapshot: EdictumPluginApplySnapshot | None = None) -> LLMConfig | None:
+        """
+        以同一合成规则选择主模型, 完整应用时只读捕获来源
+
+        参数:
+        - session_cfg: 最新实例覆盖
+        - definition: 当前或已捕获命名定义
+        - apply_snapshot: 可选完整运行应用来源
+
+        返回:
+        - 独立模型配置, 未接入模型服务时为 None
+        """
+        if self._model_cfg_mgr is None:
+            return None
+        key = definition.model_key or "model_name"
+        name = (session_cfg.session_config or {}).get(key) or definition.params.get(key) or "default"
+        models = apply_snapshot.models_for(self._model_cfg_mgr) if apply_snapshot is not None else self._model_cfg_mgr
+        return models.get_llm_config(name=name) if models is not None else None
 
     def _get_or_create_entry(self, session_cfg: SessionConfig) -> SessionEntry | None:
         """
@@ -2599,6 +2625,7 @@ class SessionManager:
             elif workflow is not None and hasattr(workflow, "llm"):
                 workflow.llm = new_llm
         applied_name = getattr(llm_cfg, "name", None)
+        setattr(session, "_satrap_model_config_fingerprint", llm_config_fingerprint(llm_cfg))
         setattr(session, "_satrap_group_model_name", applied_name if isinstance(applied_name, str) else None)
         # 所有模型引用更新成功后记录实际应用名称, 未命名配置保留待重试状态
         logger.info(f"[SessionManager] 已刷新会话 LLM 配置: {session_id}")

@@ -222,15 +222,35 @@ async def test_async_remove_waits_for_running_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_creation_lock_wait_does_not_block_event_loop(tmp_path: Path) -> None:
+async def test_async_creation_lock_wait_does_not_block_event_loop(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """
     异步创建等待线程锁时事件循环仍可调度定时器
 
     参数:
     - tmp_path: 临时目录
+    - monkeypatch: 在计时区段外准备真实实例, 不混入 SQLite 初始化耗时
     """
     manager = _make_manager(tmp_path)
     config = manager.register_session(_EchoSession, "echo", session_id="shared")
+    candidate = manager._create_entry(config, add_to_pool=False)
+    assert candidate is not None
+    main_thread = threading.get_ident()
+
+    def create_prepared_entry(session_cfg: SessionConfig) -> SessionEntry | None:
+        """
+        在真实创建锁内提交已准备实例, 检查此回调确实运行于工作线程
+
+        参数:
+        - session_cfg: 待创建实例的冷配置
+
+        返回:
+        - 实际提交到池中的条目
+        """
+        assert threading.get_ident() != main_thread
+        manager.pool.put(str(session_cfg.session_id), candidate.session, "echo")
+        return manager.pool.get(str(session_cfg.session_id))
+
+    monkeypatch.setattr(manager, "_create_entry", create_prepared_entry)
     lock_entered = threading.Event()
     release_lock = threading.Event()
 

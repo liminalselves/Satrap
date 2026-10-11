@@ -23,7 +23,7 @@ from satrap.core.log import logger
 
 if TYPE_CHECKING:
     from satrap.core.config.session_overrides import SessionOverrideStore
-    from satrap.core.framework.BackGroundManager import ModelConfigManager
+    from satrap.core.config.model_snapshot import ModelConfigReader
     from satrap.core.storage.layout import StorageLayout
     from satrap.core.framework.SessionManager import SessionManager
     from satrap.core.framework.UserManager import UserManager
@@ -50,7 +50,7 @@ class AsyncSession(_SessionCore[AsyncContextManager, AsyncCommandHandler]):
             cls.run = _wrapped_run
 
     plugin_override_store: "SessionOverrideStore | None" = None
-    plugin_model_manager: "ModelConfigManager | None" = None
+    plugin_model_manager: "ModelConfigReader | None" = None
     storage_layout: "StorageLayout | None" = None
     storage_platform_id: str | None = None
 

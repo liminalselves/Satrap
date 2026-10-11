@@ -7,7 +7,8 @@ import inspect
 from typing import Any
 import json
 
-from satrap.core.framework.BackGroundManager import ConfigTarget, ModelConfigManager
+from satrap.core.framework.BackGroundManager import ConfigTarget
+from satrap.core.config.model_snapshot import ModelConfigReader
 from satrap.core.APICall.ReRankCall import AsyncReRank, ReRank
 from satrap.core.APICall.EmbedCall import AsyncEmbedding, Embedding
 from satrap.core.APICall.ASRCall import build_asr_from_config
@@ -20,7 +21,7 @@ from satrap.core.log import logger
 MODEL_TYPES: dict[str, ConfigTarget] = {"llm": "llm", "embed": "embedding", "rerank": "rerank", "asr": "asr"}
 
 
-def named_model_config(manager: ModelConfigManager, kind: str, name: str) -> Any:
+def named_model_config(manager: ModelConfigReader, kind: str, name: str) -> Any:
     """严格查找模型引用, 不使用配置管理器的缺失名称空对象兜底"""
     target = "embedding" if kind == "embedding" else MODEL_TYPES.get(kind)
     if target is None:
@@ -56,7 +57,7 @@ class PluginResources:
     """每次插件安装独享客户端, config 保持为纯 JSON 数据"""
 
     def __init__(
-        self, manager: ModelConfigManager | None, schema: dict[str, ConfigField], config: dict[str, Any], *, async_: bool,
+        self, manager: ModelConfigReader | None, schema: dict[str, ConfigField], config: dict[str, Any], *, async_: bool,
     ) -> None:
         self.async_ = async_
         self._configs: dict[str, tuple[str, Any]] = {}
@@ -111,7 +112,7 @@ class PluginResources:
                     logger.warning("插件模型客户端关闭失败")
 
 
-def model_reference_fingerprint(manager: ModelConfigManager, schema: dict[str, ConfigField], config: dict[str, Any]) -> str:
+def model_reference_fingerprint(manager: ModelConfigReader, schema: dict[str, ConfigField], config: dict[str, Any]) -> str:
     """计算引用的内部版本, 不把凭据放入插件配置或对外响应"""
     payload = {}
     for key, definition in schema.items():

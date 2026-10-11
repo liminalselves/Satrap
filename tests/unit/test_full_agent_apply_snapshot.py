@@ -4,16 +4,19 @@ from __future__ import annotations
 import asyncio
 import importlib
 import threading
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 
 from satrap.core.backend.BackendManager import BackendManager
+from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
 from satrap.core.storage import StorageLayout
+from satrap.core.type import ASRConfig, EmbeddingConfig, ReRankConfig
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.edictum.plugin_compatibility import PluginEnvironment
@@ -168,6 +171,291 @@ async def test_full_batch_uses_one_source_and_preserves_effective_override(tmp_p
             assert meta["config"]["applied"]["params"]["system_prompt"] == "after"
         repeated = await backend.reconcile_edictum_runtime_async(config_name="assistant")
         assert all(item["ok"] and item["action"] == "noop" for item in repeated) and len(builds) == 5
+    finally:
+        await _close(managers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_full_application_uses_fresh_shared_models_and_skips_independent_model(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
+    """
+    同名模型参数变化进入重建判断, 同来源跨平台解析一次且不同模型实例不重建
+
+    参数:
+    - tmp_path: 隔离来源
+    - monkeypatch: 来源和真实构建入口计数
+    - asynchronous: 同步或异步会话
+    """
+    backend, _configs, _globals, managers, _providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    models = managers[0].model_config_manager
+    read = ModelConfigSnapshot.read
+    source_reads = []
+    received = []
+    module = importlib.import_module("satrap.core.framework.SessionManager")
+    build = module.build_llm_from_config
+
+    def counted_read(manager):
+        """
+        记录实际文件解析
+
+        参数:
+        - manager: 模型来源
+
+        返回:
+        - 只读捕获结果
+        """
+        source_reads.append(manager.storage_path)
+        return read(manager)
+
+    def counted_build(config, **kwargs):
+        """
+        记录真正用于构建客户端的独立模型参数
+
+        参数:
+        - config: 本次模型参数
+        - kwargs: 同步或异步选项
+
+        返回:
+        - 原模型占位对象
+        """
+        received.append(replace(config))
+        return build(config, **kwargs)
+
+    try:
+        models.update_llm_config("isolated", model="isolated", api_key="test")
+        managers[0].update_session_config("one-1", {"system_prompt": "local", "model_name": "isolated"})
+        prepared = await backend.reconcile_edictum_runtime_async(session_refs=[{"platform_id": "one", "session_id": "one-1"}])
+        assert prepared[0]["ok"] and prepared[0]["action"] == "restart"
+        protected = managers[0].pool.get("one-1").session
+        protected_handle = protected.list_plugins()[0]
+        external = ModelConfigManager(models.storage_path)
+        external.update_llm_config("demo", model="new-model", temperature=0.7, context_window=64000, history_ratio=0.6)
+        before = models.storage_path.read_bytes()
+        modified_at = models.storage_path.stat().st_mtime_ns
+        assert models.get_llm_config("demo").model == "demo"
+        monkeypatch.setattr(ModelConfigSnapshot, "read", counted_read)
+        monkeypatch.setattr(module, "build_llm_from_config", counted_build)
+        result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert [item["action"] for item in result] == ["restart", "noop", "restart"]
+        assert all(item["ok"] for item in result) and len(builds) == 6
+        assert source_reads == [models.storage_path]
+        assert [config.model for config in received] == ["new-model", "new-model"]
+        assert all(config.temperature == 0.7 and config.context_window == 64000 and config.history_ratio == 0.6 for config in received)
+        for manager, sid in ((managers[0], "one-0"), (managers[1], "two-0")):
+            context = manager.pool.get(sid).session.ctx
+            assert context.max_context == 64000 and context.history_ratio == 0.6
+        assert managers[0].pool.get("one-1").session is protected and protected.list_plugins()[0] is protected_handle
+        assert all(manager.pool.get(sid).session.plugin_model_manager is models for manager, sid in ((managers[0], "one-0"), (managers[1], "two-0")))
+        assert models.storage_path.read_bytes() == before and models.storage_path.stat().st_mtime_ns == modified_at
+        repeated = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert all(item["ok"] and item["action"] == "noop" for item in repeated) and len(builds) == 6
+    finally:
+        await _close(managers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["queued", "candidate", "corrupt"])
+async def test_full_model_source_change_or_corruption_preserves_runtime(tmp_path: Path, monkeypatch: Any, change: str) -> None:
+    """
+    模型来源排队或准备期间变化以及损坏都不能提交旧候选, 保留上下文和插件
+
+    参数:
+    - tmp_path: 隔离来源
+    - monkeypatch: 来源捕获与候选准备暂停
+    - change: 排队变化, 候选变化或文件损坏
+    """
+    backend, configs, _globals, managers, providers, sessions, builds = await _setup(tmp_path, monkeypatch)
+    models = managers[0].model_config_manager
+    captured = threading.Event()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    capture = EdictumPluginApplySnapshot.capture
+    prepare = providers[0].prepare_session_async
+    candidates = []
+
+    def record(*args, **kwargs):
+        """
+        通知真实完整捕获完成
+
+        参数:
+        - args: 命名来源与范围
+        - kwargs: 模型等额外来源
+
+        返回:
+        - 同代应用快照
+        """
+        snapshot = capture(*args, **kwargs)
+        captured.set()
+        return snapshot
+
+    async def paused(session, **kwargs):
+        """
+        完成真实候选插件准备后暂停
+
+        参数:
+        - session: 候选实例
+        - kwargs: 固定来源
+        """
+        await prepare(session, **kwargs)
+        candidates.append(session)
+        entered.set()
+        await release.wait()
+
+    try:
+        old_handle = sessions[0].list_plugins()[0]
+        await sessions[0].ctx.add_user_message("保留模型变更前上下文")
+        before = sessions[0].ctx.get_context()
+        configs.update("assistant", {"params": {"system_prompt": "after"}})
+        refs = [{"platform_id": "one", "session_id": "one-0"}]
+        if change == "corrupt":
+            models.storage_path.write_text("broken", encoding="utf-8")
+            with pytest.raises(ValueError):
+                await backend.reconcile_edictum_runtime_async(session_refs=refs)
+            assert models.storage_path.read_text(encoding="utf-8") == "broken" and len(builds) == 3
+        else:
+            monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", record)
+            entry = managers[0].pool.get("one-0")
+            if change == "queued":
+                await entry.async_operation_lock.acquire()
+            else:
+                monkeypatch.setattr(providers[0], "prepare_session_async", paused)
+            task = asyncio.create_task(backend.reconcile_edictum_runtime_async(session_refs=refs))
+            try:
+                if change == "queued":
+                    assert await asyncio.to_thread(captured.wait, 2)
+                else:
+                    await asyncio.wait_for(entered.wait(), 5)
+                writer = ModelConfigManager(models.storage_path)
+                writer.update_llm_config("demo", temperature=0.9)
+            finally:
+                if change == "queued":
+                    entry.async_operation_lock.release()
+                release.set()
+            result = await asyncio.wait_for(task, 5)
+            assert not result[0]["ok"] and "已变化" in result[0]["error"]
+            if candidates:
+                assert candidates[0].list_plugins() == [] and candidates[0].plugin_model_manager is models
+        assert managers[0].pool.get("one-0").session is sessions[0]
+        assert sessions[0].list_plugins()[0] is old_handle and sessions[0].ctx.get_context() == before
+    finally:
+        release.set()
+        await _close(managers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_full_application_plugin_resources_use_captured_model_source(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
+    """
+    实际插件安装读取同代四类模型资源, 运行期仍恢复原管理器且重试无重复安装
+
+    参数:
+    - tmp_path: 隔离来源与插件目录
+    - monkeypatch: 真实实例夹具
+    - asynchronous: 同步或异步实例
+    """
+    backend, configs, _globals, managers, _providers, _sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    models = managers[0].model_config_manager
+    try:
+        writer = ModelConfigManager(models.storage_path)
+        writer.set_embedding_config(EmbeddingConfig(model="embedding-new", api_key="test"), "resource")
+        writer.set_rerank_config(ReRankConfig(model="rerank-new", api_key="test", base_url="http://localhost:1"), "resource")
+        writer.set_asr_config(ASRConfig(model="asr-new", api_key="test"), "resource")
+        assert not models.has_config("embedding", "resource")
+        plugin = tmp_path / "plugins" / "model_probe"
+        plugin.mkdir(parents=True)
+        (plugin / "meta.yaml").write_text(
+            "name: model_probe\nversion: 0.1.0\nconfig_schema:\n"
+            "  llm:\n    type: llm\n    default: demo\n"
+            "  embed:\n    type: embed\n    default: resource\n"
+            "  rerank:\n    type: rerank\n    default: resource\n"
+            "  asr:\n    type: asr\n    default: resource\n", encoding="utf-8",
+        )
+        (plugin / "tools.py").write_text(
+            "def get_tools(session, config, *, resources):\n"
+            "    session._probe_resources = resources\n"
+            "    return []\n", encoding="utf-8",
+        )
+        configs.plugin_catalog.user_dir = plugin.parent
+        configs.update("assistant", {"plugins": ["session_commands", "model_probe"]})
+        result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert len(result) == 3 and all(item["ok"] and item["action"] == "reconcile_plugins" for item in result)
+        handles = []
+        for manager in managers:
+            for entry in manager.pool.list_entries().values():
+                session = entry.session
+                assert session.plugin_model_manager is models
+                resources = session._probe_resources
+                assert {key: value[1].model for key, value in resources._configs.items()} == {
+                    "llm": "demo", "embed": "embedding-new", "rerank": "rerank-new", "asr": "asr-new",
+                }
+                assert resources._clients == {}
+                handles.append(session.list_plugins()[-1])
+        repeated = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert all(item["ok"] and item["action"] == "noop" for item in repeated) and len(builds) == 3
+        assert [entry.session.list_plugins()[-1] for manager in managers for entry in manager.pool.list_entries().values()] == handles
+    finally:
+        await _close(managers)
+
+
+@pytest.mark.asyncio
+async def test_model_change_during_capture_retries_all_sources(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    捕获模型中途变化时整体重读, 不把旧参数标成新来源版本
+
+    参数:
+    - tmp_path: 隔离来源
+    - monkeypatch: 实际模型读取后写入夹具
+    """
+    backend, _configs, _globals, managers, _providers, _sessions, builds = await _setup(tmp_path, monkeypatch)
+    models = managers[0].model_config_manager
+    read = ModelConfigSnapshot.read
+    reads = []
+
+    def changed(manager):
+        """
+        首次真实读取后变更来源, 让捕获核验重新准备整个目标
+
+        参数:
+        - manager: 当前模型来源
+
+        返回:
+        - 变更前捕获结果
+        """
+        result = read(manager)
+        reads.append(True)
+        if len(reads) == 1:
+            writer = ModelConfigManager(models.storage_path)
+            writer.update_llm_config("demo", temperature=0.9)
+        return result
+
+    try:
+        monkeypatch.setattr(ModelConfigSnapshot, "read", changed)
+        result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert len(reads) == 2 and len(builds) == 6
+        assert len(result) == 3 and all(item["ok"] and item["action"] == "restart" for item in result)
+        repeated = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert all(item["ok"] and item["action"] == "noop" for item in repeated) and len(builds) == 6
+    finally:
+        await _close(managers)
+
+
+@pytest.mark.asyncio
+async def test_disabling_agent_does_not_need_or_repair_model_source(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    禁用目标只卸载实例, 不为用不到的模型来源失败或回写
+
+    参数:
+    - tmp_path: 隔离来源
+    - monkeypatch: 实际实例夹具
+    """
+    backend, configs, _globals, managers, _providers, _sessions, builds = await _setup(tmp_path, monkeypatch)
+    models = managers[0].model_config_manager
+    try:
+        configs.update("assistant", {"enabled": False})
+        models.storage_path.write_text("broken", encoding="utf-8")
+        result = await backend.reconcile_edictum_runtime_async(config_name="assistant")
+        assert len(result) == 3 and all(item["ok"] and item["action"] == "unload" for item in result)
+        assert len(builds) == 3 and models.storage_path.read_text(encoding="utf-8") == "broken"
     finally:
         await _close(managers)
 

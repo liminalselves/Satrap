@@ -7,10 +7,11 @@ Edictum 命名会话 Provider
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from contextlib import contextmanager
 import threading
 import hashlib
 import inspect
-from typing import Any, cast
+from typing import Any, cast, Iterator, TYPE_CHECKING
 import json
 import time
 
@@ -41,6 +42,9 @@ from satrap.edictum.settings import normalize_session_settings
 from satrap.core.type import SessionConfig
 
 from satrap.core.log import logger
+
+if TYPE_CHECKING:
+    from satrap.core.framework.BackGroundManager import ModelConfigManager
 
 
 @dataclass
@@ -344,12 +348,13 @@ class EdictumProvider:
         if state is None or state.type_definition.plugin_installer is None:
             return
         if apply_snapshot is not None:
-            specs = resolve_runtime_specs(session, apply_snapshot.specs_for(state.config_name), apply_snapshot.sources.catalog,
-                                          snapshot=apply_snapshot.sources)
-            installer = state.type_definition.plugin_installer
-            uninstaller = state.type_definition.plugin_uninstaller
-            result = reconcile_plugin_states(state.plugins, specs, lambda path, values: installer(session, path, values),
-                                             (lambda name: uninstaller(session, name)) if uninstaller else None)
+            with self._application_models(session, apply_snapshot):
+                specs = resolve_runtime_specs(session, apply_snapshot.specs_for(state.config_name), apply_snapshot.sources.catalog,
+                                              snapshot=apply_snapshot.sources)
+                installer = state.type_definition.plugin_installer
+                uninstaller = state.type_definition.plugin_uninstaller
+                result = reconcile_plugin_states(state.plugins, specs, lambda path, values: installer(session, path, values),
+                                                 (lambda name: uninstaller(session, name)) if uninstaller else None)
             self._refresh_runtime_fingerprint(state)
             if not result.get("ok", False):
                 raise RuntimeError("候选会话插件准备失败, 请检查插件运行状态")
@@ -761,6 +766,46 @@ class EdictumProvider:
         返回:
         - dict[str, Any]: 生命周期协调结果
         """
+        with self._application_models(session, apply_snapshot):
+            return await self._reconcile_session_plugins_from_sources_async(session, desired_plugins=desired_plugins, apply_snapshot=apply_snapshot)
+
+    @contextmanager
+    def _application_models(self, session: Session | AsyncSession, apply_snapshot: EdictumPluginApplySnapshot | None) -> Iterator[None]:
+        """
+        操作锁内显式使用捕获模型资源, 结束后恢复运行期管理器
+
+        参数:
+        - session: 当前或候选实例
+        - apply_snapshot: 可选完整应用来源
+
+        返回:
+        - 仅在本次资源合成与安装期间生效的作用域
+        """
+        original = session.plugin_model_manager
+        if apply_snapshot is None or not apply_snapshot.has_model_sources:
+            yield
+            return
+        session.plugin_model_manager = apply_snapshot.models_for(cast("ModelConfigManager | None", original))
+        try:
+            yield
+        finally:
+            session.plugin_model_manager = original
+
+    async def _reconcile_session_plugins_from_sources_async(
+        self, session: Session | AsyncSession, *, desired_plugins: object | None,
+        apply_snapshot: EdictumPluginApplySnapshot | None,
+    ) -> dict[str, Any]:
+        """
+        在已选定模型来源的作用域内执行原插件协调
+
+        参数:
+        - session: 当前实例
+        - desired_plugins: 可选目标规格
+        - apply_snapshot: 可选本次固定来源
+
+        返回:
+        - 原生命周期协调结果
+        """
         timings = PhaseTimings()
         state = self._get_runtime_state(session)
         if state is None:
@@ -809,7 +854,8 @@ class EdictumProvider:
         }
 
     def capture_plugin_application(self, scope: dict[str, bool], *, desired_plugins: object | None = None,
-                                   plugin_name: str | None = None, desired_config: dict[str, Any] | None = None) -> EdictumPluginApplySnapshot:
+                                   plugin_name: str | None = None, desired_config: dict[str, Any] | None = None,
+                                   model_managers: tuple[ModelConfigManager, ...] = ()) -> EdictumPluginApplySnapshot:
         """
         准备当前平台直接应用的共享来源, 后端跨平台入口可提供同一快照
 
@@ -818,12 +864,14 @@ class EdictumProvider:
         - desired_plugins: 可选临时目标规格
         - plugin_name: 可选引用过滤
         - desired_config: 可选完整临时运行目标
+        - model_managers: 可选完整应用的只读模型来源
 
         返回:
         - 命名配置与全局参数的同代快照
         """
         return EdictumPluginApplySnapshot.capture(self.config_manager, set(scope), desired_plugins=desired_plugins,
-                                                plugin_name=plugin_name, retained_config_names={name for name, old in scope.items() if old}, desired_config=desired_config)
+                                                plugin_name=plugin_name, retained_config_names={name for name, old in scope.items() if old}, desired_config=desired_config,
+                                                model_managers=model_managers)
 
     def references_plugin(self, session: Session | AsyncSession, plugin_name: str, *, desired_plugins: object | None = None) -> bool:
         """
@@ -889,8 +937,9 @@ class EdictumProvider:
             config = self.config_manager.get_config(state.config_name)
             desired_plugins = config.get("plugins", []) if config is not None else []
         if apply_snapshot is not None:
-            desired_specs = resolve_runtime_specs(session, apply_snapshot.specs_for(target_config_name or state.config_name),
-                                                  apply_snapshot.sources.catalog, snapshot=apply_snapshot.sources)
+            with self._application_models(session, apply_snapshot):
+                desired_specs = resolve_runtime_specs(session, apply_snapshot.specs_for(target_config_name or state.config_name),
+                                                      apply_snapshot.sources.catalog, snapshot=apply_snapshot.sources)
         else:
             desired_specs = parse_plugin_specs(desired_plugins, self.plugin_catalog, require_available=False)
             desired_specs = resolve_runtime_specs(session, desired_specs, self.plugin_catalog)
