@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from unittest.mock import Mock
 from pathlib import Path
+import json
 import pytest
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
@@ -10,6 +11,30 @@ from satrap.core.config.model_service import ModelConfigService
 from satrap.edictum.plugin_resources import build_model_client
 from satrap.core.APICall.EmbedCall import Embedding
 from satrap.core.type import LLMConfig
+
+
+def test_legacy_model_config_migrates_once_then_reload_preserves_file(tmp_path: Path) -> None:
+    """
+    旧格式仍迁移为命名配置, 后续读取不重复写回
+
+    参数:
+    - tmp_path: 测试配置目录
+    """
+    path = tmp_path / 'models.json'
+    legacy = {'llm': {'model': 'legacy-model', 'api_key': 'test-secret'}}
+    path.write_text(json.dumps(legacy), encoding='utf-8')
+    manager = ModelConfigManager(storage_path=path)
+    normalized = json.loads(path.read_text(encoding='utf-8'))
+    assert normalized['llm']['default']['model'] == 'legacy-model'
+    assert normalized['llm']['default']['api_key'] == 'test-secret'
+    initial = (path.read_bytes(), path.stat().st_mtime_ns)
+    for _ in range(3):
+        manager.reload()
+        reloaded = ModelConfigManager(storage_path=path)
+        assert reloaded.get_llm_config().model == 'legacy-model'
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == initial
+    manager.update_llm_config(model='updated-model')
+    assert ModelConfigManager(storage_path=path).get_llm_config().model == 'updated-model'
 
 
 def test_clear_embedding_dimensions_persists_and_omits_request_parameter(tmp_path: Path) -> None:

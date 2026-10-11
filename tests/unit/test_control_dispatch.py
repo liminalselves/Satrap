@@ -21,6 +21,7 @@ import time
 
 from satrap.edictum.plugin_config import PluginConfigManager
 from satrap.core.backend import control_server
+from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.type import SessionConfig, EmbeddingConfig
 from satrap.edictum.plugin_archive import PluginArchiveInstaller
 from satrap.edictum.plugin_catalog import PluginCatalog
@@ -100,6 +101,68 @@ def _json_body(response: bytes) -> dict[str, Any]:
     payload = json.loads(response.split(b"\r\n\r\n", 1)[1])
     assert isinstance(payload, dict)
     return payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('model_type', ['llm', 'embedding', 'rerank', 'asr'])
+async def test_model_get_keeps_config_version_and_file_unchanged(monkeypatch, tmp_path, model_type):
+    """
+    连续页面读取不能改写模型配置或触发版本重试
+
+    参数:
+    - monkeypatch: 隔离控制服务来源
+    - tmp_path: 测试配置目录
+    - model_type: 页面读取的模型类型
+    """
+    models = tmp_path / 'models.json'
+    ModelConfigManager(storage_path=models)
+    main = tmp_path / 'main.json'
+    main.write_text(json.dumps({'model_config_path': str(models)}), encoding='utf-8')
+    monkeypatch.setattr(control_server, 'CONFIG_PATH', main)
+    monkeypatch.setattr(control_server, 'PROJECT_ROOT', tmp_path)
+    monkeypatch.setattr(control_server, '_CONFIG_VERSION_SERVICES', {})
+    initial = (models.read_bytes(), models.stat().st_mtime_ns)
+    for _ in range(3):
+        before = _json_body(await _request('/config/versions?resources=models'))
+        response = await _request('/config/models?type=' + model_type)
+        after = _json_body(await _request('/config/versions?resources=models'))
+        assert response.startswith(b'HTTP/1.1 200')
+        assert 'default' in _json_body(response)
+        assert before == after
+        assert (models.read_bytes(), models.stat().st_mtime_ns) == initial
+
+
+@pytest.mark.asyncio
+async def test_model_versions_detect_external_edits_and_parallel_reads_are_stable(monkeypatch, tmp_path):
+    """
+    外部配置修改仍改变版本, 四种模型并发读取不再改写文件
+
+    参数:
+    - monkeypatch: 隔离控制服务来源
+    - tmp_path: 测试配置目录
+    """
+    models = tmp_path / 'models.json'
+    ModelConfigManager(storage_path=models)
+    main = tmp_path / 'main.json'
+    main.write_text(json.dumps({'model_config_path': str(models)}), encoding='utf-8')
+    monkeypatch.setattr(control_server, 'CONFIG_PATH', main)
+    monkeypatch.setattr(control_server, 'PROJECT_ROOT', tmp_path)
+    monkeypatch.setattr(control_server, '_CONFIG_VERSION_SERVICES', {})
+    before = _json_body(await _request('/config/versions?resources=models'))
+    document = json.loads(models.read_text(encoding='utf-8'))
+    document['llm']['default']['model'] = 'externally-updated-model'
+    models.write_text(json.dumps(document, ensure_ascii=False), encoding='utf-8')
+    changed = _json_body(await _request('/config/versions?resources=models'))
+    assert changed != before
+    initial = (models.read_bytes(), models.stat().st_mtime_ns)
+    responses = await asyncio.gather(*(
+        _request('/config/models?type=' + model_type)
+        for model_type in ('llm', 'embedding', 'rerank', 'asr')
+    ))
+    assert all(response.startswith(b'HTTP/1.1 200') for response in responses)
+    assert _json_body(responses[0])['default']['model'] == 'externally-updated-model'
+    assert _json_body(await _request('/config/versions?resources=models')) == changed
+    assert (models.read_bytes(), models.stat().st_mtime_ns) == initial
 
 
 @pytest.mark.asyncio

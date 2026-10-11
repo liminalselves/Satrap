@@ -237,7 +237,7 @@ class ModelConfigManager:
             json.dump(self._to_payload_locked(mask_api_key=False), f, ensure_ascii=False, indent=2)
 
     def reload(self):
-        """重新加载配置"""
+        """重新加载配置, 仅在格式迁移或归一化改变内容时写回"""
         with self._lock:
             if not self.storage_path.exists():
                 self._save_locked()
@@ -267,7 +267,8 @@ class ModelConfigManager:
                 self._asr_configs = self._deserialize_named_configs(
                     data.get("asr", {}), ASRConfig, self.DEFAULT_NAME
                 )
-                self._save_locked()
+                if self._to_payload_locked(mask_api_key=False) != data:
+                    self._save_locked()   # 避免普通读取改动文件指纹, 导致前端版本校验持续重试
             except Exception as e:
                 logger.error(f"[ModelConfigManager] 解析配置失败: {e}")
 
