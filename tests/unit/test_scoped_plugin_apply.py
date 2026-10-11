@@ -79,8 +79,7 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     snapshot = applied[0].get("apply_snapshot")
     assert isinstance(snapshot, EdictumPluginApplySnapshot)
     expected["apply_snapshot"] = snapshot
-    if kind == "runtime":
-        expected["apply_targets"] = [("one", None, "assistant", "generation")]
+    expected["apply_targets"] = [("one", None, "assistant", "generation")]
     assert applied == [expected]
 
 

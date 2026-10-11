@@ -114,7 +114,7 @@ async def test_session_manager_intersects_plugin_and_named_config_scope():
     provider = SimpleNamespace(reconcile_session_plugins_async=reconcile, references_plugin=lambda session, name, **kwargs: session.name != "unrelated")
     manager.provider_registry = SimpleNamespace(get=lambda name: provider)
     entries = {name: SimpleNamespace(session=SimpleNamespace(name=name, _satrap_provider_name="edictum"), async_operation_lock=asyncio.Lock(),
-                                    sync_operation_lock=threading.RLock()) for name in ("matched", "unrelated", "other-config")}
+                                    sync_operation_lock=threading.RLock(), instance_generation=name) for name in ("matched", "unrelated", "other-config")}
     manager.pool = SimpleNamespace(list_entries=lambda: entries)
     manager.store = SimpleNamespace(get=lambda name: SimpleNamespace(session_type_name="other" if name == "other-config" else "agent"))
     manager.platform_id = "test"

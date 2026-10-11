@@ -2635,12 +2635,15 @@ class BackendManager:
                     refs_by_platform.setdefault(platform_id, set()).add(session_id)
         scope: dict[str, bool] = {}
         selected_managers: list[tuple[str, SessionManager]] = []
+        targets_by_platform: dict[str, list[tuple[str, SessionEntry, str, str]]] = {}
         for platform_id, (session_manager, _) in self._platform_runtimes.items():
             if refs_by_platform is not None and platform_id not in refs_by_platform:
                 continue
             selected_managers.append((platform_id, session_manager))
+            targets = session_manager.edictum_runtime_apply_targets(config_name=config_name, session_ids=(refs_by_platform or {}).get(platform_id))
+            targets_by_platform[platform_id] = targets
             for name, old in session_manager.edictum_plugin_apply_scope(
-                config_name=config_name, session_ids=(refs_by_platform or {}).get(platform_id), plugin_name=plugin_name,
+                plugin_name=plugin_name, apply_targets=targets,
             ).items():
                 scope[name] = scope.get(name, False) or old
         manager = self.edictum_config_manager
@@ -2660,6 +2663,7 @@ class BackendManager:
                 session_ids=(refs_by_platform or {}).get(platform_id),
                 desired_plugins=desired_plugins,
                 concurrency=concurrency,
+                apply_targets=targets_by_platform[platform_id],
                 **apply_args,
             ))
         grouped = await asyncio.gather(*pending) if pending else []

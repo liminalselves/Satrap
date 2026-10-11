@@ -437,3 +437,83 @@ async def test_full_snapshot_handles_disabled_deleted_and_temporary_targets(tmp_
             assert all(manager.pool.list_entries() == {} for manager in managers)
     finally:
         await _close(managers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("change", ["binding", "generation", "source_check"])
+async def test_plugin_application_keeps_frozen_target_and_rechecks_generation(tmp_path: Path, monkeypatch: Any, asynchronous: bool, change: str) -> None:
+    """
+    仅插件应用同样复核冻结绑定和运行代次, 来源核验让出循环后不能绕过
+
+    参数:
+    - tmp_path: 隔离存储
+    - monkeypatch: 来源捕获通知与核验竞争夹具
+    - asynchronous: 同步或异步会话
+    - change: 排队改绑, 排队替换或来源核验期间替换
+    """
+    backend, configs, globals_, managers, _providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    captured = threading.Event()
+    capture = EdictumPluginApplySnapshot.capture
+
+    def record(*args, **kwargs):
+        """
+        通知真实来源准备完成, 可在核验工作线程模拟运行代次变化
+
+        参数:
+        - args: 捕获范围
+        - kwargs: 来源选项
+
+        返回:
+        - 真实来源快照
+        """
+        snapshot = capture(*args, **kwargs)
+        if change == "source_check":
+            current = snapshot.sources.is_current
+
+            def replace_during_check():
+                """真实来源核验成功后替换同一条目对象的代次"""
+                valid = current()
+                old = managers[0].pool.get("one-0")
+                replacement = SessionEntry(session=sessions[0], session_type="assistant", created_at=0, last_used=0)
+                if old is None:
+                    raise AssertionError("测试原实例不存在")
+                if not managers[0].pool.replace("one-0", old, replacement):
+                    raise AssertionError("测试未替换运行代次")
+                return valid
+
+            monkeypatch.setattr(snapshot.sources, "is_current", replace_during_check)
+        captured.set()
+        return snapshot
+
+    try:
+        plugin = configs.plugin_catalog.get("session_commands")
+        if plugin is None:
+            raise AssertionError("测试插件不存在")
+        globals_.save_global("session_commands", plugin.config_schema, {"about_text": "must not apply"})
+        configs.create("other", {"edictum_type": "async_simple" if asynchronous else "simple", "model_name": "demo", "plugins": ["session_commands"]})
+        monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", record)
+        old_handle = sessions[0].list_plugins()[0]
+        entry = managers[0].pool.get("one-0")
+        await entry.async_operation_lock.acquire()
+        task = asyncio.create_task(backend.reconcile_edictum_plugins_async(
+            config_name="assistant", session_refs=[{"platform_id": "one", "session_id": "one-0"}],
+        ))
+        try:
+            assert await asyncio.to_thread(captured.wait, 2)
+            if change == "binding":
+                managers[0].update_session_config("one-0", session_type_name="other")
+            elif change == "generation":
+                replacement = SessionEntry(session=sessions[0], session_type="assistant", created_at=0, last_used=0)
+                assert managers[0].pool.replace("one-0", entry, replacement)
+        finally:
+            entry.async_operation_lock.release()
+        result = await asyncio.wait_for(task, 5)
+        assert len(result) == 1 and not result[0]["ok"]
+        assert "Agent 绑定" in result[0]["error"] if change == "binding" else "运行时已变化" in result[0]["error"]
+        assert managers[0].pool.get("one-0").session is sessions[0]
+        assert sessions[0].list_plugins()[0] is old_handle and len(builds) == 3
+        about = await sessions[0].run("/about") if asynchronous else sessions[0].run("/about")
+        assert about != "must not apply"
+    finally:
+        await _close(managers)
