@@ -2510,6 +2510,16 @@ class BackendManager:
             ))
         return results
 
+    async def _reload_edictum_config_async(self) -> None:
+        """在线程中刷新应用所需的冷配置, 读取失败记录堆栈并停止协调"""
+        manager = self.edictum_config_manager
+        if manager is not None:
+            try:
+                await asyncio.to_thread(manager.reload)
+            except Exception as error:
+                logger.error(f"[BackendManager] 协调读取冷配置失败: {error}\n{traceback.format_exc()}")
+                raise
+
     async def reconcile_edictum_runtime_async(
         self,
         *,
@@ -2530,6 +2540,7 @@ class BackendManager:
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
         """
+        await self._reload_edictum_config_async()
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}
@@ -2608,13 +2619,7 @@ class BackendManager:
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
         """
-        manager = self.edictum_config_manager
-        if manager is not None:
-            try:
-                await asyncio.to_thread(manager.reload)
-            except Exception as error:
-                logger.error(f"[BackendManager] 插件协调读取冷配置失败: {error}\n{traceback.format_exc()}")
-                raise
+        await self._reload_edictum_config_async()
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}

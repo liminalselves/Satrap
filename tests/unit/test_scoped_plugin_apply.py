@@ -11,8 +11,14 @@ from satrap.core.backend.BackendManager import BackendManager, logger
 
 
 @pytest.mark.asyncio
-async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models():
-    """慢冷配置读取允许其它协程运行, 后续协调保留指定会话范围"""
+@pytest.mark.parametrize("kind", ["plugins", "runtime"])
+async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models(kind: str):
+    """
+    慢冷配置读取允许其它协程运行, 后续协调保留指定会话范围
+
+    参数:
+    - kind: 插件或完整配置协调路径
+    """
     entered = threading.Event()
     release = threading.Event()
     read_threads: list[int] = []
@@ -45,9 +51,10 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     backend = cast(Any, BackendManager.__new__(BackendManager))
     backend._edictum_cfg = SimpleNamespace(reload=reload)
     backend._model_cfg = SimpleNamespace(reload=unrelated_reload)
-    runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile)
+    runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile, reconcile_edictum_runtime_async=reconcile)
     backend._platform_runtimes = {"ob": (runtime, None), "other": (runtime, None)}
-    task = asyncio.create_task(backend.reconcile_edictum_plugins_async(
+    apply = getattr(backend, f"reconcile_edictum_{kind}_async")
+    task = asyncio.create_task(apply(
         config_name="assistant", session_refs=[{"platform_id": "ob", "session_id": "one"}],
     ))
     try:
@@ -60,12 +67,20 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     assert await task == [{"ok": True, "session_id": "one"}]
     assert len(read_threads) == 1
     assert read_threads[0] != threading.get_ident()
-    assert applied == [{"config_name": "assistant", "session_ids": {"one"}, "desired_plugins": None, "concurrency": 4}]
+    desired_key = "desired_plugins" if kind == "plugins" else "desired_config"
+    assert applied == [{"config_name": "assistant", "session_ids": {"one"}, desired_key: None, "concurrency": 4}]
 
 
 @pytest.mark.asyncio
-async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch):
-    """配置读取失败记录堆栈, 不沿用旧配置安装插件"""
+@pytest.mark.parametrize("kind", ["plugins", "runtime"])
+async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch, kind: str):
+    """
+    配置读取失败记录堆栈, 不沿用旧配置安装插件
+
+    参数:
+    - monkeypatch: 日志替换夹具
+    - kind: 插件或完整配置协调路径
+    """
     def failed_read() -> None:
         """模拟文件读取失败"""
         raise OSError("source unavailable")
@@ -76,6 +91,6 @@ async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch):
     backend._edictum_cfg = SimpleNamespace(reload=failed_read)
     backend._platform_runtimes = {}
     with pytest.raises(OSError, match="source unavailable"):
-        await backend.reconcile_edictum_plugins_async(config_name="assistant")
+        await getattr(backend, f"reconcile_edictum_{kind}_async")(config_name="assistant")
     assert len(messages) == 1
     assert "Traceback" in messages[0] and "source unavailable" in messages[0]

@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import yaml
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
+from satrap.core.backend.BackendManager import BackendManager
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionConfigStore, SessionManager, SessionRegistry
 from satrap.core.framework.providers import (
@@ -588,9 +589,11 @@ async def test_edictum_provider_applies_and_hot_updates_plugin_capabilities(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("external_write", [False, True])
 async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    external_write: bool,
 ) -> None:
     """
     Edictum 命名参数变化应原子热重启且实例只持久化覆盖项
@@ -598,6 +601,7 @@ async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     参数:
     - tmp_path: 临时目录
     - monkeypatch: pytest monkeypatch 夹具
+    - external_write: 为 True 时模拟控制服务用独立管理器保存并通过后端定向协调
     """
     registry = EdictumTypeRegistry()
     registry.register(
@@ -647,16 +651,22 @@ async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     assert isinstance(old_session, _CapturingAsyncSession)
     assert old_session.marker == "before"
 
-    config_manager.update(
+    writer = EdictumConfigManager(registry, tmp_path / "edictum.json") if external_write else config_manager
+    writer.update(
         "onebot-assistant",
         {"params": {"marker": "after"}},
     )
-    preview = manager.preview_edictum_runtime(config_name="onebot-assistant")
-    result = await manager.reconcile_edictum_runtime_async(
-        config_name="onebot-assistant"
-    )
-
-    assert preview[0]["action"] == "restart"
+    if external_write:
+        stale = config_manager.get_config("onebot-assistant")
+        assert stale is not None and stale["params"]["marker"] == "before"
+        backend = cast(Any, BackendManager.__new__(BackendManager))
+        backend._edictum_cfg = config_manager
+        backend._platform_runtimes = {"onebot-main": (manager, None)}
+        result = await backend.reconcile_edictum_runtime_async(config_name="onebot-assistant")
+    else:
+        preview = manager.preview_edictum_runtime(config_name="onebot-assistant")
+        assert preview[0]["action"] == "restart"
+        result = await manager.reconcile_edictum_runtime_async(config_name="onebot-assistant")
     assert result[0]["ok"] is True
     assert result[0]["action"] == "restart"
     new_entry = manager.pool.get("onebot-session")
@@ -669,13 +679,11 @@ async def test_edictum_full_config_change_hot_restarts_with_latest_defaults(
     assert onebot_cfg is not None
     assert onebot_cfg.session_config == {}
 
-    config_manager.update(
+    writer.update(
         "onebot-assistant",
         {"params": {"marker": "fail"}},
     )
-    failed = await manager.reconcile_edictum_runtime_async(
-        config_name="onebot-assistant"
-    )
+    failed = await (backend if external_write else manager).reconcile_edictum_runtime_async(config_name="onebot-assistant")
 
     assert failed[0]["ok"] is False
     assert failed[0]["old_runtime_preserved"] is True

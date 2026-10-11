@@ -76,6 +76,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
   const [pluginSaving, setPluginSaving] = useState(false);
   const [pluginProgress, setPluginProgress] = useState('');
   const [runtimeResult, setRuntimeResult] = useState<ConfigReloadResult | null>(null);
+  const [runtimeApplyKind, setRuntimeApplyKind] = useState<'plugins' | 'full'>('plugins');
   const [retryingRuntime, setRetryingRuntime] = useState(false);
   const [runtimeTargetName, setRuntimeTargetName] = useState<string | null>(null);
   const [runtimePlatformId, setRuntimePlatformId] = useState('');
@@ -157,6 +158,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
       return;
     }
     setSaving(true);
+    let saved = false;
     try {
       if (['simple', 'async_simple'].includes(typeName) && form.thinking
         && !getThinkingOptions(llmConfigs[form.model_name]).some((option) => option.value === form.thinking)) {
@@ -179,10 +181,12 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
           && !confirm('本次配置将立即协调 ' + affected.length + ' 个活跃会话, 是否继续?')
         ) return;
       }
-      if (editingName) await edictumApi.update(editingName, payload);
-      else await edictumApi.create(payload);
-      const reloadResult = isRunning ? await edictumApi.applyRuntimeChanges() : null;
-      if (reloadResult) setRuntimeResult(reloadResult);
+      const updated = editingName ? await edictumApi.update(editingName, payload) : await edictumApi.create(payload);
+      saved = true;
+      const finalName = updated.name || name;
+      acceptEdictumConfig(finalName, updated.config || await edictumApi.get(finalName), editingName || undefined);
+      const reloadResult = isRunning ? await edictumApi.applyFullRuntimeChanges(finalName) : null;
+      if (reloadResult) { setRuntimeResult(reloadResult); setRuntimeApplyKind('full'); }
       const reloaded = !reloadResult || reloadResult.ok;
       toast(
         reloaded ? 'success' : 'warning',
@@ -191,13 +195,12 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
           : 'Edictum 配置已保存, 但后端热加载失败',
       );
       setModalOpen(false);
-      await refresh();
     } catch (error) {
-      toast('error', '保存失败: ' + (error instanceof Error ? error.message : '未知错误'));
+      toast(saved ? 'warning' : 'error', (saved ? 'Edictum 配置已保存, 运行时应用未确认: ' : '保存失败: ') + (error instanceof Error ? error.message : '未知错误'));
     } finally {
       setSaving(false);
     }
-  }, [editingName, form, isRunning, refresh, llmConfigs]);
+  }, [editingName, form, isRunning, acceptEdictumConfig, llmConfigs]);
 
   const remove = useCallback(async (name: string) => {
     if (!confirm(`确定要删除 Edictum 配置 "${name}" 吗?`)) return;
@@ -290,6 +293,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
         setPluginProgress('配置已保存, 正在应用到该 Agent 的活跃会话');
         const result = await edictumApi.retryRuntimeChanges({ config_name: pluginManagerName });
         setRuntimeResult(result);
+        setRuntimeApplyKind('plugins');
         const affected = result.edictum_sessions.filter(
           (item) => item.config_name === pluginManagerName,
         );
@@ -317,12 +321,15 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     if (!failedSessions.length) return;
     setRetryingRuntime(true);
     try {
-      const result = await edictumApi.retryRuntimeChanges({ session_refs: failedSessions.map((item) => ({ platform_id: item.platform_id, session_id: item.session_id })) });
+      const sessionRefs = failedSessions.map((item) => ({ platform_id: item.platform_id, session_id: item.session_id }));
+      const result = runtimeApplyKind === 'full'
+        ? await edictumApi.retryFullRuntimeChanges(sessionRefs)
+        : await edictumApi.retryRuntimeChanges({ session_refs: sessionRefs });
       setRuntimeResult(result);
       const failed = result.edictum_sessions.filter((item) => !item.ok).length;
       toast(
         failed === 0 ? 'success' : 'warning',
-        failed === 0 ? '插件漂移重试完成' : `插件漂移重试完成, 仍有 ${failed} 个会话未同步`,
+        failed === 0 ? (runtimeApplyKind === 'full' ? '配置同步重试完成' : '插件漂移重试完成') : `仍有 ${failed} 个会话未同步`,
       );
       await onRuntimeCreated?.();
     } catch (error) {
@@ -330,7 +337,7 @@ export function EdictumSessionsPanel({ llmNames, onRuntimeCreated }: EdictumSess
     } finally {
       setRetryingRuntime(false);
     }
-  }, [onRuntimeCreated, runtimeResult]);
+  }, [onRuntimeCreated, runtimeResult, runtimeApplyKind]);
 
   const typeMap = useMemo(
     () => Object.fromEntries(types.map((definition) => [definition.name, definition])),
