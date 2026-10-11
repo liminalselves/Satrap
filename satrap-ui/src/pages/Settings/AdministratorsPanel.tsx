@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Toggle } from '@/components/ui/Toggle';
 import { toast } from '@/components/ui/Toast';
+import { getControlApiUrl } from '@/utils/constants';
 
 // 名单式插件编辑: 界面直接操作 included/excluded/allow/deny 四个名单, 添加即生效, 没有中间表态层
 const pluginBadges = (plugin: AdministratorPlugin | undefined, platformIds: string[]): string => {
@@ -70,6 +71,8 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const [comparison, setComparison] = useState(false);
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [checkingRuntime, setCheckingRuntime] = useState(false);
+  const readController = useRef<AbortController | null>(null);
   // 卡片平铺只显示摘要, 点击后在弹窗中编辑; 新建的卡片直接打开弹窗
   const [openCard, setOpenCard] = useState<string | null>(null);
   const dirty = snapshot !== null
@@ -87,10 +90,15 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const load = useCallback(async () => {
     if (busyRef.current) return;
     const request = ++requests.current;
+    const source = getControlApiUrl();
+    readController.current?.abort();
+    const controller = new AbortController();
+    readController.current = controller;
     setLoading(true);
+    setCheckingRuntime(false);
     try {
-      const value = await administratorsApi.read();
-      if (request !== requests.current) return;
+      const value = await administratorsApi.read(controller.signal, source);
+      if (request !== requests.current || source !== getControlApiUrl() || controller.signal.aborted) return;
       if (dirtyRef.current) {
         setSnapshot(previous => previous ? { ...previous, platforms: value.platforms, plugins: value.plugins, plugin_errors: value.plugin_errors, runtime: value.runtime } : value);
       } else {
@@ -103,14 +111,25 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
         setComparison(false);
       }
       setError('');
+      setLoading(false);
+      setCheckingRuntime(true);
+      const confirmed = await administratorsApi.runtime(controller.signal, source);
+      if (request !== requests.current || source !== getControlApiUrl() || controller.signal.aborted) return;
+      if (confirmed) setSnapshot(current => current && current.section_revision === value.section_revision
+        ? { ...current, runtime: confirmed.section_revision === value.section_revision ? confirmed.runtime
+          : { status: 'unconfirmed', error: '管理员配置已变化, 请重新读取后确认' } } : current);
     } catch (cause) {
-      if (request === requests.current) setError(administratorError(cause));
+      if (request === requests.current && source === getControlApiUrl() && !controller.signal.aborted) setError(administratorError(cause));
     } finally {
-      if (request === requests.current) setLoading(false);
+      if (request === requests.current) { setLoading(false); setCheckingRuntime(false); }
     }
   }, []);
 
-  useEffect(() => { if (active) void load(); }, [active, load]);
+  useEffect(() => {
+    if (active) void load();
+    else { setCheckingRuntime(false); setLoading(false); }
+    return () => { requests.current++; readController.current?.abort(); };
+  }, [active, load]);
   useEffect(() => () => { requests.current++; }, []);
 
   const change = (id: string, update: (group: AdministratorGroup) => AdministratorGroup) => {
@@ -126,6 +145,8 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
   const save = async () => {
     if (!snapshot || busyRef.current) return;
     requests.current++;
+    readController.current?.abort();
+    setCheckingRuntime(false);
     busyRef.current = true;
     setBusy(true);
     setLoading(false);
@@ -156,6 +177,8 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
     busyRef.current = true;
     setBusy(true);
     requests.current++;
+    readController.current?.abort();
+    setCheckingRuntime(false);
     setError('');
     try {
       if (action === 'preview') setPreview(await administratorsApi.preview(groups, overrides, currentRebind, currentRebindOverrides));
@@ -199,6 +222,7 @@ export function AdministratorsPanel({ active, onSaved }: { active: boolean; onSa
       <Button variant="primary" disabled={!snapshot || !dirty || busy} onClick={() => void save()}>保存并应用</Button>
     </div>
     {loading && <p className="text-sm text-text-secondary">正在读取管理员设置…</p>}
+    {checkingRuntime && <p role="status" className="text-sm text-text-secondary">正在确认管理员运行状态…</p>}
     {error && <div role="alert" className="rounded-md border border-error p-3 text-sm text-error">{error}</div>}
     {!!snapshot?.plugin_errors?.length && <div role="alert" className="rounded-md border border-border-glass p-3 text-sm"><p>以下插件无法加载, 不会授予管理员权限:</p><ul>{snapshot.plugin_errors.map((item, index) => <li key={`${item.name}-${index}`}>{item.name}: {item.error}</li>)}</ul></div>}
     {snapshot?.migrated_from_legacy && <div role="alert" className="rounded-md border border-border-glass p-3 text-sm">

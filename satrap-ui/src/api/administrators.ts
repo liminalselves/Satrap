@@ -1,5 +1,7 @@
 import axios from 'axios';
 import { controlClient } from './control';
+import { apiClient, ApiError } from './client';
+import { getControlApiUrl } from '@/utils/constants';
 
 export interface AdministratorMember {
   platform_id: string;
@@ -96,7 +98,27 @@ export interface AdministratorPreview {
 const root = '/config/administrator-groups';
 
 export const administratorsApi = {
-  read: async () => (await controlClient.get<AdministratorSnapshot>(root)).data,
+  read: async (signal?: AbortSignal, baseURL?: string): Promise<AdministratorSnapshot> => {
+    const client = apiClient.forService(baseURL || getControlApiUrl(), getControlApiUrl);
+    try { return await client.get<AdministratorSnapshot>(root + '/snapshot', signal); }
+    catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      return await client.get<AdministratorSnapshot>(root, signal);
+    }
+  },
+  runtime: async (signal?: AbortSignal, baseURL?: string) => {
+    try {
+      const value = await apiClient.forService(baseURL || getControlApiUrl(), getControlApiUrl)
+        .get<{ section_revision: string; runtime: AdministratorRuntime }>(root + '/runtime', signal);
+      if (!value || typeof value.section_revision !== 'string' || !value.section_revision
+        || !value.runtime || !['applied', 'next_start', 'unconfirmed'].includes(value.runtime.status)) throw new Error('管理员运行状态响应格式无效');
+      return value;
+    }
+    catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
   save: async (groups: AdministratorGroup[], overrides: AdministratorOverride[], revision: string, rebind: AdministratorRebind[], rebindOverrides: AdministratorOverrideRebind[]) =>
     (await controlClient.put<AdministratorSnapshot>(root, {
       groups, overrides, expected_revision: revision, rebind_members: rebind, rebind_overrides: rebindOverrides,

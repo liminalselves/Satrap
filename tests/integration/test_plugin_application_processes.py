@@ -131,10 +131,11 @@ def test_plugin_application_across_actual_processes(tmp_path: Path) -> None:
         assert health["healthy"] and health["pid"] == backend["pid"]
         administrator_status = request(backend["port"], "/api/administrators/status")
         assert administrator_status["ok"] and administrator_status["pid"] == backend["pid"]
+        request(port, "/config/administrator-groups/snapshot", status=401, authorized=False)
 
         read_samples = {}
         cold_parses = None
-        for path in ("/config/plugins", "/config/plugins/application_probe/config", "/config/administrator-groups"):
+        for path in ("/config/plugins", "/config/plugins/application_probe/config", "/config/administrator-groups", "/config/administrator-groups/snapshot"):
             samples = []
             for _ in range(6):
                 began = time.perf_counter(); request(port, path); samples.append((time.perf_counter() - began) * 1000)
@@ -145,6 +146,10 @@ def test_plugin_application_across_actual_processes(tmp_path: Path) -> None:
         assert cold_parses and all(count == 1 for count in cold_parses.values())
         assert state("control")["catalog_parses"] == cold_parses
         report["metadata"] = {"cold_parses": sum(cold_parses.values()), "warm_additional_parses": 0}
+        administrator_snapshot = request(port, "/config/administrator-groups/snapshot")
+        assert administrator_snapshot["runtime"]["status"] == "unconfirmed"
+        runtime = request(port, "/config/administrator-groups/runtime")
+        assert runtime["section_revision"] == administrator_snapshot["section_revision"] and runtime["runtime"]["status"] == "applied"
 
         (tmp_path / "slow_reads").touch()
         with ThreadPoolExecutor(max_workers=8) as pool:

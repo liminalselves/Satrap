@@ -20,6 +20,9 @@ try {
   await page.routeWebSocket('ws://127.0.0.1:19870/ws/status**', () => {});
   let conflict = false;
   let runtimeStatus = 'unconfirmed';
+  let releaseRuntime;
+  let pendingRuntime = new Promise(resolve => { releaseRuntime = resolve; });
+  let holdRuntime = true;
   let revision = 1;
   const group = { id: 'existing', name: '主要管理员', enabled: true, protect: false,
     members: [{ platform_id: 'future', platform_instance_id: 'old-instance', user_id: 'user@example.test' }],
@@ -46,8 +49,14 @@ try {
     if (url.pathname === '/ui-config.json') return route.fulfill({ json: { backend_api: 'http://127.0.0.1:19870', control_api: 'http://127.0.0.1:19871', chat_api: 'http://127.0.0.1:19872' } });
     if (request.method() === 'OPTIONS') return route.fulfill({ status: 204, headers: cors });
     if (request.method() !== 'GET' && url.pathname !== '/auth/session') writes.push({ path: url.pathname, query: url.search, payload: request.postDataJSON() });
-    if (url.pathname === '/config/administrator-groups') {
-      if (request.method() === 'GET') return route.fulfill({ json: snapshot, headers: cors });
+    if (url.pathname === '/config/administrator-groups/runtime') {
+      const confirmed = { section_revision: snapshot.section_revision, runtime: { status: 'applied' } };
+      if (holdRuntime) { holdRuntime = false; await pendingRuntime; }
+      return route.fulfill({ json: confirmed, headers: cors });
+    }
+    if (url.pathname === '/config/administrator-groups' || url.pathname === '/config/administrator-groups/snapshot') {
+      if (request.method() === 'GET') return route.fulfill({ json: url.pathname.endsWith('/snapshot')
+        ? { ...snapshot, runtime: { status: 'unconfirmed', error: '尚未确认运行状态' } } : snapshot, headers: cors });
       const payload = request.postDataJSON();
       if (conflict || payload.expected_revision !== snapshot.revision) return route.fulfill({ status: 409, json: { error: '配置已被其他操作修改' }, headers: cors });
       snapshot.groups = payload.groups.map(item => ({ ...item, members: item.members.map(member => ({ ...member, platform_instance_id: 'new-instance' })) }));
@@ -112,6 +121,12 @@ try {
   const name = dialog.getByLabel('管理组名称');
   await name.waitFor();
   assert.equal(await name.inputValue(), '主要管理员');
+  await panel.getByText('正在确认管理员运行状态…', { exact: true }).waitFor();
+  await name.fill('运行状态等待中的草稿');
+  releaseRuntime();
+  await panel.getByText('正在确认管理员运行状态…', { exact: true }).waitFor({ state: 'hidden' });
+  assert.equal(await name.inputValue(), '运行状态等待中的草稿');
+  await name.fill('主要管理员');
   await dialog.getByText('原平台已移除或重建, 此身份授权已失效', { exact: false }).waitFor();
   // 未接入与未在此平台加载的插件都不出现在选择器中 (option 对 Playwright 恒为 hidden)
   const allowPicker = dialog.getByLabel('添加允许的插件', { exact: true });
@@ -234,6 +249,21 @@ try {
   assert.deepEqual(snapshot.overrides[0].deny, ['group_admin']);
   assert.deepEqual(snapshot.overrides[1].allow, ['group_admin']);
   assert.equal(snapshot.overrides[1].user_id, 'another@example.test');
+  pendingRuntime = new Promise(resolve => { releaseRuntime = resolve; });
+  holdRuntime = true;
+  await panel.getByRole('button', { name: '刷新目录与状态', exact: true }).click();
+  await panel.getByText('正在确认管理员运行状态…', { exact: true }).waitFor();
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  await dialog.getByLabel('管理组名称').fill('保存后不能被旧状态覆盖');
+  await page.keyboard.press('Escape');
+  await save.click();
+  await panel.getByText('已保存, 后端启动后生效', { exact: true }).waitFor();
+  releaseRuntime();
+  await page.waitForTimeout(100);
+  assert.equal(await panel.getByText('已保存, 后端启动后生效', { exact: true }).count(), 1);
+  await groupCard.getByRole('button', { name: '配置 ▸', exact: false }).click();
+  assert.equal(await dialog.getByLabel('管理组名称').inputValue(), '保存后不能被旧状态覆盖');
+  await page.keyboard.press('Escape');
   assert.equal(writes.some(item => item.path === '/restart'), false);
   assert.deepEqual(errors, []);
   await page.mouse.move(2, 2);

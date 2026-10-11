@@ -1658,21 +1658,35 @@ def _administrator_runtime_request(section_revision: str, *, apply: bool = False
         return {"status": "unconfirmed", "error": str(error)}
 
 
-def _administrator_settings_snapshot(config: Mapping[str, Any]) -> dict[str, Any]:
+def _administrator_settings_snapshot(config: Mapping[str, Any], catalog: PluginCatalog | None = None) -> dict[str, Any]:
     """
     构造带插件启用状态标注的管理员设置快照
 
     参数:
     - config: 已保存或刚写入的配置文档
+    - catalog: 当前请求已加载的目录, 默认沿原同步入口加载
 
     返回:
     - 设置页快照, 插件载荷附带 enabled 与 loaded_platforms 供界面隐藏未启用和平台未加载的插件
     """
     from satrap.core.config.administrator_settings import administrator_settings_snapshot
 
-    service = _plugin_management_service()
+    service = _plugin_management_service(catalog)
     return administrator_settings_snapshot(config, enabled_plugins=service.enabled_plugin_names(),
                                            platform_plugins=service.loaded_plugins_by_platform(validate_platforms(config.get("platforms", []))))
+
+
+def _read_administrator_settings_snapshot(catalog: PluginCatalog) -> dict[str, Any]:
+    """
+    在线程内读取管理员文档与目录, 不连接运行宿主
+
+    参数:
+    - catalog: 当前请求固定的元数据目录
+
+    返回:
+    - 当前设置快照, 保留原修订及迁移规则
+    """
+    return _administrator_settings_snapshot(load_config_document(CONFIG_PATH), catalog)
 
 
 async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse | None:
@@ -1686,14 +1700,19 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
     - 区段与应用状态, 版本冲突 409, 非法草稿 400, 无关路径 None
     """
     root = "/config/administrator-groups"
-    if ctx.path not in {root, root + "/apply", root + "/preview"}:
+    if ctx.path not in {root, root + "/apply", root + "/preview", root + "/snapshot", root + "/runtime"}:
         return None
     from satrap.core.config.administrator_settings import administrator_settings_snapshot, save_administrator_groups, preview_administrator_groups
 
     try:
-        if ctx.method == "GET" and ctx.path == root:
-            snapshot = await asyncio.to_thread(_administrator_settings_snapshot, load_config_document(CONFIG_PATH))
-            runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"])
+        if ctx.method == "GET" and ctx.path in {root, root + "/snapshot", root + "/runtime"}:
+            catalog = await PluginCatalog().snapshot_async()
+            snapshot = await RAG_WORKERS.run(_read_administrator_settings_snapshot, catalog)
+            if ctx.path == root + "/snapshot":
+                return 200, {"ok": True, **snapshot, "runtime": {"status": "unconfirmed", "error": "尚未确认运行状态"}}
+            runtime = await RAG_WORKERS.run(_administrator_runtime_request, snapshot["section_revision"])
+            if ctx.path == root + "/runtime":
+                return 200, {"ok": True, "section_revision": snapshot["section_revision"], "runtime": runtime}
             return 200, {"ok": True, **snapshot, "runtime": runtime}
         if ctx.method == "PUT" and ctx.path == root:
             payload = await _read_json_body(ctx.reader, ctx.raw_request)
@@ -1730,6 +1749,9 @@ async def _route_administrator_settings(ctx: _RouteContext) -> ControlResponse |
             runtime = await asyncio.to_thread(_administrator_runtime_request, snapshot["section_revision"], apply=True)
             return 200, {"ok": True, "runtime": runtime, "section_revision": snapshot["section_revision"]}
         return 405, {"ok": False, "error": "此管理员接口不支持该方法"}
+    except WorkerBusyError as error:
+        logger.warning(f"[管理员设置] 读取队列已满: {error}")
+        return 503, {"ok": False, "error": str(error)}
     except ConfigRevisionConflict as error:
         logger.warning(f"[管理员设置] 保存或应用冲突: {error}")
         return 409, {"ok": False, "error": str(error), "code": "config_revision_conflict"}
