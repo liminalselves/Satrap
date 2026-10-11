@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 from satrap.core.backend.BackendManager import BackendManager
+from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.session_overrides import SessionOverrideStore
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.framework.providers.edictum import EdictumProvider
@@ -81,6 +83,94 @@ async def _release(sessions: list[Any], providers: list[EdictumProvider]) -> Non
     """
     for session, provider in zip(sessions, [providers[0], providers[0], providers[1]]):
         await provider.release_session_async(session)
+
+
+@pytest.mark.asyncio
+async def test_actual_application_reports_capture_lock_uninstall_and_install(tmp_path: Path, monkeypatch: Any) -> None:
+    """真实隔离平台生命周期按实际边界报告阶段, 查询不触发第二次应用"""
+    backend, configs, globals_, sessions, providers = await _platforms(tmp_path, monkeypatch)
+    monkeypatch.setenv("SATRAP_API_TOKEN", "test-application-progress-token-at-least-thirty-two-characters")
+    server = BackendHTTPServer(backend, port=0, static_dir=tmp_path)
+    captured, capture_resume = threading.Event(), threading.Event()
+    uninstalling, uninstall_resume = asyncio.Event(), asyncio.Event()
+    installing, install_resume = asyncio.Event(), asyncio.Event()
+    original_capture = EdictumPluginApplySnapshot.capture
+    original_install = sessions[0].install_plugin
+    original_uninstall = sessions[0].uninstall_plugin
+    entry = backend._platform_runtimes["one"][0].pool.list_entries()["one-0"]
+    key = "actual-platform-operation-001"
+
+    def paused_capture(*args, **kwargs):
+        """完成真实文件捕获后暂停来源工作线程"""
+        result = original_capture(*args, **kwargs)
+        captured.set()
+        if not capture_resume.wait(3):
+            raise RuntimeError("测试未恢复来源读取")
+        return result
+
+    async def paused_install(*args, **kwargs):
+        """暂停真实安装入口, 恢复后仍执行原安装"""
+        installing.set()
+        await install_resume.wait()
+        return await original_install(*args, **kwargs)
+
+    async def paused_uninstall(*args, **kwargs):
+        """暂停真实卸载入口, 恢复后仍执行原卸载"""
+        uninstalling.set()
+        await uninstall_resume.wait()
+        return await original_uninstall(*args, **kwargs)
+
+    async def query_phase(phase: str, instance: bool = False):
+        """重复读取已接受任务, 不发送新的协调请求"""
+        for _attempt in range(100):
+            status, result = await server._route("GET", f"/api/runtime-operations/{key}", b"")
+            assert status == 200
+            stages = result["instances"] if instance else [result["stage"]]
+            if any(stage["phase"] == phase for stage in stages):
+                return result
+            await asyncio.sleep(0.01)
+        raise AssertionError(f"实际阶段未出现: {phase}")
+
+    try:
+        plugin = configs.plugin_catalog.get("session_commands")
+        if plugin is None:
+            raise AssertionError("测试插件不存在")
+        old = sessions[0].list_plugins()[0]
+        globals_.save_global("session_commands", plugin.config_schema, {"about_text": "实际进度验收"})
+        monkeypatch.setattr(EdictumPluginApplySnapshot, "capture", paused_capture)
+        monkeypatch.setattr(sessions[0], "install_plugin", paused_install)
+        monkeypatch.setattr(sessions[0], "uninstall_plugin", paused_uninstall)
+        await entry.async_operation_lock.acquire()
+        body = json.dumps({"operation_id": key, "session_refs": [{"platform_id": "one", "session_id": "one-0"}]}).encode("utf-8")
+        status, result = await server._route("POST", "/api/edictum/plugins/reconcile", body)
+        assert status == 202
+        assert await asyncio.to_thread(captured.wait, 2)
+        await query_phase("config_read")
+        capture_resume.set()
+        await query_phase("waiting_lock", True)
+        assert sessions[0].list_plugins()[0] is old
+        entry.async_operation_lock.release()
+        await asyncio.wait_for(uninstalling.wait(), 2)
+        await query_phase("uninstall", True)
+        uninstall_resume.set()
+        await asyncio.wait_for(installing.wait(), 2)
+        await query_phase("install", True)
+        install_resume.set()
+        result = await query_phase("finished")
+        assert result["status"] == "completed" and result["result"]["edictum_sessions"][0]["ok"]
+        assert result["instances"][0]["status"] == "completed"
+        assert all(result["instances"][0]["timings_ms"][name] > 0 for name in ("waiting_lock", "install", "uninstall"))
+        assert await sessions[0].run("/about") == "实际进度验收"
+    finally:
+        capture_resume.set()
+        install_resume.set()
+        uninstall_resume.set()
+        if entry.async_operation_lock.locked():
+            entry.async_operation_lock.release()
+        task = server.applications._operations.get(key)
+        if task is not None and task.task is not None:
+            await asyncio.wait_for(asyncio.shield(task.task), 4)
+        await _release(sessions, providers)
 
 
 @pytest.mark.asyncio

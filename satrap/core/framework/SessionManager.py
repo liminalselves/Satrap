@@ -35,6 +35,7 @@ from satrap.core.framework.providers.base import SessionProviderDefinition
 from satrap.core.config.model_snapshot import llm_config_fingerprint
 from satrap.core.utils.async_worker import SESSION_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import progress_instance, progress_locks, progress_phase, progress_result, progress_source_check
 from satrap.core.APICall.LLMCall import AsyncLLM, LLM, build_llm_from_config
 from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
@@ -1160,7 +1161,7 @@ class SessionManager:
         self._sync_runtime_to_store(session_id, old_session)
         refreshed = self.store.get(session_id) or config
         snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
-        candidate = self._create_entry(refreshed, add_to_pool=False, **snapshot_args)
+        candidate = await asyncio.to_thread(self._create_entry, refreshed, add_to_pool=False, **snapshot_args)
         if candidate is None:
             await self._persist_session_contexts(old_session)
             mark_failed("候选会话创建失败")
@@ -1174,13 +1175,15 @@ class SessionManager:
             }
         try:
             if isinstance(candidate.session, AsyncSession):
-                await self._prepare_session_async(candidate.session, **snapshot_args)
-            if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                with progress_phase("candidate_prepare_ms"):
+                    await self._prepare_session_async(candidate.session, **snapshot_args)
+            if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
                 raise RuntimeError("配置在候选准备期间已变化, 请重试应用")
             self._check_apply_runtime(runtime_is_current)
         except Exception as error:
             logger.error(f"[SessionManager] 候选会话准备失败: {session_id}, {error}\n{traceback.format_exc()}")
-            await self._release_session_memory_async(candidate.session)
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(candidate.session)
             await self._persist_session_contexts(old_session)
             mark_failed(str(error))
             return {
@@ -1193,7 +1196,8 @@ class SessionManager:
             }
 
         if not self.pool.replace(session_id, entry, candidate, expected_generation=generation):
-            await self._release_session_memory_async(candidate.session)
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(candidate.session)
             current = self.pool.get(session_id)
             if current is not None:
                 await self._persist_session_contexts(current.session)
@@ -1205,7 +1209,8 @@ class SessionManager:
                 "runtime_changed": True,
                 "error": "会话运行时已变化",
             }
-        await self._release_session_memory_async(old_session)
+        with progress_phase("uninstall_ms"):
+            await self._release_session_memory_async(old_session)
         await self._persist_session_contexts(candidate.session)
         logger.info(f"[SessionManager] 会话已热重启: {session_id}")
         return {
@@ -1284,7 +1289,8 @@ class SessionManager:
             return {"ok": False, "action": "unload", "session_id": session_id, "platform_id": self.platform_id,
                     "error": "会话运行时已变化, 请重试卸载"}
         if removed is not None:
-            await self._release_session_memory_async(removed.session)
+            with progress_phase("uninstall_ms"):
+                await self._release_session_memory_async(removed.session)
         logger.info(f"[SessionManager] 会话运行时已卸载: {session_id}")
         return {
             "ok": True,
@@ -1770,7 +1776,7 @@ class SessionManager:
                 self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
-                if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
                     raise RuntimeError("插件配置在等待期间已变化, 请重试应用")
                 self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
@@ -1788,7 +1794,7 @@ class SessionManager:
                 return result
 
             try:
-                async with semaphore, entry.async_operation_lock:
+                async with progress_locks(semaphore, entry.async_operation_lock):
                     lock_wait_ms = (time.perf_counter() - wait_started) * 1000
                     if isinstance(entry.session, AsyncSession):
                         result = await apply_locked()
@@ -1822,6 +1828,13 @@ class SessionManager:
                                    **({'shared_config_read_ms': round(apply_snapshot.read_ms, 3)} if apply_snapshot is not None else {})},
                 }
 
+        async def observed_plugin(session_id: str, entry: SessionEntry, name: str, generation: str) -> dict[str, Any]:
+            """在独立观测范围内保留原实例协调和结果"""
+            with progress_instance(self.platform_id, session_id):
+                result = await reconcile_one(session_id, entry, name, generation)
+                progress_result(result)
+                return result
+
         pending: list[Awaitable[dict[str, Any]]] = []
         for session_id, entry, name, generation in targets:
             if apply_snapshot is not None and not apply_snapshot.includes_config(name):
@@ -1829,7 +1842,7 @@ class SessionManager:
             selected_plugins = [spec.name for spec in apply_snapshot.specs_for(name)] if apply_snapshot is not None else desired_plugins
             if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=selected_plugins):
                 continue
-            pending.append(reconcile_one(session_id, entry, name, generation))
+            pending.append(observed_plugin(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
 
     def preview_edictum_plugins(
@@ -1977,7 +1990,7 @@ class SessionManager:
                 self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
                     raise RuntimeError("会话运行时已变化")
-                if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在等待期间已变化, 请重试应用")
                 self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
@@ -2008,7 +2021,7 @@ class SessionManager:
                     if llm_config is not None and safe_getattr(entry.session, "_satrap_model_config_fingerprint") != llm_config_fingerprint(llm_config):
                         plan["action"] = "restart"
                         plan["changed_fields"] = [*plan.get("changed_fields", []), "model_config"]
-                if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                if apply_snapshot is not None and not await progress_source_check(apply_snapshot.sources.is_current):
                     raise RuntimeError("配置在目标核验期间已变化, 请重试应用")
                 self._check_apply_runtime(runtime_is_current)
                 if self.pool.list_entries().get(session_id) is not entry or entry.instance_generation != generation:
@@ -2044,7 +2057,7 @@ class SessionManager:
                 }
 
             try:
-                async with semaphore, entry.async_operation_lock:
+                async with progress_locks(semaphore, entry.async_operation_lock):
                     lock_wait_ms = (time.perf_counter() - started) * 1000
                     if isinstance(entry.session, AsyncSession):
                         payload = await apply_locked()
@@ -2060,9 +2073,16 @@ class SessionManager:
                 return {"ok": False, "session_id": session_id, "platform_id": self.platform_id, "error": str(error),
                         "timings_ms": {"queue_and_lock_wait_ms": round(lock_wait_ms, 3), "total_ms": round((time.perf_counter() - started) * 1000, 3)}}
 
+        async def observed_runtime(session_id: str, entry: SessionEntry, name: str, generation: str) -> dict[str, Any]:
+            """完整协调逐实例记录真实阶段和封装后的结果"""
+            with progress_instance(self.platform_id, session_id):
+                result = await reconcile_one(session_id, entry, name, generation)
+                progress_result(result)
+                return result
+
         pending: list[Awaitable[dict[str, Any]]] = []
         for session_id, entry, name, generation in targets:
-            pending.append(reconcile_one(session_id, entry, name, generation))
+            pending.append(observed_runtime(session_id, entry, name, generation))
         return list(await asyncio.gather(*pending)) if pending else []
 
     @staticmethod
@@ -2420,9 +2440,10 @@ class SessionManager:
             if model_cfg_mgr:
                 llm_cfg = self._model_config_for(session_cfg, definition, apply_snapshot=apply_snapshot)
                 if llm_cfg and llm_cfg.api_key:
-                    llm_instance = build_llm_from_config(
-                        llm_cfg, async_=definition.is_async
-                    )
+                    with progress_phase("model_build_ms"):
+                        llm_instance = build_llm_from_config(
+                            llm_cfg, async_=definition.is_async
+                        )
                 else:
                     logger.warning(
                         f"[SessionManager] LLM 配置 '{llm_cfg.name if llm_cfg is not None else 'default'}' 不存在或缺少 api_key, "

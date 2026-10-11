@@ -5,6 +5,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 import time
 
+from satrap.core.utils.application_progress import progress_phase
+
 
 class PhaseTimings:
     """累计阶段耗时, 失败及取消路径也完成计时"""
@@ -27,7 +29,8 @@ class PhaseTimings:
         """
         started = time.perf_counter()
         try:
-            yield
+            with progress_phase(name):
+                yield
         finally:
             self._phases[name] = self._phases.get(name, 0) + (time.perf_counter() - started) * 1000
 

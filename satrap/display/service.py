@@ -37,6 +37,7 @@ from satrap.core.memory.store import MemoryStore
 from satrap.core.memory.service import MemoryService
 from satrap.core.utils.async_worker import RAG_WORKERS
 from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import progress_instance, progress_locks, progress_phase, progress_result, progress_source_check
 from satrap.edictum.plugin_settings import (
     resolve_runtime_specs,
     validate_plugin_settings,
@@ -2355,7 +2356,8 @@ class ChatService:
                 logger.error(f"[聊天] 准备插件应用失败: {error}\n{traceback.format_exc()}")
                 raise
 
-        snapshot, desired_specs = await asyncio.to_thread(prepare)
+        with progress_phase("config_read_ms"):
+            snapshot, desired_specs = await asyncio.to_thread(prepare)
         config_read_ms = (time.perf_counter() - read_started) * 1000
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
@@ -2374,11 +2376,11 @@ class ChatService:
             lock_started = time.perf_counter()
             lock_wait_ms = 0.0
             try:
-                async with semaphore, conv.plugin_lock:
+                async with progress_locks(semaphore, conv.plugin_lock):
                     lock_wait_ms = (time.perf_counter() - lock_started) * 1000
                     if self._conversations.get(conv.conversation_id) is not conv or conv.session is not planned_session or not conv.persisted:
                         return {"conversation_id": conv.conversation_id, "ok": False, "status": "error", "error": "会话运行时已变化"}
-                    if not await asyncio.to_thread(snapshot.is_current):
+                    if not await progress_source_check(snapshot.is_current):
                         logger.warning(f"[聊天] 会话 {conv.conversation_id} 插件应用快照已过期, 请重试应用")
                         return {"conversation_id": conv.conversation_id, "ok": False, "status": "error",
                                 "error": "插件配置在等待期间已变化, 请重试应用",
@@ -2417,6 +2419,13 @@ class ChatService:
                                    'config_read_ms': round(config_read_ms, 3)},
                 }
 
+        async def observed_chat(conv: _Conversation, planned_session: AsyncSimpleSession) -> dict[str, Any]:
+            """Chat 实例的观测范围独立, 原会话操作和失败结果保持不变"""
+            with progress_instance(self._platform_id, conv.conversation_id):
+                result = await reconcile_one(conv, planned_session)
+                progress_result(result)
+                return result
+
         pending = []
         for conv, planned_session, persisted, old_reference in targets:
             if plugin_name is not None and not (
@@ -2428,7 +2437,7 @@ class ChatService:
                 if self._conversations.get(conv.conversation_id) is conv and conv.session is planned_session and not conv.persisted:
                     conv.build_fingerprint = ""
                 continue
-            pending.append(reconcile_one(conv, planned_session))
+            pending.append(observed_chat(conv, planned_session))
         return list(await asyncio.gather(*pending)) if pending else []
 
     async def reconcile_plugins(self, *, plugin_name: str | None = None) -> dict[str, Any]:

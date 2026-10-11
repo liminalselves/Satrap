@@ -57,6 +57,7 @@ from satrap.edictum.registry import (
 )
 from satrap.edictum.config import EdictumConfigManager
 from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
+from satrap.core.utils.application_progress import progress_phase
 from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
 from satrap.core.platform.connection import ConnectionProbeError, ConnectionProbeResult
@@ -2550,10 +2551,11 @@ class BackendManager:
             targets_by_platform[platform_id] = targets
             names.update(name for _sid, _entry, name, _generation in targets)
         manager = self.edictum_config_manager
-        apply_snapshot = None if manager is None else await asyncio.to_thread(
-            EdictumPluginApplySnapshot.capture, manager, names, desired_config=desired_config,
-            model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
-        )
+        with progress_phase("config_read_ms"):
+            apply_snapshot = None if manager is None else await asyncio.to_thread(
+                EdictumPluginApplySnapshot.capture, manager, names, desired_config=desired_config,
+                model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
+            )
         pending: list[Awaitable[list[dict[str, Any]]]] = []
         for platform_id, session_manager in selected_managers:
             pending.append(session_manager.reconcile_edictum_runtime_async(
@@ -2654,13 +2656,14 @@ class BackendManager:
             models = session_manager.model_config_manager
             if models is not None and targets_by_platform[platform_id]:
                 model_config_scopes.setdefault(models.storage_path.absolute(), set()).update(name for _sid, _entry, name, _generation in targets_by_platform[platform_id])
-        apply_snapshot = None if manager is None else await asyncio.to_thread(
-            EdictumPluginApplySnapshot.capture, manager, set(scope), desired_plugins=desired_plugins, plugin_name=plugin_name,
-            retained_config_names={name for name, old in scope.items() if old},
-            model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
-            include_main_models=False,
-            model_config_scopes=model_config_scopes,
-        )
+        with progress_phase("config_read_ms"):
+            apply_snapshot = None if manager is None else await asyncio.to_thread(
+                EdictumPluginApplySnapshot.capture, manager, set(scope), desired_plugins=desired_plugins, plugin_name=plugin_name,
+                retained_config_names={name for name, old in scope.items() if old},
+                model_managers=tuple(item.model_config_manager for pid, item in selected_managers if targets_by_platform[pid] and item.model_config_manager is not None),
+                include_main_models=False,
+                model_config_scopes=model_config_scopes,
+            )
         pending: list[Awaitable[list[dict[str, Any]]]] = []
         apply_args: dict[str, Any] = {}
         if plugin_name is not None:

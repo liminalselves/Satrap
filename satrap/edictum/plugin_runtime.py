@@ -14,6 +14,7 @@ from satrap.edictum.plugin_spec import PluginSpec
 from satrap.edictum.plugin_settings import EffectivePluginConfig, PluginInstallConfig
 from satrap.edictum.plugin import CAPABILITY_KINDS, Plugin
 from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import progress_phase
 
 from satrap.core.log import logger
 from satrap.core.config.model_snapshot import ModelConfigReader
@@ -393,7 +394,8 @@ async def _rollback_install_async(
     返回:
     - tuple[object, list[str]]: 恢复后的句柄和能力变更
     """
-    return await install_plugin_spec_async(installer, previous, model_snapshot=model_snapshot)
+    with progress_phase("rollback_ms"):
+        return await install_plugin_spec_async(installer, previous, model_snapshot=model_snapshot)
 
 
 async def reconcile_plugin_states_async(

@@ -31,6 +31,7 @@ from satrap.core.config.model_service import ModelConfigService
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
 from satrap.core.backend.ui_config import build_ui_config
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.log.stream import standard_log_stream
 from satrap.core.storage import CHAT_PLATFORM_ID, LOCAL_PLATFORM_ID, StorageMaintenanceService
 from satrap.core.type import safe_getattr, safe_getattr_str
@@ -321,6 +322,9 @@ class BackendHTTPServer(MiniHTTPServer):
         返回:
         - tuple[int, dict[str, Any]]: 路由分发到 BackendManager 对应方法
         """
+        operation_status = self.application_status(method, path)
+        if operation_status is not None:
+            return operation_status
         for handler in (
             self._route_administrators,
             self._route_ui_health_reload,
@@ -913,16 +917,23 @@ class BackendHTTPServer(MiniHTTPServer):
                     for raw_ref in cast(list[object], raw_refs):
                         if isinstance(raw_ref, dict):
                             session_refs.append(dict(cast(dict[str, str], raw_ref)))
-                sessions = await backend.reconcile_edictum_plugins_async(
-                    config_name=str(payload.get("config_name") or "").strip() or None,
-                    session_refs=session_refs,
-                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
+                scope: dict[str, Any] = {
+                    "config_name": str(payload.get("config_name") or "").strip() or None,
+                    "session_refs": session_refs,
+                    "concurrency": max(1, min(int(payload.get("concurrency") or 4), 16)),
                     **({"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}),
-                )
-                return 200, {
-                    "ok": all(item.get("ok", False) for item in sessions),
-                    "edictum_sessions": sessions,
                 }
+
+                async def apply_plugins() -> dict[str, Any]:
+                    """保留原协调和逐实例结果, 任务模式只改变等待与查询方式"""
+                    sessions = await backend.reconcile_edictum_plugins_async(**scope)
+                    return {"ok": all(item.get("ok", False) for item in sessions), "edictum_sessions": sessions}
+
+                if "operation_id" in payload:
+                    return 202, self.applications.submit(payload["operation_id"], {"route": path, **scope}, apply_plugins)
+                return 200, await apply_plugins()
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
             except Exception as error:
                 return 400, {"error": str(error)}
         # 接口: POST /api/edictum/plugins/reconcile
@@ -973,15 +984,22 @@ class BackendHTTPServer(MiniHTTPServer):
                         for item in cast(list[object], raw_refs)
                         if isinstance(item, dict)
                     ]
-                sessions = await backend.reconcile_edictum_runtime_async(
-                    config_name=str(payload.get("config_name") or "").strip() or None,
-                    session_refs=session_refs,
-                    concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
-                )
-                return 200, {
-                    "ok": all(item.get("ok", False) for item in sessions),
-                    "edictum_sessions": sessions,
+                scope = {
+                    "config_name": str(payload.get("config_name") or "").strip() or None,
+                    "session_refs": session_refs,
+                    "concurrency": max(1, min(int(payload.get("concurrency") or 4), 16)),
                 }
+
+                async def apply_runtime() -> dict[str, Any]:
+                    """完整应用仍复用原锁, 来源复核和失败回滚"""
+                    sessions = await backend.reconcile_edictum_runtime_async(**scope)
+                    return {"ok": all(item.get("ok", False) for item in sessions), "edictum_sessions": sessions}
+
+                if "operation_id" in payload:
+                    return 202, self.applications.submit(payload["operation_id"], {"route": path, **scope}, apply_runtime)
+                return 200, await apply_runtime()
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
             except Exception as error:
                 return 400, {"error": str(error)}
         # 接口: POST /api/edictum/runtime/apply

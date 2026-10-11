@@ -56,6 +56,7 @@ from satrap.core.utils.async_worker import WorkerBusyError, RAG_WORKERS
 from satrap.edictum.plugin_settings import model_options
 from satrap.core.utils.documents import DEFAULT_MAX_FILE_SIZE
 from satrap.core.utils.minihttp import MiniHTTPServer
+from satrap.core.utils.application_progress import ApplicationProgressError
 from satrap.core.config.loader import ConfigLoader
 from satrap.display.recorder import list_conversations
 from satrap.display.plugins import ChatPluginRegistry
@@ -181,6 +182,9 @@ class ChatHTTPServer(MiniHTTPServer):
 
     async def _route(self, method: str, path: str, body: bytes) -> tuple[int, dict[str, Any]]:
         svc = self.service
+        operation_status = self.application_status(method, path)
+        if operation_status is not None:
+            return operation_status
         clean = path.split("?", 1)[0]
 
         if method == "GET" and clean == "/api/chat/health":
@@ -562,7 +566,12 @@ class ChatHTTPServer(MiniHTTPServer):
                 payload = json.loads(body or b"{}")
                 if not isinstance(payload, dict) or ("plugin_name" in payload and (not isinstance(payload["plugin_name"], str) or not payload["plugin_name"].strip())):
                     raise ValueError("plugin_name 必须是非空字符串")
-                return 200, await svc.reconcile_plugins(**({"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}))
+                plugin_scope: dict[str, str] = {"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}
+                if "operation_id" in payload:
+                    return 202, self.applications.submit(payload["operation_id"], {"route": clean, **plugin_scope}, lambda: svc.reconcile_plugins(**plugin_scope))
+                return 200, await svc.reconcile_plugins(**plugin_scope)
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
             except (TypeError, ValueError) as error:
                 return 400, {"error": str(error)}
 

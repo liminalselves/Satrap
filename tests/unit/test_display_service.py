@@ -62,6 +62,58 @@ async def _wait_conversation_task(service: ChatService, conversation_id: str) ->
 
 
 @pytest.mark.asyncio
+async def test_actual_chat_application_reports_lock_and_partial_failure(tmp_path: Path, monkeypatch: Any) -> None:
+    """实际 Chat 会话等待原锁, 来源撤销时任务显示失败并保留原部分失败结果"""
+    manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
+    monkeypatch.setenv("SATRAP_API_TOKEN", "test-chat-application-token-at-least-thirty-two-characters")
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+    server = ChatHTTPServer(svc, port=0)
+    key = "actual-chat-operation-001"
+    conv = None
+    try:
+        cid = await svc.create_conversation(model="default")
+        conv = _must_conversation(svc, cid)
+        old_handle = conv.session.list_plugins()[0]
+        entry = svc._plugins.catalog.get("chat_commands")
+        if entry is None:
+            raise AssertionError("测试插件未加载")
+        manager.save_global("chat_commands", entry.config_schema, {"about_text": "第一次快照"})
+        await conv.plugin_lock.acquire()
+        status, result = await server._route("POST", "/api/chat/plugins/reconcile", json.dumps({"operation_id": key, "plugin_name": "chat_commands"}).encode("utf-8"))
+        assert status == 202
+        for _attempt in range(100):
+            status, result = await server._route("GET", f"/api/runtime-operations/{key}", b"")
+            if result["instances"] and result["instances"][0]["phase"] == "waiting_lock":
+                break
+            await asyncio.sleep(0.01)
+        assert status == 200 and result["instances"][0]["session_id"] == cid and result["instances"][0]["phase"] == "waiting_lock"
+        assert conv.session.list_plugins()[0] is old_handle
+        manager.save_global("chat_commands", entry.config_schema, {"about_text": "仅重试才能使用的新参数"})
+        conv.plugin_lock.release()
+        for _attempt in range(100):
+            status, result = await server._route("GET", f"/api/runtime-operations/{key}", b"")
+            if result["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert result["status"] == "failed" and result["result"]["ok"] and not result["result"]["applied"]
+        assert result["instances"][0]["status"] == "failed" and result["result"]["failed"] == 1
+        assert conv.session.list_plugins()[0] is old_handle
+        assert "等待期间已变化" in result["result"]["sessions"][0]["error"]
+        retried = await svc.reconcile_plugins(plugin_name="chat_commands")
+        assert retried["applied"] and await conv.session.run("/about") == "仅重试才能使用的新参数"
+    finally:
+        if conv is not None and conv.plugin_lock.locked():
+            conv.plugin_lock.release()
+        operation = server.applications._operations.get(key)
+        if operation is not None and operation.task is not None:
+            await asyncio.wait_for(asyncio.shield(operation.task), 4)
+        await svc.close()
+
+
+@pytest.mark.asyncio
 async def test_chat_data_edit_updates_live_context_without_rewriting_display(tmp_path, monkeypatch):
     service = _make_service(tmp_path, monkeypatch)
     try:
@@ -1290,23 +1342,14 @@ def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: P
     svc = _make_service(tmp_path, monkeypatch)
     svc._plugins.set_enabled("chat_commands", True)
     captured = threading.Event()
-    capture = PluginApplySnapshot.capture
+    to_thread = asyncio.to_thread
 
-    def record(catalog, manager, **kwargs):
-        """
-        通知测试实际来源捕获已完成
-
-        参数:
-        - catalog: 插件目录
-        - manager: 参数管理器
-        - kwargs: 附加核验来源
-
-        返回:
-        - 已核验快照
-        """
-        snapshot = capture(catalog, manager, **kwargs)
-        captured.set()
-        return snapshot
+    async def prepared(func, *args, **kwargs):
+        """在完整准备线程返回后通知, 不把捕获中途的可重试快照误认作最终批次"""
+        result = await to_thread(func, *args, **kwargs)
+        if getattr(func, "__name__", "") == "prepare":
+            captured.set()
+        return result
 
     async def run() -> None:
         try:
@@ -1318,7 +1361,7 @@ def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: P
                 raise AssertionError("测试插件未加载")
             schema = entry.config_schema
             manager.save_global("chat_commands", schema, {"about_text": "不应应用的旧参数"})
-            monkeypatch.setattr(PluginApplySnapshot, "capture", record)
+            monkeypatch.setattr(service_mod.asyncio, "to_thread", prepared)
             await conv.plugin_lock.acquire()
             task = asyncio.create_task(svc.reconcile_plugins(plugin_name="chat_commands"))
             try:

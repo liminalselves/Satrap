@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import threading
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Any, cast
 import pytest
 
 from satrap.core.backend.BackendManager import BackendManager
+from satrap.core.backend.http_api import BackendHTTPServer
 from satrap.core.config.model_snapshot import ModelConfigSnapshot
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.framework.SessionManager import SessionEntry, SessionManager
@@ -102,6 +104,54 @@ async def _close(managers: list[Any]) -> None:
     for manager in managers:
         for sid in list(manager.pool.list_entries()):
             await manager.unload_session_async(sid)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_full_application_model_build_does_not_block_progress_queries(tmp_path: Path, monkeypatch: Any, asynchronous: bool) -> None:
+    """实际完整候选构建在工作线程, 同步/异步会话均可查询模型构建阶段且旧实例未提前切换"""
+    backend, configs, _globals, managers, _providers, sessions, builds = await _setup(tmp_path, monkeypatch, asynchronous)
+    monkeypatch.setenv("SATRAP_API_TOKEN", "test-full-progress-token-at-least-thirty-two-characters")
+    server = BackendHTTPServer(backend, port=0, static_dir=tmp_path)
+    module = importlib.import_module("satrap.core.framework.SessionManager")
+    original_build = module.build_llm_from_config
+    entered, release = threading.Event(), threading.Event()
+    construction_threads = []
+    key = "full-model-build-operation-001"
+
+    def paused_build(*args, **kwargs):
+        """在真实模型构建入口暂停, 放行后仍由原夹具记录候选模型"""
+        construction_threads.append(threading.get_ident())
+        entered.set()
+        if not release.wait(3):
+            raise RuntimeError("测试未恢复模型构建")
+        return original_build(*args, **kwargs)
+
+    try:
+        monkeypatch.setattr(module, "build_llm_from_config", paused_build)
+        configs.update("assistant", {"params": {"system_prompt": "new prompt"}})
+        body = json.dumps({"operation_id": key, "session_refs": [{"platform_id": "one", "session_id": "one-0"}]}).encode("utf-8")
+        status, _result = await server._route("POST", "/api/edictum/runtime/apply", body)
+        assert status == 202 and await asyncio.to_thread(entered.wait, 2)
+        status, progress = await asyncio.wait_for(server._route("GET", f"/api/runtime-operations/{key}", b""), 1)
+        assert status == 200 and progress["instances"][0]["phase"] == "model_build"
+        assert construction_threads == [construction_threads[0]] and construction_threads[0] != threading.get_ident()
+        assert managers[0].pool.get("one-0").session is sessions[0] and len(builds) == 3
+        release.set()
+        for _attempt in range(300):
+            _status, result = await server._route("GET", f"/api/runtime-operations/{key}", b"")
+            if result["status"] != "running":
+                break
+            await asyncio.sleep(0.01)
+        assert result["status"] == "completed" and result["result"]["edictum_sessions"][0]["action"] == "restart"
+        assert result["instances"][0]["timings_ms"]["model_build"] > 0
+        assert managers[0].pool.get("one-0").session is not sessions[0] and len(builds) == 4
+    finally:
+        release.set()
+        operation = server.applications._operations.get(key)
+        if operation is not None and operation.task is not None:
+            await asyncio.wait_for(asyncio.shield(operation.task), 5)
+        await _close(managers)
 
 
 @pytest.mark.asyncio

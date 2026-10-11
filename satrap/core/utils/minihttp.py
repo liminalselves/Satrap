@@ -24,6 +24,7 @@ from http import HTTPStatus
 import json
 
 from satrap.core.server_auth import ServerAuth
+from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError
 
 from satrap.core.log import logger
 
@@ -281,6 +282,18 @@ class MiniHTTPServer:
         self._active_connections = 0
         self._active_websockets = 0
         self._server: asyncio.Server | None = None
+        self.applications = ApplicationOperations()
+
+    def application_status(self, method: str, path: str) -> tuple[int, dict[str, Any]] | None:
+        """经过原 HTTP 鉴权后查询当前服务的任务, 不跨进程共享状态或触发写操作"""
+        prefix = "/api/runtime-operations/"
+        clean = urlsplit(path).path
+        if method != "GET" or not clean.startswith(prefix):
+            return None
+        try:
+            return 200, self.applications.get(clean[len(prefix):])
+        except ApplicationProgressError as error:
+            return error.status, {"error": str(error)}
 
     # ---------- 生命周期 ----------
 
