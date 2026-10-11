@@ -57,7 +57,8 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
                                          plugin_catalog=PluginCatalog(tmp_path / "builtin", tmp_path / "user"))
     backend._model_cfg = SimpleNamespace(reload=unrelated_reload)
     runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile, reconcile_edictum_runtime_async=reconcile,
-                              edictum_plugin_apply_scope=lambda **kwargs: {"assistant": False})
+                              edictum_plugin_apply_scope=lambda **kwargs: {"assistant": False},
+                              edictum_runtime_apply_targets=lambda **kwargs: [("one", None, "assistant", "generation")])
     backend._platform_runtimes = {"ob": (runtime, None), "other": (runtime, None)}
     apply = getattr(backend, f"reconcile_edictum_{kind}_async")
     task = asyncio.create_task(apply(
@@ -75,10 +76,11 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     assert read_threads[0] != threading.get_ident()
     desired_key = "desired_plugins" if kind == "plugins" else "desired_config"
     expected: dict[str, object] = {"config_name": "assistant", "session_ids": {"one"}, desired_key: None, "concurrency": 4}
-    if kind == "plugins":
-        snapshot = applied[0].get("apply_snapshot")
-        assert isinstance(snapshot, EdictumPluginApplySnapshot)
-        expected["apply_snapshot"] = snapshot
+    snapshot = applied[0].get("apply_snapshot")
+    assert isinstance(snapshot, EdictumPluginApplySnapshot)
+    expected["apply_snapshot"] = snapshot
+    if kind == "runtime":
+        expected["apply_targets"] = [("one", None, "assistant", "generation")]
     assert applied == [expected]
 
 

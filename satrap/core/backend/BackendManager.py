@@ -28,7 +28,7 @@ import os
 
 from satrap.core.framework.SessionClassManager import SessionClassConfigManager
 from satrap.core.framework.BackGroundManager import ModelConfigManager
-from satrap.core.framework.SessionManager import SessionManager
+from satrap.core.framework.SessionManager import SessionEntry, SessionManager
 from satrap.core.config.platform_policy import hot_reload_keys
 from satrap.core.config.agent_routing import AgentRouteStore, resolve_agent_binding, validate_session_bindings
 from satrap.core.config.platform_messages import PlatformMessageStore
@@ -2511,16 +2511,6 @@ class BackendManager:
             ))
         return results
 
-    async def _reload_edictum_config_async(self) -> None:
-        """在线程中刷新应用所需的冷配置, 读取失败记录堆栈并停止协调"""
-        manager = self.edictum_config_manager
-        if manager is not None:
-            try:
-                await asyncio.to_thread(manager.reload)
-            except Exception as error:
-                logger.error(f"[BackendManager] 协调读取冷配置失败: {error}\n{traceback.format_exc()}")
-                raise
-
     async def reconcile_edictum_runtime_async(
         self,
         *,
@@ -2541,7 +2531,6 @@ class BackendManager:
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
         """
-        await self._reload_edictum_config_async()
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}
@@ -2550,15 +2539,29 @@ class BackendManager:
                 session_id = str(ref.get("session_id", "")).strip()
                 if platform_id and session_id:
                     refs_by_platform.setdefault(platform_id, set()).add(session_id)
-        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        selected_managers: list[tuple[str, SessionManager]] = []
+        targets_by_platform: dict[str, list[tuple[str, SessionEntry, str, str]]] = {}
+        names: set[str] = set()
         for platform_id, (session_manager, _) in self._platform_runtimes.items():
             if refs_by_platform is not None and platform_id not in refs_by_platform:
                 continue
+            selected_managers.append((platform_id, session_manager))
+            targets = session_manager.edictum_runtime_apply_targets(config_name=config_name, session_ids=(refs_by_platform or {}).get(platform_id))
+            targets_by_platform[platform_id] = targets
+            names.update(name for _sid, _entry, name, _generation in targets)
+        manager = self.edictum_config_manager
+        apply_snapshot = None if manager is None else await asyncio.to_thread(
+            EdictumPluginApplySnapshot.capture, manager, names, desired_config=desired_config,
+        )
+        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        for platform_id, session_manager in selected_managers:
             pending.append(session_manager.reconcile_edictum_runtime_async(
                 config_name=config_name,
                 session_ids=(refs_by_platform or {}).get(platform_id),
                 desired_config=desired_config,
                 concurrency=concurrency,
+                **({"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}),
+                apply_targets=targets_by_platform[platform_id],
             ))
         grouped = await asyncio.gather(*pending) if pending else []
         return [item for group in grouped for item in group]

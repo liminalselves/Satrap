@@ -144,7 +144,8 @@ class PluginApplySnapshot:
 class EdictumPluginApplySnapshot:
     """平台同次应用共享的命名规格与全局参数, 不包含实例覆盖或授权"""
 
-    def __init__(self, sources: PluginApplySnapshot, specs: dict[str, list[PluginSpec]], read_ms: float) -> None:
+    def __init__(self, sources: PluginApplySnapshot, specs: dict[str, list[PluginSpec]], read_ms: float,
+                 configs: dict[str, dict[str, Any] | None]) -> None:
         """
         保存独立命名规格及来源核验器
 
@@ -152,15 +153,17 @@ class EdictumPluginApplySnapshot:
         - sources: 目录与全局参数来源
         - specs: 本次选定命名配置的规格
         - read_ms: 实际捕获耗时
+        - configs: 对应完整命名配置, 已删除配置保存为 None
         """
         self.sources = sources
         self._specs = deepcopy(specs)
         self.read_ms = read_ms
+        self._configs = deepcopy(configs)
 
     @classmethod
     def capture(cls, manager: EdictumConfigManager, config_names: set[str], *, desired_plugins: object | None = None,
                 global_manager: PluginConfigManager | None = None, plugin_name: str | None = None,
-                retained_config_names: set[str] | None = None) -> EdictumPluginApplySnapshot:
+                retained_config_names: set[str] | None = None, desired_config: dict[str, Any] | None = None) -> EdictumPluginApplySnapshot:
         """
         在线程中统一刷新命名配置并捕获所需插件参数
 
@@ -171,6 +174,7 @@ class EdictumPluginApplySnapshot:
         - global_manager: 可选全局参数来源, 默认使用当前项目目录
         - plugin_name: 可选插件引用过滤, 在新命名内容中判断
         - retained_config_names: 已运行该插件的配置名称, 移除旧引用仍需协调
+        - desired_config: 可选完整临时运行目标, 校验后仅用于本次应用
 
         返回:
         - 同一代来源; 持续变化或读取失败时记录堆栈并抛出
@@ -183,6 +187,9 @@ class EdictumPluginApplySnapshot:
                 manager.reload()
                 catalog = manager.plugin_catalog.snapshot()
                 configs = manager.list_configs()
+                if desired_config is not None:
+                    target = manager._normalize_entry(desired_config, catalog)
+                    configs.update({name: deepcopy(target) for name in config_names})
                 specs = {
                     name: parse_plugin_specs(desired_plugins if desired_plugins is not None else configs.get(name, {}).get("plugins", []),
                                              catalog, require_available=False, migration_manager=globals_)
@@ -197,7 +204,7 @@ class EdictumPluginApplySnapshot:
                 sources = PluginApplySnapshot.capture(manager.plugin_catalog, globals_, additional_sources=(manager.storage_path,), plugin_names=names)
                 if (before == plugin_source_version(manager.storage_path) and sources.is_current()
                         and catalog.snapshot_token() == sources.catalog.snapshot_token()):
-                    return cls(sources, specs, (time.perf_counter() - started) * 1000)
+                    return cls(sources, specs, (time.perf_counter() - started) * 1000, {name: configs.get(name) for name in specs})
             raise RuntimeError("Edictum 插件配置在捕获期间持续变化, 请重试应用")
         except Exception as error:
             logger.error(f"[插件应用] 捕获 Edictum 命名配置失败: {error}\n{traceback.format_exc()}")
@@ -226,3 +233,15 @@ class EdictumPluginApplySnapshot:
         - 被捕获时为 True, 未引用目标插件的配置不进入协调
         """
         return config_name in self._specs
+
+    def config_for(self, config_name: str) -> dict[str, Any] | None:
+        """
+        返回同代完整命名目标, 不回退当前文件或旧内存内容
+
+        参数:
+        - config_name: 本次捕获的命名配置
+
+        返回:
+        - 独立配置副本, 已删除时为 None; 未捕获名称明确失败
+        """
+        return deepcopy(self._configs[config_name])
