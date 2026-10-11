@@ -1,8 +1,9 @@
-import axios, { AxiosInstance, AxiosError, InternalAxiosRequestConfig } from 'axios';
+import axios, { AxiosInstance, AxiosError, AxiosRequestConfig, InternalAxiosRequestConfig } from 'axios';
 import { getApiBaseUrl } from '@/utils/constants';
 import { ensureApiSession, establishApiSession } from '@/api/auth';
 
-type RetriableRequestConfig = InternalAxiosRequestConfig & { _satrapAuthRetry?: boolean };
+type ServiceRequestConfig = { _satrapBoundService?: string; _satrapNoAuthReplay?: boolean };
+type RetriableRequestConfig = InternalAxiosRequestConfig & ServiceRequestConfig & { _satrapAuthRetry?: boolean };
 type ErrorBody = { error?: string; reason?: string };
 
 export class ApiError extends Error {
@@ -40,8 +41,11 @@ class ApiClient {
 
     this.client.interceptors.request.use(async (config) => {
       const retry = config as RetriableRequestConfig;
-      const baseUrl = retry._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl();
+      const baseUrl = retry._satrapBoundService || (retry._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl());
       await ensureApiSession(baseUrl);
+      if (retry._satrapBoundService && getApiBaseUrl().replace(/\/$/, '') !== baseUrl) {
+        throw new ApiError('后端地址已变化, 原应用任务的生效状态未确认', undefined, 'service_changed');
+      }
       config.baseURL = baseUrl;
       return config;
     });
@@ -54,7 +58,7 @@ class ApiClient {
       (response) => response.data,
       async (error: AxiosError<ErrorBody>) => {
         const config = error.config as RetriableRequestConfig | undefined;
-        if (error.response?.status === 401 && config && !config._satrapAuthRetry) {
+        if (error.response?.status === 401 && config && !config._satrapAuthRetry && !config._satrapNoAuthReplay) {
           config._satrapAuthRetry = true;
           await establishApiSession(config.baseURL || getApiBaseUrl());
           return this.client.request(config);
@@ -82,6 +86,21 @@ class ApiClient {
 
   async delete<T>(url: string): Promise<T> {
     return this.client.delete(url) as Promise<T>;
+  }
+
+  forService(baseUrl: string) {
+    const bound = baseUrl.replace(/\/$/, '');
+    const request = <T>(method: 'GET' | 'POST', url: string, data: unknown, timeout: number, signal?: AbortSignal): Promise<T> => {
+      const config: AxiosRequestConfig & ServiceRequestConfig = {
+        method, url, data, signal, timeout, baseURL: bound,
+        _satrapBoundService: bound, _satrapNoAuthReplay: method === 'POST',
+      };
+      return this.client.request(config) as Promise<T>;
+    };
+    return {
+      get: <T>(url: string, signal?: AbortSignal, timeout = 10000) => request<T>('GET', url, undefined, timeout, signal),
+      post: <T>(url: string, data: unknown, signal?: AbortSignal, timeout = 120000) => request<T>('POST', url, data, timeout, signal),
+    };
   }
 }
 

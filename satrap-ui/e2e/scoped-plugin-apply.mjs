@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const scopeOnly = ({ operation_id, ...scope }) => { assert.match(operation_id, /^[\w-]{16,128}$/); return scope; };
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
 let browser;
 try {
@@ -82,7 +83,7 @@ try {
   await dialog.getByRole('button', { name: '保存插件配置', exact: true }).click();
   await entered;
   await dialog.getByRole('status').filter({ hasText: '配置已保存, 正在应用' }).waitFor();
-  assert.deepEqual(applications, [{ config_name: 'assistant' }]);
+  assert.deepEqual(applications.map(scopeOnly), [{ config_name: 'assistant' }]);
   await page.clock.runFor(11000);
   assert.equal(await dialog.getByRole('button', { name: '保存中…', exact: true }).isDisabled(), true);
   for (const pathName of ['/config/edictum/sessions', '/config/edictum/types', '/config/edictum/plugins', '/config/platforms']) assert.equal(reads[pathName], before[pathName]);
@@ -93,7 +94,7 @@ try {
   assert.deepEqual(configs.other, untouched);
   await page.getByRole('button', { name: '重试未同步会话', exact: true }).click();
   await page.getByText('插件漂移重试完成', { exact: true }).waitFor();
-  assert.deepEqual(applications[1], { session_refs: [{ platform_id: 'ob', session_id: 'failed-one' }] });
+  assert.deepEqual(scopeOnly(applications[1]), { session_refs: [{ platform_id: 'ob', session_id: 'failed-one' }] });
   assert.equal(await page.getByRole('button', { name: '重试未同步会话', exact: true }).isDisabled(), true);
   timeoutApply = true;
   await page.getByTitle('管理插件', { exact: true }).first().click();

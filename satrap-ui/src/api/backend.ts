@@ -1,5 +1,18 @@
 import { apiClient } from './client';
+import { RuntimeApplication } from './runtimeApplication';
 import type { BackendHealth, PlatformConfigApplication } from './types';
+
+export function createEdictumApplication(kind: 'plugins' | 'full', data: {
+  config_name?: string;
+  session_refs?: Array<{ platform_id: string; session_id: string }>;
+}) {
+  return new RuntimeApplication<ConfigReloadResult>(
+    kind === 'full' ? '/api/edictum/runtime/apply' : '/api/edictum/plugins/reconcile', data,
+    (value): value is ConfigReloadResult => Boolean(value && typeof value === 'object'
+      && typeof (value as ConfigReloadResult).ok === 'boolean' && Array.isArray((value as ConfigReloadResult).edictum_sessions)),
+    data.config_name || '指定会话',
+  );
+}
 
 export interface EdictumPluginReloadSessionResult {
   ok: boolean;

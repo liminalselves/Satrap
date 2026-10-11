@@ -5,6 +5,7 @@ import { chromium } from 'playwright';
 import { createServer } from 'vite';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const scopeOnly = ({ operation_id, ...scope }) => { assert.match(operation_id, /^[\w-]{16,128}$/); return scope; };
 const server = await createServer({ root, server: { host: '127.0.0.1', port: 0 } });
 let browser;
 try {
@@ -77,7 +78,7 @@ try {
     const timer = setTimeout(() => reject(new Error('保存后未进入完整配置应用')), 10000);
     entered.then(() => { clearTimeout(timer); resolve(); });
   });
-  assert.deepEqual(applications, [{ config_name: 'assistant' }]);
+  assert.deepEqual(applications.map(scopeOnly), [{ config_name: 'assistant' }]);
   assert.equal(previews[0].config_name, 'assistant');
   assert.equal(previews[0].config.params.system_prompt, '新的提示词');
   releaseApply();
@@ -86,7 +87,7 @@ try {
   for (const pathName of ['/config/edictum/sessions', '/config/edictum/types', '/config/edictum/plugins', '/config/platforms']) assert.equal(reads[pathName], before[pathName]);
   await page.getByRole('button', { name: '重试未同步会话', exact: true }).click();
   await page.getByText('配置同步重试完成', { exact: true }).waitFor();
-  assert.deepEqual(applications[1], { session_refs: [{ platform_id: 'ob', session_id: 'failed-one' }] });
+  assert.deepEqual(scopeOnly(applications[1]), { session_refs: [{ platform_id: 'ob', session_id: 'failed-one' }] });
   assert.equal(await page.getByRole('button', { name: '重试未同步会话', exact: true }).isDisabled(), true);
   await page.getByTitle('编辑配置', { exact: true }).first().click();
   assert.equal(await dialog.getByLabel('系统提示词', { exact: true }).inputValue(), '新的提示词');

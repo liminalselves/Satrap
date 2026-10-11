@@ -34,6 +34,7 @@ export interface FormModalProps {
   size?: 'sm' | 'md' | 'lg' | 'xl';
   // 默认保留浏览器原生校验 (必填与控件约束); 由应用校验器统一给提示的表单显式关闭
   noValidate?: boolean;
+  statusContent?: React.ReactNode;
 }
 
 export const FormModal = memo(function FormModal({
@@ -49,6 +50,7 @@ export const FormModal = memo(function FormModal({
   loading = false,
   size = 'md',
   noValidate = false,
+  statusContent,
 }: FormModalProps) {
   const formId = useId();
   const handleSubmit = (e: React.FormEvent) => {
@@ -187,6 +189,7 @@ export const FormModal = memo(function FormModal({
           </div>
         ))}
 
+        {statusContent}
         <div className="flex gap-3 pt-4">
           <Button type="submit" variant="primary" className="flex-1" disabled={loading}>
             {loading ? '处理中...' : submitText}
