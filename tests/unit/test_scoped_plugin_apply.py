@@ -4,20 +4,24 @@ import asyncio
 import threading
 from types import SimpleNamespace
 from typing import Any, cast
+from pathlib import Path
 
 import pytest
 
 from satrap.core.backend.BackendManager import BackendManager, logger
+from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["plugins", "runtime"])
-async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models(kind: str):
+async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models(kind: str, tmp_path: Path):
     """
     慢冷配置读取允许其它协程运行, 后续协调保留指定会话范围
 
     参数:
     - kind: 插件或完整配置协调路径
+    - tmp_path: 隔离配置来源
     """
     entered = threading.Event()
     release = threading.Event()
@@ -49,9 +53,11 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
         raise AssertionError("不应重载模型")
 
     backend = cast(Any, BackendManager.__new__(BackendManager))
-    backend._edictum_cfg = SimpleNamespace(reload=reload)
+    backend._edictum_cfg = SimpleNamespace(reload=reload, storage_path=tmp_path / "named.json", list_configs=lambda: {},
+                                         plugin_catalog=PluginCatalog(tmp_path / "builtin", tmp_path / "user"))
     backend._model_cfg = SimpleNamespace(reload=unrelated_reload)
-    runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile, reconcile_edictum_runtime_async=reconcile)
+    runtime = SimpleNamespace(reconcile_edictum_plugins_async=reconcile, reconcile_edictum_runtime_async=reconcile,
+                              edictum_plugin_apply_scope=lambda **kwargs: {"assistant": False})
     backend._platform_runtimes = {"ob": (runtime, None), "other": (runtime, None)}
     apply = getattr(backend, f"reconcile_edictum_{kind}_async")
     task = asyncio.create_task(apply(
@@ -68,18 +74,24 @@ async def test_scoped_plugin_read_does_not_block_loop_or_reload_unrelated_models
     assert len(read_threads) == 1
     assert read_threads[0] != threading.get_ident()
     desired_key = "desired_plugins" if kind == "plugins" else "desired_config"
-    assert applied == [{"config_name": "assistant", "session_ids": {"one"}, desired_key: None, "concurrency": 4}]
+    expected: dict[str, object] = {"config_name": "assistant", "session_ids": {"one"}, desired_key: None, "concurrency": 4}
+    if kind == "plugins":
+        snapshot = applied[0].get("apply_snapshot")
+        assert isinstance(snapshot, EdictumPluginApplySnapshot)
+        expected["apply_snapshot"] = snapshot
+    assert applied == [expected]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["plugins", "runtime"])
-async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch, kind: str):
+async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch, kind: str, tmp_path: Path):
     """
     配置读取失败记录堆栈, 不沿用旧配置安装插件
 
     参数:
     - monkeypatch: 日志替换夹具
     - kind: 插件或完整配置协调路径
+    - tmp_path: 隔离配置来源
     """
     def failed_read() -> None:
         """模拟文件读取失败"""
@@ -88,7 +100,7 @@ async def test_read_failure_is_logged_and_does_not_apply_instances(monkeypatch, 
     messages: list[str] = []
     monkeypatch.setattr(logger, "error", messages.append)
     backend = cast(Any, BackendManager.__new__(BackendManager))
-    backend._edictum_cfg = SimpleNamespace(reload=failed_read)
+    backend._edictum_cfg = SimpleNamespace(reload=failed_read, storage_path=tmp_path / "named.json")
     backend._platform_runtimes = {}
     with pytest.raises(OSError, match="source unavailable"):
         await getattr(backend, f"reconcile_edictum_{kind}_async")(config_name="assistant")

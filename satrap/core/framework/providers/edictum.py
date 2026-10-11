@@ -16,6 +16,7 @@ import time
 
 from satrap.core.framework.providers.base import SessionProviderDefinition
 from satrap.edictum.plugin_catalog import PluginCatalog
+from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.edictum.plugin_settings import resolve_runtime_specs
 from satrap.core.utils.performance import PhaseTimings
 from satrap.edictum.plugin_runtime import (
@@ -706,6 +707,7 @@ class EdictumProvider:
         session: Session | AsyncSession,
         *,
         desired_plugins: object | None = None,
+        apply_snapshot: EdictumPluginApplySnapshot | None = None,
     ) -> dict[str, Any]:
         """
         把命名冷配置中的完整插件变化应用到一个活跃会话
@@ -713,6 +715,7 @@ class EdictumProvider:
         参数:
         - session: 活跃 Edictum 会话
         - desired_plugins: 可选目标插件配置, None 时读取当前冷配置
+        - apply_snapshot: 可选本次共享来源, 默认保持单会话实时解析
 
         返回:
         - dict[str, Any]: 生命周期协调结果
@@ -722,19 +725,17 @@ class EdictumProvider:
         if state is None:
             return {"ok": False, "error": "Edictum 运行时状态不存在"}
         with timings.phase('config_read_ms'):
-            if desired_plugins is None:
-                config = self.config_manager.get_config(state.config_name)
-                if config is None:
-                    desired_plugins = []
-                else:
-                    desired_plugins = config.get("plugins", [])
-            catalog = self.plugin_catalog.snapshot()
-            desired_specs = parse_plugin_specs(
-                desired_plugins,
-                catalog,
-                require_available=False,
-            )
-            desired_specs = resolve_runtime_specs(session, desired_specs, catalog)
+            if apply_snapshot is not None:
+                catalog = apply_snapshot.sources.catalog
+                desired_specs = apply_snapshot.specs_for(state.config_name)
+                desired_specs = resolve_runtime_specs(session, desired_specs, catalog, snapshot=apply_snapshot.sources)
+            else:
+                if desired_plugins is None:
+                    config = self.config_manager.get_config(state.config_name)
+                    desired_plugins = config.get("plugins", []) if config is not None else []
+                catalog = self.plugin_catalog.snapshot()
+                desired_specs = parse_plugin_specs(desired_plugins, catalog, require_available=False)
+                desired_specs = resolve_runtime_specs(session, desired_specs, catalog)
         state.desired_fingerprint = plugin_specs_fingerprint(desired_specs)
         definition = state.type_definition
         installer = definition.plugin_installer
@@ -766,6 +767,22 @@ class EdictumProvider:
             "desired_fingerprint": state.desired_fingerprint,
         }
 
+    def capture_plugin_application(self, scope: dict[str, bool], *, desired_plugins: object | None = None,
+                                   plugin_name: str | None = None) -> EdictumPluginApplySnapshot:
+        """
+        准备当前平台直接应用的共享来源, 后端跨平台入口可提供同一快照
+
+        参数:
+        - scope: 候选配置名称及旧插件引用标记
+        - desired_plugins: 可选临时目标规格
+        - plugin_name: 可选引用过滤
+
+        返回:
+        - 命名配置与全局参数的同代快照
+        """
+        return EdictumPluginApplySnapshot.capture(self.config_manager, set(scope), desired_plugins=desired_plugins,
+                                                plugin_name=plugin_name, retained_config_names={name for name, old in scope.items() if old})
+
     def references_plugin(self, session: Session | AsyncSession, plugin_name: str, *, desired_plugins: object | None = None) -> bool:
         """
         检查当前目标或旧运行时是否引用指定插件, 不读取插件全局参数
@@ -789,6 +806,19 @@ class EdictumProvider:
         if not isinstance(desired_plugins, list):
             return False
         return any((item if isinstance(item, str) else item.get("name") if isinstance(item, dict) else None) == plugin_name for item in desired_plugins)
+
+    def plugin_config_name(self, session: Session | AsyncSession) -> str | None:
+        """
+        返回运行时命名配置标识, 不读取冷配置或全局参数
+
+        参数:
+        - session: 活跃 Edictum 实例
+
+        返回:
+        - 配置名称, 无运行状态时为 None
+        """
+        state = self._get_runtime_state(session)
+        return state.config_name if state is not None else None
 
     def preview_session_plugins(
         self,

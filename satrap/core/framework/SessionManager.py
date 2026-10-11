@@ -37,6 +37,7 @@ from satrap.core.framework.Base import AsyncSession, Session
 from satrap.core.utils.context import AsyncContextManager, ContextManager
 from satrap.core.utils.paths import get_db_path
 from satrap.edictum.registry import EDICTUM_PROVIDER
+from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.core.storage import (
     LOCAL_PLATFORM_ID,
     StorageLayout,
@@ -1608,6 +1609,52 @@ class SessionManager:
                     with entry.sync_operation_lock:
                         self._apply_model_reload(session_id, entry.session, new_llm, llm_cfg)
 
+    def _edictum_plugin_entries(self, config_name: str | None, session_ids: set[str] | None) -> list[tuple[str, SessionEntry, str]]:
+        """
+        选择应用候选实例, 只读取会话目录与运行时名称
+
+        参数:
+        - config_name: 可选命名配置过滤
+        - session_ids: 可选实例范围
+
+        返回:
+        - 会话 ID, 条目及配置名称, 保持池顺序
+        """
+        provider = self.provider_registry.get("edictum")
+        runtime_name = safe_getattr_callable(provider, "plugin_config_name")
+        selected: list[tuple[str, SessionEntry, str]] = []
+        for session_id, entry in self.pool.list_entries().items():
+            if str(safe_getattr(entry.session, "_satrap_provider_name") or "") != "edictum":
+                continue
+            if session_ids is not None and session_id not in session_ids:
+                continue
+            record = self.store.get(session_id)
+            name = str(record.session_type_name if record is not None else runtime_name(entry.session) if runtime_name is not None else "")
+            if config_name is not None and name != config_name:
+                continue
+            selected.append((session_id, entry, name))
+        return selected
+
+    def edictum_plugin_apply_scope(self, *, config_name: str | None = None, session_ids: set[str] | None = None,
+                                 plugin_name: str | None = None) -> dict[str, bool]:
+        """
+        汇总候选命名配置及旧引用, 新引用在捕获新文件后判断
+
+        参数:
+        - config_name: 可选命名配置过滤
+        - session_ids: 可选实例范围
+        - plugin_name: 可选旧插件引用标记
+
+        返回:
+        - 配置名称到旧引用是否存在的映射
+        """
+        references = safe_getattr_callable(self.provider_registry.get("edictum"), "references_plugin")
+        scope: dict[str, bool] = {}
+        for _session_id, entry, name in self._edictum_plugin_entries(config_name, session_ids):
+            old = bool(plugin_name is not None and references is not None and references(entry.session, plugin_name, desired_plugins=[]))
+            scope[name] = scope.get(name, False) or old
+        return scope
+
     async def reconcile_edictum_plugins_async(
         self,
         *,
@@ -1616,6 +1663,7 @@ class SessionManager:
         desired_plugins: object | None = None,
         plugin_name: str | None = None,
         concurrency: int = 4,
+        apply_snapshot: EdictumPluginApplySnapshot | None = None,
     ) -> list[dict[str, Any]]:
         """
         对当前平台选定的活跃 Edictum 会话应用完整插件差量
@@ -1626,6 +1674,7 @@ class SessionManager:
         - desired_plugins: 可选目标插件配置覆盖
         - plugin_name: 可选插件引用过滤, 旧引用移除也需要协调
         - concurrency: 最大并发协调数
+        - apply_snapshot: 可选后端跨平台共享快照, 默认由 Provider 准备
 
         返回:
         - list[dict[str, Any]]: 逐会话应用结果
@@ -1635,6 +1684,10 @@ class SessionManager:
         references = safe_getattr_callable(provider, "references_plugin")
         if reconcile is None:
             return []
+        capture = safe_getattr_callable(provider, "capture_plugin_application")
+        if apply_snapshot is None and capture is not None:
+            scope = self.edictum_plugin_apply_scope(config_name=config_name, session_ids=session_ids, plugin_name=plugin_name)
+            apply_snapshot = await asyncio.to_thread(capture, scope, desired_plugins=desired_plugins, plugin_name=plugin_name)
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
         async def reconcile_one(session_id: str, entry: SessionEntry) -> dict[str, Any]:
@@ -1648,15 +1701,23 @@ class SessionManager:
                     lock_wait_ms = (time.perf_counter() - wait_started) * 1000
                     if self.pool.list_entries().get(session_id) is not entry:
                         return {"ok": False, "session_id": session_id, "platform_id": self.platform_id, "error": "会话运行时已变化"}
+                    if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                        logger.warning(f"[SessionManager] 会话 {session_id} 插件应用来源在等待期间已变化")
+                        return {"ok": False, "session_id": session_id, "platform_id": self.platform_id,
+                                "error": "插件配置在等待期间已变化, 请重试应用",
+                                "timings_ms": {"shared_config_read_ms": round(apply_snapshot.read_ms, 3), "queue_and_lock_wait_ms": round(lock_wait_ms, 3)}}
+                    snapshot_args = {"apply_snapshot": apply_snapshot} if apply_snapshot is not None else {}
                     if isinstance(entry.session, AsyncSession):
-                        result = reconcile(entry.session, desired_plugins=desired_plugins)
+                        result = reconcile(entry.session, desired_plugins=desired_plugins, **snapshot_args)
                         if inspect.isawaitable(result):
                             result = await result
                     else:
                         sync_wait_started = time.perf_counter()
                         with entry.sync_operation_lock:
                             sync_lock_wait_ms = (time.perf_counter() - sync_wait_started) * 1000
-                            result = reconcile(entry.session, desired_plugins=desired_plugins)
+                            if apply_snapshot is not None and not await asyncio.to_thread(apply_snapshot.sources.is_current):
+                                raise RuntimeError("插件配置在等待同步会话期间已变化, 请重试应用")
+                            result = reconcile(entry.session, desired_plugins=desired_plugins, **snapshot_args)
                             if inspect.isawaitable(result):
                                 result = await result
                 payload: dict[str, Any] = (
@@ -1668,6 +1729,8 @@ class SessionManager:
                 payload["platform_id"] = self.platform_id
                 payload['timings_ms'] = {**payload.get('timings_ms', {}), **timings.to_payload(),
                                          'queue_and_lock_wait_ms': round(lock_wait_ms, 3), 'sync_lock_wait_ms': round(sync_lock_wait_ms, 3)}
+                if apply_snapshot is not None:
+                    payload['timings_ms']['shared_config_read_ms'] = round(apply_snapshot.read_ms, 3)
                 logger.debug(f"[SessionManager] 插件协调完成, 会话={session_id}, timings_ms={payload['timings_ms']}")
                 return payload
             except Exception as error:
@@ -1681,19 +1744,11 @@ class SessionManager:
                 }
 
         pending: list[Awaitable[dict[str, Any]]] = []
-        for session_id, entry in self.pool.list_entries().items():
-            provider_name = str(safe_getattr(entry.session, "_satrap_provider_name") or "")
-            if provider_name != "edictum":
+        for session_id, entry, name in self._edictum_plugin_entries(config_name, session_ids):
+            if apply_snapshot is not None and not apply_snapshot.includes_config(name):
                 continue
-            if session_ids is not None and session_id not in session_ids:
-                continue
-            session_config = self.store.get(session_id)
-            if config_name is not None and (
-                session_config is None
-                or session_config.session_type_name != config_name
-            ):
-                continue
-            if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=desired_plugins):
+            selected_plugins = [spec.name for spec in apply_snapshot.specs_for(name)] if apply_snapshot is not None else desired_plugins
+            if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=selected_plugins):
                 continue
             pending.append(reconcile_one(session_id, entry))
         return list(await asyncio.gather(*pending)) if pending else []

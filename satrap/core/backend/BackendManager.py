@@ -56,6 +56,7 @@ from satrap.edictum.registry import (
     create_default_edictum_type_registry,
 )
 from satrap.edictum.config import EdictumConfigManager
+from satrap.edictum.plugin_apply import EdictumPluginApplySnapshot
 from satrap.core.pipeline.attachments import asr_resolver_from_manager
 from satrap.core.platform.notices import PlatformEventHub, set_current_hub
 from satrap.core.platform.connection import ConnectionProbeError, ConnectionProbeResult
@@ -2621,7 +2622,6 @@ class BackendManager:
         返回:
         - list[dict[str, Any]]: 逐会话协调结果
         """
-        await self._reload_edictum_config_async()
         refs_by_platform: dict[str, set[str]] | None = None
         if session_refs is not None:
             refs_by_platform = {}
@@ -2630,16 +2630,34 @@ class BackendManager:
                 session_id = str(ref.get("session_id", "")).strip()
                 if platform_id and session_id:
                     refs_by_platform.setdefault(platform_id, set()).add(session_id)
-        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        scope: dict[str, bool] = {}
+        selected_managers: list[tuple[str, SessionManager]] = []
         for platform_id, (session_manager, _) in self._platform_runtimes.items():
             if refs_by_platform is not None and platform_id not in refs_by_platform:
                 continue
+            selected_managers.append((platform_id, session_manager))
+            for name, old in session_manager.edictum_plugin_apply_scope(
+                config_name=config_name, session_ids=(refs_by_platform or {}).get(platform_id), plugin_name=plugin_name,
+            ).items():
+                scope[name] = scope.get(name, False) or old
+        manager = self.edictum_config_manager
+        apply_snapshot = None if manager is None else await asyncio.to_thread(
+            EdictumPluginApplySnapshot.capture, manager, set(scope), desired_plugins=desired_plugins, plugin_name=plugin_name,
+            retained_config_names={name for name, old in scope.items() if old},
+        )
+        pending: list[Awaitable[list[dict[str, Any]]]] = []
+        apply_args: dict[str, Any] = {}
+        if plugin_name is not None:
+            apply_args["plugin_name"] = plugin_name
+        if apply_snapshot is not None:
+            apply_args["apply_snapshot"] = apply_snapshot
+        for platform_id, session_manager in selected_managers:
             pending.append(session_manager.reconcile_edictum_plugins_async(
                 config_name=config_name,
                 session_ids=(refs_by_platform or {}).get(platform_id),
                 desired_plugins=desired_plugins,
                 concurrency=concurrency,
-                **({"plugin_name": plugin_name} if plugin_name is not None else {}),
+                **apply_args,
             ))
         grouped = await asyncio.gather(*pending) if pending else []
         return [item for group in grouped for item in group]
