@@ -2,6 +2,7 @@ import { restoreConversation, type Conversation as ConversationState } from './c
 import { RunRecovery } from "./RunRecovery";
 import { RagManager } from '@/components/common/RagManager';
 import { MediaAttachment } from './MediaAttachment';
+import { useChatScroll } from './useChatScroll';
 import { ragApi } from '@/api/rag';
 import type { ConfigOption } from '@/components/common/PluginConfigFields';
 import { PluginConfigFields, type ModelOptions } from '@/components/common/PluginConfigFields';
@@ -338,7 +339,6 @@ export function Chat() {
 
   const navigate = useNavigate();
   const { theme, toggleTheme } = useTheme();
-  const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   // WS 取消订阅函数
   const unsubscribeRef = useRef<(() => void) | null>(null);
@@ -367,6 +367,7 @@ export function Chat() {
     () => conversations.find((c) => c.id === activeId),
     [conversations, activeId]
   );
+  const messageScroll = useChatScroll(`${backendOk}:${activeId}:${showEntryChoice}`, active?.messages, Boolean(active?.loaded));
   const activePendingUserInput = pendingUserInputs[activeId]?.[0];
   const activePendingUserAnswer = activePendingUserInput
     ? pendingUserAnswers[activePendingUserInput.requestId] ?? ''
@@ -892,16 +893,6 @@ export function Chat() {
       .filter((g) => g.conversations.length > 0 || !kw);
     return { groups, recent, colorIndex, total: matched.length };
   }, [conversations, search, projects]);
-
-  // 滚动到底部
-  const scrollToBottom = useCallback(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, []);
-
-  // 仅在消息变化时滚动到底部 (面板开合不联动, 避免打断历史消息阅读)
-  useEffect(() => {
-    scrollToBottom();
-  }, [active?.messages.length, active?.messages, scrollToBottom]);
 
   // 自动调整输入框高度
   useEffect(() => {
@@ -1679,9 +1670,9 @@ export function Chat() {
         )}
 
         {/* 消息流 (输入区内嵌于底部, sticky 固定, 滚动不消失) */}
-        <div className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
+        <div ref={messageScroll.containerRef} onScroll={messageScroll.onScroll} style={{ overflowAnchor: 'none' }} className="relative z-10 flex-1 overflow-y-auto custom-scrollbar px-5 pt-4 flex flex-col">
           {/* 内容区 */}
-          <div className="flex-1 flex flex-col pb-4">
+          <div ref={messageScroll.contentRef} className="flex-1 flex flex-col pb-4">
             {showEntryChoice ? (
               <div className="flex-1 flex items-center justify-center">
                 <div className="max-w-sm w-full space-y-3">
@@ -1729,7 +1720,6 @@ export function Chat() {
                     onSelectVariant={handleSelectVariant}
                   />
                 ))}
-                <div ref={messagesEndRef} />
               </div>
             )}
           </div>
@@ -3153,7 +3143,7 @@ const MessageBubble = memo(function MessageBubble({
   );
 
   return (
-    <div className="chat-message-item flex gap-3 group">
+    <div data-message-id={message.id} className="chat-message-item flex gap-3 group">
       {/* 头像: 用户消息 order-2 在右, AI 消息 order-1 在左 */}
       <div
         className={cn(

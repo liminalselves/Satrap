@@ -36,6 +36,7 @@
     "test:e2e:log-stream": "node e2e/log-stream.mjs",
     "test:e2e:administrators": "node e2e/administrators.mjs",
     "test:e2e": "node e2e/chat-reconnect.mjs",
+    "test:e2e:chat-history-media": "node e2e/chat-history-media.mjs",
     "preview": "vite preview",
     "benchmark": "npm run build && node benchmarks/run.mjs",
     "benchmark:baseline": "npm run build && node benchmarks/run.mjs --baseline",

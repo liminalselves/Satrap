@@ -23,6 +23,14 @@ describe('chatApi conversation preload', () => {
     vi.restoreAllMocks();
   });
 
+  it('媒体只读请求传递取消信号, 切页可撤销网络读取', async () => {
+    const fetchSpy = mockFetch({ data_url: 'data:image/png;base64,test' });
+    const controller = new AbortController();
+    await chatApi.previewMedia('conv-1', '/archive/test.png', controller.signal);
+    expect(fetchSpy.mock.calls[0][0]).toContain('/api/chat/media?conversation=conv-1&source=');
+    expect(fetchSpy.mock.calls[0][1]?.signal).toBe(controller.signal);
+  });
+
   it('sends complete runtime settings when preloading', async () => {
     const fetchSpy = mockFetch();
 

@@ -264,7 +264,7 @@ export type ChatEvent = (
 
 // ==================== HTTP 请求 ====================
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const baseUrl = getChatApiUrl();
   await ensureApiSession(baseUrl);
   const send = () => fetch(`${baseUrl}${path}`, {
@@ -272,6 +272,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     credentials: 'include',
     headers: { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
+    signal,
   });
   let resp = await send();
   if (resp.status === 401) {
@@ -422,8 +423,8 @@ export const chatApi = {
     request<{ ok: boolean; error?: string }>('DELETE', `/api/chat/models/${encodeURIComponent(name)}`),
 
   // 文件上传
-  previewMedia: (conversation: string, source: string) =>
-    request<{ data_url: string }>('GET', `/api/chat/media?conversation=${encodeURIComponent(conversation)}&source=${encodeURIComponent(source)}`),
+  previewMedia: (conversation: string, source: string, signal?: AbortSignal) =>
+    request<{ data_url: string }>('GET', `/api/chat/media?conversation=${encodeURIComponent(conversation)}&source=${encodeURIComponent(source)}`, undefined, signal),
 
   uploadFile: (conversation: string, fileName: string, fileDataBase64: string) =>
     request<{ ok: boolean; file_name: string; file_url: string; file_type: string; error?: string }>(
