@@ -2622,19 +2622,20 @@ def _read_plugin_global_config(name: str, catalog: PluginCatalog) -> dict[str, A
     return PluginManagementService(catalog, {}, ChatPluginRegistry(), manager=PluginConfigManager()).get_config(name)
 
 
-def _plugin_runtime_request(target: str, url: str) -> dict[str, Any]:
+def _plugin_runtime_request(target: str, url: str, scope: dict[str, str] | None = None) -> dict[str, Any]:
     """
     请求运行服务重新加载插件配置, 保留失败与未运行的区别
 
     参数:
     - target: Chat 或 Edictum 服务标识
     - url: 经过认证的内部协调接口地址
+    - scope: 可选插件名称及命名配置范围
 
     返回:
     - 应用状态及逐会话结果; 连接拒绝表示下次激活应用, 超时或业务失败表示 error
     """
     request = _authenticated_request(url, "POST")
-    request.data = b"{}"
+    request.data = json.dumps(scope or {}, ensure_ascii=False).encode("utf-8")
     request.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(request, timeout=45) as response:
@@ -2654,19 +2655,33 @@ def _plugin_runtime_request(target: str, url: str) -> dict[str, Any]:
         return {"target": target, "status": "error", "error": str(error), "sessions": []}
 
 
-async def _apply_plugin_runtime() -> list[dict[str, Any]]:
+async def _apply_plugin_runtime(*, plugin_name: str | None = None, kind: str | None = None, location_id: str | None = None) -> list[dict[str, Any]]:
     """
     分别协调 Chat 与 Edictum, 单个服务失败不阻断其他服务
 
+    参数:
+    - plugin_name: 可选插件引用过滤
+    - kind: 可选 chat 或 edictum 使用位置类别
+    - location_id: Edictum 命名配置名称, Chat 固定为 chat
+
     返回:
-    - 两个服务独立的运行应用结果
+    - 所选服务独立的运行应用结果
     """
+    if kind is None and location_id is not None:
+        raise ValueError("location_id 必须同时提供 kind")
     host, port = _configured_backend_address()
     host = _connect_host(host)
     host = f"[{host}]" if ":" in host and not host.startswith("[") else host
     urls = [("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/reconcile"),
             ("Edictum", f"http://{host}:{port}/api/edictum/plugins/reconcile")]
-    results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_runtime_request, target, url) for target, url in urls), return_exceptions=True)
+    if kind is not None:
+        if kind not in {"chat", "edictum"} or not location_id or (kind == "chat" and location_id != "chat"):
+            raise ValueError("未知插件应用位置")
+        urls = [item for item in urls if item[0] == ("Chat" if kind == "chat" else "Edictum")]
+    scope = {"plugin_name": plugin_name} if plugin_name else {}
+    if kind == "edictum":
+        scope["config_name"] = cast(str, location_id)
+    results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_runtime_request, target, url, scope) for target, url in urls), return_exceptions=True)
     return [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "sessions": []}
             for index, result in enumerate(results)]
 
@@ -2745,7 +2760,7 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": str(error)}
     except (OSError, TypeError, ValueError) as error:
         return 400, {"error": str(error)}
-    return 200, {**result, "runtime": await _apply_plugin_runtime()}
+    return 200, {**result, "runtime": await _apply_plugin_runtime(plugin_name=name, kind=payload["kind"], location_id=payload["location_id"])}
 
 
 async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
@@ -2759,8 +2774,13 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
     - 全局配置快照或应用结果, 不匹配时返回 None
     """
     if ctx.path == "/config/plugins/reconcile" and ctx.method == "POST":
-        await _read_json_body(ctx.reader, ctx.raw_request)
-        return 200, {"ok": True, "runtime": await _apply_plugin_runtime()}
+        payload = await _read_json_body(ctx.reader, ctx.raw_request)
+        for field in ("plugin_name", "kind", "location_id"):
+            if field in payload and (not isinstance(payload[field], str) or not payload[field].strip()):
+                return 400, {"error": f"{field} 必须是非空字符串"}
+        if ("kind" in payload) != ("location_id" in payload) or payload.get("kind") not in {None, "chat", "edictum"} or (payload.get("kind") == "chat" and payload.get("location_id") != "chat"):
+            return 400, {"error": "未知插件应用位置"}
+        return 200, {"ok": True, "runtime": await _apply_plugin_runtime(**{key: payload[key] for key in ("plugin_name", "kind", "location_id") if key in payload})}
     prefix = "/config/plugins/"
     if not ctx.path.startswith(prefix) or not ctx.path.endswith("/config") or ctx.method not in {"GET", "PUT"}:
         return None
@@ -2784,7 +2804,7 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": str(error)}
     except (OSError, TypeError, ValueError) as error:
         return 400, {"error": str(error)}
-    return 200, {**result, "runtime": await _apply_plugin_runtime()}
+    return 200, {**result, "runtime": await _apply_plugin_runtime(plugin_name=name)}
 
 
 async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:

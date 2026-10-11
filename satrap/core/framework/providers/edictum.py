@@ -766,6 +766,30 @@ class EdictumProvider:
             "desired_fingerprint": state.desired_fingerprint,
         }
 
+    def references_plugin(self, session: Session | AsyncSession, plugin_name: str, *, desired_plugins: object | None = None) -> bool:
+        """
+        检查当前目标或旧运行时是否引用指定插件, 不读取插件全局参数
+
+        参数:
+        - session: 活跃 Edictum 会话
+        - plugin_name: 已选择的插件名称
+        - desired_plugins: 可选目标插件列表, 默认读取命名冷配置
+
+        返回:
+        - 新旧任一引用存在时为 True, 移除引用仍进入卸载流程
+        """
+        state = self._get_runtime_state(session)
+        if state is None:
+            return False
+        if any(item.name == plugin_name for item in state.plugins):
+            return True
+        if desired_plugins is None:
+            config = self.config_manager.get_config(state.config_name)
+            desired_plugins = config.get("plugins", []) if config is not None else []
+        if not isinstance(desired_plugins, list):
+            return False
+        return any((item if isinstance(item, str) else item.get("name") if isinstance(item, dict) else None) == plugin_name for item in desired_plugins)
+
     def preview_session_plugins(
         self,
         session: Session | AsyncSession,

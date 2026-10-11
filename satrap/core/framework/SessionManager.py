@@ -1614,6 +1614,7 @@ class SessionManager:
         config_name: str | None = None,
         session_ids: set[str] | None = None,
         desired_plugins: object | None = None,
+        plugin_name: str | None = None,
         concurrency: int = 4,
     ) -> list[dict[str, Any]]:
         """
@@ -1623,6 +1624,7 @@ class SessionManager:
         - config_name: 可选 Edictum 配置名称过滤
         - session_ids: 可选会话 ID 过滤
         - desired_plugins: 可选目标插件配置覆盖
+        - plugin_name: 可选插件引用过滤, 旧引用移除也需要协调
         - concurrency: 最大并发协调数
 
         返回:
@@ -1630,6 +1632,7 @@ class SessionManager:
         """
         provider = self.provider_registry.get("edictum")
         reconcile = safe_getattr_callable(provider, "reconcile_session_plugins_async")
+        references = safe_getattr_callable(provider, "references_plugin")
         if reconcile is None:
             return []
         semaphore = asyncio.Semaphore(max(1, concurrency))
@@ -1643,6 +1646,8 @@ class SessionManager:
             try:
                 async with semaphore, entry.async_operation_lock:
                     lock_wait_ms = (time.perf_counter() - wait_started) * 1000
+                    if self.pool.list_entries().get(session_id) is not entry:
+                        return {"ok": False, "session_id": session_id, "platform_id": self.platform_id, "error": "会话运行时已变化"}
                     if isinstance(entry.session, AsyncSession):
                         result = reconcile(entry.session, desired_plugins=desired_plugins)
                         if inspect.isawaitable(result):
@@ -1687,6 +1692,8 @@ class SessionManager:
                 session_config is None
                 or session_config.session_type_name != config_name
             ):
+                continue
+            if plugin_name is not None and references is not None and not references(entry.session, plugin_name, desired_plugins=desired_plugins):
                 continue
             pending.append(reconcile_one(session_id, entry))
         return list(await asyncio.gather(*pending)) if pending else []

@@ -1064,7 +1064,7 @@ def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypa
         assert await conv.session.run("/about") == ""
         before = cold.get_config("chat_commands")
         cold.save_config("chat_commands", {"about_text": "来自管理页"}, before["revision"])
-        status, result = await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
+        status, result = await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b'{"plugin_name":"chat_commands"}')
         assert status == 200 and result["applied"]
         assert await conv.session.run("/about") == "来自管理页"
         snapshot_status, snapshot = await ChatHTTPServer(svc)._route("GET", "/api/chat/plugins/runtime", b"")

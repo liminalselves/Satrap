@@ -45,10 +45,10 @@ export function GlobalPluginSettings({ name, onDirty }: { name: string; onDirty:
   }, [name, refresh]);
   const retry = useCallback(async () => {
     setBusy(true); setError('');
-    try { setRuntime((await controlApi.reconcilePlugins()).runtime); }
+    try { setRuntime((await controlApi.reconcilePlugins({ plugin_name: name })).runtime); }
     catch (err) { setError(pluginError(err)); }
     finally { setBusy(false); }
-  }, []);
+  }, [name]);
   const save = async () => {
     if (!data) return;
     setBusy(true); setError(''); setSaved(false);

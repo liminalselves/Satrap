@@ -2605,6 +2605,7 @@ class BackendManager:
         config_name: str | None = None,
         session_refs: list[dict[str, str]] | None = None,
         desired_plugins: object | None = None,
+        plugin_name: str | None = None,
         concurrency: int = 4,
     ) -> list[dict[str, Any]]:
         """
@@ -2614,6 +2615,7 @@ class BackendManager:
         - config_name: 可选 Edictum 配置名称过滤
         - session_refs: 可选平台和会话引用
         - desired_plugins: 可选目标插件配置覆盖
+        - plugin_name: 可选插件引用过滤, 包含仍需卸载的旧引用
         - concurrency: 每个平台最大并发协调数
 
         返回:
@@ -2637,6 +2639,7 @@ class BackendManager:
                 session_ids=(refs_by_platform or {}).get(platform_id),
                 desired_plugins=desired_plugins,
                 concurrency=concurrency,
+                **({"plugin_name": plugin_name} if plugin_name is not None else {}),
             ))
         grouped = await asyncio.gather(*pending) if pending else []
         return [item for group in grouped for item in group]

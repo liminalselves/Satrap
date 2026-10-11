@@ -790,8 +790,10 @@ async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, mo
     monkeypatch.setattr(control_server, "_plugin_management_service", lambda *args: service)
     monkeypatch.setattr(control_server, '_read_plugin_global_config', lambda name, catalog: service.get_config(name))
     applied = []
-    async def apply_runtime():
-        applied.append(True)
+    async def apply_runtime(**scope):
+        applied.append(scope)
+        if scope.get("kind") == "chat":
+            return [{"target": "Chat", "status": "error", "error": "测试失败", "sessions": []}]
         return [{"target": "Chat", "status": "applied", "sessions": [{"ok": True}]}, {"target": "Edictum", "status": "error", "error": "测试失败", "sessions": []}]
     monkeypatch.setattr(control_server, "_apply_plugin_runtime", apply_runtime)
     first = _json_body(await _request("/config/plugins/probe/config"))
@@ -803,14 +805,21 @@ async def test_plugin_config_saved_independently_of_runtime_failure(tmp_path, mo
     assert service.get_config("probe")["config"]["note"] == "new"
     assert b"409" in (await _request("/config/plugins/probe/config", "PUT", body)).split(b"\r\n", 1)[0]
     assert len(applied) == 1
+    assert applied[0] == {"plugin_name": "probe"}
     retry = _json_body(await _request("/config/plugins/reconcile", "POST", b"{}"))
     assert retry["runtime"][1]["status"] == "error"
     assert len(applied) == 2
+    assert applied[1] == {}
     usage = _json_body(await _request("/config/plugins/probe/usages"))["locations"][0]
     response = await _request("/config/plugins/probe/usages", "PUT", json.dumps({"kind": "chat", "location_id": "chat", "state": {"present": True, "enabled": False, "capabilities": {}}, "expected_revision": usage["revision"]}).encode("utf-8"))
     assert b"200" in response.split(b"\r\n", 1)[0]
     assert _json_body(response)["locations"][0]["present"]
-    assert _json_body(response)["runtime"][1]["status"] == "error"
+    assert _json_body(response)["runtime"][0]["status"] == "error"
+    assert applied[2] == {"plugin_name": "probe", "kind": "chat", "location_id": "chat"}
+    for invalid_scope in ({"location_id": "agent"}, {"kind": "chat", "location_id": "agent"}, {"plugin_name": []}):
+        rejected = await _request("/config/plugins/reconcile", "POST", json.dumps(invalid_scope).encode("utf-8"))
+        assert b"400" in rejected.split(b"\r\n", 1)[0]
+    assert len(applied) == 3
     def snapshot(target, url, name):
         assert name == "probe"
         return {"target": target, "status": "stopped", "instances": []}

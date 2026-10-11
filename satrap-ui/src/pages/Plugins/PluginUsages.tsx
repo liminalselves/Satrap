@@ -32,12 +32,14 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
   const [snapshot, setSnapshot] = useState<PluginRuntimeSnapshot>();
   const [runtimeError, setRuntimeError] = useState('');
   const [runtime, setRuntime] = useState<PluginRuntimeResult[]>([]);
+  const runtimeScope = useRef<{ plugin_name: string; kind: 'chat' | 'edictum'; location_id: string }>();
   const runtimeRead = useMemo(() => new VersionedConfigRead([], (signal) => controlApi.getPluginRuntime(plugin.name, signal)), [plugin.name]);
   const runtimeRequest = useRef(0);
   const [sessionContext, setSessionContext] = useState<PluginSettingsContext | null>(null);
   const location = data?.locations.find((item) => locationKey(item) === selected);
   const dirty = !!location && !!draft && JSON.stringify(locationState(location)) !== JSON.stringify(draft);
   useEffect(() => { onDirty(dirty); }, [dirty, onDirty]);
+  useEffect(() => { runtimeScope.current = undefined; setRuntime([]); }, [plugin.name]);
   useEffect(() => {
     let disposed = false;
     setError('');
@@ -65,10 +67,10 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
     const poll = startVisiblePoll(readRuntime, { interval: 5000 });
     return () => { runtimeRequest.current++; poll.stop(); };
   }, [readRuntime]);
-  const retry = async () => {
+  const retry = async (allInstances = false) => {
     setBusy(true); setError('');
     try {
-      setRuntime((await controlApi.reconcilePlugins()).runtime);
+      setRuntime((await controlApi.reconcilePlugins(!allInstances && runtimeScope.current ? runtimeScope.current : { plugin_name: plugin.name })).runtime);
       runtimeRequest.current++; runtimeRead.invalidate();
       await readRuntime();
     }
@@ -80,6 +82,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
     setBusy(true); setError(''); setSaved(false);
     try {
       const result = await controlApi.savePluginUsage(plugin.name, location, draft);
+      runtimeScope.current = { plugin_name: plugin.name, kind: location.kind, location_id: location.id };
       runtimeRequest.current++; runtimeRead.invalidate();
       setData(result);
       const updated = result.locations.find((item) => locationKey(item) === selected);
@@ -128,7 +131,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
           <Button size="sm" onClick={() => setSessionContext({ platformId: instance.platform_id, sessionId: instance.session_id })}>配置此会话参数</Button>
         </div>)}
       </section>)}
-      {snapshot?.services.some((service) => service.instances.some((instance) => instance.plugin.error || instance.plugin.drift || instance.plugin.restart_required)) && <Button disabled={busy} onClick={() => void retry()}>重试实例应用</Button>}
+      {snapshot?.services.some((service) => service.instances.some((instance) => instance.plugin.error || instance.plugin.drift || instance.plugin.restart_required)) && <Button disabled={busy} onClick={() => void retry(true)}>重试实例应用</Button>}
     </Card>
     <SessionPluginSettingsModal context={sessionContext} plugins={[plugin.name]} onClose={() => setSessionContext(null)} />
   </div>;

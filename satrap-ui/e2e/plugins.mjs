@@ -25,6 +25,7 @@ try {
   let globalRevision = 'first';
   let failGlobalSave = false;
   let runtimeRetries = 0;
+  const retryScopes = [];
   const globalSchema = { note: { type: 'string', default: 'default', description: '全局备注' }, count: { type: 'number', default: 1, minimum: 0, integer: true }, model: { type: 'llm', default: '', nullable: true, description: '命名模型' }, prompt: { type: 'textarea', default: null, description: '未设置时可直接填写' } };
   plugins[0].config_schema = globalSchema;
   const caps = Object.fromEntries(Object.entries(plugins[0].capabilities).map(([kind, items]) => [kind, Object.fromEntries(Object.keys(items).map((name) => [name, true]))]));
@@ -80,7 +81,7 @@ try {
       }
       return route.fulfill({ json: { ok: true, schema: globalSchema, config: { note: 'default', count: 1, ...globalOverrides }, overrides: globalOverrides, revision: globalRevision, saved: route.request().method() === 'PUT', runtime: [{ target: 'Chat', status: 'applied', sessions: [{ conversation_id: 'probe-chat', ok: true }] }, { target: 'Edictum', status: 'error', error: '应用测试失败', sessions: [] }] }, headers: cors });
     }
-    if (pathname === '/config/plugins/reconcile') { runtimeRetries++; runtimeFailed = false; return route.fulfill({ json: { ok: true, runtime: [{ target: 'Chat', status: 'applied', sessions: [] }, { target: 'Edictum', status: 'next_activation', sessions: [] }] }, headers: cors }); }
+    if (pathname === '/config/plugins/reconcile') { retryScopes.push(route.request().postDataJSON()); runtimeRetries++; runtimeFailed = false; return route.fulfill({ json: { ok: true, runtime: [{ target: 'Chat', status: 'applied', sessions: [] }, { target: 'Edictum', status: 'next_activation', sessions: [] }] }, headers: cors }); }
     if (pathname === '/config/plugin-model-options') return route.fulfill({ json: { options: { llm: [{ value: 'test_model', label: '测试模型' }] } }, headers: cors });
     if (pathname === '/config/rag') return route.fulfill({ json: { knowledge_bases: [] }, headers: cors });
     const adminResponses = {
@@ -182,6 +183,7 @@ try {
   await page.getByRole('button', { name: '重试运行应用', exact: true }).click();
   await page.getByText('Edictum：下次激活时应用', { exact: true }).waitFor();
   assert.equal(runtimeRetries, 1);
+  assert.deepEqual(retryScopes[0], { plugin_name: 'builtin_probe' });
   await page.getByRole('button', { name: '恢复默认值', exact: true }).click();
   assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), 'default');
   await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
@@ -212,6 +214,11 @@ try {
   await page.getByText('使用配置已保存', { exact: true }).waitFor();
   assert.equal(locations[0].enabled, false);
   assert.equal(locations[0].capabilities.tools.probe_tool, false);
+  await page.getByRole('button', { name: '重试运行应用', exact: true }).click();
+  await page.getByText('已加载并启用', { exact: true }).waitFor();
+  assert.deepEqual(retryScopes[1], { plugin_name: 'builtin_probe', kind: 'chat', location_id: 'chat' });
+  runtimeFailed = true;
+  await page.getByText('配置与运行状态不同步 · 加载测试失败', { exact: true }).waitFor();
   const heldRuntimeStarted = new Promise((resolve) => { runtimeHeld = resolve; });
   holdRuntime = true;
   const beforeHeldPoll = runtimeReads;
@@ -220,7 +227,8 @@ try {
   assert.equal(typeof releaseRuntime, 'function');
   await page.getByRole('button', { name: '重试实例应用', exact: true }).click();
   await page.getByText('已加载并启用', { exact: true }).waitFor();
-  assert.equal(runtimeRetries, 2);
+  assert.equal(runtimeRetries, 3);
+  assert.deepEqual(retryScopes[2], { plugin_name: 'builtin_probe' });
   assert.equal(runtimeReads, beforeHeldPoll + 2);
   const obsoleteRuntime = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/plugins/builtin_probe/runtime');
   releaseRuntime();
@@ -258,6 +266,7 @@ try {
   assert.equal(globalOverrides.note, 'Chat统一保存');
   await globalDialog.getByRole('button', { name: '重试运行应用', exact: true }).click();
   await globalDialog.getByText('Edictum：下次激活时应用', { exact: true }).waitFor();
+  assert.deepEqual(retryScopes[3], { plugin_name: 'builtin_probe' });
   assert.deepEqual(errors, []);
   console.log('PASS: 插件目录搜索、来源与平台筛选、详情能力、直接打开和不存在提示');
   console.log('PASS: ZIP 上传预览、取消清理、显式安装、打开详情及刷新列表');

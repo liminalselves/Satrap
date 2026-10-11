@@ -558,7 +558,13 @@ class ChatHTTPServer(MiniHTTPServer):
             return 200, {"plugins": svc.list_plugins()}
 
         if method == "POST" and clean == "/api/chat/plugins/reconcile":
-            return 200, await svc.reconcile_plugins()
+            try:
+                payload = json.loads(body or b"{}")
+                if not isinstance(payload, dict) or ("plugin_name" in payload and (not isinstance(payload["plugin_name"], str) or not payload["plugin_name"].strip())):
+                    raise ValueError("plugin_name 必须是非空字符串")
+                return 200, await svc.reconcile_plugins(**({"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}))
+            except (TypeError, ValueError) as error:
+                return 400, {"error": str(error)}
 
         if method == "GET" and clean == "/api/chat/plugins/runtime":
             return 200, svc.plugin_runtime_snapshot()

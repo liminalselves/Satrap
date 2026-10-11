@@ -557,8 +557,8 @@ export const controlApi = {
     return (await controlClient.put<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { config, expected_revision: revision }, { timeout: 120000 })).data;
   },
 
-  reconcilePlugins: async (): Promise<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }> => {
-    return (await controlClient.post<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }>('/config/plugins/reconcile', {}, { timeout: 120000 })).data;
+  reconcilePlugins: async (scope: { plugin_name?: string; kind?: 'chat' | 'edictum'; location_id?: string } = {}): Promise<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }> => {
+    return (await controlClient.post<{ ok: boolean; runtime: import('./types').PluginRuntimeResult[] }>('/config/plugins/reconcile', scope, { timeout: 120000 })).data;
   },
 
   getPluginUsages: async (name: string): Promise<import('./types').PluginUsagesResult> => {

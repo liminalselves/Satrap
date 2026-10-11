@@ -902,6 +902,8 @@ class BackendHTTPServer(MiniHTTPServer):
         if method == "POST" and path == "/api/edictum/plugins/reconcile":
             try:
                 payload = _parse_json_object(body)
+                if "plugin_name" in payload and (not isinstance(payload["plugin_name"], str) or not payload["plugin_name"].strip()):
+                    raise ValueError("plugin_name 必须是非空字符串")
                 raw_refs = payload.get("session_refs")
                 if raw_refs is not None and not isinstance(raw_refs, list):
                     raise ValueError("session_refs 必须是数组")
@@ -915,6 +917,7 @@ class BackendHTTPServer(MiniHTTPServer):
                     config_name=str(payload.get("config_name") or "").strip() or None,
                     session_refs=session_refs,
                     concurrency=max(1, min(int(payload.get("concurrency") or 4), 16)),
+                    **({"plugin_name": payload["plugin_name"].strip()} if "plugin_name" in payload else {}),
                 )
                 return 200, {
                     "ok": all(item.get("ok", False) for item in sessions),

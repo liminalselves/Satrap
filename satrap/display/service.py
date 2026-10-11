@@ -2312,26 +2312,37 @@ class ChatService:
         """
         return self._plugins.scan()
 
-    async def _reconcile_chat_plugins(self) -> list[dict[str, Any]]:
+    async def _reconcile_chat_plugins(self, *, plugin_name: str | None = None, concurrency: int = 4) -> list[dict[str, Any]]:
         """
-        使用共享生命周期协调器同步全部正式 Chat 会话
+        使用共享生命周期协调器有界并发同步正式 Chat 会话
+
+        参数:
+        - plugin_name: 可选插件引用过滤, 已移除的旧引用仍需卸载
+        - concurrency: 最大并发会话数, 默认 4
 
         返回:
         - list[dict[str, Any]]: 逐会话同步结果
         """
         read_started = time.perf_counter()
-        desired_specs = self._plugins.resolve_specs(PluginConfigManager())
+        desired_specs = await asyncio.to_thread(self._plugins.resolve_specs, PluginConfigManager())
         config_read_ms = (time.perf_counter() - read_started) * 1000
-        results: list[dict[str, Any]] = []
-        for conv in list(self._conversations.values()):
-            if not conv.persisted:
-                conv.build_fingerprint = ""
-                continue
+        semaphore = asyncio.Semaphore(max(1, concurrency))
+
+        async def reconcile_one(conv: _Conversation) -> dict[str, Any]:
+            """
+            在原会话操作锁内协调一个 Chat 实例
+
+            参数:
+            - conv: 已选中的正式会话
+
+            返回:
+            - 成功或失败的独立应用结果
+            """
             timings = PhaseTimings()
             lock_started = time.perf_counter()
             lock_wait_ms = 0.0
             try:
-                async with conv.plugin_lock:
+                async with semaphore, conv.plugin_lock:
                     lock_wait_ms = (time.perf_counter() - lock_started) * 1000
                     result = await reconcile_plugin_states_async(
                         conv.plugin_states,
@@ -2343,32 +2354,47 @@ class ChatService:
                 result['timings_ms'] = {**result.get('timings_ms', {}), **timings.to_payload(),
                                         'lock_wait_ms': round(lock_wait_ms, 3), 'config_read_ms': round(config_read_ms, 3)}
                 logger.debug(f"[聊天] 插件协调完成, 会话={conv.conversation_id}, timings_ms={result['timings_ms']}")
-                results.append({
+                return {
                     "conversation_id": conv.conversation_id,
                     "status": "applied" if result.get("ok", False) else "error",
                     **result,
-                })
+                }
             except Exception as error:
                 logger.error(f"[聊天] 会话 {conv.conversation_id} 插件同步失败: {error}\n{traceback.format_exc()}")
-                results.append({
+                return {
                     "conversation_id": conv.conversation_id,
                     "ok": False,
                     "status": "error",
                     "error": str(error),
                     "timings_ms": {**timings.to_payload(), 'lock_wait_ms': round(lock_wait_ms, 3),
                                    'config_read_ms': round(config_read_ms, 3)},
-                })
-        return results
+                }
 
-    async def reconcile_plugins(self) -> dict[str, Any]:
+        pending = []
+        for conv in list(self._conversations.values()):
+            if plugin_name is not None and not (
+                any(spec.name == plugin_name and spec.enabled for spec in desired_specs)
+                or any(state.name == plugin_name and (state.enabled or state.handle is not None) for state in conv.plugin_states)
+            ):
+                continue
+            if not conv.persisted:
+                conv.build_fingerprint = ""
+                continue
+            pending.append(reconcile_one(conv))
+        return list(await asyncio.gather(*pending)) if pending else []
+
+    async def reconcile_plugins(self, *, plugin_name: str | None = None) -> dict[str, Any]:
         """
-        读取最新冷配置并协调全部 Chat 插件实例
+        读取最新冷配置并协调全部或指定插件引用的 Chat 实例
+
+        参数:
+        - plugin_name: 可选插件引用过滤
 
         返回:
         - 配置应用状态及逐会话协调结果
         """
-        self._plugins.refresh()
-        return self._plugin_update_result(await self._reconcile_chat_plugins())
+        await asyncio.to_thread(self._plugins.refresh)
+        return self._plugin_update_result(await self._reconcile_chat_plugins(plugin_name=plugin_name))
 
     async def manage_conversation_data(self, payload: dict[str, Any]) -> dict[str, Any]:
         """

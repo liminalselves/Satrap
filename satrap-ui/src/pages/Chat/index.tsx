@@ -2619,7 +2619,7 @@ function PluginConfigModal({
           onChange={(key, value) => setForm((prev) => ({ ...prev, [key]: value }))} />
         {runtime.length > 0 && <PluginRuntimeStatus results={runtime} busy={saving} onRetry={() => {
           setSaving(true);
-          controlApi.reconcilePlugins().then((result) => { setRuntime(result.runtime); setError(result.runtime.some((item) => item.status === 'error') ? '部分运行实例应用失败' : ''); })
+          controlApi.reconcilePlugins({ plugin_name: pluginName }).then((result) => { setRuntime(result.runtime); setError(result.runtime.some((item) => item.status === 'error') ? '部分运行实例应用失败' : ''); })
             .catch((err) => setError(pluginError(err))).finally(() => setSaving(false));
         }} />}
         <div className="flex justify-end gap-2 pt-1">
