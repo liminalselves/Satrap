@@ -124,16 +124,18 @@ async def test_session_manager_intersects_plugin_and_named_config_scope():
 
 
 @pytest.mark.asyncio
-async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkeypatch):
+async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkeypatch, tmp_path):
     """
     锁被占用的会话不阻塞其他会话, 并发有界且单项失败不取消同批
 
     参数:
     - monkeypatch: 规格解析和生命周期替换夹具
+    - tmp_path: 隔离状态文件目录
     """
     service = cast(Any, ChatService.__new__(ChatService))
     spec = PluginSpec(name="target")
-    service._plugins = SimpleNamespace(resolve_specs=lambda manager: [spec], catalog=object())
+    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [spec], catalog=object(), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
+    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True))
     service._coordinate_sandbox = lambda session: None
     sessions = []
     for index in range(5):
@@ -174,7 +176,7 @@ async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkey
         finally:
             running -= 1
 
-    monkeypatch.setattr(service_module, "resolve_runtime_specs", lambda session, specs, catalog: specs)
+    monkeypatch.setattr(service_module, "resolve_runtime_specs", lambda session, specs, catalog, **kwargs: specs)
     monkeypatch.setattr(service_module, "reconcile_plugin_states_async", reconcile)
     task = asyncio.create_task(service._reconcile_chat_plugins(plugin_name="target", concurrency=3))
     try:
@@ -194,15 +196,17 @@ async def test_chat_bound_concurrency_preserves_lock_and_isolates_failure(monkey
 
 
 @pytest.mark.asyncio
-async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monkeypatch):
+async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monkeypatch, tmp_path):
     """
     关闭或移除旧插件仍协调, 无关预加载实例不失效
 
     参数:
     - monkeypatch: 生命周期替换夹具
+    - tmp_path: 隔离状态文件目录
     """
     service = cast(Any, ChatService.__new__(ChatService))
-    service._plugins = SimpleNamespace(resolve_specs=lambda manager: [PluginSpec(name="target", enabled=False)], catalog=object())
+    service._plugins = SimpleNamespace(resolve_specs=lambda manager, **kwargs: [PluginSpec(name="target", enabled=False)], catalog=object(), state_path=tmp_path / "chat.json", refresh=lambda **kwargs: None)
+    monkeypatch.setattr(service_module.PluginApplySnapshot, "capture", lambda catalog, manager, **kwargs: SimpleNamespace(catalog=catalog, is_current=lambda: True))
     service._coordinate_sandbox = lambda session: None
     old = SimpleNamespace(conversation_id="old", persisted=True, plugin_states=[SimpleNamespace(name="target", enabled=True, handle=object())],
                           plugin_lock=asyncio.Lock(), session=SimpleNamespace(install_plugin="old", uninstall_plugin=None))
@@ -226,7 +230,7 @@ async def test_chat_filter_skips_unrelated_and_keeps_old_enabled_reference(monke
         applied.append(installer)
         return {"ok": True}
 
-    monkeypatch.setattr(service_module, "resolve_runtime_specs", lambda session, specs, catalog: specs)
+    monkeypatch.setattr(service_module, "resolve_runtime_specs", lambda session, specs, catalog, **kwargs: specs)
     monkeypatch.setattr(service_module, "reconcile_plugin_states_async", reconcile)
     result = await service._reconcile_chat_plugins(plugin_name="target")
     assert applied == ["old"]

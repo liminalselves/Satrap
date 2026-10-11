@@ -50,6 +50,7 @@ CAPABILITY_LABELS = {
 # 能力类别中文名 (供前端展示)
 
 from satrap.core.config_paths import get_config_path
+from satrap.edictum.plugin_apply import PluginApplySnapshot
 
 
 def _default_state_path() -> Path:
@@ -97,6 +98,7 @@ class ChatPluginRegistry:
         - strict: 为 True 时读取失败抛出异常, 默认保留原有启动兜底行为
         """
         with self._lock:
+            previous = self._states
             self._states = {}
             if not self.state_path.is_file():
                 return
@@ -116,6 +118,7 @@ class ChatPluginRegistry:
                             }
             except (OSError, ValueError) as e:
                 if strict:
+                    self._states = previous
                     raise
                 logger.warning(f"[聊天插件] 读取启用状态失败, 已重置: {e}")
 
@@ -198,9 +201,14 @@ class ChatPluginRegistry:
                 })
         return result
 
-    def refresh(self) -> None:
-        """重新读取由冷配置管理入口保存的 Chat 插件状态"""
-        self._load()
+    def refresh(self, *, strict: bool = False) -> None:
+        """
+        重新读取由冷配置管理入口保存的 Chat 插件状态
+
+        参数:
+        - strict: 在线应用时显式失败, 默认保留原启动兜底行为
+        """
+        self._load(strict=strict)
 
     def configure(self, name: str, state: dict[str, Any] | None, expected_revision: str) -> None:
         """
@@ -239,17 +247,20 @@ class ChatPluginRegistry:
     def resolve_specs(
         self,
         config_manager: PluginConfigManager | None = None,
+        *, snapshot: PluginApplySnapshot | None = None,
     ) -> list[PluginSpec]:
         """
         解析 Chat 当前插件状态为统一运行规格
 
         参数:
         - config_manager: 插件全局配置管理器
+        - snapshot: 可选单次应用来源, 默认实时读取
 
         返回:
         - list[PluginSpec]: 插件运行规格
         """
         manager = config_manager or PluginConfigManager()
+        catalog = snapshot.catalog if snapshot is not None else self.catalog
         raw_items: list[dict[str, Any]] = []
         with self._lock:
             states: dict[str, dict[str, Any]] = {
@@ -261,7 +272,7 @@ class ChatPluginRegistry:
                 }
                 for name, state in self._states.items()
             }
-        for entry in self.catalog.scan():
+        for entry in catalog.scan():
             state: dict[str, Any] = states.get(
                 entry.name,
                 {"enabled": False, "capabilities": {}},
@@ -275,10 +286,10 @@ class ChatPluginRegistry:
             })
         return parse_plugin_specs(
             raw_items,
-            self.catalog,
+            catalog,
             require_available=True,
             migration_manager=manager,
-            config_resolver=lambda entry, _config: manager.load_global(
+            config_resolver=lambda entry, _config: snapshot.global_config(entry.name) if snapshot is not None else manager.load_global(
                 entry.name,
                 entry.config_schema,
             ),

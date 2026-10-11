@@ -45,6 +45,7 @@ from satrap.edictum.plugin_settings import (
     model_options,
 )
 from satrap.edictum.plugin_runtime import PluginRuntimeState, reconcile_plugin_states_async
+from satrap.edictum.plugin_apply import PluginApplySnapshot, plugin_source_version
 from satrap.edictum.plugin_config import PluginConfigManager, parse_config_schema, schema_to_payload, validate_config_values
 from satrap.core.APICall.LLMCall import AsyncLLM, build_llm_from_config
 from satrap.edictum.plugin_spec import plugin_specs_fingerprint
@@ -2324,7 +2325,29 @@ class ChatService:
         - list[dict[str, Any]]: 逐会话同步结果
         """
         read_started = time.perf_counter()
-        desired_specs = await asyncio.to_thread(self._plugins.resolve_specs, PluginConfigManager())
+
+        def prepare() -> tuple[PluginApplySnapshot, list[Any]]:
+            """
+            在线程中一次捕获来源并解析 Chat 规格
+
+            返回:
+            - 应用快照与全部目标规格
+            """
+            manager = PluginConfigManager()
+            try:
+                for _attempt in range(3):
+                    state_before = plugin_source_version(self._plugins.state_path)
+                    self._plugins.refresh(strict=True)
+                    snapshot = PluginApplySnapshot.capture(self._plugins.catalog, manager, additional_sources=(self._plugins.state_path,))
+                    specs = self._plugins.resolve_specs(manager, snapshot=snapshot)
+                    if state_before == plugin_source_version(self._plugins.state_path) and snapshot.is_current():
+                        return snapshot, specs
+                raise RuntimeError("Chat 插件状态在捕获期间持续变化, 请重试应用")
+            except Exception as error:
+                logger.error(f"[聊天] 准备插件应用失败: {error}\n{traceback.format_exc()}")
+                raise
+
+        snapshot, desired_specs = await asyncio.to_thread(prepare)
         config_read_ms = (time.perf_counter() - read_started) * 1000
         semaphore = asyncio.Semaphore(max(1, concurrency))
 
@@ -2344,9 +2367,16 @@ class ChatService:
             try:
                 async with semaphore, conv.plugin_lock:
                     lock_wait_ms = (time.perf_counter() - lock_started) * 1000
+                    if self._conversations.get(conv.conversation_id) is not conv:
+                        return {"conversation_id": conv.conversation_id, "ok": False, "status": "error", "error": "会话运行时已变化"}
+                    if not await asyncio.to_thread(snapshot.is_current):
+                        logger.warning(f"[聊天] 会话 {conv.conversation_id} 插件应用快照已过期, 请重试应用")
+                        return {"conversation_id": conv.conversation_id, "ok": False, "status": "error",
+                                "error": "插件配置在等待期间已变化, 请重试应用",
+                                "timings_ms": {**timings.to_payload(), "lock_wait_ms": round(lock_wait_ms, 3), "config_read_ms": round(config_read_ms, 3)}}
                     result = await reconcile_plugin_states_async(
                         conv.plugin_states,
-                        resolve_runtime_specs(conv.session, desired_specs, self._plugins.catalog),
+                        resolve_runtime_specs(conv.session, desired_specs, snapshot.catalog, snapshot=snapshot),
                         conv.session.install_plugin,
                         conv.session.uninstall_plugin,
                     )
@@ -2393,7 +2423,6 @@ class ChatService:
         返回:
         - 配置应用状态及逐会话协调结果
         """
-        await asyncio.to_thread(self._plugins.refresh)
         return self._plugin_update_result(await self._reconcile_chat_plugins(plugin_name=plugin_name))
 
     async def manage_conversation_data(self, payload: dict[str, Any]) -> dict[str, Any]:

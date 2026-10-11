@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import copy
 import json
 import yaml
+import threading
 
 from satrap.core.framework.BackGroundManager import ModelConfigManager
 from satrap.core.config.session_overrides import SessionOverrideStore
@@ -21,6 +22,7 @@ from satrap.display.plugins import ChatPluginRegistry
 from satrap.display.service import ChatService
 from satrap.display.server import ChatHTTPServer
 from satrap.edictum.plugin import load_plugin_meta
+from satrap.edictum.plugin_apply import PluginApplySnapshot
 from satrap.core.storage import StorageLayout
 from satrap.core.memory import store as ms_mod
 from satrap.core.type import LLMCallResponse, LLMCallStreamEvent, LLMConfig
@@ -1078,6 +1080,174 @@ def test_chat_plugin_reconcile_reads_global_cold_writes(tmp_path: Path, monkeypa
         await ChatHTTPServer(svc)._route("POST", "/api/chat/plugins/reconcile", b"{}")
         assert not svc.plugin_runtime_snapshot()["sessions"][0]["plugins"][0]["enabled"]
         await svc.close()
+
+    asyncio.run(run())
+
+
+def test_chat_apply_snapshot_shared_by_instances_and_keeps_unchanged_handle(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    三个真实 Chat 实例复用一次全局解析, 独立覆盖未变化时不重装
+
+    参数:
+    - tmp_path: 隔离数据目录
+    - monkeypatch: 配置来源替换夹具
+    """
+    manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+
+    async def run() -> None:
+        try:
+            ids = [await svc.create_conversation(model="default") for _ in range(3)]
+            convs = [_must_conversation(svc, cid) for cid in ids]
+            local = convs[1].session
+            store = local.plugin_override_store
+            if store is None:
+                raise AssertionError("测试实例缺少覆盖存储")
+            store.replace(local.session_id, "plugins.chat_commands", {"about_text": "本实例覆盖"}, expected_revision=0)
+            await svc.reconcile_plugins(plugin_name="chat_commands")
+            handles = [conv.session.list_plugins()[0] for conv in convs]
+            entry = svc._plugins.catalog.get("chat_commands")
+            if entry is None:
+                raise AssertionError("测试插件未加载")
+            schema = entry.config_schema
+            manager.save_global("chat_commands", schema, {"about_text": "新全局参数"})
+            load = manager.load_global_explicit
+            reads = []
+
+            def counted(name, schema):
+                """
+                记录单次应用的正文解析次数
+
+                参数:
+                - name: 插件名称
+                - schema: 参数声明
+
+                返回:
+                - 原解析结果
+                """
+                reads.append(name)
+                return load(name, schema)
+
+            monkeypatch.setattr(manager, "load_global_explicit", counted)
+            result = await svc.reconcile_plugins(plugin_name="chat_commands")
+            assert result["ok"] and result["applied"] and reads == ["chat_commands"]
+            assert len(result["sessions"]) == 3
+            assert [await conv.session.run("/about") for conv in convs] == ["新全局参数", "本实例覆盖", "新全局参数"]
+            assert convs[1].session.list_plugins()[0] is handles[1]
+            assert result["sessions"][1]["plugins"] == []
+            assert convs[0].session.list_plugins()[0] is not handles[0]
+            assert convs[2].session.list_plugins()[0] is not handles[2]
+        finally:
+            await svc.close()
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("source", ["global", "chat_state"])
+def test_chat_queued_apply_rejects_changed_source_and_retries_latest(tmp_path: Path, monkeypatch: Any, source: str) -> None:
+    """
+    等待会话锁期间来源变化不应用旧快照, 显式重试再加载新参数
+
+    参数:
+    - tmp_path: 隔离数据目录
+    - monkeypatch: 捕获同步夹具
+    - source: 等待时发生变化的参数或能力状态来源
+    """
+    manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+    captured = threading.Event()
+    capture = PluginApplySnapshot.capture
+
+    def record(catalog, manager, **kwargs):
+        """
+        通知测试实际来源捕获已完成
+
+        参数:
+        - catalog: 插件目录
+        - manager: 参数管理器
+        - kwargs: 附加核验来源
+
+        返回:
+        - 已核验快照
+        """
+        snapshot = capture(catalog, manager, **kwargs)
+        captured.set()
+        return snapshot
+
+    async def run() -> None:
+        try:
+            cid = await svc.create_conversation(model="default")
+            conv = _must_conversation(svc, cid)
+            old_handle = conv.session.list_plugins()[0]
+            entry = svc._plugins.catalog.get("chat_commands")
+            if entry is None:
+                raise AssertionError("测试插件未加载")
+            schema = entry.config_schema
+            manager.save_global("chat_commands", schema, {"about_text": "不应应用的旧参数"})
+            monkeypatch.setattr(PluginApplySnapshot, "capture", record)
+            await conv.plugin_lock.acquire()
+            task = asyncio.create_task(svc.reconcile_plugins(plugin_name="chat_commands"))
+            try:
+                assert await asyncio.to_thread(captured.wait, 2)
+                if source == "global":
+                    manager.save_global("chat_commands", schema, {"about_text": "最新参数"})
+                else:
+                    external = ChatPluginRegistry(svc._plugins.state_path)
+                    external.catalog = svc._plugins.catalog
+                    external.set_capability("chat_commands", "commands", "about", False)
+            finally:
+                conv.plugin_lock.release()
+            rejected = await asyncio.wait_for(task, 2)
+            assert rejected["ok"] and not rejected["applied"] and rejected["failed"] == 1
+            assert "等待期间已变化" in rejected["sessions"][0]["error"]
+            assert rejected["sessions"][0]["timings_ms"]["config_read_ms"] >= 0
+            assert conv.session.list_plugins()[0] is old_handle
+            assert await conv.session.run("/about") == ""
+            result = await svc.reconcile_plugins(plugin_name="chat_commands")
+            assert result["ok"] and result["applied"]
+            if source == "global":
+                assert await conv.session.run("/about") == "最新参数"
+            else:
+                assert conv.session.list_plugins()[0].commands["about"] is False
+        finally:
+            await svc.close()
+
+    asyncio.run(run())
+
+
+def test_chat_corrupt_state_does_not_disable_existing_runtime(tmp_path: Path, monkeypatch: Any) -> None:
+    """
+    损坏启用状态使应用明确失败, 不把空状态当成应卸载全部插件
+
+    参数:
+    - tmp_path: 隔离目录
+    - monkeypatch: 配置来源替换夹具
+    """
+    manager = PluginConfigManager(tmp_path / "plugin_config")
+    monkeypatch.setattr(service_mod, "PluginConfigManager", lambda: manager)
+    _write_chat_commands(tmp_path, monkeypatch)
+    svc = _make_service(tmp_path, monkeypatch)
+    svc._plugins.set_enabled("chat_commands", True)
+
+    async def run() -> None:
+        try:
+            cid = await svc.create_conversation(model="default")
+            conv = _must_conversation(svc, cid)
+            old_handle = conv.session.list_plugins()[0]
+            svc._plugins.state_path.write_text("broken", encoding="utf-8")
+            with pytest.raises(ValueError):
+                await svc.reconcile_plugins(plugin_name="chat_commands")
+            assert conv.session.list_plugins()[0] is old_handle
+            assert svc._plugins.is_enabled("chat_commands")
+            assert await conv.session.run("/about") == ""
+        finally:
+            await svc.close()
 
     asyncio.run(run())
 

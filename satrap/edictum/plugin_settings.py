@@ -11,6 +11,8 @@ from satrap.edictum.plugin_resources import model_reference_fingerprint, MODEL_T
 from satrap.edictum.plugin_config import ConfigField, PluginConfigManager, schema_to_payload, validate_config_values
 
 from satrap.edictum.plugin_spec import parse_plugin_specs
+from satrap.edictum.plugin_apply import PluginApplySnapshot
+from satrap.core.log import logger
 
 
 class PluginInstallConfig(dict[str, Any]):
@@ -182,8 +184,19 @@ def resolve_session_plugin_config(
     return {**base, **validate_config_values(schema, values, session_override=True)}
 
 
-def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any) -> list[Any]:
-    """把全局, 命名和会话配置合成为可比较的运行目标"""
+def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any, *, snapshot: PluginApplySnapshot | None = None) -> list[Any]:
+    """
+    把全局, 命名和会话配置合成为可比较的运行目标
+
+    参数:
+    - session: 当前实例, 覆盖仍从其数据库读取
+    - specs: 待合成规格
+    - catalog: 当前目录或固定目录
+    - snapshot: 可选单次应用快照, 默认实时读取全局参数
+
+    返回:
+    - 已合成参数, 能力覆盖和模型引用版本的运行目标
+    """
     manager = PluginConfigManager()
     store = getattr(session, "plugin_override_store", None)
     if store is not None and any(spec.name == "base_take" for spec in specs):
@@ -201,7 +214,16 @@ def resolve_runtime_specs(session: Any, specs: list[Any], catalog: Any) -> list[
             from satrap.edictum.friend_migration import migrate_friend_overrides
             tool_overrides = migrate_friend_overrides(store, session.session_id, spec)
             spec = replace(spec, capabilities={**spec.capabilities, "tools": {**spec.capabilities.get("tools", {}), **tool_overrides}})
-        config = manager.resolve(spec.name, entry.config_schema, spec.config)
+        if snapshot is None:
+            config = manager.resolve(spec.name, entry.config_schema, spec.config)
+        else:
+            config = snapshot.global_config(spec.name)
+            for key, value in spec.config.items():
+                field = entry.config_schema.get(key)
+                if field is None:
+                    logger.warning(f"[插件配置] {spec.name} 会话覆盖键 {key} 未在 schema 声明, 忽略")
+                    continue
+                config[key] = field.validate(value)
         config = resolve_session_plugin_config(session, spec.name, entry.config_schema, config)
         revision = model_reference_fingerprint(models, entry.config_schema, config) if models is not None else ""
         resolved.append(replace(spec, config=config, resources_revision=revision, config_resolved=True,
