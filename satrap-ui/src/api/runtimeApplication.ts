@@ -63,6 +63,30 @@ function waitForVisibility(deadline: number, signal?: AbortSignal): Promise<void
   });
 }
 
+/**
+ * 总观察截止覆盖认证及在途请求, 仅取消本次 HTTP 观察
+ * 参数:
+ * - timeout: 本次观察的剩余毫秒数
+ * - signal: 页面生命周期, 取消时保留独立的停止原因
+ * - action: 使用本次取消信号提交或观察, 不撤销后端已接受任务
+ * 返回:
+ * - 实际结果, 或明确的等待超时/页面停止错误
+ */
+async function applicationDeadline<T>(timeout: number, signal: AbortSignal | undefined, action: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  if (signal?.aborted) throw new ApplicationUnconfirmedError('状态查询已停止, 生效状态未确认', 'query_stopped');
+  if (timeout <= 0) throw new ApplicationUnconfirmedError('等待应用超过 120 秒, 请查询任务状态');
+  const controller = new AbortController();
+  let stop = () => controller.abort();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    stop = () => { reject(new ApplicationUnconfirmedError('状态查询已停止, 生效状态未确认', 'query_stopped')); controller.abort(); };
+    signal?.addEventListener('abort', stop, { once: true });
+    timer = setTimeout(() => { reject(new ApplicationUnconfirmedError('等待应用超过 120 秒, 请查询任务状态')); controller.abort(); }, timeout);
+  });
+  try { return await Promise.race([action(controller.signal), interrupted]); }
+  finally { if (timer !== undefined) clearTimeout(timer); signal?.removeEventListener('abort', stop); controller.abort(); }
+}
+
 export class RuntimeApplication<T> {
   readonly id = crypto.randomUUID();
   readonly baseUrl: string;
@@ -115,36 +139,44 @@ export class RuntimeApplication<T> {
     if (this.started) throw new ApplicationUnconfirmedError('本任务已提交过, 请查询状态, 不要重复提交');
     this.checkService(signal);
     this.started = true;
-    let value: unknown;
-    const startedAt = Date.now();
-    try {
-      value = await this.transport.post<unknown>(this.route, { ...this.body, operation_id: this.id }, signal);
-    } catch (error) {
-      this.checkService(signal);
-      if (error instanceof ApiError && error.status !== undefined) throw error;
-      value = await this.query(signal);
-    }
-    this.checkService(signal);
-    if (this.isResult(value)) return value;
-    return this.observe(this.snapshot(value), onProgress, signal, Math.max(0, 120000 - (Date.now() - startedAt)));
+    return applicationDeadline(120000, signal, async (observing) => {
+      let value: unknown;
+      const startedAt = Date.now();
+      try {
+        value = await this.transport.post<unknown>(this.route, { ...this.body, operation_id: this.id }, observing);
+      } catch (error) {
+        this.checkService(observing);
+        if (error instanceof ApiError && error.status !== undefined) throw error;
+        value = await this.query(observing);
+      }
+      this.checkService(observing);
+      if (this.isResult(value)) return value;
+      return this.observe(this.snapshot(value), onProgress, observing, Math.max(0, 120000 - (Date.now() - startedAt)));
+    });
   }
 
   async observe(initial: ApplicationSnapshot<T>, onProgress: (snapshot: ApplicationSnapshot<T>) => void,
     signal?: AbortSignal, timeout = 120000): Promise<T> {
-    let current = initial;
-    const deadline = Date.now() + timeout;
-    for (;;) {
-      this.checkService(signal);
-      onProgress(current);
-      if (current.status !== 'running') {
-        if (current.result !== null) return current.result;
-        throw new ApplicationUnconfirmedError(current.error || '任务已结束但没有可确认的应用结果');
-      }
-      if (Date.now() >= deadline) throw new ApplicationUnconfirmedError('等待应用超过 120 秒, 请查询任务状态');
-      await delay(Math.min(1000, Math.max(1, deadline - Date.now())), signal);
-      await waitForVisibility(deadline, signal);
-      if (Date.now() >= deadline) throw new ApplicationUnconfirmedError('等待应用超过 120 秒, 请查询任务状态');
-      current = await this.query(signal);
+    if (initial.status !== 'running') {
+      this.checkService(signal); onProgress(initial);
+      if (initial.result !== null) return initial.result;
+      throw new ApplicationUnconfirmedError(initial.error || '任务已结束但没有可确认的应用结果');
     }
+    return applicationDeadline(timeout, signal, async (observing) => {
+      let current = initial;
+      const deadline = Date.now() + timeout;
+      for (;;) {
+        this.checkService(observing);
+        onProgress(current);
+        if (current.status !== 'running') {
+          if (current.result !== null) return current.result;
+          throw new ApplicationUnconfirmedError(current.error || '任务已结束但没有可确认的应用结果');
+        }
+        await delay(Math.min(1000, Math.max(1, deadline - Date.now())), observing);
+        await waitForVisibility(deadline, observing);
+        this.checkService(observing);
+        current = await this.query(observing);
+      }
+    });
   }
 }

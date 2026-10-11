@@ -20,6 +20,7 @@ try {
   const plugins = ['probe', 'other'].map((name) => ({ name, version: '1', source: 'builtin', description: '', config_schema: schema,
     capabilities: { tools: { probe_tool: '测试工具' } }, usage_count: 2, edictum_configs: ['assistant'], chat_enabled: true }));
   let global = { note: 'old' }, globalRevision = 'one', failSave = false, legacy = false, holdSave = false, releaseSave;
+  let holdQuery = false, releaseQuery;
   const locations = [
     { kind: 'chat', id: 'chat', label: 'Chat', present: true, enabled: true, capabilities: structuredClone(caps), revision: 'chat-one', parent_enabled: true, availability: { allowed: true } },
     { kind: 'edictum', id: 'assistant', label: 'assistant', present: true, enabled: true, capabilities: structuredClone(caps), revision: 'edictum-one', parent_enabled: true, availability: { allowed: true } },
@@ -75,6 +76,7 @@ try {
     if (pathname.startsWith('/config/plugin-operations/')) {
       assert.equal(request.method(), 'GET'); assert.equal(url.port, '19871');
       const id = pathname.split('/').at(-1); queries.push(id);
+      if (holdQuery) { holdQuery = false; await new Promise((resolve) => { releaseQuery = resolve; }); }
       return operations.has(id) ? reply(snapshot(id)) : reply({ error: '任务不存在' }, 404);
     }
     const responses = { '/config/plugins': { plugins }, '/config/models': {}, '/config/session-classes': {},
@@ -100,10 +102,19 @@ try {
   assert.equal(first.plugin_name, 'probe'); assert.equal(first.kind, undefined); assert.equal(writes.length, 2);
   firstJob.phase = 'install'; await page.clock.runFor(1100);
   await page.getByRole('status').filter({ hasText: '安装插件' }).first().waitFor();
-  await page.clock.runFor(121000);
+  await page.clock.runFor(116000);
+  holdQuery = true;
+  const queryStarted = page.waitForRequest((request) => request.url().includes('/config/plugin-operations/'));
+  const queryAborted = page.waitForEvent('requestfailed', { predicate: (request) => request.url().includes('/config/plugin-operations/') });
+  await page.clock.runFor(1100); await queryStarted;
+  await page.clock.runFor(6000);
   await page.getByRole('alert').filter({ hasText: '全局参数已保存, 运行时应用未确认' }).waitFor();
+  await queryAborted;
   assert.equal(applications.length, 1); assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), '已保存的草稿');
   firstJob.result = success;
+  assert.equal(typeof releaseQuery, 'function'); releaseQuery();
+  await page.clock.runFor(100);
+  await page.getByRole('alert').filter({ hasText: '全局参数已保存, 运行时应用未确认' }).waitFor();
   await page.getByRole('button', { name: '查询应用状态', exact: true }).click();
   await page.getByRole('status').filter({ hasText: '运行应用已结束' }).waitFor();
   assert.equal(applications.length, 1); assert.equal(writes.length, 2); assert(queries.includes(first.operation_id));

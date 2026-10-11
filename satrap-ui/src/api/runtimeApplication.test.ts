@@ -128,6 +128,38 @@ describe('运行时应用任务', () => {
     expect(adapter.mock.calls.filter(([config]) => config.method === 'post')).toHaveLength(1);
   });
 
+  it('在途状态 GET 卡住也在总截止停止, 迟到结果不覆盖, 后续仍可查询已知任务', async () => {
+    const app = application(), progress = vi.fn();
+    let release!: () => void;
+    adapter.mockImplementation(async (config) => {
+      if (config.method === 'post') return response(config, snapshot(app.id));
+      await new Promise<void>((resolve) => { release = resolve; });
+      return response(config, snapshot(app.id, 'completed', result));
+    });
+    const pending = app.start(progress), rejected = expect(pending).rejects.toThrow('120 秒');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(adapter.mock.calls.map(([config]) => config.method)).toEqual(['post', 'get']);
+    await vi.advanceTimersByTimeAsync(119000); await rejected;
+    expect(adapter.mock.calls[1][0].signal.aborted).toBe(true);
+    release(); await vi.advanceTimersByTimeAsync(0);
+    expect(progress.mock.calls.map(([value]) => value.status)).toEqual(['running']);
+    expect(vi.getTimerCount()).toBe(0);
+    adapter.mockImplementation(async (config) => response(config, snapshot(app.id, 'completed', result)));
+    expect((await app.query()).result).toEqual(result);
+    expect(adapter.mock.calls.filter(([config]) => config.method === 'post')).toHaveLength(1);
+  });
+
+  it('认证等待也受总截止限制, 迟到认证不能发出过期的写请求', async () => {
+    const app = application();
+    let release!: () => void;
+    mocks.auth.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+    const pending = app.start(vi.fn()), rejected = expect(pending).rejects.toThrow('120 秒');
+    await vi.advanceTimersByTimeAsync(120000); await rejected;
+    expect(adapter).not.toHaveBeenCalled();
+    release(); await vi.advanceTimersByTimeAsync(0);
+    expect(adapter).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('不接受其它任务 ID/未知终态/缺失结果, 不能误报成功', async () => {
     for (const value of [snapshot('other-id'), snapshot('other-id', 'completed', {}), { operation_id: 'invalid' }]) {
       adapter.mockImplementation(async (config) => response(config, value));
