@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
+import math
 import re
 import threading
 import time
@@ -26,6 +27,7 @@ _PHASES = {
     "candidate_prepare_ms": "candidate_prepare", "source_check_ms": "source_check",
     "context_sync_ms": "context_sync", "apply_ms": "applying",
     "rollback_ms": "rollback",
+    "dispatch_ms": "dispatch", "await_runtime_ms": "awaiting_runtime",
 }
 
 
@@ -250,6 +252,48 @@ class ApplicationOperations:
                 stage.status = "failed" if failed or result is not None and not result.get("ok", False) else "completed"
                 stage.phase = "finished"
 
+    def external(self, reporter: _Reporter, target: str, snapshot: Mapping[str, Any]) -> None:
+        """
+        投影已认证运行服务的实际阶段, 只接收固定观测字段
+
+        参数:
+        - reporter: 当前应用任务的观测身份
+        - target: 固定服务标识, 用于区分不同服务的同名实例
+        - snapshot: 已核对任务 ID 的远程进度快照
+        """
+        rows = snapshot.get("instances")
+        root = snapshot.get("stage")
+        if not isinstance(rows, list) or not isinstance(root, Mapping):
+            raise ValueError("运行服务进度缺少阶段或实例列表")
+        active = next((item for item in rows if isinstance(item, Mapping) and item.get("status") == "running"), root)
+        selected = [(replace(reporter, instance=(target, "")), active)]
+        for item in rows[:self._max_instances]:
+            if not isinstance(item, Mapping) or any(not isinstance(item.get(key), str) for key in ("platform_id", "session_id")):
+                raise ValueError("运行服务返回了无效实例进度")
+            selected.append((replace(reporter, instance=(f"{target}/{item['platform_id']}", item["session_id"])), item))
+        prepared = []
+        for current, item in selected:
+            phase, status = item.get("phase"), item.get("status")
+            elapsed = item.get("phase_elapsed_ms")
+            timings = item.get("timings_ms")
+            if phase not in {*_PHASES.values(), "queued", "finished"} or status not in {"running", "completed", "failed", "cancelled"}:
+                raise ValueError("运行服务返回了未知进度状态")
+            if not isinstance(elapsed, (int, float)) or not math.isfinite(elapsed) or elapsed < 0 or not isinstance(timings, Mapping):
+                raise ValueError("运行服务返回了无效阶段耗时")
+            cleaned = {name: float(value) for name, value in timings.items()
+                       if name in _PHASES.values() and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0}
+            prepared.append((current, phase, status, elapsed, cleaned))
+        with self._lock:
+            for current, phase, status, elapsed, cleaned in prepared:
+                stage = self._stage(current)
+                if stage is not None:
+                    stage.phase, stage.status = phase, status
+                    stage.phase_started = time.perf_counter() - elapsed / 1000
+                    stage.timings_ms = cleaned
+            operation = self._operations.get(reporter.operation_id)
+            if operation is not None and operation.status == "running" and operation.generation is reporter.generation:
+                operation.instances_limited |= bool(snapshot.get("instances_limited")) or len(rows) > self._max_instances
+
 
 @contextmanager
 def progress_phase(name: str) -> Iterator[None]:
@@ -288,6 +332,19 @@ def progress_result(result: Mapping[str, Any]) -> None:
     reporter = _REPORTER.get()
     if reporter is not None and reporter.instance is not None:
         reporter.registry.finish_instance(reporter, result)
+
+
+def progress_external(target: str, snapshot: Mapping[str, Any]) -> None:
+    """
+    将子服务实际进度并入当前任务, 不复制请求正文或工具调用身份
+
+    参数:
+    - target: 已选定的运行服务标识
+    - snapshot: 子服务返回的同一任务快照
+    """
+    reporter = _REPORTER.get()
+    if reporter is not None:
+        reporter.registry.external(reporter, target, snapshot)
 
 
 @asynccontextmanager

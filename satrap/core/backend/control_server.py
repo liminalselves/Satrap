@@ -70,6 +70,8 @@ from satrap.core.config.model_service import ASR_TEST_MAX_AUDIO_BYTES, ModelConf
 from satrap.core.config.rag_service import RagOperationError, rag_admin_request, rag_upload_document, require_stored_session
 from satrap.core.utils.async_worker import RAG_WORKERS, WorkerBusyError
 from satrap.core.utils.performance import PhaseTimings
+from satrap.core.utils.application_progress import ApplicationOperations, ApplicationProgressError, progress_phase
+from satrap.core.backend.plugin_application import relay_plugin_application, runtime_result
 from satrap.core.config.versions import ConfigVersionService
 from satrap.edictum.plugin_settings import PluginSettingsService, model_options, validate_model_values
 from satrap.core.backend.static_ui import DEFAULT_STATIC_DIR, SPAStaticService
@@ -157,6 +159,8 @@ CORS_HEADERS = {
 
 _CONTROL_AUTH = ServerAuth.create("127.0.0.1", 19871, session_namespace="control")
 """控制服务共享鉴权策略"""
+_PLUGIN_APPLICATIONS = ApplicationOperations()
+"""当前控制进程的有界应用任务, 不保存配置正文或共享工具授权"""
 
 CONTROL_MAX_BODY_BYTES = 1024 * 1024
 """控制服务 JSON 请求体最大字节数"""
@@ -2642,10 +2646,7 @@ def _plugin_runtime_request(target: str, url: str, scope: dict[str, str] | None 
             payload = json.loads(response.read(2 * 1024 * 1024))
         if not isinstance(payload, dict):
             raise ValueError("运行服务返回了无效结果")
-        sessions = payload.get("sessions", payload.get("edictum_sessions", []))
-        success = bool(payload.get("ok")) and payload.get("applied", True) and all(item.get("ok", False) for item in sessions)
-        return {"target": target, "status": ("applied" if sessions else "next_activation") if success else "error", "sessions": sessions,
-                "error": "" if success else payload.get("error", "部分运行实例应用失败")}
+        return runtime_result(target, payload)
     except urllib.error.HTTPError as error:
         return {"target": target, "status": "error", "error": f"运行服务返回 HTTP {error.code}", "sessions": []}
     except urllib.error.URLError as error:
@@ -2655,7 +2656,34 @@ def _plugin_runtime_request(target: str, url: str, scope: dict[str, str] | None 
         return {"target": target, "status": "error", "error": str(error), "sessions": []}
 
 
-async def _apply_plugin_runtime(*, plugin_name: str | None = None, kind: str | None = None, location_id: str | None = None) -> list[dict[str, Any]]:
+def _plugin_runtime_targets(kind: str | None, location_id: str | None) -> list[tuple[str, str]]:
+    """
+    固定当前批次的内部服务地址和使用位置, 不在查询中重新路由
+
+    参数:
+    - kind: 可选 chat 或 edictum 使用位置类别
+    - location_id: 命名配置名称或固定 chat
+
+    返回:
+    - 所选内部服务的标识及 POST 地址
+    """
+    if kind is None and location_id is not None:
+        raise ValueError("location_id 必须同时提供 kind")
+    if kind is not None and (kind not in {"chat", "edictum"} or not location_id or (kind == "chat" and location_id != "chat")):
+        raise ValueError("未知插件应用位置")
+    urls = []
+    if kind in {None, "chat"}:
+        urls.append(("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/reconcile"))
+    if kind in {None, "edictum"}:
+        host, port = _configured_backend_address()
+        host = _connect_host(host)
+        host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        urls.append(("Edictum", f"http://{host}:{port}/api/edictum/plugins/reconcile"))
+    return urls
+
+
+async def _apply_plugin_runtime(*, plugin_name: str | None = None, kind: str | None = None, location_id: str | None = None,
+                                operation_id: str | None = None) -> list[dict[str, Any]]:
     """
     分别协调 Chat 与 Edictum, 单个服务失败不阻断其他服务
 
@@ -2663,27 +2691,28 @@ async def _apply_plugin_runtime(*, plugin_name: str | None = None, kind: str | N
     - plugin_name: 可选插件引用过滤
     - kind: 可选 chat 或 edictum 使用位置类别
     - location_id: Edictum 命名配置名称, Chat 固定为 chat
+    - operation_id: 可选控制任务 ID, 提供时以短 HTTP 查询等待实际子任务结果
 
     返回:
     - 所选服务独立的运行应用结果
     """
-    if kind is None and location_id is not None:
-        raise ValueError("location_id 必须同时提供 kind")
-    host, port = _configured_backend_address()
-    host = _connect_host(host)
-    host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    urls = [("Chat", f"http://127.0.0.1:{int(os.getenv('SATRAP_CHAT_PORT', '19872'))}/api/chat/plugins/reconcile"),
-            ("Edictum", f"http://{host}:{port}/api/edictum/plugins/reconcile")]
-    if kind is not None:
-        if kind not in {"chat", "edictum"} or not location_id or (kind == "chat" and location_id != "chat"):
-            raise ValueError("未知插件应用位置")
-        urls = [item for item in urls if item[0] == ("Chat" if kind == "chat" else "Edictum")]
+    with progress_phase("config_read_ms"):
+        urls = await RAG_WORKERS.run(_plugin_runtime_targets, kind, location_id)
     scope = {"plugin_name": plugin_name} if plugin_name else {}
     if kind == "edictum":
         scope["config_name"] = cast(str, location_id)
-    results = await asyncio.gather(*(RAG_WORKERS.run(_plugin_runtime_request, target, url, scope) for target, url in urls), return_exceptions=True)
-    return [result if isinstance(result, dict) else {"target": urls[index][0], "status": "error", "error": str(result), "sessions": []}
-            for index, result in enumerate(results)]
+    pending = (RAG_WORKERS.run(_plugin_runtime_request, target, url, scope) if operation_id is None
+               else relay_plugin_application(target, url, scope, operation_id, _authenticated_request) for target, url in urls)
+    results = await asyncio.gather(*pending, return_exceptions=True)
+    normalized = []
+    for index, result in enumerate(results):
+        if isinstance(result, dict):
+            normalized.append(result)
+        else:
+            detail = "".join(traceback.format_exception(result)) if isinstance(result, BaseException) else str(result)
+            logger.error(f"[插件应用] {urls[index][0]} 协调失败\n{detail}")
+            normalized.append({"target": urls[index][0], "status": "error", "error": str(result), "sessions": []})
+    return normalized
 
 
 def _plugin_snapshot_request(target: str, url: str, name: str) -> dict[str, Any]:
@@ -2751,6 +2780,8 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
         if not isinstance(payload.get("state"), dict) or any(not isinstance(payload.get(key), str) for key in ("kind", "location_id", "expected_revision")):
             raise ValueError("缺少使用位置、配置草稿或版本")
+        if "apply_runtime" in payload and not isinstance(payload["apply_runtime"], bool):
+            raise ValueError("apply_runtime 必须为布尔值")
         result = await RAG_WORKERS.run(service.save_usage, name, payload["kind"], payload["location_id"], payload["state"], payload["expected_revision"])
     except ConfigRevisionConflict as error:
         return 409, {"error": str(error)}
@@ -2760,6 +2791,8 @@ async def _route_plugin_usages(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": str(error)}
     except (OSError, TypeError, ValueError) as error:
         return 400, {"error": str(error)}
+    if payload.get("apply_runtime") is False:
+        return 200, result
     return 200, {**result, "runtime": await _apply_plugin_runtime(plugin_name=name, kind=payload["kind"], location_id=payload["location_id"])}
 
 
@@ -2780,7 +2813,18 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
                 return 400, {"error": f"{field} 必须是非空字符串"}
         if ("kind" in payload) != ("location_id" in payload) or payload.get("kind") not in {None, "chat", "edictum"} or (payload.get("kind") == "chat" and payload.get("location_id") != "chat"):
             return 400, {"error": "未知插件应用位置"}
-        return 200, {"ok": True, "runtime": await _apply_plugin_runtime(**{key: payload[key] for key in ("plugin_name", "kind", "location_id") if key in payload})}
+        scope = {key: payload[key] for key in ("plugin_name", "kind", "location_id") if key in payload}
+        if "operation_id" in payload:
+            try:
+                operation_id = _PLUGIN_APPLICATIONS.validate_id(payload["operation_id"])
+                async def apply_runtime() -> dict[str, Any]:
+                    """控制任务只保存运行结果, 配置正文仍沿原保存事务独立返回"""
+                    runtime = await _apply_plugin_runtime(**scope, operation_id=operation_id)
+                    return {"ok": all(item.get("status") != "error" for item in runtime), "runtime": runtime}
+                return 202, _PLUGIN_APPLICATIONS.submit(operation_id, {"route": ctx.path, **scope}, apply_runtime)
+            except ApplicationProgressError as error:
+                return error.status, {"error": str(error)}
+        return 200, {"ok": True, "runtime": await _apply_plugin_runtime(**scope)}
     prefix = "/config/plugins/"
     if not ctx.path.startswith(prefix) or not ctx.path.endswith("/config") or ctx.method not in {"GET", "PUT"}:
         return None
@@ -2793,6 +2837,8 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
         payload = await _read_json_body(ctx.reader, ctx.raw_request)
         values = payload.get("config")
         revision = payload.get("expected_revision")
+        if "apply_runtime" in payload and not isinstance(payload["apply_runtime"], bool):
+            raise ValueError("apply_runtime 必须为布尔值")
         if not isinstance(values, dict) or not isinstance(revision, str):
             raise ValueError("缺少 config 对象或 expected_revision")
         result = await RAG_WORKERS.run(service.save_config, name, values, revision)
@@ -2804,7 +2850,28 @@ async def _route_plugin_config(ctx: _RouteContext) -> ControlResponse | None:
         return 503, {"error": str(error)}
     except (OSError, TypeError, ValueError) as error:
         return 400, {"error": str(error)}
+    if payload.get("apply_runtime") is False:
+        return 200, result
     return 200, {**result, "runtime": await _apply_plugin_runtime(plugin_name=name)}
+
+
+async def _route_plugin_application(ctx: _RouteContext) -> ControlResponse | None:
+    """
+    在原控制鉴权之后只读查询进程内应用任务, 查询不提交或重试写操作
+
+    参数:
+    - ctx: 已认证的控制路由上下文
+
+    返回:
+    - 本进程任务快照或明确的输入/未知记录错误, 不匹配时为 None
+    """
+    prefix = "/config/plugin-operations/"
+    if ctx.method != "GET" or not ctx.path.startswith(prefix):
+        return None
+    try:
+        return 200, _PLUGIN_APPLICATIONS.get(ctx.path[len(prefix):])
+    except ApplicationProgressError as error:
+        return error.status, {"error": str(error)}
 
 
 async def _route_plugin_install(ctx: _RouteContext) -> ControlResponse | None:
@@ -3446,6 +3513,7 @@ async def _handle_request(
             _route_group_chat_media,
             _route_conversation_data,
             _route_plugin_install,
+            _route_plugin_application,
             _route_plugin_config,
             _route_plugin_usages,
             _route_edictum_metadata,
@@ -3501,13 +3569,14 @@ async def run_server(host: str = "127.0.0.1", port: int = 19871):
     - host: 主机
     - port: 端口
     """
-    global _CONTROL_AUTH
+    global _CONTROL_AUTH, _PLUGIN_APPLICATIONS
     _CONTROL_AUTH = ServerAuth.create(host, port, session_namespace="control")
 
     # 检查单实例
     if not await asyncio.to_thread(_check_single_instance):
         print("Control server is already running")
         sys.exit(1)
+    _PLUGIN_APPLICATIONS = ApplicationOperations()
 
     await asyncio.to_thread(_write_pid_file, CONTROL_PID_FILE, os.getpid())
     # 写入 PID 文件
