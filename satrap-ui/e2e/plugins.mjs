@@ -26,6 +26,7 @@ try {
   let failGlobalSave = false;
   let runtimeRetries = 0;
   const retryScopes = [];
+  const applicationScope = ({ operation_id, ...scope }) => { assert.match(operation_id, /^[\w-]{16,128}$/); return scope; };
   const globalSchema = { note: { type: 'string', default: 'default', description: '全局备注' }, count: { type: 'number', default: 1, minimum: 0, integer: true }, model: { type: 'llm', default: '', nullable: true, description: '命名模型' }, prompt: { type: 'textarea', default: null, description: '未设置时可直接填写' } };
   plugins[0].config_schema = globalSchema;
   const caps = Object.fromEntries(Object.entries(plugins[0].capabilities).map(([kind, items]) => [kind, Object.fromEntries(Object.keys(items).map((name) => [name, true]))]));
@@ -183,7 +184,7 @@ try {
   await page.getByRole('button', { name: '重试运行应用', exact: true }).click();
   await page.getByText('Edictum：下次激活时应用', { exact: true }).waitFor();
   assert.equal(runtimeRetries, 1);
-  assert.deepEqual(retryScopes[0], { plugin_name: 'builtin_probe' });
+  assert.deepEqual(applicationScope(retryScopes[0]), { plugin_name: 'builtin_probe' });
   await page.getByRole('button', { name: '恢复默认值', exact: true }).click();
   assert.equal(await page.getByLabel('note', { exact: true }).inputValue(), 'default');
   await page.getByRole('button', { name: '保存全局参数', exact: true }).click();
@@ -216,7 +217,7 @@ try {
   assert.equal(locations[0].capabilities.tools.probe_tool, false);
   await page.getByRole('button', { name: '重试运行应用', exact: true }).click();
   await page.getByText('已加载并启用', { exact: true }).waitFor();
-  assert.deepEqual(retryScopes[1], { plugin_name: 'builtin_probe', kind: 'chat', location_id: 'chat' });
+  assert.deepEqual(applicationScope(retryScopes[1]), { plugin_name: 'builtin_probe', kind: 'chat', location_id: 'chat' });
   runtimeFailed = true;
   await page.getByText('配置与运行状态不同步 · 加载测试失败', { exact: true }).waitFor();
   const heldRuntimeStarted = new Promise((resolve) => { runtimeHeld = resolve; });
@@ -228,7 +229,7 @@ try {
   await page.getByRole('button', { name: '重试实例应用', exact: true }).click();
   await page.getByText('已加载并启用', { exact: true }).waitFor();
   assert.equal(runtimeRetries, 3);
-  assert.deepEqual(retryScopes[2], { plugin_name: 'builtin_probe' });
+  assert.deepEqual(applicationScope(retryScopes[2]), { plugin_name: 'builtin_probe' });
   assert.equal(runtimeReads, beforeHeldPoll + 2);
   const obsoleteRuntime = page.waitForResponse((response) => new URL(response.url()).pathname === '/config/plugins/builtin_probe/runtime');
   releaseRuntime();

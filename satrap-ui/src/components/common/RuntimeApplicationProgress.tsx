@@ -2,7 +2,7 @@ import { applicationPhaseLabel, type ApplicationSnapshot } from '@/api/runtimeAp
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 
-export function RuntimeApplicationProgress({ id, label, snapshot, resultOk, busy, error, onQuery }: {
+export function RuntimeApplicationProgress({ id, label, snapshot, resultOk, busy, error, onQuery, completionText = '应用已完成' }: {
   id: string;
   label?: string;
   snapshot: ApplicationSnapshot<unknown> | null;
@@ -10,6 +10,7 @@ export function RuntimeApplicationProgress({ id, label, snapshot, resultOk, busy
   busy: boolean;
   error: string;
   onQuery: () => void;
+  completionText?: string;
 }) {
   return <Card>
     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -17,7 +18,7 @@ export function RuntimeApplicationProgress({ id, label, snapshot, resultOk, busy
       <Button type="button" size="sm" variant="ghost" disabled={busy || !snapshot && resultOk !== undefined} onClick={onQuery}>查询应用状态</Button>
     </div>
     <p role="status" className="mt-2 text-sm text-text-secondary">
-      {error || (snapshot?.status === 'completed' || resultOk === true ? '应用已完成'
+      {error || (snapshot?.status === 'completed' || resultOk === true ? completionText
         : snapshot?.status === 'failed' || resultOk === false ? '应用失败, 请查看实际结果'
           : snapshot?.status === 'cancelled' ? '服务已取消应用, 生效状态未确认'
             : snapshot ? applicationPhaseLabel(snapshot.instances.find((item) => item.status === 'running')?.phase || snapshot.stage.phase) : '正在提交应用请求')}

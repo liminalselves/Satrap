@@ -63,5 +63,11 @@ export function useRuntimeApplication<T>() {
     }
   }, [update]);
 
-  return { view, apply, query };
+  const getSignal = useCallback(() => lifetime.current.signal, []);
+  const clear = useCallback(() => {
+    if (busy.current || lifetime.current.signal.aborted) return;
+    current.current = null;
+    setView(null);
+  }, []);
+  return { view, apply, query, getSignal, clear };
 }

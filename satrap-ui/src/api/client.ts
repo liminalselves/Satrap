@@ -2,7 +2,7 @@ import axios, { AxiosInstance, AxiosError, AxiosRequestConfig, InternalAxiosRequ
 import { getApiBaseUrl } from '@/utils/constants';
 import { ensureApiSession, establishApiSession } from '@/api/auth';
 
-type ServiceRequestConfig = { _satrapBoundService?: string; _satrapNoAuthReplay?: boolean };
+type ServiceRequestConfig = { _satrapBoundService?: string; _satrapCurrentService?: () => string; _satrapNoAuthReplay?: boolean };
 type RetriableRequestConfig = InternalAxiosRequestConfig & ServiceRequestConfig & { _satrapAuthRetry?: boolean };
 type ErrorBody = { error?: string; reason?: string };
 
@@ -43,7 +43,7 @@ class ApiClient {
       const retry = config as RetriableRequestConfig;
       const baseUrl = retry._satrapBoundService || (retry._satrapAuthRetry && config.baseURL ? config.baseURL : getApiBaseUrl());
       await ensureApiSession(baseUrl);
-      if (retry._satrapBoundService && getApiBaseUrl().replace(/\/$/, '') !== baseUrl) {
+      if (retry._satrapBoundService && (retry._satrapCurrentService || getApiBaseUrl)().replace(/\/$/, '') !== baseUrl) {
         throw new ApiError('后端地址已变化, 原应用任务的生效状态未确认', undefined, 'service_changed');
       }
       config.baseURL = baseUrl;
@@ -88,18 +88,19 @@ class ApiClient {
     return this.client.delete(url) as Promise<T>;
   }
 
-  forService(baseUrl: string) {
+  forService(baseUrl: string, currentService = getApiBaseUrl) {
     const bound = baseUrl.replace(/\/$/, '');
-    const request = <T>(method: 'GET' | 'POST', url: string, data: unknown, timeout: number, signal?: AbortSignal): Promise<T> => {
+    const request = <T>(method: 'GET' | 'POST' | 'PUT', url: string, data: unknown, timeout: number, signal?: AbortSignal): Promise<T> => {
       const config: AxiosRequestConfig & ServiceRequestConfig = {
         method, url, data, signal, timeout, baseURL: bound,
-        _satrapBoundService: bound, _satrapNoAuthReplay: method === 'POST',
+        _satrapBoundService: bound, _satrapCurrentService: currentService, _satrapNoAuthReplay: method !== 'GET',
       };
       return this.client.request(config) as Promise<T>;
     };
     return {
       get: <T>(url: string, signal?: AbortSignal, timeout = 10000) => request<T>('GET', url, undefined, timeout, signal),
       post: <T>(url: string, data: unknown, signal?: AbortSignal, timeout = 120000) => request<T>('POST', url, data, timeout, signal),
+      put: <T>(url: string, data: unknown, signal?: AbortSignal, timeout = 120000) => request<T>('PUT', url, data, timeout, signal),
     };
   }
 }

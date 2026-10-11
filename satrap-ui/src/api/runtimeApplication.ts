@@ -33,7 +33,7 @@ const PHASE_LABELS: Record<string, string> = {
   queued: '等待开始', config_read: '读取配置', waiting_lock: '等待会话空闲', install: '安装插件',
   uninstall: '卸载插件', model_build: '创建模型客户端', candidate_prepare: '准备新会话',
   source_check: '核对配置是否变化', context_sync: '同步上下文', applying: '应用配置',
-  rollback: '恢复原插件', finished: '已结束',
+  rollback: '恢复原插件', finished: '已结束', dispatch: '提交应用请求', awaiting_runtime: '等待运行服务状态',
 };
 
 export function applicationPhaseLabel(phase: string): string {
@@ -65,16 +65,24 @@ function waitForVisibility(deadline: number, signal?: AbortSignal): Promise<void
 
 export class RuntimeApplication<T> {
   readonly id = crypto.randomUUID();
-  readonly baseUrl = getApiBaseUrl().replace(/\/$/, '');
-  private readonly transport = apiClient.forService(this.baseUrl);
+  readonly baseUrl: string;
+  private readonly currentService: () => string;
+  private readonly queryPrefix: string;
+  private readonly transport: ReturnType<typeof apiClient.forService>;
   private started = false;
 
   constructor(private readonly route: string, private readonly body: Record<string, unknown>,
-    private readonly isResult: (value: unknown) => value is T, readonly label = '') {}
+    private readonly isResult: (value: unknown) => value is T, readonly label = '',
+    options: { currentService?: () => string; queryPrefix?: string } = {}) {
+    this.currentService = options.currentService || getApiBaseUrl;
+    this.baseUrl = this.currentService().replace(/\/$/, '');
+    this.queryPrefix = options.queryPrefix || '/api/runtime-operations/';
+    this.transport = apiClient.forService(this.baseUrl, this.currentService);
+  }
 
   private checkService(signal?: AbortSignal) {
     if (signal?.aborted) throw new ApplicationUnconfirmedError('状态查询已停止, 生效状态未确认', 'query_stopped');
-    if (getApiBaseUrl().replace(/\/$/, '') !== this.baseUrl) throw new ApplicationUnconfirmedError('后端地址已变化, 请回到原服务查询应用状态');
+    if (this.currentService().replace(/\/$/, '') !== this.baseUrl) throw new ApplicationUnconfirmedError('后端地址已变化, 请回到原服务查询应用状态');
   }
 
   private snapshot(value: unknown): ApplicationSnapshot<T> {
@@ -92,7 +100,7 @@ export class RuntimeApplication<T> {
   async query(signal?: AbortSignal): Promise<ApplicationSnapshot<T>> {
     this.checkService(signal);
     try {
-      const value = await this.transport.get<unknown>(`/api/runtime-operations/${encodeURIComponent(this.id)}`, signal);
+      const value = await this.transport.get<unknown>(`${this.queryPrefix}${encodeURIComponent(this.id)}`, signal);
       this.checkService(signal);
       return this.snapshot(value);
     } catch (error) {

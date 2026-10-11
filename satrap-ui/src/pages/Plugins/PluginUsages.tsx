@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { controlApi } from '@/api/control';
+import { createPluginApplication, type PluginApplicationResult } from '@/api/pluginApplications';
+import { ApplicationUnconfirmedError } from '@/api/runtimeApplication';
+import { useRuntimeApplication } from '@/hooks/useRuntimeApplication';
+import { RuntimeApplicationProgress } from '@/components/common/RuntimeApplicationProgress';
 import { VersionedConfigRead } from '@/api/configVersions';
 import { startVisiblePoll } from '@/utils/visiblePoll';
 import type { ManagedPlugin, PluginLocation, PluginLocationState, PluginRuntimeResult, PluginRuntimeSnapshot, PluginUsagesResult } from '@/api/types';
@@ -32,6 +36,8 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
   const [snapshot, setSnapshot] = useState<PluginRuntimeSnapshot>();
   const [runtimeError, setRuntimeError] = useState('');
   const [runtime, setRuntime] = useState<PluginRuntimeResult[]>([]);
+  const application = useRuntimeApplication<PluginApplicationResult>();
+  const locked = busy || Boolean(application.view?.busy);
   const runtimeScope = useRef<{ plugin_name: string; kind: 'chat' | 'edictum'; location_id: string }>();
   const runtimeRead = useMemo(() => new VersionedConfigRead([], (signal) => controlApi.getPluginRuntime(plugin.name, signal)), [plugin.name]);
   const runtimeRequest = useRef(0);
@@ -64,40 +70,56 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
     }
   }, [runtimeRead]);
   useEffect(() => {
+    if (!application.view?.result) return;
+    setRuntime(application.view.result.runtime); setError('');
+    runtimeRequest.current++; runtimeRead.invalidate();
+    void readRuntime().catch(() => undefined);
+  }, [application.view?.result, readRuntime, runtimeRead]);
+  useEffect(() => {
     const poll = startVisiblePoll(readRuntime, { interval: 5000 });
     return () => { runtimeRequest.current++; poll.stop(); };
   }, [readRuntime]);
   const retry = async (allInstances = false) => {
+    if (locked) return;
     setBusy(true); setError('');
+    setRuntime([]);
     try {
-      setRuntime((await controlApi.reconcilePlugins(!allInstances && runtimeScope.current ? runtimeScope.current : { plugin_name: plugin.name })).runtime);
-      runtimeRequest.current++; runtimeRead.invalidate();
-      await readRuntime();
+      const scope = !allInstances && runtimeScope.current ? runtimeScope.current : { plugin_name: plugin.name };
+      setRuntime((await application.apply(createPluginApplication(scope), 'plugins')).runtime);
     }
-    catch (err) { setError(pluginError(err)); }
+    catch (err) { if (!(err instanceof ApplicationUnconfirmedError && err.code === 'query_stopped')) setError(pluginError(err)); }
     finally { setBusy(false); }
   };
   const save = async () => {
-    if (!location || !draft) return;
+    if (!location || !draft || locked) return;
     setBusy(true); setError(''); setSaved(false);
+    application.clear(); setRuntime([]);
+    let stored = false;
     try {
-      const result = await controlApi.savePluginUsage(plugin.name, location, draft);
-      runtimeScope.current = { plugin_name: plugin.name, kind: location.kind, location_id: location.id };
+      const scope = { plugin_name: plugin.name, kind: location.kind, location_id: location.id };
+      const operation = createPluginApplication(scope);
+      const result = await controlApi.savePluginUsage(plugin.name, location, draft,
+        { applyRuntime: false, baseUrl: operation.baseUrl, signal: application.getSignal() });
+      stored = true;
+      runtimeScope.current = scope;
       runtimeRequest.current++; runtimeRead.invalidate();
       setData(result);
       const updated = result.locations.find((item) => locationKey(item) === selected);
       if (updated) setDraft(locationState(updated));
       setSaved(true); setRuntime(result.runtime || []);
       onSaved();
-      await readRuntime().catch((err) => setRuntimeError(pluginError(err)));
-    } catch (err) { setError(pluginError(err)); }
+      if (result.runtime === undefined) setRuntime((await application.apply(operation, 'plugins')).runtime);
+      else await readRuntime().catch((err) => setRuntimeError(pluginError(err)));
+    } catch (err) {
+      if (!(err instanceof ApplicationUnconfirmedError && err.code === 'query_stopped')) setError((stored ? '使用配置已保存, 运行时应用未确认: ' : '') + pluginError(err));
+    }
     finally { setBusy(false); }
   };
   return <div className="space-y-4">
     <Card className="space-y-4">
       <p className="text-sm text-text-secondary">插件在每个使用位置分别启用。关闭整个插件会保留各项能力的独立开关。</p>
       {error && <p role="alert" className="text-error">{error}</p>}
-      {data && <label className="block text-sm">使用位置<select aria-label="使用位置" className="glass-input mt-2 w-full" value={selected} disabled={busy} onChange={(event) => {
+      {data && <label className="block text-sm">使用位置<select aria-label="使用位置" className="glass-input mt-2 w-full" value={selected} disabled={locked} onChange={(event) => {
         if (dirty && !confirmDiscard()) return;
         const next = data.locations.find((item) => locationKey(item) === event.target.value);
         if (next) { setSelected(locationKey(next)); setDraft(locationState(next)); setSaved(false); setError(''); }
@@ -106,18 +128,21 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
         {location.availability.message && <p className="text-sm text-text-tertiary">{location.availability.message}</p>}
         {!location.parent_enabled && <p className="text-sm text-text-tertiary">此命名配置已停用，运行实例还需启用对应会话。</p>}
         <div className="flex flex-wrap items-center gap-3">
-          {draft.present ? <><label className="flex items-center gap-2 text-sm"><input aria-label="启用插件" type="checkbox" checked={draft.enabled} disabled={busy || (!location.availability.allowed && !draft.enabled)} onChange={(event) => { setDraft({ ...draft, enabled: event.target.checked }); setSaved(false); }} />启用插件</label><Button size="sm" variant="danger" disabled={busy} onClick={() => { setDraft({ ...draft, present: false }); setSaved(false); }}>移除</Button></> : <Button disabled={busy || !location.availability.allowed} onClick={() => { setDraft({ ...draft, present: true, enabled: true }); setSaved(false); }}>添加到此位置</Button>}
+          {draft.present ? <><label className="flex items-center gap-2 text-sm"><input aria-label="启用插件" type="checkbox" checked={draft.enabled} disabled={locked || (!location.availability.allowed && !draft.enabled)} onChange={(event) => { setDraft({ ...draft, enabled: event.target.checked }); setSaved(false); }} />启用插件</label><Button size="sm" variant="danger" disabled={locked} onClick={() => { setDraft({ ...draft, present: false }); setSaved(false); }}>移除</Button></> : <Button disabled={locked || !location.availability.allowed} onClick={() => { setDraft({ ...draft, present: true, enabled: true }); setSaved(false); }}>添加到此位置</Button>}
           {location.kind === 'edictum' && <Link className="text-sm text-accent" to={`/agents?edictum=${encodeURIComponent(location.id)}`}>打开命名配置参数</Link>}
           {location.kind === 'chat' && <Link className="text-sm text-accent" to="/chat">打开 Chat</Link>}
         </div>
-        {draft.present && <PluginCapabilities capabilities={plugin.capabilities} values={draft.capabilities} active={draft.enabled} disabled={busy} onChange={(kind, name, enabled) => { setDraft({ ...draft, capabilities: { ...draft.capabilities, [kind]: { ...draft.capabilities[kind], [name]: enabled } } }); setSaved(false); }} />}
-        <div className="flex flex-wrap gap-2"><Button variant="primary" disabled={!dirty || busy} onClick={() => void save()}>{busy ? '处理中…' : '保存使用配置'}</Button><Button disabled={busy} onClick={() => { if (!dirty || confirmDiscard()) { setSaved(false); setRefresh((value) => value + 1); } }}>重新读取</Button></div>
+        {draft.present && <PluginCapabilities capabilities={plugin.capabilities} values={draft.capabilities} active={draft.enabled} disabled={locked} onChange={(kind, name, enabled) => { setDraft({ ...draft, capabilities: { ...draft.capabilities, [kind]: { ...draft.capabilities[kind], [name]: enabled } } }); setSaved(false); }} />}
+        <div className="flex flex-wrap gap-2"><Button variant="primary" disabled={!dirty || locked} onClick={() => void save()}>{locked ? '处理中…' : '保存使用配置'}</Button><Button disabled={locked} onClick={() => { if (!dirty || confirmDiscard()) { setSaved(false); setRefresh((value) => value + 1); } }}>重新读取</Button></div>
         {dirty && <p className="text-xs text-text-tertiary">有未保存的修改</p>}
       </>}
-      {!data && <Button onClick={() => setRefresh((value) => value + 1)} disabled={busy}>重新读取</Button>}
+      {!data && <Button onClick={() => setRefresh((value) => value + 1)} disabled={locked}>重新读取</Button>}
       {saved && <p role="status" className="text-success">使用配置已保存</p>}
-      {runtime.length > 0 && <PluginRuntimeStatus results={runtime} onRetry={() => void retry()} busy={busy} />}
+      {runtime.length > 0 && <PluginRuntimeStatus results={runtime} onRetry={() => void retry()} busy={locked} />}
     </Card>
+    {application.view && <RuntimeApplicationProgress id={application.view.application.id} label={application.view.application.label}
+      snapshot={application.view.snapshot} resultOk={application.view.result?.ok} busy={application.view.busy} error={application.view.error}
+      onQuery={() => void application.query()} completionText="运行应用已结束" />}
     <Card className="space-y-4">
       <div className="flex items-center justify-between gap-2"><h2 className="text-lg font-semibold">运行实例</h2><Button size="sm" onClick={() => void readRuntime().catch((err) => setRuntimeError(pluginError(err)))}>刷新运行状态</Button></div>
       {runtimeError && <p role="alert" className="text-error">{runtimeError}</p>}
@@ -131,7 +156,7 @@ export function PluginUsages({ plugin, onDirty, onSaved }: { plugin: ManagedPlug
           <Button size="sm" onClick={() => setSessionContext({ platformId: instance.platform_id, sessionId: instance.session_id })}>配置此会话参数</Button>
         </div>)}
       </section>)}
-      {snapshot?.services.some((service) => service.instances.some((instance) => instance.plugin.error || instance.plugin.drift || instance.plugin.restart_required)) && <Button disabled={busy} onClick={() => void retry(true)}>重试实例应用</Button>}
+      {snapshot?.services.some((service) => service.instances.some((instance) => instance.plugin.error || instance.plugin.drift || instance.plugin.restart_required)) && <Button disabled={locked} onClick={() => void retry(true)}>重试实例应用</Button>}
     </Card>
     <SessionPluginSettingsModal context={sessionContext} plugins={[plugin.name]} onClose={() => setSessionContext(null)} />
   </div>;

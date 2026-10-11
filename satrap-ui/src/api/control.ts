@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { savePluginConfigOnly, type PluginSaveOptions } from './pluginApplications';
 import type { GroupChatSummary, GroupChatSummaryPage } from './types';
 import type { SessionPluginSettings } from './pluginSettings';
 import type { ModelOptions } from '@/components/common/PluginConfigFields';
@@ -554,7 +555,8 @@ export const controlApi = {
     return (await controlClient.get<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { signal })).data;
   },
 
-  saveGlobalPluginConfig: async (name: string, config: Record<string, unknown>, revision: string): Promise<import('./types').GlobalPluginConfig> => {
+  saveGlobalPluginConfig: async (name: string, config: Record<string, unknown>, revision: string, options?: PluginSaveOptions): Promise<import('./types').GlobalPluginConfig> => {
+    if (options?.applyRuntime === false) return savePluginConfigOnly(`/config/plugins/${encodeURIComponent(name)}/config`, { config, expected_revision: revision }, options);
     return (await controlClient.put<import('./types').GlobalPluginConfig>(`/config/plugins/${encodeURIComponent(name)}/config`, { config, expected_revision: revision }, { timeout: 120000 })).data;
   },
 
@@ -566,7 +568,8 @@ export const controlApi = {
     return (await controlClient.get<import('./types').PluginUsagesResult>(`/config/plugins/${encodeURIComponent(name)}/usages`)).data;
   },
 
-  savePluginUsage: async (name: string, location: import('./types').PluginLocation, state: import('./types').PluginLocationState): Promise<import('./types').PluginUsagesResult> => {
+  savePluginUsage: async (name: string, location: import('./types').PluginLocation, state: import('./types').PluginLocationState, options?: PluginSaveOptions): Promise<import('./types').PluginUsagesResult> => {
+    if (options?.applyRuntime === false) return savePluginConfigOnly(`/config/plugins/${encodeURIComponent(name)}/usages`, { kind: location.kind, location_id: location.id, state, expected_revision: location.revision }, options);
     return (await controlClient.put<import('./types').PluginUsagesResult>(`/config/plugins/${encodeURIComponent(name)}/usages`, { kind: location.kind, location_id: location.id, state, expected_revision: location.revision }, { timeout: 120000 })).data;
   },
 

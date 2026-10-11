@@ -175,6 +175,8 @@ export interface PluginRuntimeResult {
   status: 'applied' | 'next_activation' | 'error';
   error?: string;
   sessions: Array<Record<string, unknown>>;
+  operation_id?: string;
+  confirmation?: 'unconfirmed' | 'not_accepted';
 }
 
 export interface GlobalPluginConfig {
